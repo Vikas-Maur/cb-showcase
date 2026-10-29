@@ -1,9 +1,13 @@
 # Builds the Windows app when started by hand (Actions → Build Windows app → Run workflow), with
-# scripts/build-windows.js. The app is the run's artifact: download it, unzip it and run Cardboard.exe.
+# scripts/build-windows.js, and publishes it as the release "windows-latest": one .exe that unpacks the app
+# into a folder, from which Cardboard\Cardboard.exe runs. Each run replaces the previous build.
 name: Build Windows app
 
 on:
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -22,9 +26,18 @@ jobs:
       - name: Build
         run: node scripts/build-windows.js
 
-      # About 490 MB zipped. Kept for 3 days: artifacts count against the account's Actions storage.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: Cardboard-1.4.0-windows
-          path: out/Cardboard-win
-          retention-days: 3
+      # 7-Zip's LZMA2 makes it about 306 MB (about 500 MB as a zip). With 7-Zip's self-extractor in front,
+      # it is one .exe that unpacks on Windows 10 and 11 with nothing installed.
+      - name: Package
+        run: |
+          Rename-Item out/Cardboard-win Cardboard
+          7z a -t7z -mx9 -mmt=on out/Cardboard.7z ./out/Cardboard
+          cmd /c copy /b "C:\Program Files\7-Zip\7z.sfx" + out\Cardboard.7z out\Cardboard-1.4.0-windows-x64.exe
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete windows-latest --cleanup-tag --yes 2>$null
+          $notes = "Cardboard 1.4.0 for Windows, built from $($env:GITHUB_SHA.Substring(0, 7)).`n`nRun the .exe and choose where to unpack it, then run Cardboard\Cardboard.exe. It adds itself to the Start Menu on first start. Nothing is code-signed, so Windows may say it protected your PC: More info, then Run anyway."
+          gh release create windows-latest out/Cardboard-1.4.0-windows-x64.exe --target $env:GITHUB_SHA --title "Cardboard 1.4.0 for Windows" --notes $notes

@@ -304,7 +304,10 @@ From scratch, on Windows: `cd tools && npm ci`, then `node scripts/build-windows
 Claude Code 2.1.309 for Windows (npm). It then builds `out\Cardboard-win` and checks the versions of what it
 bundles. It needs 7-Zip. The result is byte for byte the same as the `Cardboard-win\` built step by step.
 On GitHub, the same build runs by hand: Actions → Build Windows app → Run workflow
-(`.github/workflows/build-windows.yml`). The app is the run's artifact.
+(`.github/workflows/build-windows.yml`). It publishes the app as the release `windows-latest`, replacing the
+previous build: `Cardboard-1.4.0-windows-x64.exe`, about 306 MB, which unpacks the app into a folder on
+Windows 10 or 11 with nothing installed (7-Zip's LZMA2 behind its self-extractor; a zip would be about
+500 MB). It isn't code-signed, so Windows may warn before running it.
 
 Step by step, into the `Cardboard-win\` that is already there:
 

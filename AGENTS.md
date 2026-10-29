@@ -36,8 +36,10 @@ to its minified bundles at build time.
   from into `dl/` (Cardboard 1.4.0 for Mac from cardboard.ai, Electron, ffmpeg 8.1, uv, Claude Code) and
   builds `out/Cardboard-win`.
 - Anywhere else (Ubuntu): the "Build Windows app" workflow runs the same build on a GitHub Windows runner.
-  `gh workflow run build-windows.yml --ref <branch>`, `gh run watch`, then
-  `gh run download <run-id> -n Cardboard-1.4.0-windows`. A patch that no longer matches fails the build.
+  `gh workflow run build-windows.yml --ref <branch>`, then `gh run watch`. A patch that no longer matches
+  fails the build. It publishes the app as the release `windows-latest`, replacing the previous build:
+  `gh release download windows-latest` gets `Cardboard-1.4.0-windows-x64.exe`, which unpacks the app.
+  Builds go to that release, never to workflow artifacts.
 
 **Testing.** The app runs only on Windows, and its GPU paths need an NVIDIA card, so checks in the real
 app happen on the Windows machine.
