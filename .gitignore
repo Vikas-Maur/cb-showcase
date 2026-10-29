@@ -1,0 +1,23 @@
+# Cardboard's app, downloads and unpacked code: large, and not ours to redistribute.
+/Cardboard-win/
+/dl/
+/extracted/
+/asar-src/
+/main.orig.js
+/library-worker.orig.js
+/cardboard.orig.mjs
+/cli-media.orig.mjs
+/tabs.orig.js
+/index.orig.js
+/EditorRoute.orig.js
+
+# What scripts/build-windows.js builds.
+/out/
+
+# Build tools (reinstall with `npm ci` in tools/).
+/tools/*
+!/tools/package.json
+!/tools/package-lock.json
+
+# Screenshots taken by scripts/shot.ps1.
+/shot.png

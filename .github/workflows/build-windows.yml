@@ -1,0 +1,30 @@
+# Builds the Windows app when started by hand (Actions → Build Windows app → Run workflow), with
+# scripts/build-windows.js. The app is the run's artifact: download it, unzip it and run Cardboard.exe.
+name: Build Windows app
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Build tools
+        working-directory: tools
+        run: npm ci
+
+      - name: Build
+        run: node scripts/build-windows.js
+
+      # About 490 MB zipped. Kept for 3 days: artifacts count against the account's Actions storage.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Cardboard-1.4.0-windows
+          path: out/Cardboard-win
+          retention-days: 3
