@@ -10,6 +10,7 @@
 /tabs.orig.js
 /index.orig.js
 /EditorRoute.orig.js
+/installErrorTelemetry.orig.js
 
 # What scripts/build-windows.js builds (--baseline into out-baseline).
 /out/

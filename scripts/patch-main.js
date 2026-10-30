@@ -14,6 +14,8 @@ const replace = (from, to, count = 1) => {
   if (n !== count) throw new Error(`expected ${count} match(es), found ${n}: ${from}`);
   src = src.split(from).join(to);
 };
+// CB_BASELINE=1 (build-windows.js --baseline) leaves out the "speed" changes, as patch-worker.js does.
+const speed = process.env.CB_BASELINE !== "1";
 
 // Helpers injected once at the top of the bundle.
 const preamble = String.raw`
@@ -407,7 +409,7 @@ var __cbLogMenu = (menu) => {
 // What the pages report (patch-renderer.js). A key the page left alone may have been a menu accelerator,
 // which runs right after it; those are in the log as menu items already.
 var __cbLogFrom = (d, wc) => {
-  if (!d || !/^(key|shortcut|error|toast)$/.test(d.ev)) return;
+  if (!d || !/^(key|shortcut|error|toast|playback\.(wait|forced)|preview\.(slow|rebuild)|canvas\.restored)$/.test(d.ev)) return;
   const { ev, ...f } = d, m = /\/app\/editor\/([^/?#]+)/.exec(wc?.getURL?.() ?? "");
   if (m) f.project = m[1];
   if (ev !== "key" || f.handled !== false) return __cbLog(ev, f);
@@ -445,11 +447,40 @@ var __cbPipeWorker = (child) => {
     });
   }
 };
+// The fast GPU, on AC power (patch 13). The GPU is chosen before the app is ready; Electron's powerMonitor
+// already answers then on Windows (checked on Electron 43: on battery it said so before and after ready,
+// in 0.01 ms). If it can't answer, the default GPU, as before.
+var __cbGpuAsked = "default";
+var __cbOnAc = () => {
+  let ac = false;
+  try { ac = require("electron").powerMonitor.isOnBatteryPower() === false; } catch {}
+  if (ac) __cbGpuAsked = "high-performance";
+  return ac;
+};
+// NVIDIA laptops power the discrete GPU off when it's idle, and the GPU process waited for it to power up
+// before the first frame (measured: +135 ms to a usable Dashboard, +260 ms to first paint). nvidia-smi,
+// which ships with the driver, wakes it while the app is still loading. Elsewhere it isn't there: nothing.
+var __cbWakeGpu = () => {
+  try {
+    const exe = require("path").join(process.env.SystemRoot || "C:\\Windows", "System32", "nvidia-smi.exe");
+    if (require("fs").existsSync(exe)) require("child_process").spawn(exe, ["-L"], { stdio: "ignore", windowsHide: true }).on("error", () => {}).unref();
+  } catch {}
+};
 var __cbLogStart = () => {
   const { app, screen } = require("electron");
   __cbLog("app.start", { version: app.getVersion(), electron: process.versions.electron, os: require("os").release(),
     displays: screen.getAllDisplays().map((d) => d.size.width + "x" + d.size.height + "@" + d.scaleFactor) });
   app.on("will-quit", () => { __cbLog("app.quit", {}); __cbLogFlush(true); });
+  // Which GPU draws the app (PCI vendor: 0x10de NVIDIA, 0x8086 Intel, 0x1002 AMD), and processes that die:
+  // a GPU process crash or reset blanks canvases, a renderer's takes a tab. Only the "complete" GPU info
+  // marks the GPU in use ("basic" marks none), so it is read once the app has settled.
+  setTimeout(() => app.getGPUInfo("complete").then((i) => {
+    const all = i.gpuDevice ?? [], d = all.find((g) => g.active);
+    const hex = (n) => (typeof n === "number" ? "0x" + n.toString(16).padStart(4, "0") : undefined);
+    __cbLog("gpu", { vendor: hex(d?.vendorId), device: hex(d?.deviceId), gpus: all.length, asked: __cbGpuAsked });
+  }).catch(() => {}), 15000).unref?.();
+  app.on("child-process-gone", (e, d) => __cbLog("process.gone", { type: d.type, reason: d.reason, exitCode: d.exitCode }));
+  app.on("render-process-gone", (e, w, d) => __cbLog("process.gone", { type: "renderer", reason: d.reason, exitCode: d.exitCode }));
 };
 // Main's own warnings and errors ([desktop] …), which only reached a console nobody sees.
 if (process.type === "browser") {
@@ -601,5 +632,30 @@ replace(
   `reveal:{running:__cbWin?"Revealing the project in File Explorer":"Revealing the project in Finder",done:__cbWin?"Revealed the project in File Explorer":"Revealed the project in Finder"}`,
 );
 
+// 13 (speed). The fast GPU on laptops with two, on AC power. Windows gives an app the power-saving GPU
+// unless the app asks: on a laptop with an RTX 3050 Cardboard drew everything (preview, timeline,
+// graphics, its own video decoding) on the integrated Intel GPU, which shares system RAM, while the RTX
+// sat idle. Measured on the RTX: a graphic with video 41–50 frames/s against 24–26, a third to a seventh
+// as many editor frames over 50 ms, ~900 MB less system RAM taken as GPU memory. The RTX, otherwise powered
+// off, then draws 3.3 W with Cardboard idle and ~9 W while a graphic plays (measured, nvidia-smi), so on
+// battery the app keeps the default GPU (__cbOnAc, the power state when it starts; a change
+// takes effect at the next start). Its power-up is started early (__cbWakeGpu). A choice made for
+// Cardboard in Windows' Settings > Display > Graphics still wins (measured: "Power saving" there keeps it
+// on the integrated GPU with this switch on). One GPU or none: the switch does nothing.
+if (speed)
+  replace(
+    `__cbWin&&oe.app.commandLine.appendSwitch("force-prefers-reduced-motion");`,
+    `__cbWin&&oe.app.commandLine.appendSwitch("force-prefers-reduced-motion");__cbWin&&__cbOnAc()&&(oe.app.commandLine.appendSwitch("force_high_performance_gpu"),__cbWakeGpu());`,
+  );
+
+// 14. The telemetry warning says why the upload failed. Each failed upload of an analytics event files a
+// defect about it, and when that defect can't be sent either main warns "[telemetry] sentry delivery
+// failed" (145 of them in an hour of exports) without the reason, an HTTP status or a network error.
+// The reason is Cardboard's own fixed message ("Telemetry relay failed (429)", "fetch failed").
+replace(
+  "deliver(t,r=!0){this.send(t).catch(()=>{r?this.defect({process:\"main\",kind:\"telemetry_delivery\",workflow_stage:t.kind}):this.deps.warn(`[telemetry] ${t.kind} delivery failed`)})}",
+  "deliver(t,r=!0){this.send(t).catch(__cbE=>{r?this.defect({process:\"main\",kind:\"telemetry_delivery\",workflow_stage:t.kind}):this.deps.warn(`[telemetry] ${t.kind} delivery failed`+(__cbE?.message?`: ${String(__cbE.message).slice(0,120)}`:\"\"))})}",
+);
+
 fs.writeFileSync(file, src);
-console.log(`patched ${path.basename(file)} (${src.length} bytes)`);
+console.log(`patched ${path.basename(file)} (${src.length} bytes${speed ? "" : ", baseline"})`);

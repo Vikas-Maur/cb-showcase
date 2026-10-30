@@ -29,7 +29,7 @@ they are Cardboard's software, not ours to redistribute.
   - `resources\director\claude.exe` — Claude Code 2.1.309 for win32-x64, the version the Mac build bundles.
   - `resources\cli\` — the `cardboard`/`cb` CLI, patched.
 - `dl\`, `extracted\`, `asar-src\` — downloads and unpacked sources, kept for rebuilding.
-- `main.orig.js`, `library-worker.orig.js`, `cardboard.orig.mjs`, `tabs.orig.js`, `index.orig.js`, `EditorRoute.orig.js` — unpatched bundles the patch scripts start from.
+- `main.orig.js`, `library-worker.orig.js`, `cardboard.orig.mjs`, `tabs.orig.js`, `index.orig.js`, `EditorRoute.orig.js`, `installErrorTelemetry.orig.js` — unpatched bundles the patch scripts start from.
 - `scripts\` — patch and helper scripts.
 - `tools\` — 7-Zip, `@electron/asar`, rcedit and the generated `Cardboard.ico`.
 
@@ -105,9 +105,27 @@ they are Cardboard's software, not ours to redistribute.
     Main writes it. Menu items say whether they ran from the strip's menu or their accelerator, agent
     answers say how long their question waited, Ctrl+Tab (which main handles itself) and Alt/F10 are
     logged, and main's own warnings and errors and the library worker's output go in too. Before, those
-    only reached a console nobody sees when Cardboard starts from the Start Menu.
+    only reached a console nobody sees when Cardboard starts from the Start Menu. It also says which GPU
+    draws the app, and when a GPU or page process dies.
 12. Windows wording where main names the Mac: "this PC" for "this Mac" in the sign-out and quit dialogs
     and when an agent isn't installed, and File Explorer for Finder in the agent's reveal step.
+13. On a laptop with two GPUs, Cardboard draws on the fast one when the PC is plugged in. Windows gives
+    an app the power-saving GPU unless the app asks for the other, so on a laptop with an RTX 3050
+    everything Cardboard draws (preview, timeline, graphics) and its own video decoding ran on the
+    integrated Intel GPU, which borrows system RAM, while the RTX sat idle. Started on battery it stays on
+    the default GPU: the RTX, powered off otherwise, draws 3.3 W while Cardboard idles on it and about 9 W
+    while a graphic plays. The choice is made when Cardboard starts, from the
+    power state then; plugging in or out while it runs takes effect at the next start. An NVIDIA
+    GPU is powered off when idle, and waiting for it to power up made startup slower, so `nvidia-smi -L`
+    (installed with the driver) starts waking it as Cardboard starts. To keep Cardboard on the
+    power-saving GPU, choose "Power saving" for it in Windows Settings → System → Display → Graphics;
+    that wins over Cardboard's request (checked). Left out of `--baseline`. Measured in
+    [Benchmarks](#benchmarks).
+14. The "[telemetry] sentry delivery failed" warning says why: Cardboard's own message for the failed upload,
+    an HTTP status or a network error ("Telemetry relay failed (429)", "fetch failed"). Cardboard reports
+    its own problems, and a failed analytics upload is one, to cardboard.ai; when that report can't be sent
+    either, main warned without the reason (145 times in an hour of test exports, from both builds and from
+    a normal session, so not from these changes).
 
 `scripts\patch-worker.js` (applied to `asar-src\dist\library-worker.js`) uses the NVIDIA GPU
 (NVENC) for converting imported media and making preview copies, where macOS uses VideoToolbox.
@@ -168,7 +186,8 @@ leaves room for the window controls on the right, except in full screen, where W
 macOS's strip does for the traffic lights on the left. The menu's code is in `scripts\strip-titlebar.js`.
 
 `scripts\patch-renderer.js` (applied to `asar-src\dist\renderer\assets\index-DufLJgUU.js`, the renderer's
-main bundle, and `EditorRoute-CuIqwZKP.js`, the editor's) does the rest of the renderer's changes.
+main bundle, `EditorRoute-CuIqwZKP.js`, the editor's, and `installErrorTelemetry-DxKId8tA.js`, which holds
+the editor's state) does the rest of the renderer's changes.
 
 It imports the media in a dropped folder and its subfolders: dropped on the editor (the media panel or
 anywhere else) it goes into the project, and dropped on the Dashboard (its prompt box, or anywhere else
@@ -202,6 +221,40 @@ It also fixes the keyboard on Windows, found by pressing every shortcut in the r
   and is unchanged.
 - The pages' part of the activity log: shortcuts, keys nothing handled, how each agent question was
   answered (a key or a click), page errors and error toasts.
+
+The timeline and playback, found by playing real projects in a separate copy of the app and measuring:
+- Previous/next frame (← →) keep the playhead in view. Jump to start/end scrolled the timeline to the
+  playhead; the frame steps did not, so holding ← walked it off the edge, out of sight.
+- Dragging the playhead, or scrubbing the ruler, past the edge of the timeline scrolls it, faster the
+  further out, as in other editors. It only followed the pointer within the visible part, so a point off
+  screen could only be reached by scrolling first. Rightward it stops once the project's end is in view.
+- The timeline redraws when the GPU hands its canvases back. The ruler and the tracks are drawn on opaque
+  canvases; when the GPU drops them (a driver reset, the GPU process restarting, memory running short)
+  Chromium gives them back blank, which shows as black, and says so with a `contextrestored` event nothing
+  listened to. They stayed black until something else redrew them: still 99% black 10 s after the GPU
+  process restarted, against redrawn within 1.5 s now.
+- Play waits only for audio that will be heard. After a seek, Play holds ("Loading audio...", up to 8 s)
+  until the sound of the clips ahead is loaded, and that included clips on muted tracks and muted,
+  hidden or reversed clips, which are never played. With a slow disk (every extracted-audio read 3 s
+  late): Play with the B-roll track muted started in 0.18–0.22 s, against 4.0–4.1 s.
+- A second Play while it says "Loading audio..." plays at once, the sound joining as it loads (as after
+  the 8 s limit). Pressing again did nothing, so it looked like Space didn't work: 0.82–0.83 s to playing
+  with a second press at 0.6 s, against 3.9–4.1 s. Each audio load is numbered, and only the newest one
+  may start playback when it ends, so a load overtaken by a pause, a seek and another Play can't start
+  playback before the new spot's audio is in.
+- A graphic (a `<code>` clip) is rebuilt only when its page stops answering. The preview asked a graphic's
+  page for a frame with a 10 s timer that also covered fetching the frames of the videos inside it, so a
+  slow video decode made Cardboard rebuild the page, which stays invisible until it draws: the preview
+  went black for as long as that took. The page's timer now starts when the frame is sent. A slow fetch
+  is waited for and its frame used when it comes; only one that hasn't answered in 30 s gets the old
+  rebuild, so a hung decode still ends in Cardboard's "couldn't render" note.
+- While playing, a graphic draws with the newest frame of its videos that is ready instead of waiting for
+  the frame of that exact moment. Every frame of a graphic waited for its videos' frames, even with the
+  video off screen, before the next could start, so a graphic with a video inside played at 26–41 frames/s
+  on the test laptop (4–14 while it was busy) and froze for seconds when a decode was slow. Paused, scrubbing, and the first frame after Play still
+  wait for the exact frame. Left out of `--baseline`.
+- The activity log notes the waits: Play waiting on audio over half a second, a second press forcing it,
+  slow video frames for a graphic, graphics rebuilt, canvases given back.
 
 And Windows wording where Cardboard names the Mac: "this PC" for "this Mac" (Settings → Library, Agents,
 the plans note, the library drive error) and File Explorer for Finder (Show in File Explorer, the project's reveal button, the
@@ -254,6 +307,13 @@ typed into a field. Every line has `t` (local time) and `ev`; lines from a proje
 | `error` | An uncaught error in a page | `msg`, `src`, `rejection` |
 | `main.warn`, `main.error` | Main's warnings and errors (`[desktop] …`) | `msg` |
 | `worker` | The library worker's output, with `[media]` notes on NVENC, CUDA and CPU fallbacks | `msg` |
+| `gpu` | Which GPU draws the app, 15 s after start | `vendor` (PCI id: `0x10de` NVIDIA, `0x8086` Intel, `0x1002` AMD), `device`, `gpus` (how many), `asked` (`high-performance` or `default`, see patch 13) |
+| `process.gone` | A GPU, utility or page process died | `type`, `reason`, `exitCode` |
+| `canvas.restored` | The GPU gave the timeline's canvases back blank and they were redrawn | `what` (`ruler`, `tracks`) |
+| `playback.wait` | Play waited over half a second for audio | `ms`, `timedOut` (the 8 s limit), `started` |
+| `playback.forced` | A second Play started playback without waiting for audio | |
+| `preview.slow` | A graphic's video frames took over a second (at most one line per 10 s) | `kind`, `ms` |
+| `preview.rebuild` | A graphic's page stopped answering and was rebuilt | `reason` |
 
 `on` and `field` name a control by one of the fixed labels written into Cardboard's code ("Play", "Add media
 files"), else by its analytics id (`director-question-option`), else by its role or tag (`button`,
@@ -330,6 +390,46 @@ Nothing the benchmarks do spends credits: no generation, transcription, captions
 Every profile shares the stored sign-in (`%APPDATA%\ai.cardboard\account.json`), so sign in to Cardboard once
 beforehand. Close Cardboard and plug the laptop in first: on battery, Windows slows the CPU and GPU.
 
+#### Playback, the timeline and the GPU
+
+Measured on one laptop (i5-12450HX, Intel UHD + RTX 3050 6 GB, Windows 11, on mains), the build before these
+changes against the build after, each run in its own isolated instance, alternating builds, every run listed.
+The graphic is a 20 s `<code>` clip with a video inside it (a real project's), played from the start for 19 s.
+
+| | Before | After |
+| --- | --- | --- |
+| Graphic, frames drawn per second | 29.8, 37.2, 26.2 | 87.7, 77.7, 80.7 |
+| Its wait for video frames, median per frame | 24, 20, 25 ms | 5, 4, 5 ms |
+| Editor frames, slowest 5% | 27.7, 20.8, 20.9 ms | 7.6, 7.3, 7.6 ms |
+| Editor frames over 50 ms (19 s) | 20, 20, 17 | 6, 6, 4 |
+| Black preview frames | 0, 0, 0 | 0, 0, 0 |
+| Memory (working set, all processes) | 3113, 3153, 3708 MB | 2800, 2796, 2842 MB |
+| System RAM taken as GPU memory | 902, 603, 1031 MB | 36 MB (the RTX's own ~870 MB) |
+| CPU while playing | 1.37, 1.56, 1.87 cores | 2.20, 2.23, 2.26 cores |
+
+The CPU goes into drawing about 2.7 times as many frames: per frame drawn it is about 55% less. Split, with the
+after build kept on the Intel GPU (Windows' per-app "Power saving"): the graphic alone went from 41.3, 39.8 to
+72.4, 74.2 frames/s (+0.15 core), the editor's frame times did not change. The RTX gives the editor's smoothness
+and the memory.
+
+- Timeline after the GPU process restarts: 99.4% black at 1.5, 4 and 10 s before; redrawn by 1.5 s after.
+- ← / → across the edge of the view and dragging the playhead past either edge: the playhead left the view in
+  all four before; stays in view in all four after.
+- Play right after a seek into a clip whose sound is extracted audio, every such read answered 3 s late: one press
+  3.9–4.2 s before, 4.0–4.3 s after (the audio must load); a second press at 0.6 s, 3.9–4.1 s before, 0.81–0.83 s
+  after; the clip's track muted, 4.0–4.1 s before, 0.18–0.22 s after. Without the delay, about 0.2 s in both.
+- A pause, a seek and Play again while an earlier audio load still runs (reads 6 s late): without the load
+  numbering playback started 1.5 s before the new spot's audio was in, with it after.
+- Startup to the Dashboard on mains, 7 launches each, medians: first paint 2505 → 2589 ms, prompt box ready
+  2354 → 2310 ms, largest paint 2891 → 3081 ms, working set 1123 → 1082 MB, private 810 → 1013 MB (the NVIDIA
+  driver), idle CPU the same. The slowest launches were 0.6–0.8 s slower, when the RTX wakes late. Without the
+  early wake, first paint was 260 ms slower at the median.
+- Export at 1080p, on mains: the 60 s media timeline (4K HEVC and H.264 clips) took 159.2, 164.5, 160.8,
+  158.4 s before and 156.4, 155.1, 150.7 s after, plus one run of 357.0 s while Windows Update installed a
+  Windows Security platform update (in the System log at the same minutes). The 20 s graphic: 81.4, 117.5 s
+  before, 68.0, 135.7 s after (as noisy in both). Outputs the same size and length.
+- The 25 page tests of `scripts\test-shortcuts.js` pass on the after build.
+
 ### Not ported
 
 - The auto-updater (Squirrel.Mac) is still macOS-only, so updates won't install themselves.
@@ -361,7 +461,7 @@ Step by step, into the `Cardboard-win\` that is already there:
 node scripts/patch-main.js asar-src/dist/main.js
 node scripts/patch-worker.js asar-src/dist/library-worker.js
 node scripts/patch-strip.js asar-src/dist/renderer/assets/tabs-DV5oCzuF.js
-node scripts/patch-renderer.js asar-src/dist/renderer/assets/index-DufLJgUU.js asar-src/dist/renderer/assets/EditorRoute-CuIqwZKP.js
+node scripts/patch-renderer.js asar-src/dist/renderer/assets/index-DufLJgUU.js asar-src/dist/renderer/assets/EditorRoute-CuIqwZKP.js asar-src/dist/renderer/assets/installErrorTelemetry-DxKId8tA.js
 node tools/node_modules/@electron/asar/bin/asar.mjs pack asar-src Cardboard-win/resources/app.asar
 node scripts/patch-cli.js Cardboard-win/resources/cli/cardboard.mjs cardboard.orig.mjs
 node scripts/patch-cli-media.js Cardboard-win/resources/cli/chunks/chunk-LL26E55H.mjs cli-media.orig.mjs

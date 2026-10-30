@@ -66,3 +66,12 @@ app happen on the Windows machine.
 - cmd reads `.cmd` files in the console's code page, not UTF-8: write non-ASCII paths as
   `%LOCALAPPDATA%\…` (see `__cbCmdPath`).
 - The activity log records how and when things happened, and failures, never text the user typed.
+- Measure on mains only, and check (`root/wmi` `BatteryStatus.PowerOnline`): on battery Windows throttles the
+  laptop about 3x, and the build picks a different GPU (patch-main 13).
+- On a laptop with two GPUs, Chromium draws on the power-saving one unless asked. Per-process GPU use is in the
+  `\GPU Process Memory(pid_*)` counters (the integrated GPU has no dedicated memory); `nvidia-smi` lists nothing
+  for it and wakes the discrete GPU just by asking. Windows' per-app "Power saving" choice pins a build to the
+  integrated GPU for an A/B.
+- During playback a code graphic is a live iframe over the preview, not the captured canvas; the editor's
+  timeline canvases are opaque, so a canvas the GPU dropped shows black.
+- From Git Bash, Windows tools that take `/flags` (`reg`, `taskkill`) need `MSYS_NO_PATHCONV=1`.

@@ -82,7 +82,7 @@ const icnsPng = (icns) => {
   node("scripts/patch-main.js", path.join(dist, "main.js"));
   node("scripts/patch-worker.js", path.join(dist, "library-worker.js"));
   node("scripts/patch-strip.js", path.join(assets, "tabs-DV5oCzuF.js"));
-  node("scripts/patch-renderer.js", path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"));
+  node("scripts/patch-renderer.js", path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
   node(ASAR, "pack", src, path.join(RES, "app.asar"));
   node("scripts/patch-cli.js", path.join(RES, "cli", "cardboard.mjs"), path.join(WORK, "cardboard.orig.mjs"));
   node("scripts/patch-cli-media.js", path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"), path.join(WORK, "cli-media.orig.mjs"));

@@ -1,14 +1,20 @@
-// Patches Cardboard's renderer: its main bundle (index-*.js) and the editor's (EditorRoute-*.js).
+// Patches Cardboard's renderer: its main bundle (index-*.js), the editor's (EditorRoute-*.js) and the editor
+// store's (installErrorTelemetry-*.js).
 // - A dropped folder imports the media inside it.
 // - Windows keyboards: shortcut recording and conflicts, the Shortcuts page's keyboard, Ctrl+Y.
 // - Answering the agent's questions from the keyboard.
+// - The timeline keeps the playhead in view, and redraws after the GPU drops its canvases.
+// - Playback starts without waiting on muted audio, and at once on a second press.
+// - Graphics with a video inside play without waiting on the video's frames ("speed").
 // - The pages' part of the activity log (see __cbLog in patch-main.js).
-// Usage: node patch-renderer.js <path-to-dist/renderer/assets/index-*.js> <path-to-…/EditorRoute-*.js>
+// Usage: node patch-renderer.js <…/index-*.js> <…/EditorRoute-*.js> <…/installErrorTelemetry-*.js>
 const fs = require("fs");
 const path = require("path");
 
-const [indexFile, editorFile] = process.argv.slice(2);
-if (!editorFile) throw new Error("usage: node patch-renderer.js <index-*.js> <EditorRoute-*.js>");
+const [indexFile, editorFile, storeFile] = process.argv.slice(2);
+if (!storeFile) throw new Error("usage: node patch-renderer.js <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>");
+// CB_BASELINE=1 (build-windows.js --baseline) leaves out the "speed" changes, as patch-worker.js does.
+const speed = process.env.CB_BASELINE !== "1";
 
 // The pristine copy of a bundle, kept outside the asar source tree so it is not repacked.
 const pristine = (file, origName) => {
@@ -24,7 +30,7 @@ const patch = (file, origName, edits) => {
     src = src.split(from).join(to);
   });
   fs.writeFileSync(file, src);
-  console.log(`patched ${path.basename(file)} (${src.length} bytes)`);
+  console.log(`patched ${path.basename(file)} (${src.length} bytes${speed ? "" : ", baseline"})`);
 };
 
 // Windows wording for text that names the Mac: "this PC" for "this Mac", File Explorer for Finder. Cardboard
@@ -109,6 +115,8 @@ const __cbRedoY=(id,b,e,get)=>__cbWinKeys&&id===se.REDO&&e.key.toLowerCase()==="
 // Activity log. Main writes it; this page reports shortcuts, keys nothing handled, how an agent
 // question was answered, errors and error toasts. Never text typed into a field.
 const __cbLog=(ev,f)=>{try{z("cb:log",{ev,where:location.pathname.startsWith("/app/editor/")?"editor":location.pathname.replace(/^\/app\/?/,"")||"home",...f}).catch(()=>{})}catch{}};
+// The editor's bundle (EditorRoute) and the store's report playback, preview and canvas events through it.
+window.__cbLog=__cbLog;
 const __cbKeyName=k=>k===" "?"Space":k.length===1?k.toUpperCase():{ArrowLeft:"Left",ArrowRight:"Right",ArrowUp:"Up",ArrowDown:"Down",Escape:"Esc"}[k]??k;
 const __cbCombo=e=>[e.ctrlKey&&"Ctrl",e.altKey&&"Alt",e.shiftKey&&"Shift",e.metaKey&&(__cbWinKeys?"Win":"Cmd"),__cbKeyName(e.key)].filter(Boolean).join("+");
 const __cbEditable=t=>t instanceof HTMLElement&&(t.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
@@ -211,4 +219,121 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
     [`reveal:{running:%,`, "Revealing the project in Finder", "Revealing the project in File Explorer"],
     [`done:%}`, "Revealed the project in Finder", "Revealed the project in File Explorer"],
   ]);
+
+  // 9. Previous/next frame (← →) keep the playhead in view. Jump to start/end scroll the timeline to it (H1),
+  // the frame steps did not: holding ← walked the playhead off the edge of the timeline, out of sight.
+  replace(
+    `U.getState().setPlaybackPosition(_),d("timeline"),it("playback_prev_frame",{})`,
+    `U.getState().setPlaybackPosition(_),H1({playheadTime:_,pixelsPerSecond:U.getState().pixelsPerSecond}),d("timeline"),it("playback_prev_frame",{})`,
+  );
+  replace(
+    `U.getState().setPlaybackPosition(H),d("timeline"),it("playback_next_frame",{})`,
+    `U.getState().setPlaybackPosition(H),H1({playheadTime:H,pixelsPerSecond:U.getState().pixelsPerSecond}),d("timeline"),it("playback_next_frame",{})`,
+  );
+
+  // 10. Dragging the playhead (or scrubbing the ruler) past the edge of the timeline scrolls it. Zv, the
+  // scrub both use, followed the pointer only within the visible part: past the edge the playhead left the
+  // view and the timeline stayed put, so a far point could only be reached by scrolling first. Once the
+  // pointer has moved, being within 12 px of an edge or past it scrolls the timeline that way, faster the
+  // further out (up to 48 px a frame), and the time follows the pointer as it does. Rightward it stops
+  // once the project's end is in view: the playhead stops at the end, and the timeline runs on far past it.
+  replace(
+    `const I=M=>x(M.clientX),w=M=>v(M.clientX);window.addEventListener("mousemove",I),window.addEventListener("mouseup",w),f.current=()=>{window.removeEventListener("mousemove",I),window.removeEventListener("mouseup",w)},E&&x(S)}`,
+    `let __cbX=S,__cbMoved=!1,__cbRaf=0;const __cbEdge=()=>{__cbRaf=requestAnimationFrame(__cbEdge);if(!__cbMoved)return;const q=document.querySelector("[data-timeline-scroll]");if(!q)return;const r=q.getBoundingClientRect(),over=__cbX<r.left+12?__cbX-(r.left+12):__cbX>r.right-12?__cbX-(r.right-12):0;if(over===0)return;const st=U.getState(),was=q.scrollLeft,end=Math.max(0,st.duration*st.pixelsPerSecond-q.clientWidth+24);let to=was+Math.sign(over)*Math.min(48,2+Math.abs(over)*.5);over>0&&(to=Math.min(to,Math.max(was,end)));if(to===was)return;q.scrollLeft=to;q.scrollLeft!==was&&x(__cbX)};__cbRaf=requestAnimationFrame(__cbEdge);` +
+      `const I=M=>(__cbX=M.clientX,__cbMoved=!0,x(M.clientX)),w=M=>v(M.clientX);window.addEventListener("mousemove",I),window.addEventListener("mouseup",w),f.current=()=>{cancelAnimationFrame(__cbRaf),window.removeEventListener("mousemove",I),window.removeEventListener("mouseup",w)},E&&x(S)}`,
+  );
+
+  // 11. The timeline redraws when the GPU gives its canvases back. Its ruler and tracks are opaque 2D
+  // canvases; when the GPU drops them (a driver reset, the GPU process restarting, memory pressure) Chromium
+  // restores them blank, black, and fires contextrestored, which nothing listened to. They stayed black
+  // until something else made them redraw (measured: still 99% black 10 s after the GPU process restarted).
+  replace(
+    `const b=o.useCallback(T=>{if(!s.current)return null;const S=s.current.getBoundingClientRect();return(T-S.left+u.current.offsetX)/p.current},[])`,
+    `o.useEffect(()=>{const c=s.current;if(!c)return;const f=()=>{window.__cbLog?.("canvas.restored",{what:"ruler"}),g()};c.addEventListener("contextrestored",f);return()=>c.removeEventListener("contextrestored",f)},[g]);` +
+      `const b=o.useCallback(T=>{if(!s.current)return null;const S=s.current.getBoundingClientRect();return(T-S.left+u.current.offsetX)/p.current},[])`,
+  );
+  replace(
+    `o.useEffect(()=>{ee.current=we},[we]);`,
+    `o.useEffect(()=>{ee.current=we},[we]);o.useEffect(()=>{const cs=[I.current,M.current].filter(Boolean),f=e=>{e.target===I.current&&window.__cbLog?.("canvas.restored",{what:"tracks"}),we()};for(const c of cs)c.addEventListener("contextrestored",f);return()=>{for(const c of cs)c.removeEventListener("contextrestored",f)}},[we]);`,
+  );
+
+  // 12. Starting playback waits only for audio that will be heard. After a seek, Play waits (up to 8 s,
+  // "Loading audio...") until the sound of every clip in the next seconds is loaded, and that included
+  // clips on muted tracks and muted, hidden or reversed clips, which the audio graph (syncAudioGraph) never
+  // plays. __cbAudible keeps what syncAudioGraph keeps. A wait over half a second goes in the activity log.
+  replace(
+    `hasBuffersReadyForClipsAtTime(ge.current.timelineItems,ge.current.mediaItems,K,we)`,
+    `hasBuffersReadyForClipsAtTime(__cbAudible(ge.current),ge.current.mediaItems,K,we)`,
+  );
+  replace(
+    `ne.preloadAudioForClipsAtTime(ge.current.timelineItems,ge.current.mediaItems,me,de)`,
+    `ne.preloadAudioForClipsAtTime(__cbAudible(ge.current),ge.current.mediaItems,me,de)`,
+  );
+  // Each load is numbered (window.__cbPreloadGen, shared with the store, see 15): only the newest one may
+  // clear the loading flag and start playback when it ends. Once 15 lets Play start during a load, a
+  // pause, a seek and Play again start a second load while the first still runs, and the first one's end
+  // started playback before the second load's audio was in.
+  replace(`we(!0);let Q=!1;try{`, `const __cbG=window.__cbPreloadGen=(window.__cbPreloadGen||0)+1;we(!0);let Q=!1;const __cbT=performance.now();try{`);
+  replace(
+    `finally{we(!1);const{pendingPlayback:ne}=U.getState();ne&&(K(!1),X(!0)),Q&&Et.info("Still loading audio, playback may start silent")}`,
+    `finally{if(__cbG===window.__cbPreloadGen){we(!1);const{pendingPlayback:ne}=U.getState();ne&&(K(!1),X(!0)),Q&&Et.info("Still loading audio, playback may start silent");const __cbMs=performance.now()-__cbT;__cbMs>500&&window.__cbLog?.("playback.wait",{ms:Math.round(__cbMs),timedOut:Q,started:ne})}}`,
+  );
+  replace(
+    `class sH{`,
+    `const __cbAudible=c=>{const m=new Map(c.tracks.map(t=>[t.id,t]));return c.timelineItems.filter(u=>{if(u.type!=="audio"&&u.type!=="video")return!0;const k=m.get(u.trackId);return!(!k||k.muted||cn(u)||u.muted||u.audioDisabled||u.playbackDirection==="reverse")})};class sH{`,
+  );
+
+  // 13. A graphic is rebuilt only when its page stops answering. sH, the preview's frame pump, started its
+  // 10 s "stopped responding" timer before fetching the graphic's video frames, so a slow video decode
+  // (a busy machine) rebuilt the graphic's page, which stays invisible until it draws: the preview went
+  // black for as long as the new page took. The page's timer now starts when the frame is sent to it; a
+  // slow fetch is waited for, and only one that hasn't answered in 30 s gets Cardboard's rebuild (see
+  // below). Rebuilds and slow fetches go in the activity log.
+  replace(
+    `if(n&&a.rebuilds<rH){a.rebuilds++,this.options.onRebuild();return}`,
+    `if(n&&a.rebuilds<rH){a.rebuilds++,window.__cbLog?.("preview.rebuild",{reason:t}),this.options.onRebuild();return}`,
+  );
+  // 14 (speed). While playing, a graphic draws with the newest video frame that is ready instead of waiting
+  // for the frame of this exact moment. Every frame of a graphic waited for its video assets' frames, even
+  // when the video wasn't on screen, and only then asked for the next: measured 7–13 frames/s with a video
+  // inside against 32–41 without, and multi-second freezes when a decode was slow. Paused and scrubbing,
+  // and the first frame after Play, still wait for the exact frame. Frames held as bitmaps (transferred to
+  // the page, so not reusable) keep the old way.
+  const pumpFrom = `const r=this.options.counters.nextRequestId++;this.requestTime=n,this.requestKey=this.options.renderKey?.(),this.requestId=r,this.timer=setTimeout(()=>this.fail("The graphic stopped responding.",!0),aH);const s=l=>{this.active&&this.requestId===r&&this.fail(l instanceof Error?l.message:String(l),!1)},i=l=>{if(!this.active||this.requestId!==r){qc(l);return}const d=this.options.playbackSession?.(),u=a!==void 0&&a===d,m=this.pendingTime!==null&&this.pendingTime!==n;if(a!==d||this.requestKey!==this.options.renderKey?.()||m&&!u){qc(l),this.clearTimer(),this.requestId=null,this.pendingTime??=this.latestTime,this.pump();return}const h={type:Cs.render,id:r,time:n};l&&(h.frames=l);const p=o3(l);try{p.length===0?t.postMessage(h,"*"):t.postMessage(h,"*",p)}catch(f){qc(l),s(f)}};try{const l=this.options.frames?.(n);l?l.then(i,s):i(void 0)}catch(l){s(l)}}}`;
+  // 13's part: the page's timer starts at postMessage. A fetch that is only slow is waited for (and logged
+  // at 10 s): its result is used when it comes. Only a fetch that hasn't answered in 30 s falls back to
+  // what Cardboard did at 10 s, rebuilding the page (and after two rebuilds, its "couldn't render" note),
+  // so one request has one fetch at a time and a hung decode still ends somewhere.
+  const rel = (l) => `${l}!==this.__cbFrames&&qc(${l})`;
+  const pumpTo =
+    `const r=this.options.counters.nextRequestId++;this.requestTime=n,this.requestKey=this.options.renderKey?.(),this.requestId=r;` +
+    `const __cbW=setTimeout(()=>{this.active&&this.requestId===r&&this.__cbSlow("frames",aH)},aH),__cbW2=setTimeout(()=>{this.active&&this.requestId===r&&this.fail("The graphic stopped responding.",!0)},3*aH);` +
+    `const s=l=>{clearTimeout(__cbW),clearTimeout(__cbW2),this.active&&this.requestId===r&&this.fail(l instanceof Error?l.message:String(l),!1)},i=l=>{clearTimeout(__cbW),clearTimeout(__cbW2);if(!this.active||this.requestId!==r){${rel("l")};return}const d=this.options.playbackSession?.(),u=a!==void 0&&a===d,m=this.pendingTime!==null&&this.pendingTime!==n;if(a!==d||this.requestKey!==this.options.renderKey?.()||m&&!u){${rel("l")},this.clearTimer(),this.requestId=null,this.pendingTime??=this.latestTime,this.pump();return}const h={type:Cs.render,id:r,time:n};l&&(h.frames=l);const p=o3(l);this.timer=setTimeout(()=>this.fail("The graphic stopped responding.",!0),aH);try{p.length===0?t.postMessage(h,"*"):t.postMessage(h,"*",p)}catch(f){${rel("l")},s(f)}};` +
+    `try{(a===void 0||this.__cbSession!==a)&&(this.__cbSession=a,this.__cbFrames=void 0);` +
+    (speed
+      ? // 14: playing with frames in hand: draw now, fetch the next frames alongside.
+        `if(a!==void 0&&this.__cbFrames!==void 0){this.__cbFetch(n,a),i(this.__cbFrames);return}` +
+        `const l=this.options.frames?.(n);l?l.then(x=>{a!==void 0&&this.__cbSession===a&&x&&o3(x).length===0&&(this.__cbFrames=x),i(x)},s):i(void 0)`
+      : `const l=this.options.frames?.(n);l?l.then(i,s):i(void 0)`) +
+    `}catch(l){s(l)}}` +
+    // One fetch at a time; the newest frames replace the held ones if nothing was transferred. A fetch
+    // that hasn't answered in 30 s is given up (its late answer dropped) so a new one can start.
+    `__cbFetch(n,a){if(this.__cbBusy)return;let l;try{l=this.options.frames?.(n)}catch{return}if(!l)return;const tok=this.__cbBusy={},t0=performance.now(),tm=setTimeout(()=>{this.__cbBusy===tok&&(this.__cbBusy=null,this.__cbSlow("video-frame",3*aH))},3*aH);` +
+    `l.then(x=>{clearTimeout(tm);const cur=this.__cbBusy===tok;cur&&(this.__cbBusy=null);const ms=performance.now()-t0;cur&&ms>1e3&&this.__cbSlow("video-frame",ms);if(!cur||!this.active||this.__cbSession!==a||!x||o3(x).length!==0){x&&qc(x);return}this.__cbFrames=x},()=>{clearTimeout(tm),this.__cbBusy===tok&&(this.__cbBusy=null)})}` +
+    `__cbSlow(kind,ms){const now=Date.now();now-(this.__cbSlowAt??0)<1e4||(this.__cbSlowAt=now,window.__cbLog?.("preview.slow",{kind,ms:Math.round(ms)}))}}`;
+  replace(pumpFrom, pumpTo);
+});
+
+patch(storeFile, "installErrorTelemetry.orig.js", (replace) => {
+  // 15. A second Play while "Loading audio..." starts playback at once. Play after a seek waits for the
+  // audio ahead to load (up to 8 s, see 12), and pressing it again did nothing: it was still waiting. Now
+  // the second press plays without waiting (the sound joins as it loads, as after the 8 s limit). The
+  // loading flag is cleared with it: the button shows that flag before playing, so it kept spinning
+  // "Loading audio..." while the playhead ran (measured: playing at 0.9 s, spinner until 6.8 s). Only the
+  // button reads the flag. The load it overrode is retired (its number bumped, see 12), so when it ends it
+  // neither clears the flag of a newer load nor starts playback.
+  replace(
+    `if(n.isAudioPreloading){t({pendingPlayback:!0});return}`,
+    `if(n.isAudioPreloading){if(n.pendingPlayback){window.__cbPreloadGen=(window.__cbPreloadGen||0)+1,t({isPlaying:!0,pendingPlayback:!1,isAudioPreloading:!1}),window.__cbLog?.("playback.forced",{});return}t({pendingPlayback:!0});return}`,
+  );
 });
