@@ -9,6 +9,7 @@ We are working to showcase our skills to the team behind cardboard. Hence, we ar
 3. We must always design performant features and provide the best in class performance to our users.
 4. You must test the application as close to a real user would as possible, including testing the real instance of the app whenever it makes sense.
 5. You must always lead by proving things. For example: actual performance benchmarks, before/after states, comparisons, etc.
+6. Never state a measured number (sizes, timings, ratios, percentages, benchmarks) as fact until a separate subagent has independently re-run the measurement or verified your measurements and confirmed them; until then don't quote those numbers.
 
 ## Working in this repo
 
@@ -18,6 +19,7 @@ Windows builds of the tools it bundles. We don't have Cardboard's source. Every 
 to its minified bundles at build time.
 
 **How a change is made.**
+
 - `scripts/patch-*.js` each read a pristine bundle and change it with `replace(from, to, count)`: exact text
   in the minified code, which must match exactly `count` times or the build stops. Larger code goes into
   helpers injected at the top of a bundle (`__cb…` names; `media-helpers.js`, `rename-retry.js`,
@@ -32,6 +34,7 @@ to its minified bundles at build time.
   `*.orig.*`, `out/`). `.gitignore` keeps them out: they're not ours to redistribute.
 
 **Building.**
+
 - On Windows: `cd tools && npm ci`, then `node scripts/build-windows.js`. It downloads what the app is made
   from into `dl/` (Cardboard 1.4.0 for Mac from cardboard.ai, Electron, ffmpeg 8.1, uv, Claude Code) and
   builds `out/Cardboard-win`.
@@ -45,6 +48,7 @@ to its minified bundles at build time.
 
 **Testing.** The app runs only on Windows, and its GPU paths need an NVIDIA card, so checks in the real
 app happen on the Windows machine.
+
 - Run Cardboard with its own profile and library, never the user's: `CARDBOARD_USER_DATA`,
   `CARDBOARD_HOME`, and `--remote-debugging-port` to drive it over the DevTools protocol (`scripts/cdp.js`).
 - `scripts/test-shortcuts.js`: 25 page tests, and 9 more with real keys (`--os`). The project under test
@@ -55,6 +59,7 @@ app happen on the Windows machine.
   pipeline on the same machine" (the baseline).
 
 **Pitfalls learned the hard way.**
+
 - Don't open a project's `project.json` while Cardboard runs: on Windows a reader makes its saves fail
   (EPERM). Watch the bundle's `cache/` and `proxies/` folders instead.
 - DevTools key events don't reach the window menu's accelerators (Ctrl+T, Ctrl+W…); real keys do
