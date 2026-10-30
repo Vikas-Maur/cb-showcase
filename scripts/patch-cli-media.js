@@ -15,23 +15,30 @@ const replace = (from, to, count = 1) => {
   src = src.split(from).join(to);
 };
 
-// The numbered steps match patch-worker.js.
+// The numbered steps match patch-worker.js, and CB_BASELINE=1 leaves out the same "speed" steps.
+const speed = process.env.CB_BASELINE !== "1";
+
 // 1. NVENC.
 replace(`ii=(e,t)=>{if(process.platform!=="darwin")return Promise.resolve(!1);`, `ii=(e,t)=>{if(__cbWin)return __cbHwProbe(e,t);if(process.platform!=="darwin")return Promise.resolve(!1);`);
 replace(`"h264_videotoolbox"`, `__cbHwEnc.h264`, 3);
 replace(`"hevc_videotoolbox"`, `__cbHwEnc.hevc`, 2);
 replace(`"-allow_sw","1"`, `...__cbHwOpts`, 3);
-replace(`["-c:v",pp,"-b:v",r,`, `["-c:v",pp,...__cbProxyRate(r),`);
+// Speed: constant quality.
+if (speed) replace(`["-c:v",pp,"-b:v",r,`, `["-c:v",pp,...__cbProxyRate(r),`);
 
-// 2. Proxies decode on the GPU.
-replace(`try{await Ps(e,t,a,n,o,!0,i)}catch(c){`, `try{await __cbCudaFirst(e,g=>Ps(e,t,a,n,o,g?"cuda":!0,i),()=>up(a,{force:!0}))}catch(c){`);
-replace('"-nostats","-i",t,"-map","0:v:0","-map",`${ve(n)}?`,"-vf",RS(o)', '"-nostats",...__cbProxyIn(i,n),"-i",t,"-map","0:v:0","-map",`${ve(n)}?`,"-vf",__cbProxyOnGpu(i,n)?RS(o).replace("scale=","scale_cuda=")+":format=yuv420p:interp_algo=lanczos":RS(o)');
-replace(`...MS(i,o),"-pix_fmt","yuv420p","-c:a"`, `...MS(i,o),...__cbProxyOnGpu(i,n)?[]:["-pix_fmt","yuv420p"],"-c:a"`);
+// 2. Speed: proxies decode on the GPU.
+if (speed) {
+  replace(`try{await Ps(e,t,a,n,o,!0,i)}catch(c){`, `try{await __cbCudaFirst(e,g=>Ps(e,t,a,n,o,g?"cuda":!0,i),()=>up(a,{force:!0}))}catch(c){`);
+  replace('"-nostats","-i",t,"-map","0:v:0","-map",`${ve(n)}?`,"-vf",RS(o)', '"-nostats",...__cbProxyIn(i,n),"-i",t,"-map","0:v:0","-map",`${ve(n)}?`,"-vf",__cbProxyOnGpu(i,n)?RS(o).replace("scale=","scale_cuda=")+":format=yuv420p:interp_algo=lanczos":RS(o)');
+  replace(`...MS(i,o),"-pix_fmt","yuv420p","-c:a"`, `...MS(i,o),...__cbProxyOnGpu(i,n)?[]:["-pix_fmt","yuv420p"],"-c:a"`);
+}
 
-// 3. Keyframe-only filmstrips.
-replace(`Mp=async(e,t,r,n,o)=>{`, `Mp=async(e,t,r,n,o,__cbProbeBin)=>{`);
-replace(`let d=await Mp(c,o,n,i,l);`, `let d=await Mp(c,o,n,i,l,e.binaries().ffprobe);`);
-replace('await X(e,["-v","error","-y","-i",t,"-map","0:v:0","-vf",`fps=1/${i},${Ip(vd)}`,"-q:v",Ep,fn(c,"%06d.jpg")]);', 'await __cbStrip(e,__cbProbeBin,t,c,a.length,(x,f="")=>X(e,["-v","error","-y",...x,"-i",t,"-map","0:v:0","-vf",`fps=1/${i}${f},${Ip(vd)}`,"-q:v",Ep,fn(c,"%06d.jpg")]));');
+// 3. Speed: keyframe-only filmstrips.
+if (speed) {
+  replace(`Mp=async(e,t,r,n,o)=>{`, `Mp=async(e,t,r,n,o,__cbProbeBin)=>{`);
+  replace(`let d=await Mp(c,o,n,i,l);`, `let d=await Mp(c,o,n,i,l,e.binaries().ffprobe);`);
+  replace('await X(e,["-v","error","-y","-i",t,"-map","0:v:0","-vf",`fps=1/${i},${Ip(vd)}`,"-q:v",Ep,fn(c,"%06d.jpg")]);', 'await __cbStrip(e,__cbProbeBin,t,c,a.length,(x,f="")=>X(e,["-v","error","-y",...x,"-i",t,"-map","0:v:0","-vf",`fps=1/${i}${f},${Ip(vd)}`,"-q:v",Ep,fn(c,"%06d.jpg")]));');
+}
 
 // 4. A video has its thumbnails once its filmstrip exists.
 replace(`let c=await vP(e.cache,n);return c.length>0?{thumbnailIds:c,`, `let c=await vP(e.cache,n);return c.length>0&&(i.kind!=="video"||c.some(x=>x.includes(":timeline:")))?{thumbnailIds:c,`);
@@ -47,4 +54,4 @@ const shim = `const require = __createRequire(import.meta.url);\n`;
 replace(shim, shim + require("./media-helpers"));
 
 fs.writeFileSync(file, src);
-console.log(`patched ${path.basename(file)} (${src.length} bytes)`);
+console.log(`patched ${path.basename(file)} (${src.length} bytes${speed ? "" : ", baseline"})`);

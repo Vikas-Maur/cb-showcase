@@ -286,6 +286,50 @@ keyboard changes, 20 of the 25 page tests passed. The five failures were Ctrl+Y,
 missed Ctrl+D conflict, and the activity log, which didn't exist yet. With them, all 25 pass, and all 9
 accelerator tests.
 
+### Benchmarks
+
+`scripts\bench\` measures builds against each other on one machine, the way someone uses Cardboard. It runs the real
+app with a fresh profile and library each run, drives it over DevTools, and times the `cb` CLI that agents use.
+
+To show what this port's speed changes do, it compares two builds:
+- **baseline**: Cardboard's own pipeline, as it runs on a Mac. It has only what Windows needs to run it, and leaves
+  out the speed changes in the media patches. `build-windows.js --baseline` builds it (`CB_BASELINE=1`). In it:
+  - decoding happens on the CPU;
+  - filmstrips decode every frame;
+  - proxies are made one at a time, by the hardware encoder at Cardboard's fixed 12 Mb/s, as VideoToolbox makes them
+    on a Mac.
+- **ours**: the normal build.
+
+The workflow publishes both: `Cardboard-1.4.0-windows-x64-baseline.exe` unpacks into `Cardboard-baseline\`. The
+bugs the patches fix stay fixed in both.
+
+```sh
+node scripts/bench/media.js bench-media --ffmpeg Cardboard\resources\bin\ffmpeg.exe
+node scripts/bench/run.js --build baseline=Cardboard-baseline --build ours=Cardboard
+```
+
+`media.js` makes six clips. They're synthetic, but they have what decides how much work an import is:
+- 4K HEVC 10-bit from a phone, in landscape and in portrait (rotated);
+- 4K60 H.264 from an action camera;
+- a 1080p screen recording with a keyframe every 10 s;
+- 1080p HEVC 10-bit;
+- a WAV.
+
+`run.js` runs 5 counted runs per build after a warm-up, alternating between the builds. It writes every run and the
+medians to `bench-results\<date>\results.md` and `results.json`, together with the machine and the clips.
+- **import** drops the clips on a new project, through the event the editor's Import Media sends. It waits until
+  nothing has been written to the bundle's `media\`, `cache\`, `proxies\` and `converted\` folders for 15 s. It
+  reports when the clips were listed, when the first thumbnail and the last file were written, and what was made.
+  What was made must be the same for both builds.
+- **cli** times `cb --help`, `project create`, `project list`, `source print` and `source apply` with the app closed.
+- **cli-import** imports the same clips through `cb media add`. That runs the CLI's own copy of the import pipeline,
+  patched as the app's is, and exits once every thumbnail, waveform and proxy is made. It needs no window and no
+  sign-in.
+
+Nothing the benchmarks do spends credits: no generation, transcription, captions, voices, mattes or footage search.
+Every profile shares the stored sign-in (`%APPDATA%\ai.cardboard\account.json`), so sign in to Cardboard once
+beforehand. Close Cardboard and plug the laptop in first: on battery, Windows slows the CPU and GPU.
+
 ### Not ported
 
 - The auto-updater (Squirrel.Mac) is still macOS-only, so updates won't install themselves.
@@ -302,10 +346,12 @@ From scratch, on Windows: `cd tools && npm ci`, then `node scripts/build-windows
 `dl\` what the app is made from, from where each is published: Cardboard 1.4.0 for Mac
 (`assets.cardboard.ai`), Electron 43.7.0 for Windows, ffmpeg 8.1 (BtbN's win64 GPL build), uv 0.13.6 and
 Claude Code 2.1.309 for Windows (npm). It then builds `out\Cardboard-win` and checks the versions of what it
-bundles. It needs 7-Zip. The result is byte for byte the same as the `Cardboard-win\` built step by step.
+bundles. It needs 7-Zip. The result is byte for byte the same as the `Cardboard-win\` built step by step, plus a
+`build-info.json` that says which build it is (`--baseline` builds the benchmarks' baseline, see
+[Benchmarks](#benchmarks)).
 On GitHub, the same build runs by hand: Actions → Build Windows app → Run workflow
 (`.github/workflows/build-windows.yml`). It publishes the app as the release `windows-latest`, replacing the
-previous build: `Cardboard-1.4.0-windows-x64.exe`, about 306 MB, which unpacks the app into a folder on
+previous build: `Cardboard-1.4.0-windows-x64.exe` (with the baseline beside it), about 306 MB, which unpacks the app into a folder on
 Windows 10 or 11 with nothing installed (7-Zip's LZMA2 behind its self-extractor; a zip would be about
 500 MB). It isn't code-signed, so Windows may warn before running it.
 

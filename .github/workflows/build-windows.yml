@@ -1,6 +1,8 @@
 # Builds the Windows app when started by hand (Actions → Build Windows app → Run workflow), with
 # scripts/build-windows.js, and publishes it as the release "windows-latest": one .exe that unpacks the app
-# into a folder, from which Cardboard\Cardboard.exe runs. Each run replaces the previous build.
+# into a folder, from which Cardboard\Cardboard.exe runs. Each run replaces the previous build. Beside it goes the
+# baseline the benchmarks compare against (build-windows.js --baseline, scripts/bench), which unpacks into
+# Cardboard-baseline\ so it never lands on top of the app.
 name: Build Windows app
 
 on:
@@ -26,6 +28,9 @@ jobs:
       - name: Build
         run: node scripts/build-windows.js
 
+      - name: Build the baseline
+        run: node scripts/build-windows.js --baseline --out out-baseline
+
       # 7-Zip's LZMA2 makes it about 306 MB (about 500 MB as a zip). With 7-Zip's self-extractor in front,
       # it is one .exe that unpacks on Windows 10 and 11 with nothing installed.
       - name: Package
@@ -33,11 +38,14 @@ jobs:
           Rename-Item out/Cardboard-win Cardboard
           7z a -t7z -mx9 -mmt=on out/Cardboard.7z ./out/Cardboard
           cmd /c copy /b "C:\Program Files\7-Zip\7z.sfx" + out\Cardboard.7z out\Cardboard-1.4.0-windows-x64.exe
+          Rename-Item out-baseline/Cardboard-win Cardboard-baseline
+          7z a -t7z -mx9 -mmt=on out/Cardboard-baseline.7z ./out-baseline/Cardboard-baseline
+          cmd /c copy /b "C:\Program Files\7-Zip\7z.sfx" + out\Cardboard-baseline.7z out\Cardboard-1.4.0-windows-x64-baseline.exe
 
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete windows-latest --cleanup-tag --yes 2>$null
-          $notes = "Cardboard 1.4.0 for Windows, built from $($env:GITHUB_SHA.Substring(0, 7)).`n`nRun the .exe and choose where to unpack it, then run Cardboard\Cardboard.exe. It adds itself to the Start Menu on first start. Nothing is code-signed, so Windows may say it protected your PC: More info, then Run anyway."
-          gh release create windows-latest out/Cardboard-1.4.0-windows-x64.exe --target $env:GITHUB_SHA --title "Cardboard 1.4.0 for Windows" --notes $notes
+          $notes = "Cardboard 1.4.0 for Windows, built from $($env:GITHUB_SHA.Substring(0, 7)).`n`nRun the .exe and choose where to unpack it, then run Cardboard\Cardboard.exe. It adds itself to the Start Menu on first start. Nothing is code-signed, so Windows may say it protected your PC: More info, then Run anyway.`n`nCardboard-1.4.0-windows-x64-baseline.exe is only for benchmarks (scripts/bench): Cardboard's own media pipeline without this port's speed changes. It unpacks into Cardboard-baseline\."
+          gh release create windows-latest out/Cardboard-1.4.0-windows-x64.exe out/Cardboard-1.4.0-windows-x64-baseline.exe --target $env:GITHUB_SHA --title "Cardboard 1.4.0 for Windows" --notes $notes

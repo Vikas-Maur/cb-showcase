@@ -19,27 +19,37 @@ const replace = (from, to, count = 1) => {
 // The rename retry (see rename-retry.js) goes first.
 const preamble = require("./rename-retry") + require("./media-helpers");
 
+// CB_BASELINE=1 builds the baseline the benchmarks compare against (scripts/bench): Cardboard's own media
+// pipeline as it runs on a Mac, with only what Windows needs to run it. Decoding stays on the CPU, filmstrips
+// decode every frame, and proxies are made one at a time on the hardware encoder at Cardboard's fixed 12 Mb/s,
+// as VideoToolbox makes them. The fixes (4, 5) stay in. The steps marked "speed" are left out.
+const speed = process.env.CB_BASELINE !== "1";
+
 // 1. Use NVENC for media conversion and proxies when the GPU has it. A failed hardware encode
 // already falls back to libx264/libx265 (the ToolError catch around each hardware attempt).
 replace(`J1=(e,t)=>{if(process.platform!=="darwin")return Promise.resolve(!1);`, `J1=(e,t)=>{if(__cbWin)return __cbHwProbe(e,t);if(process.platform!=="darwin")return Promise.resolve(!1);`);
 replace(`"h264_videotoolbox"`, `__cbHwEnc.h264`, 3);
 replace(`"hevc_videotoolbox"`, `__cbHwEnc.hevc`, 2);
 replace(`"-allow_sw","1"`, `...__cbHwOpts`, 3);
-// Proxies in NVENC's constant-quality mode, capped at Cardboard's rate (see __cbProxyRate).
-replace(`["-c:v",WI,"-b:v",r,`, `["-c:v",WI,...__cbProxyRate(r),`);
+// Speed: proxies in NVENC's constant-quality mode, capped at Cardboard's rate (see __cbProxyRate).
+if (speed) replace(`["-c:v",WI,"-b:v",r,`, `["-c:v",WI,...__cbProxyRate(r),`);
 
-// 2. Proxies decode on the GPU too (NVDEC, and scale_cuda unless the source is rotated). Software decoding
+// 2. Speed: proxies decode on the GPU too (NVDEC, and scale_cuda unless the source is rotated). Software decoding
 // of 4K HEVC made a proxy take about as long as the clip runs. If the GPU run fails, the NVENC run with
 // CPU decoding follows, then the existing libx264 fallback. scale_cuda scales with lanczos: its default
 // was softer than the CPU path's scaler (VMAF 85.5 against 92.4 for the same 4K clip).
-replace(`try{await M4(e,t,o,n,i,!0,a)}catch(s){`, `try{await __cbCudaFirst(e,g=>M4(e,t,o,n,i,g?"cuda":!0,a),()=>(0,go.rm)(o,{force:!0}))}catch(s){`);
-replace('"-nostats","-i",t,"-map","0:v:0","-map",`${Ir(n)}?`,"-vf",xH(i)', '"-nostats",...__cbProxyIn(a,n),"-i",t,"-map","0:v:0","-map",`${Ir(n)}?`,"-vf",__cbProxyOnGpu(a,n)?xH(i).replace("scale=","scale_cuda=")+":format=yuv420p:interp_algo=lanczos":xH(i)');
-replace(`...vH(a,i),"-pix_fmt","yuv420p","-c:a"`, `...vH(a,i),...__cbProxyOnGpu(a,n)?[]:["-pix_fmt","yuv420p"],"-c:a"`);
+if (speed) {
+  replace(`try{await M4(e,t,o,n,i,!0,a)}catch(s){`, `try{await __cbCudaFirst(e,g=>M4(e,t,o,n,i,g?"cuda":!0,a),()=>(0,go.rm)(o,{force:!0}))}catch(s){`);
+  replace('"-nostats","-i",t,"-map","0:v:0","-map",`${Ir(n)}?`,"-vf",xH(i)', '"-nostats",...__cbProxyIn(a,n),"-i",t,"-map","0:v:0","-map",`${Ir(n)}?`,"-vf",__cbProxyOnGpu(a,n)?xH(i).replace("scale=","scale_cuda=")+":format=yuv420p:interp_algo=lanczos":xH(i)');
+  replace(`...vH(a,i),"-pix_fmt","yuv420p","-c:a"`, `...vH(a,i),...__cbProxyOnGpu(a,n)?[]:["-pix_fmt","yuv420p"],"-c:a"`);
+}
 
-// 3. Timeline filmstrips decode only keyframes when that is enough (see __cbStrip). hS gets ffprobe to check.
-replace(`hS=async(e,t,r,n,i)=>{`, `hS=async(e,t,r,n,i,__cbProbeBin)=>{`);
-replace(`let l=await hS(s,i,n,a,c);`, `let l=await hS(s,i,n,a,c,e.binaries().ffprobe);`);
-replace('await yt(e,["-v","error","-y","-i",t,"-map","0:v:0","-vf",`fps=1/${a},${pS(bw)}`,"-q:v",uS,(0,zs.join)(s,"%06d.jpg")]);', 'await __cbStrip(e,__cbProbeBin,t,s,o.length,(x,f="")=>yt(e,["-v","error","-y",...x,"-i",t,"-map","0:v:0","-vf",`fps=1/${a}${f},${pS(bw)}`,"-q:v",uS,(0,zs.join)(s,"%06d.jpg")]));');
+// 3. Speed: timeline filmstrips decode only keyframes when that is enough (see __cbStrip). hS gets ffprobe to check.
+if (speed) {
+  replace(`hS=async(e,t,r,n,i)=>{`, `hS=async(e,t,r,n,i,__cbProbeBin)=>{`);
+  replace(`let l=await hS(s,i,n,a,c);`, `let l=await hS(s,i,n,a,c,e.binaries().ffprobe);`);
+  replace('await yt(e,["-v","error","-y","-i",t,"-map","0:v:0","-vf",`fps=1/${a},${pS(bw)}`,"-q:v",uS,(0,zs.join)(s,"%06d.jpg")]);', 'await __cbStrip(e,__cbProbeBin,t,s,o.length,(x,f="")=>yt(e,["-v","error","-y",...x,"-i",t,"-map","0:v:0","-vf",`fps=1/${a}${f},${pS(bw)}`,"-q:v",uS,(0,zs.join)(s,"%06d.jpg")]));');
+}
 
 // 4. A video has its thumbnails once its filmstrip exists, not just its poster. The poster is written
 // first, so quitting Cardboard mid-filmstrip left clips that reopening the project never finished. When
@@ -56,4 +66,4 @@ replace(`return m.then(()=>n(c.id,{phase:"done"})),{items:u,failures:p}`, `retur
 // After the replacements, since the preamble itself names the VideoToolbox encoders.
 src = preamble + src;
 fs.writeFileSync(file, src);
-console.log(`patched ${path.basename(file)} (${src.length} bytes)`);
+console.log(`patched ${path.basename(file)} (${src.length} bytes${speed ? "" : ", baseline"})`);

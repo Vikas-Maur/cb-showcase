@@ -2,7 +2,9 @@
 // built on, Cardboard's app code from its macOS installer with every patch applied, and Windows builds of the
 // tools it bundles (ffmpeg, ffprobe, uv, Claude Code). Runs on Windows (7-Zip, tar, PowerShell); the GitHub
 // workflow .github/workflows/build-windows.yml runs it.
-//   node scripts/build-windows.js [--out <dir>]          (default out)
+//   node scripts/build-windows.js [--out <dir>] [--baseline]          (default out)
+// --baseline builds the baseline the benchmarks compare against (scripts/bench): the media patches leave out their
+// speed changes (CB_BASELINE=1, see patch-worker.js), so the app runs Cardboard's own pipeline as a Mac does.
 // Everything it starts from is downloaded into dl\ when missing, from where its makers publish it.
 const fs = require("fs"), path = require("path"), { execFileSync } = require("child_process");
 
@@ -10,6 +12,9 @@ const ROOT = path.join(__dirname, "..");
 const argOut = process.argv.indexOf("--out");
 const OUT = path.resolve(ROOT, argOut > 0 ? process.argv[argOut + 1] : "out");
 const APP = path.join(OUT, "Cardboard-win"), WORK = path.join(OUT, "work"), RES = path.join(APP, "resources");
+const BASELINE = process.argv.includes("--baseline");
+// The patch scripts read it from the environment they inherit.
+if (BASELINE) process.env.CB_BASELINE = "1";
 const INPUTS = {
   // Cardboard's macOS installer, the version the patches are written against. cardboard.ai/desktop/download
   // links the newest one (/desktop/download/stable); each version stays at its own address.
@@ -103,6 +108,11 @@ const icnsPng = (icns) => {
     "version-string": { FileDescription: "Cardboard", ProductName: "Cardboard", CompanyName: "Cardboard, Inc.", OriginalFilename: "Cardboard.exe", InternalName: "Cardboard" },
   });
 
+  // Which build this is, for the benchmarks to report beside their numbers.
+  let commit = null;
+  try { commit = run("git", ["rev-parse", "HEAD"], { cwd: ROOT }).trim(); } catch {}
+  fs.writeFileSync(path.join(APP, "build-info.json"), JSON.stringify({ variant: BASELINE ? "baseline" : "full", commit, built: new Date().toISOString() }, null, 2) + "\n");
+
   step("Check");
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
   const checks = [
@@ -116,5 +126,5 @@ const icnsPng = (icns) => {
     if (!want.test(got)) process.exitCode = 1;
   }
   fs.rmSync(WORK, { recursive: true, force: true });
-  console.log(`\nbuilt ${APP}`);
+  console.log(`\nbuilt ${APP}${BASELINE ? " (baseline)" : ""}`);
 })().catch((e) => { console.error(e); process.exit(1); });

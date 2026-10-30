@@ -11,8 +11,13 @@
 /index.orig.js
 /EditorRoute.orig.js
 
-# What scripts/build-windows.js builds.
+# What scripts/build-windows.js builds (--baseline into out-baseline).
 /out/
+/out-baseline/
+
+# Benchmark clips (scripts/bench/media.js) and results (scripts/bench/run.js).
+/bench-media/
+/bench-results/
 
 # Build tools (reinstall with `npm ci` in tools/).
 /tools/*
@@ -21,3 +26,6 @@
 
 # Screenshots taken by scripts/shot.ps1.
 /shot.png
+
+# Local inspection copies of Cardboard internals: proprietary, never commit.
+_inspect/

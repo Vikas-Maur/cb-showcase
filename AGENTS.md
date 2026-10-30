@@ -39,7 +39,9 @@ to its minified bundles at build time.
   `gh workflow run build-windows.yml --ref <branch>`, then `gh run watch`. A patch that no longer matches
   fails the build. It publishes the app as the release `windows-latest`, replacing the previous build:
   `gh release download windows-latest` gets `Cardboard-1.4.0-windows-x64.exe`, which unpacks the app.
-  Builds go to that release, never to workflow artifacts.
+  Builds go to that release, never to workflow artifacts. The same release also holds
+  `Cardboard-1.4.0-windows-x64-baseline.exe` (`build-windows.js --baseline`): Cardboard's own pipeline without our
+  speed changes, which the benchmarks compare against. A new speed change goes behind `speed` in its patch script.
 
 **Testing.** The app runs only on Windows, and its GPU paths need an NVIDIA card, so checks in the real
 app happen on the Windows machine.
@@ -48,7 +50,9 @@ app happen on the Windows machine.
 - `scripts/test-shortcuts.js`: 25 page tests, and 9 more with real keys (`--os`). The project under test
   must be the second tab; the script closes the tabs after it.
 - Back performance claims with before/after runs against the previous build: alternate the builds, and
-  report medians along with every run.
+  report medians along with every run. `scripts/bench/run.js` does this (`--build baseline=… --build ours=…`).
+  There is no Mac to measure on, so never claim "faster than the Mac". Claim "faster than Cardboard's own
+  pipeline on the same machine" (the baseline).
 
 **Pitfalls learned the hard way.**
 - Don't open a project's `project.json` while Cardboard runs: on Windows a reader makes its saves fail
