@@ -9,7 +9,9 @@ We are working to showcase our skills to the team behind cardboard. Hence, we ar
 3. We must always design performant features and provide the best in class performance to our users.
 4. You must test the application as close to a real user would as possible, including testing the real instance of the app whenever it makes sense.
 5. You must always lead by proving things. For example: actual performance benchmarks, before/after states, comparisons, etc.
-6. Never state a measured number (sizes, timings, ratios, percentages, benchmarks) as fact until a separate subagent has independently re-run the measurement or verified your measurements and confirmed them; until then don't quote those numbers.
+6. Never state a measured number (sizes, timings, ratios, percentages, benchmarks) as fact until a separate subagent has independently verified your numbers and methodoloy or had re-run the measurements entirely in case of serious/substantial/bigger cases and confirmed them; until then don't quote those numbers.
+7. Run the tests appropriately based on the change made. You don't need to run each and every test again all the times, especially if the change is small. Only run all the tests when a big change was done, important parts of the code were touched, possibility of potential regressions etc.
+8. If you are on my windows machine, and you are pushing directly to main, replace my existing cardboard installation with the latest one.
 
 ## Working in this repo
 
