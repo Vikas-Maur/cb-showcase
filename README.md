@@ -255,6 +255,47 @@ The timeline and playback, found by playing real projects in a separate copy of 
   wait for the exact frame. Left out of `--baseline`.
 - The activity log notes the waits: Play waiting on audio over half a second, a second press forcing it,
   slow video frames for a graphic, graphics rebuilt, canvases given back.
+- Clicking the timeline, or a clip in the preview, takes the keyboard from the agent's prompt box (or any other
+  field outside them), as a click anywhere else in the editor already did. Both cancel the click's default
+  action so a drag doesn't select text, and that also left the keyboard where it was: with the prompt box
+  focused, Space after clicking a clip typed a space into the prompt instead of playing, and Delete, S and the
+  arrows edited the prompt instead of the timeline. Checked by clicking the ruler, a clip, empty track space,
+  a track header and a selected clip in the preview: before, Space typed into the prompt box after each of the
+  five; now it plays after each. A click on the tracks, the ruler or the track headers also takes the keyboard
+  from the timeline's own controls: after the zoom slider was used, → and ← zoomed the timeline as well as
+  stepping the playhead, and now they only step it. The preview's text editing keeps its own behaviour.
+- The editor's left rail (Library, Layout, Audio, Captions, Text, Transitions, Effects) shows each icon's name
+  in a tooltip. Cardboard wraps every icon in its tooltip, but the rail's button dropped what the tooltip
+  hands it (its hover and focus handlers), so none ever opened.
+
+Badges in the agent's prompt box (a clip or media file mentioned with @, an attached file, a pasted link, a
+skill) are one unit, and a click on one opens it. A badge is text in the box with a chip drawn over it, and
+the caret could go inside it: a click on a badge put the caret between its letters (or, on its icon, between
+the two spaces it starts with), and typing there broke the badge into loose text (`clip-a.mxp4`). Now a click
+on a badge opens what it stands for, the way a link does, and the caret and the text stay as they were, also
+while the button is down:
+- a clip: selected on the timeline, the playhead at its start and the timeline scrolled to it, as a click on
+  the clip there would; the keyboard goes to the editor, so Space plays it;
+- a media file: Cardboard's own Media preview of it (the one its tile's Preview opens in the Library), found by
+  the file's id, so it works for a file scrolled out of the Library, hidden by a Library search, or sharing its
+  name with another. What the left panel shows stays as it is (a collapsed panel opens), and a selected clip
+  stays selected;
+- a sound effect from Audio, which the Library doesn't list: its clip on the timeline, or the Audio panel;
+- an attached file or a skill: its file, in the app that opens it (Cardboard's Preview for attachments);
+- a link: the browser.
+
+A clip deleted since it was mentioned says it isn't on the timeline anymore. Escape closes a Media preview
+opened this way and nothing else (it also cleared the timeline's selection, and with it a selected clip's
+reference in the prompt). Over a badge the pointer is a
+hand. From the keyboard a badge is one character wide: ← and → step over it, Shift+←/→ select it whole,
+Ctrl+← and Ctrl+→ (Option on a Mac) take it as one word, ↑ and ↓ stop at its edge, and the caret never passes
+through it on the way (the word moves went into it before being put right); a drag that ends on it takes it
+whole, and Ctrl+Backspace and Ctrl+Delete (Option on a Mac) remove it whole as
+Backspace and Delete already did, where they used to leave part of its name behind. The same goes for the link
+badges in Report an Issue, whose Backspace took a link apart a letter at a time. Typing anywhere else, and the
+arrows and deletes in plain text, work as before. On a caret move by the mouse or another
+key only the characters around the caret are looked at; the prompt's badges are found when the caret is next
+to one, and on a word move, or ↑ ↓ with badges in the prompt.
 
 And Windows wording where Cardboard names the Mac: "this PC" for "this Mac" (Settings → Library, Agents,
 the plans note, the library drive error) and File Explorer for Finder (Show in File Explorer, the project's reveal button, the
@@ -314,6 +355,7 @@ typed into a field. Every line has `t` (local time) and `ev`; lines from a proje
 | `playback.forced` | A second Play started playback without waiting for audio | |
 | `preview.slow` | A graphic's video frames took over a second (at most one line per 10 s) | `kind`, `ms` |
 | `preview.rebuild` | A graphic's page stopped answering and was rebuilt | `reason` |
+| `badge.open` | A badge in a prompt box was clicked open | `kind` (`item`, `media`, `attachment`, `skill`, `link`) |
 
 `on` and `field` name a control by one of the fixed labels written into Cardboard's code ("Play", "Add media
 files"), else by its analytics id (`director-question-option`), else by its role or tag (`button`,

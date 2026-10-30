@@ -409,7 +409,7 @@ var __cbLogMenu = (menu) => {
 // What the pages report (patch-renderer.js). A key the page left alone may have been a menu accelerator,
 // which runs right after it; those are in the log as menu items already.
 var __cbLogFrom = (d, wc) => {
-  if (!d || !/^(key|shortcut|error|toast|playback\.(wait|forced)|preview\.(slow|rebuild)|canvas\.restored)$/.test(d.ev)) return;
+  if (!d || !/^(key|shortcut|error|toast|playback\.(wait|forced)|preview\.(slow|rebuild)|canvas\.restored|badge\.open)$/.test(d.ev)) return;
   const { ev, ...f } = d, m = /\/app\/editor\/([^/?#]+)/.exec(wc?.getURL?.() ?? "");
   if (m) f.project = m[1];
   if (ev !== "key" || f.handled !== false) return __cbLog(ev, f);

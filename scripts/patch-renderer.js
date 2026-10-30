@@ -6,6 +6,8 @@
 // - The timeline keeps the playhead in view, and redraws after the GPU drops its canvases.
 // - Playback starts without waiting on muted audio, and at once on a second press.
 // - Graphics with a video inside play without waiting on the video's frames ("speed").
+// - Badges in prompt boxes are one unit and open on a click; clicking the timeline takes the keyboard.
+// - The editor rail's tooltips show.
 // - The pages' part of the activity log (see __cbLog in patch-main.js).
 // Usage: node patch-renderer.js <…/index-*.js> <…/EditorRoute-*.js> <…/installErrorTelemetry-*.js>
 const fs = require("fs");
@@ -194,6 +196,165 @@ for(const k of["error","warning"]){const f=ue[k];typeof f=="function"&&(ue[k]=(m
       "Projects and cloud services need an account. Their files stay on this PC."],
   ]);
   replace('"aria-label":`Show ${e.name} in Finder`', '"aria-label":`Show ${e.name} in ${window.desktop?.platform==="win32"?"File Explorer":"Finder"}`');
+
+  // ── Badges in prompt boxes, and the timeline's clicks ──
+  // 16. A badge in a prompt box (a clip or media file mentioned, a file attached, a pasted link, a skill) is
+  // one unit for the caret. A badge is text in the box's textarea with a chip drawn over it: two figure
+  // spaces, the name, a no-break space (ha, t5, H1). The caret could go inside it: a click on a badge or ←/→
+  // put the caret between its letters, and typing there broke it into loose text with its chip gone.
+  // Backspace and Delete next to one already removed it whole (TD); the word deletes (Ctrl+Backspace,
+  // Ctrl+Delete) cut into it. Now a click on a badge opens what it stands for, as a link does, and leaves the
+  // caret and the text alone (the editor's part is 18); the keys step over a badge or select it whole; no
+  // caret or selection end is ever left inside one. Used by the agent's prompt box (Mz, on the Dashboard and
+  // in the editor) and the Report an Issue box (its link badges), whose Backspace took a link badge apart a
+  // letter at a time.
+  // 17. Clicking the timeline or a clip in the preview takes the keyboard from a text field, as a click
+  // anywhere else in the editor does. Both cancel the pointer's default action, so that a drag doesn't
+  // select text, and that also kept the focus where it was: with the agent's prompt box focused, Space after
+  // clicking a clip typed a space instead of playing, and Delete, S and the arrows edited the prompt. The
+  // same kept the keyboard on the timeline's zoom slider, so → and ← zoomed as well as stepping the playhead.
+  const badges = String.raw`
+// [start, end) of each badge in the text v, for the box's picks p: the same badges the chips are drawn for
+// (kr: from the left, the longest badge text starting at each place). kr tries every badge at every
+// character, which takes milliseconds on a long prompt; this finds each badge's text with indexOf.
+const __cbChips=(v,p)=>{const c=[];for(const k of new Set(p.map(x=>x.token)))if(k)for(let i=v.indexOf(k);i!==-1;i=v.indexOf(k,i+1))c.push([i,i+k.length]);c.sort((x,y)=>x[0]-y[0]||y[1]-x[1]);const r=[];let n=0;for(const x of c)x[0]>=n&&(r.push(x),n=x[1]);return r};
+// Whether a badge's text starts, ends or lies across q. It looks only at the characters around q, so the
+// checks below cost the same on any length of prompt; the badges are found only when one is there.
+const __cbNear=(v,p,q)=>p.some(({token:k})=>k&&v.slice(Math.max(0,q-k.length),q+k.length).includes(k));
+// On every selection change: keeps the caret and the selection out of badges, as a last resort (the arrows,
+// the word moves and a press on a badge never put it there, see __cbChipKey and __cbChipDown). A key that
+// moves into one (Home, End, Page Up/Down on a wrapped badge) carries on to the edge it was heading for, a
+// selection that ends inside one takes the whole badge, and anything else goes to its nearer edge.
+const __cbSnap=(t,p)=>{
+const{selectionStart:s,selectionEnd:e,value:v}=t,back=t.selectionDirection==="backward",o=t.__cbSel;
+t.__cbSel={s,e,back,v};
+if(s==null||!__cbNear(v,p,s)&&(s===e||!__cbNear(v,p,e)))return;
+const rs=__cbChips(v,p),inside=q=>rs.find(([a,b])=>a<q&&q<b);
+let f=back?s:e,n=back?e:s;
+const rf=inside(f),ra=s===e?void 0:inside(n);
+if(!rf&&!ra)return;
+// Where the moving end was, when a key moved it (the text unchanged).
+const was=o&&o.v===v&&!t.__cbPtr?(o.back?o.s:o.e):null;
+if(rf){const[a,b]=rf;f=was!==null&&was!==f?(f<was?a:b):s===e?(f-a<=b-f?a:b):back?a:b}
+if(s===e)n=f;else if(ra)n=back?ra[1]:ra[0];
+n<=f?t.setSelectionRange(n,f,"forward"):t.setSelectionRange(f,n,"backward");
+t.__cbSel={s:Math.min(n,f),e:Math.max(n,f),back:f<n,v}};
+// The chip drawn at a point, if any. The chips are in an overlay beside the textarea that takes no pointer
+// events, so they are found by their rectangles. A chip's number is its badge's place in kr's list.
+const __cbChipAt=(t,x,y)=>[...t.parentElement.querySelectorAll("[data-chip]")].find(c=>[...c.getClientRects()].some(r=>x>=r.left&&x<r.right&&y>=r.top&&y<r.bottom));
+// Over a badge the pointer is a hand, as over a link: a click opens it.
+const __cbChipCursor=m=>{const t=m.currentTarget,on=!m.buttons&&!!__cbChipAt(t,m.clientX,m.clientY);on!==!!t.__cbHand&&(t.__cbHand=on,t.style.cursor=on?"pointer":"")};
+// What a click on a badge opens, each in its own place: a link in the browser, an attached file or a skill's
+// file in its app (as the badge card's Preview does, QU), and a clip or media file in the editor, which
+// takes the keyboard (the editor's bundle selects the clip on the timeline, or opens the file's Preview from
+// the Library).
+const __cbOpen=(t,k,skills)=>{
+if(!k)return;
+const kind=k.kind!=="mention"?k.kind:k.type===ci?"skill":k.target?.kind??"mention";
+__cbLog("badge.open",{kind});
+if(k.kind==="link")window.open(k.url,"_blank","noopener");
+else if(k.kind==="attachment")QU(k.file);
+else if(kind==="skill"){const s=skills?.find(x=>x.label===k.label);s?.path&&QU({path:s.path,name:s.label})}
+else if(k.target){t.blur();dispatchEvent(new CustomEvent("cb:open-badge",{detail:{kind:k.target.kind,id:k.target.id,label:k.target.label}}))}};
+// A mouse press in the box. On a badge the caret doesn't move, not even while the button is down, and a
+// click (not a drag, not the second press of a double-click) opens the badge. Any other press is the
+// browser's, and while the button is down (React reports the selection only on release) a drag that
+// reaches a badge takes it whole.
+const __cbChipDown=(m,p,skills)=>{
+if(m.button!==0&&m.button!==2)return;
+const t=m.currentTarget,c=__cbChipAt(t,m.clientX,m.clientY);
+t.__cbPtr=!0;
+if(!c){if(m.button===0){const fix=()=>document.activeElement===t&&__cbSnap(t,p);document.addEventListener("selectionchange",fix);addEventListener("mouseup",()=>document.removeEventListener("selectionchange",fix),{once:!0,capture:!0})}return}
+m.preventDefault();
+if(m.button!==0||m.detail>1)return;
+const x=m.clientX,y=m.clientY,n=c.dataset.chip;
+addEventListener("mouseup",u=>{if(Math.abs(u.clientX-x)>4||Math.abs(u.clientY-y)>4||__cbChipAt(t,u.clientX,u.clientY)?.dataset.chip!==n)return;const k=kr(t.value,p)[Number(n)];k&&__cbOpen(t,k.pick??p.find(q=>q.token===k.token),skills)},{once:!0,capture:!0})};
+// The word keys (Ctrl+Backspace/Delete/←/→, Option on a Mac).
+const __cbMac=window.desktop?.platform==="darwin",__cbWordKey=k=>__cbMac?k.altKey&&!k.ctrlKey&&!k.metaKey:k.ctrlKey&&!k.altKey&&!k.metaKey;
+// Where the caret at q is drawn ({left, top, bottom}): the chips' overlay beside the textarea holds the same
+// text, laid out the same. It is measured on the character at q, since at a line wrap the caret is drawn at
+// the start of the next line (a collapsed range there gives the end of the line above); at the very end, after
+// the last character.
+const __cbCaretRect=(t,q)=>{const o=t.parentElement?.querySelector('[aria-hidden="true"]');if(!o)return null;const w=document.createTreeWalker(o,NodeFilter.SHOW_TEXT),r=document.createRange();let x,at=0,last=null;while(x=w.nextNode()){const l=x.data.length;if(q<at+l){r.setStart(x,q-at);r.setEnd(x,q-at+1);const c=r.getClientRects()[0];return c?{left:c.left,top:c.top,bottom:c.bottom}:null}at+=l;l&&(last=x)}if(!last)return null;r.setStart(last,last.data.length-1);r.setEnd(last,last.data.length);const c=r.getClientRects()[0];return c?{left:c.right,top:c.top,bottom:c.bottom}:null};
+// Keys at a badge, before the box's own handling: ← → step over it (with Shift, select it whole), Backspace
+// and Delete remove it whole (Cardboard's TD), and so do the word deletes, also across the spaces between
+// the caret and the badge. True when it took the key; the delete keys then delete the selection it made.
+const __cbChipKey=(k,p)=>{
+const t=k.currentTarget;t.__cbPtr=!1;
+if(k.nativeEvent?.isComposing)return!1;
+const{selectionStart:s,selectionEnd:e,value:v}=t,back=t.selectionDirection==="backward",f=back?s:e,n=back?e:s,right=k.key==="ArrowRight";
+const go=to=>{k.preventDefault();k.shiftKey?n<=to?t.setSelectionRange(n,to,"forward"):t.setSelectionRange(to,n,"backward"):t.setSelectionRange(to,to);return!0};
+if((right||k.key==="ArrowLeft")&&!k.ctrlKey&&!k.altKey&&!k.metaKey&&(s===e||k.shiftKey)){
+const r=__cbNear(v,p,f)&&__cbChips(v,p).find(([a,b])=>(right?a:b)===f);
+return r?go(right?r[1]:r[0]):!1}
+// The word moves (Ctrl+← →, Option on a Mac) treat a badge as one word. The browser takes its leading figure
+// spaces for spaces and its name for words, so where the next or previous stop was in a badge the caret
+// landed inside it. These take over exactly there, and leave every other stop to the browser (measured on
+// Windows: Ctrl+→ stops before punctuation and at a line's end, Ctrl+← at punctuation):
+// - Ctrl+→ (to the next word's start): from a badge's start, past it and the spaces after it; to the badge,
+//   from punctuation, spaces or a line break before it, or from a word followed by spaces and the badge.
+// - Ctrl+← (to the previous word's start): to the badge's start, across spaces and line breaks after it.
+// - Option+→ / Option+← on a Mac, which skip punctuation: to the badge's end, or its start.
+if((right||k.key==="ArrowLeft")&&__cbWordKey(k)){
+const rs=__cbChips(v,p),word=/[\p{L}\p{N}_]/u;
+if(right){const r=rs.find(([a])=>a>=f);if(!r)return!1;const[a,b]=r,gap=v.slice(f,a);
+if(__cbMac)return word.test(gap)?!1:go(b);
+if(f===a){let to=b;for(;to<v.length&&(v[to]===" "||v[to]==="\t");)to++;return go(to)}
+return!word.test(gap)||/^[\p{L}\p{N}_]+[ \t]*$/u.test(gap)?go(a):!1}
+const r=rs.findLast(([,b])=>b<=f);if(!r)return!1;const gap=v.slice(r[1],f);
+return(__cbMac?!word.test(gap):/^\s*$/.test(gap))?go(r[0]):!1}
+// ↑ ↓ that would land inside a badge on the line above or below go to the badge's edge on that line nearer
+// the caret's column instead. Where they land is found from where the caret is drawn in the chips' overlay,
+// as the browser does: from the selection's start (↑) or end (↓) when Shift isn't held, and at the column the
+// first of a run of ↑ ↓ started from.
+if((k.key==="ArrowUp"||k.key==="ArrowDown")&&p.length>0&&!k.ctrlKey&&!k.altKey&&!k.metaKey){
+const up=k.key==="ArrowUp",from=k.shiftKey||s===e?f:up?s:e,c=__cbCaretRect(t,from);if(!c)return!1;
+const g=t.__cbGoal,x=g&&g.at===from?g.x:c.left,lh=parseFloat(getComputedStyle(t).lineHeight)||c.bottom-c.top||20,y=up?c.top-lh/2:c.bottom+lh/2;
+// Where this move ends, for the next one (the browser's move has happened by then).
+setTimeout(()=>{t.__cbGoal={x,at:t.selectionDirection==="backward"?t.selectionStart:t.selectionEnd}},0);
+const q=document.caretPositionFromPoint?.(x,y);if(q?.offsetNode!==t)return!1;
+const r=__cbChips(v,p).find(([a,b])=>a<q.offset&&q.offset<b);if(!r)return!1;
+const d=o=>{const m=__cbCaretRect(t,o);return m?Math.abs((m.top+m.bottom)/2-y)*1e3+Math.abs(m.left-x):1/0};
+return go(d(r[0])<=d(r[1])?r[0]:r[1])}
+if(k.key!=="Backspace"&&k.key!=="Delete"||t.readOnly||t.disabled)return!1;
+const fwd=k.key==="Delete";
+if(s===e&&__cbWordKey(k)){
+let q=s;
+if(fwd)for(;q<v.length&&(v[q]===" "||v[q]==="\t");)q++;else for(;q>0&&(v[q-1]===" "||v[q-1]==="\t");)q--;
+const r=__cbNear(v,p,q)&&__cbChips(v,p).find(([a,b])=>(fwd?a:b)===q);
+if(!r)return!1;
+fwd?t.setSelectionRange(s,r[1]):t.setSelectionRange(r[0],s);
+return!0}
+if(k.metaKey||k.ctrlKey||s===e&&!__cbNear(v,p,s))return!1;
+const r=TD(v,p,s,e,fwd?"forward":"backward");
+if(r===null)return!1;
+t.setSelectionRange(r.start,r.end);
+return!0};
+// 17: a click on the timeline or the preview blurs what has the keyboard outside it. A click on the
+// timeline's tracks, ruler or track headers blurs whatever has it there too (its zoom slider kept it, so → and
+// ← then zoomed as well as stepping the playhead), unless the click is inside it. The preview's own fields
+// (its text editing) keep their ways.
+addEventListener("pointerdown",e=>{const a=document.activeElement,t=e.target;if(!e.isTrusted||!(a instanceof HTMLElement)||a===document.body||!(t instanceof Element)||a.contains(t))return;const r=t.closest('[data-analytics-region="editor-timeline"],[data-analytics-region="editor-preview"]');r&&(!r.contains(a)||t.closest("[data-timeline-scroll],[data-vertical-scroll-region]"))&&a.blur()},{capture:!0,passive:!0});
+`;
+  replace(`function J0(e){`, badges + `function J0(e){`);
+  // The agent's prompt box: its keys, its selection and its mouse presses.
+  replace(
+    `if((W.key==="Backspace"||W.key==="Delete")&&!W.metaKey&&!W.ctrlKey&&!Me.busy){`,
+    `if(__cbChipKey(W,rn))return;if((W.key==="Backspace"||W.key==="Delete")&&!W.metaKey&&!W.ctrlKey&&!Me.busy){`,
+  );
+  replace(
+    `onClick:()=>t1(),onSelect:()=>t1(),`,
+    `onClick:()=>t1(),onSelect:W=>{__cbSnap(W.currentTarget,rn),t1()},onMouseDown:W=>__cbChipDown(W,rn,Z),onMouseMove:__cbChipCursor,`,
+  );
+  // The Report an Issue box, whose badges are pasted links.
+  replace(
+    `E=S=>{S.key!=="Enter"||!(S.metaKey||S.ctrlKey)||(S.preventDefault(),!d&&e.send())}`,
+    `E=S=>{if(__cbChipKey(S,e.links.map($f)))return;S.key!=="Enter"||!(S.metaKey||S.ctrlKey)||(S.preventDefault(),!d&&e.send())}`,
+  );
+  replace(
+    `onKeyDown:E,onPaste:p,onScroll:x,placeholder:"What happened?"`,
+    `onKeyDown:E,onSelect:S=>__cbSnap(S.currentTarget,e.links.map($f)),onMouseDown:S=>__cbChipDown(S,e.links.map($f)),onMouseMove:__cbChipCursor,onPaste:p,onScroll:x,placeholder:"What happened?"`,
+  );
 });
 
 patch(editorFile, "EditorRoute.orig.js", (replace) => {
@@ -322,6 +483,58 @@ patch(editorFile, "EditorRoute.orig.js", (replace) => {
     `l.then(x=>{clearTimeout(tm);const cur=this.__cbBusy===tok;cur&&(this.__cbBusy=null);const ms=performance.now()-t0;cur&&ms>1e3&&this.__cbSlow("video-frame",ms);if(!cur||!this.active||this.__cbSession!==a||!x||o3(x).length!==0){x&&qc(x);return}this.__cbFrames=x},()=>{clearTimeout(tm),this.__cbBusy===tok&&(this.__cbBusy=null)})}` +
     `__cbSlow(kind,ms){const now=Date.now();now-(this.__cbSlowAt??0)<1e4||(this.__cbSlowAt=now,window.__cbLog?.("preview.slow",{kind,ms:Math.round(ms)}))}}`;
   replace(pumpFrom, pumpTo);
+
+  // 18. A click on a badge in the agent's prompt box opens what it stands for (16, __cbOpen). A clip's badge
+  // selects the clip, puts the playhead at its start and scrolls the timeline to it, as clicking the clip
+  // there would. A media file's badge opens the file in Cardboard's own Media preview, the one its tile's
+  // Preview opens in the Library: the Library's state (EY) is asked to preview that file, by its id, from
+  // all of the project's media, so a file scrolled out of the list, hidden by a search or sharing its name
+  // with another opens as well. Cardboard keeps the Library mounted behind the left panel's other tabs and
+  // behind a clip's properties, and the preview opens from there without changing the panel. A collapsed
+  // panel is opened as it was (its state, not the rail's Library button, which deselects the clip and so
+  // takes its reference out of the prompt). A sound effect from Audio is in the project but not in the
+  // Library's list: its badge opens its clip on the timeline if it has one, else the Audio panel. (Music
+  // can't be mentioned as a file.) A clip or file deleted since it was mentioned says so. Escape with a
+  // Media preview open closes only the preview, as its close button does: the preview listens after the
+  // editor's shortcuts, so the same Escape also cleared the selection, and with a clip selected (which a
+  // badge, unlike the Library, can open the preview over) its reference left the prompt. In a text field,
+  // and with a dialog or menu open over the preview (its delete confirmation, a tile's menu), Escape is left
+  // as it was, so it closes that first.
+  replace(
+    `return tn(Vt.IMPORT_MEDIA,J),{media:F,filteredMedia:ae,`,
+    `o.useEffect(()=>{const f=v=>{const d=v.detail;if(!d||d.seen)return;d.seen=!0;const m=F.find(x=>x.id===d.id);if(m){d.found=!0,z(m.id),$(null),P(null),j(d.top);return}const o=(V?.media??[]).find(x=>x.id===d.id);o&&(d.elsewhere=o.data?.type??"other")};addEventListener("cb:preview-media",f);return()=>removeEventListener("cb:preview-media",f)},[F,V]);` +
+      `return tn(Vt.IMPORT_MEDIA,J),{media:F,filteredMedia:ae,`,
+  );
+  const openBadge = String.raw`
+const __cbOpenClip=it=>{const st=U.getState();st.isPlaying&&st.setIsPlaying(!1);st.previewMode!=="timeline"&&st.setPreviewMode("timeline");st.selectTimelineItem(it.id);st.setPlaybackPosition(it.startTime);H1({playheadTime:it.startTime,pixelsPerSecond:st.pixelsPerSecond,behavior:"smooth"})};
+addEventListener("keydown",e=>{if(e.key!=="Escape"||e.defaultPrevented||e.target instanceof HTMLElement&&(e.target.isContentEditable||/^(INPUT|TEXTAREA|SELECT)$/.test(e.target.tagName)))return;const b=document.querySelector('[role="dialog"][aria-label="Media preview"] button[aria-label="Close preview"]');b&&!document.querySelector('[role="alertdialog"],[role="menu"],[role="dialog"]:not([aria-label="Media preview"])')&&(e.preventDefault(),e.stopImmediatePropagation(),b.click())},!0);
+addEventListener("cb:open-badge",e=>{const{kind:k,id:i,label:l}=e.detail??{},st=U.getState();
+if(k==="media"){
+// d.seen: the Library answered; d.found: it opened the file's preview; d.elsewhere: the file is in the project
+// but not in the Library's list. The preview is placed beside the left panel, near its top.
+const ask=()=>{const p=document.querySelector("[data-editor-left-panel]")?.getBoundingClientRect(),d={id:i,top:(p?.top??0)+64};dispatchEvent(new CustomEvent("cb:preview-media",{detail:d}));return d};
+st.isLeftPanelCollapsed&&st.setLeftPanelCollapsed(!1);
+let n=0;const go=()=>{const d=ask();if(d.found)return;
+if(d.elsewhere){const c=U.getState().timelineItems.find(x=>x.mediaItemId===i);c?__cbOpenClip(c):d.elsewhere==="audio"?(U.getState().setActiveLeftTab("music"),Et.info(l+" is in Audio, with the music and sound effects.")):Et.info(l+" isn't in the Library anymore.");return}
+if(d.seen){Et.info(l+" isn't in the Library anymore.");return}
+// No Library mounted: show it by the panel's state, then ask again.
+n++===0&&U.getState().setActiveLeftTab("media");n<90?requestAnimationFrame(go):Et.info("Couldn't open the Library to preview "+l+".")};
+requestAnimationFrame(go);return}
+if(k!=="item")return;
+const it=st.timelineItems.find(x=>x.id===i);
+it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
+`;
+  replace(`class sH{`, openBadge + `class sH{`);
+
+  // 19. The editor's left rail (Library, Layout, Audio, Captions, Text, Transitions, Effects) shows its
+  // tooltips. Each icon is wrapped in Cardboard's tooltip, but the button inside (H_) kept only its own props
+  // and dropped the ones the tooltip's trigger hands it (its pointer and focus handlers, its ref, data-state),
+  // so no tooltip ever opened: the rail was icons with no names. The button now takes them; its click runs
+  // the trigger's (which closes the tooltip) and then switches the panel, as before.
+  replace(
+    `H_=({tab:e,tile:t,className:n,label:a})=>{const r=e.icon;return c.jsxs("button",{"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:e.select,`,
+    `H_=({tab:e,tile:t,className:n,label:a,...__cbTip})=>{const r=e.icon;return c.jsxs("button",{...__cbTip,"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:v=>{__cbTip.onClick?.(v),e.select()},`,
+  );
 });
 
 patch(storeFile, "installErrorTelemetry.orig.js", (replace) => {
