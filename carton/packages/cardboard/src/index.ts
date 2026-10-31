@@ -3,7 +3,7 @@
 // fm∘sv GUI projection (injected), host <-> engine conversion with LCS move recovery, the hard and soft validators, the
 // timeline.tsx header contract, and the CARDBOARD_ACTOR identity source. Port of core-v5 `cardboard-schema.mjs`.
 // The file-system side (materializer, .cbproj) is `@carton/cardboard/node`. Owner: cardboard-adapter.
-import { merge3 } from "@carton/core";
+import { canonical, diff, merge3 } from "@carton/core";
 import type { Doc } from "@carton/core";
 import type { HostAdapter, OwnFn } from "@carton/core/plugins";
 import { cardboardSchema, diagnose } from "./schema.ts";
@@ -49,6 +49,7 @@ export const cardboardFilesHost = {
   fromProject: (project: Record<string, unknown>, base: Doc | null, own?: OwnFn): Doc => fromHost(project, base, own),
   toProject: (doc: Doc, current: Record<string, unknown> | null): Record<string, unknown> => materializeProject(doc, current),
   merge3: (base: Doc, ours: Doc, theirs: Doc): Doc => merge3(base, ours, theirs, cardboardSchema).doc,
+  changes: (from: Doc, to: Doc): string[] => diff(from, to, cardboardSchema).map(canonical),
   diagnose,
 };
 

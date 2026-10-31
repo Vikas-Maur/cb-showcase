@@ -3,8 +3,10 @@
 //   // cardboard:rev main@57~3f9a1c0e b:<branchId8> p:<printNonce> by <actor>
 //
 // - the ref names the state the file shows, `<cut name>@<seq>~<stateHash8>`, exactly as core's `refString` prints it.
-//   A cut's name may contain spaces ("30s Instagram cut@4~…"): the ref runs up to ` b:`;
-// - `b:` is the first 8 characters of the branch id, because two cuts may share a name ("Bob's main");
+//   A cut's name may contain spaces, and words like ` by ` or ` p:` ("Version by Alice@4~…"): as in core's parser,
+//   the name runs up to the last `@<seq>~<hash8> b:<8 hex>`;
+// - `b:` names the cut, because two cuts may share a name ("Bob's main"): 8 lowercase hex characters, as core reads
+//   it (core's `branchToken`): the id's first 8 when they are lowercase hex (every id core makes), else its SHA-256's;
 // - `p:` is a nonce that is new for every print, so two prints of one state are told apart (system proof, Finding 3);
 //   a per-agent view's "last applied save" base is keyed on it;
 // - `by` names who printed it; it is the rest of the line and may contain spaces.
@@ -12,6 +14,8 @@
 // Cardboard 1.4.0 prints `// cardboard:rev <stateUpdatedAt ms>` as the 4th line of its header block and reads the
 // first line matching `^\s*//\s*cardboard:rev\s+(\d+)\s*$`. A bare number still parses here, as a legacy timestamp
 // ref. Only the first rev line in a file counts, as in 1.4.0.
+
+import { branchToken } from "@carton/core";
 
 export const REV_TAG = "cardboard:rev";
 
@@ -32,6 +36,9 @@ export type Rev = CartonRev | LegacyRev;
 
 const LINE = /^[ \t]*\/\/[ \t]*cardboard:rev[ \t]+([^\r\n]*?)[ \t]*\r?$/m;
 const LEGACY = /^\d+$/;
+// Core's shape, read as core's own parser reads it: the ref runs up to the last `@<seq>~<hash8> b:<8 hex>`, so a cut
+// name with ` by `, ` p:` or ` b:` in it keeps the nonce and the printer that follow.
+const CORE_BODY = /^(.+@\d+~[0-9a-f]{8}) b:([0-9a-f]{8})(?: p:([0-9A-Za-z]+))?(?: by (.*))?$/;
 // The ref is lazy: it ends where the optional ` b:`, ` p:` and ` by ` fields take the rest of the line.
 const BODY = /^(.+?)(?: b:([0-9A-Za-z_-]+))?(?: p:([0-9A-Za-z]+))?(?: by (.*))?$/;
 
@@ -42,10 +49,20 @@ export interface RevInput {
   by?: string | null;
 }
 
+/**
+ * The `b:` token for a cut id, core's one definition (`@carton/core`'s `branchToken`, re-exported so the header format
+ * has one owner): the id's first 8 characters when they are lowercase hex (every id core makes: a UUID, `cb cut new`'s
+ * 24 hex characters + `.n`), as core's own headers print them; any other id (a caller's own, one from a `.cbproj` or
+ * another host: `b6b.alt`, `ab-cdef0…`) gives the first 8 hex characters of its SHA-256, so its header still parses
+ * back. Headers this package printed before (`cfa541a`, an FNV-1a hash for such ids) no longer name their cut: a save
+ * from one is refused "state unknown: re-print", and a re-print gives a header that reads back.
+ */
+export { branchToken };
+
 /** The header line, without a newline. */
 export function renderRev({ ref, branchId, nonce, by }: RevInput): string {
   let s = `// ${REV_TAG} ${ref.replace(/[\r\n]+/g, " ")}`;
-  if (branchId) s += ` b:${branchId.replace(/-/g, "").slice(0, 8)}`;
+  if (branchId) s += ` b:${branchToken(branchId)}`;
   if (nonce) s += ` p:${nonce}`;
   if (by) s += ` by ${by.replace(/[\r\n]+/g, " ")}`;
   return s;
@@ -56,7 +73,7 @@ export function renderRev({ ref, branchId, nonce, by }: RevInput): string {
 export function parseRevBody(body: string): Rev | null {
   const b = body.trim();
   if (LEGACY.test(b)) return { kind: "legacy", rev: Number(b) };
-  const m = BODY.exec(b);
+  const m = CORE_BODY.exec(b) ?? BODY.exec(b);
   if (!m) return null;
   return { kind: "carton", ref: m[1]!, branch8: m[2] ?? null, nonce: m[3] ?? null, by: m[4] ?? null };
 }

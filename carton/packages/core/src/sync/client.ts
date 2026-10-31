@@ -120,6 +120,12 @@ function mergeLineage(have: ClosureEntry[], page: readonly ClosureEntry[]): Clos
   return out;
 }
 
+/** One key per actor in presence (`kind:id`; anything else by its JSON). */
+const presenceKey = (a: unknown): string => {
+  const x = a as { kind?: unknown; id?: unknown } | null;
+  return x && typeof x === "object" && typeof x.id === "string" ? `${String(x.kind)}:${x.id}` : JSON.stringify(a);
+};
+
 export class SyncClient {
   readonly queue: ReplicaQueue;
   readonly branchId: string;
@@ -141,6 +147,8 @@ export class SyncClient {
   private presenceAt = -Infinity;
   private presenceNext: { actor: Change["author"]; state: PresenceState | null } | null = null;
   private presenceTimer: unknown = null;
+  /** Peers this connection shows (their last presence not a leave), by actor: told gone when it closes. */
+  private shown = new Map<string, unknown>();
   private waiters: ((ok: boolean) => void)[] = [];
   private statusListeners: ((s: SyncStatus) => void)[] = [];
   private _status: SyncStatus = "offline";
@@ -209,11 +217,16 @@ export class SyncClient {
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
     if (this.presenceTimer !== null) this.timers.clearTimeout(this.presenceTimer);
     this.presenceTimer = null;
+    // a coalesced update still waiting goes out before the close: it is often the leave (`null`) a closing editor
+    // sends right after its last move, and peers have no other way to learn the person left (the relay keeps none)
+    const p = this.presenceNext;
     this.presenceNext = null;
+    if (p && this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
     const c = this.conn;
     this.conn = null;
     c?.close();
     this.failRequests(why);
+    this.dropShown();
     this.setStatus("stopped");
     this.emit({ type: "stopped", why });
     for (const w of this.waiters.splice(0)) w(false);
@@ -306,6 +319,7 @@ export class SyncClient {
     if (id !== this.connId || !this.conn) return;
     this.conn = null;
     this.failRequests(why);
+    this.dropShown();
     this.caughtUp = false;
     this.setStatus("offline");
     this.emit({ type: "offline", why });
@@ -328,6 +342,15 @@ export class SyncClient {
       this.requests.set(m.req, { m, rows: [], resolve, reject });
       this.send(m);
     });
+  }
+  /**
+   * The connection is gone: every peer it showed is told gone, as a leave (`state: null`). A host that restarts, or a
+   * room evicted on a deploy, keeps no one to send leaves for; a peer still there shows again with its next update.
+   */
+  private dropShown(): void {
+    const gone = [...this.shown.values()];
+    this.shown.clear();
+    for (const actor of gone) this.emit({ type: "presence", branchId: this.branchId, actor, state: null });
   }
   /** Drop connection `id` (a lost message: the server couldn't read an envelope, or we couldn't): reconnect, catch up. */
   private drop(id: number, why: string): void {
@@ -556,8 +579,12 @@ export class SyncClient {
       }
       case "overwritten":
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
-      case "presence":
+      case "presence": {
+        const k = presenceKey(m.actor);
+        if (m.state === null) this.shown.delete(k);
+        else this.shown.set(k, m.actor);
         return this.emit({ type: "presence", branchId: m.branchId, actor: m.actor, state: m.state });
+      }
       case "unknownBranch":
         return this.emit({ type: "error", error: "unknown branch" });
       case "adoptError":

@@ -65,7 +65,9 @@ export interface OpenOptions {
    * Create the project when the store is empty: a Main cut at `doc`, or (`import`) from a teammate's shallow `.cbproj`
    * of a project this machine doesn't have: their cuts become tracking cuts and a writable cut forks from their head.
    * `asChange`: §16 migration of an existing project: the cut starts empty and `doc` is `main@1`, one insert-all
-   * change by `{kind: "system", id: "import"}` (otherwise `doc` is the root state at seq 0).
+   * change by `{kind: "system", id: "import"}` (otherwise `doc` is the root state at seq 0). The root and the import are
+   * one store write; a project still at an empty root with no change (left by an older build) gets the import when
+   * opened with `asChange`.
    * `join`: a cut a host already sequences, opened from an invite on a machine that holds nothing of the project.
    */
   init?: { doc: Doc; projectId?: string; cutName?: string; asChange?: boolean } | { import: ShallowExport } | { join: JoinInit };
@@ -251,7 +253,12 @@ export interface Carton {
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
   /** `id`: a stable cut id, so a retried call returns the cut it already made. */
   fork(name: string, opts?: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string }): Promise<CutRecord>;
-  switchTo(cut: string): Promise<void>;
+  /**
+   * Make `cut` the current cut, this handle's and the machine's (`meta ["current"]`, last writer wins). With
+   * `persist: false`, the handle's only, nothing written: for a process that adopts a switch another one stored, so a
+   * third process's switch in between is never overwritten by the adoption.
+   */
+  switchTo(cut: string, opts?: { persist?: boolean }): Promise<void>;
   /** Fold `from` (a cut id or a ref) into `into` (default: current cut). */
   /** With `check: true`, nothing is committed and `preview` tells what the fold would bring in. */
   fold(from: string | StateRef, opts?: FoldOptions & { into?: string }): Promise<FoldResult & { preview?: FoldPreview }>;
@@ -621,25 +628,50 @@ class CartonImpl implements Carton {
       const h = History.create(this.schema, init.asChange ? emptyDoc(this.schema) : init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
       const cut = h.cut(h.current)!;
       meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
-      const ok = await s.write(
-        [
-          { table: T.meta, key: PROJECT, value: meta },
-          { table: T.meta, key: CURRENT, value: cut.id },
-          { table: T.cuts, key: [cut.id], value: cut },
-          { table: T.keyframes, key: [cut.id, 0], value: h.stateOf(nodeId(cut.id, 0)) },
-        ],
-        [{ table: T.meta, key: PROJECT, expect: "absent" }],
-      );
-      if (!ok) return this.load(); // another process created it first: open theirs
+      const root: StoreWrite[] = [
+        { table: T.meta, key: PROJECT, value: meta },
+        { table: T.meta, key: CURRENT, value: cut.id },
+        { table: T.cuts, key: [cut.id], value: cut },
+        { table: T.keyframes, key: [cut.id, 0], value: h.stateOf(nodeId(cut.id, 0)) },
+      ];
+      const absent: StoreCondition[] = [{ table: T.meta, key: PROJECT, expect: "absent" }];
+      let ok: boolean;
       if (init.asChange) {
+        // the empty root and its import change in one write (local-cli request 7): a process stopped in between would
+        // leave an empty project that every later open took as made
         this.#meta = meta;
-        await this.#rebuild();
-        await this.#mutate(cut.id, () => this.#h.commit(cut.id, { doc: init.doc, author: { kind: "system", id: "import", name: "Import" }, kind: "import", id: `import.${this.#meta.projectId}` }), { idempotent: true });
-        return;
-      }
+        this.#h = h;
+        h.onConfirmed = (c, change) => this.#confirmed.push({ cut: c, change });
+        h.onNoop = (id, c, seq) => this.#noops.push({ id, cut: c, seq });
+        this.#confirmed.length = this.#noops.length = 0;
+        this.#importInit(cut.id, init.doc);
+        ok = await this.#flush(root, absent);
+        this.#confirmed.length = this.#noops.length = 0;
+      } else ok = await s.write(root, absent);
+      if (!ok) return this.load(); // another process created it first: open theirs
+      this.#meta = meta;
+      await this.#rebuild();
+      return;
     }
     this.#meta = await this.#checkSchema(meta);
     await this.#rebuild();
+    const init = this.#opts.init;
+    if (init && "doc" in init && init.asChange) await this.#resumeImport(init.doc);
+  }
+  #importInit(cut: string, doc: Doc): void {
+    if (this.#h.headSeq(cut) === 0) this.#h.commit(cut, { doc, author: { kind: "system", id: "import", name: "Import" }, kind: "import", id: `import.${this.#meta.projectId}` });
+  }
+  /**
+   * A project an older build left at its empty root (stopped between the root and the import, request 7), opened with
+   * `asChange`: the import is committed now. Only a project that is nothing but that: one local cut, no change on it,
+   * the empty root; a change that lands first (another process's import or edit) wins, and this one stands down.
+   */
+  async #resumeImport(doc: Doc): Promise<void> {
+    const cuts = this.#h.cuts();
+    const c = cuts[0];
+    if (cuts.length !== 1 || !c || c.forkOf || c.shallow || c.sequencer.kind !== "local" || this.#h.headSeq(c.id) !== 0) return;
+    if (this.#h.hashOf(nodeId(c.id, 0)) !== E.hashDoc(emptyDoc(this.schema), this.schema)) return;
+    await this.#mutate(c.id, () => this.#importInit(c.id, doc), { idempotent: true });
   }
   /**
    * Every process on a project must hash and merge its states alike (R2-03): one whose schema differs from the one the
@@ -1187,10 +1219,10 @@ class CartonImpl implements Carton {
     );
     return rec;
   }
-  async switchTo(cut: string): Promise<void> {
+  async switchTo(cut: string, opts: { persist?: boolean } = {}): Promise<void> {
     await this.#refresh();
     this.#h.current = cut;
-    await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
+    if (opts.persist !== false) await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
   }
   async renameCut(cut: string, name: string): Promise<CutRecord> {
     let rec!: CutRecord;

@@ -14,15 +14,18 @@
 // - A 1.4.0 timestamp rev resolves only through the mapping written at migration (`recordLegacyRev`).
 import { StateUnknown, actorKey } from "@carton/core";
 import type { Actor, Carton, Doc, Notice, NoticeKind, StateRef, ConflictCard } from "@carton/core";
-import { revBody, type Rev } from "../header.ts";
+import { branchToken, revBody, type CartonRev, type Rev } from "../header.ts";
 import type { HeldBase, MaterializerEngine, SaveResult } from "./materializer.ts";
 
 const VIEWS = "views";
 /** The ref token core prints (`<cut name>@<seq>~<hash8>`), from a pin's header (`… b:<branch8> p:… by …`). */
 const tokenOf = (header: string): string => {
+  const m = /^(.+@\d+~[0-9a-f]{8}) b:/.exec(header); // a cut name may hold " b:" itself
+  if (m) return m[1]!;
   const i = header.indexOf(" b:");
   return i < 0 ? header : header.slice(0, i);
 };
+const STATE_TOKEN = /^(.+)@(\d+)~([0-9a-f]{8})$/;
 /** The notices row holding a save's cards for its author (`@carton/local` writes.ts `cardsKey`). */
 const cardsKey = (author: Actor, change: string) => [actorKey(author), 0, 0, `req:${change}`];
 interface PinRecord {
@@ -47,6 +50,36 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     await store.write([{ table: VIEWS, key, value }]);
   };
   const toHeld = (r: { doc: Doc; seq: number; causal: string[] }): HeldBase => ({ baseDoc: r.doc, baseSeq: r.seq, causal: r.causal });
+  /**
+   * A printed header's state. Core matches `b:` to the cut whose `branchToken` it is (core's one definition, which this
+   * package re-exports), so the header goes to core as text, except when several cuts share the token: core ranks the
+   * header's cut name above "has the printed state", so a print on a cut renamed since, with a same-token cut now under
+   * that name, would be refused "state unknown: re-print" (review 14 #5). Then the cut that has the state is taken here.
+   */
+  const refOf = async (rev: CartonRev): Promise<StateRef | string> => {
+    const m = STATE_TOKEN.exec(rev.ref);
+    if (!m || !rev.branch8) return revBody(rev);
+    const same = (await carton.cuts()).filter((c) => branchToken(c.id) === rev.branch8);
+    if (same.length <= 1) return revBody(rev);
+    const on = (id: string): StateRef => ({ branchId: id, seq: Number(m[2]), hash8: m[3]! });
+    // two cuts with one token (a hash collision, or ids sharing their first 8 characters): the one that has this state
+    // (review 14 #5: a name can be shared or renamed since the print); of several (the same state), the current cut's,
+    // then the one with the printed name
+    const holding: typeof same = [];
+    for (const c of same) {
+      try {
+        await carton.resolve(on(c.id));
+        holding.push(c);
+      } catch (e) {
+        // not this cut's state; a store failure (busy, locked) is no answer: thrown, so the save is retried, not taken
+        // to another cut (round 15 #5)
+        if ((e as { code?: string })?.code !== "STATE_UNKNOWN") throw e;
+      }
+    }
+    const pool = holding.length ? holding : same;
+    const pick = pool.find((c) => c.id === cut()) ?? pool.find((c) => c.name === m[1]) ?? pool[0]!;
+    return on(pick.id);
+  };
   const pinKey = (r: StateRef) => `${r.branchId}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`;
   const pinsByOwner = new Map<string, number>();
   /** The author's cards row for a save (`@carton/local`'s `cardsRow`). */
@@ -68,15 +101,17 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     async head() {
       return (await carton.head(cut())).doc;
     },
-    async pin({ owner, doc, seq, causal, ttlMs }) {
-      const p = await carton.pin({ owner, cut: cut(), ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
+    async pin({ owner, cut: at, doc, seq, causal, ttlMs }) {
+      // the cut is read once: the pin's store refresh may find a cut another process switched to (review 11 #1)
+      const on = at ?? cut();
+      const p = await carton.pin({ owner, cut: on, ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
       const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
       await store.write([{ table: VIEWS, key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord }]);
       // now and then, per owner: long-lived owners (the shared file's prints) keep pinning new states
       const n = (pinsByOwner.get(owner) ?? 0) + 1;
       pinsByOwner.set(owner, n);
       if (n % 64 === 0) await prune(owner);
-      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)) };
+      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on };
     },
     async release(owner) {
       const rows = await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] });
@@ -89,12 +124,14 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
         if (!ref) throw new StateUnknown(String(rev.rev), "a 1.4.0 timestamp rev from before Carton, of another state");
         return toHeld(await carton.resolve(ref));
       }
-      return toHeld(await carton.resolve(revBody(rev)));
+      return toHeld(await carton.resolve(await refOf(rev)));
     },
     async commit({ doc, base, author, id }) {
-      const b = "baseDoc" in base ? base : base.kind === "carton" ? revBody(base) : ((await getMeta<string>(["legacy", String(base.rev)])) ?? String(base.rev));
+      const b = "baseDoc" in base ? base : base.kind === "carton" ? await refOf(base) : ((await getMeta<string>(["legacy", String(base.rev)])) ?? String(base.rev));
       const withId = id ? { id } : {};
-      let r = await carton.commit({ doc, base: b, author, cut: cut(), ...withId });
+      // the cut is read once, for both commits and the result: a state built on the save belongs to it (round 15 #4)
+      const on = cut();
+      let r = await carton.commit({ doc, base: b, author, cut: on, ...withId });
       let cards: ConflictCard[] = [];
       let kept = false;
       if (r.status === "conflicts") {
@@ -106,7 +143,7 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
           await store.write([{ table: VIEWS, key: ["attempt-cards", id], value: cards }, cardsRow(author, id, cards)]);
           kept = true;
         }
-        r = await carton.commit({ doc, base: b, author, cut: cut(), choices: () => "ours", ...withId });
+        r = await carton.commit({ doc, base: b, author, cut: on, choices: () => "ours", ...withId });
       } else if (id && (r.status === "confirmed" || r.status === "pending")) {
         // a retry answered by id (confirmed, or still pending on a shared cut offline): the cards recorded on the
         // first attempt are still this save's
@@ -117,7 +154,7 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       } else if (kept && (r.status === "conflicts" || r.status === "rejected")) {
         await store.write([{ table: "notices", key: cardsKey(author, id!), value: undefined }]); // the save didn't land
       }
-      const out = (s: SaveResult): SaveResult => (cards.length ? { ...s, status: "conflicts", cards } : s);
+      const out = (s: SaveResult): SaveResult => (cards.length ? { ...s, status: "conflicts", cards, cut: on } : { ...s, cut: on });
       switch (r.status) {
         case "confirmed":
           return out({ status: "confirmed", seq: r.seq, ...(r.change ? { id: r.change.id } : {}) });
@@ -146,6 +183,26 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       return JSON.stringify([c, h.ref.branchId, h.ref.seq, h.ref.pending ?? []]);
     },
     newChangeId: () => carton.newChangeId(),
+    async *changesSince(seq: number, o: { cut?: string; until?: number; skip?: ReadonlySet<string> } = {}) {
+      // the whole log back to `seq`, a page at a time (round 15 #1: no window), newest first; only the changes asked for
+      // are checked out, and a change right below the last one reuses its state
+      const c = o.cut ?? cut();
+      const PAGE = 64;
+      let page = await carton.log({ cut: c, limit: PAGE });
+      let below: { seq: number; doc: Doc } | null = null;
+      for (;;) {
+        for (const v of page) {
+          if (v.ref.seq <= seq) return;
+          if (!v.change || (o.until !== undefined && v.ref.seq >= o.until) || o.skip?.has(v.change)) continue;
+          const after = below?.seq === v.ref.seq ? below.doc : await carton.checkout({ branchId: c, seq: v.ref.seq });
+          const before = await carton.checkout({ branchId: c, seq: v.ref.seq - 1 });
+          below = { seq: v.ref.seq - 1, doc: before };
+          yield { id: v.change, seq: v.ref.seq, before, after };
+        }
+        if (page.length < PAGE) return;
+        page = await carton.log({ cut: c, limit: PAGE, before: page[page.length - 1]!.ref.seq });
+      }
+    },
     getMeta,
     putMeta,
     shared: () => opts.shared?.() ?? false,

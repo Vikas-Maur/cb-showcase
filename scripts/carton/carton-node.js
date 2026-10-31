@@ -45,10 +45,22 @@ function open(bundlePath, { projectId, doc } = {}) {
       const id = projectId ?? doc?.id ?? readProject(bundlePath)?.id;
       const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db"));
       // A project without history yet starts from its document on disk (§16, main@1).
-      const first = exists ? null : doc ?? readProject(bundlePath);
+      let first = exists ? null : doc ?? readProject(bundlePath);
       // R1: extensions add openLocal options (live sync: the worker's handle gets the project's sync connection, the
       // person's actor and the replica's name; cb gets the helper that syncs headlessly).
-      const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined, ...(await extOpenOptions({ bundlePath, projectId: id })) });
+      const more = await extOpenOptions({ bundlePath, projectId: id });
+      const openWith = (start) => openLocal({ projectDir: bundlePath, projectId: id, init: start ? { doc: fromHost(start, null) } : undefined, ...more });
+      let lc;
+      try { lc = await openWith(first); } catch (e) {
+        // A carton.db another machine made (a folder copied from another computer, or one a sync client brought) is
+        // never adopted as this machine's replica: the stores set it aside (carton.from-<host>-<t>.db, kept for its
+        // history) and open an empty one (L15). That project then starts its own history from project.json, as a
+        // project without one does; without this its history stayed off for good ("holds no project").
+        if (first || !/holds no project/.test(errText(e))) throw e;
+        first = doc ?? readProject(bundlePath);
+        if (!first) throw e;
+        lc = await openWith(first);
+      }
       if (first) await setRev(lc, first.stateUpdatedAt, (await lc.carton.head()).ref);
       return lc;
     })().catch((e) => (warnOnce("open:" + bundlePath, `history is off for ${path.basename(bundlePath)}: ${errText(e)}`), opened.delete(bundlePath), null));

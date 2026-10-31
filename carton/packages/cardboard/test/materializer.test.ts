@@ -19,13 +19,13 @@ const clip = (id: string, s: number, e: number, extra: Record<string, unknown> =
 async function setup(t: test.TestContext, items: Item[], opts: { start?: boolean } = {}) {
   fs.mkdirSync(SCRATCH, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
-  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   const project = { id: "p1", name: "Demo", stateUpdatedAt: 1, timelineItems: items };
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
   const engine = new FakeEngine({ name: "Demo", timelineItems: items });
   const clock = new FakeClock();
   const mz = new Materializer({ bundle, engine, host: plainHost, codec: jsonTimelineCodec, clock });
   t.after(() => mz.close());
+  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 1 })).ref);
   await mz.adoptCurrentFiles();
   if (opts.start !== false) await mz.start();
@@ -114,7 +114,6 @@ test("an unread save is applied before a print renders; the writer's next save l
 test("displacement: a foreign save landing while Carton renders is moved aside, not overwritten, and applied", async (t) => {
   fs.mkdirSync(SCRATCH, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
-  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project: { name: "Demo", timelineItems: [clip("titleX", 0, 3, { textContent: "a" })] }, media: [] }));
   const engine = new FakeEngine({ name: "Demo", timelineItems: [clip("titleX", 0, 3, { textContent: "a" })] });
   const clock = new FakeClock();
@@ -123,6 +122,7 @@ test("displacement: a foreign save landing while Carton renders is moved aside, 
   const codec = { ...jsonTimelineCodec, print: (p: Record<string, unknown>, rev: string) => (race?.(), (race = null), jsonTimelineCodec.print(p, rev)) };
   const mz = new Materializer({ bundle, engine, host: plainHost, codec, clock, writeProject: false });
   t.after(() => mz.close());
+  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   await mz.start();
   const text = fs.readFileSync(path.join(bundle, TIMELINE_FILE), "utf8");
   race = () => fs.writeFileSync(path.join(bundle, TIMELINE_FILE), text.replace('"a"', '"raced"'));
@@ -427,12 +427,12 @@ test("a shared-file save that raised cards: head's values kept, the cards stored
   const cards: unknown[] = [];
   fs.mkdirSync(SCRATCH, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
-  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project: { name: "D", timelineItems: [clip("a", 0, 5)] }, media: [] }));
   const engine = new FakeEngine({ name: "D", timelineItems: [clip("a", 0, 5)] });
   const clock = new FakeClock();
   const mz = new Materializer({ bundle, engine, host: plainHost, codec: jsonTimelineCodec, clock, writeProject: false, onCards: (c) => cards.push(c) });
   t.after(() => mz.close());
+  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   await mz.start();
   const text = fs.readFileSync(path.join(bundle, TIMELINE_FILE), "utf8");
   engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "theirs"));
@@ -449,12 +449,12 @@ test("a shared-file save that raised cards: head's values kept, the cards stored
 test("on a case-insensitive file system a view printed as `Alice` and saved through `alice.tsx` is one view", async (t) => {
   fs.mkdirSync(SCRATCH, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
-  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project: { name: "D", timelineItems: [clip("a", 0, 5)] }, media: [] }));
   const engine = new FakeEngine({ name: "D", timelineItems: [clip("a", 0, 5)] });
   const clock = new FakeClock();
   const mz = new Materializer({ bundle, engine, host: plainHost, codec: jsonTimelineCodec, clock, writeProject: false, foldCase: true });
   t.after(() => mz.close());
+  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   await mz.start();
   const { path: rel, name } = await mz.printView("Alice", { kind: "agent", id: "alice" });
   assert.equal(name, "alice");

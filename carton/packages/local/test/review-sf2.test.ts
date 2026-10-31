@@ -6,8 +6,8 @@
 // what was delivered to it.
 // Requests 1-4 to foundation-core landed in `3160e3e`. Their core runs a shared commit's pending-row write in the
 // commit's turn, so request 1 and 4's scenarios are set up as foundation's own tests do (a late pending-row write; edits
-// waiting offline). Request 5 (a refused edit's row removed in one batch with its author's notice) is `todo` until it
-// lands; it fails fast (every wait has a deadline).
+// waiting offline). Request 5 (a refused edit's row removed in one batch with its author's notice) landed in `a9416b2`
+// (a queued change's row is deleted only with its outcome's batch). Every wait has a deadline: a failure is fast.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton } from "@carton/core";
@@ -33,7 +33,6 @@ function within<T>(ms: number, p: Promise<T>, what: string): Promise<T> {
   let t: NodeJS.Timeout;
   return Promise.race([p, new Promise<T>((_, no) => (t = setTimeout(() => no(new Error(`timed out waiting for ${what}`)), ms)))]).finally(() => clearTimeout(t));
 }
-const req = (n: number) => ({ todo: `foundation-core request ${n} (local-cli notes)`, timeout: 30_000 });
 const landed = { timeout: 30_000 };
 /**
  * Cleanup that runs even when a test times out (node:test doesn't run a timed-out test's `finally`): open every gate,
@@ -134,7 +133,7 @@ test("a handle fenced off, then connected again under the new nonce, pushes what
   }
 });
 
-test("a refused edit's pending row goes in one batch with its author's notice: never gone untold", req(5), async () => {
+test("a refused edit's pending row goes in one batch with its author's notice: never gone untold", landed, async () => {
   const w = world();
   const store = createMemoryStore();
   const lease = new Lease(store);
