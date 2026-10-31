@@ -6,7 +6,7 @@
 import * as path from "node:path";
 import { locateCartonDb, defaultAppDataDir, projectKey, type DbLocation, type LocateOptions } from "./location.ts";
 import { openSqliteStore, type SqliteStore, type SqliteStoreOptions } from "./store.ts";
-import { settlePlacement } from "./move.ts";
+import { settlePlacement, type MoveHooks } from "./move.ts";
 
 export interface ProjectStoreOptions extends LocateOptions, SqliteStoreOptions {}
 
@@ -15,7 +15,7 @@ export interface ProjectLocation extends DbLocation {
   setAside?: string;
 }
 
-export async function openProjectStore(opts: ProjectStoreOptions, hooks: { afterSettle?: () => Promise<void> } = {}): Promise<{ store: SqliteStore; location: ProjectLocation }> {
+export async function openProjectStore(opts: ProjectStoreOptions, hooks: MoveHooks & { afterSettle?: () => Promise<void> } = {}): Promise<{ store: SqliteStore; location: ProjectLocation }> {
   const location: ProjectLocation = locateCartonDb(opts);
   if (opts.readOnly) return { store: await openSqliteStore(location.dbPath, opts), location };
   const projectDir = path.join(opts.appDataDir ?? defaultAppDataDir(), "projects", projectKey(opts.projectId));
@@ -25,7 +25,7 @@ export async function openProjectStore(opts: ProjectStoreOptions, hooks: { after
   const { opened, setAside } = await settlePlacement(location.dbPath, location.inBundle ? inAppData : inBundle, path.join(projectDir, "placement.lock"), async () => {
     await hooks.afterSettle?.();
     return openSqliteStore(location.dbPath, opts);
-  });
+  }, undefined, hooks);
   if (setAside) location.setAside = setAside;
   return { store: opened, location };
 }

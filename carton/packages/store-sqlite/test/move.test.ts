@@ -346,3 +346,38 @@ test("a source without a file id (an export) gets one before it is moved, so its
   assert.match(copyOf.dbId, /^[0-9a-f]{16}$/, "an interrupted move of it could be recognised");
   await b.store.close();
 });
+
+test("a crash right after publishing an export's copy: the source's id was committed first, and recovery keeps later writes", async () => {
+  const p = project();
+  const elsewhere = await openSqliteStore(path.join(path.dirname(p.bundleDir), "elsewhere", "carton.db"));
+  await elsewhere.write(put(1));
+  await elsewhere.exportCopy(p.inBundle, []); // no _carton rows: no file id yet
+  await elsewhere.close();
+  p.startSyncing();
+  // A process moves it and dies between publishing the copy and marking the source.
+  const src = new URL("../src/index.ts", import.meta.url).href;
+  const code = `import { openProjectStore } from ${JSON.stringify(src)}; await openProjectStore(${JSON.stringify({ bundleDir: p.bundleDir, appDataDir: p.appDataDir, projectId: p.projectId })}, { afterPublish: () => process.exit(0) });`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "inherit"] });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+  const meta = (file: string, k: string) => {
+    const raw = new DatabaseSync(file, { readOnly: true });
+    try {
+      const row = raw.prepare(`SELECT v FROM "_carton" WHERE k = ?`).get(k) as { v: string } | undefined;
+      return row ? JSON.parse(row.v) : undefined;
+    } finally {
+      raw.close();
+    }
+  };
+  const sourceId = meta(p.inBundle, "dbId");
+  assert.match(sourceId, /^[0-9a-f]{16}$/, "the source's id survived the crash: it was committed before the copy");
+  assert.equal(meta(p.inAppData, "copyOf").dbId, sourceId, "and the published copy names it");
+  assert.equal(meta(p.inBundle, "movedTo"), undefined, "the move was never confirmed");
+  // The source is still the history: a write lands there before anyone reopens through openProjectStore.
+  const late = await openSqliteStore(p.inBundle);
+  await late.write(put(2));
+  await late.close();
+  const b = await openProjectStore(p);
+  assert.equal(b.store.path, p.inAppData);
+  assert.deepEqual(await seqs(b.store), [1, 2], "the unconfirmed copy was redone from the source, with its later write");
+  await b.store.close();
+});

@@ -62,15 +62,20 @@ const same = (a: string, b: string) => {
  * that settled must not be overtaken by a move before it has the file open. Returns `open`'s result, and the path a
  * foreign carton.db found at `target` was moved aside to, if any.
  */
-export async function settlePlacement<T>(target: string, other: string, lockFile: string, open: () => Promise<T>, waitMs = 10_000): Promise<{ opened: T; setAside?: string }> {
+/** Test-only points to stop at (a crash test exits the process there). */
+export interface MoveHooks {
+  afterPublish?: () => void | Promise<void>;
+}
+
+export async function settlePlacement<T>(target: string, other: string, lockFile: string, open: () => Promise<T>, waitMs = 10_000, hooks: MoveHooks = {}): Promise<{ opened: T; setAside?: string }> {
   return withLock(lockFile, waitMs, async () => {
     const setAside = setAsideIfForeign(target);
-    if (!same(target, other) && fs.existsSync(other)) await settle(target, other, waitMs);
+    if (!same(target, other) && fs.existsSync(other)) await settle(target, other, waitMs, hooks);
     return { opened: await open(), ...(setAside ? { setAside } : {}) };
   });
 }
 
-async function settle(target: string, other: string, waitMs: number): Promise<void> {
+async function settle(target: string, other: string, waitMs: number, hooks: MoveHooks): Promise<void> {
   // Nothing can fence a history Carton can't write (another process may still have it open and writing), so it is
   // never copied as if it were frozen.
   const unwritable = (e: unknown) => new PlacementConflictError(other, target, `This project's history is in a place Carton can't write (${(e as Error).message})`);
@@ -98,7 +103,7 @@ async function settle(target: string, other: string, waitMs: number): Promise<vo
     const t = fs.existsSync(target) ? inspect(target) : null;
     if (moved) {
       // Done before. If the copy has since vanished (deleted by hand), the history is still here: copy again.
-      if (!t) await copyAndMark(src, other, target);
+      if (!t) await copyAndMark(src, other, target, hooks);
       cleanUp = true;
       return;
     }
@@ -119,7 +124,7 @@ async function settle(target: string, other: string, waitMs: number): Promise<vo
       if (!interrupted && !stale) throw new PlacementConflictError(target, other);
       removeUnused(target); // an unconfirmed copy, or the old copy we're moving back over
     }
-    await copyAndMark(src, other, target);
+    await copyAndMark(src, other, target, hooks);
     cleanUp = true;
   } finally {
     if (src.isTransaction) src.exec("ROLLBACK");
@@ -165,9 +170,10 @@ async function begin(db: DatabaseSync, file: string, waitMs: number): Promise<vo
 
 // Steps 2-4 of the protocol; `src` holds the write lock on `from`, so the copy (made on a second connection, which
 // reads the last committed state) is exactly what the mark will vouch for.
-async function copyAndMark(src: DatabaseSync, from: string, to: string): Promise<void> {
+async function copyAndMark(src: DatabaseSync, from: string, to: string, hooks: MoveHooks): Promise<void> {
   const token = randomBytes(8).toString("hex");
   await copyInto(from, to, { path: path.resolve(from), token, ...(readMeta<string>(src, DB_ID) ? { dbId: readMeta<string>(src, DB_ID) } : {}) });
+  await hooks.afterPublish?.(); // between steps 3 and 4: where a crash leaves an unconfirmed copy
   src.exec(`CREATE TABLE IF NOT EXISTS main."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
   writeMeta(src, MOVED_TO, { path: path.resolve(to), token });
   src.exec("COMMIT");
