@@ -226,3 +226,65 @@ test("put with ifAbsent is one create-only PUT: an existing object stays, and it
   assert.deepEqual(await media.get("m/once", { offset: 0, length: 4 }), first.subarray(0, 4));
   assert.equal((await client.put("m/new", fill(7, 3), { ifAbsent: true })).size, 7);
 });
+
+// Round 4 finding 2: the media lock is per physical scope. A host whose store pauses the repair's delete of `prefix`.
+async function pausedRepair(name: string, prefix: string, teams?: Record<string, string>) {
+  const dir = scratch(name);
+  const inner = createFsBlobStore({ root: join(dir, "blobs"), durable: false });
+  let atDelete!: () => void, release!: () => void;
+  const reached = new Promise<void>((r) => (atDelete = r));
+  const gate = new Promise<void>((r) => (release = r));
+  const gated = new Proxy(inner, {
+    get(t, prop) {
+      if (prop === "delete")
+        return async (key: string) => {
+          if (key.startsWith(prefix)) {
+            atDelete();
+            await gate;
+          }
+          return t.delete(key);
+        };
+      const v = Reflect.get(t, prop);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as BlobStore;
+  const h = await startNodeHost({ dataDir: join(dir, "data"), auth, secret: SECRET, blobs: gated, durability: "normal", ...(teams ? { teamOf: (p: string) => teams[p] } : {}) });
+  hosts.push(h);
+  const client = async (projectId: string) =>
+    hostMediaBlobs({ origin: h.httpUrl, projectId, token: await auth.issue({ account: "o", credential: "o/dev", role: "editor", projectId, ttlMs: 3600_000 }) });
+  const p = await client("p"), q = await client("q");
+  const bytes = fill(LEAF_SIZE + 9, 7);
+  const m = await mediaHash(bytes, webCryptoHasher());
+  const key = mediaKey(m.hash);
+  await p.put(manifestKey(m.hash), m.bytes);
+  const bad = bytes.slice();
+  bad[3] ^= 0xff;
+  await p.put(key, bad);
+  const report = p.reportDamaged(key, 0);
+  await reached; // p's repair found the damage and holds the lock, about to delete
+  return { p, q, bytes, m, key, report, release };
+}
+const within = <T,>(ms: number, x: Promise<T>) => Promise.race([x.then(() => "done" as const), new Promise<"waiting">((ok) => setTimeout(() => ok("waiting"), ms).unref())]);
+
+test("a repair in one project doesn't hold up another project's write of the same hash: their stores are apart", async () => {
+  const { q, bytes, m, key, report, release } = await pausedRepair("media-lock-apart", "projects/p/media/m/");
+  try {
+    await q.put(manifestKey(m.hash), m.bytes);
+    assert.equal(await within(10_000, q.put(key, bytes)), "done", "q's write waited for p's repair");
+  } finally {
+    release();
+  }
+  assert.deepEqual(await report, { damaged: true, removed: true });
+  assert.deepEqual(await q.get(key, { offset: 0, length: 4 }), bytes.subarray(0, 4));
+});
+
+test("within a team a repair in one project holds a teammate's write of that object until it's done, so the good copy stands", async () => {
+  const { q, bytes, key, report, release } = await pausedRepair("media-lock-team", "teams/studio/media/m/", { p: "studio", q: "studio" });
+  const write = q.put(key, bytes);
+  // without one lock for the team, q's write finds a right-sized object and keeps it, then the repair deletes it
+  assert.equal(await within(1500, write), "waiting", "q's write went ahead during p's repair");
+  release();
+  assert.deepEqual(await report, { damaged: true, removed: true });
+  await write;
+  assert.deepEqual(await q.get(key, { offset: 0, length: 4 }), bytes.subarray(0, 4), "the teammate's good copy stands");
+});

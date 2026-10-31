@@ -69,8 +69,8 @@ async function client(fx: HostFixture, token: string): Promise<Client> {
 const rec = (id: string) => ({ id, name: "main", forkOf: null, owner: "alice", kind: "main", sequencer: { kind: "server", since: 0 } });
 
 // Shares a fresh branch through the protocol's own hand-off (`adopt`), as a client does.
-async function share(c: Client, branchId: string): Promise<void> {
-  c.conn.send({ type: "adopt", branchId, n: 0, stateHash: "", rows: [], rec: rec(branchId), doc0: HOST_SUITE_DOC, closure: [] } as unknown as sync.ClientMessage);
+async function share(c: Client, branchId: string, doc0: unknown = HOST_SUITE_DOC): Promise<void> {
+  c.conn.send({ type: "adopt", branchId, n: 0, stateHash: "", rows: [], rec: rec(branchId), doc0, closure: [] } as unknown as sync.ClientMessage);
   const m = await c.wait((m) => (m.type === "adopted" || m.type === "adoptError") && (m as { branchId?: string }).branchId === branchId, "adopted");
   assert.equal(m.type, "adopted", JSON.stringify(m));
 }
@@ -158,6 +158,32 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       const seen = (await bob.wait((m) => m.type === "changes", "fan-out")) as sync.ChangesMsg;
       assert.equal(seen.rows[0]!.id, id);
       assert.equal(seen.rows[0]!.seq, 1);
+    });
+
+    // A Durable Object's SQLite allows 5 terms in a compound SELECT and 100 bound variables (node:sqlite: 500 and
+    // 32766), so a statement built per id must stay within both on every host (web-demo REQ-3: a change touching
+    // more clips than one statement's terms was answered "too many terms in compound SELECT" and stayed pending).
+    test("a change touching 33 clips is sequenced, and a trim of all of them: every statement fits a Durable Object's SQLite", async () => {
+      const b = newBranch();
+      const c = await connect(await fx.token("editor"));
+      const items = Array.from({ length: 33 }, (_, i) => ({ id: `c${i}`, trackId: "V1", startTime: i * 5, endTime: i * 5 + 5, trimStart: 0, trimEnd: 5, opacity: 1 }));
+      await share(c, b, { tracks: HOST_SUITE_DOC.tracks, timelineItems: items });
+      await hello(c, b);
+      const rid = ridOf();
+      const change = (n: number, field: string, value: (it: (typeof items)[number]) => unknown, spans: boolean) => ({
+        id: `${rid}.${n}`, hash: "0".repeat(64), author: { kind: "human", id: "suite" }, branchId: b, base: { seq: n - 1, pending: [] },
+        ops: items.map((it) => ({ op: "set", path: ["timelineItems", it.id, field], value: value(it) })), intent: null, kinds: null, policy: "merge", at: Date.now(),
+        // a timing field also declares its record's group path (`#time`), as the engine does
+        paths: items.flatMap((it) => (spans ? [`timelineItems/${it.id}/${field}`, `timelineItems/${it.id}/#time`] : [`timelineItems/${it.id}/${field}`])),
+        reads: items.map((it) => `timelineItems/${it.id}`),
+        spans: spans ? items.map((it) => ({ track: "V1", lo: it.startTime, hi: it.endTime })) : [], trackOrder: [],
+      });
+      for (const [n, ch] of [[1, change(1, "name", (it) => `renamed ${it.id}`, false)], [2, change(2, "endTime", (it) => it.endTime - 1, true)]] as const) {
+        push(c, b, 1, [ch]);
+        const a = (await c.wait(ackOf(ch.id), `ack ${n}`)) as sync.AckMsg;
+        assert.equal(a.type, "ack", JSON.stringify(a));
+        assert.equal(a.seq, n);
+      }
     });
 
     test("one connection's messages are handled in order: 20 pipelined changes are acked 1..20", async () => {
