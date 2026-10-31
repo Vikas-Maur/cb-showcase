@@ -1,0 +1,17 @@
+{
+  "name": "@carton/media",
+  "version": "0.1.0",
+  "description": "Carton media: content ids, lazy hashing, tiers, resumable uploads, verified range reads, collab proxies",
+  "type": "module",
+  "license": "UNLICENSED",
+  "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./node": "./src/node/index.ts"
+  },
+  "files": ["src", "dist"],
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}
