@@ -20,7 +20,8 @@
 import { equalBytes } from "./bytes.ts";
 import type { LeafCache } from "./cache.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
-import { damagedKey, manifestKey, mediaKey } from "./keys.ts";
+import { reportDamage } from "./damage.ts";
+import { manifestKey, mediaKey } from "./keys.ts";
 import { decodeManifest, LEAF_SIZE, leafDigest, leafSpan, type Manifest } from "./manifest.ts";
 import { LeafMismatchError, type MediaStat, type RangeSource } from "./range-source.ts";
 
@@ -260,10 +261,7 @@ export class MediaReader implements RangeSource {
       this.#o.onEvent?.({ type: "mismatch", hash, leaf: i, handedOut: false });
     }
     this.#o.onEvent?.({ type: "repair-failed", hash, leaf: i });
-    if (this.#o.reportDamage !== false) {
-      const note = new TextEncoder().encode(JSON.stringify({ leaf: i, at: Date.now() }));
-      await this.#o.store.put(damagedKey(hash), note, { contentType: "application/json" }).catch(() => {});
-    }
+    if (this.#o.reportDamage !== false) await reportDamage(this.#o.store, hash, { leaf: i });
     throw new LeafMismatchError(hash, i);
   }
 

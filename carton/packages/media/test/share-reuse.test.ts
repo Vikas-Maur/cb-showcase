@@ -1,5 +1,6 @@
 // Reusing, taking over and repairing shared proxies (S5 review round, findings 4–8). No ffmpeg: a fake segmenter.
 import assert from "node:assert/strict";
+import { isDamaged } from "../src/damage.ts";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -100,7 +101,7 @@ test("a whole-object proxy reported damaged is made and uploaded again (finding 
   const r = await shareMedia({ ...o, proxyStreams: false, encoders: [enc] });
   assert.equal(encoded, true);
   assert.equal(r.record.proxy?.hash, m.hash);
-  assert.equal(store.objects.has(damagedKey(m.hash)), false, "repaired");
+  assert.equal(await isDamaged(store, m.hash), false, "repaired");
   const ok = await new MediaReader({ store, hasher: nodeHasher }).readVerified(m.hash, 0, m.size);
   assert.deepEqual([...ok], [...bytes]);
 });

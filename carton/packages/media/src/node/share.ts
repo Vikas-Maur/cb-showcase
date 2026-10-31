@@ -13,7 +13,8 @@
 import { readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { BlobStore, Hasher, ProxyEncoder } from "../contracts.ts";
-import { damagedKey, proxyPointerKey, type ProxyPointer } from "../keys.ts";
+import { isDamaged, reportDamage } from "../damage.ts";
+import { proxyPointerKey, type ProxyPointer } from "../keys.ts";
 import { claimProxyStream, newStreamId, ProxyStreamReader, ProxyStreamWriter, usableProxy } from "../stream.ts";
 import { MediaReader } from "../read.ts";
 import type { Manifest } from "../manifest.ts";
@@ -101,7 +102,7 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
 
   // Shared objects a reader reported damaged (bad/<hash>, e2e S5-5) count as not shared: they are planned again, and
   // their upload replaces the stored copy instead of deduping on it. A damaged proxy stream is made anew.
-  const reported = async (id: string | undefined) => id !== undefined && (await o.store.head(damagedKey(id)).catch(() => null)) !== null;
+  const reported = async (id: string | undefined) => id !== undefined && (await isDamaged(o.store, id).catch(() => false));
   // (The proxy is checked further down, through its pointer, once the record's hash is known.)
   if (record.proxy && record.hash === undefined && (await reported(record.proxy.stream ?? record.proxy.hash))) delete record.proxy;
   if (record.original === "shared" && (await reported(record.hash))) delete record.original;
@@ -356,5 +357,4 @@ async function proxyOf(o: ShareMediaOptions, p: ProxyPointer, profile: string, h
   return { stream: p.stream, size: end?.size, profile, encoder: p.encoder };
 }
 
-const giveUp = (store: ShareMediaOptions["store"], stream: string): Promise<unknown> =>
-  store.put(damagedKey(stream), new TextEncoder().encode(JSON.stringify({ unfinished: true, at: Date.now() })), { contentType: "application/json" }).catch(() => {});
+const giveUp = (store: ShareMediaOptions["store"], stream: string): Promise<unknown> => reportDamage(store, stream, { unfinished: true });

@@ -263,7 +263,7 @@ test("a whole-object proxy whose stored size is wrong is replaced (S5 review rou
   assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
 });
 
-test("checking a finished stream for damaged parts reads its end, not every entry; a takeover clears the old report (round 2, finding 4)", async () => {
+test("checking a finished stream for damage reads no segment entry; a takeover deletes nothing (round 2, finding 4)", async () => {
   const store = new CountingMemoryStore();
   const src = "ab".repeat(32);
   const a = await claimProxyStream(store, src, "p1", "libx264");
@@ -284,7 +284,7 @@ test("checking a finished stream for damaged parts reads its end, not every entr
   // Reported: taken over, and the old stream's report goes with it (nothing points at that stream now).
   await store.put(damagedKey(w.id), new Uint8Array([1]));
   assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
-  assert.equal(store.objects.has(damagedKey(w.id)), false);
+  assert.ok(store.objects.has(damagedKey(w.id)), "the old stream's report stays: nothing is deleted, nothing points at it");
 });
 
 const offlineDir = scratchDir("stream-offline");

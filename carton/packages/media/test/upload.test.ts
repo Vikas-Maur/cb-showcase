@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isDamaged, reportDamage } from "../src/damage.ts";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { equalBytes } from "../src/bytes.ts";
@@ -294,7 +295,7 @@ for (const size of [3 * MiB + 9, 10 * MiB + 9]) {
     const again = await uploadMedia(o);
     assert.equal(again.deduped, false, "not deduped on a damaged object");
     assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data), "replaced byte for byte");
-    assert.equal(mem.objects.has(damagedKey(manifest.hash)), false, "the report is cleared once replaced");
+    assert.equal(await isDamaged(mem, manifest.hash), false, "the report is cleared once replaced");
     const fresh = new MediaReader({ store: mem, hasher: nodeHasher });
     assert.ok(equalBytes(await fresh.readVerified(manifest.hash, 0, size), data), "a teammate reads it again");
     assert.equal((await uploadMedia(o)).deduped, true, "and the next upload dedups as usual");
@@ -347,7 +348,7 @@ test("a repair whose completion answer was lost still clears the damage report (
   const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good), partSize: LEAF_SIZE, retries: 0 };
   await uploadMedia(o);
   assert.ok(equalBytes((await store.get(key))!, good));
-  assert.equal(store.objects.has(damagedKey(manifest.hash)), false);
+  assert.equal(await isDamaged(store, manifest.hash), false);
   const again = await uploadMedia(o);
   assert.equal(again.bytesSent, 0, "deduped now");
 });
@@ -377,5 +378,61 @@ test("a repair that keeps the object's ETag (same bytes) and lost its completion
     };
   };
   await uploadMedia(o);
-  assert.equal(store.objects.has(damagedKey(manifest.hash)), false);
+  assert.equal(await isDamaged(store, manifest.hash), false);
+});
+
+/** A store with only put, get and HEAD (and multipart), as through a Carton host's HTTP API: no delete, no list. */
+function noDeleteStore(): CountingMemoryStore {
+  const store = new CountingMemoryStore();
+  store.delete = async () => assert.fail("delete: the host API has none");
+  store.list = async () => assert.fail("list: the host API has none");
+  return store;
+}
+
+test("repairs are recorded append-only: through a store without delete, a repaired object dedups again, and a new report counts again", async () => {
+  const store = noDeleteStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 51);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good) };
+  await uploadMedia(o);
+  const reader = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 });
+  // Damage, found by a reader: reported.
+  store.objects.get(mediaKey(manifest.hash))![3] ^= 255;
+  await assert.rejects(reader.readVerified(manifest.hash, 0, 10), LeafMismatchError);
+  assert.equal(await isDamaged(store, manifest.hash), true);
+  // The next upload replaces it and answers the report; the report itself stays.
+  assert.ok((await uploadMedia(o)).bytesSent > 0);
+  assert.equal(await isDamaged(store, manifest.hash), false);
+  assert.ok(store.objects.has(damagedKey(manifest.hash)), "nothing deleted");
+  assert.ok(equalBytes(await new MediaReader({ store, hasher: nodeHasher }).readVerified(manifest.hash, 0, good.length), good));
+  // Answered: the next upload dedups.
+  assert.equal((await uploadMedia(o)).bytesSent, 0);
+  // Damaged again later: a new report, which the old answer doesn't cover.
+  store.objects.get(mediaKey(manifest.hash))![7] ^= 255;
+  await assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).readVerified(manifest.hash, 0, 10), LeafMismatchError);
+  assert.equal(await isDamaged(store, manifest.hash), true);
+  assert.ok((await uploadMedia(o)).bytesSent > 0, "replaced again");
+  assert.equal(await isDamaged(store, manifest.hash), false);
+});
+
+test("a report written while a repair is running still counts after it (the repair answers only the report it saw)", async () => {
+  const store = noDeleteStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 52);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good) };
+  await uploadMedia(o);
+  await reportDamage(store, manifest.hash, { leaf: 0 });
+  const put = store.put.bind(store);
+  let reported = false;
+  store.put = async (k, d, opts) => {
+    // Another reader reports again while the replacement goes up.
+    if (k === mediaKey(manifest.hash) && !reported) {
+      reported = true;
+      await reportDamage(store, manifest.hash, { leaf: 1 });
+    }
+    return put(k, d, opts);
+  };
+  await uploadMedia(o);
+  assert.equal(reported, true);
+  assert.equal(await isDamaged(store, manifest.hash), true, "the later report isn't answered by this repair");
 });

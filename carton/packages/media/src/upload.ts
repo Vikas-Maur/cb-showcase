@@ -13,7 +13,8 @@
 
 import type { BlobStore, Hasher, MultipartUpload } from "./contracts.ts";
 import type { ByteSource } from "./hash.ts";
-import { damagedKey, manifestKey, mediaKey } from "./keys.ts";
+import { markRepaired, openReport } from "./damage.ts";
+import { manifestKey, mediaKey } from "./keys.ts";
 import { equalBytes } from "./bytes.ts";
 import { LEAF_SIZE, leafDigest, type Manifest } from "./manifest.ts";
 
@@ -239,7 +240,9 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
 
   const head = await withRetries(o, () => store.head(key));
   // A reader found leaves of the stored object that never verify (e2e S5-5): replace it rather than dedup on it.
-  const damaged = head !== null && (await withRetries(o, () => store.head(damagedKey(m.hash)))) !== null;
+  // A report a repair already answered (repaired/<hash>) doesn't count: reports are never deleted (damage.ts).
+  const report = head === null ? null : await withRetries(o, () => openReport(store, m.hash));
+  const damaged = report !== null;
   if (head && head.size === m.size && !damaged) {
     await ensureManifest(o);
     if (state) {
@@ -252,10 +255,10 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     return result;
   }
   // A different size at a content-addressed key, or a reported damage, means a broken object: the upload below
-  // replaces it, and the damage note goes once it has.
+  // replaces it, and once it has, the report is answered (repaired/<hash>; nothing is deleted).
   await ensureManifest(o);
   const repaired = async <T>(r: T): Promise<T> => {
-    if (damaged) await store.delete(damagedKey(m.hash)).catch(() => {});
+    if (report) await markRepaired(store, m.hash, report).catch(() => {});
     return r;
   };
 

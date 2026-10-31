@@ -19,9 +19,10 @@
 import { isMediaHash, toHex } from "./bytes.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
 import { bytesSource, hashSource } from "./hash.ts";
-import { damagedKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
+import { mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
 import type { MediaStat, RangeSource } from "./range-source.ts";
 import type { LeafCache } from "./cache.ts";
+import { isDamaged, reportDamage } from "./damage.ts";
 import type { MediaReader } from "./read.ts";
 import { uploadMedia, type UploadOptions } from "./upload.ts";
 
@@ -320,7 +321,7 @@ export class ProxyStreamReader {
 
   async #reportDamage(what: Record<string, unknown>): Promise<void> {
     if (this.#o.reportDamage === false) return;
-    await this.#o.store.put(damagedKey(this.id), utf8.encode(JSON.stringify({ ...what, at: Date.now() })), { contentType: "application/json" }).catch(() => {});
+    await reportDamage(this.#o.store, this.id, what);
   }
 
   async #bytes(part: StreamPart, signal?: AbortSignal): Promise<Uint8Array> {
@@ -520,7 +521,7 @@ export async function claimProxyStream(
   } catch (e) {
     // The claim may be ours, yet the caller won't know it and nothing will write the stream: report it, so the next
     // claim takes it over instead of waiting for it to go stale. (A stream id nobody points at costs nothing.)
-    await store.put(damagedKey((mine as { stream: string }).stream), utf8.encode(JSON.stringify({ unclaimed: true, at: now() })), { contentType: "application/json" }).catch(() => {});
+    await reportDamage(store, (mine as { stream: string }).stream, { unclaimed: true });
     throw e;
   }
   if (isMine(first)) return { claimed: true, pointer: mine };
@@ -530,20 +531,19 @@ export async function claimProxyStream(
   // Unreadable, abandoned or damaged: take it over. Two takers at once both write; the last one's pointer wins and the
   // other one's stream is simply never pointed at.
   await store.put(key, body, { contentType: "application/json" });
-  // The replaced stream's report did its job: nothing points at it now. (An object's report stays until an upload
-  // replaces the object: other media may share its bytes.)
-  if (there && "stream" in there) await store.delete(damagedKey(there.stream)).catch(() => {});
+  // The replaced stream's report stays (nothing is deleted, damage.ts): nothing points at that stream any more, and a
+  // stream id is never reused.
   return { claimed: true, pointer: mine };
 }
 
 async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, now: number): Promise<boolean> {
   if ("hash" in p) {
-    if ((await store.head(damagedKey(p.hash))) !== null) return true;
+    if (await isDamaged(store, p.hash)) return true;
     return (await store.head(mediaKey(p.hash)))?.size !== p.size;
   }
   // A damaged part is reported against its stream wherever it is read as part of one (play, the playlist's segment
   // URLs, a whole-stream read): one HEAD, no listing, so the check works through any store (e2e S5-7).
-  if ((await store.head(damagedKey(p.stream))) !== null) return true;
+  if (await isDamaged(store, p.stream)) return true;
   if ((await store.head(streamEndKey(p.stream))) !== null) return false;
   // Live if anything happened lately: the newest entry, or the claim itself.
   const newest = await newestEntry(store, p.stream);
