@@ -69,6 +69,15 @@ const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 // agents (§8).
 const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : parseActorId(id) ?? identify({ declared: id }));
 
+// Cards a commit raised, as a notice for its author in carton.db's notices table, where `cb conflicts`, the Stop hook
+// and the History panel read them (core keeps notices only for confirmed and pending commits).
+const keyOf = (a) => [a.kind, a.id, a.agentId].filter(Boolean).join("/");
+async function keepCards(lc, author, cards) {
+  const to = keyOf(author), at = Date.now();
+  const text = `${cards.length} of your edits clashed with a change made meanwhile; the other change was kept. Choose with cb conflicts / cb resolve, or in History.`;
+  await lc.store.write([{ table: "notices", key: [to, at, 0, Math.random().toString(16).slice(2, 10)], value: { to, kind: "late-conflict", text, cards, at } }]);
+}
+
 // ---------------------------------------------------------------- H1: one change per mutation
 async function commit({ bundlePath, base, doc, actor, meta }) {
   if (meta?.materialize) return { doc, status: "materialized" };
@@ -104,6 +113,9 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     await setRev(lc, out.stateUpdatedAt, head.ref);
     return { ...r, doc: out, merged: false };
   }
+  // A clash keeps head's value; the writer's side is a conflict card, kept as a notice for its author until it is
+  // resolved (`cb conflicts`, the History panel), never dropped.
+  if (r.status === "conflicts" && r.cards?.length) await keepCards(lc, actorOf(meta?.actor ?? actor), r.cards);
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
   const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
   await setRev(lc, out.stateUpdatedAt, head.ref);
@@ -125,7 +137,7 @@ async function headProject(bundlePath, current) {
 
 // ---------------------------------------------------------------- files: displace, then install
 const installs = new Map(); // target path → { files: DisplacedFiles, own, noLinks, timer }
-const SEEN_KEEP = 32;
+const SEEN_KEEP = 256;
 const seenFile = (file) => path.join(path.dirname(file), ".carton", "seen.json");
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const readSeen = (file) => { try { return JSON.parse(fs.readFileSync(seenFile(file), "utf8")); } catch { return {}; } };
@@ -140,34 +152,91 @@ const markSeen = (file, hash) => {
   fs.renameSync(tmp, seenFile(file));
 };
 
-async function install(tmp, file, seenStamp) {
-  // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
-  if (!(await open(path.dirname(file)))) return fs.promises.rename(tmp, file);
-  let s = installs.get(file);
-  if (!s) {
-    const bundle = path.dirname(file);
-    s = { files: new DisplacedFiles(path.join(bundle, ".carton", "displaced")), own: null, noLinks: !hardLinksWork(bundle), timer: null };
-    installs.set(file, s);
+// One install at a time per bundle, across processes (mkdir is atomic on NTFS too): the check that a file is still
+// head and its install happen together, so two writers can't leave an older state on disk after a newer one.
+async function withInstallLock(bundle, fn) {
+  const dir = path.join(bundle, ".carton", "install.lock"), t0 = Date.now();
+  for (;;) {
+    try { fs.mkdirSync(dir); break; } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+      // A holder that died leaves the folder: after 10 s it is taken over.
+      try { if (Date.now() - fs.statSync(dir).mtimeMs > 10_000) fs.rmSync(dir, { recursive: true, force: true }); } catch {}
+      if (Date.now() - t0 > 20_000) throw new Error("the install lock stayed held");
+      await new Promise((r) => setTimeout(r, 5));
+    }
   }
-  const bytes = fs.readFileSync(tmp);
-  const r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null });
-  markSeen(file, sha(bytes));
-  // The file the writer read (its stamp unchanged since), or one Carton wrote, isn't a foreign save.
-  const seen = new Set(readSeen(file)[path.basename(file)] ?? []);
-  const rest = r.displaced.filter((p, i) => {
-    const mine = (i === 0 && seenStamp && statStamp(p) === seenStamp) || seen.has(sha(fs.readFileSync(p)));
-    if (mine) fs.rmSync(p, { force: true });
-    return !mine;
+  try { return await fn(); } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+}
+// The rev a file being installed was written from: project.json's stateUpdatedAt, timeline.tsx's header.
+const revIn = (file, bytes) => {
+  const text = bytes.toString("utf8");
+  if (path.basename(file) === "project.json") { try { return JSON.parse(text).project?.stateUpdatedAt; } catch { return undefined; } }
+  const m = /^\s*\/\/\s*cardboard:rev\s+(\d+)\s*$/m.exec(text);
+  return m ? Number(m[1]) : undefined;
+};
+
+async function install(tmp, file, seenStamp) {
+  const bundle = path.dirname(file);
+  // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
+  const lc = await open(bundle);
+  if (!lc) return fs.promises.rename(tmp, file);
+  return withInstallLock(bundle, async () => {
+    const bytes = fs.readFileSync(tmp);
+    // A writer whose state is no longer head (another process committed and installed after it) doesn't install: the
+    // newer state is, or is about to be, on disk.
+    const ref = await refOf(lc, revIn(file, bytes));
+    if (ref) {
+      const head = (await lc.carton.head()).ref;
+      if (ref.branchId !== head.branchId || ref.seq < head.seq) return void fs.rmSync(tmp, { force: true });
+    }
+    let s = installs.get(file);
+    if (!s) {
+      s = { files: new DisplacedFiles(path.join(bundle, ".carton", "displaced")), own: null, noLinks: !hardLinksWork(bundle), timer: null, mine: new Set() };
+      installs.set(file, s);
+    }
+    sweep(file, s);
+    const r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null });
+    markSeen(file, sha(bytes));
+    // What was at the path is held, never deleted at once: the file the writer read (its stamp unchanged) or one
+    // Carton wrote goes only if its bytes and stamp are still the same after the hold. An in-place writer that opened
+    // it just before and writes after is caught then (P10 settle-2); anything else is a foreign save.
+    const seen = new Set(readSeen(file)[path.basename(file)] ?? []);
+    let foreign = false;
+    r.displaced.forEach((p, i) => {
+      s.mine.add(p);
+      const b = fs.readFileSync(p), st = statStamp(p);
+      const h = sha(b), mine = (i === 0 && seenStamp && st === seenStamp) || seen.has(h);
+      if (!mine) foreign = true;
+      // The file the writer read is known from now on, so a later process can sweep it if this one exits first.
+      else if (!seen.has(h)) markSeen(file, h);
+      s.files.hold([p], mine ? { bytes: b, stamp: st } : i === 0 ? s.own : null);
+    });
+    s.own = { bytes, stamp: statStamp(file) };
+    s.files.endRound();
+    if (!s.files.size) return;
+    // Review after the hold (never inside this write: applying a foreign timeline.tsx writes the project again). A
+    // foreign file keeps the process alive until it is applied, so a short cb call doesn't exit with it unapplied.
+    clearTimeout(s.timer);
+    s.timer = setTimeout(() => review(file, s).catch((e) => warnOnce("review:" + file, "review of displaced files failed: " + errText(e))), 300);
+    if (!foreign) s.timer.unref?.();
   });
-  s.files.hold(rest, s.own);
-  s.own = { bytes, stamp: statStamp(file) };
-  s.files.endRound();
-  if (!s.files.size) return;
-  // Review after the hold (never inside this write: applying a foreign timeline.tsx writes the project again). A
-  // foreign file keeps the process alive until it is applied, so a short cb call doesn't exit with it unapplied.
-  clearTimeout(s.timer);
-  s.timer = setTimeout(() => review(file, s).catch((e) => warnOnce("review:" + file, "review of displaced files failed: " + errText(e))), 300);
-  if (!rest.length) s.timer.unref?.();
+}
+
+// Files an earlier process displaced and exited before its hold ended: one still holding a state Carton wrote, untouched
+// for 10 s, goes; anything else stays for a person to look at (importing an old file now would revert newer changes).
+function sweep(file, s) {
+  const dir = path.join(path.dirname(file), ".carton", "displaced");
+  let names;
+  try { names = fs.readdirSync(dir); } catch { return; }
+  const seen = new Set(readSeen(file)[path.basename(file)] ?? []), now = Date.now();
+  for (const n of names) {
+    const p = path.join(dir, n);
+    if (s.mine.has(p)) continue;
+    try {
+      const st = fs.statSync(p);
+      if (now - st.mtimeMs > 10_000 && seen.has(sha(fs.readFileSync(p)))) fs.rmSync(p, { force: true });
+    } catch {}
+  }
 }
 
 // A displaced file Carton didn't write is someone's save: a project.json is imported as an outside change, a
@@ -286,7 +355,7 @@ export const cardboard14 = {
         const lc = await lcOf(projectId);
         if (!lc) return { status: "unavailable" };
         const r = await lc.write({ kind: "undo", group: localGroup() }, { actor: actorOf("person") });
-        await materializeIn(library, projectId);
+        if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
         return r;
       },
       redo: async () => ({ status: "unavailable" }),
@@ -298,7 +367,17 @@ export const cardboard14 = {
           const lc = await lcOf(projectId);
           if (!lc) return { status: "unavailable" };
           const handle = fromCarton(lc.carton, { me: actorOf("person") });
-          s = serveUi(handle.ui ?? handle, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
+          const ui = handle.ui ?? handle;
+          // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
+          for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
+            const f = ui[m];
+            if (typeof f === "function") ui[m] = async (...a) => {
+              const r = await f.apply(ui, a);
+              if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
+              return r;
+            };
+          }
+          s = serveUi(ui, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
           servers.set(client, s);
         }
         s.receive(message);
@@ -312,9 +391,28 @@ export const cardboard14 = {
 async function context(target, as, after) {
   const lc = await open(target.bundlePath, { projectId: target.id });
   if (!lc) throw new Error(`History isn't available for ${path.basename(target.bundlePath)} yet`);
+  // A 1.4.0 rev (`cb undo <rev>`, the number `cb history` printed before Carton, a timeline header) is a ref the rev
+  // map knows; core has no state for a bare timestamp.
+  const ref = async (x) => {
+    if (typeof x !== "string" && typeof x !== "number") return x;
+    if (!/^\d{13}$/.test(String(x))) return x;
+    const r = await refOf(lc, Number(x));
+    return r ? `${r.branchId}@${r.seq}` : x;
+  };
+  const REFS = new Set(["checkout", "resolve", "diff", "shots", "restore", "name", "preview", "fold", "foldSome"]);
+  const carton = new Proxy(lc.carton, {
+    get(t, k) {
+      const v = Reflect.get(t, k, t);
+      if (typeof v !== "function") return v;
+      if (k === "fork") return async (name, o) => v.call(t, name, o?.from !== undefined ? { ...o, from: await ref(o.from) } : o);
+      if (!REFS.has(k)) return v.bind(t);
+      return async (...a) => v.apply(t, await Promise.all(a.map((x, i) => (i < 2 ? ref(x) : x))));
+    },
+  });
   const project = {
-    carton: lc.carton,
+    carton,
     async write(op, o) {
+      for (const k of ["ref", "from"]) if (op && op[k] !== undefined) op = { ...op, [k]: await ref(op[k]) };
       const r = await lc.write(op, o);
       if (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts") await after(target);
       return r;
@@ -327,5 +425,7 @@ async function context(target, as, after) {
 async function materializeIn(library, projectId) {
   const current = await library.projects.read(projectId);
   const next = await headProject(library.projects.bundlePathFor(projectId), current);
-  if (next) await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name"], carton: { materialize: true } });
+  if (!next) return false;
+  await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name"], carton: { materialize: true } });
+  return true;
 }

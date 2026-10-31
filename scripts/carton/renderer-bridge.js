@@ -52,10 +52,15 @@ module.exports = String.raw`window.__carton = (() => {
         return { adopted: false, timeline: undefined };
       }
       if (st.cartonBase != null && ev.stateUpdatedAt != null && ev.stateUpdatedAt <= st.cartonBase) return { adopted: false, timeline: undefined };
-      // An armed save goes first. If the person keeps editing meanwhile, the next one goes too.
-      for (let i = 0; i < 5 && store.armed(); i++) await store.flush();
-      const doc = await host.fetch(ev.id);
-      if (!doc) return null;
+      // An armed save goes first. If the person edits while it or the read is in flight, that edit's save goes too and
+      // head is read again: the adopt below runs only with nothing unsaved, with no await between the check and it.
+      let doc = null;
+      for (let i = 0; i < 20; i++) {
+        while (store.armed()) await store.flush();
+        doc = await host.fetch(ev.id);
+        if (!store.armed()) break;
+      }
+      if (!doc || store.armed()) return { adopted: false, timeline: undefined };
       const project = host.deserialize(doc), list = host.projects.list();
       host.projects.replace(list.map((p) => (p.id === ev.id ? project : p)));
       const t = timelineOf(project);

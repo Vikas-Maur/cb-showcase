@@ -107,3 +107,15 @@ test("the History panel's calls reach main with their arguments as given", async
   await t.c.call("ui", [{ projectId: "p1", client: "c", message: { t: "hello" } }]);
   assert.deepEqual(t.calls.at(-1), ["carton:call", "ui", { projectId: "p1", client: "c", message: { t: "hello" } }]);
 });
+
+test("an edit made while head is being read is saved first, and only then is head adopted", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let reads = 0;
+  const fetch = t.host.fetch;
+  // The person edits while the first read is in flight.
+  t.host.fetch = async (id) => { if (reads++ === 0) t.setArmed(true); return fetch(id); };
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 200, carton: true });
+  assert.equal(reads, 2);
+  assert.deepEqual(t.log.map((l) => l[0]), ["flush", "replace", "adopt"]);
+});

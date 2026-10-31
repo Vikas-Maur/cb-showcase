@@ -23,6 +23,23 @@ const [workerFile, root] = process.argv.slice(2);
   const final = await call("projects.read", p.id);
   out.after = final.timelineItems.find((i) => i.type === "text").fontSize;
   if (lossy) out.video = final.timelineItems.find((i) => i.type === "video");
+  const bundlePath = (await call("projects.bundleInfo", p.id)).bundlePath;
+  const text = (d) => d.timelineItems.find((i) => i.type === "text");
+  if (process.env.STALE === "1") {
+    // A GUI save made on the version read at the start: its size clashes with the agent's 160 since. Head keeps 160,
+    // and the person's 170 is a card kept for the person.
+    const stale = doc.timelineItems.map((it) => (it.type === "text" ? { ...it, fontSize: 170 } : it));
+    await call("projects.updateScoped", { ...doc, timelineItems: stale, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
+    out.stale = text(await call("projects.read", p.id)).fontSize;
+    out.cards = (await call("carton.notices", { bundlePath, actor: "person" })).flatMap((n) => n.cards ?? []).length;
+  }
+  if (process.env.UNDO === "1") {
+    // ⌘Z: the person's last change is undone at head, written into project.json, and announced to the pages.
+    const before = events.length;
+    out.undo = (await call("carton.undo", { projectId: p.id })).status;
+    out.undone = text(await call("projects.read", p.id)).fontSize;
+    out.announced = events.slice(before).some((e) => e.change?.kind === "changed");
+  }
   console.log(JSON.stringify(out));
   process.exit(0);
 })().catch((e) => { console.error(e); process.exit(1); });

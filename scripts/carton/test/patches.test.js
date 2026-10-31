@@ -194,8 +194,15 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   fs.writeFileSync(path.join(b, "timeline.tsx"), fs.readFileSync(path.join(b, "timeline.tsx"), "utf8").replace(/fontSize=\{\d+\}/, "fontSize={77}"));
   run(null, "project", "rename", "Demo", "Demo cut");
   assert.equal(textId().fontSize, 77);
-  const left = fs.existsSync(path.join(b, ".carton", "displaced")) ? fs.readdirSync(path.join(b, ".carton", "displaced")) : [];
-  assert.deepEqual(left, []);
+  // Nothing foreign is left aside: anything still in .carton/displaced is a state Carton wrote, waiting out its hold.
+  const seen = new Set(Object.values(JSON.parse(fs.readFileSync(path.join(b, ".carton", "seen.json"), "utf8"))).flat());
+  const dir = path.join(b, ".carton", "displaced");
+  for (const n of fs.existsSync(dir) ? fs.readdirSync(dir) : []) assert.ok(seen.has(require("crypto").createHash("sha256").update(fs.readFileSync(path.join(dir, n))).digest("hex")), "foreign file left: " + n);
+  // cb undo <rev> with a 1.4.0 rev (as cb history printed before Carton, or a timeline header) reaches that version.
+  const header = Number(/cardboard:rev (\d+)/.exec(fs.readFileSync(path.join(b, "timeline.tsx"), "utf8"))[1]);
+  assert.ok(header > 1e12);
+  const undoRev = cb(carton.cli, root, ["undo", "Demo cut", String(header)], real());
+  assert.equal(undoRev.code, 0, undoRev.out);
   // A GUI save through the real worker: the editor's lossy serializer dropped the clip's autoReframe and rounded its
   // times, but only the person's edit lands; Carton off (1.4.0) loses autoReframe (B10).
   const gui = (name, extra) => {
@@ -207,8 +214,11 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
     assert.equal(g.status, 0, g.stderr);
     return JSON.parse(g.stdout.trim().split("\n").pop());
   };
-  const on = gui("on", real()), off = gui("off", { CARDBOARD_CARTON: "0" });
+  const on = gui("on", { ...real(), STALE: "1", UNDO: "1" }), off = gui("off", { CARDBOARD_CARTON: "0" });
   assert.equal(on.guiSave, 150);
+  // A stale GUI save's clash keeps head (160) and a card for the person; ⌘Z then reaches project.json and the pages.
+  assert.deepEqual([on.stale, on.cards > 0], [160, true], JSON.stringify(on));
+  assert.deepEqual([on.undo !== "unavailable", on.announced], [true, true], JSON.stringify(on));
   assert.equal(on.video.autoReframe, true, JSON.stringify(on.video));
   assert.equal(off.video.autoReframe, undefined);
   // Four agents at once on different titles: none loses its last edit (B1).

@@ -98,7 +98,7 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     merge3: (base, current, file, opts, rn) => (carton() ? carton().merge3({ base, current, file, prefer: opts?.prefer, rn }) : rn(base, current, file, opts)),
     // The apply's result gains carton: {status, ref, conflicts} when its write was committed; nothing when history
     // is off for the project.
-    status: (id) => { const r = last.get(id); return r && r.status !== "off" ? { carton: { status: r.status, ref: r.ref, conflicts: r.conflicts?.length ?? 0 } } : {}; },
+    status: (id) => { const r = last.get(id); return r && r.status !== "off" && r.status !== "materialized" ? { carton: { status: r.status, ref: r.ref, conflicts: r.cards?.length ?? 0 } } : {}; },
     // Runs fn with every write it starts attributed to who.
     as: (who, fn) => acting.run(who, fn),
     // H8 (worker only): the worker's carton RPC namespace, and who the worker's own RPC writers are. A full project
