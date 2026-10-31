@@ -671,7 +671,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           sig: cardSig(card),
         },
       });
+      // A rebase's cards (an edit made offline meeting a teammate's) don't say whose edit is at head: Credits does
+      if (!by) void nameOtherSide(id, card, cut);
     }
+    publishConflicts();
+  };
+  const nameOtherSide = async (id: string, card: ConflictCard, cut: string) => {
+    const segs = splitPathKey(card.path);
+    const record = schema.collections[segs[0] ?? ""] ? segs.slice(0, 2) : segs.slice(0, 1);
+    const who = await carton.credits(record, { cut }).catch(() => null);
+    const e = cardEntries.get(id);
+    if (!who || !e || disposed) return;
+    e.conflict = { ...e.conflict, theirs: { ...e.conflict.theirs, author: ui(who) } };
     publishConflicts();
   };
 
