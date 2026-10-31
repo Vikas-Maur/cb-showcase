@@ -2,7 +2,7 @@
 // headless helper: carton.db through store-sqlite, Carton with the real Cardboard adapter, the cardboard materializer
 // watching the bundle (project.json, the shared timeline.tsx, per-agent views and their `.status` sidecars), and, when
 // `sync` is configured, the sync client to a real sequencer host (server-node or the Worker under wrangler dev).
-//   config: { projectDir, projectId, codec?: "json" | "cli", sync?: { url, tokenFile }, remoteRewriteMs? }
+//   config: { projectDir, projectId, codec?: "json" | "cli", sync?: { url, tokenFile }, remoteRewriteMs?, freezeIdleMs? }
 // On a first open the project is imported as `main@1` (§16 migration) and the files on disk are adopted as that state.
 // Requests with an `e2e` field are the test's hands on the app (a GUI save, a status read); everything else is a `cb`
 // write, served exactly as the app serves one.
@@ -50,6 +50,7 @@ export async function createHolderEngine({ dbPath, config }: HelperFactoryOption
     host: cardboardFilesHost,
     codec: await codecFor(config.codec),
     ...(config.remoteRewriteMs !== undefined ? { remoteRewriteMs: Number(config.remoteRewriteMs) } : {}),
+    ...(config.freezeIdleMs !== undefined ? { freezeIdleMs: Number(config.freezeIdleMs) } : {}),
   });
   if (fresh) await mz.adoptCurrentFiles();
   await mz.start();
