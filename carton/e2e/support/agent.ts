@@ -9,6 +9,7 @@
 //   agent <bundle> <projectId> <json: {steps, view?, statusMs?, noRetry?, waitGo?}>  (waitGo: after printing, wait for a
 //   line on stdin before editing)
 // A step: {op: "insert", like: <item name>, id, name, set: {...}} | {op: "set", name, set: {...}} | {op: "remove", name}
+// (those three read the JSON codec's body) | {op: "text", find, replace} (any codec, Cardboard's JSX included)
 // Prints {actor, view, results: [status sidecar per step]}.
 import { readFileSync, writeFileSync } from "node:fs";
 import { renameRetry } from "./env.ts";
@@ -53,6 +54,13 @@ const readStatus = () => { try { return JSON.parse(readFileSync(statusFile, "utf
 const parse = (text: string) => { const i = text.indexOf("\n{"); return { head: text.slice(0, i + 1), body: JSON.parse(text.slice(i + 1)) }; };
 
 for (const step of cfg.steps) {
+  if (step.op === "text") {
+    // an edit of the file's text as an agent's Edit tool makes it (any codec: Cardboard's own JSX too)
+    const text = readFileSync(file, "utf8");
+    if (!text.includes(step.find)) throw new Error(`"${step.find}" isn't in my view`);
+    await save(text.replace(step.find, step.replace));
+    continue;
+  }
   const { head, body } = parse(readFileSync(file, "utf8"));
   const list = body.timelineItems as any[];
   if (step.op === "insert") {
@@ -66,12 +74,17 @@ for (const step of cfg.steps) {
   } else if (step.op === "remove") {
     body.timelineItems = list.filter((i) => i.name !== step.name);
   }
+  await save(head + JSON.stringify(body, null, 1) + "\n");
+}
+
+/** Saves the view (temp file + rename) and waits for the materializer's sidecar for this save. */
+async function save(text: string): Promise<void> {
   const before = readStatus();
   const savedAt = Date.now();
   const tmp = `${file}.${process.pid}.tmp`;
-  writeFileSync(tmp, head + JSON.stringify(body, null, 1) + "\n");
+  writeFileSync(tmp, text);
   renameRetry(tmp, file);
-  // wait for the materializer to apply this save: a sidecar written after it, for a change other than the last
+  // a sidecar written after the save, for a change other than the last
   const end = Date.now() + (cfg.statusMs ?? 30_000);
   let st: any = null;
   for (;;) {

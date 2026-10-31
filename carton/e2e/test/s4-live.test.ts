@@ -43,7 +43,10 @@ for (const kind of ["node", "cloudflare"] as const) {
     assert.equal(pend.status, "pending", JSON.stringify(pend));
     t.diagnostic(JSON.stringify({ offlineAnswerMs: Date.now() - t0 }));
     await gui(b.app, SAMPLE.clipFast, "name", "Clip A fast (Bob, offline)");
-    await until(async () => /^Offline: 2 edits waiting$/.test((await state(b.app)).sync?.label ?? ""), 20_000, "B's status: Offline: 2 edits waiting");
+    // a second cb write while offline, on a field nobody else touches: pending now, confirmed after the rejoin
+    const pend2 = await cbWrite(b.m, { kind: "commit", ops: [setOp("timelineItems", id(SAMPLE.badge), "zIndex", 4)] }, { actor: sub });
+    assert.equal(pend2.status, "pending", JSON.stringify(pend2));
+    await until(async () => /^Offline: 3 edits waiting$/.test((await state(b.app)).sync?.label ?? ""), 20_000, "B's status: Offline: 3 edits waiting");
     await gui(a.app, SAMPLE.clipA, "opacity", 0.8);
     await until(() => itemNamed(a.m, SAMPLE.clipA)?.opacity === 0.8, 20_000, "A's clashing edit");
     const aOther = await cbWrite(a.m, { kind: "commit", ops: [setOp("timelineItems", id(SAMPLE.tone), "volume", 55)] }, { actor: "codex/alice-agent" });
@@ -72,8 +75,14 @@ for (const kind of ["node", "cloudflare"] as const) {
       assert.equal((await cbOk(s.m, ["credits", "Clip A fast (Bob, offline)"])).by.id, "human:me", "B's offline GUI edit is the person's");
       assert.equal((await cbOk(s.m, ["credits", SAMPLE.tone])).by.id, "codex/alice-agent");
     }
+    // the id cb answered `pending` with is the change the server confirmed: on A's history, by its author
+    const onA = (await cbOk(a.m, ["history", "--limit", "100"])).versions.find((v: any) => v.change === pend2.id);
+    assert.equal(onA?.by?.id, sub, `the pending change ${pend2.id}, confirmed and attributed: ${JSON.stringify(onA)}`);
     const rows = await host.rows(a.m.projectId);
-    if (rows) assert.equal(new Set(rows.map((r) => r.id)).size, rows.length, "no change id twice on the server");
+    if (rows) {
+      assert.equal(new Set(rows.map((r) => r.id)).size, rows.length, "no change id twice on the server");
+      assert.equal(rows.filter((r) => r.id === pend2.id).length, 1);
+    }
 
     // --- the late conflict reaches the subagent that caused it: once through SubagentStop, and in cb conflicts
     const hook = (active: boolean) => runOnce("hook stop", [CB_BIN, "hook", "stop", "--project", b.m.bundle], {
