@@ -3,6 +3,9 @@
 //     app's handle had loaded the store, the app saw the row and skipped its own, and its handle (core doesn't reload
 //     exports another process wrote) sent `.cbproj`s without that version: a copy folded from the empty root.
 //   - #2: an export of the empty root, made before the import landed, counted as the mark.
+//   Since core made the import a lineage point itself (request 8, `1423f0d`) there is no mark: #1 and #2 check that the
+//   app's `.cbproj` carries the starting version and a copy folds cleanly all the same. Request 9 (`16aa326`): a handle
+//   takes in exports another process made before it writes its own `.cbproj`.
 //   - #3: a switch the holder served whose materializer call failed: the follower dropped what it owed (the handle had
 //     left that cut) and nothing told the materializer again (the holder's own writes never move its stamp).
 import { test } from "node:test";
@@ -35,7 +38,7 @@ async function clone(a: LocalCarton, projectId: string): Promise<LocalCarton> {
   return openLocal(opts(p, "Bob"));
 }
 
-test("SG3-1: the app's handle carries the starting version in its .cbproj though a `cb` marked it while the app opened", async () => {
+test("SG3-1: the app's handle carries the starting version (the import) in its .cbproj though a `cb` opened the project while the app did", async () => {
   const p = project("sg3-concurrent");
   const original = Carton.open;
   let loaded!: () => void, release!: () => void;
@@ -48,7 +51,7 @@ test("SG3-1: the app's handle carries the starting version in its .cbproj though
   }) as typeof Carton.open;
   let a: LocalCarton | undefined, b: LocalCarton | undefined;
   try {
-    // the app creates the project; its handle has loaded the store when a `cb` opens it (and marks it)
+    // the app creates the project; its handle has loaded the store when a `cb` opens it
     const opening = openLocal({ ...opts(p, "Alice"), init: { doc: doc0() } });
     await isLoaded;
     const cb = await openLocal(opts(p, "CLI"));
@@ -71,7 +74,7 @@ test("SG3-1: the app's handle carries the starting version in its .cbproj though
   }
 });
 
-test("SG3-2: an export of the empty root made before the import landed is not the mark: the starting version is marked, a copy folds cleanly", async () => {
+test("SG3-2: an export of the empty root made before the import landed: the .cbproj carries the starting version all the same, a copy folds cleanly", async () => {
   const p = project("sg3-root");
   const { store } = await openProjectStore({ bundleDir: p.dir, projectId: p.projectId, appDataDir: p.dataDir });
   const raw = await Carton.open({ adapter, store, actor, init: { doc: { tracks: [], timelineItems: [] }, projectId: p.projectId, asChange: false } });
@@ -79,16 +82,18 @@ test("SG3-2: an export of the empty root made before the import landed is not th
   await raw.exportShallow({ to: "someone, before the import" });
   await raw.close();
   await store.close();
-  // the next open with init finishes the import (core, request 7), then marks it
+  // the next open with init finishes the import (core, request 7); it writes no export row of its own
   const a = await openLocal({ ...opts(p, "Alice"), init: { doc: doc0() } });
   let b: LocalCarton | undefined;
   try {
-    const marks = (await a.store.range("meta", { prefix: ["export"] })).map((r) => String(r.key[1])).sort();
-    assert.deepEqual(marks, [`${cut}@0`, `${cut}@1`]);
+    const rows = (await a.store.range("meta", { prefix: ["export"] })).map((r) => String(r.key[1])).sort();
+    assert.deepEqual(rows, [`${cut}@0`], "only the export made before the import");
     b = await clone(a, p.projectId);
     assert.equal((await a.write({ kind: "commit", ops: [set("c1", "opacity", 0.7)] })).status, "confirmed");
     assert.equal((await b.write({ kind: "commit", ops: [set("c2", "opacity", 0.4)] })).status, "confirmed");
-    const r = await bringInTheirChanges(a.carton as never, { shallow: await b.carton.exportShallow({ to: "Alice" }) });
+    const theirs = await b.carton.exportShallow({ to: "Alice" });
+    assert.ok(theirs.nodes.some((n) => n.seq === 1), `the starting version is in the copy's .cbproj: ${JSON.stringify(theirs.nodes.map((n) => n.seq))}`);
+    const r = await bringInTheirChanges(a.carton as never, { shallow: theirs });
     assert.equal((r as { fold?: { status: string } }).fold?.status, "confirmed", JSON.stringify(r));
   } finally {
     await b?.close();
@@ -132,7 +137,7 @@ test("SG3-3: a served switch whose materializer call failed is told again at the
   }
 });
 
-test("request 9: a handle's .cbproj carries a version another process exported after this handle loaded", { todo: "foundation-core request 9 (local-cli notes)" }, async () => {
+test("request 9: a handle's .cbproj carries a version another process exported after this handle loaded", async () => {
   const path = join(mkdtempSync(join(scratch(), "sg3-req9-")), "carton.db");
   const s = await openSqliteStore(path), os = await openSqliteStore(path);
   // the app's handle, open all along
