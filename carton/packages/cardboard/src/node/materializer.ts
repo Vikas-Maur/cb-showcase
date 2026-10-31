@@ -253,10 +253,15 @@ type Overlay = { id: string; envelope: Record<string, unknown>; mtimeNs?: string
 type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null; viewGen?: number };
 /** `fromDisplaced`: from `.carton/displaced`; `viewGen`: the view's print generation the displaced file was moved off in. */
 type ApplyOptions = { fromDisplaced?: boolean; viewGen?: number };
-/** A view print replaced at a save's commit (`["reprinted", view, nonce]`): `hash` is that save's file. */
+/**
+ * A view print replaced at a save's commit (`["reprinted", view, nonce]`): `hash` is that save's file, `change` its
+ * change and `gen` its print generation, as the view row records them while it is the view's latest save.
+ */
 interface Replaced {
   hash: string;
   at: number;
+  change: string | null;
+  gen: number;
 }
 type Origin = { rel: string; mtimeNs: bigint; viewGen?: number };
 
@@ -286,6 +291,8 @@ const revOf = (body: string): Rev | null => findRev(REV_PREFIX + body)?.rev ?? n
  * to what was already confirmed, returns the seq it found); its own change is skipped by id. Pending: no bound.
  */
 const upTo = (res: SaveResult): number | undefined => (res.seq === undefined ? undefined : res.seq + 1);
+/** Whether a view save of print generation `gen` shows in the sidecar: no save of a later print does (round 18 #2). */
+const shows = (row: ViewRow, gen: number): boolean => row.savedGen === undefined || gen >= row.savedGen;
 const isStateUnknown = (e: unknown): boolean => (e as { code?: string })?.code === "STATE_UNKNOWN" || /state unknown/i.test((e as Error)?.message ?? "");
 
 export class Materializer {
@@ -767,8 +774,9 @@ export class Materializer {
 
   /**
    * A view whose save repeated an edit of a change its print didn't hold is printed again at the save's own commit (see
-   * `repeatsHidden`), with a new nonce: its next save's base is that exact state. The same print generation, sidecar and
-   * latest change: a late update for this save still reaches the sidecar. An agent's edit after it re-reads the file.
+   * `repeatsHidden`), with a new nonce: its next save's base is that exact state. The same sidecar and latest change: a
+   * late update for this save still reaches the sidecar. A new print generation: a save displaced by its install (written
+   * on the replaced print) is older than any save on the reprint (round 19 #1). An agent's edit after it re-reads the file.
    * A later save written on the print it replaces (the agent's own buffer, or a save landing while this renders, which
    * the install displaces) is refused "state unknown: re-print": no base describes it. Its saved content holds part of a
    * change it never saw whole, so taking it as seen loses the rest without a card (round 17 #1), and taking the print's
@@ -781,8 +789,9 @@ export class Materializer {
     const nonce = printNonce();
     const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
     const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
-    await this.install(viewPath(view), text, row.printGen ?? 0);
-    Object.assign(row, { header, nonce, last: null });
+    const gen = row.printGen ?? 0;
+    await this.install(viewPath(view), text, gen);
+    Object.assign(row, { header, nonce, last: null, printGen: gen + 1 });
     await this.engine.putMeta(["view", view], row);
   }
 
@@ -1252,7 +1261,8 @@ export class Materializer {
         // (a file from an unknown print, recovered after a restart, counts as the latest)
         const name = viewName(d.rel);
         const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
-        if (name && row && (d.viewGen === undefined || d.viewGen === (row.printGen ?? 0))) await this.failView(name, row, { status: "error", error: text }, d.viewGen);
+        const gen = d.viewGen ?? row?.printGen ?? 0;
+        if (name && row && shows(row, gen)) await this.failView(name, row, { status: "error", error: text }, gen);
         // only now: if the notice or the refusal failed (and threw), the next review reports it again
         this.reportedPartials.add(d.path);
       }
@@ -1317,19 +1327,22 @@ export class Materializer {
     // print, still finishes there (R7-02); an older one never replaces a newer save's outcome or stops its late updates
     // (round 18 #2). A file of unknown generation (not displaced, or recovered after a restart) counts as the latest.
     const fileGen = o.viewGen ?? row?.printGen ?? 0;
-    const current = !row || row.savedGen === undefined || fileGen >= row.savedGen;
+    const current = !row || shows(row, fileGen);
     const viewFailed = async (s: Partial<StatusBody> & { status: StatusBody["status"] }) => {
       if (name && row && current) await this.failView(name, row, s, fileGen);
     };
     const rev = rel === PROJECT_FILE ? null : (findRev(text)?.rev ?? null);
     // a save already committed by an earlier attempt of this same file (a failure, or a crash, after its commit) is
     // finished below from its recorded result, even though its content now equals head, or its print was replaced since
+    // (this file, or its bytes written again while that save is unfinished: round 19 #3)
+    const gen = sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
     const earlier = await this.engine.getMeta<Attempt>(["attempt", rel]);
-    const resumed = !!earlier && earlier.gen === sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
-    // written on a print replaced at a save's commit (see reprintView): refused, unless it is that save itself (its bytes
-    // written again, or finished from its attempt; round 18 #1)
+    const resumed = !!earlier && (earlier.gen === gen || (!!earlier.result && earlier.hash === hash));
+    // written on a print replaced at a save's commit (see reprintView): refused, unless it is that save itself, finished
+    // from its attempt, or its bytes written again while it is still the view's latest save (round 18 #1; after a later
+    // save, restoring it is a save on the replaced print like any other: round 19 #4)
     const replaced = name && rev?.kind === "carton" && rev.nonce && !resumed ? await this.engine.getMeta<Replaced>(["reprinted", name, rev.nonce]) : undefined;
-    if (replaced && replaced.hash === hash) {
+    if (replaced && replaced.hash === hash && row && row.lastChange === replaced.change && row.savedGen === replaced.gen) {
       if (!o.fromDisplaced) ps.last = hash;
       if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
       await this.saveState(rel);
@@ -1413,14 +1426,16 @@ export class Materializer {
     // A retry of this same save after a failure below (or a crash) must not commit again: the engine would confirm it
     // as empty, without the change's id that a view's causal past and the freeze view need. So the save records its
     // change id before committing, and its result right after; a retry commits with the same id (dedup by id) or reuses
-    // the result. The slot is per path and bound to the file generation and the base, so it never answers for another save.
+    // the result. The slot is per path: with a result, it finishes any file with that content (that save); without one, it
+    // is bound to the file generation and the base, so it never answers for another save.
     const attemptKey = ["attempt", rel] as const;
-    const gen = sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
     const baseKey = "baseDoc" in base ? `held:${base.baseSeq}:${base.causal.join(",")}:${row?.last?.contentHash ?? ""}` : base.kind === "carton" ? `ref:${base.ref} b:${base.branch8 ?? ""}` : `legacy:${base.rev}`;
     let slot = await this.engine.getMeta<Attempt>(attemptKey);
-    // finishing a save stored before a failure (or crash): its view row may already name the save itself as the base
-    const finishing = !!slot?.result && slot.gen === gen && slot.hash === hash && row?.last?.contentHash === hash;
-    if (!slot || slot.gen !== gen || (slot.base !== baseKey && !finishing)) {
+    // finishing a save stored before a failure (or crash): its result is this content's commit, whatever base the lookup
+    // finds now (the view row may already name the save itself as the base, or a reprint may have replaced its print;
+    // round 19 #2), and whatever the file's stamp (its bytes written again: round 19 #3)
+    const finishing = !!slot?.result && slot.hash === hash;
+    if (!slot || (!finishing && (slot.gen !== gen || slot.base !== baseKey))) {
       const id = this.engine.newChangeId?.();
       slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
       await this.engine.putMeta(attemptKey, slot);
@@ -1499,7 +1514,7 @@ export class Materializer {
         const causal = res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal;
         reprint = await this.repeatsHidden(baseDoc, saved, held.baseSeq, causal, res.cut, upTo(res));
         // the print is marked replaced before anything below can fail (round 18 #3)
-        if (reprint) await this.engine.putMeta(["reprinted", name, row.nonce], { hash, at: this.clock.now() } satisfies Replaced);
+        if (reprint) await this.engine.putMeta(["reprinted", name, row.nonce], { hash, at: this.clock.now(), change: res.id ?? null, gen: fileGen } satisfies Replaced);
         row.last = reprint ? null : { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal } };
       }
       row.lastChange = res.id ?? null;
