@@ -15,7 +15,7 @@ import type { Manifest } from "../manifest.ts";
 import { COLLAB_PROXY_720P, encodeProxy, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
 import type { HashScheduler } from "../scheduler.ts";
 import { CONTEXT_CAP_BYTES, planShare, type MediaRecord, type SharePolicy, type T1Kind } from "../tiers.ts";
-import { uploadMedia, type UploadResult, type UploadStateStore } from "../upload.ts";
+import { SourceChangedError, uploadMedia, type UploadResult, type UploadStateStore } from "../upload.ts";
 import { fileSource } from "./file-source.ts";
 import { hashFile } from "./hash-file.ts";
 import { nodeHasher } from "./node-hasher.ts";
@@ -49,6 +49,11 @@ export interface ShareMediaOptions {
 export interface ShareMediaResult {
   record: MediaRecord;
   skipped: { what: string; why: string }[];
+}
+
+/** A local file couldn't be opened for upload (as opposed to the store failing). */
+class LocalFileError extends Error {
+  override name = "LocalFileError";
 }
 
 interface Reuser {
@@ -99,9 +104,11 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
     try {
       const m = await hash(path);
       t1Manifests[kind] = m;
+      // The size that counts is the one hashed: a file can grow past the cap between its stat and its hash.
+      t1Sizes[kind] = m.size;
       if (record.t1![kind] && record.t1![kind]!.hash !== m.hash) delete record.t1![kind];
     } catch (e) {
-      if ((e as Error)?.name === "AbortError") throw e;
+      if (o.signal?.aborted || (e as Error)?.name === "AbortError") throw o.signal?.aborted ? o.signal.reason : e;
       delete t1Sizes[kind];
       unreadable.push({ what: kind, why: `can't read it: ${(e as Error).message}` });
     }
@@ -112,7 +119,12 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
   for (const s of plan.skipped) o.onEvent?.({ type: "skipped", ...s });
 
   const upload = async (what: string, path: string, manifest: Manifest, contentType?: string): Promise<UploadResult> => {
-    const source = await fileSource(path);
+    let source: Awaited<ReturnType<typeof fileSource>>;
+    try {
+      source = await fileSource(path);
+    } catch (e) {
+      throw new LocalFileError((e as Error).message, { cause: e });
+    }
     try {
       const result = await uploadMedia({ store: o.store, hasher, source, manifest, state: o.uploadState, bytesPerSecond: o.bytesPerSecond, signal: o.signal, contentType });
       o.onEvent?.({ type: "uploaded", what, result });
@@ -127,7 +139,18 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
     if (step.tier === "T1") {
       const path = o.local.t1![step.kind]!;
       const m = t1Manifests[step.kind]!;
-      await upload(step.kind, path, m);
+      try {
+        await upload(step.kind, path, m);
+      } catch (e) {
+        // This file can't be read now (its hash may have come from the manifest cache), or it changed since it was
+        // hashed: skip it, like an unreadable file above. Cancellation and store errors still fail the share.
+        if (o.signal?.aborted) throw o.signal.reason;
+        if (!(e instanceof LocalFileError) && !(e instanceof SourceChangedError)) throw e;
+        const skip = { what: step.kind, why: `can't read it: ${(e as Error).message}` };
+        plan.skipped.push(skip);
+        o.onEvent?.({ type: "skipped", ...skip });
+        continue;
+      }
       record.t1![step.kind] = { hash: m.hash, size: m.size };
     } else if (step.tier === "T2") {
       if (!original) {

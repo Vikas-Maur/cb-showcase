@@ -175,17 +175,34 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   let byKey = inFlight.get(o.store);
   if (!byKey) inFlight.set(o.store, (byKey = new Map()));
   const key = mediaKey(o.manifest.hash);
-  const before = byKey.get(key);
+  // Our turn comes when the caller before us settles. Waiting for it can be aborted; if we leave the line that way,
+  // the next caller still waits for the one before us.
+  const turn = (byKey.get(key) ?? Promise.resolve()).catch(() => {});
   const mine = (async () => {
-    if (before) await before.catch(() => {});
+    await untilAborted(turn, o.signal);
     return uploadOnce(o);
   })();
-  byKey.set(key, mine);
-  try {
-    return await mine;
-  } finally {
-    if (byKey.get(key) === mine) byKey.delete(key);
-  }
+  // What the next caller waits for: our upload, or (if we left the line) the caller before us. The entry goes when that
+  // settles, not when we return: an aborted waiter returns at once while the upload before it is still running.
+  const tail: Promise<unknown> = mine.then(
+    () => {},
+    () => turn,
+  );
+  byKey.set(key, tail);
+  void tail.then(() => {
+    if (byKey.get(key) === tail) byKey.delete(key);
+  });
+  return mine;
+}
+
+function untilAborted<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return p;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 async function uploadOnce(o: UploadOptions): Promise<UploadResult> {

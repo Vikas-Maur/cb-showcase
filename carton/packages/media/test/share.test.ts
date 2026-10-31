@@ -1,14 +1,14 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ProxyEncoder } from "../src/contracts.ts";
 import { mediaKey, proxyPointerKey } from "../src/keys.ts";
 import { COLLAB_PROXY_720P } from "../src/proxy.ts";
 import { MediaReader } from "../src/read.ts";
-import { HashScheduler } from "../src/scheduler.ts";
+import { HashScheduler, MemoryManifestCache } from "../src/scheduler.ts";
 import { toMediaRecord } from "../src/tiers.ts";
 import { CountingMemoryStore } from "../src/testing.ts";
 import { ffmpegEncoder } from "../src/node/ffmpeg-encoder.ts";
@@ -169,4 +169,48 @@ test("files the policy leaves out are never read, and an unreadable T1 file does
   assert.ok(r.record.t1?.poster, "the poster still went up");
   const skipped = events.filter((e) => e.type === "skipped").map((e) => (e as { what: string }).what).sort();
   assert.deepEqual(skipped, [".context", "transcript"]);
+});
+
+test("T1 files: the cap applies to the size hashed, a file that can't be opened is skipped, cancellation still cancels (review round 3)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  // A .context that grows past the cap between its stat and its hash is still left out.
+  const growing = join(s.dir, "growing.tar");
+  writeFileSync(growing, "small");
+  const scheduler = new HashScheduler({
+    hasher: nodeHasher,
+    hash: async (t, o) => {
+      if (t.key === growing) truncateSync(growing, 26_000_000);
+      return hashFile(t.key, { signal: o.signal });
+    },
+  });
+  const store = new CountingMemoryStore();
+  const events: ShareEvent[] = [];
+  const r = await shareMedia({ store, record: record(), local: { original, t1: { context: growing } }, policy: { originals: false, proxies: false }, encoders: [], workDir: s.dir, scheduler, onEvent: (e) => events.push(e) });
+  assert.equal(r.record.t1?.context, undefined, "the grown .context stays local");
+  assert.ok(events.some((e) => e.type === "skipped" && (e as { what: string }).what === ".context"));
+
+  // A T1 file whose hash comes from the manifest cache but which can't be opened any more (EACCES on Windows when
+  // another program holds it, here a permission change).
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const locked = join(s.dir, "transcript.json");
+    writeFileSync(locked, "{}");
+    const cached = new HashScheduler({ hasher: nodeHasher, hash: (t, o) => hashFile(t.key, { signal: o.signal }), cache: new MemoryManifestCache() });
+    await shareMedia({ store, record: record(), local: { original, t1: { transcript: locked } }, policy: { originals: false, proxies: false }, encoders: [], workDir: s.dir, scheduler: cached });
+    chmodSync(locked, 0o000);
+    try {
+      const ev: ShareEvent[] = [];
+      const again = await shareMedia({ store: new CountingMemoryStore(), record: record(), local: { original, t1: { transcript: locked, poster } }, policy: { originals: false, proxies: false }, encoders: [], workDir: s.dir, scheduler: cached, onEvent: (e) => ev.push(e) });
+      assert.ok(again.record.t1?.poster, "the rest of the clip is shared");
+      assert.ok(ev.some((e) => e.type === "skipped" && (e as { what: string }).what === "transcript"));
+    } finally {
+      chmodSync(locked, 0o644);
+    }
+  }
+
+  // Cancelling with a reason that isn't named AbortError still cancels.
+  const ac = new AbortController();
+  const slow = new HashScheduler({ hasher: nodeHasher, hash: async (t, o) => (ac.abort(new Error("cancelled by the user")), hashFile(t.key, { signal: o.signal })) });
+  await assert.rejects(
+    shareMedia({ store, record: toMediaRecord({ id: "m9", kind: "video", fileName: "x.mp4", size: 0 }), local: { t1: { poster } }, policy: { originals: false }, encoders: [], workDir: s.dir, scheduler: slow, signal: ac.signal }),
+    /cancelled by the user/,
+  );
 });

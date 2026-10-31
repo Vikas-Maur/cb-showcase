@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { equalBytes } from "../src/bytes.ts";
+import type { BlobStore } from "../src/contracts.ts";
 import { bytesSource, hashSource } from "../src/hash.ts";
 import { manifestKey, mediaKey } from "../src/keys.ts";
 import { decodeManifest, LEAF_SIZE } from "../src/manifest.ts";
@@ -191,5 +192,58 @@ test("two processes resuming one upload both succeed although part ETags change 
   const opts = (store: FaultyStore) => ({ store, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 });
   const results = await Promise.allSettled([uploadMedia(opts(new FaultyStore(mem, {}))), uploadMedia(opts(new FaultyStore(mem, {})))]);
   assert.deepEqual(results.map((r) => (r.status === "rejected" ? String(r.reason) : "ok")), ["ok", "ok"]);
+  assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+});
+
+test("a caller waiting for its turn on the same object can still abort (review round 3, finding 1)", async () => {
+  const { manifest, source } = await setup(12 * MiB, 14);
+  const mem = new CountingMemoryStore();
+  // The first upload stalls inside the store: its createMultipart never answers.
+  let release!: () => void;
+  const stall = new Promise<void>((r) => (release = r));
+  const stalled = new FaultyStore(mem, {});
+  const realCreate = stalled.createMultipart.bind(stalled);
+  stalled.createMultipart = async (k, o) => (await stall, realCreate(k, o));
+  const first = uploadMedia({ store: stalled, hasher: nodeHasher, source, manifest, partSize: 2 * MiB });
+  const ac = new AbortController();
+  const second = uploadMedia({ store: stalled, hasher: nodeHasher, source, manifest, partSize: 2 * MiB, signal: ac.signal });
+  ac.abort();
+  const outcome = await Promise.race([second.then(() => "resolved", (e) => (e as Error).name), new Promise((r) => setTimeout(() => r("pending"), 2000))]);
+  assert.equal(outcome, "AbortError");
+  // A third caller still waits for the first, which is still running.
+  let thirdDone = false;
+  const third = uploadMedia({ store: stalled, hasher: nodeHasher, source, manifest, partSize: 2 * MiB }).then((r) => ((thirdDone = true), r));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(thirdDone, false, "serialization holds for later callers");
+  release();
+  await first;
+  assert.equal((await third).deduped, true);
+});
+
+test("a completion with ETags another process replaced is recovered by listing them again (review round 3, suggestion)", async () => {
+  const { manifest, source, data } = await setup(12 * MiB, 15);
+  const mem = new CountingMemoryStore();
+  const store = new FaultyStore(mem, {});
+  // Just before this caller completes, "another process" sends every part again (new ETags) and does not complete.
+  const wrapHandle = (u: Awaited<ReturnType<BlobStore["createMultipart"]>>) => {
+    let first = true;
+    return {
+      ...u,
+      key: u.key,
+      uploadId: u.uploadId,
+      complete: async (parts: { partNumber: number; etag: string }[]) => {
+        if (first) {
+          first = false;
+          const other = await mem.resumeMultipart(u.key, u.uploadId);
+          for (let n = 1; n <= parts.length; n++) await other.uploadPart(n, data.subarray((n - 1) * 2 * MiB, n * 2 * MiB));
+        }
+        return u.complete(parts);
+      },
+    };
+  };
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k, o) => wrapHandle(await create(k, o));
+  const r = await uploadMedia({ store, hasher: nodeHasher, source, manifest, partSize: 2 * MiB, retryDelayMs: 1 });
+  assert.equal(r.deduped, false);
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
 });
