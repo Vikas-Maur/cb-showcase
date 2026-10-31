@@ -56,6 +56,8 @@ export interface SaveResult {
   seq?: number;
   cards?: ConflictCard[];
   reason?: string;
+  /** The cut the commit went to (read once for it): a state built on the save belongs to that cut. */
+  cut?: string;
 }
 
 /** A pinned state: the ref token core prints (`<cut>@<seq>~<hash8>`), its cut, its seq, and its doc. */
@@ -75,9 +77,10 @@ export interface MaterializerEngine {
   /**
    * Pins the head, or `doc` (a state not in the log: the freeze view) for `owner`. `seq` is the confirmed seq `doc`
    * was derived from, so a commit on it is checked against everything confirmed since (default: head); `causal`: the
-   * changes after `seq` that `doc` already holds (agent saves merged into a freeze view), never met again.
+   * changes after `seq` that `doc` already holds (agent saves merged into a freeze view), never met again. `cut`: the
+   * cut to pin on (default: the current one).
    */
-  pin(opts: { owner: string; doc?: Doc; seq?: number; causal?: string[]; ttlMs: number }): Promise<Pinned>;
+  pin(opts: { owner: string; cut?: string; doc?: Doc; seq?: number; causal?: string[]; ttlMs: number }): Promise<Pinned>;
   /** Releases every pin `owner` holds (a turn ended). */
   release(owner: string): Promise<void>;
   /** A printed ref -> its exact state and causal past. Throws "state unknown: re-print" when it can't (§4.4). */
@@ -88,11 +91,11 @@ export interface MaterializerEngine {
    */
   commit(input: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string }; id?: string }): Promise<SaveResult>;
   /**
-   * The confirmed changes on the current cut after `seq`, oldest first (at most the newest 64), each with the states
-   * just before and after it: which ones a save made itself (the same edit as a change it never saw), so a state built
-   * on the save names them in its causal past (rounds 13, 14).
+   * The confirmed changes on `cut` (default: the current one) after `seq` and before `until`, outside `skip`, newest
+   * first, read as they are asked for (a caller can stop early), each with the states just before and after it: whether
+   * a save repeated an edit of a change it never saw (rounds 13-15).
    */
-  changesSince?(seq: number): Promise<{ id: string; seq: number; before: Doc; after: Doc }[]>;
+  changesSince?(seq: number, o?: { cut?: string; until?: number; skip?: ReadonlySet<string> }): AsyncIterable<{ id: string; seq: number; before: Doc; after: Doc }>;
   /** A fresh change id, recorded before committing so a retry commits with the same id (dedup by id). */
   newChangeId?(): string;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
@@ -231,6 +234,8 @@ interface PathState {
   failed: string[];
 }
 const KEEP_WRITTEN = 8;
+/** At most this many changes a save didn't see are read for it; past them it takes the exact path (round 15 #1). */
+const HIDDEN_SCAN = 256;
 const KEEP_STAMPS = 32;
 
 type Record_ = { t: number; path: string; [k: string]: unknown };
@@ -267,6 +272,11 @@ const push = <T>(list: T[], x: T, keep: number): void => {
 const refBodyOf = (p: { ref: string; branchId: string }): string => renderRev({ ref: p.ref, branchId: p.branchId }).slice(REV_PREFIX.length);
 const revOf = (body: string): Rev | null => findRev(REV_PREFIX + body)?.rev ?? null;
 /** Core's `StateUnknown` (code STATE_UNKNOWN), or the materializer's own "no exact base" refusals. */
+/**
+ * The changes a save could have repeated end at its commit's seq (inclusive: a commit that made no change, a save equal
+ * to what was already confirmed, returns the seq it found); its own change is skipped by id. Pending: no bound.
+ */
+const upTo = (res: SaveResult): number | undefined => (res.seq === undefined ? undefined : res.seq + 1);
 const isStateUnknown = (e: unknown): boolean => (e as { code?: string })?.code === "STATE_UNKNOWN" || /state unknown/i.test((e as Error)?.message ?? "");
 
 export class Materializer {
@@ -539,25 +549,36 @@ export class Materializer {
     this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
   }
   /**
-   * The confirmed changes after `seq` (outside `causal`) that a save made itself: every edit of the change is one the save
-   * made from its base (an agent saving the same ripple a remote made). A state built on the save holds them, so its
-   * causal past must name them (rounds 13, 14). A change that only matches the save by chance without the save making
-   * it (one undoing another) isn't. `partial`: a change the save made only part of; `at`: the states after each change.
+   * Whether a save repeated an edit of a change its base doesn't hold: a confirmed change on `cut` after `seq`, outside
+   * `causal`, up to the save's own commit (`until`, exclusive), with an edit the save also made from its base (an agent saving the
+   * ripple a remote made, alone or with edits of its own). No causal past describes such a save's content exactly: it
+   * may hold all of such a change, part of it, or the net of several (a ripple made in two steps, undone and redone), and
+   * naming too few changes maps later saves through one again, too many skips a remap or a card (rounds 13-15). So a
+   * state built on such a save is the commit's own state instead (`commitState`), which core describes exactly. Past
+   * HIDDEN_SCAN changes, or when they can't be read, the answer is yes: the exact path is always safe.
    */
-  private async madeByTheSave(base: Doc, saved: Doc, seq: number, causal: readonly string[]): Promise<{ ids: string[]; partial: boolean; at: Map<number, Doc> }> {
-    const out = { ids: [] as string[], partial: false, at: new Map<number, Doc>() };
-    if (!this.engine.changesSince || !this.host.changes) return out;
+  private async repeatsHidden(base: Doc, saved: Doc, seq: number, causal: readonly string[], cut: string | undefined, until: number | undefined): Promise<boolean> {
+    if (!this.engine.changesSince || !this.host.changes) return false;
     const own = new Set(this.host.changes(base, saved));
-    if (!own.size) return out;
-    for (const c of await this.engine.changesSince(seq)) {
-      out.at.set(c.seq, c.after);
-      if (causal.includes(c.id)) continue;
-      const effect = this.host.changes(c.before, c.after);
-      const made = effect.filter((e) => own.has(e)).length;
-      if (effect.length && made === effect.length) out.ids.push(c.id);
-      else if (made) out.partial = true;
+    if (!own.size) return false;
+    let n = 0;
+    try {
+      for await (const c of this.engine.changesSince(seq, { ...(cut !== undefined ? { cut } : {}), ...(until !== undefined ? { until } : {}), skip: new Set(causal) })) {
+        if (++n > HIDDEN_SCAN) return true;
+        if (this.host.changes(c.before, c.after).some((e) => own.has(e))) return true;
+      }
+    } catch (e) {
+      this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: `reading the changes a save didn't see (taken as repeated): ${e instanceof Error ? e.message : String(e)}` });
+      return true;
     }
-    return out;
+    return false;
+  }
+  /**
+   * The state a commit made, pinned for `owner` on the cut the commit went to (not the current one: another process may
+   * have switched since, round 15 #4); for a commit still pending (a shared cut offline), the optimistic head.
+   */
+  private async commitState(res: SaveResult, owner: string): Promise<Pinned> {
+    return this.engine.pin({ owner, ttlMs: 7 * DAY, ...(res.seq !== undefined ? { seq: res.seq } : {}), ...(res.cut !== undefined ? { cut: res.cut } : {}) });
   }
   /** Whether `h` was pinned on the current cut (or the engine has no cuts). */
   private onCurrentCut(h: HeldBase): boolean {
@@ -733,6 +754,21 @@ export class Materializer {
       await this.engine.putMeta(["view", view], row);
       return { name: view, path: rel, ref: refBodyOf(p) };
     });
+  }
+
+  /**
+   * A view whose save repeated an edit of a change its print didn't hold is printed again at the save's own commit (see
+   * `repeatsHidden`), with a new nonce: its next save's base is that exact state. The same print generation, sidecar and
+   * latest change: a late update for this save still reaches the sidecar. An agent's edit after it re-reads the file.
+   */
+  private async reprintView(view: string, row: ViewRow, res: SaveResult): Promise<void> {
+    const p = await this.commitState(res, row.pinOwner);
+    const nonce = printNonce();
+    const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
+    const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
+    await this.install(viewPath(view), text, row.printGen ?? 0);
+    Object.assign(row, { header, nonce, last: null });
+    await this.engine.putMeta(["view", view], row);
   }
 
   private async writeSharedNow(cause: string, force = false): Promise<void> {
@@ -1388,20 +1424,20 @@ export class Materializer {
       const cut = this.freeze.cut;
       await this.freezeOnCurrentCut();
       if (cut === this.freeze.cut) {
-        // a save that made an edit the freeze hides (an agent saving the ripple a remote made, alone or with edits of its
-        // own) holds that change: the view names it in its causal past, or core maps later saves through it again
-        // (review 9 #1; rounds 13, 14). Read from the log after the commit, so a retry and a change landing just before
-        // this one are seen alike, and nothing else is revealed.
+        // a save that repeated an edit the freeze hides (an agent saving the ripple a remote made, alone or with edits of
+        // its own) holds that change, all of it, part of it or its net with others, which no causal past can say: the
+        // freeze restarts at this save's own commit, so it shows what was confirmed up to it and still hides what came
+        // after (R8-01; rounds 13-15). Read after the commit, so a retry and a change landing just before it are alike.
+        // A commit that went to another cut than the freeze's (a switch between them) restarts it there too; the next
+        // rewrite moves it to the current cut.
         const own = res.id ? [res.id] : [];
-        const made = await this.madeByTheSave(baseDoc, saved, this.freeze.baseSeq, [...this.freeze.causal, ...own]);
-        const at = made.partial && res.seq !== undefined ? made.at.get(res.seq) : undefined;
-        if (at) {
-          // it made only part of a hidden change, which no causal past can say: the freeze restarts at this save's own
-          // commit, so it shows what was confirmed up to it and still hides what came after (R8-01)
-          this.restartFreeze({ baseDoc: at, baseSeq: res.seq!, causal: [], ...(this.engine.cut ? { cut: this.engine.cut() } : {}) });
+        const elsewhere = res.cut !== undefined && this.freeze.cut !== null && res.cut !== this.freeze.cut;
+        if (elsewhere || (await this.repeatsHidden(baseDoc, saved, this.freeze.baseSeq, [...this.freeze.causal, ...own], this.freeze.cut ?? undefined, upTo(res)))) {
+          const p = await this.commitState(res, "shared-view");
+          this.restartFreeze({ baseDoc: p.doc, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) });
         } else {
           this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
-          for (const id of [...own, ...made.ids]) if (!this.freeze.causal.includes(id)) this.freeze.causal.push(id);
+          for (const id of own) if (!this.freeze.causal.includes(id)) this.freeze.causal.push(id);
         }
       }
     }
@@ -1415,14 +1451,16 @@ export class Materializer {
         this.retryWrite("shared"); // during a freeze nothing else would rewrite it until the turn ends
       }
     }
+    let reprint = false;
     if (name && row) {
       // the saved content's causal past: its base's, plus this save's own change
       if (rev?.kind === "carton" && rev.nonce === row.nonce) {
-        // the next save's base is this save, with what it holds: its base's causal past, its own change, and any change
-        // it made itself as someone else did first (review 14 #4: else that change is mapped through again)
+        // the next save's base is this save: its base's causal past and its own change. A save that repeated an edit of
+        // a change its print didn't hold has no such past (see repeatsHidden): the view is printed again at the save's
+        // own commit below, and the next save's base is that exact state (review 14 #4, round 15 #2, #3)
         const causal = res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal;
-        const made = await this.madeByTheSave(baseDoc, saved, held.baseSeq, causal);
-        row.last = { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal: [...causal, ...made.ids] } };
+        reprint = await this.repeatsHidden(baseDoc, saved, held.baseSeq, causal, res.cut, upTo(res));
+        row.last = reprint ? null : { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal } };
       }
       row.lastChange = res.id ?? null;
       await this.engine.putMeta(["view", name], row);
@@ -1430,6 +1468,7 @@ export class Materializer {
       const status: StatusBody["status"] = cards.length ? "conflicts" : res.status;
       const pinned = await this.engine.pin({ owner: row.pinOwner, ttlMs: 7 * DAY });
       await this.writeStatus(name, { status, seq: res.seq ?? null, conflicts: cards, diagnostics: this.host.diagnose(saved, head), ref: refBodyOf(pinned), ...(res.reason ? { error: res.reason } : {}) }, res.id ?? null, { immediate: true });
+      if (reprint) await this.reprintView(name, row, res);
     }
     this.onHeadChange("local");
     await settle();
