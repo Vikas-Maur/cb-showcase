@@ -104,6 +104,16 @@ async function probe(ffprobe: string, file: string): Promise<{ duration: number;
   return { duration, width, height };
 }
 
+// Two runs may make the same clip at once (the seed and a test). On Windows a rename onto a file the other run has
+// open fails (EPERM): its file comes from the same recipe, so keep it.
+async function place(tmp: string, final: string): Promise<void> {
+  try {
+    await rename(tmp, final);
+  } catch (e) {
+    if (!(await exists(final))) throw e;
+  }
+}
+
 /** Generates the sample clips in `dir` (or reuses them) and describes them. */
 export async function makeSampleClips(dir: string, opts: ClipOptions = {}): Promise<SampleClip[]> {
   const ffmpeg = opts.ffmpeg ?? process.env.FFMPEG ?? "ffmpeg";
@@ -127,9 +137,9 @@ export async function makeSampleClips(dir: string, opts: ClipOptions = {}): Prom
         await run(ffmpeg, encodeArgs(r, title, parts[0]!));
         await run(ffmpeg, posterArgs(parts[0]!, parts[1]!));
         await run(ffmpeg, filmstripArgs(parts[0]!, r.seconds, parts[2]!));
-        await rename(parts[1]!, poster);
-        await rename(parts[2]!, filmstrip);
-        await rename(parts[0]!, file);
+        await place(parts[1]!, poster);
+        await place(parts[2]!, filmstrip);
+        await place(parts[0]!, file);
       } finally {
         await Promise.all(parts.map((p) => rm(p, { force: true })));
       }
