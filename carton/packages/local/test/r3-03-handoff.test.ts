@@ -49,7 +49,8 @@ async function world(name: string) {
   const proxy = await holdProxy(port);
   const syncCfg = { url: proxy.via(url), tokenFile: join(dir, "token-alice") };
   const open = () => openLocal({ projectDir: dir, projectId, adapter, actor: { kind: "agent", id: "codex/hand-off", name: "Codex" }, helperFactory: here("./support/real-sync-factory.ts"), helperConfig: syncCfg });
-  const init = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: { kind: "human", id: "human:alice" } });
+  // the starting state as the root (main@0): the seqs and credits below count only this test's own changes
+  const init = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0(), asChange: false }, actor: { kind: "human", id: "human:alice" } });
   const localIds: string[] = [];
   for (let i = 0; i < 5; i++) {
     const r = await init.write({ kind: "commit", ops: [set(`c${i}`, "opacity", 0.1 * (i + 1))] });

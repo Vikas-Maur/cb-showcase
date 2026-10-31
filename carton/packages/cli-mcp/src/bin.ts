@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // `carton`: the Carton commands outside Cardboard (tests, other hosts, and agents on a machine without the app).
-//   carton [--project <dir>] [--data-dir <dir>] <command> [args] [--json] [--as <agent>]
+//   carton [--project <dir>] [--data-dir <dir>] [--server <url> --token-file <file>] <command> [args] [--json] [--as <agent>]
+//     --server: the team's sync server for this call's helper (a shared cut, `share`); also CARTON_SYNC_URL. Its token
+//     is read from --token-file (CARTON_TOKEN_FILE), never passed on a command line.
 //   carton hook pre-tool-use                     Claude Code PreToolUse hook (stdin → stdout)
 //   carton hook stop [--project <dir>]           Claude Code Stop/SubagentStop hook
 //   carton hook-settings [--project <dir>]       prints the `--settings` JSON for host Claude Code
@@ -45,7 +47,14 @@ const projectDir = () => {
   if (!p) throw new Error("no project: pass --project <dir>, or run inside a project folder");
   return resolve(p);
 };
-const open = async (): Promise<LocalCarton> => (await import("@carton/local")).openLocal({ projectDir: projectDir(), dataDir });
+const server = takeOpt(argv, "--server") ?? process.env.CARTON_SYNC_URL;
+const tokenFile = takeOpt(argv, "--token-file") ?? process.env.CARTON_TOKEN_FILE;
+const open = async (): Promise<LocalCarton> => {
+  if (server && !tokenFile) throw new Error("--server needs --token-file <file> (or CARTON_TOKEN_FILE): the session token, read from a file");
+  // the helper this call starts (a shared cut, `share`) syncs with that server, over the app's recorded factory if any
+  const helperConfig = server ? { sync: { url: server, tokenFile: resolve(tokenFile!) } } : undefined;
+  return (await import("@carton/local")).openLocal({ projectDir: projectDir(), dataDir, ...(helperConfig ? { helperConfig } : {}) });
+};
 
 async function main(): Promise<number> {
   if (argv[0] === "hook" && argv[1] === "pre-tool-use") {
