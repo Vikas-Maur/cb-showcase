@@ -177,7 +177,10 @@ export interface MaterializerOptions {
   localRewriteMs?: number;
   /** Remote changes rewrite the shared file at most this often while the cut is shared (R5-05). */
   remoteRewriteMs?: number;
-  /** A windowless agent counts as active until this long after its last save or `cb` call. */
+  /**
+   * A windowless agent counts as active until this long after its last save or `cb` call; a hooked one until its Stop,
+   * or this long after its last hook event (a Stop can be lost: Claude Code sends none when the user interrupts a turn).
+   */
   freezeIdleMs?: number;
   /** How long a hooked agent's announced write (`hookWrite`) waits for its save to land. */
   attributeMs?: number;
@@ -364,7 +367,7 @@ export class Materializer {
   // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active. `baseSeq` is
   // the confirmed seq the freeze view was derived from and `causal` the agent saves merged into it since: its pin
   // carries both, so a save from it meets every other change since, and never those saves a second time.
-  readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown };
+  readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
   /** The cut `sharedRef` was pinned on. */
@@ -497,19 +500,54 @@ export class Materializer {
 
   // ------------------------------------------------------------------ hooks and head changes
 
-  /** A hooked agent read the shared file (PreToolUse): the freeze starts. */
+  /** A hooked agent read the shared file (PreToolUse; `@carton/local` sends a hooked agent's `cb` call so too): the freeze starts. */
   hookRead(actor: Actor): Promise<void> {
     return this.run(async () => {
-      this.freeze.hooked.set(actor.id, actor);
+      this.hold(actor);
       await this.updateFreeze();
     });
   }
-  /** A hooked agent's turn ended (Stop/SubagentStop): its pins go, and the freeze may end. */
+  /** `actor` holds the freeze until its Stop, or until it has been quiet for `freezeIdleMs`. */
+  private hold(actor: Actor): void {
+    this.freeze.hooked.set(actor.id, actor);
+    this.freeze.heard.set(actor.id, this.clock.now());
+  }
+  /** Any hook event or call from a hooked actor: it is still there, its hold runs on (a quiet one's ends). */
+  private async heardFrom(actor: Actor): Promise<void> {
+    if (!this.freeze.hooked.has(actor.id)) return;
+    this.freeze.heard.set(actor.id, this.clock.now());
+    await this.updateFreeze();
+  }
+  private unhold(id: string): boolean {
+    this.freeze.heard.delete(id);
+    return this.freeze.hooked.delete(id);
+  }
+  /**
+   * A hooked agent stopped (Stop/SubagentStop): its pins go, and the freeze may end. A subagent releases only what it
+   * pinned (its parent's turn runs on: the Director's view and freeze stay). The turn's own Stop releases everything the
+   * turn's actors pinned or hooked, its subagents' too: a SubagentStop can be lost (the late-conflict hook holds it).
+   */
   hookStop(actor: Actor): Promise<void> {
     return this.run(async () => {
-      await this.engine.release(turnOwner(actor));
-      if (this.freeze.hooked.delete(actor.id)) await this.updateFreeze();
+      let left = false;
+      if (isSubagent(actor)) {
+        await this.engine.release(turnOwner(actor));
+        left = this.unhold(actor.id);
+      } else {
+        const turn = turnOf(actor);
+        const subs = (await this.engine.getMeta<string[]>(turnPinsKey(turn))) ?? [];
+        for (const owner of [turnOwner(actor), ...subs]) await this.engine.release(owner);
+        if (subs.length) await this.engine.putMeta(turnPinsKey(turn), undefined);
+        for (const [id, a] of this.freeze.hooked) if (id === actor.id || turnOf(a) === turn) left = this.unhold(id) || left;
+      }
+      if (left) await this.updateFreeze();
     });
+  }
+  /** The turn's own Stop releases `pinOwner` too (see `hookStop`). */
+  private async noteSubagentPins(owner: Actor, pinOwner: string): Promise<void> {
+    const key = turnPinsKey(turnOf(owner));
+    const subs = (await this.engine.getMeta<string[]>(key)) ?? [];
+    if (!subs.includes(pinOwner)) await this.engine.putMeta(key, [...subs, pinOwner]);
   }
   /**
    * A hooked agent is about to write a watched file (PreToolUse on Write/Edit/MultiEdit). Files carry no writer, so the
@@ -518,12 +556,14 @@ export class Materializer {
    */
   hookWrite(actor: Actor, rel: string): Promise<void> {
     return this.run(async () => {
-      const canon = this.watched(rel) ?? rel;
+      const canon = this.watched(rel);
+      if (canon !== TIMELINE_FILE) await this.heardFrom(actor);
+      if (canon === null) return; // no save of it is ever attributed: an entry would stay forever
       const list = this.announced.get(canon) ?? [];
       list.push({ actor, at: this.clock.now() });
       this.announced.set(canon, list);
       if (canon === TIMELINE_FILE) {
-        this.freeze.hooked.set(actor.id, actor); // a hooked agent writing the shared file is active, as when it reads
+        this.hold(actor); // a hooked agent writing the shared file is active, as when it reads
         await this.updateFreeze();
       }
     });
@@ -716,10 +756,17 @@ export class Materializer {
     }, this.opts.localRewriteMs);
   }
 
+  /** When the freeze ends if nothing else happens: the latest of the windowless window and each hooked actor's. */
+  private freezeEnd(): number {
+    return Math.max(this.freeze.lastForeign, this.freeze.lastCb, ...this.freeze.heard.values()) + this.opts.freezeIdleMs;
+  }
   private frozenNow(): boolean {
-    return this.freeze.hooked.size > 0 || this.clock.now() < Math.max(this.freeze.lastForeign, this.freeze.lastCb) + this.opts.freezeIdleMs;
+    return this.clock.now() < this.freezeEnd();
   }
   private async updateFreeze(): Promise<void> {
+    // a hooked actor quiet for `freezeIdleMs` holds the freeze no longer: its Stop may never come (an interrupted
+    // turn, a Stop sent while a helper held the lease); its next hook event holds it again
+    for (const [id, at] of this.freeze.heard) if (this.clock.now() >= at + this.opts.freezeIdleMs) this.unhold(id);
     const f = this.frozenNow();
     if (f && !this.freeze.active) {
       // the freeze starts from what the shared file shows, and remembers the seq that state was derived from
@@ -735,8 +782,8 @@ export class Materializer {
     }
     if (this.freeze.timer) this.clock.clearTimeout(this.freeze.timer);
     this.freeze.timer = null;
-    if (this.freeze.active && this.freeze.hooked.size === 0) {
-      const end = Math.max(this.freeze.lastForeign, this.freeze.lastCb) + this.opts.freezeIdleMs;
+    if (this.freeze.active) {
+      const end = this.freezeEnd();
       this.freeze.timer = this.clock.setTimeout(() => {
         this.freeze.timer = null;
         this.fire(() => this.updateFreeze());
@@ -784,7 +831,9 @@ export class Materializer {
       const view = this.canonView(name);
       const rel = viewPath(view);
       await this.importUnseen(rel);
+      if (opts.hooked) await this.heardFrom(owner); // a hooked agent's `cb` call
       const pinOwner = opts.hooked ? turnOwner(owner) : `view:${view}`;
+      if (opts.hooked && isSubagent(owner)) await this.noteSubagentPins(owner, pinOwner);
       const prev = await this.engine.getMeta<ViewRow>(["view", view]);
       const p = await this.engine.pin({ owner: pinOwner, ttlMs: 7 * DAY });
       const nonce = printNonce();
@@ -1638,8 +1687,16 @@ export class Materializer {
   }
 }
 
-/** The pin owner of a hooked agent's turn. */
-export const turnOwner = (a: Actor): string => `turn:${a.turn ?? a.id}`;
+/**
+ * The pin owner of a hooked actor's prints: the turn's own agent pins as `turn:<turn>`, a subagent as
+ * `turn:<turn>/sub:<id>`, so a subagent's Stop releases only what it pinned while its parent's turn runs on (local-cli H8).
+ */
+export const turnOwner = (a: Actor): string => (isSubagent(a) ? `turn:${turnOf(a)}/sub:${a.id}` : `turn:${turnOf(a)}`);
+const isSubagent = (a: Actor): boolean => a.kind === "subagent" || !!a.agentId;
+/** The turn an actor acts in: its `turn`; without one its own id, or a subagent's parent's (`<parent id>/sub-…`, §10). */
+const turnOf = (a: Actor): string => a.turn ?? (isSubagent(a) && a.id.includes("/") ? a.id.slice(0, a.id.lastIndexOf("/")) : a.id);
+/** Meta row: the pin owners a turn's subagents printed with, released when the turn itself stops. */
+const turnPinsKey = (turn: string): string[] => ["turn-pins", turn];
 
 /** `.scratch/views/<name>.tsx` -> name. */
 export function viewName(rel: string): string | null {
