@@ -6,7 +6,7 @@
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { AuthProvider, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
+import type { AuthProvider, BlobStore, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
 
 export interface HostFixture {
   host: SequencerHost;
@@ -21,6 +21,8 @@ export interface HostFixture {
   tokenFor?(o: { credential: string; account?: string; role?: Role; projectId?: string }): Promise<string>;
   /** Rows the host's storage has read and written so far (P5 cost accounting), when it can tell. */
   rows?(): Promise<{ rowsRead: number; rowsWritten: number }>;
+  /** The BlobStore a client of this host passes as `blobs`, so messages over 1 MiB travel as envelopes. */
+  clientBlobs?(token: string): BlobStore;
 }
 
 // ------------------------------------------------------------------ AuthProvider

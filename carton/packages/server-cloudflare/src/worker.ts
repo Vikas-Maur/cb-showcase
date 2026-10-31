@@ -7,7 +7,7 @@ import type { AuthContext } from "@carton/core/plugins";
 import { createHmacAuth, type HmacAuth, offersCartonProtocol } from "@carton/server";
 import { handleHttp, type HttpDeps } from "@carton/host-http";
 import type { Env } from "./env.ts";
-import { ProjectRoom, mediaBlobs, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
+import { ProjectRoom, mediaBlobs, sequencerBlobs, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
 import { BlobVault } from "./blob-do.ts";
 
 export { ProjectRoom, BlobVault };
@@ -25,6 +25,7 @@ export function depsFor(env: Env): HttpDeps {
     auth: authFor(env),
     secret: env.AUTH_SECRET,
     blobsFor: (projectId) => mediaBlobs(env, projectId),
+    sequencerBlobsFor: (projectId) => sequencerBlobs(env, projectId),
     async upgrade(req: Request, auth: AuthContext, projectId: string) {
       if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("expected a WebSocket upgrade", { status: 426 });
       if (!offersCartonProtocol(req.headers) && !req.headers.get("authorization"))
