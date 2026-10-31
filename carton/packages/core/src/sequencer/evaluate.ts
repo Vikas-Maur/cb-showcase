@@ -221,7 +221,9 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
     for (const row of tail) if (past.has(row.id)) found++;
     if (found !== past.size) return { kind: "reject", reason: "base unknown", detail: "a pending id it builds on isn't confirmed" };
   }
-  if (!ch.ops.length) return { kind: "reject", reason: "no ops" };
+  // a fold whose result equals its first parent has no ops but is still a DAG node (its merge edge must be recorded,
+  // or a later fold of the same cut finds an older base); any other empty change is refused
+  if (!ch.ops.length && !ch.mergeOf) return { kind: "reject", reason: "no ops" };
   if (ch.policy === "lww" && controls.lwwCheck !== false && (ch.spans.length > 0 || ch.trackOrder.length > 0 || ch.paths.some(hasGroupSegment)))
     return { kind: "reject", reason: "lww on structure" };
   const missing = undeclared(ch, tl, cfg.groupOf ?? timeGroupOf(tl));

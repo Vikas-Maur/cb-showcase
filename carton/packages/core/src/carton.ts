@@ -57,8 +57,10 @@ export interface OpenOptions {
   /**
    * Create the project when the store is empty: a Main cut at `doc`, or (`import`) from a teammate's shallow `.cbproj`
    * of a project this machine doesn't have: their cuts become tracking cuts and a writable cut forks from their head.
+   * `asChange`: §16 migration of an existing project: the cut starts empty and `doc` is `main@1`, one insert-all
+   * change by `{kind: "system", id: "import"}` (otherwise `doc` is the root state at seq 0).
    */
-  init?: { doc: Doc; projectId?: string; cutName?: string } | { import: ShallowExport };
+  init?: { doc: Doc; projectId?: string; cutName?: string; asChange?: boolean } | { import: ShallowExport };
   /** `autoConnect: false`: the sync-lease holder connects itself, under its nonce (§6.2). */
   sync?: { transport: Transport; url: string; token: string | (() => Promise<string>); autoConnect?: boolean };
   media?: { blobStore: BlobStore; encoders?: ProxyEncoder[] };
@@ -182,6 +184,7 @@ export interface Carton {
 }
 
 const PROJECT = ["project"] as const;
+const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.collections).map((k) => [k, []]));
 interface ProjectMeta {
   projectId: string;
   schemaVersion: number;
@@ -249,18 +252,24 @@ class CartonImpl implements Carton {
       const init = this.#opts.init;
       if (!init) throw new Error("Carton.open: the store holds no project (pass `init`)");
       if ("import" in init) return this.#createFromImport(init.import);
-      const h = History.create(this.schema, init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
+      const h = History.create(this.schema, init.asChange ? emptyDoc(this.schema) : init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
       const cut = h.cut(h.current)!;
       meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, current: cut.id, rids: [this.#rid] };
       const ok = await s.write(
         [
           { table: T.meta, key: PROJECT, value: meta },
           { table: T.cuts, key: [cut.id], value: cut },
-          { table: T.keyframes, key: [cut.id, 0], value: E.fork(init.doc, this.schema) },
+          { table: T.keyframes, key: [cut.id, 0], value: h.stateOf(nodeId(cut.id, 0)) },
         ],
         [{ table: T.meta, key: PROJECT, expect: "absent" }],
       );
       if (!ok) return this.load(); // another process created it first: open theirs
+      if (init.asChange) {
+        this.#meta = meta;
+        await this.#rebuild();
+        await this.#mutate(cut.id, () => this.#h.commit(cut.id, { doc: init.doc, author: { kind: "system", id: "import", name: "Import" }, kind: "import", id: `import.${this.#meta.projectId}` }), { idempotent: true });
+        return;
+      }
     }
     this.#meta = meta;
     await this.#rebuild();
