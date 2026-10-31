@@ -79,7 +79,7 @@ test("SG3-2: an export of the empty root made before the import landed is not th
   await raw.exportShallow({ to: "someone, before the import" });
   await raw.close();
   await store.close();
-  // the next open with init finishes the import (finishImport), then marks it
+  // the next open with init finishes the import (core, request 7), then marks it
   const a = await openLocal({ ...opts(p, "Alice"), init: { doc: doc0() } });
   let b: LocalCarton | undefined;
   try {

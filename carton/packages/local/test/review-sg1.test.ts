@@ -1,5 +1,5 @@
 // Regressions from Stage G review round 1 (GPT 6.1 Sol): a new project whose import change never landed is finished
-// on the next open; a fold request's rest is decided before the fold, so the request is never answered without it;
+// on the next open (by core since request 7, foundation `d7b1f56`; openLocal did it before); a fold request's rest is decided before the fold, so the request is never answered without it;
 // `undo --turn` raises one card per field, from the value before the turn; a copy of an undo request that finished
 // meanwhile is never followed by a rewrite of its cards; the follower tells again what a failed listener missed; a
 // follower stopped during its adoption read switches nothing.
@@ -29,7 +29,7 @@ function within<T>(p: Promise<T>, what: string, ms = 10_000): Promise<T> {
 }
 const empty = () => ({ tracks: [], timelineItems: [] });
 
-/** A project left as core leaves it when stopped between its two init steps: the empty root at main@0, no import. */
+/** A project as an older core left it when stopped between its two init steps: the empty root at main@0, no import. */
 async function halfInitialized(name: string) {
   const { dir, projectId } = bundle(name);
   const first = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: empty(), asChange: false }, actor });
@@ -67,7 +67,7 @@ test("a new project whose import change never landed gets it on the next open wi
   }
 });
 
-test("Carton.open resumes an init whose import change never landed", { todo: "foundation-core request 7 (local-cli notes)" }, async () => {
+test("Carton.open resumes an init whose import change never landed (request 7, foundation d7b1f56)", async () => {
   const store = createMemoryStore();
   const a = await Carton.open({ adapter, store, actor, init: { doc: empty(), asChange: false } });
   await a.close();
