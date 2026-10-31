@@ -225,6 +225,16 @@ export const storeCases: readonly StoreCase[] = [
     },
   },
   {
+    name: "range: a limit counts whole rows (2.7 reads 2; 0, 0.5 and negatives read none), forward and reverse",
+    async run({ store }) {
+      ok(await store.write(Array.from({ length: 5 }, (_, i) => put("t", ["k", i], i))));
+      for (const reverse of [false, true]) {
+        eq((await store.range("t", { prefix: ["k"], limit: 2.7, reverse })).length, 2, `2.7 reverse=${reverse}`);
+        for (const limit of [0, 0.5, -1]) deepEq(await store.range("t", { prefix: ["k"], limit, reverse }), [], `${limit} reverse=${reverse}`);
+      }
+    },
+  },
+  {
     name: "tables are independent",
     async run({ store }) {
       ok(await store.write([put("a", ["k"], "in a"), put("b", ["k"], "in b")]));

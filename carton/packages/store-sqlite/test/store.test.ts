@@ -69,13 +69,18 @@ test("Carton tables are readable SQLite tables: names kept, case made safe, odd 
     { table: "pathmap", key: ["p"], value: 2 },
     { table: "a-b c", key: ["k"], value: 3 },
     { table: "sqlite_x", key: ["k"], value: 4 },
+    { table: "\ud800", key: ["k"], value: 5 },
+    { table: "\ud801", key: ["k"], value: 6 },
   ]);
   const names = (s.db.raw.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all() as { name: string }[]).map((r) => r.name);
-  assert.deepEqual(names, ["_carton", "_t_612d622063", "_t_73716c6974655f78", "changes", "path$map", "pathmap"]);
+  // "a-b c" and "sqlite_x" as UTF-16 code units in hex; lone surrogates keep their own names.
+  assert.deepEqual(names, ["_carton", "_t_0061002d006200200063", "_t_00730071006c006900740065005f0078", "_t_d800", "_t_d801", "changes", "path$map", "pathmap"]);
   assert.equal(await s.get("pathMap", ["p"]), 1);
   assert.equal(await s.get("pathmap", ["p"]), 2);
   assert.equal(await s.get("a-b c", ["k"]), 3);
   assert.equal(await s.get("sqlite_x", ["k"]), 4);
+  assert.equal(await s.get("\ud800", ["k"]), 5, "lone surrogates in a table name stay distinct");
+  assert.equal(await s.get("\ud801", ["k"]), 6);
   await s.close();
 });
 
@@ -107,6 +112,9 @@ test("exportCopy: a full-history copy without the local tables, whose bytes hold
   await copy.close();
   assert.equal(pragma(out, "application_id"), 0x4352544e);
   assert.notEqual(pragma(out, "journal_mode"), "wal", "a single self-contained file");
+  const meta = new DatabaseSync(out, { readOnly: true });
+  assert.deepEqual(meta.prepare(`SELECT k FROM "_carton"`).all(), [], "no machine id or placement marks in a shared copy");
+  meta.close();
   assert.ok(!fs.existsSync(`${out}-wal`));
   await s.close();
 });
@@ -166,12 +174,14 @@ test("a lock held longer than busyTimeoutMs fails the write with BusyError, writ
   const holder = spawn(process.execPath, [path.join(here, "xproc-holder.ts"), file, "800"], { stdio: ["ignore", "pipe", "inherit"] });
   await new Promise<void>((resolve) => holder.stdout.on("data", (d) => String(d).includes("locked") && resolve()));
   const exited = new Promise((r) => holder.on("exit", r));
-  let maxStall = 0, last = performance.now();
-  const beat = setInterval(() => { const now = performance.now(); maxStall = Math.max(maxStall, now - last); last = now; }, 2);
+  let maxStall = 0, last = performance.now(), beats = 0;
+  const beat = setInterval(() => { const now = performance.now(); maxStall = Math.max(maxStall, now - last); last = now; beats++; }, 2);
   const t0 = performance.now();
   const err = await s.write([{ table: "changes", key: ["main", 9], value: { id: "mine" } }]).catch((e) => e);
   const took = performance.now() - t0;
   clearInterval(beat);
+  maxStall = Math.max(maxStall, performance.now() - last);
+  assert.ok(beats >= took / 8, `only ${beats} heartbeats in ${Math.round(took)} ms`);
   assert.ok(err instanceof BusyError, String(err));
   assert.equal(err.code, "CARTON_DB_BUSY");
   assert.ok(took >= 140 && took < 700, `gave up after ${Math.round(took)} ms`);
@@ -236,4 +246,69 @@ test("large values (keyframes) are stored compressed and read back exactly; smal
   assert.deepEqual(await copy.get("keyframes", ["main", 64]), kf, "the export carries compressed values as they are");
   await copy.close();
   await s.close();
+});
+
+test("a write that fails after creating a table leaves no ghost table behind", async () => {
+  const s = await openSqliteStore(fresh());
+  // A write whose insert fails (as with SQLITE_FULL) after its CREATE TABLE ran in the same transaction.
+  const db = s.db.raw;
+  const orig = s.db.stmt.bind(s.db);
+  let fail = true;
+  (s.db as { stmt: typeof s.db.stmt }).stmt = (sql: string) => {
+    if (fail && sql.startsWith('INSERT INTO "ghost"')) {
+      fail = false;
+      throw Object.assign(new Error("database or disk is full"), { errcode: 13 });
+    }
+    return orig(sql);
+  };
+  await assert.rejects(s.write([{ table: "ghost", key: ["a"], value: 1 }]), /disk is full/);
+  assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE name = 'ghost'").get()!.n, 0, "the CREATE rolled back");
+  assert.equal(await s.get("ghost", ["a"]), undefined, "reading a rolled-back table is just absent");
+  assert.deepEqual(await s.range("ghost"), []);
+  assert.equal(await s.write([{ table: "ghost", key: ["a"], value: 1 }]), true, "and writing it later creates it");
+  assert.equal(await s.get("ghost", ["a"]), 1);
+  await s.close();
+});
+
+test("many processes creating the same new carton.db at once all open it (identity read in one snapshot)", async () => {
+  const files = Array.from({ length: 5 }, (_, i) => path.join(root, `race-${i}`, ".carton", "carton.db"));
+  const runs = files.flatMap((f) =>
+    Array.from({ length: 4 }, () =>
+      new Promise<{ code: number | null; err: string }>((resolve) => {
+        const child = spawn(process.execPath, ["--input-type=module", "-e", `import { openSqliteStore } from ${JSON.stringify(path.join(here, "../src/index.ts"))}; const s = await openSqliteStore(${JSON.stringify(f)}); await s.write([{ table: "t", key: [process.pid], value: 1 }]); await s.close();`], { stdio: ["ignore", "ignore", "pipe"] });
+        let err = "";
+        child.stderr.on("data", (d) => (err += d));
+        child.on("exit", (code) => resolve({ code, err }));
+      }),
+    ),
+  );
+  const out = await Promise.all(runs);
+  assert.deepEqual(out.filter((r) => r.code !== 0).map((r) => r.err.split("\n").find((l) => /Error/.test(l))), []);
+  for (const f of files) {
+    const s = await openSqliteStore(f);
+    assert.equal((await s.range("t")).length, 4);
+    await s.close();
+  }
+});
+
+test("exportCopy refuses its own database (also through a symlink or hard link) and any database in use", async () => {
+  const file = fresh();
+  const s = await openSqliteStore(file);
+  await s.write([{ table: "changes", key: ["c", 1], value: 1 }, { table: "pathMap", key: ["m"], value: "C:\\Users\\ana\\x.mov" }]);
+  await assert.rejects(s.exportCopy(file, ["pathMap"]), /own database/);
+  const link = path.join(root, `link-${n}.db`);
+  fs.symlinkSync(file, link);
+  await assert.rejects(s.exportCopy(link, ["pathMap"]), /own database/);
+  const hard = path.join(path.dirname(file), "hard.db");
+  fs.linkSync(file, hard);
+  await assert.rejects(s.exportCopy(hard, ["pathMap"]), /own database/);
+  const other = await openSqliteStore(fresh());
+  await other.write([{ table: "t", key: ["k"], value: 1 }]);
+  await assert.rejects(s.exportCopy(other.path, ["pathMap"]), /in use/);
+  await other.close();
+  assert.equal(await s.get("pathMap", ["m"]), "C:\\Users\\ana\\x.mov", "nothing was replaced");
+  await s.close();
+  const again = await openSqliteStore(file);
+  assert.equal((await again.range("changes")).length, 1);
+  await again.close();
 });

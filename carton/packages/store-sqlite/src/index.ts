@@ -5,6 +5,7 @@
 // paths may be non-ASCII. Owner: stores.
 export { SqliteStore, openSqliteStore, FORMAT_VERSION, type SqliteStoreOptions } from "./store.ts";
 export { BusyError } from "./db.ts";
+export { MovedError, PlacementConflictError, settlePlacement } from "./move.ts";
 export {
   locateCartonDb,
   detectCloudSync,

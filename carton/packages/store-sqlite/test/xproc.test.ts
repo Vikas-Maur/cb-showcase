@@ -79,6 +79,7 @@ test("P3b: a write waiting for another process's lock keeps the event loop runni
   }
   const waited = performance.now() - t0;
   clearInterval(beat);
+  maxStall = Math.max(maxStall, performance.now() - last); // the last interval, which no beat sampled
   await exited;
   const ids = (await store.range<{ id: string }>("changes", { prefix: ["main"] })).map((r) => r.value.id);
   const busyRetries = store.db.busyRetries;
@@ -89,6 +90,9 @@ test("P3b: a write waiting for another process's lock keeps the event loop runni
   assert.equal(attempts, 2);
   assert.ok(waited >= HOLD * 0.5, `the write really waited (${waited} ms)`);
   assert.ok(busyRetries > 0);
-  // A DatabaseSync with the prototype's busy_timeout=5000 would block here for the whole ~400 ms hold.
+  // A DatabaseSync with the prototype's busy_timeout=5000 would block here for the whole ~400 ms hold. The heartbeat
+  // must have run all along (every 2 ms asked; a quarter of that is plenty on a loaded box), so a wait that blocked
+  // the loop can't pass by never letting the heartbeat sample it.
+  assert.ok(beats >= waited / 8, `only ${beats} heartbeats in ${Math.round(waited)} ms`);
   assert.ok(maxStall < 100, `event loop stalled ${maxStall} ms while waiting`);
 });

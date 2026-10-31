@@ -75,8 +75,10 @@ export class IdbStore implements Store {
 
   async range<T = unknown>(table: string, r: StoreRange = {}): Promise<{ key: StoreKey; value: T }[]> {
     const range = keyRange(table, r);
-    if (!range || (r.limit !== undefined && r.limit <= 0)) return [];
+    // A limit counts whole rows: 2.7 reads 2, and anything below 1 reads none. (A count of 0 would mean "all" to
+    // IndexedDB's getAll, so it never reaches it.)
     const limit = r.limit === undefined ? undefined : Math.floor(r.limit);
+    if (!range || (limit !== undefined && !(limit >= 1))) return [];
     return run(this.#open(), KV, "readonly", async (tx) => {
       const s = tx.objectStore(KV);
       if (!r.reverse) {
