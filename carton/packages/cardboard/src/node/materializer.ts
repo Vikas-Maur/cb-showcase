@@ -228,12 +228,16 @@ export interface StatusBody {
  *   files from foreign ones.
  * - `applied`, `failed`: stamps of foreign files whose save was stored, or tried and refused; a displaced file with one
  *   of those stamps is that same file, moved.
+ * - `epoch`: counts what has happened at the path since a save's result was recorded: Carton installed a file there
+ *   (outside a save of the path), or a save finished but its attempt slot couldn't be cleared. A recorded result finishes
+ *   another file with its bytes only while it is unchanged (see `finishes`).
  */
 interface PathState {
   last: string | null;
   written: { hash: string; stamp: string }[];
   applied: string[];
   failed: string[];
+  epoch?: number;
 }
 const KEEP_WRITTEN = 8;
 /** At most this many changes a save didn't see are read for it; past them it takes the exact path (round 15 #1). */
@@ -247,7 +251,15 @@ type Record_ = { t: number; path: string; [k: string]: unknown };
  * result) instead of committing again; a different save of the path takes the slot over.
  */
 /** A save's attempt slot (`["attempt", rel]`): its change id before the commit, its result after, until it is settled. */
-type Attempt = { gen: string; base: string; hash?: string; id?: string; result?: SaveResult };
+type Attempt = { gen: string; base: string; hash?: string; id?: string; result?: SaveResult; epoch?: number };
+/**
+ * Whether a save's recorded result finishes this file instead of a commit: the same file (its generation, at the path
+ * or displaced), or its bytes written again while nothing has happened at the path since (round 19 #3). After Carton
+ * installed a file there, or once that save finished, the same bytes are a save of their own: a GUI saving an earlier
+ * state again after a later one, or a stale buffer after a remote change was written in (round 20 #1).
+ */
+const finishes = (slot: Attempt | undefined, ps: PathState, gen: string, hash: string): boolean =>
+  !!slot?.result && slot.hash === hash && (slot.gen === gen || (slot.epoch !== undefined && slot.epoch === (ps.epoch ?? 0)));
 /** A foreign project.json's envelope, kept for its unversioned fields until Carton's next write consumes it. */
 type Overlay = { id: string; envelope: Record<string, unknown>; mtimeNs?: string };
 type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null; viewGen?: number };
@@ -764,6 +776,8 @@ export class Materializer {
       const nonce = printNonce();
       const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
       const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
+      // the next generation is stored before the install (as a reprint's: round 20 #2)
+      if (prev) await this.engine.putMeta(["view", view], { ...prev, printGen: (prev.printGen ?? 0) + 1 });
       await this.install(rel, text, prev?.printGen ?? 0);
       // a print starts a new generation: late updates for an earlier save never reach this print's sidecar
       const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), printGen: (prev?.printGen ?? 0) + 1, last: null, lastChange: null };
@@ -790,6 +804,9 @@ export class Materializer {
     const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
     const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
     const gen = row.printGen ?? 0;
+    // the next generation is stored before the install: a save on the installed print is never as old as the saves it
+    // displaced, even if storing the print's row below fails (round 20 #2)
+    await this.engine.putMeta(["view", view], { ...row, printGen: gen + 1 });
     await this.install(viewPath(view), text, gen);
     Object.assign(row, { header, nonce, last: null, printGen: gen + 1 });
     await this.engine.putMeta(["view", view], row);
@@ -955,6 +972,12 @@ export class Materializer {
       const st = await this.pathState(rel);
       push(st.written, { hash, stamp }, KEEP_WRITTEN);
     }
+    // a file of Carton's at the path: an earlier save's bytes written after it are a save of their own (`finishes`). Not
+    // while a save of this path installs its own consequences (the regenerated shared file, a view's reprint)
+    if (!this.applying.has(rel)) {
+      const st = await this.pathState(rel);
+      st.epoch = (st.epoch ?? 0) + 1;
+    }
     await this.setLast(rel, hash);
     this.held.endRound();
     await this.reviewDisplaced();
@@ -979,9 +1002,9 @@ export class Materializer {
     await this.saveState(rel);
   }
   /** Content at the path that is the current generation already (installed, applied or tried): nothing to do. */
-  private async isCurrent(rel: string, hash: string): Promise<boolean> {
+  private async isCurrent(rel: string, hash: string, stamp: string): Promise<boolean> {
     if ((await this.pathState(rel)).last !== hash) return false;
-    return !(await this.unfinished(rel, hash));
+    return !(await this.unfinished(rel, hash, stamp));
   }
   /**
    * A save stored but not finished (it failed, or the process died, after its receipt): its attempt slot still holds
@@ -989,10 +1012,10 @@ export class Materializer {
    * its path, or displaced) and finished from its recorded result. Not while it is being finished now (R7-01 reads the
    * path again).
    */
-  private async unfinished(rel: string, hash: string): Promise<boolean> {
+  private async unfinished(rel: string, hash: string, stamp: string): Promise<boolean> {
     if (this.applying.has(rel)) return false;
     const slot = await this.engine.getMeta<Attempt>(["attempt", rel]);
-    return !!slot?.result && slot.hash === hash;
+    return finishes(slot, await this.pathState(rel), sha(`${stamp}\n${hash}`).slice(0, 24), hash);
   }
 
   // ------------------------------------------------------------------ foreign saves
@@ -1072,7 +1095,7 @@ export class Materializer {
 
   private async readEvent(rel: string): Promise<void> {
     const f = await this.readFile(rel);
-    if (!f || (await this.isCurrent(rel, f.hash))) return;
+    if (!f || (await this.isCurrent(rel, f.hash, f.stamp))) return;
     if (rel === TIMELINE_FILE) {
       this.freeze.lastForeign = this.clock.now();
       await this.updateFreeze();
@@ -1096,7 +1119,7 @@ export class Materializer {
         this.quietTimers.delete(rel);
         this.fire(async () => {
           const f = await this.readFile(rel);
-          if (!f || (await this.isCurrent(rel, f.hash))) return;
+          if (!f || (await this.isCurrent(rel, f.hash, f.stamp))) return;
           if (f.stamp !== stamp) return this.waitForQuiet(rel, f.stamp);
           if (await this.parses(rel, f.bytes)) return void (await this.readWithRetry(rel));
           await this.setLast(rel, f.hash); // reported once; the file stays where its writer put it
@@ -1111,7 +1134,7 @@ export class Materializer {
   /** A foreign save at `rel` that no watcher saw (written while the app was closed): applied before Carton writes it. */
   private async importUnseen(rel: string, o: { unparsed?: "wait" } = {}): Promise<void> {
     const f = await this.readFile(rel);
-    if (!f || (await this.isCurrent(rel, f.hash))) return;
+    if (!f || (await this.isCurrent(rel, f.hash, f.stamp))) return;
     if (!(await this.parses(rel, f.bytes))) {
       // a view: as at a watch event (re-read once quiet, then refused with its sidecar saying why). project.json and
       // the shared file are displaced by the install, then kept and reported if they never parse
@@ -1175,7 +1198,7 @@ export class Materializer {
       const ps = await this.pathState(rel);
       const stamp = stampOf(st);
       const hash = sha(bytes);
-      if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || (ps.applied.includes(stamp) && !(await this.unfinished(rel, hash)))) {
+      if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || (ps.applied.includes(stamp) && !(await this.unfinished(rel, hash, stamp)))) {
         await this.held.release(file); // Carton's own install, or a copy of a save already stored (and finished)
         continue;
       }
@@ -1241,7 +1264,7 @@ export class Materializer {
       await this.held.release(d.path);
     };
     // a copy: that save is stored (and finished; an unfinished one is applied again, from its recorded result)
-    if ((d.stamp && ps.applied.includes(d.stamp) && !(await this.unfinished(d.rel, hash))) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done();
+    if ((d.stamp && ps.applied.includes(d.stamp) && !(await this.unfinished(d.rel, hash, d.stamp))) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done();
     if (d.stamp && ps.failed.includes(d.stamp)) {
       this.origin.delete(d.path);
       this.keptFiles.add(d.path);
@@ -1334,10 +1357,10 @@ export class Materializer {
     const rev = rel === PROJECT_FILE ? null : (findRev(text)?.rev ?? null);
     // a save already committed by an earlier attempt of this same file (a failure, or a crash, after its commit) is
     // finished below from its recorded result, even though its content now equals head, or its print was replaced since
-    // (this file, or its bytes written again while that save is unfinished: round 19 #3)
+    // (this file, or its bytes written again while nothing has happened at the path since: `finishes`)
     const gen = sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
     const earlier = await this.engine.getMeta<Attempt>(["attempt", rel]);
-    const resumed = !!earlier && (earlier.gen === gen || (!!earlier.result && earlier.hash === hash));
+    const resumed = !!earlier && (earlier.gen === gen || finishes(earlier, ps, gen, hash));
     // written on a print replaced at a save's commit (see reprintView): refused, unless it is that save itself, finished
     // from its attempt, or its bytes written again while it is still the view's latest save (round 18 #1; after a later
     // save, restoring it is a save on the replaced print like any other: round 19 #4)
@@ -1433,23 +1456,30 @@ export class Materializer {
     let slot = await this.engine.getMeta<Attempt>(attemptKey);
     // finishing a save stored before a failure (or crash): its result is this content's commit, whatever base the lookup
     // finds now (the view row may already name the save itself as the base, or a reprint may have replaced its print;
-    // round 19 #2), and whatever the file's stamp (its bytes written again: round 19 #3)
-    const finishing = !!slot?.result && slot.hash === hash;
+    // round 19 #2), for this file or its bytes written again before anything else happened at the path (`finishes`)
+    const finishing = finishes(slot, ps, gen, hash);
     if (!slot || (!finishing && (slot.gen !== gen || slot.base !== baseKey))) {
       const id = this.engine.newChangeId?.();
-      slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
+      slot = { gen, base: baseKey, hash, epoch: ps.epoch ?? 0, ...(id ? { id } : {}) };
       await this.engine.putMeta(attemptKey, slot);
     }
     const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
-    if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res });
+    if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res, epoch: ps.epoch ?? 0 });
     const settle = async () => {
       // the save is finished: its slot (and the engine's record of its cards) can go. Never fatal: a leftover slot is
-      // taken over by the path's next save
+      // taken over by the path's next save, and finishes only this same file from now on (round 20 #1: the same bytes
+      // written later are a save of their own)
       try {
         await this.engine.putMeta(attemptKey, undefined);
         if (slot.id) await this.engine.putMeta(["attempt-cards", slot.id], undefined);
       } catch (e) {
         this.log.errors.push({ t: this.clock.now(), path: rel, error: `attempt cleanup: ${e instanceof Error ? e.message : String(e)}` });
+        ps.epoch = (ps.epoch ?? 0) + 1;
+        try {
+          await this.saveState(rel);
+        } catch {
+          // kept in memory for this process
+        }
       }
     };
     if (res.status === "rejected") {
