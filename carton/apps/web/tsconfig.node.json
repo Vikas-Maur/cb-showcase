@@ -1,0 +1,10 @@
+{
+  // The Node side (seed, Director bot, host, sample media, benches), the tests and the e2e. They also check src/ with
+  // Node types, since the tests run its browser code under Node.
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "noEmit": true
+  },
+  "include": ["scripts", "test", "src", "bench", "../../e2e/web"]
+}

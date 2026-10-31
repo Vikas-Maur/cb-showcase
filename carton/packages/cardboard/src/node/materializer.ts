@@ -509,10 +509,10 @@ export class Materializer {
    * The freeze view and its seq belong to the cut the freeze started on; on another cut that seq is another state or
    * none. Once the cut has moved (told, or found here), the freeze restarts from the current cut's head.
    */
-  private async freezeOnCurrentCut(moved = false): Promise<void> {
+  private async freezeOnCurrentCut(moved = false, pinned?: HeldBase): Promise<void> {
     const cut = this.engine.cut?.() ?? null;
     if (!this.freeze.active || (!moved && cut === this.freeze.cut)) return;
-    const h = await this.pinnedHead("shared-file");
+    const h = pinned ?? (await this.pinnedHead("shared-file"));
     this.freeze.view = h.baseDoc;
     this.freeze.baseSeq = h.baseSeq;
     this.freeze.causal = [];
@@ -1254,7 +1254,10 @@ export class Materializer {
     const earlier = await this.engine.getMeta<Attempt>(["attempt", rel]);
     const resumed = !!earlier && earlier.gen === sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
     const asBase = !name && !resumed && sameDoc(saved, baseDoc);
-    const asHead = !name && !resumed && !asBase && sameDoc(saved, await this.engine.head());
+    // during a freeze, head is pinned once: the save is compared with, and the freeze restarted from, the same state
+    // (a commit from another process landing in between must stay hidden, R8-01)
+    const frozenHead = !name && !resumed && !asBase && rel === TIMELINE_FILE && this.freeze.active ? await this.pinnedHead("shared-file") : null;
+    const asHead = !name && !resumed && !asBase && sameDoc(saved, frozenHead ? frozenHead.baseDoc : await this.engine.head());
     if (asBase || asHead) {
       // nothing to version: the file shows the state its header names, or head itself (another materializer's install
       // of carton.db's state, a takeover helper's while it held the lease, B11/B3; or a save that changed nothing). No
@@ -1262,7 +1265,7 @@ export class Materializer {
       // project.json's own fields are still kept (its overlay). An agent saving head's content into a frozen shared
       // file has taken in what the freeze hid: the freeze view restarts from head, with head's whole causal past (a
       // merge into the old view without those changes' ids would map later saves through them again)
-      if (rel === TIMELINE_FILE && asHead && this.freeze.active) await this.freezeOnCurrentCut(true);
+      if (asHead && frozenHead) await this.freezeOnCurrentCut(true, frozenHead);
       if (rel === PROJECT_FILE) {
         await this.storeOverlay(text, stamp);
         this.scheduleProjectWrite("overlay"); // its fields reach the file (nothing to write if the file has them)
