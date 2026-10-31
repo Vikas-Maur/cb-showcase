@@ -204,6 +204,10 @@ export async function toolUrl(bundlePath, projectId, src) {
       // Only ids a clip's record named as a stream are streams; anything else is a whole object.
       source: streamRangeSource({ streams: (id) => streams.get(streamKey(bundlePath, projectId, id)) ?? null, media: tools }),
       playlist: (id, urlFor) => streamOf(bundlePath, projectId, id).playlist(urlFor),
+      // A segment a tool read through a playlist (its URL names the stream) that doesn't verify: the stream is reported
+      // damaged on the host (bad/<stream>), so the sharer's next share makes a new one. The reader ignores a hash that
+      // isn't one of its parts.
+      reportDamage: (stream, hash) => streamOf(bundlePath, projectId, stream).reportPartDamage(hash),
       unref: true,
     });
     servers.set(bundlePath, s);

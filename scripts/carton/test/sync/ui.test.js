@@ -7,7 +7,8 @@ const fs = require("fs"), path = require("path");
 
 const ROOT = path.resolve(__dirname, "../../../..");
 const CARTON = path.join(ROOT, "carton");
-const OUT = path.join(process.env.CARTON_TEST_DIR || path.join("/home/ubuntu/gfv-scratch/carton/windows-sync", "ui-test"));
+// Never /tmp (a small shared tmpfs on the build box).
+const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(require("os").homedir(), "gfv-scratch", "carton", "windows-sync"), "ui-test");
 
 let React, render, LiveStatus;
 test.before(async () => {
