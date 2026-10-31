@@ -150,7 +150,9 @@ export class EnvelopeError extends Error {}
 export async function unseal(ref: BlobRef, blobs: BlobStore, opts: { from: "client" | "server"; maxBytes: number }): Promise<unknown> {
   if (!envelopeKeyOk(ref, opts.from)) throw new EnvelopeError("a key that isn't an envelope's");
   if (!Number.isSafeInteger(ref.size) || ref.size < 0 || ref.size > opts.maxBytes) throw new EnvelopeError(`${ref.size} bytes (the limit is ${opts.maxBytes})`);
-  const bytes = await blobs.get(ref.key);
+  // at most one byte more than announced: a sender that lies about the size can't make the receiver load a big object
+  // (round 2 finding 1); one byte over is enough to see the lie
+  const bytes = await blobs.get(ref.key, { offset: 0, length: ref.size + 1 });
   if (!bytes) throw new EnvelopeError("its blob is missing");
   if (bytes.byteLength !== ref.size) throw new EnvelopeError(`${bytes.byteLength} bytes, not ${ref.size}`);
   if ((await digestHex(bytes)) !== ref.sha256) throw new EnvelopeError("its digest doesn't match");

@@ -1,7 +1,8 @@
 // The oversized-message envelope end to end: one change of 33 MiB through the in-process host, whose transport refuses
 // any message over 32 MiB (as a WebSocket host's would). With the blob store on both sides the change is pushed as an
 // envelope, confirmed, fanned out as an envelope, and caught up by a replica that joins afterwards, with no connection
-// lost. The control: without the blob store on the client, the same push is refused by the transport and stays pending.
+// lost. The controls: the transport does refuse a message over 32 MiB (it closes the connection), and a client without
+// the blob store rejects such a change itself as too large, so it never strands the edits after it.
 // And catch-up by pages of at most 4 MiB: a replica joining after many large changes asks again until it has them all.
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -53,14 +54,30 @@ export function register(): void {
     }
   });
 
-  test("envelope control: without the blob store on the client, the same push is refused by the 32 MiB transport and stays pending", async () => {
-    const blobs = createMemoryBlobStore();
-    const { host, a, close } = await sharedCutWorld({ blobs, clientBlobs: false });
+  test("envelope control: the in-process transport refuses a message over 32 MiB by closing the connection", async () => {
+    const { host, close } = await sharedCutWorld({ blobs: createMemoryBlobStore() });
     try {
-      const id = a.commit([set("c0", "name", payload())]);
-      await until(() => host.tooBig >= 1, 30_000, "the transport refuses the push");
-      assert.equal((await a.cut.waitFor(id, 200)).status, "pending");
-      assert.equal(host.sequencer.tables.head("cut-main"), 0, "nothing confirmed");
+      const conn = await host.transport.connect(host.url, { token: "tok-alice" });
+      let closed = "";
+      conn.onClose((why) => (closed = why));
+      conn.send({ type: "presence", branchId: "cut-main", actor: { kind: "human", id: "alice" }, state: { pad: payload() } });
+      await until(() => closed !== "", 5000, "the connection closes");
+      assert.equal(closed, "message too big");
+      assert.equal(host.tooBig, 1);
+    } finally {
+      await close();
+    }
+  });
+
+  test("envelope control: a client without the blob store rejects a 33 MiB change itself as too large; the next edit still confirms", async () => {
+    const { host, a, close } = await sharedCutWorld({ blobs: createMemoryBlobStore(), clientBlobs: false });
+    try {
+      const big = a.commit([set("c0", "name", payload())]);
+      const small = a.commit([set("c1", "name", "after")]);
+      assert.deepEqual(await a.cut.waitFor(big, 30_000), { status: "rejected", id: big, reason: "too large" });
+      assert.deepEqual(await a.cut.waitFor(small, 30_000), { status: "confirmed", id: small, seq: 1 });
+      assert.equal(host.tooBig, 0, "nothing over the cap was sent");
+      assert.equal(a.cut.sync!.stats.reconnects, 1);
     } finally {
       await close();
     }

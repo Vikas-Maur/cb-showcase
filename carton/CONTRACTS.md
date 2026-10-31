@@ -84,3 +84,27 @@ await carton.undo();                                             // ⌘Z for the
 
 The engine functions (`merge3`, `diff`, `apply`, `shotDiff`, `describe`…) are exported from `@carton/core` for code
 that works on docs directly.
+
+## Size
+
+`node scripts/size.mjs` checks the **history bundle** (esbuild minify, ESM, platform-neutral, gzip 9, bundling
+`core/src/history/index.ts` so engine parts History doesn't use are tree-shaken, exactly as P4 measured the
+prototype's 19.3 KB) against a **30 KB min+gz budget**. `node scripts/size-attr.mjs packages/core/src <scratch>`
+prints what each feature costs by stubbing it out. At `7e2f3f7` (UNVERIFIED, bytes min+gz; deterministic, not
+load-dependent):
+
+| Feature in the history bundle | min+gz | In the prototype's 19.3 KB? |
+|---|---|---|
+| Local sequencer, v11 rule (sync-sequencer's `evaluatePush`, shared with the server) | 4,069 | the v5 rule was 947 |
+| `.cbproj` shallow/full export and import, last authors | 1,814 | yes |
+| Fold-some (atomic pre-check, inverse) | 587 | yes, without the pre-check |
+| Undo by actor group, remaps inverted | 550 | no |
+| Portable SHA-256 (browsers and Workers have no sync digest) | 469 | no (node:crypto) |
+| Pins with owner sets | 390 | simpler pins |
+| Views (R4-02) | 236 | yes |
+| Log, names, restore | 216 | no |
+| Remap stored as one op (P5) | 191 | no |
+| Soft warnings on confirm (§4.1) | 128 | no |
+
+The whole bundle is 28.6 KB: 3.1 KB over the prototype is the v11 rule, the rest is the behaviour the plan and the
+five review rounds require (stable ids and no-op ids, Published-cut guard, lineage checks, atomic fold-some).

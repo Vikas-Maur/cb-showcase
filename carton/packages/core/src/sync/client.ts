@@ -18,10 +18,10 @@
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
-import type { AdoptMsg, ClientMessage, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
+import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
-import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, oversized, seal, unseal } from "./envelope.ts";
+import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, jsonBytesBound, oversized, seal, unseal } from "./envelope.ts";
 import type { ConfirmedId } from "./messages.ts";
 
 export type SyncStatus = "offline" | "connecting" | "syncing" | "up-to-date" | "stopped";
@@ -83,12 +83,20 @@ export interface SyncClientOptions {
   envelopeBytes?: number;
   /** The largest message this client fetches from an envelope (default 1 GiB). */
   maxEnvelopeBytes?: number;
+  /**
+   * The largest message this client sends, until the server says its own (`WelcomeMsg.maxMessageBytes`): default 64
+   * MiB with `blobs` (the server's envelope limit), 32 MiB without (a WebSocket frame). A change bigger than this is
+   * rejected locally ("too large"); pushes over it together go in several messages.
+   */
+  maxMessageBytes?: number;
 }
 
 /** The most presence updates a client sends a second (§12: 10–20 Hz while dragging). */
 export const PRESENCE_PER_SEC = 10;
 
 let CONN = 0;
+/** Refusals about the connection (its token, its branch), not the change: the same on every message it sends. */
+const CONNECTION_REASONS: ReadonlySet<string> = new Set(["forbidden", "read-only branch", "unknown branch", "foreign id"]);
 
 export class SyncClient {
   readonly queue: ReplicaQueue;
@@ -99,6 +107,8 @@ export class SyncClient {
   epoch = 0;
   private conn: TransportConnection | null = null;
   private connId = 0;
+  /** The largest client message the server reads, from its welcome. */
+  private serverLimit: number | null = null;
   /** The current connection's outgoing side: keeps order around envelope uploads. */
   private out: Outbox<ClientMessage> | null = null;
   stopped = false;
@@ -124,6 +134,9 @@ export class SyncClient {
   readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0, envelopesSent: 0, envelopesReceived: 0 };
 
   private unsubscribe: (() => void) | null = null;
+  /** `history` requests waiting for their answer on the current connection, by `req`. */
+  private requests = new Map<number, { m: HistoryMsg; rows: ConfirmedChange[]; lineage?: ClosureEntry[]; resolve: (r: { rows: ConfirmedChange[]; lineage?: ClosureEntry[] }) => void; reject: (e: Error) => void }>();
+  private reqN = 0;
 
   constructor(opts: SyncClientOptions) {
     this.o = opts;
@@ -178,6 +191,7 @@ export class SyncClient {
     const c = this.conn;
     this.conn = null;
     c?.close();
+    this.failRequests(why);
     this.setStatus("stopped");
     this.emit({ type: "stopped", why });
     for (const w of this.waiters.splice(0)) w(false);
@@ -265,10 +279,27 @@ export class SyncClient {
   private onClose(id: number, why: string): void {
     if (id !== this.connId || !this.conn) return;
     this.conn = null;
+    this.failRequests(why);
     this.caughtUp = false;
     this.setStatus("offline");
     this.emit({ type: "offline", why });
     if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.o.backoffMs ?? 500);
+  }
+  private failRequests(why: string): void {
+    for (const r of this.requests.values()) r.reject(new Error(`history request lost: ${why}`));
+    this.requests.clear();
+  }
+  /**
+   * History this replica doesn't hold (Stage F): the rows `(after, upTo]` of this branch, paged like catch-up, and with
+   * `lineage` its ancestry closure. Fails if offline or if the connection drops before the last page.
+   */
+  history(after: number, upTo: number, { lineage = false }: { lineage?: boolean } = {}): Promise<{ rows: ConfirmedChange[]; lineage?: ClosureEntry[] }> {
+    if (!this.conn || this.stopped) return Promise.reject(new Error("history request: offline"));
+    return new Promise((resolve, reject) => {
+      const m: HistoryMsg = { type: "history", branchId: this.branchId, req: ++this.reqN, after, upTo, ...(lineage ? { lineage: true } : {}) };
+      this.requests.set(m.req, { m, rows: [], resolve, reject });
+      this.send(m);
+    });
   }
   /** Drop connection `id` (a lost message: the server couldn't read an envelope, or we couldn't): reconnect, catch up. */
   private drop(id: number, why: string): void {
@@ -296,7 +327,7 @@ export class SyncClient {
    * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
    * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
    */
-  private hello(onlyFrom = -1): ClientMessage {
+  private hello(onlyFrom = -1, after?: number): ClientMessage {
     const b = this.branchId;
     const pending: PendingClaim[] = [];
     for (const p of this.queue.pending(b)) {
@@ -307,6 +338,7 @@ export class SyncClient {
     }
     const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
     if (this.noKeyframe) m.noKeyframe = true;
+    if (after !== undefined) m.claimsAfter = after;
     if (this.o.blobs) m.envelopes = true;
     return m;
   }
@@ -317,7 +349,14 @@ export class SyncClient {
   private upload(): void {
     const s = this.queue.branch(this.branchId).sequencer;
     if (s.kind !== "handingOff" || !this.o.adoptPayload) return;
-    const msg: AdoptMsg = { type: "adopt", branchId: this.branchId, n: s.n, stateHash: s.stateHash, ...this.o.adoptPayload() };
+    const payload = this.o.adoptPayload();
+    const msg: AdoptMsg = { type: "adopt", branchId: this.branchId, n: s.n, stateHash: s.stateHash, ...payload };
+    if (payload.doc0) msg.rootHash = hashDoc(payload.doc0, this.queue.schema);
+    if (oversized(msg, this.messageLimit())) {
+      // never sent to be refused: the owner learns now (sharing without history uploads only the current state)
+      this.emit({ type: "error", error: `this cut's upload is over the server's limit of ${this.messageLimit()} bytes: share it without history` });
+      return;
+    }
     this.send(msg);
     if (this.forceAdoptTwice) {
       this.forceAdoptTwice = false;
@@ -339,6 +378,8 @@ export class SyncClient {
     const b = this.branchId;
     switch (m.type) {
       case "status": {
+        // the limit, before the hand-off's upload (round 3 finding 6)
+        if (m.maxMessageBytes && this.o.blobs) this.serverLimit = m.maxMessageBytes;
         if (this.queue.branch(b).sequencer.kind !== "handingOff") return;
         if (m.adopted && m.adoptKey === this.adoptKey()) return this.becomeServer(m.since ?? 0);
         if (!m.adopted) return this.upload();
@@ -349,12 +390,13 @@ export class SyncClient {
         return this.becomeServer(m.since);
       case "hello":
       case "changes":
+        if (m.type === "hello" && m.maxMessageBytes && this.o.blobs) this.serverLimit = m.maxMessageBytes;
         this.fenced(() => {
           if (m.branchId !== b) return;
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
             // the server checked only part of our claims: keep what it found, ask for the rest, act on nothing yet
             this.confirmedSoFar.push(...m.confirmed);
-            return this.send(this.hello(m.uncheckedFrom));
+            return this.send(this.hello(m.uncheckedFrom, m.checkedThrough));
           }
           const confirmed = m.type === "hello" ? [...this.confirmedSoFar.splice(0), ...m.confirmed] : [];
           if (m.type === "changes" && m.rows.length && m.rows[0]!.seq > this.queue.headSeq(b) + 1) return this.resync("a gap in the rows");
@@ -415,9 +457,18 @@ export class SyncClient {
         this.epoch++; // everything still in flight from the dead epoch is dropped by the server; resend all
         this.emit({ type: "reject", id: m.id, reason: m.reason, epoch: m.epoch });
         if (VALIDATION_REASONS.has(m.reason)) {
-          // can't be fixed by resubmitting: it leaves the queue as rejected; the rest is rebased without it
           this.fenced(() => {
-            if (m.id) this.queue.rejectPending(b, m.id, m.reason);
+            const p = m.id ? this.queue.pending(b).find((x) => x.id === m.id) : undefined;
+            if (p && this.queue.isEmpty(p)) {
+              // an emptied change (absorbed, or refused here) is only withdrawn: nothing about it is decided by a
+              // refusal, since a copy sent earlier may still be confirmed (round 4 finding 1). One this connection may
+              // not make (its token, its branch) isn't sent again on it; any other answered a push refused for its
+              // content, and the change is withdrawn in the new epoch.
+              if (CONNECTION_REASONS.has(m.reason)) {
+                p.withdrawRefused = this.connId;
+                this.emit({ type: "error", error: `withdraw of ${m.id} refused (${m.reason}): it stays pending` });
+              }
+            } else if (m.id) this.queue.rejectPending(b, m.id, m.reason); // the rest is rebased without it
             this.defer(() => this.pump(), 1);
           });
           return;
@@ -447,6 +498,20 @@ export class SyncClient {
           this.defer(() => this.pump(), Math.max(1, n)); // the rebase holds the pusher, then the resubmission
         });
         return;
+      }
+      case "history": {
+        const r = this.requests.get(m.req);
+        if (!r || m.branchId !== b) return;
+        if (m.error) {
+          this.requests.delete(m.req);
+          return r.reject(new Error(m.error));
+        }
+        r.rows.push(...m.rows);
+        if (m.lineage) r.lineage = m.lineage;
+        // the next page starts after the last row; a page with no row can't make progress, so it ends the request
+        if (m.more && m.rows.length) return this.send((r.m = { ...r.m, after: m.rows[m.rows.length - 1]!.seq, lineage: false }));
+        this.requests.delete(m.req);
+        return r.resolve({ rows: r.rows, ...(r.lineage ? { lineage: r.lineage } : {}) });
       }
       case "overwritten":
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
@@ -478,7 +543,9 @@ export class SyncClient {
     } catch {
       return; // not held (inside a jumped stretch): someone else will upload it
     }
-    this.send({ type: "keyframe", branchId: this.branchId, keyframe: { seq, stateHash: hashDoc(doc, this.queue.schema), doc } });
+    const msg: ClientMessage = { type: "keyframe", branchId: this.branchId, keyframe: { seq, stateHash: hashDoc(doc, this.queue.schema), doc } };
+    if (oversized(msg, this.messageLimit())) return; // keyframes are optional: another replica, or rows, serve instead
+    this.send(msg);
   }
 
   /**
@@ -516,60 +583,105 @@ export class SyncClient {
     if (!this.conn?.open || !this.caughtUp || this.stopped || this.quiesced) return;
     const b = this.branchId;
     if (this.queue.branch(b).sequencer.kind !== "server") return;
-    this.fenced(() => {
-      const head = this.queue.headSeq(b);
-      for (const p of [...this.queue.pending(b)]) {
-        if (!this.queue.isEmpty(p)) continue;
-        if (!p.sentBases.length) {
-          this.queue.absorbLocally(b, p); // never sent: no copy can exist anywhere
-          continue;
-        }
-        if (p.withdrawSent?.conn === this.connId && p.withdrawSent.epoch === this.epoch) continue;
-        p.withdrawSent = { conn: this.connId, epoch: this.epoch };
-        this.stats.withdraws++;
-        this.emit({ type: "withdraw", id: p.id, epoch: this.epoch });
-        this.send({ type: "withdraw", branchId: b, id: p.id, base: head, epoch: this.epoch });
+    this.fenced(() => this.pushPending(b));
+    // a validation reject or a local absorption can empty the queue with no ack to come: up to date now (round 2
+    // finding 9)
+    if (!this.stopped && this._status === "syncing" && !this.queue.pending(b).length) this.setStatus("up-to-date");
+  }
+  /** Withdraw what was absorbed, then send every pending change not yet sent in this epoch, in order. */
+  private pushPending(b: string): void {
+    const head = this.queue.headSeq(b);
+    for (const p of [...this.queue.pending(b)]) {
+      if (!this.queue.isEmpty(p)) continue;
+      if (!p.sentBases.length) {
+        this.queue.absorbLocally(b, p); // never sent: no copy can exist anywhere
+        continue;
       }
-      const pend = this.queue.pending(b);
-      if (this.o.pipeline === false && pend.some((p) => !this.queue.isEmpty(p) && this.inFlight(p))) return;
-      const out: Change[] = [];
-      for (const p of pend) {
-        if (this.queue.isEmpty(p) || this.inFlight(p)) continue;
-        const v = last(p.versions);
-        p.sentEpoch = this.epoch;
-        p.sentConn = this.connId;
-        p.sentAt ??= (this.o.clock ?? Date.now)();
-        p.sends++;
-        if (!p.sentBases.includes(v.base.seq)) p.sentBases.push(v.base.seq);
-        let ch: Change = {
-          id: p.id,
-          hash: v.hash,
-          author: p.author,
-          branchId: b,
-          base: v.base,
-          ops: v.ops,
-          intent: v.intent,
-          kinds: v.kinds,
-          policy: v.policy,
-          at: p.created,
-          rebase: v.k,
-          supersedes: v.supersedes,
-          paths: v.decl.paths,
-          reads: v.decl.reads,
-          spans: v.decl.spans,
-          trackOrder: v.decl.trackOrder,
-        };
-        if (v.decl.structural !== undefined) ch.structural = v.decl.structural;
-        if (p.history) Object.assign(ch, p.history); // fold-in and undo fields travel with the change (finding 13)
-        if (this.tamper) ch = this.tamper(ch);
-        out.push(ch);
+      if (p.withdrawSent?.conn === this.connId && p.withdrawSent.epoch === this.epoch) continue;
+      if (p.withdrawRefused === this.connId) continue;
+      p.withdrawSent = { conn: this.connId, epoch: this.epoch };
+      // a withdraw lands in (head, head + K + 1] like a push: its base joins the claims a reconnect makes, so a lost
+      // answer is found again rather than spent twice (round 4 finding 2)
+      if (!p.sentBases.includes(head)) p.sentBases.push(head);
+      this.stats.withdraws++;
+      this.emit({ type: "withdraw", id: p.id, epoch: this.epoch });
+      this.send({ type: "withdraw", branchId: b, id: p.id, base: head, epoch: this.epoch });
+    }
+    const pend = this.queue.pending(b);
+    if (this.o.pipeline === false && pend.some((p) => !this.queue.isEmpty(p) && this.inFlight(p))) return;
+    const limit = this.messageLimit();
+    // the server reads whole messages: the push around the changes counts too (round 3 finding 1)
+    const wrapper = { type: "push" as const, branchId: b, epoch: this.epoch, changes: [] as Change[] };
+    const wrap = jsonBytesBound(wrapper, Infinity);
+    const out: Change[] = [];
+    const sizes: number[] = [];
+    let tooLarge: string | null = null;
+    for (const p of pend) {
+      if (this.queue.isEmpty(p) || this.inFlight(p)) continue;
+      const v = last(p.versions);
+      let ch: Change = {
+        id: p.id,
+        hash: v.hash,
+        author: p.author,
+        branchId: b,
+        base: v.base,
+        ops: v.ops,
+        intent: v.intent,
+        kinds: v.kinds,
+        policy: v.policy,
+        at: p.created,
+        rebase: v.k,
+        supersedes: v.supersedes,
+        paths: v.decl.paths,
+        reads: v.decl.reads,
+        spans: v.decl.spans,
+        trackOrder: v.decl.trackOrder,
+      };
+      if (v.decl.structural !== undefined) ch.structural = v.decl.structural;
+      if (p.history) Object.assign(ch, p.history); // fold-in and undo fields travel with the change (finding 13)
+      if (this.tamper) ch = this.tamper(ch);
+      // a change bigger than one message the server reads can never be confirmed: rejected here rather than sent and
+      // stranded; the changes after it wait for the rebase without it (round 2 finding 2)
+      const n = jsonBytesBound(ch, limit);
+      if (wrap + n > limit && oversized({ ...wrapper, changes: [ch] }, limit)) {
+        tooLarge = p.id;
+        break;
       }
-      if (!out.length) return;
-      this.stats.pushMsgs++;
+      p.sentEpoch = this.epoch;
+      p.sentConn = this.connId;
+      p.sentAt ??= (this.o.clock ?? Date.now)();
+      p.sends++;
+      if (!p.sentBases.includes(v.base.seq)) p.sentBases.push(v.base.seq);
+      out.push(ch);
+      sizes.push(n);
+    }
+    if (out.length) {
       this.stats.changesSent += out.length;
       this.emit({ type: "push", ids: out.map((c) => c.id), epoch: this.epoch });
-      this.send({ type: "push", branchId: b, epoch: this.epoch, changes: out });
-    });
+      // changes over the limit together go in several messages, in order, in the same epoch; each message's size is
+      // its wrapper plus its changes and their commas (a change alone was checked to fit above)
+      let from = 0, size = wrap;
+      for (let i = 0; i <= out.length; i++) {
+        if (i === out.length || (i > from && size + sizes[i]! + 1 > limit)) {
+          this.stats.pushMsgs++;
+          this.send({ type: "push", branchId: b, epoch: this.epoch, changes: out.slice(from, i) });
+          from = i;
+          size = wrap;
+        }
+        if (i < out.length) size += sizes[i]! + 1;
+      }
+    }
+    if (tooLarge) {
+      // sent before (a copy may still be confirmed): withdrawn first, reported once the server answers (round 3
+      // finding 2); never sent: rejected at once
+      this.emit({ type: "reject", id: tooLarge, reason: "too large", epoch: this.epoch });
+      this.queue.rejectLocally(b, tooLarge, "too large");
+      this.defer(() => this.pump(), 1);
+    }
+  }
+  /** The largest message we send: the server's, else ours (64 MiB with a blob store, 32 MiB without). */
+  private messageLimit(): number {
+    return this.serverLimit ?? this.o.maxMessageBytes ?? (this.o.blobs ? 64 << 20 : 32 << 20);
   }
 
   /** Handover / idle exit: push nothing new from now on. */

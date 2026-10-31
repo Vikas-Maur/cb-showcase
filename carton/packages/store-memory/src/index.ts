@@ -26,6 +26,12 @@ class Table {
 
 const rank = (x: string | number): number => (typeof x === "number" ? 0 : 1);
 /** Key order of the Store contract: element-wise, number < string, numbers numerically, then shorter first. */
+function validKey(key: StoreKey): void {
+  for (const el of key) {
+    if (typeof el === "number" ? !Number.isFinite(el) : typeof el !== "string") throw new TypeError(`store key: ${String(el)} is not a string or a finite number`);
+  }
+}
+
 export function compareKeys(a: StoreKey, b: StoreKey): number {
   const n = Math.min(a.length, b.length);
   for (let i = 0; i < n; i++) {
@@ -111,13 +117,17 @@ export function createMemoryStore(opts: MemoryStoreOptions = {}): Store & { read
       if (r.lt) hi = Math.min(hi, bound(keys, r.lt, false));
       if (r.lte) hi = Math.min(hi, bound(keys, r.lte, true));
       const out: { key: StoreKey; value: T }[] = [];
-      const limit = r.limit ?? Infinity;
+      // A limit counts whole rows: 2.7 reads 2, anything below 1 reads none (the same in every store).
+      const limit = r.limit === undefined ? Infinity : Math.floor(r.limit);
       if (!r.reverse) for (let i = lo; i < hi && out.length < limit; i++) out.push({ key: keys[i]!, value: t.byKey.get(enc(keys[i]!))!.value as T });
       else for (let i = hi - 1; i >= lo && out.length < limit; i--) out.push({ key: keys[i]!, value: t.byKey.get(enc(keys[i]!))!.value as T });
       return out;
     },
     async write(writes: readonly StoreWrite[], conditions: readonly StoreCondition[] = []): Promise<boolean> {
       check();
+      // Refuse keys the other stores can't store (NaN would also break the sort), before anything is applied.
+      for (const w of writes) validKey(w.key);
+      for (const c of conditions) validKey(c.key);
       // check and apply in one synchronous step: nothing else can run in between (one event loop)
       for (const c of conditions) if (!holds(c)) return false;
       const touched = new Set<string>();
@@ -140,7 +150,17 @@ export function createMemoryStore(opts: MemoryStoreOptions = {}): Store & { read
         }
         touched.add(w.table);
       }
-      if (touched.size) for (const l of data.listeners) l([...touched]);
+      if (touched.size) {
+        const tables = [...touched];
+        // The batch is applied whatever a listener does: a throwing listener is reported, not turned into a failure.
+        for (const l of data.listeners) {
+          try {
+            l(tables);
+          } catch (e) {
+            console.error("carton store: a watch listener threw", e);
+          }
+        }
+      }
       return true;
     },
     watch(listener) {
