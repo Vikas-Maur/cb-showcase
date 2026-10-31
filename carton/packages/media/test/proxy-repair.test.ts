@@ -4,7 +4,8 @@ import { after, test } from 'node:test';
 import { scratchDir } from './helpers.ts';
 import { writeFile } from 'node:fs/promises';
 import { bytesSource, hashSource } from '../src/hash.ts';
-import { damagedKey, mediaKey, proxyPointerKey, streamEndKey, streamSegmentKey } from '../src/keys.ts';
+import { damagedKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey } from '../src/keys.ts';
+import { MemoryLeafCache } from '../src/cache.ts';
 import { LEAF_SIZE } from '../src/manifest.ts';
 import { nodeHasher } from '../src/node/node-hasher.ts';
 import { closeHashWorkers } from '../src/node/hash-file.ts';
@@ -298,4 +299,72 @@ test('cancelling during the read-back\'s last digest ends in AbortError, not suc
   release();
   await upload;
   assert.equal(afterAbort, 'AbortError');
+});
+
+// S5 review round 5 (the reviewer's reproductions, typed).
+async function liveStream() {
+  const store = new CountingMemoryStore();
+  const claim = await claimProxyStream(store, src, 'p1', 'test');
+  const writer = new ProxyStreamWriter({ store, hasher: nodeHasher, id: (claim.pointer as { stream: string }).stream });
+  const init = await writer.init(new Uint8Array([1]));
+  const part = await writer.segment(new Uint8Array([2, 3]), 2);
+  return { store, writer, init, part };
+}
+
+test('an entry that reads as JSON but not as an entry is not kept, and is read again (round 5, finding 1)', async () => {
+  const { store, writer, init } = await liveStream();
+  const cache = new MemoryLeafCache();
+  const media = new MediaReader({ store, hasher: nodeHasher, cache });
+  const get = store.get.bind(store);
+  let transient = true;
+  store.get = async (key, range) => {
+    if (key === streamInitKey(writer.id) && transient) {
+      transient = false;
+      const b = (await get(key, range))!;
+      return new TextEncoder().encode(new TextDecoder().decode(b).replace('size', 'sixe'));
+    }
+    return get(key, range);
+  };
+  const reader = new ProxyStreamReader({ store, media, id: writer.id });
+  assert.equal(await reader.initPart(), null);
+  assert.deepEqual(await reader.initPart(), init, 'the store is asked again');
+  // And one already kept invalid (an older cache): read from the store instead.
+  await cache.putEntry(streamInitKey(writer.id), new TextEncoder().encode('{"hash":"nope"}'));
+  assert.deepEqual(await new ProxyStreamReader({ store, media, id: writer.id }).initPart(), init);
+});
+
+test('reporting a known damaged segment needs no further entry reads (round 5, finding 2)', async () => {
+  const { store, writer, part } = await liveStream();
+  const media = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 });
+  const reader = new ProxyStreamReader({ store, media, id: writer.id });
+  await reader.segment(0);
+  let handled!: () => void;
+  const requestDone = new Promise<void>((r) => (handled = r));
+  const server = await startRangeServer({
+    onRequest: (info) => {
+      if (info.hash === part.hash && info.error) handled();
+    },
+    source: media.toolSource(),
+    playlist: (_id, urlFor) => reader.playlist(urlFor),
+    reportDamage: (_stream, hash) => reader.reportPartDamage(hash),
+  });
+  try {
+    const list = await (await fetch(server.playlistUrl(writer.id))).text();
+    const url = list.split('\n').find((line) => line.includes(part.hash))!;
+    store.objects.get(mediaKey(part.hash))![0] ^= 255;
+    const get = store.get.bind(store);
+    let failNext = true;
+    store.get = async (key, range) => {
+      if (key === streamSegmentKey(writer.id, 1) && failNext) {
+        failNext = false;
+        throw new Error('transient metadata GET failure');
+      }
+      return get(key, range);
+    };
+    assert.equal((await fetch(url)).status, 502);
+    await requestDone; // onRequest runs after the damage callback settles
+    assert.equal(await usableProxy(store, src, 'p1'), null, 'the stream is reported');
+  } finally {
+    await server.close();
+  }
 });

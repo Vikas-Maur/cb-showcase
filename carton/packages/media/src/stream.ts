@@ -234,28 +234,31 @@ export class ProxyStreamReader {
     return this.#o.cache ?? this.#o.media.cache;
   }
 
-  /** An entry: from the cache, else from the store (and then kept). Absent entries aren't kept: they may yet appear. */
-  async #entry(key: string): Promise<Record<string, unknown> | null> {
-    const kept = await this.#kept(key);
+  /**
+   * An entry, as `as` reads it: from the cache, else from the store (and then kept). Only entries that read as valid
+   * are kept, and a kept one that doesn't is read from the store again; absent ones aren't kept: they may yet appear.
+   */
+  async #entry<T>(key: string, as: (v: Record<string, unknown> | null) => T | null): Promise<T | null> {
+    const kept = await this.#kept(key, as);
     if (kept) return kept;
     const b = await this.#o.store.get(key);
-    const v = b && parseJson(b);
+    const v = b && as(parseJson(b));
     if (v) await this.#cache?.putEntry?.(key, b).catch(() => {});
-    return v ?? null;
+    return v || null;
   }
 
-  async #kept(key: string): Promise<Record<string, unknown> | null> {
+  async #kept<T>(key: string, as: (v: Record<string, unknown> | null) => T | null): Promise<T | null> {
     const b = await this.#cache?.getEntry?.(key).catch(() => null);
-    return b ? parseJson(b) : null;
+    return b ? as(parseJson(b)) : null;
   }
 
   async initPart(): Promise<StreamPart | null> {
-    this.#init ??= asPart(await this.#entry(streamInitKey(this.id)));
+    this.#init ??= await this.#entry(streamInitKey(this.id), asPart);
     return this.#init;
   }
 
   async end(): Promise<StreamEnd | null> {
-    this.#end ??= asEnd(await this.#entry(streamEndKey(this.id)));
+    this.#end ??= await this.#entry(streamEndKey(this.id), asEnd);
     return this.#end;
   }
 
@@ -269,12 +272,12 @@ export class ProxyStreamReader {
 
   async #fill(index: number): Promise<StreamSegment | null> {
     // A kept end says where the stream stops, without asking the store (which may be unreachable) for one more entry.
-    this.#end ??= asEnd(await this.#kept(streamEndKey(this.id)));
+    this.#end ??= await this.#kept(streamEndKey(this.id), asEnd);
     // Entries land in order, so fetch the ones before it first: the cache stays a prefix.
     while (this.#segments.length <= index) {
       const i = this.#segments.length;
       if (this.#end && i >= this.#end.segments) return null;
-      const seg = asSegment(await this.#entry(streamSegmentKey(this.id, i)), i);
+      const seg = await this.#entry(streamSegmentKey(this.id, i), (v) => asSegment(v, i));
       if (!seg) return null;
       this.#segments.push(seg);
     }
@@ -314,7 +317,11 @@ export class ProxyStreamReader {
    * isn't one of its parts.
    */
   async reportPartDamage(hash: string): Promise<boolean> {
-    const mine = (await this.initPart())?.hash === hash || (await this.known()).some((s) => s.hash === hash);
+    // Parts already read first: a tool reports a segment it got from this reader's playlist, so it is almost always
+    // known, and the report mustn't hang on fetching entries (one more request that may fail).
+    const isPart = (p: StreamPart | null) => p?.hash === hash;
+    let mine = isPart(this.#init) || this.#segments.some(isPart);
+    if (!mine) mine = isPart(await this.initPart().catch(() => null)) || (await this.known().catch(() => this.#segments.slice())).some(isPart);
     if (mine) await this.#reportDamage({ hash });
     return mine;
   }
