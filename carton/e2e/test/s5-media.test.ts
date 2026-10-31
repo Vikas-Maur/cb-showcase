@@ -57,10 +57,27 @@ after(async () => {
 });
 
 const fileSha = (path: string, from = 0, to?: number) => createHash("sha256").update(readFileSync(path).subarray(from, to)).digest("hex");
-/** A file's video packets as ffprobe lists them (size and duration of each), for "the same video" across containers. */
-async function videoPackets(path: string): Promise<string> {
-  const r = await run(FFPROBE, ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=size,duration_time", "-of", "csv=p=0", path], { timeout: 60_000, maxBuffer: 64 << 20 });
-  return r.stdout.trim();
+/**
+ * A file's packets per track as ffprobe reads them: each packet's size and SHA-256 of its payload, in order, keyed by
+ * track type ("video", "audio"). Equal across containers exactly when every track's coded frames are the same bytes in
+ * the same order (a repackaging, no re-encode, nothing dropped).
+ */
+async function mediaPackets(path: string): Promise<Record<string, string[]>> {
+  const r = await run(FFPROBE, ["-v", "error", "-show_data_hash", "sha256", "-show_entries", "packet=codec_type,size,data_hash", "-of", "csv=p=0", path], { timeout: 60_000, maxBuffer: 64 << 20 });
+  const tracks: Record<string, string[]> = {};
+  for (const line of r.stdout.trim().split(/\r?\n/)) {
+    const [type, size, hash] = line.split(",");
+    if (type && hash) (tracks[type] ??= []).push(`${size} ${hash}`);
+  }
+  return tracks;
+}
+
+/** `played` carries the same coded video and audio as `source`, and the source has both tracks. */
+async function assertSameMedia(played: string, source: string, what: string): Promise<void> {
+  const [got, want] = [await mediaPackets(played), await mediaPackets(source)];
+  assert.ok(want.video?.length && want.audio?.length, `the source has video and audio: ${Object.keys(want)}`);
+  assert.deepEqual(Object.keys(got).sort(), Object.keys(want).sort(), `${what}: the same tracks`);
+  for (const k of Object.keys(want)) assert.ok(got[k]!.length === want[k]!.length && got[k]!.every((x, n) => x === want[k]![n]), `${what}: every ${k} packet the same bytes (${got[k]!.length} vs ${want[k]!.length})`);
 }
 const statePath = (m: Machine, hash: string) => join(m.home, "uploads", `m_${hash}.json`);
 /** The parts a machine's FsUploadStateStore has recorded for an open upload (read briefly: the app renames over it). */
@@ -173,7 +190,7 @@ for (const kind of ["blob-fs", "blob-s3", "host-http"] as const) {
     assert.equal(px.bytes, proxy.size, "init plus every segment: the record's size");
     assert.ok(px.init > 0 && px.segments >= 1 && px.ended?.segments === px.segments, `played to the stream's end: ${JSON.stringify(px)}`);
     assert.deepEqual(px.events, [], "no leaf failed its check");
-    if (FF) assert.deepEqual(await videoPackets(played), await videoPackets(hostProxy), "the same video, packet for packet");
+    if (FF) await assertSameMedia(played, hostProxy, "the played stream is the owner's proxy");
     const og = await mate.ask({ cmd: "read", hash: want.original.hash, mode: "tool" }, 60_000);
     assert.equal(og.failed, undefined, og.failed);
     assert.equal(og.mediaHash, want.original.hash, "the original's bytes hash to its id");
@@ -270,7 +287,7 @@ test("S5 the shared clip's id rides in the project: the owner commits it through
   assert.equal(px.failed, undefined, px.failed);
   assert.equal(px.bytes, shared.proxy.size, "every part, as the owner's record sizes it");
   assert.deepEqual(px.events, [], "no leaf failed its check");
-  assert.deepEqual(await videoPackets(join(w.mate.home, "played.mp4")), await videoPackets(hostProxy), "the owner's proxy, packet for packet");
+  await assertSameMedia(join(w.mate.home, "played.mp4"), hostProxy, "the played stream is the owner's proxy");
   const og = await mate.ask({ cmd: "read", hash, mode: "tool" }, 60_000);
   assert.equal(og.failed, undefined, og.failed);
   assert.equal(og.mediaHash, want.original.hash, "the original's bytes hash to the id the project names");
@@ -499,37 +516,43 @@ async function heldProxyUpload(w: World): Promise<HeldUpload> {
   };
 }
 
-// PLAN §22 phase 4 (S5-1, fixed by media's segmented proxies): the owner's share puts every segment of the proxy
-// stream but its `end` entry is held, so the stream is still uploading for as long as the teammate's attempt lasts.
+// PLAN §22 phase 4 (S5-1, fixed by media's segmented proxies): the owner's share holds the stream's entry for segment 1
+// (and so everything after it), so the stream is still uploading while the teammate plays: the player gets the init
+// segment and segment 0, then waits; once the entry goes up the same playback carries on to the stream's end.
 test("S5 a teammate streams the proxy before its upload finishes (PLAN §22 phase 4)", { timeout: 240_000, skip: NO_FF }, async (t) => {
   const w = await world(t, "host-http");
   const original = placeOriginal(w.owner, clips.original);
   const hostProxy = placeHostProxy(w.owner, clips.hostProxy);
   const { record } = sampleVideo(w.owner);
   const owner = await startMachine(w.procs, "owner", w.owner.home, w.side.storeFor("owner"));
-  const sharing = owner.ask({ cmd: "share", record, original, hostProxy, originals: false, holdEnd: true }, 180_000);
+  const sharing = owner.ask({ cmd: "share", record, original, hostProxy, originals: false, holdSegment: 1 }, 180_000);
   sharing.catch(() => {});
   try {
-    const held = await owner.next((x) => x.endHeld || x.shareEvent?.type === "proxy" && x.shareEvent.how === "teammate's", 120_000);
-    assert.ok(held.endHeld, `the proxy was made as a new stream: ${JSON.stringify(held)}`);
-    const stream = String(held.endHeld).split("/")[1]!;
+    const held = await Promise.race([
+      owner.next((x) => x.entryHeld, 120_000),
+      sharing.then((r) => { throw new Error(`the share finished without reaching segment 1 (a one-segment proxy?): ${JSON.stringify(r.record?.proxy)}`); }),
+    ]);
+    const stream = String(held.entryHeld).split("/")[1]!;
     const mate = await startMachine(w.procs, "mate", w.mate.home, w.side.storeFor("mate"));
     // the teammate learns the stream from the source's pointer, as from the project's record, while it uploads
     const { pointer } = await mate.ask({ cmd: "proxyOf", hash: (await hashFile(original)).hash });
     assert.equal(pointer?.stream, stream, "the teammate finds the stream while it uploads");
-    const first = await mate.ask({ cmd: "play", stream, segments: 1 }, 60_000);
-    assert.equal(first.failed, undefined, first.failed);
-    assert.ok(first.init > 0 && first.segments === 1, `the init segment and the first segment play, verified: ${JSON.stringify(first)}`);
-    assert.deepEqual(first.events, [], "no leaf failed its check");
-    assert.equal(first.ended, null, "the stream had not ended during the teammate's attempt");
-    assert.ok(!owner.lines.some((x) => x.endSent), "the owner's upload was still going");
-    // then the end goes up: a player that kept going reaches the stream's end, and the record carries its size
-    const whole = mate.ask({ cmd: "play", stream }, 120_000);
+    const playing = mate.ask({ cmd: "play", stream }, 180_000);
+    const done = settled(playing);
+    await mate.next((x) => x.played?.stream === stream && x.played.index === 0, 60_000);
+    // the player has segment 0 and is waiting for segment 1, which is still on its way
+    await new Promise((r) => setTimeout(r, 1500));
+    assert.ok(!done(), "the player waits for the segment still uploading (it doesn't stop at what is up)");
+    assert.ok(!mate.lines.some((x) => x.played?.stream === stream && x.played.index === 1), "segment 1 isn't played before it is up");
+    assert.ok(!owner.lines.some((x) => x.entrySent), "the owner's upload was still going");
+    // the entry goes up: the same playback carries on to the end, every part verified, the record sized
     await owner.ask({ cmd: "release" });
     const r = await sharing;
-    const all = await whole;
+    const all = await playing;
     assert.equal(all.failed, undefined, all.failed);
+    assert.ok(all.segments >= 2 && all.ended?.segments === all.segments, `played on to the stream's end: ${JSON.stringify({ segments: all.segments, ended: all.ended })}`);
     assert.equal(all.bytes, r.record.proxy?.size, "the whole stream, as the record sizes it");
+    assert.deepEqual(all.events, [], "no leaf failed its check");
     assert.equal(r.record.proxy?.stream, stream);
   } finally {
     await owner.ask({ cmd: "release" }).catch(() => {});

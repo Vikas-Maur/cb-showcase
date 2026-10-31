@@ -488,20 +488,42 @@ test("S3-3 bringing in a same-id project with no shared lineage offers a new pro
 // the Windows facade's openLocal call), so every cut's owner and every `.cbproj`'s sender is "replica": a recipient's
 // two "Main cut"s can't be told apart ("Bob's main", §5.3), and the missing-base dialog reads "This copy builds on a
 // version from replica… Ask replica for their copy" (§13).
-test("S3-1 a .cbproj names its sender, and the recipient can tell the sender's cut from its own", async () => {
+test("S3-1 a .cbproj names its sender (not \"replica\"), a copied cut keeps its owner's name, and bringing it in keeps the recipient's", async () => {
   const { openLocal } = await import("@carton/local");
   const { cardboardAdapter } = await import("@carton/cardboard");
-  const { readProjectForImport } = await import("@carton/cardboard/node");
+  const { bringInTheirChanges, readProjectForImport } = await import("@carton/cardboard/node");
+  const person = (id: string, name: string, group: string) => ({ kind: "human", id: `human:${id}`, name, group }) as any;
+  const open = (m: Machine, who: any, init?: unknown) => openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as any, actor: who, ...(init ? { init } : {}) } as any);
+  // Alice's project; Bob's copy of it (her carton.db without local tables, his own replica)
   const A = makeMachine("s3-1-a");
-  const imp = readProjectForImport(A.bundle);
-  const la = await openLocal({ projectDir: A.bundle, projectId: A.projectId, dataDir: dataDirFor(A.bundle), adapter: cardboardAdapter as any, actor: { kind: "human", id: "human:alice", name: "Alice", group: "alice@laptop" }, init: { doc: imp.doc } });
+  const la = await open(A, person("alice", "Alice", "alice@laptop"), { doc: readProjectForImport(A.bundle).doc });
   try {
-    const pkg = await la.carton.exportShallow({ to: "bob" });
-    const owner = (await la.carton.cuts())[0]!.owner;
-    assert.notEqual(pkg.sender, "replica", "the file names who sent it");
-    assert.notEqual(owner, "replica", "the cut names whose it is");
+    const mine = await la.carton.exportShallow({ to: "bob" });
+    assert.equal(mine.sender, "Alice", "Alice's file names her");
+    assert.equal((await la.carton.cuts())[0]!.owner, "Alice", "her cut names her");
   } finally {
     await la.close();
+  }
+  const B = makeMachine("s3-1-b", A);
+  const cl = await runOnce("clone", [support("clone.ts"), join(A.dbDir, "carton.db"), join(B.dbDir, "carton.db")]);
+  assert.equal(cl.code, 0, cl.stderr);
+  const lb = await open(B, person("bob", "Bob", "bob@desk"));
+  let theirs;
+  try {
+    theirs = await lb.carton.exportShallow({ to: "alice" });
+    assert.equal(theirs.sender, "Bob", "Bob's file names him, not the replica he copied");
+    assert.equal((await lb.carton.cuts())[0]!.owner, "Alice", "the cut he copied stays Alice's");
+  } finally {
+    await lb.close();
+  }
+  // Alice brings in Bob's file: it is from Bob, and her own cut is still hers
+  const la2 = await open(A, person("alice", "Alice", "alice@laptop"));
+  try {
+    const r = await bringInTheirChanges(la2.carton as any, { shallow: theirs });
+    assert.notEqual(r.status, "no-shared-lineage", JSON.stringify(r));
+    assert.deepEqual((await la2.carton.cuts()).map((c: any) => c.owner), ["Alice"]);
+  } finally {
+    await la2.close();
   }
 });
 

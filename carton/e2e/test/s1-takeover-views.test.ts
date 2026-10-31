@@ -21,13 +21,17 @@ test("B3: an agent's print --view while the app's engine thread is briefly busy 
   procs.watchHelpers(m.dbDir);
   const app = procs.start("app", [support("app.ts"), m.bundle, m.projectId, "{}"]);
   await app.next((x) => x.ready);
-  // the engine thread is busy for 4 s (under the 6 s lease expiry: its holder is fresh, just not answering)
-  const stalled = app.ask({ cmd: "serve", req: { e2e: "stall", ms: 4000 } });
+  // the engine thread is busy for 5 s (under the 6 s lease expiry: its holder is fresh, just not answering); the agent
+  // starts once the stall is certainly on, and the test then checks a helper took the lease (so its print was served
+  // by a takeover helper, B3's condition, not by the app after the stall)
+  const marker = join(m.home, "stalled"), since = Date.now();
+  const stalled = app.ask({ cmd: "serve", req: { e2e: "stall", ms: 5000, marker } });
+  await until(() => existsSync(marker), 30_000, "the engine thread to be stalled");
   const actor = "director/chat9/turn1/sub-editor-Z";
   const agent = procs.start(actor, [support("agent.ts"), m.bundle, m.projectId, JSON.stringify({ noRetry: true, steps: [{ op: "set", name: SAMPLE.logo, set: { zIndex: 3 } }] })], { env: { CARDBOARD_ACTOR: actor } });
   const [out] = await Promise.all([agent.next((x) => Array.isArray(x.results), 60_000), stalled]);
   assert.equal(out.results[0].status, "confirmed");
-  t.diagnostic(JSON.stringify({ helpers: procs.helperPids().length }));
+  assert.ok(helperTookLeaseSince(m, since), "a helper took the lease while the app was stalled (otherwise this run didn't reach B3's condition)");
 });
 
 // B11 (fixed by local-cli 38814d9; was routed to local-cli + cardboard-adapter): a `cb` write that doesn't go through the app's lease holder (a helper
