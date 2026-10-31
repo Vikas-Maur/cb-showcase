@@ -69,14 +69,16 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       return (await carton.head(cut())).doc;
     },
     async pin({ owner, doc, seq, causal, ttlMs }) {
-      const p = await carton.pin({ owner, cut: cut(), ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
+      // the cut is read once: the pin's store refresh may find a cut another process switched to (review 11 #1)
+      const on = cut();
+      const p = await carton.pin({ owner, cut: on, ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
       const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
       await store.write([{ table: VIEWS, key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord }]);
       // now and then, per owner: long-lived owners (the shared file's prints) keep pinning new states
       const n = (pinsByOwner.get(owner) ?? 0) + 1;
       pinsByOwner.set(owner, n);
       if (n % 64 === 0) await prune(owner);
-      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)) };
+      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on };
     },
     async release(owner) {
       const rows = await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] });

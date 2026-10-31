@@ -19,6 +19,7 @@ import "../src/cardboard/system/b11-external-head.ts";
 import "../src/cardboard/system/review7.ts";
 import "../src/cardboard/system/review8.ts";
 import "../src/cardboard/system/review9.ts";
+import "../src/cardboard/system/review11.ts";
 import "../src/cardboard/system/hosts-schema.ts";
 import "../src/cardboard/cli-codec.test.ts";
 
