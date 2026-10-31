@@ -1,9 +1,10 @@
 // Entry of the detached helper process. See helper.ts.
 //   helper-main --db <carton.db> --seen <nonce|-> --factory <module> [--config <json>] [--idle-ms <ms>]
-import { dirname } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { Holder, holderSocketPath } from "./holder.ts";
-import { Lease } from "./lease.ts";
+import { Lease, recordHelperRecipe } from "./lease.ts";
 import { factoryUrl, helperLog } from "./helper.ts";
 import type { HelperFactoryOptions } from "./helper.ts";
 import type { HolderEngine } from "./holder.ts";
@@ -23,7 +24,13 @@ const seen = !a.seen || a.seen === "-" ? null : a.seen;
 
 try {
   const mod = (await import(factoryUrl(a.factory))) as { createHolderEngine(o: HelperFactoryOptions): Promise<{ store: Store; engine: HolderEngine; close?: () => Promise<void>; log?: (e: Record<string, unknown>) => void }> };
-  const made = await mod.createHolderEngine({ dbPath, config: a.config ? JSON.parse(a.config) : {}, log });
+  const config = a.config ? JSON.parse(a.config) : {};
+  const made = await mod.createHolderEngine({ dbPath, config, log });
+  // a helper its caller set up (its own factory, or local's with a sync server) leaves that setup for helpers started
+  // without one, unless the app recorded its own (B7)
+  const self = fileURLToPath(import.meta.url);
+  const isDefault = resolve(a.factory) === join(dirname(self), `factory${self.endsWith(".ts") ? ".ts" : ".js"}`);
+  if (!isDefault || config.sync) await recordHelperRecipe(made.store, { factory: a.factory, config }, "helper").catch(() => {});
   const { store, engine, close } = made;
   const holderLog = made.log ? (e: Record<string, unknown>) => { log(e); made.log!(e); } : log;
   const idleMs = a["idle-ms"] ? Number(a["idle-ms"]) : 60000;

@@ -114,7 +114,7 @@ export const MCP_TOOLS: readonly McpToolSpec[] = [
   },
   {
     name: "timeline_fold",
-    description: "Fold a cut into the current one (git merge). `check` reports cards without saving; `reject` folds in some of it, keeping the listed record paths out.",
+    description: "Fold a cut into the current one (git merge). `check` reports cards without saving; `reject` folds in some of it, keeping the listed record paths out. Folding the same cut again later folds in the rest.",
     shape: {
       cut: { type: "string", description: "the cut to fold in" },
       into: { type: "string", description: "fold into this cut instead of the current one", optional: true },

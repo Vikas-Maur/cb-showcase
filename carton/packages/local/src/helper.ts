@@ -32,12 +32,20 @@ export const helperEntry = (): string => {
   return join(dirname(self), `helper-main${self.endsWith(".ts") ? ".ts" : ".js"}`);
 };
 
+/**
+ * The helper's environment. Under Electron `process.execPath` is the app's own binary: `cb`'s shims run it as Node
+ * (`ELECTRON_RUN_AS_NODE=1`, inherited), but the app's library worker (a utility process) doesn't have it set, and
+ * without it the spawn would start a second copy of the app instead of the helper. So under Electron it is set here.
+ */
+export function helperEnv(base: NodeJS.ProcessEnv, electron: string | undefined = process.versions.electron): NodeJS.ProcessEnv {
+  return electron ? { ...base, ELECTRON_RUN_AS_NODE: "1" } : base;
+}
+
 export function spawnHelper(o: SpawnHelperOptions): number | undefined {
   const args = [helperEntry(), "--db", o.dbPath, "--seen", o.seen ?? "-", "--factory", o.factory];
   if (o.config) args.push("--config", JSON.stringify(o.config));
   if (o.idleMs !== undefined) args.push("--idle-ms", String(o.idleMs));
-  // Under Cardboard's CLI, process.execPath is the app binary run as Node (ELECTRON_RUN_AS_NODE=1, inherited).
-  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true, env: o.env ?? process.env });
+  const child = spawn(process.execPath, args, { detached: true, stdio: "ignore", windowsHide: true, env: helperEnv(o.env ?? process.env) });
   child.unref();
   return child.pid;
 }
