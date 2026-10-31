@@ -3,7 +3,9 @@
 //   {status: "confirmed", seq, ref} | {status: "pending", id, ref} | {status: "conflicts", conflicts, ref}
 //   | {status: "rejected", reason}, with the actor's notices (late conflicts) first.
 // On a shared cut the holder waits up to 5 s for the server's answer (L14); offline it answers `pending` at once.
-import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConflictCard, Notice, PathKey, StateRef } from "@carton/core";
+import { merge3 } from "@carton/core";
+import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
+import type { Store } from "@carton/core/plugins";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
 export type WriteOp =
@@ -16,7 +18,9 @@ export type WriteOp =
   | { kind: "fork"; name: string; from?: string; cutKind?: string }
   | { kind: "switch"; cut: string }
   | { kind: "name"; ref: string; name: string }
-  | { kind: "pin"; owner: string; cut?: string; ttlMs?: number };
+  | { kind: "pin"; owner: string; cut?: string; ttlMs?: number }
+  /** `cb resolve` closed a card: drop it from the actor's late-conflict notices. */
+  | { kind: "closeCard"; change: ChangeId | null; path: PathKey };
 
 export interface WriteRequest {
   /** Stable change id made by the calling process (`<rid>.<n>`): a retried call never makes a second change. */
@@ -93,6 +97,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "switch": await carton.switchTo(op.cut); return { status: "confirmed", seq: 0, ref: null, notices, cut: op.cut };
     case "name": await carton.name(op.ref, op.name); return { status: "confirmed", seq: 0, ref: op.ref, notices };
     case "pin": { const pin = await carton.pin({ owner: op.owner, cut: op.cut, ttlMs: op.ttlMs }); return { status: "confirmed", seq: pin.ref.seq, ref: pin.header, notices, header: pin.header }; }
+    case "closeCard": return { status: "confirmed", seq: 0, ref: null, notices, closed: await closeCard(carton, author, op.change, op.path) };
     default: return { status: "error", error: `unknown write ${(op as any).kind}`, notices };
   }
   if (r?.status === "up-to-date") return { status: "confirmed", seq: 0, ref: null, notices, upToDate: true };
@@ -111,19 +116,44 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
 }
 
 /**
- * Undo a whole agent turn (`cb undo --turn`, §8): every change of the turn, newest first, inverted against the head as
- * one change. Each inverse is a 3-way merge (after → head ← before), so changes others made meanwhile survive, and a
- * path someone has since changed in a way the inverse can't apply cleanly becomes a card.
+ * Undo a whole agent turn (`cb undo --turn`, §8): every change of the turn (the Director's and its subagents'), newest
+ * first, inverted against the head and saved as **one** change. Each inverse is a 3-way merge (after → head ← before),
+ * as core's revert does, so changes others made meanwhile survive, and a path someone has since changed in a way the
+ * inverse can't apply cleanly becomes a card instead of being overwritten.
  */
 async function undoTurn(carton: Carton, turn: string, author: Actor, cut?: string): Promise<CommitResult> {
-  const versions = await carton.log({ cut });
+  const head = await carton.head(cut);
+  const versions = await carton.log({ cut, limit: 5000 });
   const mine = versions.filter((v) => v.author?.turn === turn && v.change);
-  if (!mine.length) return { status: "confirmed", seq: (await carton.head(cut)).ref.seq, ref: (await carton.head(cut)).ref, change: null, rebased: 0, notices: [], empty: true };
-  // reverts newest first; core's revert is a 3-way merge per change
-  let last: CommitResult | null = null;
+  if (!mine.length) return { status: "confirmed", seq: head.ref.seq, ref: head.ref, change: null, rebased: 0, notices: [], empty: true };
+  let doc: Doc = head.doc;
+  const cards: ConflictCard[] = [];
   for (const v of mine) {
-    last = await carton.revert(v.change!, { author: { ...author }, cut });
-    if (last.status === "conflicts" || last.status === "rejected") return last;
+    const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - 1 }), carton.checkout(v.ref)]);
+    const m = merge3(after, doc, before, carton.schema, { infer: false });
+    doc = m.doc;
+    cards.push(...m.conflicts);
   }
-  return last!;
+  if (cards.length) return { status: "conflicts", cards, ref: head.ref };
+  return carton.commit({ doc, base: head.ref, author, cut, name: `Undo turn ${turn}` });
+}
+
+/** Core's notice key for an actor (`ActorKey` in core types: `kind/id[/agentId]`). */
+export const actorKey = (a: Actor): string => [a.kind, a.id, a.agentId].filter(Boolean).join("/");
+
+/**
+ * Drop one card from an actor's late-conflict notices (the card was resolved with `cb resolve`). Notices live in the
+ * local `notices` table, `[actorKey, at, n]`; a notice whose last card is closed goes away.
+ */
+async function closeCard(carton: Carton, actor: Actor, change: ChangeId | null, path: PathKey): Promise<boolean> {
+  const store = (carton as unknown as { store?: Store }).store;
+  if (!store) return false;
+  const rows = await store.range<Notice>("notices", { prefix: [actorKey(actor)] });
+  for (const { key, value } of rows) {
+    if ((change && value.change !== change) || !value.cards?.some((c) => c.path === path)) continue;
+    const cards = value.cards.filter((c) => c.path !== path);
+    await store.write([{ table: "notices", key, value: cards.length ? { ...value, cards } : undefined }]);
+    return true;
+  }
+  return false;
 }
