@@ -64,13 +64,14 @@ export function hasherSuite(name: string, hasher: Hasher): void {
 }
 
 export interface MediaStoreSuiteOptions {
-  /** Bytes per test file. Small by default; the suite runs against real backends too. */
-  size?: number;
+  /** Part size for the multipart tests. 5 MiB by default: S3 and R2 refuse smaller parts (except the last). */
+  partSize?: number;
 }
 
 export function mediaStoreSuite(name: string, make: () => Promise<BlobStore>, hasher: Hasher, opts: MediaStoreSuiteOptions = {}): void {
-  const size = opts.size ?? 5 * LEAF_SIZE + 4321;
-  const partSize = 2 * LEAF_SIZE;
+  const partSize = opts.partSize ?? 5 * LEAF_SIZE;
+  // Three whole parts and a short last one, so resume and part-size rules are exercised on any backend.
+  const size = 3 * partSize + 4321;
   const fixture = async (seed: number) => {
     const data = xorshiftBytes(size, seed);
     return { data, manifest: await hashSource(bytesSource(data), hasher), source: bytesSource(data) };
