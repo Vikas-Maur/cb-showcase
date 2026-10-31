@@ -2,8 +2,8 @@
 // tracks as a sequence, items with parent trackId, keyed arrays, blobRef atomics, the versioned media subset), the
 // fm∘sv GUI projection, host <-> engine conversion with LCS move recovery, the hard and soft validators, and the
 // Claude Code / CARDBOARD_ACTOR identity source. Port of core-v5 `cardboard-schema.mjs`. Owner: cardboard-adapter.
-import type { Schema, Doc, Actor } from "@carton/core";
-import type { HostAdapter, IdentitySource, OwnFn } from "@carton/core/plugins";
+import type { Schema, Doc } from "@carton/core";
+import type { HostAdapter, OwnFn } from "@carton/core/plugins";
 
 const todo = (what: string): never => {
   throw new Error(`not implemented: ${what}`);
@@ -52,11 +52,6 @@ export const cardboardAdapter: HostAdapter<CardboardProject> = {
   projectGuiSave: (b, s) => projectGuiSave(b, s),
 };
 
-/** `CARDBOARD_ACTOR=director/<chat>/<turn>[/sub-<type>-<id>]`, Claude Code hook input, or self-declared (L1). */
-export function parseActor(value: string, defaults?: Partial<Actor>): Actor | null {
-  return todo("parseActor");
-}
-export const cardboardIdentity: IdentitySource = {
-  kind: "cardboard-env",
-  current: (env) => todo("cardboardIdentity.current"),
-};
+export { parseActor, subagentActorId, cardboardIdentity } from "./identity.ts";
+export * from "./header.ts";
+export * from "./codec.ts";

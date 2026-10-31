@@ -1,0 +1,5 @@
+{
+  // `@carton/cardboard/node`: the materializer and .cbproj, Node and Electron only.
+  "extends": "../../tsconfig.node.json",
+  "include": ["src/node"]
+}
