@@ -162,6 +162,12 @@ function report(rep) {
     return { file: rep.file, kind: "repeat", ...r, problems };
   }
   if (!fs.existsSync(f) || fs.statSync(f).size === 0) return { file: rep.file, problems: ["missing or empty"] };
+  if (rep.kind === "text") {
+    // a tool that prints lines of text: kept as it is; `mustMatch` names lines it must print (its own checks)
+    const text = fs.readFileSync(f, "utf8");
+    for (const re of rep.mustMatch ?? []) if (!new RegExp(re, "m").test(text)) problems.push(`no line matching /${re}/`);
+    return { file: rep.file, kind: "text", value: text.slice(-20000), problems };
+  }
   if (rep.kind === "json") {
     let value = null;
     try {
@@ -261,6 +267,7 @@ for (const r of reports) {
       for (const [k, v] of Object.entries(c.metrics)) md += `| ${k} | ${fmt(v.median)} | ${v.runs.map(fmt).join(", ")} |\n`;
       md += "\n</details>\n";
     }
+  else if (r.kind === "text") md += "```\n" + r.value + "\n```\n";
   else if (r.kind) md += "```json\n" + JSON.stringify(r.value ?? r, null, 1).slice(0, 20000) + "\n```\n";
 }
 summary(md);

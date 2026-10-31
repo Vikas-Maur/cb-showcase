@@ -800,6 +800,103 @@
       ]
     },
     {
+      "id": "media-x264",
+      "agent": "media",
+      "claim": "libx264 collab-proxy encode cost (notes 5, bench/media/x264-cost.ts since a069b7d): two deterministic 10 s 1080p30 sources (easy, grain), the exact ffmpegEncoder('libx264') arguments, CPU time from ffmpeg's -benchmark, 3 rounds",
+      "timeout": 45,
+      "needs": [
+        "ffmpeg"
+      ],
+      "steps": [
+        {
+          "label": "make the two sources (x264-cost.ts make)",
+          "run": [
+            "{node}",
+            "bench/media/x264-cost.ts",
+            "make",
+            "{tmp}/x264"
+          ]
+        },
+        {
+          "label": "x264-cost.ts run, 3 rounds",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/x264-cost.ts",
+            "run",
+            "{tmp}/x264",
+            "3",
+            "{results}/x264-cost.jsonl"
+          ],
+          "stdoutTo": "{results}/x264-summary.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "x264-cost.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at"
+          ],
+          "expect": {
+            "cells": 2,
+            "runsPerCell": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "cardboard-zip",
+      "agent": "cardboard-adapter",
+      "claim": "the .cbproj ZipWriter vs a yazl-style stream copy vs fs.copyFileSync, 256 MiB, 7 runs, order rotating (bench/zip/bench.ts, since 27c9c5d): the check passes and ours beats stream in every rotation and at the median",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "the source's folder",
+          "run": [
+            "{node}",
+            "-e",
+            "require('fs').mkdirSync(process.argv[1], { recursive: true })",
+            "{tmp}/zip"
+          ]
+        },
+        {
+          "label": "bench/zip/bench.ts, 256 MiB source, 7 runs",
+          "run": [
+            "{node}",
+            "bench/zip/bench.ts",
+            "{tmp}/zip/src.bin",
+            "--runs",
+            "7",
+            "--make-mib",
+            "256"
+          ],
+          "stdoutTo": "{results}/zip.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "zip.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^# check: ours wrote one STORED entry",
+            "^median\\tours",
+            "^median\\tstream"
+          ]
+        }
+      ]
+    },
+    {
       "id": "cardboard-race-linux",
       "agent": "cardboard-adapter",
       "claim": "P10 on Linux, the full matrix on the shipped code: free mode with the inotify oracle, turn mode, in-place writers, the missing-path gap (notes 1)",
