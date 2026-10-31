@@ -307,7 +307,7 @@ onto the packages' APIs, so a package API change touches only the facade.
 
 ## 6. State on 2026-10-31
 
-- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 27 tests):
+- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 28 tests):
   - Carton off: `cb`'s output and files equal our Windows build's; the real library worker runs patched.
   - Carton on, for real (`@carton/local` and `carton.db`): history with authors down to the subagent, credits, a cut
     with `project.json` following the switch, fold, `undo --turn` raising a card, and 4 concurrent `cb` writers losing
