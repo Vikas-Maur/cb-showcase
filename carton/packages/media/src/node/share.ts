@@ -60,18 +60,39 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
   const hasher = o.hasher ?? nodeHasher;
   const profile = o.profile ?? COLLAB_PROXY_720P;
   const record: MediaRecord = { ...o.record, t1: { ...o.record.t1 } };
-  const t1Sizes: Partial<Record<T1Kind, number>> = {};
-  for (const [kind, path] of Object.entries(o.local.t1 ?? {}) as [T1Kind, string][]) t1Sizes[kind] = (await stat(path)).size;
-  const hostProxy = o.encoders.some(canReuse);
-  const plan = planShare(record, { original: !!o.local.original, t1: t1Sizes, hostProxy }, o.policy);
-  for (const s of plan.skipped) o.onEvent?.({ type: "skipped", ...s });
-
   const hash = async (path: string): Promise<Manifest> => {
     o.signal?.throwIfAborted();
     if (!o.scheduler) return hashFile(path, { signal: o.signal });
     const st = await stat(path);
     return o.scheduler.request({ key: path, size: st.size, mtimeMs: st.mtimeMs }, "share");
   };
+
+  // What is shared already counts only if it still matches what is on this machine. Hash first, then plan:
+  // - the original: relinked to other footage, its proxy and shared original belong to the old footage;
+  // - each T1 file: a regenerated transcript or poster is a new file.
+  let original: Manifest | undefined;
+  if (o.local.original) {
+    original = await hash(o.local.original);
+    if (record.hash !== undefined && record.hash !== original.hash) {
+      delete record.proxy;
+      delete record.original;
+    }
+    record.hash = original.hash;
+    record.size = original.size;
+    o.onEvent?.({ type: "hashed", what: "original", hash: original.hash });
+  }
+  const t1Sizes: Partial<Record<T1Kind, number>> = {};
+  const t1Manifests: Partial<Record<T1Kind, Manifest>> = {};
+  for (const [kind, path] of Object.entries(o.local.t1 ?? {}) as [T1Kind, string][]) {
+    const m = await hash(path);
+    t1Manifests[kind] = m;
+    t1Sizes[kind] = m.size;
+    if (record.t1![kind] && record.t1![kind]!.hash !== m.hash) delete record.t1![kind];
+  }
+  const hostProxy = o.encoders.some(canReuse);
+  const plan = planShare(record, { original: !!o.local.original, t1: t1Sizes, hostProxy }, o.policy);
+  for (const s of plan.skipped) o.onEvent?.({ type: "skipped", ...s });
+
   const upload = async (what: string, path: string, manifest: Manifest, contentType?: string): Promise<UploadResult> => {
     const source = await fileSource(path);
     try {
@@ -83,19 +104,11 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
     }
   };
 
-  let original: Manifest | undefined;
-  if (o.local.original) {
-    original = await hash(o.local.original);
-    record.hash = original.hash;
-    record.size = original.size;
-    o.onEvent?.({ type: "hashed", what: "original", hash: original.hash });
-  }
-
   for (const step of plan.steps) {
     o.signal?.throwIfAborted();
     if (step.tier === "T1") {
       const path = o.local.t1![step.kind]!;
-      const m = await hash(path);
+      const m = t1Manifests[step.kind]!;
       await upload(step.kind, path, m);
       record.t1![step.kind] = { hash: m.hash, size: m.size };
     } else if (step.tier === "T2") {

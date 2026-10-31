@@ -295,12 +295,29 @@ test("rename retries while Windows holds the target open, and only then", async 
 test("encode arguments: files by file: URL, keyframes by time, no metadata, faststart", () => {
   const args = encodeArgs("libx264", "-odd name.mov", "out:put.mp4", COLLAB_PROXY_720P);
   const at = (flag: string) => args[args.indexOf(flag) + 1];
-  assert.match(at("-i"), /^file:\/.*-odd name\.mov$/);
-  assert.match(args[args.length - 1], /^file:\/.*out:put\.mp4$/);
+  // An absolute path after file:, POSIX or Windows (file:C:\...).
+  assert.match(at("-i"), /^file:(\/|[A-Za-z]:\\).*-odd name\.mov$/);
+  assert.match(args[args.length - 1], /^file:(\/|[A-Za-z]:\\).*out:put\.mp4$/);
   assert.equal(at("-force_key_frames"), "expr:gte(t,n_forced*2)");
   assert.equal(at("-maxrate"), "2500k");
   assert.equal(at("-bufsize"), "5000k");
   assert.equal(at("-b:a"), "128k");
   assert.equal(at("-map_metadata"), "-1");
   assert.equal(at("-movflags"), "+faststart");
+});
+
+// Review round 1, findings 2 and 6.
+test("an audio-only source gets an AAC proxy, and two encodes of one output don't share a temporary file", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  const dir = join(OUT_DIR, "audio");
+  mkdirSync(dir, { recursive: true });
+  const wav = join(dir, "voice.wav");
+  execFileSync(FFMPEG, ["-hide_banner", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=330:duration=2", wav]);
+  const out = join(dir, "voice.mp4");
+  const enc = ffmpegEncoder("libx264", { ffmpeg: FFMPEG });
+  // Both at once, to the same output: each writes its own partial, both rename into place.
+  const [a, b] = await Promise.all([enc.encode({ path: wav }, { path: out }, COLLAB_PROXY_720P), enc.encode({ path: wav }, { path: out }, COLLAB_PROXY_720P)]);
+  assert.ok(a.bytes > 0 && b.bytes > 0);
+  const streams = execFileSync(FFPROBE, ["-v", "error", "-show_entries", "stream=codec_type,codec_name", "-of", "csv=p=0", out]).toString().trim();
+  assert.equal(streams, "aac,audio");
+  assert.deepEqual(leftovers(dir), []);
 });

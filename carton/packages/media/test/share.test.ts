@@ -115,3 +115,34 @@ test("the host's own proxy is shared as it is when it qualifies; originals go up
   assert.equal(r.record.original, "shared");
   assert.ok(store.objects.has(mediaKey(r.record.hash!)));
 });
+
+test("re-sharing a clip relinked to other footage replaces its proxy and original (review round 1, finding 3)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  const store = new CountingMemoryStore();
+  const first = await shareMedia({
+    store,
+    record: record(),
+    local: { original, t1: { poster } },
+    policy: { originals: true },
+    encoders: [hostProxyEncoder({ locate: () => hostProxy, ffprobe: FFPROBE })],
+    workDir: s.dir,
+  });
+  assert.equal(first.record.original, "shared");
+  // The same clip, now pointing at other footage (the host proxy is gone), and a regenerated poster.
+  const other = makeClip(join(s.dir, "retake.mp4"), { seconds: 2, size: "640x360", faststart: true, kbps: 500 });
+  const poster2 = join(s.dir, "poster2.jpg");
+  writeFileSync(poster2, xorshiftBytes(30_000, 4));
+  const second = await shareMedia({
+    store,
+    record: first.record,
+    local: { original: other, t1: { poster: poster2 } },
+    policy: { originals: true },
+    encoders: [hostProxyEncoder({ locate: () => null, ffprobe: FFPROBE }), ffmpegEncoder("libx264", { ffmpeg: FFMPEG })],
+    workDir: s.dir,
+  });
+  const otherHash = (await hashFile(other)).hash;
+  assert.equal(second.record.hash, otherHash);
+  assert.notEqual(second.record.proxy?.hash, first.record.proxy?.hash, "a new proxy for the new footage");
+  assert.equal(second.record.proxy?.encoder, "libx264");
+  assert.ok(store.objects.has(mediaKey(otherHash)), "the new original was uploaded");
+  assert.equal(second.record.t1?.poster?.hash, (await hashFile(poster2)).hash, "the new poster replaced the old one");
+});

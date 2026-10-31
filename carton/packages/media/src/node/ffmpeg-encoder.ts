@@ -6,7 +6,9 @@
 //   makes the encoder unavailable instead of failing every encode.
 // - ffmpeg runs without a shell (paths with spaces and non-ASCII names reach it intact on Windows), with no console
 //   window, below normal priority so the editor stays responsive, and is killed on abort or when it stalls.
-// - A path output is written to `<output>.partial.mp4` and renamed into place, so a reader never sees half a proxy.
+// - A path output is written to `<output>.<random>.partial.mp4` and renamed into place, so a reader never sees half a
+//   proxy, and two encodes of the same output (two processes sharing one clip) never write the same temporary file.
+// - A source without video (a WAV, an MP3) gets an audio-only proxy: the video map is optional.
 //   A sink output is encoded to a temporary file first (moov first needs a seekable file), then streamed to the sink,
 //   so a failed encode never writes to the sink and the next encoder of the chain can still use it.
 
@@ -95,7 +97,9 @@ export function encodeArgs(codec: FfmpegCodec, input: string, output: string, p:
     "-progress", "pipe:1",
     // file: stops a name like "a:b.mp4" being read as a protocol, and a name starting with "-" as an option.
     "-i", `file:${resolve(input)}`,
-    "-map", "0:V:0", "-map", "0:a:0?", // V: the first real video stream, not cover art
+    // V: the first real video stream, not cover art. Optional, so audio-only sources make an AAC-only proxy (the video
+    // filter and encoder options then apply to no stream); a source with neither fails, as it should.
+    "-map", "0:V:0?", "-map", "0:a:0?",
     "-vf", scaleFilter(p.height),
     "-c:v", codec, ...codecArgs(codec, p),
     "-force_key_frames", `expr:gte(t,n_forced*${p.keyframeSeconds})`,
@@ -337,7 +341,7 @@ export function ffmpegEncoder(codec: FfmpegCodec, opts: FfmpegEncoderOptions = {
       signal?.throwIfAborted();
       const toPath = "path" in output;
       const final = toPath ? resolve(output.path) : null;
-      const written = final ? `${final}.partial.mp4` : join(resolve(opts.tempDir ?? tmpdir()), `carton-proxy-${randomUUID()}.mp4`);
+      const written = final ? `${final}.${randomUUID().slice(0, 8)}.partial.mp4` : join(resolve(opts.tempDir ?? tmpdir()), `carton-proxy-${randomUUID()}.mp4`);
       await mkdir(dirname(written), { recursive: true });
       let bytes: number;
       try {

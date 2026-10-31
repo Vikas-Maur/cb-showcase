@@ -9,6 +9,7 @@
 //   open would make Cardboard's own rename onto it fail with EPERM.
 
 import { execFile } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { copyFile, link, open, rm, stat } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { MediaInput, MediaOutput, ProxyEncoder, ProxyProfile } from "@carton/core/plugins";
@@ -132,8 +133,8 @@ export async function probeProxyFile(
 
 /** Puts the host's file at `to`: a hard link where the file system allows one, else a copy. Atomic either way. */
 async function linkOrCopy(from: string, to: string): Promise<void> {
-  const partial = `${to}.partial.mp4`;
-  await rm(partial, { force: true });
+  // Its own temporary name: two processes sharing the same clip may place the same proxy at once.
+  const partial = `${to}.${randomUUID().slice(0, 8)}.partial.mp4`;
   try {
     try {
       await link(from, partial);
