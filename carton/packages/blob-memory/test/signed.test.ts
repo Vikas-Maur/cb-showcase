@@ -70,3 +70,15 @@ test("list pages in code-point order across the BMP / astral boundary (U+E000 so
   const second = await st.list("u/", { limit: 1, cursor: first.cursor! });
   assert.deepEqual(second.blobs.map((b) => b.key), ["u/\u{10000}"]);
 });
+
+test("a signed PUT with If-None-Match: * creates only: an existing object keeps its bytes (the store's ifAbsent)", async () => {
+  await store.put("once.bin", new Uint8Array([1, 1]));
+  const put = await signer.sign("PUT", "once.bin", 60);
+  assert.equal((await local(put, { method: "PUT", body: new Uint8Array([2, 2, 2]), headers: { "if-none-match": "*" } })).status, 200);
+  assert.deepEqual(await store.get("once.bin"), new Uint8Array([1, 1]));
+  const fresh = await signer.sign("PUT", "fresh.bin", 60);
+  assert.equal((await local(fresh, { method: "PUT", body: new Uint8Array([3]), headers: { "if-none-match": "*" } })).status, 200);
+  assert.deepEqual(await store.get("fresh.bin"), new Uint8Array([3]));
+  assert.equal((await local(put, { method: "PUT", body: new Uint8Array([4]) })).status, 200, "without the header a PUT replaces");
+  assert.deepEqual(await store.get("once.bin"), new Uint8Array([4]));
+});

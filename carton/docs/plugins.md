@@ -185,7 +185,10 @@ every host runs the same function. The host:
    **The repair path (§11).** A reader whose leaf never verifies reports it with `POST …/blobs/damaged {key, leaf}`.
    The host loads the manifest, which the hash itself verifies, re-reads that leaf, and removes the object only if
    its stored bytes really are wrong and it wasn't replaced meanwhile. The owner's next share then finds it missing
-   and uploads it again. A report can't remove a sound object.
+   and uploads it again. A report can't remove a sound object. Writes of that key through the API wait for a check
+   in progress, and the check waits for them, within one process. On a host of many processes (Workers) a write
+   served by another one can still land between the check and the delete, since BlobStore has no conditional
+   delete; that write is undone, and the uploader's next share uploads it again.
 
    **Signed URLs** are built from the request's origin, so build the `Request` with the address the client used. A
    URL carrying an internal address can't be reached from outside. server-node takes, in order: `publicOrigin`;
@@ -242,6 +245,9 @@ const host = await startNodeHost({
   adminToken: process.env.CARTON_ADMIN_TOKEN, port: 8787, staticDir: "./web",
 });
 ```
+
+blob-fs's object paths and server-node's room files are pre-release layouts: until Carton's first release they may
+change without a migration. After it, any change to them ships with one.
 
 **Cloudflare, local only:** run `npm run dev` in `packages/server-cloudflare`, which starts `wrangler dev`. Copy
 `.dev.vars.example` to `.dev.vars` first. `wrangler.toml` binds R2. Remove the `[[r2_buckets]]` block to run on the

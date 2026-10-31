@@ -125,7 +125,7 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     if (url.pathname.startsWith("/blob/")) {
       const store = deps.blobsFor(projectId);
       if (!store) return err(404, "this host has no blob store");
-      return await serveSignedBlob(req, store, blobSigner(deps, url.origin, projectId), deps.maxBodyBytes ? { maxPutBytes: deps.maxBodyBytes } : {});
+      return await serveSignedBlob(req, store, blobSigner(deps, url.origin, projectId), { ...(deps.maxBodyBytes ? { maxPutBytes: deps.maxBodyBytes } : {}), aroundPut: withMediaLock });
     }
     if (url.pathname.startsWith("/api/admin/")) {
       if (req.method !== "POST" || rest !== "/invites") return err(404, "no such route");
@@ -219,18 +219,42 @@ async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: 
 // against the manifest (mf/<hash>, which the hash itself verifies) and, only if the stored bytes really are wrong,
 // removes the object, so the owner's next share finds it missing and uploads it again. A report can't remove a good
 // object: the host reads the leaf and the manifest, and trusts neither the reporter nor its claim. If the object was
-// replaced while it was being checked (its etag changed), it is left alone: the new one may be good. BlobStore has no
-// conditional delete, so a replacement landing between the last head and the delete is removed too; the cost is one
-// more upload on the owner's next share, never wrong bytes served.
+// replaced while it was being checked (its etag changed), it is left alone: the new one may be good. Writes of an
+// `m/<hash>` key through this API (a signed PUT's store write, once its body has arrived; a multipart complete) wait
+// for a check of that key in progress, and the check waits for them, so a replacement can't land between the last head
+// and the delete. That lock is per
+// process: on a host of many processes (Workers), a write served by another one can still land there, and since
+// BlobStore has no conditional delete it is removed too. The cost is that one write undone (the uploader's next share
+// uploads it again), never wrong bytes served.
 const hasher = webCryptoHasher();
+const MEDIA_KEY = /^m\/[0-9a-f]{64}$/;
+const mediaLocks = new Map<string, Promise<void>>();
+async function withMediaLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+  if (!MEDIA_KEY.test(key)) return fn();
+  const before = mediaLocks.get(key) ?? Promise.resolve();
+  let release!: () => void;
+  const mine = before.then(() => new Promise<void>((r) => (release = r)));
+  mediaLocks.set(key, mine);
+  await before;
+  try {
+    return await fn();
+  } finally {
+    release();
+    if (mediaLocks.get(key) === mine) mediaLocks.delete(key);
+  }
+}
+
 async function checkDamaged(store: BlobStore, key: string, leaf: number): Promise<Response> {
   const m = /^m\/([0-9a-f]{64})$/.exec(key);
   if (!m) return err(400, "only media objects (m/<hash>) are checked");
-  const manifestBytes = await store.get(manifestKey(m[1]!));
+  return withMediaLock(key, () => checkDamagedLocked(store, key, m[1]!, leaf));
+}
+async function checkDamagedLocked(store: BlobStore, key: string, hash: string, leaf: number): Promise<Response> {
+  const manifestBytes = await store.get(manifestKey(hash));
   if (!manifestBytes) return err(409, "no manifest to check it against");
   let manifest;
   try {
-    manifest = await decodeManifest(manifestBytes, hasher, m[1]!);
+    manifest = await decodeManifest(manifestBytes, hasher, hash);
   } catch {
     return err(409, "the manifest doesn't verify");
   }
@@ -297,7 +321,7 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
     const parts = b.parts;
     if (!Array.isArray(parts) || parts.length === 0 || parts.length > MAX_PARTS || parts.some((p) => !p || typeof p.etag !== "string" || p.etag.length > 256 || !Number.isInteger(p.partNumber)))
       return err(400, `parts must be 1..${MAX_PARTS} {partNumber, etag} entries`);
-    return json(await handle.complete(parts as { partNumber: number; etag: string }[]));
+    return json(await withMediaLock(key, () => handle.complete(parts as { partNumber: number; etag: string }[])));
   }
   if (req.method === "DELETE" && !sub) {
     await handle.abort();

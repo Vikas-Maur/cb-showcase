@@ -70,18 +70,35 @@ test("a sound team object can't be overwritten from another project; a broken on
   const part = await up.uploadPart(1, fill(bytes.length, 5));
   assert.equal((await up.complete([part])).size, bytes.length);
   assert.deepEqual(await root.get(`teams/t1/media/${key}`, { offset: 100, length: 8 }), bytes.subarray(100, 108));
-  // a wrong-sized object is broken: an upload replaces it
+  // a wrong-sized object is broken: an upload of the right size replaces it
   await root.put(`teams/t1/media/${key}`, fill(5, 1));
   await b.put(key, bytes);
   assert.equal((await root.head(`teams/t1/media/${key}`))?.size, bytes.length);
 });
 
+test("bytes need their manifest first, and the manifest's size", async () => {
+  const { root, a, bytes, m, key, mf } = await setup();
+  await assert.rejects(a.put(key, bytes), /PreconditionFailed|manifest/);
+  await assert.rejects(a.createMultipart(key), /PreconditionFailed|manifest/);
+  assert.equal(await root.head(`teams/t1/media/${key}`), null);
+  await a.put(mf, m.bytes);
+  await assert.rejects(a.put(key, bytes.subarray(1)), /InvalidPart|manifest says/);
+  await assert.rejects(a.createMultipart(mf), /InvalidKey|whole/);
+  const up = await a.createMultipart(key);
+  const short = await up.uploadPart(1, bytes.subarray(0, LEAF_SIZE));
+  await assert.rejects(up.complete([short]), /InvalidPart|manifest says/);
+  assert.equal(await root.head(`teams/t1/media/${key}`), null, "a short upload is never published");
+  const second = await up.uploadPart(2, bytes.subarray(LEAF_SIZE, 2 * LEAF_SIZE));
+  const last = await up.uploadPart(3, bytes.subarray(2 * LEAF_SIZE));
+  assert.equal((await up.complete([short, second, last])).size, bytes.length);
+});
+
 test("grants: writing grants, resuming needs one, delete reaches the team copy only with one", async () => {
   const { root, a, b, bytes, m, key, mf } = await setup();
+  await a.put(mf, m.bytes);
   const up = await a.createMultipart(key);
   assert.ok(await root.head(`projects/a/grants/${m.hash}`), "starting an upload grants it");
   await assert.rejects(b.resumeMultipart(key, up.uploadId), /NoSuchUpload|no such upload/);
-  await a.put(mf, m.bytes);
   const again = await a.resumeMultipart(key, up.uploadId);
   const p = await again.uploadPart(1, bytes);
   await again.complete([p]);

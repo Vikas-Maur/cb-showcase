@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { request } from "node:http";
 import { createHmacAuth } from "@carton/server";
+import type { BlobStore } from "@carton/core/plugins";
 import { createFsBlobStore } from "@carton/blob-fs";
 import { hostMediaBlobs } from "@carton/host-http/client";
 import { mediaHash, manifestKey, mediaKey, webCryptoHasher, uploadMedia, bytesSource, LEAF_SIZE } from "@carton/media";
@@ -155,4 +156,73 @@ test("S5-3: a team keeps one copy of a file its projects share; a project reads 
   // a write from b can't replace the sound team copy
   await b.put(key, fill(bytes.length, 1));
   assert.deepEqual(await blobs.get(`teams/studio/media/${key}`, { offset: 0, length: 16 }), bytes.subarray(0, 16));
+});
+
+test("§11 repair and a replacement racing it: the replacement waits for the check, then stands", async () => {
+  const dir = scratch("media-repair-race");
+  const inner = createFsBlobStore({ root: join(dir, "blobs"), durable: false });
+  let atDelete!: () => void, release!: () => void;
+  const reached = new Promise<void>((r) => (atDelete = r));
+  const gate = new Promise<void>((r) => (release = r));
+  let held = false, putArrived = false;
+  const gated = new Proxy(inner, {
+    get(t, prop) {
+      if (prop === "put")
+        return async (...a: Parameters<BlobStore["put"]>) => {
+          if (held && a[0].includes("/media/m/")) putArrived = true;
+          return t.put(...a);
+        };
+      if (prop === "delete")
+        return async (key: string) => {
+          if (key.includes("/media/m/")) {
+            atDelete();
+            await gate;
+          }
+          return t.delete(key);
+        };
+      const v = Reflect.get(t, prop);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as BlobStore;
+  const h = await startNodeHost({ dataDir: join(dir, "data"), auth, secret: SECRET, blobs: gated, durability: "normal" });
+  hosts.push(h);
+  const token = await auth.issue({ account: "o", credential: "o/dev", role: "editor", projectId: "p", ttlMs: 3600_000 });
+  const media = hostMediaBlobs({ origin: h.httpUrl, projectId: "p", token });
+  const bytes = fill(2 * LEAF_SIZE + 3, 5);
+  const m = await mediaHash(bytes, webCryptoHasher());
+  const key = mediaKey(m.hash);
+  await media.put(manifestKey(m.hash), m.bytes);
+  const bad = bytes.slice();
+  bad[LEAF_SIZE + 1] ^= 0xff;
+  await media.put(key, bad);
+  const report = media.reportDamaged(key, 1);
+  await reached; // the host found the damage and is about to remove it
+  held = true;
+  const replacement = media.put(key, bytes);
+  // without the lock the replacement's write reaches the store now; with it, nothing does until the check is over
+  for (const end = Date.now() + 2000; !putArrived && Date.now() < end; ) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(putArrived, false, "a replacement was written in the middle of the repair check");
+  held = false;
+  release();
+  assert.deepEqual(await report, { damaged: true, removed: true });
+  await replacement;
+  assert.deepEqual(await media.get(key, { offset: LEAF_SIZE, length: 4 }), bytes.subarray(LEAF_SIZE, LEAF_SIZE + 4), "the good replacement stands");
+});
+
+test("put with ifAbsent is one create-only PUT: an existing object stays, and its info comes back", async () => {
+  const { h, token, media } = await host();
+  const first = fill(300, 1);
+  await media.put("m/once", first);
+  const calls: string[] = [];
+  const counted = (async (u: string | URL | Request, i?: RequestInit) => {
+    const path = new URL(u instanceof Request ? u.url : String(u)).pathname;
+    calls.push(`${i?.method ?? "GET"} ${path.endsWith("/blobs/sign") ? "sign" : path.endsWith("/blobs/head") ? "head" : "blob"}`);
+    return fetch(u, i);
+  }) as typeof fetch;
+  const client = hostMediaBlobs({ origin: h.httpUrl, projectId: "p", token, fetch: counted });
+  const info = await client.put("m/once", fill(10, 2), { ifAbsent: true });
+  assert.deepEqual(calls, ["POST sign", "PUT blob", "GET head"], "no head before the PUT: the PUT itself is create-only");
+  assert.equal(info.size, 300, "the stored object's info, not the refused bytes'");
+  assert.deepEqual(await media.get("m/once", { offset: 0, length: 4 }), first.subarray(0, 4));
+  assert.equal((await client.put("m/new", fill(7, 3), { ifAbsent: true })).size, 7);
 });

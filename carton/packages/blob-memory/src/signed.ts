@@ -149,6 +149,9 @@ export interface ServeOptions {
   // Bodies of a signed PUT above this are refused (Workers' request limit is 100 MB on the Free plan). Large media go
   // through multipart instead.
   maxPutBytes?: number;
+  // Runs a signed PUT's store write, once its body has arrived: a host can serialize writes of a key with other work
+  // on it (host-http's repair check) without holding anything while a client is still sending.
+  aroundPut?<T>(key: string, write: () => Promise<T>): Promise<T>;
 }
 
 // Answers a request on a signed blob URL: GET/HEAD (with ranges) or PUT. 403 for a bad or expired signature.
@@ -165,7 +168,11 @@ export async function serveSignedBlob(req: Request, store: BlobStore, signer: Bl
       throw e;
     }
     const ct = req.headers.get("content-type");
-    const info = await store.put(key, body, ct ? { contentType: ct } : {});
+    // `If-None-Match: *` asks for create-only, applied by the store atomically (its `ifAbsent`). The header only ever
+    // narrows what the signed URL allows, so it needs no signature of its own.
+    const createOnly = req.headers.get("if-none-match")?.trim() === "*";
+    const write = () => store.put(key, body, { ...(ct ? { contentType: ct } : {}), ...(createOnly ? { ifAbsent: true } : {}) });
+    const info = await (opts.aroundPut ? opts.aroundPut(key, write) : write());
     return new Response(null, { status: 200, headers: info.etag ? { etag: info.etag } : {} });
   }
   const head = await store.head(key);
