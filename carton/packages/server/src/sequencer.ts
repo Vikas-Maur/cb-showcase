@@ -80,8 +80,6 @@ export interface SequencerStats {
   adoptRepeats: number;
   ridClaimConflicts: number;
   keyframes: number;
-  /** Presence updates dropped by the per-connection cap. */
-  presenceDropped: number;
   rowsRead: number;
   rowsWritten: number;
   /** Envelopes opened (from clients) and sealed (to clients: one per message, however many connections). */
@@ -217,7 +215,6 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     adoptRepeats: 0,
     ridClaimConflicts: 0,
     keyframes: 0,
-    presenceDropped: 0,
     get rowsRead() {
       return opts.storage.stats?.().rowsRead ?? tables.meter.rowsRead;
     },
@@ -303,8 +300,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
    * hostile hello can't ask for more); bases past that are reported in `uncheckedFrom`, never treated as unconfirmed:
    * the client asks again for those before acting on the list (review finding 10).
    */
-  function confirmedOf(branchId: string, claims: readonly PendingClaim[] | undefined): { list: ConfirmedId[]; uncheckedFrom: number | null } {
-    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null };
+  function confirmedOf(
+    branchId: string,
+    claims: readonly PendingClaim[] | undefined,
+    { after = -1, budget = Infinity }: { after?: number; budget?: number } = {},
+  ): { list: ConfirmedId[]; uncheckedFrom: number | null; checkedThrough: number | null } {
+    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null, checkedThrough: null };
     const head = tables.head(branchId);
     const want = new Set<string>();
     const bases = new Set<number>();
@@ -316,32 +317,51 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (bs.length) bases.add(Math.max(...bs));
       } else for (const b of bs) bases.add(b);
     }
-    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null };
+    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null, checkedThrough: null };
     // merge the windows so overlapping claims never read a row twice; every base's window counts against the cap,
     // merged or not, so a message reads at most cap × (K + 1) seqs (round 2 finding 6: adjacent windows merged into one
     // range used to bypass it)
+    //
+    // The list is in seq order and stops at `budget` bytes (at least one id): it then says where to go on, the base its
+    // range began at and the seq checked through, and a continuation (`after`) reads only past it. One window can list
+    // up to K + 1 ids, so a page can end inside one (round 5 finding 2).
     const sorted = [...bases].sort((a, b) => a - b);
     const cap = controls.claimWindows ?? MAX_CLAIM_WINDOWS;
     const out: ConfirmedId[] = [];
-    let lo = -1, hi = -1, windows = 0;
-    const flush = () => {
-      if (hi > lo) for (const e of tables.idsIn(branchId, lo, hi)) if (want.has(e.id)) out.push(e);
+    let lo = -1, hi = -1, windows = 0, used = 0;
+    let cut: number | null = null;
+    /** Read the current range past `after`; false (and `cut`) when the budget runs out inside it. */
+    const flush = (): boolean => {
+      const from = Math.max(lo, after);
+      if (hi > from)
+        for (const e of tables.idsIn(branchId, from, hi)) {
+          if (!want.has(e.id)) continue;
+          const n = sync.jsonBytesBound(e, Infinity) + 1;
+          if (out.length && used + n > budget) {
+            cut = lo;
+            return false;
+          }
+          used += n;
+          out.push(e);
+        }
+      return true;
     };
+    const stopped = (): { list: ConfirmedId[]; uncheckedFrom: number; checkedThrough: number } => ({ list: out, uncheckedFrom: cut!, checkedThrough: out[out.length - 1]!.seq });
     for (const b of sorted) {
       if (++windows > cap) {
-        flush();
-        return { list: out, uncheckedFrom: b };
+        if (!flush()) return stopped();
+        return { list: out, uncheckedFrom: b, checkedThrough: null };
       }
       const top = Math.min(b + K + 1, head);
       if (b <= hi) hi = Math.max(hi, top);
       else {
-        flush();
+        if (!flush()) return stopped();
         lo = b;
         hi = top;
       }
     }
-    flush();
-    return { list: out, uncheckedFrom: null };
+    if (!flush()) return stopped();
+    return { list: out, uncheckedFrom: null, checkedThrough: null };
   }
 
   // ---------------------------------------------------------------- rows for catch-up (live and archived)
@@ -569,17 +589,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return null;
   }
 
-  /** A Published cut's source cut and the version published (its record's `source` and fork point). */
-  function publishedSource(rec: CutRecord | undefined): { branchId: string; at: number } | null {
-    if (rec?.kind !== "published" || typeof rec.forkOf !== "string") return null;
-    const i = rec.forkOf.lastIndexOf("@");
-    const at = Number(rec.forkOf.slice(i + 1));
-    if (i < 1 || !Number.isInteger(at)) return null;
-    return { branchId: typeof rec.source === "string" ? rec.source : rec.forkOf.slice(0, i), at };
-  }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
-    // a reader scoped to some cuts (a Published cut's watch link) reads only those: refused before anything is sent
-    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(m.branchId)) return send(c, { type: "error", reason: `this token can't read ${m.branchId}` });
     const b = tables.branch(m.branchId);
     if (!b) return send(c, { type: "unknownBranch", branchId: m.branchId });
     if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
@@ -599,7 +609,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       }
     }
     const head = tables.head(m.branchId);
-    const { list: confirmed, uncheckedFrom } = confirmedOf(m.branchId, m.pending);
+    const claimsAfter = Number.isInteger(m.claimsAfter) ? (m.claimsAfter as number) : -1;
+    const { list: confirmed, uncheckedFrom, checkedThrough } = confirmedOf(m.branchId, m.pending, { after: claimsAfter, budget: catchupBytes });
+    // the list isn't complete: the client acts on nothing until it is, so this page is the list alone (no rows, no
+    // keyframe, no subscription yet), within the page's budget
+    if (uncheckedFrom !== null) {
+      const partial: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows: [], confirmed, uncheckedFrom };
+      if (checkedThrough !== null) partial.checkedThrough = checkedThrough;
+      return send(c, partial);
+    }
     let from = Math.max(-1, Math.min(m.have, head));
     let keyframe: sync.KeyframeData | undefined;
     let budget = catchupBytes;
@@ -616,18 +634,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         from = k.seq;
       } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
+    budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
     const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
-    // `source` (a Published cut's source and its head) is asked of foundation-core for WelcomeMsg (web-demo notes);
-    // until it is in core's types it rides as this extension
-    const msg: sync.WelcomeMsg & { source?: { branchId: string; at: number; head: number } } = { type: "hello", branchId: m.branchId, head, rows, confirmed };
+    const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
-    if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
-    // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
-    const src = publishedSource(b.rec);
-    if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId) };
     // the client then never sends what would be refused unread (round 2 finding 2)
     if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
     if (last < head) msg.more = true;
@@ -649,7 +662,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const head0 = tables.head(m.branchId);
       if (Number.isInteger(ch.base?.seq) && head0 - ch.base.seq > K) {
         // the K cap (§6.3): no scan of the log, only the bounded id list for this push's changes
-        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })));
+        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })), { budget: catchupBytes });
         return reject(c, m.branchId, ch.id, "behind", m.epoch, r ? { confirmed: r.list, ...(r.uncheckedFrom !== null ? { uncheckedFrom: r.uncheckedFrom } : {}) } : {});
       }
       if (declarationTooLarge(ch)) return reject(c, m.branchId, ch.id, "too large", m.epoch);
@@ -867,36 +880,6 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     emit({ type: "keyframe", branchId: m.branchId, seq: k.seq, mismatch: false });
   }
 
-  // Per connection, a token bucket: PRESENCE_BURST updates at once, refilled at PRESENCE_PER_SEC. Clients send at most
-  // 10 a second (the sync client coalesces); anything over the cap is dropped, so a misbehaving client can't make the
-  // relay, and on a Durable Object the fan-out work, grow with its sending rate.
-  const presenceBuckets = new Map<string, { tokens: number; at: number }>();
-  function presenceAllowed(c: HostConnection): boolean {
-    const now = clock();
-    const b = presenceBuckets.get(c.id) ?? { tokens: PRESENCE_BURST, at: now };
-    b.tokens = Math.min(PRESENCE_BURST, b.tokens + ((now - b.at) / 1000) * PRESENCE_PER_SEC);
-    b.at = now;
-    presenceBuckets.set(c.id, b);
-    if (b.tokens < 1) return false;
-    b.tokens -= 1;
-    return true;
-  }
-
-  // The latest presence a connection had dropped by its cap, per branch, relayed when its bucket refills: a burst
-  // (updates that queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position
-  // or its `state: null` always reaches each branch's others. The rate itself stays per connection.
-  const presenceTrailing = new Map<string, Map<string, { msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>>();
-  function clearTrailing(id: string, branchId?: string): void {
-    const byBranch = presenceTrailing.get(id);
-    if (!byBranch) return;
-    for (const [b, t] of byBranch) {
-      if (branchId !== undefined && b !== branchId) continue;
-      clearTimeout(t.timer);
-      byBranch.delete(b);
-    }
-    if (byBranch.size === 0) presenceTrailing.delete(id);
-  }
-
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
     if (!stateOf(c).subs.includes(m.branchId)) return;
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
@@ -904,38 +887,6 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
-    if (!presenceAllowed(c)) {
-      stats.presenceDropped++;
-      const byBranch = presenceTrailing.get(c.id) ?? new Map();
-      presenceTrailing.set(c.id, byBranch);
-      const waiting = byBranch.get(m.branchId);
-      if (waiting) {
-        waiting.msg = msg;
-        return;
-      }
-      const b = presenceBuckets.get(c.id)!;
-      const ms = Math.max(1, Math.ceil(((1 - b.tokens) / PRESENCE_PER_SEC) * 1000));
-      const branchId = m.branchId;
-      const entry = {
-        msg,
-        timer: setTimeout(function relay() {
-          if (!conns.has(c.id) || !stateOf(c).subs.includes(branchId)) return clearTrailing(c.id, branchId);
-          // one token per relay, as any update; a connection with several branches waiting takes its turns
-          if (!presenceAllowed(c)) {
-            entry.timer = setTimeout(relay, Math.max(1, Math.ceil(1000 / PRESENCE_PER_SEC)));
-            (entry.timer as { unref?: () => void }).unref?.();
-            return;
-          }
-          byBranch.delete(branchId);
-          if (byBranch.size === 0) presenceTrailing.delete(c.id);
-          fanout(branchId, entry.msg, c.id);
-        }, ms),
-      };
-      (entry.timer as { unref?: () => void }).unref?.();
-      byBranch.set(branchId, entry);
-      return;
-    }
-    clearTrailing(c.id, m.branchId); // this newer state supersedes the one waiting on its branch
     fanout(m.branchId, msg, c.id);
   }
 
@@ -997,8 +948,6 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     disconnect(conn) {
       conns.delete(conn.id);
       outboxes.delete(conn.id);
-      presenceBuckets.delete(conn.id);
-      clearTrailing(conn.id);
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
@@ -1076,21 +1025,31 @@ function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8A
   const bytes = (k: string) => (r[k] === null || r[k] === undefined ? 0 : enc.encode(String(r[k])).byteLength);
   return ROW_FIXED + 6 * enc.encode(branchId).byteLength + (body?.byteLength ?? 0) + bytes("author") + bytes("base") + bytes("paths") + bytes("reads") + 3 * bytes("spans") + 6 * (bytes("id") + bytes("hash") + bytes("policy"));
 }
+/** A blob read as a stream of ranged gets, `chunk` bytes at a time, fetched only as the reader pulls. */
+function rangedStream(blobs: BlobStore, key: string, chunk: number): ReadableStream<Uint8Array> {
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(ctl) {
+      const part = await blobs.get(key, { offset, length: chunk });
+      if (!part) return ctl.error(new Error(`segment ${key} is missing from the blob store`));
+      if (part.byteLength) ctl.enqueue(part);
+      offset += part.byteLength;
+      if (part.byteLength < chunk) ctl.close();
+    },
+  });
+}
 /** A reply row's keys, numbers and the defaults `Tables.toRow` adds (the rest is sized from its columns). */
 const ROW_FIXED = 256;
 
 /**
  * The rows of an archived segment (a gzip-compressed JSON array of row objects), one at a time, read as a stream: only
  * one row's text is held at once, so a page that stops early never decompresses or parses the rest (round 3 finding
- * 3). Uses the store's `getStream` when it has one.
+ * 3). Uses the store's `getStream` when it has one, else ranged gets of 64 KiB (round 4 finding 3: a whole-object get
+ * loads the segment before the page can stop it).
  */
 async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Record<string, string | number | null>> {
   let stream: ReadableStream<Uint8Array> | null = blobs.getStream ? await blobs.getStream(key) : null;
-  if (!stream) {
-    const stored = await blobs.get(key);
-    if (!stored) throw new Error(`segment ${key} is missing from the blob store`);
-    stream = new Blob([stored as Uint8Array<ArrayBuffer>]).stream();
-  }
+  if (!stream) stream = rangedStream(blobs, key, 64 * 1024);
   // (the lib types give these transforms a BufferSource writable side: a Uint8Array stream is one)
   if (key.endsWith(".gz")) stream = stream.pipeThrough(new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>);
   const reader = stream.pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>).getReader();
@@ -1136,9 +1095,6 @@ function utf8Over(text: string, limit: number): boolean {
 function declarationTooLarge(ch: Change): boolean {
   return (ch.paths?.length ?? 0) + (ch.reads?.length ?? 0) > 200_000 || (ch.spans?.length ?? 0) > 50_000 || (ch.trackOrder?.length ?? 0) > 10_000 || (ch.base?.pending?.length ?? 0) > 10_000;
 }
-/** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
-const PRESENCE_BURST = 20;
-const PRESENCE_PER_SEC = 20;
 /** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
 const ARCHIVE_KEEP = 10_000;
 const ARCHIVE_SEGMENT = 10_000;

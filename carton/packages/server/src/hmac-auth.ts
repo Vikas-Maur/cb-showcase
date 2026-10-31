@@ -22,8 +22,6 @@ export interface InviteClaims {
   kid: string;
   prj: string;
   role: Role;
-  // the cuts the sessions it makes are scoped to (a Published cut's watch link: its viewers read that cut only)
-  brs?: string[];
   iat: number; // seconds
   exp: number;
 }
@@ -161,11 +159,7 @@ export class HmacAuth implements AuthProvider {
     }
     const keyP = typeof claims?.kid === "string" ? this.#keys.get(claims.kid) : undefined;
     if (!keyP) throw new AuthError("unknown signing key");
-    const mac = fromB64url(token.slice(dot + 1));
-    // Canonical only: the MAC's last base64url character has unused bits, and a token differing there decodes to the
-    // same MAC, but it is not the token that was issued (the AuthProvider suite's tamper check).
-    if (b64url(mac) !== token.slice(dot + 1)) throw new AuthError("bad signature");
-    const ok = await crypto.subtle.verify("HMAC", await keyP, mac as Uint8Array<ArrayBuffer>, enc.encode(body));
+    const ok = await crypto.subtle.verify("HMAC", await keyP, fromB64url(token.slice(dot + 1)) as Uint8Array<ArrayBuffer>, enc.encode(body));
     if (!ok) throw new AuthError("bad signature");
     const now = this.#sec();
     if (claims.v !== 1 || !Number.isInteger(claims.exp) || !Number.isInteger(claims.iat)) throw new AuthError("bad token");
@@ -175,18 +169,13 @@ export class HmacAuth implements AuthProvider {
     return claims;
   }
 
-  // An invite link's token. Only an owner's session may ask a host for one (see `canInvite`). `branches` scopes the
-  // sessions it makes to those cuts: writers may push only there, and viewers and commenters may read only there (a
-  // Published cut's share link must not show the edit behind it).
-  async createInvite(project: string, role: Role, ttlMs?: number, branches?: readonly string[]): Promise<string> {
+  // An invite link's token. Only an owner's session may ask a host for one (see `canInvite`).
+  async createInvite(project: string, role: Role, ttlMs?: number): Promise<string> {
     if (!ID_RE.test(project)) throw new AuthError("bad project id", 400);
     if (!ROLES.includes(role)) throw new AuthError("bad role", 400);
-    if (branches !== undefined && (!Array.isArray(branches) || !branches.length || branches.length > 64 || branches.some((b) => typeof b !== "string" || !ID_RE.test(b)))) throw new AuthError("bad branches", 400);
     const iat = this.#sec();
     const ttl = ttlMs === undefined ? this.#inviteTtl : Math.floor(ttlMs / 1000);
-    const claims: InviteClaims = { v: 1, typ: "invite", kid: this.#currentKid, prj: project, role, iat, exp: iat + ttl };
-    if (branches) claims.brs = [...branches];
-    return this.#sign(claims);
+    return this.#sign({ v: 1, typ: "invite", kid: this.#currentKid, prj: project, role, iat, exp: iat + ttl });
   }
 
   // AuthProvider.issue: a session for claims the caller already trusts (a server-side mint, tests, Cardboard's API
@@ -208,8 +197,7 @@ export class HmacAuth implements AuthProvider {
     const c = await this.#open(invite);
     if (c.typ !== "invite") throw new AuthError("not an invite");
     if (typeof account !== "string" || !ID_RE.test(account)) throw new AuthError("bad account id", 400);
-    if (c.brs !== undefined && (!Array.isArray(c.brs) || c.brs.some((b) => typeof b !== "string"))) throw new AuthError("bad token");
-    return this.#issue(c.prj, c.role, account, await deviceId(installKey), c.brs);
+    return this.#issue(c.prj, c.role, account, await deviceId(installKey));
   }
 
   // A new session for the same device and role. Works up to `refreshGraceSec` after expiry, for a device that

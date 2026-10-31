@@ -95,6 +95,8 @@ export interface SyncClientOptions {
 export const PRESENCE_PER_SEC = 10;
 
 let CONN = 0;
+/** Refusals about the connection (its token, its branch), not the change: the same on every message it sends. */
+const CONNECTION_REASONS: ReadonlySet<string> = new Set(["forbidden", "read-only branch", "unknown branch", "foreign id"]);
 
 export class SyncClient {
   readonly queue: ReplicaQueue;
@@ -325,7 +327,7 @@ export class SyncClient {
    * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
    * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
    */
-  private hello(onlyFrom = -1): ClientMessage {
+  private hello(onlyFrom = -1, after?: number): ClientMessage {
     const b = this.branchId;
     const pending: PendingClaim[] = [];
     for (const p of this.queue.pending(b)) {
@@ -336,6 +338,7 @@ export class SyncClient {
     }
     const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
     if (this.noKeyframe) m.noKeyframe = true;
+    if (after !== undefined) m.claimsAfter = after;
     if (this.o.blobs) m.envelopes = true;
     return m;
   }
@@ -393,7 +396,7 @@ export class SyncClient {
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
             // the server checked only part of our claims: keep what it found, ask for the rest, act on nothing yet
             this.confirmedSoFar.push(...m.confirmed);
-            return this.send(this.hello(m.uncheckedFrom));
+            return this.send(this.hello(m.uncheckedFrom, m.checkedThrough));
           }
           const confirmed = m.type === "hello" ? [...this.confirmedSoFar.splice(0), ...m.confirmed] : [];
           if (m.type === "changes" && m.rows.length && m.rows[0]!.seq > this.queue.headSeq(b) + 1) return this.resync("a gap in the rows");
@@ -454,9 +457,18 @@ export class SyncClient {
         this.epoch++; // everything still in flight from the dead epoch is dropped by the server; resend all
         this.emit({ type: "reject", id: m.id, reason: m.reason, epoch: m.epoch });
         if (VALIDATION_REASONS.has(m.reason)) {
-          // can't be fixed by resubmitting: it leaves the queue as rejected; the rest is rebased without it
           this.fenced(() => {
-            if (m.id) this.queue.rejectPending(b, m.id, m.reason);
+            const p = m.id ? this.queue.pending(b).find((x) => x.id === m.id) : undefined;
+            if (p && this.queue.isEmpty(p)) {
+              // an emptied change (absorbed, or refused here) is only withdrawn: nothing about it is decided by a
+              // refusal, since a copy sent earlier may still be confirmed (round 4 finding 1). One this connection may
+              // not make (its token, its branch) isn't sent again on it; any other answered a push refused for its
+              // content, and the change is withdrawn in the new epoch.
+              if (CONNECTION_REASONS.has(m.reason)) {
+                p.withdrawRefused = this.connId;
+                this.emit({ type: "error", error: `withdraw of ${m.id} refused (${m.reason}): it stays pending` });
+              }
+            } else if (m.id) this.queue.rejectPending(b, m.id, m.reason); // the rest is rebased without it
             this.defer(() => this.pump(), 1);
           });
           return;
@@ -586,7 +598,11 @@ export class SyncClient {
         continue;
       }
       if (p.withdrawSent?.conn === this.connId && p.withdrawSent.epoch === this.epoch) continue;
+      if (p.withdrawRefused === this.connId) continue;
       p.withdrawSent = { conn: this.connId, epoch: this.epoch };
+      // a withdraw lands in (head, head + K + 1] like a push: its base joins the claims a reconnect makes, so a lost
+      // answer is found again rather than spent twice (round 4 finding 2)
+      if (!p.sentBases.includes(head)) p.sentBases.push(head);
       this.stats.withdraws++;
       this.emit({ type: "withdraw", id: p.id, epoch: this.epoch });
       this.send({ type: "withdraw", branchId: b, id: p.id, base: head, epoch: this.epoch });
