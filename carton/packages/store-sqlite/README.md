@@ -24,9 +24,11 @@ const { carton } = await importProject({ bundleDir, projectId, appDataDir, adapt
 | `readOnly` | `false` | Read without ever writing (no placement move either). |
 | `appDataDir` | per-OS local app data | Where carton.db goes when it can't live in the bundle, and the project's placement lock. **Every process opening a project must pass the same value.** |
 
-WAL checkpoints never run inside a commit: SQLite's automatic one is off, and a passive checkpoint runs on its own
-turn of the event loop (after 1,000 writes, every 30 s, and at open). It costs the calling thread a few ms to tens of
-ms now and then, never the write lock.
+With the default durability, WAL checkpoints never run inside a commit: SQLite's automatic one is off, and a passive
+checkpoint runs on its own turn of the event loop (after 1,000 writes, every 30 s, and at open). It costs the calling
+thread a few ms to tens of ms now and then, never the write lock. With `durability: "full"` SQLite's automatic
+checkpoint stays on: every commit already fsyncs under the lock, and moving the checkpoint out only made each commit
+slower there (verify-ci S3c).
 
 ## Errors a host should handle
 

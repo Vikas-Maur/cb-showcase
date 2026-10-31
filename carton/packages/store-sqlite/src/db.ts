@@ -25,7 +25,8 @@ export interface DbOptions {
    * "full" fsyncs every commit, and SQLite does that inside COMMIT: the write lock is held across the fsync, so how
    * long it is held depends on the disk, and other processes' writes wait that long. On a GitHub runner it exceeded
    * 5 ms in 5 of 14 benchmark runs (verify-ci, VERIFIED.md S3). It can't be otherwise: a commit has to be on disk
-   * before the lock is let go.
+   * before the lock is let go. "full" also keeps SQLite's own WAL checkpoint inside the commit that crosses 1,000
+   * frames (the default moves it out of the lock; for "full" that only made every commit slower).
    */
   durability?: "normal" | "full";
   readOnly?: boolean;
@@ -71,6 +72,7 @@ export class Db {
   checkpointMaxMs = 0;
   #writesSinceCheckpoint = 0;
   #checkpointQueued = false;
+  #deferCheckpoints = false;
   #walTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
@@ -91,11 +93,19 @@ export class Db {
           db.raw.exec("PRAGMA journal_mode=WAL");
         });
       }
-      db.raw.exec(`PRAGMA synchronous=${opts.durability === "full" ? "FULL" : "NORMAL"};
+      const full = opts.durability === "full";
+      db.raw.exec(`PRAGMA synchronous=${full ? "FULL" : "NORMAL"};
         PRAGMA temp_store=MEMORY;
-        PRAGMA journal_size_limit=${16 * 1024 * 1024};
-        PRAGMA wal_autocheckpoint=0;`);
-      if (!opts.readOnly) db.#watchWal();
+        PRAGMA journal_size_limit=${16 * 1024 * 1024};`);
+      // Checkpoints out of the write lock for the default only (see #watchWal). With "full" every commit already
+      // fsyncs under the lock, which dominates its worst case, so moving the checkpoint out bought nothing there and
+      // cost every commit (verify-ci S3c: +23% p50, +33% mean per commit, worst hold unchanged): SQLite's automatic
+      // checkpoint stays on for "full".
+      if (!opts.readOnly && !full) {
+        db.raw.exec("PRAGMA wal_autocheckpoint=0");
+        db.#deferCheckpoints = true;
+        db.#watchWal();
+      }
       return db;
     } catch (e) {
       db.close();
@@ -144,11 +154,11 @@ export class Db {
     } finally {
       this.lastLockMs = performance.now() - t0;
     }
-    if (++this.#writesSinceCheckpoint >= CHECKPOINT_EVERY_WRITES) this.#queueCheckpoint();
+    if (this.#deferCheckpoints && ++this.#writesSinceCheckpoint >= CHECKPOINT_EVERY_WRITES) this.#queueCheckpoint();
     return out;
   }
 
-  // Checkpoints never run inside a commit. SQLite's automatic one would: the commit that takes the WAL past 1,000
+  // With the default durability, checkpoints never run inside a commit. SQLite's automatic one would: the commit that takes the WAL past 1,000
   // frames copies them all into the database (and fsyncs it) while still holding the write lock, which every other
   // process waits on (verified: about once per 1,000 commits a ~30 ms hold). It is off (wal_autocheckpoint=0), and a
   // PASSIVE checkpoint, which takes only the checkpointer lock, runs on its own turn of the event loop: after
