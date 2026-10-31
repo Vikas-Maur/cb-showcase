@@ -116,3 +116,12 @@ export async function mutationsDuring(el: Element, fn: () => Promise<void>): Pro
 }
 
 export { React };
+
+/** Wait until `ok()` holds (checked after each short pause), for things that land on a timer or animation frame. */
+export async function waitFor(ok: () => boolean, label: string, ms = 5000): Promise<void> {
+  const t0 = Date.now();
+  while (!ok()) {
+    if (Date.now() - t0 > ms) throw new Error(`timed out waiting for ${label}`);
+    await act(() => new Promise((r) => setTimeout(r, 5)));
+  }
+}

@@ -1,7 +1,7 @@
 // Regression tests for review round 2 (reviews/ui.md), on the real engine.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Carton, POS, defineSchema, object, timeAlgebra, type Actor, type CartonEvent, type Doc, type Rec } from "@carton/core";
+import { Carton, POS, defineSchema, object, timeAlgebra, type Actor, type CartonEvent, type ConflictCard, type Doc, type Rec } from "@carton/core";
 import type { HostAdapter } from "@carton/core/plugins";
 import { createMemoryStore } from "@carton/store-memory";
 import { fromCarton, type FromCartonOptions } from "../src/from-carton.ts";
@@ -22,7 +22,17 @@ const alice: Actor = { kind: "human", id: "alice", name: "Alice", group: "alice@
 const director = (turn: string): Actor => ({ kind: "agent", id: "director", name: "Director", turn, chat: "c1", group: "alice@laptop" });
 const bob: Actor = { kind: "human", id: "bob", name: "Bob" };
 const set = (id: string, f: string, v: unknown) => ({ op: "set" as const, path: ["items", id, f], value: v });
-const settle = () => new Promise((r) => setTimeout(r, 80));
+// Every view model a test opens, so settle() waits for their own scheduled and running work, never a guessed time
+// (Windows wakes timers at about 15.6 ms; a fixed wait races the 50 ms refresh debounce: verify-ci #8).
+const live = new Set<ReturnType<typeof fromCarton>>();
+const make = (...a: Parameters<typeof fromCarton>) => {
+  const h = fromCarton(...a);
+  live.add(h);
+  return h;
+};
+const settle = async () => {
+  for (let i = 0; i < 3; i++) await Promise.all([...live].map((h) => h.settled()));
+};
 const item = async (c: Carton, id: string, cut?: string) => ((await c.head(cut)).doc.items as Rec[]).find((i) => i.id === id)!;
 
 async function open(extra: Partial<FromCartonOptions> = {}, store = createMemoryStore()) {
@@ -33,7 +43,7 @@ async function open(extra: Partial<FromCartonOptions> = {}, store = createMemory
     taps.push(l);
     return realOn(l);
   };
-  const ui = fromCarton(carton, { me: alice, ...extra });
+  const ui = make(carton, { me: alice, ...extra });
   await ui.ready;
   return { carton, ui, store, emit: (e: CartonEvent) => taps.forEach((l) => l(e)) };
 }
@@ -161,7 +171,7 @@ test("R2-9: 'fold in the rest' stays done after the adapter is recreated, and is
   const inv = ui.history().at("all", 0)!;
   assert.equal(inv.foldRest, true);
   // A fresh adapter over the same project still offers it (derived from state, not session memory).
-  const again = fromCarton(carton, { me: alice });
+  const again = make(carton, { me: alice });
   await again.ready;
   await settle();
   assert.equal(again.history().at("all", 0)!.foldRest, true);
@@ -169,7 +179,7 @@ test("R2-9: 'fold in the rest' stays done after the adapter is recreated, and is
   again.dispose();
   ui.dispose();
   // And after it was done, a fresh adapter no longer offers it.
-  const third = fromCarton(carton, { me: alice });
+  const third = make(carton, { me: alice });
   await third.ready;
   await settle();
   assert.equal(third.history().at("all", 1)!.foldRest, undefined);
@@ -245,7 +255,7 @@ test("R3-5: a decided partial fold is not diffed again on later refreshes", asyn
   let diffs = 0;
   const realDiff = carton.diff.bind(carton);
   (carton as { diff: typeof carton.diff }).diff = (...a) => (diffs++, realDiff(...a));
-  const again = fromCarton(carton, { me: alice });
+  const again = make(carton, { me: alice });
   await again.ready;
   await settle();
   const first = diffs;
@@ -356,24 +366,25 @@ test("R5-2: a read that started before a change can't put back a decision the ch
   // Another handle writes (no event here): the next refresh must check again; pause that check's head read.
   const otherHandle = await Carton.open({ adapter, store, actor: bob });
   await otherHandle.commit({ ops: [set("a", "color", "x")] });
-  let release!: () => void;
+  let release!: () => void, entered!: () => void;
   const gate = new Promise<void>((r) => (release = r));
+  const inRead = new Promise<void>((r) => (entered = r));
   const realHead = carton.head.bind(carton);
   let armed = true;
   (carton as { head: typeof carton.head }).head = async (cut) => {
     const h = await realHead(cut);
     if (armed) {
       armed = false;
+      entered();
       await gate; // the read saw d red; meanwhile d turns green
     }
     return h;
   };
   const p = ui.refresh();
-  await settle();
+  await inRead;
   await carton.commit({ ops: [set("d", "color", "green")] }); // through this handle: an event invalidates
   release();
   await p;
-  await settle();
   await settle();
   assert.equal(flag(), undefined, "the stale 'still left out' was discarded; the fresh read says it isn't");
   ui.dispose();
@@ -389,5 +400,30 @@ test("R5-2: writes from another handle (no events) invalidate a 'still left out'
   await ui.refresh();
   await settle();
   assert.equal(flag(), undefined);
+  ui.dispose();
+});
+
+// ---------------------------------------------------------------- Stage F (verify-ci #3: the windows facade)
+
+test("Stage F: cards a host reports keep its own fields; cardFor maps a Conflict back; sides follow core; resolve removes only that card", async () => {
+  const { carton, ui } = await open();
+  // A stale GUI save's clash, as the windows facade reports it (core's convention, with its own card ids):
+  // ours = head on screen (the change that was kept), theirs = the person's own edit.
+  const card = (cid: string, head: number, mine: number) => ({ kind: "field" as const, path: "items/a/fontSize", base: 150, ours: head, theirs: mine, cid });
+  ui.reportConflicts([card("k1", 160, 170), card("k2", 180, 170)]);
+  const shown = ui.conflicts();
+  assert.equal(shown.length, 2, "two kept cards for one field");
+  type HostCard = ConflictCard & { cid: string };
+  const first = shown.find((c) => ui.cardFor<HostCard>(c.id)?.cid === "k1")!;
+  assert.equal(first.path, "items/a/fontSize", "path says which field");
+  assert.equal(first.mine.summary, "170", "mine is the person's own edit (core's theirs)");
+  assert.equal(first.theirs.summary, "160", "theirs is the change that was kept (core's ours, head)");
+  assert.equal(first.provisional, "theirs", "the kept change is what shows now");
+  assert.notEqual(first.id, first.path, "Conflict.id is opaque: never the path");
+  await ui.resolve(first.id, "theirs"); // keep what shows: no commit, the card goes
+  assert.deepEqual(ui.conflicts().map((c) => ui.cardFor<HostCard>(c.id)?.cid), ["k2"], "only that card went");
+  assert.equal(ui.cardFor(first.id), undefined);
+  await settle();
+  assert.equal((await carton.log()).length, 1, "nothing committed for keeping what shows");
   ui.dispose();
 });
