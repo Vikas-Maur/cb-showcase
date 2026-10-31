@@ -3,7 +3,7 @@
 // [p, len] (later times pushed right). A time is mapped as a start edge ("s": right-continuous) or an end edge ("e":
 // left-continuous); null means the time sat inside deleted content.
 import type { Schema } from "../schema.ts";
-import type { Doc, Op, Path, Rec, RemapChain, RemapMaps, RemapOp, RemapStep, SetOp } from "../types.ts";
+import type { Doc, Lineage, Op, Path, Rec, RemapChain, RemapMaps, RemapOp, RemapStep, SetOp } from "../types.ts";
 import { posOf } from "./doc.ts";
 import { cmp, EMPTY } from "./json.ts";
 
@@ -141,6 +141,17 @@ export function invertChain(chain: RemapChain | null | undefined): RemapChain {
 }
 export const invertMaps = (m: RemapMaps | null | undefined): RemapMaps => Object.fromEntries(Object.entries(m ?? {}).map(([t, c]) => [t, invertChain(c)]));
 export const isEmptyMap = (m: RemapMaps | null | undefined): boolean => !m || Object.values(m).every((c) => !c?.length);
+/**
+ * A change's recorded remap as merge3 takes it (one side of `remaps`): its maps and its lineage, or undefined when it
+ * has neither. A split records lineage only (`{middle: ["middle", "middle-b"]}`): kept, so a rebase over a concurrent
+ * edit of the split clip reaches every piece (kit-docs: it was dropped whenever the maps were empty).
+ */
+export const intentRemap = (i: { maps?: RemapMaps; lineage?: Lineage } | null | undefined): { maps: RemapMaps; lineage?: Lineage } | undefined => {
+  if (!i) return undefined;
+  const lineage = i.lineage && Object.keys(i.lineage).length ? i.lineage : undefined;
+  if (isEmptyMap(i.maps) && !lineage) return undefined;
+  return { maps: i.maps ?? {}, ...(lineage ? { lineage } : {}) };
+};
 
 /**
  * A remap op as the per-item sets it stands for, against `doc`: every item on a mapped lane whose extent maps cleanly

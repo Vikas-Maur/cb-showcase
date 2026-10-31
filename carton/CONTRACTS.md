@@ -58,7 +58,18 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 ## Carton handle notes
 
 - **Refs** passed to `checkout`, `diff`, `fold`, `restore`, `preview` may be a printed header, a `StateRef`, a node id
-  `"<cutId>@<seq>"`, or a cut id (its head). A ref that can't be rebuilt exactly throws `StateUnknown`.
+  `"<cutId>@<seq>"`, or a cut id (its head); a commit's `base` takes a header, a `StateRef` or a node id. A ref that
+  can't be rebuilt exactly throws `StateUnknown`.
+- **Documents are values.** `head()`, `checkout()` and `resolve()` hand out the collection arrays as the caller's own
+  (add, remove, reorder freely) and the records and root values frozen: they are History's, shared with every state
+  that didn't change them, so an edit in place throws. Replace the record you change (`{ ...rec, name }`). What you
+  commit becomes History's the same way: a record or value you passed in (an op's value, or `commit({ doc })`'s
+  changed records, which the diff takes as they are) is frozen once a state holding it has been handed out, so keep
+  building on copies, not on the objects you committed. The cost is the array copy a head always had: each of
+  History's arrays is frozen once, and a change freezes only what it writes.
+- **A split** records its lineage in the intent (`{ kind: "split", lineage: { c: ["c", "c-b"] } }`): a concurrent
+  edit to the split clip meets the split (the source record is part of its declaration) and reaches every piece,
+  whichever lands first, on local and shared cuts.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have.
 - **A `.cbproj` from a copy of your project folder** (the same cut ids): the sender's versions on a cut you hold that
