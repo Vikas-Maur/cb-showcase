@@ -335,7 +335,9 @@ of your edits were replaced" (B11).
 
 **With Carton.**
 - Listen to `carton.on(e => …)`: `{ type: "change", local: false }` for others' changes, `absorbed` for a pending edit
-  that turned out to be there already, and `notice` for late conflicts.
+  that turned out to be there already, and `notice` for late conflicts. On a shared cut, `sync-error` says why the
+  host refused or couldn't be reached (`error.code`: `update-server`, `unauthorized`, `unreachable`, `unknown-cut`,
+  `too-large` or `server`); a later welcome or ack clears it (`error: null`). `carton.sync.error(cut)` reads it.
 - The echo of the page's own save only moves `cartonBase`.
 - Otherwise, if a save is armed, send it first, with its base. The worker rebases the person's edits on head: on a
   clash head's value stays and the edit becomes a card. A coupled field group (a clip's times) is decided as one unit,
