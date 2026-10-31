@@ -69,14 +69,20 @@ test("S1 a real Cardboard project: GUI save, a Director turn with two parallel s
   }
 
   // all six subagent edits (and the Director's) are in head, on disk and in project.json, once each
-  await until(() => itemNamed(m, "Title B")?.startTime === 9 && itemNamed(m, "Title A")?.startTime === 5, 20_000, "project.json to show head");
+  // (the Director's own save can land last: B3's retries delay its print on a loaded machine)
+  await until(() => itemNamed(m, "Title B")?.startTime === 9 && itemNamed(m, "Title A")?.startTime === 5 && itemNamed(m, SAMPLE.clipA)?.opacity === 0.5, 30_000, "project.json to show head");
   for (const [x, at] of [["A", 5], ["B", 9]] as const) {
     const it = itemNamed(m, `Title ${x}`)!;
     assert.equal(it.textContent, `${x} v2`, `${x}'s second edit landed`);
     assert.deepEqual([it.startTime, it.endTime], [at, at + 1], `${x}'s third edit landed`);
   }
   assert.equal(items(m).filter((i) => /^Title [AB]$/.test(i.name ?? "")).length, 2, "no duplicate titles");
-  assert.equal(itemNamed(m, SAMPLE.clipA)!.opacity, 0.5, "the Director's edit landed");
+  if (itemNamed(m, SAMPLE.clipA)!.opacity !== 0.5) {
+    const hist = await cbOk(m, ["history", "--limit", "30"]);
+    const steps = [];
+    for (const v of hist.versions.filter((x: any) => x.ref.seq > 1).reverse()) steps.push([v.version, v.by?.id ?? null, (await cbOk(m, ["compare", `main@${v.ref.seq - 1}`, v.version])).changes]);
+    assert.fail(`the Director's edit isn't in project.json (Clip A opacity ${itemNamed(m, SAMPLE.clipA)!.opacity}); history ${JSON.stringify(steps)}; Director ${JSON.stringify(outs[0])}`);
+  }
   assert.equal(itemNamed(m, SAMPLE.title)!.fontSize, 150, "the person's GUI edit is still there");
 
   // history: every version, attributed down to the subagent (R2-03)

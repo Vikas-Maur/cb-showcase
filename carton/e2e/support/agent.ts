@@ -34,7 +34,7 @@ try {
   for (;;) {
     const printed = await local.write({ kind: "printView", ...(cfg.view ? { name: cfg.view } : {}) });
     if (printed.status === "confirmed" && (printed as any).view) { view = (printed as any).view; break; }
-    if (cfg.noRetry || printRetries >= 10 || !/views need the app open/.test(String((printed as any).error))) {
+    if (cfg.noRetry || printRetries >= 60 || !/views need the app open/.test(String((printed as any).error))) {
       throw new Error(`print --view failed: ${JSON.stringify(printed)}; lease at ${Date.now()}: ${JSON.stringify(await local.lease.snapshot())}`);
     }
     printRetries++;

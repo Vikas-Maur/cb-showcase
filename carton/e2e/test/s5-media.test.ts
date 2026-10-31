@@ -366,9 +366,10 @@ for (const kind of ["blob-s3", "host-http"] as const) {
 // Minimal case for S5-4 on the host only: an S3 gateway aborted while a part is in flight can take that part and
 // revive the upload (VersityGW does; S3 documents in-flight parts "might or might not succeed"), which makes the drop
 // racy there. The concurrent-resume test above shows the same waste on S3 in its diagnostics.
-test("S5-4 an upload the store dropped mid-way (expired, or completed by another process) costs at most the parts that were in flight (host-http)", {
+// (S5-4, fixed in media d5508fb1: uploadMedia retried uploadPart on NoSuchUpload, re-sending every in-flight part up to
+// 5 times to an upload that could never take it)
+test("an upload the store dropped mid-way (expired, or completed by another process) costs at most the parts that were in flight (host-http)", {
   timeout: 180_000,
-  todo: "S5-4, media: uploadMedia retries uploadPart on NoSuchUpload, re-sending every in-flight part up to 5 times to an upload that can never take it",
 }, async (t) => {
   const w = await world(t, "host-http");
   const want = await hashFile(clips.big);
