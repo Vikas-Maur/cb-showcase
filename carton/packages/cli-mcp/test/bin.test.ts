@@ -84,7 +84,7 @@ test("carton --server <url> --token-file <file> share: a helper shares the cut w
   const cut = first.carton.cut;
   await first.close();
   // the team's server (server-node), its token for alice in a file
-  const host = spawn(process.execPath, [fileURLToPath(new URL("../../local/test/support/host.ts", import.meta.url)), dir, imp.projectId], { stdio: ["pipe", "pipe", "inherit"] });
+  const host = spawn(process.execPath, [fileURLToPath(new URL("../../local/test/support/host.ts", import.meta.url)), dir, String(imp.projectId)], { stdio: ["pipe", "pipe", "inherit"] });
   let helperPid: number | null = null;
   t.after(() => { if (helperPid) try { process.kill(helperPid, "SIGKILL"); } catch {} host.kill("SIGKILL"); });
   await new Promise<void>((r) => host.stdout!.once("data", () => r()));
