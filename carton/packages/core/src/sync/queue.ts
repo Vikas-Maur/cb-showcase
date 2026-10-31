@@ -433,7 +433,9 @@ export class ReplicaQueue {
     const log = this.logs.get(b)!;
     if (kf.seq <= log.length) return false;
     // a keyframe becomes confirmed state: it must hash to what it claims (review finding 14)
-    if (kf.stateHash && hashDoc(kf.doc, this.schema) !== kf.stateHash) throw new KeyframeMismatch(b, kf.seq);
+    // a keyframe without a real digest is refused like a wrong one: nothing unchecked becomes confirmed state (round 2
+    // finding 8)
+    if (typeof kf.stateHash !== "string" || !/^[0-9a-f]{64}$/.test(kf.stateHash) || hashDoc(kf.doc, this.schema) !== kf.stateHash) throw new KeyframeMismatch(b, kf.seq);
     this.placeholderTop.set(b, kf.seq);
     for (let s = log.length + 1; s <= kf.seq; s++) log.push({ seq: s, id: null, ops: [], placeholder: true });
     this.kf.get(b)!.set(kf.seq, kf.doc);

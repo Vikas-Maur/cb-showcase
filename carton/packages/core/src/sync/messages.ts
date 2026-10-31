@@ -145,6 +145,8 @@ export interface AdoptMsg {
   rec: CutRecord;
   doc0: Doc | null;
   rootSeq?: number;
+  /** `hashDoc(doc0)`, so a joiner from nothing can check the root keyframe (the client fills it in). */
+  rootHash?: string;
   closure: { branchId: string; rec: CutRecord; nodes: DagNode[] }[];
 }
 /** A shared variant made on the server: O(1), no rows copied; it reads the parent at `seq` (§6.3). */
@@ -184,6 +186,8 @@ export interface WelcomeMsg {
   confirmed: ConfirmedId[];
   /** More rows follow: send `hello` again with the new `have`. */
   more?: boolean;
+  /** The largest client message the server reads (its envelope limit, for a client that sends envelopes). */
+  maxMessageBytes?: number;
   /**
    * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
    * acting on the list. Unchecked ids are never to be taken as unconfirmed.
