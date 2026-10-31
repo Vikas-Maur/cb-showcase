@@ -69,3 +69,24 @@ test("history: an unknown branch, a cut the token doesn't cover and a bad closur
   await seq.handle(c, { type: "adopt", branchId: "bad", n: 0, stateHash: H("c"), rows: [], rec: rec("bad"), doc0: doc([clip("c0", 0, 5)]) as never, closure: [{ branchId: "anc", rec: rec("anc"), nodes: [], states: [{ seq: -1, hash: "x", doc: {} as never }] }] });
   assert.match(c.last("adoptError")!.reason, /closure: bad/);
 });
+
+test("history: a session scoped to a cut gets no lineage outside its scope, so a variant folded into it stays unread (web-demo R3-1)", async () => {
+  const seq = createSequencer({ storage: sqliteStorage(), auth: staticAuth });
+  const c = fakeConn("alice/1");
+  const d0 = doc([clip("c0", 0, 5)]);
+  const variant = doc([clip("c0", 0, 3)]);
+  const closure: sync.ClosureEntry[] = [{ branchId: "variant", rec: rec("variant"), nodes: [node("variant", 0), node("variant", 4, ["variant@0"])], states: [{ seq: 4, hash: H("4"), doc: variant as never }] }];
+  await seq.handle(c, { type: "adopt", branchId: "pub", n: 0, stateHash: H("c"), rows: [], rec: rec("pub"), doc0: d0 as never, closure });
+  assert.ok(c.last("adopted"));
+  const ask = async (who: ReturnType<typeof fakeConn>) => {
+    await seq.handle(who, { type: "history", branchId: "pub", req: 1, after: 0, upTo: 0, lineage: true });
+    return who.last("history")!;
+  };
+  const watcher = await ask(fakeConn("w/1", "viewer", { branches: ["pub"] }));
+  assert.equal(watcher.error, undefined);
+  assert.deepEqual(watcher.lineage, [], "the variant's states reached a watch link");
+  const teammate = await ask(fakeConn("t/1", "viewer"));
+  assert.deepEqual(teammate.lineage?.map((t) => t.branchId), ["variant"], "an unscoped reader still gets the lineage");
+  const both = await ask(fakeConn("e/1", "editor", { branches: ["pub", "variant"] }));
+  assert.deepEqual(both.lineage?.map((t) => t.branchId), ["variant"], "a scope that covers the ancestor reads it");
+});
