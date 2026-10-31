@@ -253,6 +253,16 @@ The timeline and playback, found by playing real projects in a separate copy of 
   video off screen, before the next could start, so a graphic with a video inside played at 26–41 frames/s
   on the test laptop (4–14 while it was busy) and froze for seconds when a decode was slow. Paused, scrubbing, and the first frame after Play still
   wait for the exact frame. Left out of `--baseline`.
+- An open editor no longer wakes up on every screen refresh while nothing moves. Everything drawn over the
+  preview (selection handles, a playing graphic, background removal, pending generations) is placed from where
+  the preview's canvas is on screen, and Cardboard measured that on every refresh (up to 144 times a second on
+  a 144 Hz screen) for as long as a project was open. Background project tabs did it too: they're stacked
+  behind the front one, not hidden. Now it measures when something could have moved the canvas (the window or
+  a panel resizing, a divider dragged, the preview zoomed, panned or given another aspect ratio, a scroll or
+  transition around it, the pointer pressed or dragged), keeps measuring every frame while the canvas moves,
+  and rests half a second after it stops. A check once a second catches anything else. On the test laptop an
+  idle editor took about a fifth of a CPU core with one project open and about two thirds with four; now about
+  1% and 2% (see "An idle editor" under Benchmarks). Left out of `--baseline`.
 - The activity log notes the waits: Play waiting on audio over half a second, a second press forcing it,
   slow video frames for a graphic, graphics rebuilt, canvases given back.
 - Clicking the timeline, or a clip in the preview, takes the keyboard from the agent's prompt box (or any other
@@ -471,6 +481,33 @@ and the memory.
   Windows Security platform update (in the System log at the same minutes). The 20 s graphic: 81.4, 117.5 s
   before, 68.0, 135.7 s after (as noisy in both). Outputs the same size and length.
 - The 25 page tests of `scripts\test-shortcuts.js` pass on the after build.
+
+#### An idle editor
+
+The same laptop on mains, with a 144 Hz screen. The build before the preview's position loop rested is compared with
+the build after, alternating, 5 runs each. Each run is a fresh isolated instance with fresh two-clip projects. It is
+left untouched for 20 s, then measured for 60 s. CPU is the instance's processes together, as a share of one core.
+
+| | Before | After |
+| --- | --- | --- |
+| One project tab: frame callbacks per second | 144.2, 144.2, 144.2, 144.2, 144.4 | 0 in every run |
+| One project tab: CPU | 11.2, 21.5, 21.2, 19.0, 20.3% (median 20.3%) | 0.9, 0.4, 0.7, 1.1, 0.7% (median 0.7%) |
+| … of which the GPU process | 3.0, 6.3, 5.9, 5.9, 6.5% | 0.2, 0.1, 0.3, 0.2, 0.2% |
+| Four project tabs: frame callbacks per second | 578.8, 581.4, 538.2, 536.0, 542.8 | 0 in every run |
+| Four project tabs: CPU | 68.7, 64.8, 66.4, 53.0, 52.5% (median 64.8%) | 1.6, 0.9, 2.9, 2.0, 3.2% (median 2.0%) |
+
+A separate re-run measured with a Chromium trace and Windows' CPU counters instead, with the window pinned in
+front, 3 runs per build, and got the same medians:
+- one tab: 144.1 → 0 callbacks per second, 19.9% → 0.9% of a core;
+- four tabs: 576.3 → 0 callbacks per second, 68.3% → 1.6% of a core.
+
+Playing the 56 s timeline with the window in front, nothing changed: 143.5, 143.3, 143.3, 142.8 frames/s and
+1.13, 1.13, 1.14, 1.12 cores before, against 143.1, 143.2, 136.7, 142.3 frames/s and 1.10, 1.14, 1.13, 1.11 cores
+after. After the change, the position loop ran 0 times during playback.
+
+These figures are for a window that is on screen. Normally Windows Chromium treats a completely covered window as
+hidden, and a hidden window gets no frame callbacks, in either build. The runs above turn that detection off, so
+that a window left behind others still counts as visible.
 
 ### Not ported
 

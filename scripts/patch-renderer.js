@@ -6,6 +6,7 @@
 // - The timeline keeps the playhead in view, and redraws after the GPU drops its canvases.
 // - Playback starts without waiting on muted audio, and at once on a second press.
 // - Graphics with a video inside play without waiting on the video's frames ("speed").
+// - The editor stops measuring the preview's place on every frame while nothing moves ("speed").
 // - Badges in prompt boxes are one unit and open on a click; clicking the timeline takes the keyboard.
 // - The editor rail's tooltips show.
 // - The pages' part of the activity log (see __cbLog in patch-main.js).
@@ -535,6 +536,48 @@ it?__cbOpenClip(it):Et.info("That clip isn't on the timeline anymore.")});
     `H_=({tab:e,tile:t,className:n,label:a})=>{const r=e.icon;return c.jsxs("button",{"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:e.select,`,
     `H_=({tab:e,tile:t,className:n,label:a,...__cbTip})=>{const r=e.icon;return c.jsxs("button",{...__cbTip,"aria-label":a===void 0?e.label:void 0,className:W("group flex w-full cursor-pointer flex-col items-center gap-1 px-1",n),onClick:v=>{__cbTip.onClick?.(v),e.select()},`,
   );
+
+  // 20 (speed). The preview's position loop rests while nothing moves. The overlays drawn over the preview
+  // (selection handles, a playing graphic's page, background removal, pending generations) follow the
+  // canvas's place on screen through one tracker per canvas (pF), which measured it on every screen refresh
+  // for as long as the editor was open: 60 or 144 times a second with nothing on screen changing, and in
+  // every open project tab, since background tabs are only stacked behind the front one and never hidden
+  // (backgroundThrottling off). It polled because the canvas can move without an event of its own: the
+  // preview's zoom and pan, a panel sliding or resizing, its aspect-ratio animation. Now each such change
+  // wakes the same per-frame measuring, which carries on while the canvas moves (and while a finite
+  // animation runs on it or its parents) and stops 0.5 s after it last moved. What wakes it: a parent or the
+  // canvas resizing (ResizeObserver) or changing its attributes or children (inline style, class, data-state;
+  // MutationObserver, not the subtree), a scroll or transition or animation on a parent, the window or
+  // viewport resizing, fonts loading, the preview's zoom, pan or aspect ratio changing in the store, and a
+  // press, release or drag of the pointer. A once-a-second check is the safety net for anything else: a
+  // timer asks for no frames, so it costs far less than the loop it replaces. Cardboard's own listeners
+  // (resize, scroll, its ResizeObserver) still measure at once, and measureNow still measures on demand.
+  if (speed) {
+    replace(
+      `function fF(e,t,n=.5){`,
+      `const __cbRectWatch=(el,measure)=>{let raf=0,last=null,since=0;const d=document,now=()=>performance.now(),` +
+        `mine=t=>t===d||t instanceof Element&&t.contains(el),` +
+        `moving=()=>d.getAnimations().some(x=>x.playState==="running"&&mine(x.effect?.target)&&isFinite(x.effect.getComputedTiming().endTime)),` +
+        `tick=()=>{raf=0;const r=measure();r!==last&&(last=r,since=now());(now()-since<500||moving())&&(raf=requestAnimationFrame(tick))},` +
+        `wake=()=>{since=now();raf||(raf=requestAnimationFrame(tick))},` +
+        `onMine=e=>mine(e.target)&&wake(),onDrag=e=>e.buttons&&wake(),` +
+        `ro=new ResizeObserver(()=>{measure(),wake()}),mo=new MutationObserver(wake),` +
+        `iv=setInterval(()=>{raf||measure()===last||wake()},1e3),` +
+        `off=U.subscribe((s,p)=>{(s.canvasTransform!==p.canvasTransform||s.aspectRatio!==p.aspectRatio)&&wake()}),` +
+        `vv=window.visualViewport,` +
+        `on=[[d,"scroll",onMine],[d,"transitionrun",onMine],[d,"transitionstart",onMine],[d,"animationstart",onMine],[d,"pointerdown",wake],[d,"pointerup",wake],[d,"pointermove",onDrag],[window,"resize",wake],[vv,"resize",wake],[vv,"scroll",wake],[d.fonts,"loadingdone",wake]];` +
+        `for(let x=el;x;x=x.parentElement)ro.observe(x),mo.observe(x,{attributes:!0,childList:!0});` +
+        `for(const[t,n,f]of on)t?.addEventListener(n,f,{capture:!0,passive:!0});` +
+        `wake();` +
+        `return()=>{raf&&cancelAnimationFrame(raf),raf=0,clearInterval(iv),off(),ro.disconnect(),mo.disconnect();for(const[t,n,f]of on)t?.removeEventListener(n,f,{capture:!0})}};` +
+        `function fF(e,t,n=.5){`,
+    );
+    replace(
+      `let r=null;const s=()=>{a(),r=window.requestAnimationFrame(s)};r=window.requestAnimationFrame(s);const i=new ResizeObserver(a);`,
+      `const __cbRest=__cbRectWatch(e,a);let r=null;const i=new ResizeObserver(a);`,
+    );
+    replace(`n.stop=()=>{r!==null&&window.cancelAnimationFrame(r),r=null,i.disconnect(),`, `n.stop=()=>{__cbRest(),r!==null&&window.cancelAnimationFrame(r),r=null,i.disconnect(),`);
+  }
 });
 
 patch(storeFile, "installErrorTelemetry.orig.js", (replace) => {
