@@ -372,7 +372,7 @@ export class History {
     const ref = this.parseRef(refIn);
     if ("legacy" in ref) throw new StateUnknown(refIn, "a 1.4.0 timestamp rev has no Carton state");
     const br = this.#cuts.get(ref.branchId);
-    if (!br || br.rec.shallow) throw new StateUnknown(refIn, "unknown cut");
+    if (!br || br.rec.shallow) throw new StateUnknown(refIn, "unknown branch");
     if (ref.seq > br.log.length) throw new StateUnknown(refIn, "seq beyond head");
     const confirmed = this.stateOf(nodeId(ref.branchId, ref.seq))!;
     const h8 = ref.hash8 ?? ref.hash?.slice(0, 8);
@@ -386,10 +386,18 @@ export class History {
   }
 
   // ------------------------------------------------------------ commits (local sequencer, rebase on reject)
-  /** M4: did `author` create element `id` of the sequence at `seqKey` (a path key: `tracks`, `items/X/effects`)? */
+  /**
+   * M4: did `author` create element `id` of the sequence at `seqKey`? `seqKey` is the sequence's path key (`tracks`,
+   * `timelineItems/X/effects`); one whose first segment isn't a collection is a timeline item's keyed array in short
+   * form (`X/effects`, the prototype's form).
+   */
   own(author: Actor | string | null | undefined): (seqKey: string, id: string) => boolean {
     const a = actorKey(author);
-    return (seqKey, id) => this.#creators.get(`${seqKey}/${E.pathKey([id])}`) === a;
+    const tl = this.schema.timeline;
+    return (seqKey, id) => {
+      const full = this.schema.collections[seqKey.split("/")[0]!] || !tl ? seqKey : `${tl.collection}/${seqKey}`;
+      return this.#creators.get(`${full}/${E.pathKey([id])}`) === a;
+    };
   }
   /**
    * Commit a new state (or ops) made on `base` (a ref, a held state, or the head). Confirmed at once on a cut this
