@@ -11,6 +11,7 @@ import "../src/cardboard/system/cbproj.ts";
 import "../src/cardboard/system/real-codec.ts";
 import "../src/cardboard/system/review1.ts";
 import "../src/cardboard/system/review2.ts";
+import "../src/cardboard/system/review4.ts";
 import "../src/cardboard/system/wording.ts";
 import "../src/cardboard/cli-codec.test.ts";
 

@@ -228,7 +228,7 @@ export class Materializer {
   private queue: Promise<unknown> = Promise.resolve();
   private tmpSeq = 0;
   private readonly tmpTag = randomBytes(4).toString("hex");
-  private envelopeCache: { stamp: string; env: Record<string, unknown> | null } | null = null;
+  private envelopeCache: { stamp: string; env: Record<string, unknown> | null; hash: string } | null = null;
   private readonly state = new Map<string, PathState>();
   private readonly lastInstall = new Map<string, OwnInstall & { hash: string }>();
   /** Displaced foreign files that don't parse (yet): re-read when their stamp changes. */
@@ -551,10 +551,16 @@ export class Materializer {
 
   /** The project.json envelope of the file on disk (null if absent or unreadable). */
   private readEnvelope(): Record<string, unknown> | null {
-    // project.json can be large (thumbnail id lists grow with footage): parse it again only when its stamp changed
+    return this.envelopeFile()?.env ?? null;
+  }
+  /**
+   * The file on disk: its envelope, content hash and stamp. project.json can be large (thumbnail id lists grow with
+   * footage), so it is read, hashed and parsed again only when its stamp changed.
+   */
+  private envelopeFile(): { env: Record<string, unknown> | null; hash: string; stamp: string } | null {
     const stamp = statStamp(this.abs(PROJECT_FILE));
     if (stamp === null) return null;
-    if (this.envelopeCache?.stamp === stamp) return this.envelopeCache.env;
+    if (this.envelopeCache?.stamp === stamp) return this.envelopeCache;
     const f = this.readFile(PROJECT_FILE);
     if (!f) return null;
     let env: Record<string, unknown> | null = null;
@@ -564,8 +570,8 @@ export class Materializer {
     } catch {
       env = null;
     }
-    this.envelopeCache = { stamp: f.stamp, env };
-    return env;
+    this.envelopeCache = { stamp: f.stamp, env, hash: f.hash };
+    return this.envelopeCache;
   }
   private async currentProject(): Promise<Project | null> {
     return ((await this.projectSource()).env?.project as Project | undefined) ?? null;
@@ -580,11 +586,11 @@ export class Materializer {
    */
   private async projectSource(): Promise<{ env: Record<string, unknown> | null; overlay: Overlay | null }> {
     const overlay = (await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"])) ?? null;
-    const fileEnv = this.readEnvelope();
+    const f = this.envelopeFile();
+    const fileEnv = f?.env ?? null;
     if (!overlay) return { env: fileEnv, overlay: null };
     const consumed = await this.engine.getMeta<string>(["file", PROJECT_FILE, "consumed"]);
     if (consumed !== overlay.id) return { env: overlay.envelope, overlay };
-    const f = this.readFile(PROJECT_FILE);
     const ps = await this.pathState(PROJECT_FILE);
     const own = !!f && ps.written.some((w) => w.hash === f.hash && w.stamp === f.stamp);
     if (f && !own && BigInt(f.stamp.split(":")[2] ?? "0") < BigInt(overlay.mtimeNs ?? "0")) return { env: overlay.envelope, overlay };
@@ -706,16 +712,19 @@ export class Materializer {
   private async readWithRetry(rel: string, attempt = 0): Promise<void> {
     try {
       await this.readEvent(rel);
+      // done: a retry still pending for this path has nothing left to do
+      const pending = this.retryTimers.get(rel);
+      if (pending) this.clock.clearTimeout(pending);
       this.retryTimers.delete(rel);
     } catch (e) {
-      if (!this.closed && !this.retryTimers.has(rel) && attempt < 12)
-        this.retryTimers.set(
-          rel,
-          this.clock.setTimeout(() => {
-            this.retryTimers.delete(rel);
-            this.fire(() => this.readWithRetry(rel, attempt + 1));
-          }, Math.min(30_000, 250 * 2 ** attempt)),
-        );
+      if (!this.closed && !this.retryTimers.has(rel) && attempt < 12) {
+        const timer: unknown = this.clock.setTimeout(() => {
+          if (this.retryTimers.get(rel) !== timer) return; // cancelled, or replaced
+          this.retryTimers.delete(rel);
+          if (!this.closed) this.fire(() => this.readWithRetry(rel, attempt + 1));
+        }, Math.min(30_000, 250 * 2 ** attempt));
+        this.retryTimers.set(rel, timer);
+      }
       throw e;
     }
   }
@@ -910,7 +919,6 @@ export class Materializer {
       this.origin.delete(d.path);
       this.partials.set(d.path, { rel: d.rel, stamp: d.stamp, mtimeNs: d.mtimeNs, ...(d.viewGen !== undefined ? { viewGen: d.viewGen } : {}) });
       if (!this.reportedPartials.has(d.path)) {
-        this.reportedPartials.add(d.path);
         this.log.unparsed.push({ t: this.clock.now(), path: d.rel, displaced: true });
         const text = `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied`;
         await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text });
@@ -919,6 +927,8 @@ export class Materializer {
         const name = viewName(d.rel);
         const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
         if (name && row && (d.viewGen === undefined || d.viewGen === (row.printGen ?? 0))) await this.failView(name, row, { status: "error", error: text });
+        // only now: if the notice or the refusal failed (and threw), the next review reports it again
+        this.reportedPartials.add(d.path);
       }
       return;
     }
@@ -1008,7 +1018,13 @@ export class Materializer {
       if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
-    const res = await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) } });
+    // A retry of this same file (same path, stamp and bytes) after a failure below must not commit again: the engine
+    // would confirm it as empty, and the change's id (a view's causal past, the freeze view's) would be lost. The
+    // result is recorded right after the commit, before any other write, and removed with the receipt.
+    const attemptKey = ["attempt", rel, sha(`${rel}\n${stamp ?? ""}\n${hash}`).slice(0, 24)] as const;
+    const earlier = await this.engine.getMeta<SaveResult>(attemptKey);
+    const res = earlier ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) } }));
+    if (!earlier && res.status !== "rejected") await this.engine.putMeta(attemptKey, res);
     if (res.status === "rejected") {
       await this.engine.notice(actor, { kind: "error", text: `${rel}: rejected${res.reason ? `: ${res.reason}` : ""}; kept, not applied` });
       if (name && row) await this.failView(name, row, { status: "rejected", error: res.reason ?? "rejected", ref: rev?.kind === "carton" ? rev.ref : null });
@@ -1035,6 +1051,7 @@ export class Materializer {
     if (!o.fromDisplaced) ps.last = hash;
     if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
     await this.saveState(rel);
+    await this.engine.putMeta(attemptKey, undefined);
     this.log.applied.push({ t: this.clock.now(), path: rel, id: res.id ?? null, status: res.status, cards: cards.length, actor: actor.id, hash });
     if (batch) await this.reportCards(batch, !name);
     if (this.freeze.active && this.freeze.view && rel !== PROJECT_FILE) {

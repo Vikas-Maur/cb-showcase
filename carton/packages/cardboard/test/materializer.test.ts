@@ -684,3 +684,58 @@ test("review 3 #4: a displaced view file that doesn't parse, of the current prin
   await mz2.onChangeUpdate(name, first, { status: "confirmed", seq: 9 });
   assert.equal(status().status, "error", "the older save's confirmation is stale");
 });
+
+// ------------------------------------------------------------------ review round 4 regressions
+
+test("review 4 #2: a retry pending when a later event succeeds is cancelled, and nothing runs after close", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel } = await s.mz.printView("v", agent, { hooked: true });
+  const realResolve = s.engine.resolve.bind(s.engine);
+  let fail = true;
+  let calls = 0;
+  s.engine.resolve = async (rev) => {
+    calls++;
+    if (fail) {
+      fail = false;
+      throw new Error("database is locked");
+    }
+    return realResolve(rev);
+  };
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[0]!.name = "x")));
+  await s.event(rel); // fails: a retry is scheduled
+  s.mz.onFsEvent(rel); // a later event succeeds first
+  await s.mz.idle();
+  assert.equal(s.find(await s.head(), "a").name, "x");
+  await s.mz.close();
+  const before = calls;
+  await s.clock.advance(60_000, () => s.mz.idle());
+  assert.equal(calls, before, "the cancelled retry never ran after close");
+});
+
+test("review 4 #3: if reporting a displaced view file that doesn't parse fails, the next review reports it and refuses the view", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("v", agent, { hooked: true });
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[0]!.name = "A")));
+  await s.event(rel);
+  const first = s.engine.commits.at(-1)!.id;
+  const realNotice = s.engine.notice.bind(s.engine);
+  let fail = true;
+  s.engine.notice = async (to, n) => {
+    if (fail && /moved aside/.test(n.text)) {
+      fail = false;
+      throw new Error("database is locked");
+    }
+    return realNotice(to, n);
+  };
+  fs.writeFileSync(path.join(s.bundle, ".carton", "displaced", `x-1@@${encodeURIComponent(rel)}`), "// cardboard:rev main@0~00000000 by y\n{broken");
+  const mz2 = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock, writeProject: false });
+  t.after(() => mz2.close());
+  await mz2.start();
+  await s.clock.advance(6000, () => mz2.idle());
+  const status = () => JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8"));
+  assert.equal(status().status, "error", "refused on the retry");
+  await mz2.onChangeUpdate(name, first, { status: "confirmed", seq: 9 });
+  assert.equal(status().status, "error");
+});
