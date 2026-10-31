@@ -158,6 +158,8 @@ export class ProjectRoom {
       return conn.send({ type: "error", reason: "bad json" });
     }
     const before = conn.state.subs.length + ":" + conn.state.deadEpoch + ":" + conn.state.subs.join(",");
+    // a hello may be answered with envelopes (a big catch-up): their sweep runs from the alarm, so arm it as a push does
+    if (msg?.type === "hello" && !this.#alarmArmed) void this.#armAlarm();
     await this.#seq!.handle(conn, msg);
     const after = conn.state.subs.length + ":" + conn.state.deadEpoch + ":" + conn.state.subs.join(",");
     // persist the protocol state only when it changed (a hello, a reject): hibernation must not lose it
@@ -204,10 +206,13 @@ export class ProjectRoom {
     }
     const seq = this.#seq!;
     if (!sequencerBlobs(this.#env, this.#projectId!)) return;
-    const keep = Number(this.#env.ARCHIVE_KEEP ?? 10_000), segmentRows = Number(this.#env.ARCHIVE_SEGMENT ?? 10_000);
+    const o: { keep?: number; segmentRows?: number } = {};
+    if (this.#env.ARCHIVE_KEEP) o.keep = Number(this.#env.ARCHIVE_KEEP);
+    if (this.#env.ARCHIVE_SEGMENT) o.segmentRows = Number(this.#env.ARCHIVE_SEGMENT);
     try {
-      for (const id of seq.tables.branchIds()) if (!seq.tables.branch(id)?.tracking) await seq.archive(id, { keep, segmentRows });
-      this.#alarmArmed = false; // re-armed by the next accepted push
+      // archives old rows to gzip segments and sweeps expired envelope blobs
+      await seq.maintain(o);
+      this.#alarmArmed = false; // re-armed by the next push or hello
     } catch {
       await this.#ctx.storage.setAlarm(Date.now() + ALARM_RETRY_MS);
     }

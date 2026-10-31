@@ -4,9 +4,10 @@
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, type HostFixture } from "@carton/conformance";
+import { blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, hostSuite, type HostFixture } from "@carton/conformance";
 import { createHmacAuth } from "@carton/server";
 import { webSocketTransport } from "@carton/server-node";
+import { hostMessageBlobs } from "@carton/host-http/client";
 import type { Role } from "@carton/core/plugins";
 import { doBlobStore } from "../src/blob-do.ts";
 import { R2_MIN_PART_SIZE } from "../src/blob-r2.ts";
@@ -53,6 +54,7 @@ async function fixture(): Promise<HostFixture> {
     },
     tokenFor: (o) => issue(o.account ?? o.credential.split("/")[0]!, o.credential, o.role ?? "editor", o.projectId),
     restart: () => dev.restart(),
+    clientBlobs: (token) => hostMessageBlobs({ origin: dev.origin, projectId: PROJECT, token }),
     async rows() {
       const s = (await (await fetch(`${dev.origin}/__test/stats/${PROJECT}`)).json()) as { stats: { rowsRead: number; rowsWritten: number } };
       return { rowsRead: s.stats.rowsRead, rowsWritten: s.stats.rowsWritten };
@@ -64,5 +66,6 @@ async function fixture(): Promise<HostFixture> {
 sequencerHostSuite("server-cloudflare (Worker + ProjectRoom in wrangler dev)", fixture);
 transportSuite("server-cloudflare (WebSocket through the Worker)", fixture);
 liveSyncSuite("server-cloudflare (Worker + ProjectRoom)", fixture);
+hostSuite("server-cloudflare (Worker + ProjectRoom)", fixture);
 
 httpApiSuite("server-cloudflare (Worker, R2)", async () => ({ origin: dev.origin, adminToken: ADMIN, minPartSize: R2_MIN_PART_SIZE }));
