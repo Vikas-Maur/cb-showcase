@@ -440,7 +440,9 @@ test("Windows: a carton.db whose ACL denies writing is refused the same way", { 
   const a = await openProjectStore(p);
   await a.store.write(put(1));
   await a.store.close();
-  const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  // Windows' own tools by full path: the first `whoami` on PATH can be Git for Windows' GNU one (`extra operand '/user'`).
+  const system32 = (exe: string) => path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", `${exe}.exe`);
+  const run = (cmd: string, args: string[]) => execFileSync(system32(cmd), args, { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   // The deny names this process's own SID (from its token), not a composed DOMAIN\user that may not match it
   // (verify-ci #17). Only write data and append data are denied: icacls' "(W)" is FILE_GENERIC_WRITE, which also
   // holds SYNCHRONIZE and READ_CONTROL, and denying those makes every open fail, reads included.
