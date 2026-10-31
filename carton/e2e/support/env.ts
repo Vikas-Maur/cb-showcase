@@ -3,7 +3,7 @@
 // is a small tmpfs), else the OS temp folder (CI runners on Linux, Windows and macOS).
 import { existsSync, mkdirSync, mkdtempSync, renameSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 export const E2E = fileURLToPath(new URL("..", import.meta.url));
@@ -16,6 +16,22 @@ export function scratchRoot(): string {
   const dir = process.env.CARTON_E2E_TMP ?? (existsSync(box) ? join(box, "carton", "e2e-qa", "run") : join(tmpdir(), "carton-e2e"));
   mkdirSync(dir, { recursive: true });
   return dir;
+}
+
+/** The real home folder of the test run (children get a scratch HOME, see procs.ts). */
+export const REAL_HOME = homedir();
+
+/**
+ * A machine's app-data folder (`<machine home>/appdata`), from its bundle `<machine home>/lib/<Name>.cardboard`: where
+ * carton.db goes when the bundle is in a synced folder, on a network share or on FAT/exFAT (§6.4, L15). Passed to every
+ * Carton open, so no placement ever reaches the real user profile, and two machines on one box never share one.
+ */
+export const dataDirFor = (bundle: string): string => join(dirname(dirname(resolve(bundle))), "appdata");
+
+/** Refuse to touch a file outside the scratch root (the user's real data is never opened). */
+export function assertInScratch(path: string, what: string): void {
+  const root = resolve(scratchRoot()) + sep;
+  if (!resolve(path).startsWith(root)) throw new Error(`${what} is outside the scratch folder (${path}); refusing to open it`);
 }
 
 /** A fresh folder for one scenario. */

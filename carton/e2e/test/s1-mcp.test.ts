@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeMachine, itemNamed, SAMPLE } from "../support/project.ts";
 import { Procs } from "../support/procs.ts";
-import { support, until } from "../support/env.ts";
+import { dataDirFor, support, until } from "../support/env.ts";
 import { CB_BIN, cbOk } from "../support/cb.ts";
 
 test("S1 MCP over stdio: tools listed; cuts, fold --check, credits, history, publish and undo through the tools", { timeout: 180_000 }, async (t) => {
@@ -18,7 +18,7 @@ test("S1 MCP over stdio: tools listed; cuts, fold --check, credits, history, pub
   await app.ask({ cmd: "serve", req: { e2e: "gui", set: [{ name: SAMPLE.title, field: "fontSize", value: 140 }] } });
   await until(() => itemNamed(m, SAMPLE.title)?.fontSize === 140, 20_000, "the GUI save");
 
-  const mcp = procs.start("mcp", [CB_BIN, "--project", m.bundle, "mcp"], { env: { CARDBOARD_ACTOR: "director/chatM/turn1" } });
+  const mcp = procs.start("mcp", [CB_BIN, "--project", m.bundle, "--data-dir", dataDirFor(m.bundle), "mcp"], { env: { CARDBOARD_ACTOR: "director/chatM/turn1" } });
   let n = 0;
   const call = async (method: string, params: unknown = {}) => {
     const id = ++n;

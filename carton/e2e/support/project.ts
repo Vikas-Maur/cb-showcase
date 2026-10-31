@@ -28,8 +28,13 @@ export function makeMachine(name: string, from?: Machine): Machine {
   const bundle = join(lib, "Sample.cardboard");
   mkdirSync(bundle, { recursive: true });
   if (from) {
-    // the same project on a second machine: its files, never its .carton (a replica gets carton.db another way)
+    // the same project on a second machine: its files, never its .carton (a replica gets carton.db another way), and
+    // its own absolute media paths (project.json's media[].nativePath point into each machine's own library)
     cpSync(from.bundle, bundle, { recursive: true, filter: (src) => !/[\\/]\.carton([\\/]|$)/.test(src) && !/[\\/]\.scratch([\\/]|$)/.test(src) });
+    const file = join(bundle, "project.json");
+    let text = readFileSync(file, "utf8");
+    for (const [a, b] of [[from.lib.replace(/\\/g, "/"), lib.replace(/\\/g, "/")], [from.lib, lib], [JSON.stringify(from.lib).slice(1, -1), JSON.stringify(lib).slice(1, -1)]]) text = text.replaceAll(a!, b!);
+    writeFileSync(file, text);
   } else {
     const env = readFileSync(join(FIXTURES, "project.json"), "utf8").replaceAll("/FIXTURE", lib.replace(/\\/g, "/"));
     writeFileSync(join(bundle, "project.json"), env);

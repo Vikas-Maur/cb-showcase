@@ -4,12 +4,12 @@
 //     (never deployed), state on disk under the scenario's scratch folder.
 // Tokens are the demo HMAC tokens, issued here with the run's random secret.
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createHmacAuth } from "@carton/server";
-import { pkg } from "./env.ts";
 import { Procs, type Proc } from "./procs.ts";
 import { support } from "./env.ts";
+import { startWrangler, WRANGLER } from "./wrangler.ts";
 
 export type HostKind = "node" | "cloudflare";
 
@@ -25,7 +25,6 @@ export interface Host {
   stop(): Promise<void>;
 }
 
-const WRANGLER = join(pkg("..", "node_modules", ".bin", process.platform === "win32" ? "wrangler.cmd" : "wrangler"));
 
 /** Why a host kind can't run here (null when it can). */
 export function hostMissing(kind: HostKind): string | null {
@@ -60,10 +59,7 @@ export async function startHost(kind: HostKind, dir: string, procs: Procs): Prom
     };
   }
   // wrangler dev, with the production wrangler.toml (local R2 and Durable Objects, persisted under `dir`)
-  const { startDev } = await import("../../packages/server-cloudflare/test/dev-server.ts");
-  const state = join(dir, "wrangler-state");
-  mkdirSync(state, { recursive: true });
-  const dev = await startDev({ config: pkg("server-cloudflare", "wrangler.toml"), state, vars: { AUTH_SECRET: secret, ADMIN_TOKEN: randomBytes(16).toString("base64url") }, timeoutMs: 180_000 });
+  const dev = await startWrangler({ dir: join(dir, "wrangler"), vars: { AUTH_SECRET: secret, ADMIN_TOKEN: randomBytes(16).toString("base64url") } });
   return {
     kind,
     port: dev.port,

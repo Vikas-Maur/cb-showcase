@@ -8,10 +8,11 @@
 import { createInterface } from "node:readline";
 import { locateCartonDb } from "@carton/store-sqlite";
 import { EngineThread } from "@carton/local";
-import { support } from "./env.ts";
+import { assertInScratch, dataDirFor, support } from "./env.ts";
 
 const [bundle, projectId, json = "{}"] = process.argv.slice(2);
-const { dbPath } = locateCartonDb({ bundleDir: bundle!, projectId: projectId! });
+const { dbPath } = locateCartonDb({ bundleDir: bundle!, projectId: projectId!, appDataDir: dataDirFor(bundle!) });
+assertInScratch(dbPath, "carton.db");
 const th = await EngineThread.start({ dbPath, factory: support("app-factory.ts"), config: { projectDir: bundle, projectId, ...JSON.parse(json) } });
 process.stdout.write(JSON.stringify({ ready: true, pid: process.pid, nonce: th.nonce, dbPath }) + "\n");
 // never outlive a test run that died without killing us

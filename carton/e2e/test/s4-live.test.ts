@@ -9,15 +9,18 @@
 // Each machine reaches the host through its own TCP link (support/link.ts), so "offline" is a dropped connection.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { itemNamed, SAMPLE } from "../support/project.ts";
+import { itemNamed, items, SAMPLE } from "../support/project.ts";
 import { runOnce } from "../support/procs.ts";
-import { renameRetry, until } from "../support/env.ts";
+import { dataDirFor, renameRetry, support, until } from "../support/env.ts";
 import { cb, cbOk, cbWrite, setOp, CB_BIN } from "../support/cb.ts";
 import { hostMissing } from "../support/hosts.ts";
 import { openSqliteStore } from "@carton/store-sqlite";
-import { twoMachines, state, gui } from "../support/live.ts";
+import { humanCards } from "@carton/local";
+import { twoMachines, state, gui, startApp } from "../support/live.ts";
+import { makeMachine } from "../support/project.ts";
+import { Link } from "../support/link.ts";
 
 for (const kind of ["node", "cloudflare"] as const) {
   const skip = hostMissing(kind) ?? (kind === "cloudflare" && process.env.CARTON_E2E_CLOUDFLARE === "0" ? "CARTON_E2E_CLOUDFLARE=0" : false);
@@ -57,7 +60,7 @@ for (const kind of ["node", "cloudflare"] as const) {
     await until(async () => (await state(b.app)).sync?.status === "up-to-date", 60_000, "B back up to date");
     const heads = await until(async () => {
       const [ha, hb] = [await state(a.app), await state(b.app)];
-      return ha.head.seq === hb.head.seq && ha.head.hash === hb.head.hash && ha.sync.pending === 0 && hb.sync.pending === 0 && [ha, hb];
+      return typeof ha.docHash === "string" && ha.head.seq === hb.head.seq && ha.docHash === hb.docHash && ha.sync.pending === 0 && hb.sync.pending === 0 && [ha, hb];
     }, 60_000, "A and B on the same head");
     t.diagnostic(JSON.stringify({ head: heads[0].head.seq, shareRows }));
     for (const s of [a, b]) {
@@ -85,7 +88,7 @@ for (const kind of ["node", "cloudflare"] as const) {
     }
 
     // --- the late conflict reaches the subagent that caused it: once through SubagentStop, and in cb conflicts
-    const hook = (active: boolean) => runOnce("hook stop", [CB_BIN, "hook", "stop", "--project", b.m.bundle], {
+    const hook = (active: boolean) => runOnce("hook stop", [CB_BIN, "hook", "stop", "--project", b.m.bundle, "--data-dir", dataDirFor(b.m.bundle)], {
       env: { CARDBOARD_ACTOR: "director/chatB/turn2" },
       input: JSON.stringify({ hook_event_name: "SubagentStop", session_id: "sess-b", agent_id: "x1", agent_type: "editor", stop_hook_active: active, cwd: b.m.bundle }),
     });
@@ -102,6 +105,16 @@ for (const kind of ["node", "cloudflare"] as const) {
       assert.deepEqual(second, {}, "at most once per conflict set (stop_hook_active)");
       const third = JSON.parse((await hook(false)).stdout.trim() || "{}");
       assert.deepEqual(third, {}, "a conflict already delivered never blocks again");
+      // what the subagent left unresolved is the person's now: the card with both values, never dropped (§6.2)
+      const st = await openSqliteStore(join(b.m.dbDir, "carton.db"));
+      try {
+        const cards = (await humanCards(st)).flatMap((n) => n.cards ?? []);
+        const card = cards.find((c) => c.path.startsWith(`timelineItems/${id(SAMPLE.clipA)}`));
+        assert.ok(card, `the person's cards hold the subagent's clash: ${JSON.stringify(cards)}`);
+        assert.equal((card as any).theirs?.opacity ?? (card as any).theirs, 0.3, "the subagent's value is in the card");
+      } finally {
+        await st.close();
+      }
     });
     // the card stays the agent's (or the person's, once handed over): never dropped
     const listed = await cb(b.m, ["conflicts"], { actor: sub });
@@ -173,3 +186,62 @@ for (const kind of ["node", "cloudflare"] as const) {
     });
   }
 }
+
+// Agents through their per-agent views on a shared cut (the documented flow, §6.4): the status sidecar says `pending`
+// at once, then the server's answer; offline, an agent's three dependent edits each say `pending` and it edits on from
+// its own file; after the rejoin all three land, attributed, and its sidecar settles.
+for (const wire of [true, false]) {
+  test(wire ? "S4 view agents on a shared cut: online pending → confirmed; offline three dependent edits, settled after the rejoin" : "B10: with @carton/local's CartonHolderEngine alone, a shared view save's sidecar settles", { timeout: 300_000, ...(wire ? {} : { todo: "B10, local-cli (+windows): nothing forwards a shared view change's settlement to Materializer.onChangeUpdate; its sidecar stays pending" }) }, async (t) => {
+    const { a, b, procs } = await twoMachines(t, "node", wire ? {} : { wireSidecars: false });
+    const agent = (actor: string, cfg: Record<string, unknown>) => procs.start(actor, [support("agent.ts"), b.m.bundle, b.m.projectId, JSON.stringify(cfg)], { env: { CARDBOARD_ACTOR: actor } });
+    const online = await agent("director/chatV/turn1/sub-editor-o1", { settled: true, statusMs: wire ? 30_000 : 15_000, steps: [{ op: "set", name: SAMPLE.logo, set: { zIndex: 6 } }] }).next((x) => Array.isArray(x.results), 120_000);
+    assert.equal(online.results[0].status, "confirmed", JSON.stringify(online.results[0]));
+    if (!wire) return;
+    await until(() => itemNamed(a.m, SAMPLE.logo)?.zIndex === 6, 30_000, "the view save on A");
+    b.link.down();
+    await until(async () => (await state(b.app)).sync?.status === "offline", 30_000, "B offline");
+    const sub = "director/chatV/turn2/sub-editor-o2";
+    const steps = [
+      { op: "insert", like: SAMPLE.title, id: "title-V", name: "Title V", set: { textContent: "V v1", startTime: 6, endTime: 7, trimStart: 0, trimEnd: 1 } },
+      { op: "set", name: "Title V", set: { textContent: "V v2" } },
+      { op: "set", name: "Title V", set: { startTime: 7, endTime: 8 } },
+    ];
+    const off = await agent(sub, { steps }).next((x) => Array.isArray(x.results), 120_000);
+    assert.deepEqual(off.results.map((r: any) => r.status), ["pending", "pending", "pending"], "offline, each save is acknowledged as pending");
+    b.link.up();
+    await until(() => itemNamed(a.m, "Title V")?.textContent === "V v2" && itemNamed(a.m, "Title V")?.startTime === 7, 60_000, "the three offline edits on A");
+    const statusFile = join(b.m.bundle, off.view.path.replace(/\.tsx$/, ".status"));
+    const settled = await until(() => { const s = JSON.parse(readFileSync(statusFile, "utf8")); return s.status !== "pending" && s; }, 30_000, "the agent's sidecar to settle");
+    assert.equal(settled.status, "confirmed", JSON.stringify(settled));
+    const h = await cbOk(a.m, ["history", "--limit", "30"]);
+    assert.equal(h.versions.filter((v: any) => v.by?.id === sub).length, 3, "three changes by the offline subagent, on the other machine");
+    assert.equal(items(a.m).filter((i) => i.name === "Title V").length, 1, "no duplicate");
+  });
+}
+
+// "Invite to edit" (§0.1): a machine that holds nothing of the project joins the shared cut from the invite (the cut's
+// record and root, support/invite.ts) with an empty carton.db; every row comes from the host. Its files show A's edits,
+// and edits from either machine reach the other.
+test("S4 a machine joins a shared cut from an empty store (Invite to edit): catches up from the host, edits both ways", { timeout: 300_000 }, async (t) => {
+  const { host, a, procs } = await twoMachines(t, "node");
+  const inv = await runOnce("invite", [support("invite.ts"), join(a.m.dbDir, "carton.db")]);
+  assert.equal(inv.code, 0, inv.stderr);
+  const invite = inv.lines.at(-1);
+  assert.equal(invite.cut.sequencer.kind, "server");
+  const c = makeMachine("s4-join-c", a.m);
+  assert.ok(!existsSync(join(c.dbDir, "carton.db")), "nothing of A's carton.db on C");
+  const linkC = await Link.open(host.port);
+  t.after(() => linkC.close());
+  const appC = await startApp(procs, c, host, "carol", linkC, { join: invite });
+  await until(async () => (await state(appC)).sync?.status === "up-to-date", 60_000, "C caught up from the host");
+  await until(async () => { const [ha, hc] = [await state(a.app), await state(appC)]; return typeof ha.docHash === "string" && ha.docHash === hc.docHash && ha.head.seq === hc.head.seq; }, 60_000, "C on A's head");
+  await until(() => itemNamed(c, SAMPLE.logo)?.zIndex === 3 && itemNamed(c, SAMPLE.title)?.fontSize === 110, 30_000, "C's files to show A's edits");
+  const h = await cbOk(c, ["history", "--limit", "20"]);
+  t.diagnostic(JSON.stringify({ joinedHistory: h.versions.map((v: any) => [v.version, v.by?.id ?? null]) }));
+  // edits both ways
+  const rc = await cbWrite(c, { kind: "commit", ops: [setOp("timelineItems", itemNamed(c, SAMPLE.badge)!.id, "zIndex", 7)] }, { actor: "codex/carol" });
+  assert.equal(rc.status, "confirmed", JSON.stringify(rc));
+  await gui(a.app, SAMPLE.tone, "volume", 42);
+  for (const s of [a.m, c]) await until(() => itemNamed(s, SAMPLE.badge)?.zIndex === 7 && itemNamed(s, SAMPLE.tone)?.volume === 42, 30_000, "both edits on both machines");
+  assert.equal((await cbOk(a.m, ["credits", SAMPLE.badge])).by.id, "codex/carol");
+});

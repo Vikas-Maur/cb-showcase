@@ -1,10 +1,10 @@
 // Real processes for the scenarios: each script prints one JSON object per line on stdout and may read commands on
 // stdin. A `Procs` registry per scenario kills everything it started, plus the detached headless helpers `cb` calls
 // spawned (found by the pids in each carton.db's `helper.log`), so no test leaves a process behind on a shared box.
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { scratchRoot } from "./env.ts";
+import { REAL_HOME, scratchRoot } from "./env.ts";
 import { createInterface } from "node:readline";
 
 export interface ProcOptions {
@@ -93,6 +93,20 @@ function cleanEnv(extra: Record<string, string | undefined> = {}): NodeJS.Proces
   for (const [k, v] of Object.entries(process.env)) if (!/^(CARDBOARD_|CARTON_AGENT|CLAUDECODE|CLAUDE_CODE|GEMINI_CLI|CODEX_|CURSOR_TRACE_ID)/.test(k)) env[k] = v;
   const t = shortTmp();
   if (t) env.TMPDIR = t;
+  // a scratch profile: nothing a child starts (Carton's app-data fallback, wrangler, ffmpeg) reads or writes the user's
+  // real one; what the children need from the real home is passed explicitly
+  const root = scratchRoot();
+  const home = join(root, "home");
+  mkdirSync(home, { recursive: true });
+  env.CARTON_E2E_TMP = root;
+  const cli = join(REAL_HOME, ".t3", "projects", "cardboard-showcase", "_inspect", "cardboard-1.4.0", "cli", "cardboard.mjs");
+  if (!env.CARTON_CARDBOARD_CLI && existsSync(cli)) env.CARTON_CARDBOARD_CLI = cli;
+  for (const k of ["HOME", "USERPROFILE"]) env[k] = home;
+  env.LOCALAPPDATA = join(home, "AppData", "Local");
+  env.APPDATA = join(home, "AppData", "Roaming");
+  env.XDG_DATA_HOME = join(home, ".local", "share");
+  env.XDG_CONFIG_HOME = join(home, ".config");
+  env.XDG_CACHE_HOME = join(home, ".cache");
   for (const [k, v] of Object.entries(extra)) if (v === undefined) delete env[k]; else env[k] = v;
   return env;
 }
@@ -130,15 +144,29 @@ export class Procs {
   }
 }
 
-/** Kill a detached helper only while it is still one of ours (pids get reused on a shared box). */
-export function killIfOurs(pid: number, dirs: string[]): void {
+/** A process's command line, or null when it is gone or can't be read (then nothing is killed). */
+export function commandLineOf(pid: number): string | null {
   try {
-    if (existsSync(`/proc/${pid}/cmdline`)) {
-      const cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8");
-      if (!dirs.some((d) => cmd.includes(d)) || !/helper-main/.test(cmd)) return;
+    if (existsSync(`/proc/${pid}/cmdline`)) return readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ");
+    if (process.platform === "win32") {
+      const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`], { encoding: "utf8", windowsHide: true, timeout: 15_000 });
+      return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
     }
-    process.kill(pid, "SIGKILL");
-  } catch { /* already gone */ }
+    const r = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 15_000 });
+    return r.status === 0 && r.stdout.trim() ? r.stdout.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Kill a detached helper only while it is still one of ours: its command line names helper-main and one of this
+ * scenario's folders (pids get reused, and the box is shared). When that can't be checked, it is left alone.
+ */
+export function killIfOurs(pid: number, dirs: string[]): void {
+  const cmd = commandLineOf(pid);
+  if (!cmd || !/helper-main/.test(cmd) || !dirs.some((d) => cmd.includes(d) || cmd.includes(d.replace(/\\/g, "\\\\")))) return;
+  try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ }
 }
 
 /** Runs a one-shot process to its end: its JSON lines, exit code and output. */

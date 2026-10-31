@@ -5,10 +5,11 @@
 import { createInterface } from "node:readline";
 import { locateCartonDb } from "@carton/store-sqlite";
 import { EngineThread } from "@carton/local";
-import { support } from "./env.ts";
+import { assertInScratch, dataDirFor, support } from "./env.ts";
 
 const [bundle, projectId, json = "{}"] = process.argv.slice(2);
-const { dbPath } = locateCartonDb({ bundleDir: bundle!, projectId: projectId! });
+const { dbPath } = locateCartonDb({ bundleDir: bundle!, projectId: projectId!, appDataDir: dataDirFor(bundle!) });
+assertInScratch(dbPath, "carton.db");
 const th = await EngineThread.start({ dbPath, factory: support("s3-factory.ts"), config: { projectDir: bundle, projectId, ...JSON.parse(json) } });
 process.stdout.write(JSON.stringify({ ready: true, pid: process.pid, nonce: th.nonce, dbPath }) + "\n");
 setTimeout(() => process.exit(0), Number(process.env.CARTON_E2E_APP_TTL_MS ?? 600_000)).unref();

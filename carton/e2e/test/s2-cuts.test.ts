@@ -16,7 +16,7 @@ import { cardboardAdapter } from "@carton/cardboard";
 import type { HostAdapter } from "@carton/core";
 import { makeMachine, itemNamed, SAMPLE, type Machine } from "../support/project.ts";
 import { Procs, type Proc } from "../support/procs.ts";
-import { support, until } from "../support/env.ts";
+import { dataDirFor, support, until } from "../support/env.ts";
 import { cb, cbOk, cbWrite, setOp } from "../support/cb.ts";
 
 const CUT = "30s Instagram cut";
@@ -90,7 +90,7 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   });
   // what that command would run: core's revert of the inverse change (History.acceptRest), as a cb write
   const inverse = h.versions[0].change as string;
-  const local = await openLocal({ projectDir: m.bundle, projectId: m.projectId, adapter: cardboardAdapter as HostAdapter, actor: { kind: "human", id: "human:me", name: "me" } });
+  const local = await openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as HostAdapter, actor: { kind: "human", id: "human:me", name: "me" } });
   try {
     const r = await local.write({ kind: "revert", changeId: inverse });
     assert.equal(r.status, "confirmed", JSON.stringify(r));

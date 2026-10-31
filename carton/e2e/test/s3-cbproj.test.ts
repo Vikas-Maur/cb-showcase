@@ -26,7 +26,7 @@ import { findRev } from "@carton/cardboard";
 import { extractFullHistory, readCbproj, ZipReader } from "@carton/cardboard/node";
 import { makeMachine, itemNamed, items, SAMPLE, type Item, type Machine } from "../support/project.ts";
 import { Procs, runOnce, type Proc } from "../support/procs.ts";
-import { scratch, support, until } from "../support/env.ts";
+import { dataDirFor, scratch, support, until } from "../support/env.ts";
 import { cbOk } from "../support/cb.ts";
 import { writeRawZip, zipNames } from "../support/s3-zip.ts";
 
@@ -494,7 +494,7 @@ test("S3-1 a .cbproj names its sender, and the recipient can tell the sender's c
   const { readProjectForImport } = await import("@carton/cardboard/node");
   const A = makeMachine("s3-1-a");
   const imp = readProjectForImport(A.bundle);
-  const la = await openLocal({ projectDir: A.bundle, projectId: A.projectId, adapter: cardboardAdapter as any, actor: { kind: "human", id: "human:alice", name: "Alice", group: "alice@laptop" }, init: { doc: imp.doc } });
+  const la = await openLocal({ projectDir: A.bundle, projectId: A.projectId, dataDir: dataDirFor(A.bundle), adapter: cardboardAdapter as any, actor: { kind: "human", id: "human:alice", name: "Alice", group: "alice@laptop" }, init: { doc: imp.doc } });
   try {
     const pkg = await la.carton.exportShallow({ to: "bob" });
     const owner = (await la.carton.cuts())[0]!.owner;

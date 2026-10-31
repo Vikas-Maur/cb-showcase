@@ -7,6 +7,7 @@ import { openLocal, identify } from "@carton/local";
 import type { WriteOp } from "@carton/local";
 import { cardboardAdapter } from "@carton/cardboard";
 import type { HostAdapter } from "@carton/core";
+import { dataDirFor } from "./env.ts";
 
 const [bundle, projectId, json] = process.argv.slice(2);
 const arg = JSON.parse(json!);
@@ -14,6 +15,7 @@ const req = (arg.op ? arg : { op: arg }) as { op: WriteOp; waitMs?: number; id?:
 const local = await openLocal({
   projectDir: bundle!,
   projectId,
+  dataDir: dataDirFor(bundle!),
   adapter: cardboardAdapter as HostAdapter,
   actor: identify(),
   ...(req.helper ? { helperFactory: req.helper.factory, helperConfig: req.helper.config } : {}),

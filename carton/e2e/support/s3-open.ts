@@ -12,6 +12,7 @@
 // Prints {bundle, projectId, cut, head, cuts, files, ignored}.
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { assertInScratch, dataDirFor } from "./env.ts";
 import { Carton, type HostAdapter } from "@carton/core";
 import { cardboardAdapter, cardboardFilesHost, jsonTimelineCodec } from "@carton/cardboard";
 import { Materializer, readCbproj, ZipReader, safeEntryPath } from "@carton/cardboard/node";
@@ -37,7 +38,8 @@ try {
 writeFileSync(join(staging, "project.json"), JSON.stringify(c.manifest, null, 2));
 
 const projectId = String((c.manifest.project as { id: string }).id);
-const { dbPath, inBundle } = locateCartonDb({ bundleDir: staging, projectId });
+const { dbPath, inBundle } = locateCartonDb({ bundleDir: staging, projectId, appDataDir: dataDirFor(bundle!) });
+assertInScratch(dbPath, "carton.db");
 if (!inBundle) throw new Error("s3-open: the scratch library should keep carton.db in the bundle");
 const store = await openSqliteStore(dbPath);
 const carton = await Carton.open({ adapter: cardboardAdapter as HostAdapter, store, hasher: nodeHasher, actor: { kind: "system", id: "engine", name: "Engine" }, init: { import: c.shallow } });

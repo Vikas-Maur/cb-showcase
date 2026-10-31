@@ -7,7 +7,7 @@
 // Zero lost edits, zero edits re-attributed to another actor.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeMachine, itemNamed, SAMPLE, readEnvelope, type Machine } from "../support/project.ts";
 import { Procs, killIfOurs } from "../support/procs.ts";
@@ -92,9 +92,11 @@ test("S6 the app is killed mid-save (a GUI save and an agent's view save not app
   const actor = "director/chat7/turn1/sub-editor-v1";
   const agent = procs.start(actor, [support("agent.ts"), m.bundle, m.projectId, JSON.stringify({ waitGo: true, statusMs: 300_000, steps: [{ op: "set", name: SAMPLE.logo, set: { zIndex: 9 } }] })], { env: { CARDBOARD_ACTOR: actor } });
   await agent.next((x) => x.printed);
-  // the engine thread is busy; meanwhile the editor saves project.json and the agent saves its view; then the app dies
-  const stalled = app.ask({ cmd: "serve", req: { e2e: "stall", ms: 6000 } }).catch(() => null);
-  await sleep(300);
+  // the engine thread is busy (for longer than the test needs: the app is killed during it); meanwhile the editor saves
+  // project.json and the agent saves its view; then the app dies with both unapplied
+  const marker = join(m.home, "stalled");
+  const stalled = app.ask({ cmd: "serve", req: { e2e: "stall", ms: 120_000, marker } }).catch(() => null);
+  await until(() => existsSync(marker), 30_000, "the engine thread to be stalled");
   const env = readEnvelope(m);
   env.project.timelineItems.find((i) => i.name === SAMPLE.title)!.fontSize = 133;
   env.project.stateUpdatedAt = Date.now();
@@ -105,6 +107,7 @@ test("S6 the app is killed mid-save (a GUI save and an agent's view save not app
   const printedText = readFileSync(viewFile, "utf8");
   agent.p.stdin!.write("go\n");
   await until(() => readFileSync(viewFile, "utf8") !== printedText, 10_000, "the agent's save on disk");
+  assert.deepEqual((await cbOk(m, ["history"])).versions.map((v: any) => v.kind), ["import", "root"], "neither save applied before the crash");
   await app.kill("SIGKILL");
   void stalled;
   // restart: unseen saves are imported before anything is written over them
@@ -116,6 +119,9 @@ test("S6 the app is killed mid-save (a GUI save and an agent's view save not app
   await t.test("B8: a view save the crashed app never applied is applied when the app restarts (and its sidecar written)", { todo: "B8, cardboard-adapter: Materializer.start() imports unseen saves of project.json and timeline.tsx, not of .scratch/views/*.tsx; applied only at the owner's next print" }, async () => {
     await until(() => itemNamed(m, SAMPLE.logo)?.zIndex === 9, 15_000, "the view save applied after the restart");
     assert.equal((await cbOk(m, ["credits", SAMPLE.logo])).by.id, actor, "the view save is its owner's, across the crash");
+    // the agent that saved is still waiting on its sidecar (as AGENTS.md says): it hears about its save
+    const out = await agent.next((x) => Array.isArray(x.results), 15_000);
+    assert.equal(out.results[0].status, "confirmed", JSON.stringify(out.results[0]));
   });
   // never lost: the owner's next print applies the unread save first (then credits it to the owner)
   const reprint = procs.start(`${actor}-reprint`, [support("agent.ts"), m.bundle, m.projectId, JSON.stringify({ steps: [] })], { env: { CARDBOARD_ACTOR: actor } });
@@ -128,43 +134,55 @@ test("S6 the app is killed mid-save (a GUI save and an agent's view save not app
   assert.equal(changes.length, 2, "each save once");
 });
 
-test("S6 the server restarts while both machines sync edits: both converge, nothing lost, nothing twice", { timeout: 300_000 }, async (t) => {
+test("S6 the server restarts with pushes on the wire: both machines converge, nothing lost, nothing twice", { timeout: 300_000 }, async (t) => {
   const { host, a, b } = await twoMachines(t, "node");
   const ids = new Map((readEnvelope(a.m).project.timelineItems).map((i) => [i.name, i.id]));
   const id = (name: string) => ids.get(name)!;
-  const edits: Promise<any>[] = [];
+  const helperOf = (side: typeof a) => ({ factory: LOCAL_FACTORY, config: { sync: { url: side.link.url(side.m.projectId), tokenFile: join(side.m.home, `token-${side === a ? "alice" : "bob"}`) } } });
+  const write = (side: typeof a, k: number, name: string, field: string, value: unknown, waitMs = 5000) =>
+    cbWrite(side.m, { kind: "commit", ops: [setOp("timelineItems", id(name), field, value)] }, { actor: `codex/${side === a ? "a" : "b"}-${k}`, waitMs, helper: helperOf(side) });
   const plan = [
     [a, SAMPLE.title, "fontSize", 101], [b, SAMPLE.logo, "zIndex", 11], [a, SAMPLE.tone, "volume", 61],
-    [b, SAMPLE.grade, "name", "Grade (B)"], [a, SAMPLE.clipA, "opacity", 0.61], [b, SAMPLE.badge, "zIndex", 5],
+    [b, SAMPLE.grade, "name", "Grade (B)"], [b, SAMPLE.clipA, "opacity", 0.61], [a, SAMPLE.badge, "zIndex", 5],
   ] as const;
-  for (const [k, [side, name, field, value]] of plan.entries()) {
-    // each cb call can start a helper that syncs (B7: a plain cb's helper has no sync config; pinned below)
-    const helper = { factory: LOCAL_FACTORY, config: { sync: { url: side.link.url(side.m.projectId), tokenFile: join(side.m.home, `token-${side === a ? "alice" : "bob"}`) } } };
-    edits.push(cbWrite(side.m, { kind: "commit", ops: [setOp("timelineItems", id(name), field, value)] }, { actor: `codex/${side === a ? "a" : "b"}-${k}`, waitMs: 2000, helper }));
-    if (k === 2) await host.restart();
-  }
-  const res = await Promise.all(edits);
-  t.diagnostic(JSON.stringify(res.map((r) => r.status)));
-  for (const r of res) assert.ok(r.status === "confirmed" || r.status === "pending", JSON.stringify(r));
+  // two edits synced normally
+  for (const k of [0, 1]) assert.equal((await write(plan[k][0], k, plan[k][1], plan[k][2], plan[k][3])).status, "confirmed");
+  // B's next two pushes are on the wire (held in its link), A's next edit too; then the server dies and comes back
+  b.link.hold();
+  a.link.hold();
+  const inflight = [2, 3, 4].map((k) => write(plan[k][0], k, plan[k][1], plan[k][2], plan[k][3], 1000));
+  await until(() => b.link.heldBytes > 0 && a.link.heldBytes > 0, 30_000, "pushes from both machines on the wire");
+  const res = await Promise.all(inflight);
+  t.diagnostic(JSON.stringify({ inflight: res.map((r) => r.status) }));
+  for (const r of res) assert.equal(r.status, "pending", `unacknowledged: ${JSON.stringify(r)}`);
+  await host.restart();
+  a.link.release();
+  b.link.release();
+  // and one more edit after the restart
+  const last = await write(plan[5][0], 5, plan[5][1], plan[5][2], plan[5][3]);
+  assert.ok(last.status === "confirmed" || last.status === "pending", JSON.stringify(last));
   await until(async () => {
     const [ha, hb] = [await state(a.app), await state(b.app)];
-    return ha.head.seq === hb.head.seq && ha.head.hash === hb.head.hash && ha.sync.pending === 0 && hb.sync.pending === 0;
+    return typeof ha.docHash === "string" && ha.head.seq === hb.head.seq && ha.docHash === hb.docHash && ha.sync.pending === 0 && hb.sync.pending === 0;
   }, 90_000, "both machines on one head after the restart");
   for (const s of [a, b]) {
     await until(() => plan.every(([, name, field, value]) => itemNamed(s.m, field === "name" ? (value as string) : name)?.[field] === value), 30_000, "every edit in project.json");
     const hist = await cbOk(s.m, ["history", "--limit", "100"]);
-    const ids = hist.versions.map((v: any) => v.change).filter(Boolean);
-    assert.equal(new Set(ids).size, ids.length, "no change twice");
+    const changeIds = hist.versions.map((v: any) => v.change).filter(Boolean);
+    assert.equal(new Set(changeIds).size, changeIds.length, "no change twice");
     for (const [k, [side, name]] of plan.entries()) assert.equal((await cbOk(s.m, ["credits", id(name)])).by.id, `codex/${side === a ? "a" : "b"}-${k}`, `${name}'s author`);
   }
   const rows = (await host.rows(a.m.projectId))!;
   assert.equal(new Set(rows.map((r) => r.id)).size, rows.length, "no change id twice on the server");
-  void gui;
 });
 
 test("B7: with the app closed, a plain `cb` write on a shared cut starts a helper that syncs it (not 'open Carton with sync')", { timeout: 300_000, todo: "B7, local-cli + windows: the helper a cb starts gets no sync config (server URL, token file); nothing records it for the project" }, async (t) => {
-  const { a } = await twoMachines(t, "node");
+  const { host, a, b } = await twoMachines(t, "node");
   await a.app.ask({ cmd: "exit" });
   const r = await cbWrite(a.m, { kind: "commit", ops: [setOp("timelineItems", itemNamed(a.m, SAMPLE.logo)!.id, "zIndex", 12)] }, { actor: "codex/closed-app" });
   assert.ok(r.status === "confirmed" || r.status === "pending", JSON.stringify(r));
+  // synced for real: the server holds it, and the other machine sees it, credited to the agent
+  await until(async () => (await host.rows(a.m.projectId))!.some((x) => x.id === r.id), 30_000, "the change on the server");
+  await until(() => itemNamed(b.m, SAMPLE.logo)?.zIndex === 12, 30_000, "the change on B");
+  assert.equal((await cbOk(b.m, ["credits", SAMPLE.logo])).by.id, "codex/closed-app");
 });

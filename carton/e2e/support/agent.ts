@@ -6,22 +6,24 @@
 //      read the `.status` sidecar until it reports this save. The next edit starts from the agent's own file, so the
 //      three edits depend on each other (R2-03), and each save's base is the previous save of the same print.
 // Identity comes from CARDBOARD_ACTOR, as Cardboard's Director hook (or our PreToolUse prefixer) sets it.
-//   agent <bundle> <projectId> <json: {steps, view?, statusMs?, noRetry?, waitGo?}>  (waitGo: after printing, wait for a
+//   agent <bundle> <projectId> <json: {steps, view?, statusMs?, noRetry?, waitGo?, settled?}>  (waitGo: after printing, wait for a
 //   line on stdin before editing)
 // A step: {op: "insert", like: <item name>, id, name, set: {...}} | {op: "set", name, set: {...}} | {op: "remove", name}
 // (those three read the JSON codec's body) | {op: "text", find, replace} (any codec, Cardboard's JSX included)
+// | {op: "wait"} (prints {waiting}, then waits for a line on stdin)
 // Prints {actor, view, results: [status sidecar per step]}.
 import { readFileSync, writeFileSync } from "node:fs";
-import { renameRetry } from "./env.ts";
+import { dataDirFor, renameRetry } from "./env.ts";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { openLocal, identify } from "@carton/local";
 import { cardboardAdapter } from "@carton/cardboard";
 import type { HostAdapter } from "@carton/core";
 
 const [bundle, projectId, json] = process.argv.slice(2);
-const cfg = JSON.parse(json!) as { steps: any[]; view?: string; statusMs?: number; noRetry?: boolean; waitGo?: boolean };
+const cfg = JSON.parse(json!) as { steps: any[]; view?: string; statusMs?: number; noRetry?: boolean; waitGo?: boolean; settled?: boolean };
 const actor = identify();
-const local = await openLocal({ projectDir: bundle!, projectId, adapter: cardboardAdapter as HostAdapter, actor });
+const local = await openLocal({ projectDir: bundle!, projectId, dataDir: dataDirFor(bundle!), adapter: cardboardAdapter as HostAdapter, actor });
 const results: any[] = [];
 let view: { name: string; path: string; ref: string };
 // B3 (routed to local-cli): on a loaded machine a `cb` call that misses one 100 ms ping takes the app's lease over with a
@@ -42,10 +44,13 @@ try {
   await local.close();
 }
 const file = join(bundle!, ...view.path.split("/"));
+// lines on stdin: "go" after a pause (waitGo, or a {op: "wait"} step)
+const stdinLines = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
+const nextLine = async () => void (await stdinLines.next());
 if (cfg.waitGo) {
   // printed; the test changes things before this agent saves (a stale save), then says go
   process.stdout.write(JSON.stringify({ printed: view }) + "\n");
-  await new Promise<void>((r) => process.stdin.once("data", () => r()));
+  await nextLine();
 }
 const statusFile = file.replace(/\.tsx$/, ".status");
 const readStatus = () => { try { return JSON.parse(readFileSync(statusFile, "utf8")); } catch { return null; } };
@@ -53,7 +58,13 @@ const readStatus = () => { try { return JSON.parse(readFileSync(statusFile, "utf
 // the JSON timeline codec: comment header lines, then the timeline slice as JSON
 const parse = (text: string) => { const i = text.indexOf("\n{"); return { head: text.slice(0, i + 1), body: JSON.parse(text.slice(i + 1)) }; };
 
-for (const step of cfg.steps) {
+for (const [i, step] of cfg.steps.entries()) {
+  if (step.op === "wait") {
+    // the test changes things between this agent's saves (a person's edit), then says go
+    process.stdout.write(JSON.stringify({ waiting: i, view }) + "\n");
+    await nextLine();
+    continue;
+  }
   if (step.op === "text") {
     // an edit of the file's text as an agent's Edit tool makes it (any codec: Cardboard's own JSX too)
     const text = readFileSync(file, "utf8");
@@ -89,10 +100,13 @@ async function save(text: string): Promise<void> {
   let st: any = null;
   for (;;) {
     st = readStatus();
-    if (st && st.at >= savedAt && (st.change !== before?.change || st.at !== before?.at) && st.status !== "pending") break;
+    // `pending` acknowledges the save (a shared cut offline, or waiting for the server): an agent edits on from its own
+    // file; with `settled` it waits for the server's answer instead
+    if (st && st.at >= savedAt && (st.change !== before?.change || st.at !== before?.at) && !(cfg.settled && st.status === "pending")) break;
     if (Date.now() > end) throw new Error(`no status for my save within ${cfg.statusMs ?? 30_000} ms (last: ${JSON.stringify(st)})`);
     await new Promise((r) => setTimeout(r, 20));
   }
   results.push(st);
 }
-process.stdout.write(JSON.stringify({ actor: actor.id, view, results, printRetries }) + "\n");
+// stdin stays open for the test's lines: exit once the result is written (piped stdout is async on Windows)
+process.stdout.write(JSON.stringify({ actor: actor.id, view, results, printRetries }) + "\n", () => process.exit(0));

@@ -1,7 +1,7 @@
 // `cb` as an agent or a person runs it in a terminal: the standalone `carton` bin (`@carton/cli-mcp`), one process per
 // command, on the project bundle, with `--json`. Identity as the caller would have it: CARDBOARD_ACTOR from a hook,
 // `--as` for a self-declared agent, or nothing (a terminal user).
-import { pkg, support } from "./env.ts";
+import { dataDirFor, pkg, support } from "./env.ts";
 import type { Machine } from "./project.ts";
 import { runOnce } from "./procs.ts";
 
@@ -15,7 +15,7 @@ export interface CbRun {
 }
 
 export async function cb(m: Machine, args: string[], o: { actor?: string; env?: Record<string, string>; input?: string; timeoutMs?: number } = {}): Promise<CbRun> {
-  const r = await runOnce(`cb ${args[0]}`, [CB_BIN, "--project", m.bundle, ...args, "--json"], {
+  const r = await runOnce(`cb ${args[0]}`, [CB_BIN, "--project", m.bundle, "--data-dir", dataDirFor(m.bundle), ...args, "--json"], {
     env: { ...(o.actor ? { CARDBOARD_ACTOR: o.actor } : {}), ...o.env },
     input: o.input,
     timeoutMs: o.timeoutMs ?? 90_000,

@@ -41,11 +41,16 @@ export async function twoMachines(t: test.TestContext, kind: HostKind, appConfig
   await gui(appA, SAMPLE.title, "fontSize", 110);
   await until(() => itemNamed(ma, SAMPLE.title)?.fontSize === 110, 20_000, "A's first local edit");
   const localIds = (await cbOk(ma, ["history"])).versions.map((v: any) => v.change).filter(Boolean).reverse();
+  // the link is down while the hand-off starts, so the upload can't finish before the next commit: the cut stays
+  // `handingOff` (§5.3 step 1) and a commit made then is pending, never confirmed locally
+  linkA.down();
   const shared = await cbWrite(ma, { kind: "share" });
   assert.equal(shared.status, "confirmed", JSON.stringify(shared));
-  // a commit during the hand-off is never confirmed locally: it becomes the next server seq
-  const during = await cbWrite(ma, { kind: "commit", ops: [setOp("timelineItems", itemNamed(ma, SAMPLE.logo)!.id, "zIndex", 3)] }, { actor: "codex/handoff" });
-  assert.ok(during.status === "pending" || during.status === "confirmed", JSON.stringify(during));
+  assert.equal((await cbOk(ma, ["cut", "list"])).cuts[0].sequencer.kind, "handingOff", "the cut is handing off");
+  const during = await cbWrite(ma, { kind: "commit", ops: [setOp("timelineItems", itemNamed(ma, SAMPLE.logo)!.id, "zIndex", 3)] }, { actor: "codex/handoff", waitMs: 1000 });
+  assert.equal(during.status, "pending", `a commit during the hand-off is never confirmed locally: ${JSON.stringify(during)}`);
+  assert.equal((await cbOk(ma, ["history"])).versions[0].change, localIds.at(-1), "nothing was sequenced locally after n");
+  linkA.up();
   await until(async () => (await cbOk(ma, ["cut", "list"])).cuts[0].sequencer.kind === "server", 60_000, "A's cut to become server-sequenced");
   let shareRows: unknown = null;
   const rows = await host.rows(ma.projectId);
