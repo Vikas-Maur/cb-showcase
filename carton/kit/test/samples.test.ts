@@ -14,7 +14,7 @@ import { cardboardAdapter, createCardboardAdapter, fromHost, materializeProject,
 import { excludedFromExport } from "@carton/cardboard/node";
 import { register } from "@carton/cli-mcp";
 import { authProviderSuite } from "@carton/conformance";
-import { hookSettings, identify, nodeHasher, openLocal, readProjectId } from "@carton/local";
+import { hookSettings, identify, nodeHasher, openLocal, readProjectId, runWrite } from "@carton/local";
 import { prefixCommand, preToolUseOutput } from "@carton/local/hooks";
 import { createFsBlobStore } from "@carton/blob-fs";
 import { createHmacAuth, newSecret } from "@carton/server";
@@ -133,6 +133,30 @@ test("H2: history with authors, restore as a new version, undo by actor group", 
     head = (await carton.head()).doc;
     assert.equal(clip(head, "outro").textContent, "Outro", "restore brings back main@1 as a new version");
     assert.equal((await carton.checkout(log[0]!.ref)).timelineItems !== undefined, true, "every version can still be read");
+  } finally {
+    await carton.close();
+    await store.close();
+  }
+});
+
+test("H2: a retried `undo --turn` gets the first answer back, though the turn changed and clashed since", async () => {
+  const bundleDir = bundle("h2-retry");
+  const { carton, store } = await importProject({ bundleDir, projectId: readProjectId(bundleDir), adapter: cardboardAdapter, hasher: nodeHasher, host: () => readProjectJson(bundleDir).project });
+  try {
+    const director: Actor = { ...agent("director/c/t1"), turn: "t1" };
+    const me: Actor = { kind: "human", id: "person", group: "local:me@box" };
+    await carton.commit({ doc: withClip((await carton.head()).doc, "intro", { textContent: "turn edit" }), author: director });
+    const req = { id: "kit.undo-turn", actor: director, op: { kind: "undoTurn" as const, turn: "t1" } };
+    const first = await runWrite(carton, structuredClone(req));
+    assert.equal(first.status, "confirmed", JSON.stringify(first));
+    // a late subagent edit under the same turn, then someone else changes the same field
+    await carton.commit({ doc: withClip((await carton.head()).doc, "outro", { textContent: "late subagent" }), author: { ...director, agentId: "sub-1" } });
+    await carton.commit({ doc: withClip((await carton.head()).doc, "outro", { textContent: "mine" }), author: me });
+    // the retry (its first answer was lost) must not say "nothing was saved": the undo is in history
+    const again = await runWrite(carton, structuredClone(req));
+    assert.equal(again.status, "confirmed", JSON.stringify(again));
+    assert.equal(again.id, first.id);
+    assert.equal((await carton.log({ limit: 20 })).filter((v) => v.kind === "undo").length, 1, "still one undo");
   } finally {
     await carton.close();
     await store.close();
