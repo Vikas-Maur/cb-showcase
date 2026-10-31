@@ -7,11 +7,11 @@
 // Zero lost edits, zero edits re-attributed to another actor.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeMachine, itemNamed, SAMPLE, readEnvelope, type Machine } from "../support/project.ts";
 import { Procs, killIfOurs } from "../support/procs.ts";
-import { pkg, scratch, support, until, sleep } from "../support/env.ts";
+import { pkg, renameRetry, scratch, support, until, sleep } from "../support/env.ts";
 import { cbOk, cbWrite, setOp } from "../support/cb.ts";
 import { Link } from "../support/link.ts";
 import { startHost } from "../support/hosts.ts";
@@ -100,7 +100,7 @@ test("S6 the app is killed mid-save (a GUI save and an agent's view save not app
   env.project.stateUpdatedAt = Date.now();
   const tmp = join(m.bundle, ".project.json.gui.tmp");
   writeFileSync(tmp, JSON.stringify(env, null, 2));
-  renameSync(tmp, join(m.bundle, "project.json"));
+  renameRetry(tmp, join(m.bundle, "project.json"));
   const viewFile = join(m.bundle, ".scratch", "views", `${(await agent.next((x) => x.printed)).printed.name}.tsx`);
   const printedText = readFileSync(viewFile, "utf8");
   agent.p.stdin!.write("go\n");

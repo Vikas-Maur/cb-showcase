@@ -1,7 +1,7 @@
 // Where the end-to-end tests keep their files, and where the workspace's packages are.
 // Scratch: CARTON_E2E_TMP, else ~/gfv-scratch/carton/e2e-qa when that folder exists (the shared build box, whose /tmp
 // is a small tmpfs), else the OS temp folder (CI runners on Linux, Windows and macOS).
-import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -36,5 +36,20 @@ export async function until<T>(f: () => T | null | undefined | false | Promise<T
     }
     if (Date.now() > end) throw new Error(`timed out after ${ms} ms waiting for ${what}${last ? ` (last error: ${(last as Error)?.message ?? last})` : ""}`);
     await sleep(every);
+  }
+}
+
+/**
+ * Replace `to` with `from` as an editor's or agent's atomic save does. On Windows a rename over a file another process
+ * has open (Carton's materializer reading it) fails with EPERM/EBUSY for a moment; editors retry, so do we.
+ */
+export function renameRetry(from: string, to: string): void {
+  for (let i = 0; ; i++) {
+    try {
+      return renameSync(from, to);
+    } catch (e: any) {
+      if (i >= 50 || !["EPERM", "EBUSY", "EACCES"].includes(e?.code)) throw e;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    }
   }
 }

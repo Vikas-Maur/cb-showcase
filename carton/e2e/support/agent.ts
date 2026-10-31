@@ -10,7 +10,8 @@
 //   line on stdin before editing)
 // A step: {op: "insert", like: <item name>, id, name, set: {...}} | {op: "set", name, set: {...}} | {op: "remove", name}
 // Prints {actor, view, results: [status sidecar per step]}.
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { renameRetry } from "./env.ts";
 import { join } from "node:path";
 import { openLocal, identify } from "@carton/local";
 import { cardboardAdapter } from "@carton/cardboard";
@@ -69,7 +70,7 @@ for (const step of cfg.steps) {
   const savedAt = Date.now();
   const tmp = `${file}.${process.pid}.tmp`;
   writeFileSync(tmp, head + JSON.stringify(body, null, 1) + "\n");
-  renameSync(tmp, file);
+  renameRetry(tmp, file);
   // wait for the materializer to apply this save: a sidecar written after it, for a change other than the last
   const end = Date.now() + (cfg.statusMs ?? 30_000);
   let st: any = null;

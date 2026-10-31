@@ -9,11 +9,11 @@
 // Each machine reaches the host through its own TCP link (support/link.ts), so "offline" is a dropped connection.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { itemNamed, SAMPLE } from "../support/project.ts";
 import { runOnce } from "../support/procs.ts";
-import { until } from "../support/env.ts";
+import { renameRetry, until } from "../support/env.ts";
 import { cb, cbOk, cbWrite, setOp, CB_BIN } from "../support/cb.ts";
 import { hostMissing } from "../support/hosts.ts";
 import { twoMachines, state, gui } from "../support/live.ts";
@@ -132,7 +132,7 @@ for (const kind of ["node", "cloudflare"] as const) {
       const items = (read.body.timelineItems as any[]).map((i) => (i.name === SAMPLE.logo ? { ...i, zIndex: 6 } : i));
       const head = read.text.slice(0, read.text.indexOf("\n{") + 1);
       writeFileSync(`${shared}.agent.tmp`, head + JSON.stringify({ ...read.body, timelineItems: items }, null, 1) + "\n");
-      renameSync(`${shared}.agent.tmp`, shared);
+      renameRetry(`${shared}.agent.tmp`, shared);
       // 4. everything lands, on both machines
       for (const s of [a, b]) {
         await until(() => itemNamed(s.m, SAMPLE.logo)?.zIndex === 6, 60_000, `the agent's edit on ${s === a ? "A" : "B"}`);

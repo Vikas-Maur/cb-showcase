@@ -6,7 +6,8 @@
 // On a first open the project is imported as `main@1` (§16 migration) and the files on disk are adopted as that state.
 // Requests with an `e2e` field are the test's hands on the app (a GUI save, a status read); everything else is a `cb`
 // write, served exactly as the app serves one.
-import { readFileSync, renameSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
+import { renameRetry } from "./env.ts";
 import { join } from "node:path";
 import { Carton } from "@carton/core";
 import type { Actor, HostAdapter } from "@carton/core";
@@ -78,7 +79,7 @@ export async function createHolderEngine({ dbPath, config }: HelperFactoryOption
         await mz.hookWrite(person(req.who), "project.json");
         const tmp = join(projectDir, `.project.json.${Date.now()}.tmp`);
         writeFileSync(tmp, JSON.stringify(env, null, 2));
-        renameSync(tmp, file);
+        renameRetry(tmp, file);
         return { ok: true };
       }
       case "idle":

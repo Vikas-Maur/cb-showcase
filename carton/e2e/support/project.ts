@@ -1,9 +1,9 @@
 // A real Cardboard project on disk: the sample bundle Cardboard 1.4.0's own CLI wrote (cardboard-adapter's fixtures:
 // project.json with the `{format, version, project, media}` envelope, its timeline.tsx), in a scratch library of its
 // own. Never the user's library or profile.
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync, renameSync, cpSync } from "node:fs";
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync, cpSync } from "node:fs";
 import { join } from "node:path";
-import { pkg, scratch } from "./env.ts";
+import { pkg, renameRetry, scratch } from "./env.ts";
 
 const FIXTURES = pkg("conformance", "src", "cardboard", "fixtures", "sample");
 
@@ -47,7 +47,7 @@ export const itemNamed = (m: Machine, name: string): Item | undefined => items(m
 export function writeEnvelopeAtomic(m: Machine, env: Envelope): void {
   const tmp = join(m.bundle, `.project.json.${process.pid}.${Date.now()}.tmp`);
   writeFileSync(tmp, JSON.stringify(env, null, 2));
-  renameSync(tmp, join(m.bundle, "project.json"));
+  renameRetry(tmp, join(m.bundle, "project.json"));
 }
 
 /** The sample's clip names (CLI-made fixture): what the scenarios edit. */
