@@ -17,13 +17,8 @@ holds; they don't say how fast the built code is.
 - **Opening a project still reads every change row** (new). Keyframes are stored (every 64 changes, and at named,
   fold, export and published versions), so only the changes after the newest one are replayed. But every row of every
   cut is still read into memory on each open, and every `cb` call opens the project. Compaction is optional.
-- **Documents are values.** A record of a document Carton gave you is shared with the version it came from. Change a
-  record in place and the commit sees no difference. Always copy the record you change. (`head()` says "an owned
-  copy"; it isn't one, for speed. Reported to its owner.)
 - **Fonts aren't synced (L4), and no validator warns about them yet.** The Cardboard schema's soft checks cover overlaps
   only.
-- **A split's lineage isn't used when a commit is rebased** (new). An edit made on a clip that another change split
-  lands on the piece that kept the clip's id, not on the other pieces. Ripples (`maps`) are mapped as they should be.
 - **Ripple inference is a heuristic (L9).** Carton infers a ripple from an agent's file edit only when it is
   unambiguous. Recorded intents (H7) are the reliable path.
 - **FAT and exFAT have no hard links (L13).** There, a save from another program that lands in a very short window can
