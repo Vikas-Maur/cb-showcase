@@ -1,6 +1,7 @@
 // What a machine's carton.db says head is, read in this process (a reader beside the app; never the user's data), and
 // a wait that prefers the files the person sees.
 import type { test } from "node:test";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Carton } from "@carton/core";
 import type { HostAdapter } from "@carton/core";
@@ -27,18 +28,29 @@ export async function headItems(m: Machine): Promise<Item[]> {
   }
 }
 
+/** Whether a headless helper took this machine's lease at or after `since` (its `helper.log` says so). */
+export function helperTookLeaseSince(m: Machine, since: number): boolean {
+  const f = join(m.dbDir, "helper.log");
+  if (!existsSync(f)) return false;
+  return readFileSync(f, "utf8").split("\n").some((l) => {
+    try { const e = JSON.parse(l); return e.kind === "helper" && e.type === "lease" && e.t >= since; } catch { return false; }
+  });
+}
+
 /**
- * Waits for project.json to show a `cb` write. If it never does but carton.db's head has it, the write landed outside
- * the app's lease holder (B3's takeover on a loaded machine) and the app's files missed it: that is B11, pinned by its
- * own test (s1-takeover-views.test.ts); here it is a diagnostic, and the scenario goes on from carton.db's head.
+ * Waits for project.json to show a `cb` write made at or after `since`. Only when a headless helper provably took the
+ * lease since then (B3's takeover on a loaded machine) and carton.db's head has the write does a miss count as B11
+ * (the write served outside the app's holder, pinned by s1-takeover-views.test.ts): a diagnostic, and the scenario
+ * goes on from carton.db's head. Any other miss (the app held the lease and didn't rewrite the files) fails.
  */
-export async function untilShown(t: test.TestContext, m: Machine, pred: (items: Item[]) => boolean, what: string, ms = 20_000): Promise<Item[]> {
+export async function untilShown(t: test.TestContext, m: Machine, since: number, pred: (items: Item[]) => boolean, what: string, ms = 20_000): Promise<Item[]> {
   try {
     return await until(() => { const it = items(m); return pred(it) && it; }, ms, `${what} in project.json`);
   } catch (e) {
+    if (!helperTookLeaseSince(m, since)) throw e;
     const head = await headItems(m);
     if (!pred(head)) throw e;
-    t.diagnostic(`B11 hit: ${what} is in carton.db's head but not in project.json (a write served outside the app's holder)`);
+    t.diagnostic(`B11 hit: ${what} is in carton.db's head but not in project.json (a helper took the lease and served the write)`);
     return head;
   }
 }

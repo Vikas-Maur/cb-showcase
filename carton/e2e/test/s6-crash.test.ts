@@ -16,6 +16,7 @@ import { cbOk, cbWrite, setOp } from "../support/cb.ts";
 import { Link } from "../support/link.ts";
 import { startHost } from "../support/hosts.ts";
 import { twoMachines, state, gui, LOCAL_FACTORY, helperConfigFile } from "../support/live.ts";
+import { helperTookLeaseSince } from "../support/head.ts";
 
 
 test("S6 the helper is killed mid-push; the next cb takes over and retries under the same id: one row, its author kept (H1 late push included)", { timeout: 300_000 }, async (t) => {
@@ -177,11 +178,15 @@ test("S6 the server restarts with pushes on the wire: both machines converge, no
 });
 
 test("B7: with the app closed, a plain `cb` write on a shared cut starts a helper that syncs it (not 'open Carton with sync')", { timeout: 300_000, todo: "B7, local-cli + windows: the helper a cb starts gets no sync config (server URL, token file); nothing records it for the project" }, async (t) => {
-  const { host, a, b } = await twoMachines(t, "node");
+  const { host, a, b, procs } = await twoMachines(t, "node");
   await a.app.ask({ cmd: "exit" });
+  // no holder left from setup (a helper started then has the stand-in config and a working sync connection)
+  await procs.stopHelpers();
   rmSync(helperConfigFile(a.m), { force: true }); // the product's own behaviour: no recorded sync config
+  const since = Date.now();
   const r = await cbWrite(a.m, { kind: "commit", ops: [setOp("timelineItems", itemNamed(a.m, SAMPLE.logo)!.id, "zIndex", 12)] }, { actor: "codex/closed-app" });
   assert.ok(r.status === "confirmed" || r.status === "pending", JSON.stringify(r));
+  assert.ok(helperTookLeaseSince(a.m, since), "the write started a fresh helper");
   // synced for real: the server holds it, and the other machine sees it, credited to the agent
   await until(async () => (await host.rows(a.m.projectId))!.some((x) => x.id === r.id), 30_000, "the change on the server");
   await until(() => itemNamed(b.m, SAMPLE.logo)?.zIndex === 12, 30_000, "the change on B");

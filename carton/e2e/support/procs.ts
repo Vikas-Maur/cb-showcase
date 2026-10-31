@@ -110,6 +110,17 @@ export class Procs {
     return [...pids];
   }
 
+  /** Kills this scenario's live helpers and waits until they are gone (a test that needs a fresh helper). */
+  async stopHelpers(ms = 15_000): Promise<void> {
+    const dirs = [...this.helperLogs];
+    const pids = this.helperPids();
+    for (const pid of pids) killIfOurs(pid, dirs);
+    const ours = (pid: number) => { const c = commandLineOf(pid); return !!c && /helper-main/.test(c) && dirs.some((d) => c.includes(d)); };
+    for (const end = Date.now() + ms; pids.some(ours); await new Promise((r) => setTimeout(r, 100))) {
+      if (Date.now() > end) throw new Error(`helpers still running after ${ms} ms: ${pids.filter(ours).join(", ")}`);
+    }
+  }
+
   async close(): Promise<void> {
     await Promise.all(this.all.map((p) => p.kill()));
     for (const pid of this.helperPids()) killIfOurs(pid, [...this.helperLogs]);

@@ -102,18 +102,20 @@ test("S1 a real Cardboard project: GUI save, a Director turn with two parallel s
   const beforeUndo = h.versions[0].version;
 
   // --- undo the whole turn (Director and subagents): one undo change; the person's GUI edit stays
+  const undoAt = Date.now();
   const u = await cbOk(m, ["undo", "--turn", "turn1"]);
   assert.equal(u.status, "confirmed", JSON.stringify(u));
-  const undone = await untilShown(t, m, (l) => !named(l, "Title A") && !named(l, "Title B") && named(l, SAMPLE.clipA)!.opacity === 0.9, "the turn undone");
+  const undone = await untilShown(t, m, undoAt, (l) => !named(l, "Title A") && !named(l, "Title B") && named(l, SAMPLE.clipA)!.opacity === 0.9, "the turn undone");
   assert.equal(named(undone, SAMPLE.title)!.fontSize, 150, "undo --turn kept the person's edit");
   h = await cbOk(m, ["history", "--limit", "50"]);
   assert.equal(h.versions[0].kind, "undo");
   assert.equal(h.versions.filter((v: any) => v.kind === "undo").length, 1, "one undo change for the whole turn");
 
   // --- restore the version before the undo: saved as a new version, every edit back
+  const restoreAt = Date.now();
   const r = await cbOk(m, ["restore", beforeUndo]);
   assert.equal(r.status, "confirmed", JSON.stringify(r));
-  const restored = await untilShown(t, m, (l) => named(l, "Title A")?.textContent === "A v2" && named(l, "Title B")?.startTime === 9, "the restore");
+  const restored = await untilShown(t, m, restoreAt, (l) => named(l, "Title A")?.textContent === "A v2" && named(l, "Title B")?.startTime === 9, "the restore");
   h = await cbOk(m, ["history", "--limit", "50"]);
   assert.ok(h.versions[0].ref.seq > guiSeq + 7, "restore is a new version, history kept");
   assert.equal(named(restored, SAMPLE.clipA)!.opacity, 0.5);

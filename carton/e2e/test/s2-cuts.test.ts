@@ -74,9 +74,10 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   assert.equal((await cbOk(m, ["history"])).versions[0].ref.seq, mainSeq, "a fold with cards saved nothing");
 
   // fold in some of it: keep the logo change out, keep main's opacity
+  const foldAt = Date.now();
   const some = await cbOk(m, ["fold", CUT, "--reject", `timelineItems/${ids.logo}`, "--keep", "mine"]);
   assert.equal(some.status, "confirmed", JSON.stringify(some));
-  const folded = await untilShown(t, m, (l) => named(l, SAMPLE.title)?.textContent === "30s version", "the fold");
+  const folded = await untilShown(t, m, foldAt, (l) => named(l, SAMPLE.title)?.textContent === "30s version", "the fold");
   assert.equal(named(folded, SAMPLE.clipA)!.opacity, 0.2, "--keep mine kept main's value");
   assert.equal(named(folded, SAMPLE.logo)!.zIndex, 2, "the rejected record stayed out");
   const h = await cbOk(m, ["history", "--limit", "10"]);
@@ -91,6 +92,7 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   });
   // what that command would run: core's revert of the inverse change (History.acceptRest), as a cb write
   const inverse = h.versions[0].change as string;
+  const restAt = Date.now();
   const local = await openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as HostAdapter, actor: { kind: "human", id: "human:me", name: "me" } });
   try {
     const r = await local.write({ kind: "revert", changeId: inverse });
@@ -98,7 +100,7 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   } finally {
     await local.close();
   }
-  const rest2 = await untilShown(t, m, (l) => named(l, SAMPLE.logo)?.zIndex === 7, "the rest folded in");
+  const rest2 = await untilShown(t, m, restAt, (l) => named(l, SAMPLE.logo)?.zIndex === 7, "the rest folded in");
   assert.equal(named(rest2, SAMPLE.clipA)!.opacity, 0.2, "folding in the rest left the decided card alone");
   assert.equal((await cbOk(m, ["fold", CUT, "--check"])).status, "up-to-date");
 });

@@ -8,7 +8,10 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { makeMachine, itemNamed, SAMPLE } from "../support/project.ts";
 import { Procs } from "../support/procs.ts";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { support, until } from "../support/env.ts";
+import { helperTookLeaseSince } from "../support/head.ts";
 import { cbWrite, setOp } from "../support/cb.ts";
 
 test("B3: an agent's print --view while the app's engine thread is briefly busy is served (not 'views need the app open')", { timeout: 120_000, todo: "B3, local-cli: a takeover helper has no materializer" }, async (t) => {
@@ -40,9 +43,14 @@ test("B11: a cb write served while the app's engine thread is briefly busy still
   const app = procs.start("app", [support("app.ts"), m.bundle, m.projectId, "{}"]);
   await app.next((x) => x.ready);
   const logo = itemNamed(m, SAMPLE.logo)!;
-  const stalled = app.ask({ cmd: "serve", req: { e2e: "stall", ms: 4000 } });
+  // the write starts only once the engine thread is certainly stalled, and the test then checks it was served by a
+  // takeover helper (B11's condition), so a write the app served normally can't pass it
+  const marker = join(m.home, "stalled"), since = Date.now();
+  const stalled = app.ask({ cmd: "serve", req: { e2e: "stall", ms: 4000, marker } });
+  await until(() => existsSync(marker), 30_000, "the engine thread to be stalled");
   const r = await cbWrite(m, { kind: "commit", ops: [setOp("timelineItems", logo.id, "zIndex", 6)] }, { actor: "codex/busy-app" });
   assert.equal(r.status, "confirmed", JSON.stringify(r));
   await stalled;
+  assert.ok(helperTookLeaseSince(m, since), "a helper took the lease and served the write (otherwise this run didn't reach B11's condition)");
   await until(() => itemNamed(m, SAMPLE.logo)?.zIndex === 6, 15_000, "project.json to show the write");
 });
