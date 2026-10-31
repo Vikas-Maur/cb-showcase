@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { openLocal } from "../src/open.ts";
 import { EngineThread } from "../src/engine-thread.ts";
 import { NO_HELPER } from "../src/client.ts";
@@ -111,7 +111,7 @@ test("spawnHelper in an Electron utility process (the app's library worker): the
     const seen = [];
     cp.spawn = (cmd, args, o) => (seen.push({ cmd, args, asNode: o.env.ELECTRON_RUN_AS_NODE === "1", path: o.env.PATH === process.env.PATH, own: o.env.OWN ?? null }), { unref() {}, pid: 0 });
     syncBuiltinESMExports();
-    import(${JSON.stringify(here("../src/helper.ts"))}).then((h) => {
+    import(${JSON.stringify(pathToFileURL(here("../src/helper.ts")).href)}).then((h) => {
       h.spawnHelper({ dbPath: "/x/carton.db", seen: null, factory: "/x/factory.js" });
       h.spawnHelper({ dbPath: "/x/carton.db", seen: null, factory: "/x/factory.js", env: { PATH: process.env.PATH, OWN: "1" } });
       console.log(JSON.stringify({ seen, envAfter: process.env.ELECTRON_RUN_AS_NODE ?? null }));
