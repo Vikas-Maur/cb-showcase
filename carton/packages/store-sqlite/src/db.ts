@@ -7,6 +7,7 @@
 // `BEGIN IMMEDIATE`: the lock is held only for the check and the inserts (target ≤ 5 ms, §6.2), and nothing else in
 // this process can interleave with it, because the transaction begins and ends in one turn of the event loop.
 
+import * as fs from "node:fs";
 import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { setTimeout as sleep } from "node:timers/promises";
 
@@ -34,6 +35,12 @@ export function isBusy(e: unknown): boolean {
   return typeof code === "number" && ((code & 0xff) === SQLITE_BUSY || (code & 0xff) === SQLITE_LOCKED);
 }
 
+/** A checkpoint after this many of a connection's own writes (each adds at least one WAL frame; SQLite's own
+ *  automatic checkpoint runs at 1,000 frames). */
+export const CHECKPOINT_EVERY_WRITES = 1000;
+/** And every this many ms on an idle timer, for the frames other processes add. */
+export const CHECKPOINT_EVERY_MS = 30_000;
+
 export class BusyError extends Error {
   readonly code = "CARTON_DB_BUSY";
   constructor(ms: number) {
@@ -54,6 +61,12 @@ export class Db {
   busyRetries = 0;
   /** How long the last write held the write lock, BEGIN IMMEDIATE to COMMIT, in ms (§6.2's target is ≤ 5). */
   lastLockMs = 0;
+  /** WAL checkpoints this connection ran, and the longest (ms; it holds this thread, never the write lock). */
+  checkpoints = 0;
+  checkpointMaxMs = 0;
+  #writesSinceCheckpoint = 0;
+  #checkpointQueued = false;
+  #walTimer: ReturnType<typeof setInterval> | null = null;
 
   /**
    * Open a connection and set it up. Waits asynchronously if another process is creating the same file. `verify`
@@ -75,7 +88,9 @@ export class Db {
       }
       db.raw.exec(`PRAGMA synchronous=${opts.durability === "full" ? "FULL" : "NORMAL"};
         PRAGMA temp_store=MEMORY;
-        PRAGMA journal_size_limit=${16 * 1024 * 1024};`);
+        PRAGMA journal_size_limit=${16 * 1024 * 1024};
+        PRAGMA wal_autocheckpoint=0;`);
+      if (!opts.readOnly) db.#watchWal();
       return db;
     } catch (e) {
       db.close();
@@ -124,7 +139,46 @@ export class Db {
     } finally {
       this.lastLockMs = performance.now() - t0;
     }
+    if (++this.#writesSinceCheckpoint >= CHECKPOINT_EVERY_WRITES) this.#queueCheckpoint();
     return out;
+  }
+
+  // Checkpoints never run inside a commit. SQLite's automatic one would: the commit that takes the WAL past 1,000
+  // frames copies them all into the database (and fsyncs it) while still holding the write lock, which every other
+  // process waits on (verified: about once per 1,000 commits a ~30 ms hold). It is off (wal_autocheckpoint=0), and a
+  // PASSIVE checkpoint, which takes only the checkpointer lock, runs on its own turn of the event loop: after
+  // CHECKPOINT_EVERY_WRITES of this connection's writes, every CHECKPOINT_EVERY_MS on an idle timer (for frames that
+  // short `cb` processes add), and once at open (for a WAL a crash left behind). A PASSIVE checkpoint with nothing new
+  // to copy does no I/O, so the timer is cheap. The WAL is bounded by the larger of those: it can't grow without limit
+  // while any store has the file open. (The WAL file's size is no guide: after a checkpoint SQLite reuses it from the
+  // start without shrinking it.)
+  #watchWal(): void {
+    this.#queueCheckpoint();
+    this.#walTimer = setInterval(() => this.#queueCheckpoint(), CHECKPOINT_EVERY_MS);
+    this.#walTimer.unref?.();
+  }
+
+  #queueCheckpoint(): void {
+    if (this.#checkpointQueued || this.#closed) return;
+    this.#checkpointQueued = true;
+    setImmediate(() => {
+      this.#checkpointQueued = false;
+      this.checkpoint();
+    });
+  }
+
+  /** A PASSIVE checkpoint: copies what it can without waiting for readers or blocking writers. */
+  checkpoint(): void {
+    if (this.#closed) return;
+    this.#writesSinceCheckpoint = 0;
+    const t0 = performance.now();
+    try {
+      this.raw.prepare("PRAGMA wal_checkpoint(PASSIVE)").all();
+      this.checkpoints++;
+      this.checkpointMaxMs = Math.max(this.checkpointMaxMs, performance.now() - t0);
+    } catch {
+      // another process is checkpointing (busy), or the disk refused: the next check tries again
+    }
   }
 
   /**
@@ -163,6 +217,7 @@ export class Db {
   close(): void {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.#walTimer) clearInterval(this.#walTimer);
     this.#stmts.clear();
     this.raw.close();
   }
