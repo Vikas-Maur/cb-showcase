@@ -6,12 +6,13 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
-import { Carton } from "@carton/core";
+import { Carton, LOCAL_TABLES, STORE_TABLES } from "@carton/core";
 import type { Actor, Doc } from "@carton/core";
+import type { Store } from "@carton/core/plugins";
 import { createMemoryStore } from "@carton/store-memory";
 import { cardboardAdapter, fromHost, toHost } from "@carton/cardboard";
 import zlib from "node:zlib";
-import { exportCbproj, readCbproj, bringInTheirChanges, extractFullHistory } from "@carton/cardboard/node";
+import { exportCbproj, readCbproj, bringInTheirChanges, extractFullHistory, importFullHistory } from "@carton/cardboard/node";
 import { SCRATCH, clips, find, type Item } from "./world.ts";
 
 const ALICE: Actor = { kind: "human", id: "alice", group: "alice@laptop" };
@@ -240,4 +241,90 @@ test(".cbproj: aliases of excluded paths, unsafe names and colliding members are
   const c = await readCbproj(out);
   assert.deepEqual(c.files, ["media//a.mp4", "notes.md"], "only one member per extracted path, and nothing excluded");
   assert.deepEqual(c.ignored.sort(), ["../escape.txt", "./.carton-export/shallow.json", "./.carton/carton.db", ".scratch/./views/x.tsx", "media/a.mp4"].sort());
+});
+
+// S3-2: "Include history so they can see every version" read back. The app copies carton.db without the local tables
+// (store-sqlite's `exportCopy`) and opens the extracted copy read-only (`openSqliteStore`); here a JSON file of the
+// sender's store rows stands in for both, so the whole path runs through a real `.cbproj` on the real engine.
+async function writeHistory(from: Store, to: string): Promise<void> {
+  const rows: [string, unknown, unknown][] = [];
+  for (const table of Object.values(STORE_TABLES)) {
+    if (LOCAL_TABLES.has(table)) continue;
+    for (const r of await from.range(table)) rows.push([table, r.key, r.value]);
+  }
+  await fs.promises.writeFile(to, JSON.stringify(rows));
+}
+async function openHistory(p: string): Promise<Store> {
+  const store = createMemoryStore();
+  const rows = JSON.parse(await fs.promises.readFile(p, "utf8")) as [string, unknown, unknown][];
+  if (rows.length) await store.write(rows.map(([table, key, value]) => ({ table, key: key as string[], value })));
+  return store;
+}
+const DIRECTOR: Actor = { kind: "agent", id: "director/chatS2/turn1", name: "Director", group: "alice@laptop/director", turn: "turn1" };
+
+test(".cbproj S3-2: a file sent with history shows the sender's versions, authors and names on the recipient [real engine]", async (t) => {
+  const project = { id: "proj-8", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
+  const sa = createMemoryStore();
+  const alice = await Carton.open({ adapter: cardboardAdapter, store: sa, init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
+  const theirs = alice.cut;
+  await edit(alice, ALICE, (its) => void (find(its, "c0").name = "Alice's title"));
+  await edit(alice, DIRECTOR, (its) => void (find(its, "c1").name = "the Director's cut"));
+  await alice.name((await alice.log({ limit: 1 }))[0]!.ref, "Sent to Bob");
+  const dir = bundle(t, "history", project);
+  const out = path.join(dir, "..", `history-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  await exportCbproj({ bundle: dir, out, shallow: await alice.exportShallow({ to: "bob" }), fullHistory: (to) => writeHistory(sa, to) });
+
+  // Bob opens it (Open Project: init from the shallow export), then takes its history
+  const c = await readCbproj(out);
+  assert.equal(c.hasFullHistory, true);
+  const bob = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { import: c.shallow! }, actor: BOB });
+  t.after(async () => {
+    await alice.close();
+    await bob.close();
+  });
+  const tmpDir = fs.mkdtempSync(path.join(SCRATCH, "history-tmp-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  assert.deepEqual(await importFullHistory(bob, out, { openStore: openHistory, tmpDir }), { status: "imported", cuts: [theirs] });
+  assert.deepEqual(fs.readdirSync(tmpDir), [], "the extracted copy is removed");
+  const log = await bob.log({ cut: theirs });
+  assert.deepEqual(log.map((v) => [v.author?.id ?? null, v.name ?? null]).slice(0, 2), [["director/chatS2/turn1", "Sent to Bob"], ["alice", null]], JSON.stringify(log.map((v) => [v.ref, v.author?.id])));
+  assert.ok((await bob.cuts()).find((x) => x.id === theirs)?.tracking, "read-only: theirs");
+  assert.deepEqual(await importFullHistory(bob, out, { openStore: openHistory, tmpDir }), { status: "imported", cuts: [] }, "a second time takes nothing");
+
+  // a file without history, and another project's history
+  const plain = await send(t, alice, dir, "carol");
+  assert.deepEqual(await importFullHistory(bob, plain, { openStore: openHistory, tmpDir }), { status: "no-history" });
+  const other = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { doc: fromHost({ ...project, id: "proj-9" }, null), projectId: "proj-9" }, actor: ALICE });
+  t.after(() => other.close());
+  const so = (other as unknown as { store: Store }).store;
+  const foreign = path.join(dir, "..", `foreign-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(foreign, { force: true }));
+  await exportCbproj({ bundle: dir, out: foreign, shallow: await other.exportShallow({ to: "bob" }), fullHistory: (to) => writeHistory(so, to) });
+  const refused = await importFullHistory(bob, foreign, { openStore: openHistory, tmpDir });
+  assert.equal(refused.status, "refused");
+  assert.match(refused.status === "refused" ? refused.reason : "", /another project/);
+});
+
+test(".cbproj S3-2: Bring in their changes takes a file's history too, then folds their head in [real engine]", async (t) => {
+  const project = { id: "proj-10", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
+  const sa = createMemoryStore();
+  const alice = await Carton.open({ adapter: cardboardAdapter, store: sa, init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
+  const dir = bundle(t, "bring-history", project);
+  const bob = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { import: await alice.exportShallow({ to: "bob" }) }, actor: BOB });
+  t.after(async () => {
+    await alice.close();
+    await bob.close();
+  });
+  await edit(alice, DIRECTOR, (its) => void (find(its, "c2").name = "the Director's edit"));
+  const out = path.join(dir, "..", `bring-history-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  await exportCbproj({ bundle: dir, out, shallow: await alice.exportShallow({ to: "bob" }), fullHistory: (to) => writeHistory(sa, to) });
+  const tmpDir = fs.mkdtempSync(path.join(SCRATCH, "history-tmp-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const r = await bringInTheirChanges(bob, await readCbproj(out), { history: { file: out, openStore: openHistory, tmpDir } });
+  assert.equal(r.status, "folded", JSON.stringify(r));
+  assert.deepEqual(r.history, { status: "imported", cuts: [alice.cut] });
+  assert.equal(find(toHost((await bob.head()).doc).timelineItems as Item[], "c2").name, "the Director's edit");
+  assert.ok((await bob.log({ cut: alice.cut })).some((v) => v.author?.id === "director/chatS2/turn1"), "and the version that made it, with its author");
 });

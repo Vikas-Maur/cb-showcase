@@ -979,3 +979,113 @@ test("a save of timeline.tsx that changes nothing (the state its header names) c
   assert.equal(s.mz.log.rewrites.length, rewrites, "not answered with a rewrite");
   assert.ok(s.mz.log.applied.some((a) => a.status === "unchanged"));
 });
+
+test("review 7 #5: a failed rewrite of the frozen shared file after a view save is tried again, not left stale until the turn ends", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  await s.mz.hookRead(agent); // a hooked turn: the shared file is frozen until it ends
+  let fail = true;
+  const realPrint = jsonTimelineCodec.print.bind(jsonTimelineCodec);
+  t.mock.method(jsonTimelineCodec, "print", (...a: Parameters<typeof jsonTimelineCodec.print>) => {
+    if (fail) throw new Error("printer failed");
+    return realPrint(...a);
+  });
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+  await s.event(rel);
+  assert.equal(s.find(await s.head(), "Y").name, "renamed", "the save is stored");
+  assert.notEqual(s.find(s.read().items, "Y").name, "renamed", "the shared file missed it");
+  fail = false;
+  await s.tick(1000);
+  assert.equal(s.find(s.read().items, "Y").name, "renamed", "the retried rewrite shows the save in the freeze view");
+});
+
+test("review 7 #3: a view save found at start whose import fails for a moment (a locked database) is retried, not left for the next edit", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  await s.mz.close();
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+  let fail = 1;
+  const realCommit = s.engine.commit.bind(s.engine);
+  s.engine.commit = async (i) => {
+    if (fail) {
+      fail--;
+      throw new Error("database is locked");
+    }
+    return realCommit(i);
+  };
+  const mz = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => mz.close());
+  await mz.start();
+  assert.equal(fail, 0, "the first try failed");
+  await s.clock.advance(2000, () => mz.idle());
+  assert.equal(s.find(await s.head(), "Y").name, "renamed");
+  assert.equal(JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8")).status, "confirmed");
+});
+
+for (const crash of [false, true])
+test(`review 7 #2: a displaced view save that failed after its receipt is finished by the next review${crash ? " after a restart" : ""}, not deleted as a copy`, async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("v", agent, { hooked: true });
+  const save = s.edited(s.read(rel), (its) => (its[1]!.name = "renamed"));
+  // the agent's save lands just as a re-print installs the view: the install moves it aside, and its review applies it
+  const realRename = fs.renameSync;
+  let landed = false;
+  t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (!landed && from === s.abs(rel)) {
+      landed = true;
+      s.writeAtomic(rel, save);
+    }
+    return realRename(from, to);
+  });
+  // storing the view row fails after the commit and the receipt: once, or until the app dies
+  let fail = crash ? Infinity : 1;
+  const realPut = s.engine.putMeta.bind(s.engine);
+  s.engine.putMeta = async (k, v) => {
+    if (fail && k[0] === "view" && s.engine.commits.length) {
+      fail--;
+      throw new Error("database is locked");
+    }
+    return realPut(k, v);
+  };
+  await s.mz.printView("v", agent, { hooked: true });
+  t.mock.restoreAll();
+  let mz = s.mz;
+  if (crash) {
+    await s.tick(1000); // its review applies it and fails at the view row, and its retries too
+    await s.mz.close(); // the app dies before the next review; the file stays in .carton/displaced
+    assert.equal(fs.readdirSync(path.join(s.bundle, ".carton", "displaced")).length, 1, "the save is still held");
+    fail = 0;
+    mz = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+    t.after(() => mz.close());
+    await mz.start();
+  }
+  await s.clock.advance(3000, () => mz.idle());
+  assert.ok(landed);
+  assert.equal(fail, 0, "the view row failed");
+  assert.equal(s.engine.commits.length, 1, "applied once");
+  assert.equal(s.find(await s.head(), "Y").name, "renamed");
+  assert.equal(await s.engine.getMeta(["attempt", rel]), undefined, "finished: its attempt settled");
+  assert.ok((await s.engine.getMeta<ViewRow>(["view", name]))?.lastChange, "the view row records the save's change");
+});
+
+test("review 7 #1: the materializer's installs stop when the install lock was taken over (it passes the lock's mine())", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20)]);
+  const owner = path.join(s.bundle, ".carton", "install.lock", "owner");
+  const real = fs.readFileSync;
+  let tookOver = false;
+  t.mock.method(fs, "readFileSync", (p: fs.PathOrFileDescriptor, o?: unknown) => {
+    if (p === owner && !tookOver) {
+      tookOver = true; // read by mine() right before the install's first rename
+      return JSON.stringify({ pid: 1, me: "successor" });
+    }
+    return (real as (p: fs.PathOrFileDescriptor, o?: unknown) => unknown)(p, o);
+  });
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  await assert.rejects(s.mz.printView("v", agent, { hooked: true }), { name: "InstallLockLost" });
+  t.mock.restoreAll();
+  assert.ok(tookOver);
+  assert.equal(fs.existsSync(s.abs(viewPath("v"))), false, "nothing installed");
+});
