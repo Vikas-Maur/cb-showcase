@@ -6,7 +6,8 @@
   "license": "UNLICENSED",
   "exports": {
     ".": "./src/index.ts",
-    "./hooks": "./src/hooks.ts"
+    "./hooks": "./src/hooks.ts",
+    "./hook-send": "./src/hook-send.ts"
   },
   "publishConfig": {
     "exports": {
@@ -17,6 +18,10 @@
       "./hooks": {
         "types": "./dist/hooks.d.ts",
         "default": "./dist/hooks.js"
+      },
+      "./hook-send": {
+        "types": "./dist/hook-send.d.ts",
+        "default": "./dist/hook-send.js"
       }
     }
   },

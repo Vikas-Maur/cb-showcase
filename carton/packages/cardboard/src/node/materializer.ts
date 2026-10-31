@@ -45,6 +45,8 @@ export interface HeldBase {
   baseDoc: Doc;
   baseSeq: number;
   causal: string[];
+  /** The cut this state was pinned on, when known: a freeze view belongs to it (B6). */
+  cut?: string;
 }
 
 export interface SaveResult {
@@ -54,6 +56,8 @@ export interface SaveResult {
   seq?: number;
   cards?: ConflictCard[];
   reason?: string;
+  /** The cut the commit went to (read once for it): a state built on the save belongs to that cut. */
+  cut?: string;
 }
 
 /** A pinned state: the ref token core prints (`<cut>@<seq>~<hash8>`), its cut, its seq, and its doc. */
@@ -62,6 +66,8 @@ export interface Pinned {
   branchId: string;
   seq: number;
   doc: Doc;
+  /** The cut pinned on (`MaterializerEngine.cut` when the pin was asked for). */
+  cut?: string;
 }
 
 /** What the materializer needs from the engine. `cartonMaterializerEngine` implements it over `Carton`. */
@@ -71,9 +77,10 @@ export interface MaterializerEngine {
   /**
    * Pins the head, or `doc` (a state not in the log: the freeze view) for `owner`. `seq` is the confirmed seq `doc`
    * was derived from, so a commit on it is checked against everything confirmed since (default: head); `causal`: the
-   * changes after `seq` that `doc` already holds (agent saves merged into a freeze view), never met again.
+   * changes after `seq` that `doc` already holds (agent saves merged into a freeze view), never met again. `cut`: the
+   * cut to pin on (default: the current one).
    */
-  pin(opts: { owner: string; doc?: Doc; seq?: number; causal?: string[]; ttlMs: number }): Promise<Pinned>;
+  pin(opts: { owner: string; cut?: string; doc?: Doc; seq?: number; causal?: string[]; ttlMs: number }): Promise<Pinned>;
   /** Releases every pin `owner` holds (a turn ended). */
   release(owner: string): Promise<void>;
   /** A printed ref -> its exact state and causal past. Throws "state unknown: re-print" when it can't (§4.4). */
@@ -83,6 +90,12 @@ export interface MaterializerEngine {
    * `id`, a commit whose id is already confirmed returns that confirmation (and its cards), never a second change.
    */
   commit(input: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string }; id?: string }): Promise<SaveResult>;
+  /**
+   * The confirmed changes on `cut` (default: the current one) after `seq` and before `until`, outside `skip`, newest
+   * first, read as they are asked for (a caller can stop early), each with the states just before and after it: whether
+   * a save repeated an edit of a change it never saw (rounds 13-15).
+   */
+  changesSince?(seq: number, o?: { cut?: string; until?: number; skip?: ReadonlySet<string> }): AsyncIterable<{ id: string; seq: number; before: Doc; after: Doc }>;
   /** A fresh change id, recorded before committing so a retry commits with the same id (dedup by id). */
   newChangeId?(): string;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
@@ -110,6 +123,11 @@ export interface MaterializerHost {
   toProject(doc: Doc, current: Project | null): Project;
   /** Three-way merge of docs; used to gather agents' saves into the freeze view (R8-01). */
   merge3(base: Doc, ours: Doc, theirs: Doc): Doc;
+  /**
+   * The changes from one doc to another, each as a comparable string (the same edit made from either side gives the
+   * same string). Finds a save that took in part of what the freeze hides; without it, such a save is merged as any.
+   */
+  changes?(from: Doc, to: Doc): string[];
   /** Hard and soft findings for the status sidecar, as 1.4.0's `// diagnostics:` lists them. */
   diagnose(saved: Doc, head: Doc): string[];
 }
@@ -216,6 +234,8 @@ interface PathState {
   failed: string[];
 }
 const KEEP_WRITTEN = 8;
+/** At most this many changes a save didn't see are read for it; past them it takes the exact path (round 15 #1). */
+const HIDDEN_SCAN = 256;
 const KEEP_STAMPS = 32;
 
 type Record_ = { t: number; path: string; [k: string]: unknown };
@@ -252,6 +272,11 @@ const push = <T>(list: T[], x: T, keep: number): void => {
 const refBodyOf = (p: { ref: string; branchId: string }): string => renderRev({ ref: p.ref, branchId: p.branchId }).slice(REV_PREFIX.length);
 const revOf = (body: string): Rev | null => findRev(REV_PREFIX + body)?.rev ?? null;
 /** Core's `StateUnknown` (code STATE_UNKNOWN), or the materializer's own "no exact base" refusals. */
+/**
+ * The changes a save could have repeated end at its commit's seq (inclusive: a commit that made no change, a save equal
+ * to what was already confirmed, returns the seq it found); its own change is skipped by id. Pending: no bound.
+ */
+const upTo = (res: SaveResult): number | undefined => (res.seq === undefined ? undefined : res.seq + 1);
 const isStateUnknown = (e: unknown): boolean => (e as { code?: string })?.code === "STATE_UNKNOWN" || /state unknown/i.test((e as Error)?.message ?? "");
 
 export class Materializer {
@@ -301,6 +326,8 @@ export class Materializer {
   readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
+  /** The cut `sharedRef` was pinned on. */
+  private sharedCut: string | undefined = undefined;
   private lastRemoteRewrite = -Infinity;
   private remoteTimer: unknown = null;
   private localTimer: unknown = null;
@@ -512,11 +539,60 @@ export class Materializer {
   private async freezeOnCurrentCut(moved = false, pinned?: HeldBase): Promise<void> {
     const cut = this.engine.cut?.() ?? null;
     if (!this.freeze.active || (!moved && cut === this.freeze.cut)) return;
-    const h = pinned ?? (await this.pinnedHead("shared-file"));
+    this.restartFreeze(await this.currentHead(pinned));
+  }
+  /** The freeze view restarts from `h`; it belongs to the cut `h` was pinned on (review 11 #1). */
+  private restartFreeze(h: HeldBase): void {
     this.freeze.view = h.baseDoc;
     this.freeze.baseSeq = h.baseSeq;
-    this.freeze.causal = [];
-    this.freeze.cut = cut;
+    this.freeze.causal = [...h.causal];
+    this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
+  }
+  /**
+   * Whether a save repeated an edit of a change its base doesn't hold: a confirmed change on `cut` after `seq`, outside
+   * `causal`, up to the save's own commit (`until`, exclusive), with an edit the save also made from its base (an agent saving the
+   * ripple a remote made, alone or with edits of its own). No causal past describes such a save's content exactly: it
+   * may hold all of such a change, part of it, or the net of several (a ripple made in two steps, undone and redone), and
+   * naming too few changes maps later saves through one again, too many skips a remap or a card (rounds 13-15). So a
+   * state built on such a save is the commit's own state instead (`commitState`), which core describes exactly. Past
+   * HIDDEN_SCAN changes, or when they can't be read, the answer is yes: the exact path is always safe.
+   */
+  private async repeatsHidden(base: Doc, saved: Doc, seq: number, causal: readonly string[], cut: string | undefined, until: number | undefined): Promise<boolean> {
+    if (!this.engine.changesSince || !this.host.changes) return false;
+    const own = new Set(this.host.changes(base, saved));
+    if (!own.size) return false;
+    let n = 0;
+    try {
+      for await (const c of this.engine.changesSince(seq, { ...(cut !== undefined ? { cut } : {}), ...(until !== undefined ? { until } : {}), skip: new Set(causal) })) {
+        if (++n > HIDDEN_SCAN) return true;
+        if (this.host.changes(c.before, c.after).some((e) => own.has(e))) return true;
+      }
+    } catch (e) {
+      this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: `reading the changes a save didn't see (taken as repeated): ${e instanceof Error ? e.message : String(e)}` });
+      return true;
+    }
+    return false;
+  }
+  /**
+   * The state a commit made, pinned for `owner` on the cut the commit went to (not the current one: another process may
+   * have switched since, round 15 #4); for a commit still pending (a shared cut offline), the optimistic head.
+   */
+  private async commitState(res: SaveResult, owner: string): Promise<Pinned> {
+    return this.engine.pin({ owner, ttlMs: 7 * DAY, ...(res.seq !== undefined ? { seq: res.seq } : {}), ...(res.cut !== undefined ? { cut: res.cut } : {}) });
+  }
+  /** Whether `h` was pinned on the current cut (or the engine has no cuts). */
+  private onCurrentCut(h: HeldBase): boolean {
+    return h.cut === undefined || h.cut === this.engine.cut?.();
+  }
+  /**
+   * Head pinned for the shared file on the cut that is current once pinned (`pinned`, if it is): a pin refreshes from
+   * the store and can find a cut another process switched to, so the head it returns is the old cut's (review 11 #1).
+   * Re-pinned a few times; a pin still behind is labelled with its own cut, so the next check restarts the freeze.
+   */
+  private async currentHead(pinned?: HeldBase): Promise<HeldBase> {
+    let h = pinned ?? (await this.pinnedHead("shared-file"));
+    for (let i = 0; i < 3 && !this.onCurrentCut(h); i++) h = await this.pinnedHead("shared-file");
+    return h;
   }
 
   /** Any `cb` call: windowless agents count as active for a while after it. */
@@ -605,13 +681,11 @@ export class Materializer {
     const f = this.frozenNow();
     if (f && !this.freeze.active) {
       // the freeze starts from what the shared file shows, and remembers the seq that state was derived from
-      const shown = this.sharedRef ? await this.resolveOrNull(this.sharedRef) : null;
-      const start = shown ?? (await this.pinnedHead("shared-file"));
+      // (only if it shows the current cut: a cut switched without telling this materializer starts from its head)
+      const cut = this.engine.cut?.();
+      const shown = this.sharedRef && this.sharedCut === cut ? await this.resolveOrNull(this.sharedRef) : null;
       this.freeze.active = true;
-      this.freeze.view = start.baseDoc;
-      this.freeze.baseSeq = start.baseSeq;
-      this.freeze.causal = [...start.causal];
-      this.freeze.cut = this.engine.cut?.() ?? null;
+      this.restartFreeze(shown ? { ...shown, ...(cut !== undefined ? { cut } : {}) } : await this.currentHead());
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
       this.freeze.view = null;
@@ -639,7 +713,7 @@ export class Materializer {
   /** Head, pinned for `owner`, as a held state with its seq. */
   private async pinnedHead(owner: string): Promise<HeldBase> {
     const p = await this.engine.pin({ owner, ttlMs: 7 * DAY });
-    return { baseDoc: p.doc, baseSeq: p.seq, causal: [] };
+    return { baseDoc: p.doc, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) };
   }
 
   // ------------------------------------------------------------------ Carton's writes
@@ -647,12 +721,7 @@ export class Materializer {
   /** `cb source print` with the app open: the shared file shows head; a freeze view restarts from it. */
   printShared(): Promise<string> {
     return this.run(async () => {
-      if (this.freeze.active) {
-        const h = await this.pinnedHead("shared-file");
-        this.freeze.view = h.baseDoc;
-        this.freeze.baseSeq = h.baseSeq;
-        this.freeze.causal = [];
-      }
+      if (this.freeze.active) this.restartFreeze(await this.currentHead());
       await this.writeSharedNow("print", true);
       return this.sharedRef!;
     });
@@ -687,10 +756,27 @@ export class Materializer {
     });
   }
 
+  /**
+   * A view whose save repeated an edit of a change its print didn't hold is printed again at the save's own commit (see
+   * `repeatsHidden`), with a new nonce: its next save's base is that exact state. The same print generation, sidecar and
+   * latest change: a late update for this save still reaches the sidecar. An agent's edit after it re-reads the file.
+   */
+  private async reprintView(view: string, row: ViewRow, res: SaveResult): Promise<void> {
+    const p = await this.commitState(res, row.pinOwner);
+    const nonce = printNonce();
+    const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
+    const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
+    await this.install(viewPath(view), text, row.printGen ?? 0);
+    Object.assign(row, { header, nonce, last: null });
+    await this.engine.putMeta(["view", view], row);
+  }
+
   private async writeSharedNow(cause: string, force = false): Promise<void> {
     await this.importUnseen(TIMELINE_FILE);
     await this.freezeOnCurrentCut();
-    const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, seq: this.freeze.baseSeq, causal: this.freeze.causal, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
+    // the freeze view only on the cut it belongs to (if the cut moved since, head until the next check restarts it)
+    const view = this.freeze.active && this.freeze.cut === (this.engine.cut?.() ?? null) ? this.freeze.view : null;
+    const pinned = view ? await this.engine.pin({ owner: "shared-view", doc: view, seq: this.freeze.baseSeq, causal: this.freeze.causal, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
     if (cause === "remote") this.lastRemoteRewrite = this.clock.now();
     const body = refBodyOf(pinned);
     const cur = await this.readFile(TIMELINE_FILE);
@@ -699,6 +785,7 @@ export class Materializer {
     const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
     await this.install(TIMELINE_FILE, text);
     this.sharedRef = body; // only once installed: a failed rewrite must not read as done
+    this.sharedCut = pinned.cut;
 
     this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
   }
@@ -760,10 +847,12 @@ export class Materializer {
     // project.json has one base: Carton's latest materialization of it. Only that state stays pinned for it (the
     // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
     // unpatched tools, rare, and get the latest view as their base).
+    const on = this.engine.cut?.();
     const head = await this.engine.head();
     const onDisk = await this.readEnvelope();
     const same = (x: unknown) => onDisk !== null && JSON.stringify(x) === JSON.stringify(onDisk);
-    if (!fresh && this.projectPin && cur && same({ ...env, project: this.host.toProject(head, cur) })) return;
+    // (not when the head read found a cut switch: that head is the old cut's, review 12 #1's class)
+    if (!fresh && this.projectPin && cur && on === this.engine.cut?.() && same({ ...env, project: this.host.toProject(head, cur) })) return;
     await this.engine.release("project-file");
     const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     const body = refBodyOf(p);
@@ -1256,8 +1345,16 @@ export class Materializer {
     const asBase = !name && !resumed && sameDoc(saved, baseDoc);
     // during a freeze, head is pinned once: the save is compared with, and the freeze restarted from, the same state
     // (a commit from another process landing in between must stay hidden, R8-01)
-    const frozenHead = !name && !resumed && !asBase && rel === TIMELINE_FILE && this.freeze.active ? await this.pinnedHead("shared-file") : null;
-    const asHead = !name && !resumed && !asBase && sameDoc(saved, frozenHead ? frozenHead.baseDoc : await this.engine.head());
+    const frozenHead = !name && !resumed && !asBase && rel === TIMELINE_FILE && this.freeze.active ? await this.currentHead() : null;
+    // a head-equal save is a no-op only against the current cut's head: if the cut is found switched while head is
+    // read (a pin or a read refreshes from the store; `currentHead` gave up re-pinning), the save is committed on the
+    // cut it lands on, as when the switch is seen a moment earlier (review 12 #1)
+    let asHead = false;
+    if (!name && !resumed && !asBase) {
+      const on = this.engine.cut?.();
+      const head = frozenHead ? frozenHead.baseDoc : await this.engine.head();
+      asHead = (frozenHead ? this.onCurrentCut(frozenHead) : on === this.engine.cut?.()) && sameDoc(saved, head);
+    }
     if (asBase || asHead) {
       // nothing to version: the file shows the state its header names, or head itself (another materializer's install
       // of carton.db's state, a takeover helper's while it held the lease, B11/B3; or a save that changed nothing). No
@@ -1327,8 +1424,21 @@ export class Materializer {
       const cut = this.freeze.cut;
       await this.freezeOnCurrentCut();
       if (cut === this.freeze.cut) {
-        this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
-        if (res.id && !this.freeze.causal.includes(res.id)) this.freeze.causal.push(res.id);
+        // a save that repeated an edit the freeze hides (an agent saving the ripple a remote made, alone or with edits of
+        // its own) holds that change, all of it, part of it or its net with others, which no causal past can say: the
+        // freeze restarts at this save's own commit, so it shows what was confirmed up to it and still hides what came
+        // after (R8-01; rounds 13-15). Read after the commit, so a retry and a change landing just before it are alike.
+        // A commit that went to another cut than the freeze's (a switch between them) restarts it there too; the next
+        // rewrite moves it to the current cut.
+        const own = res.id ? [res.id] : [];
+        const elsewhere = res.cut !== undefined && this.freeze.cut !== null && res.cut !== this.freeze.cut;
+        if (elsewhere || (await this.repeatsHidden(baseDoc, saved, this.freeze.baseSeq, [...this.freeze.causal, ...own], this.freeze.cut ?? undefined, upTo(res)))) {
+          const p = await this.commitState(res, "shared-view");
+          this.restartFreeze({ baseDoc: p.doc, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) });
+        } else {
+          this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
+          for (const id of own) if (!this.freeze.causal.includes(id)) this.freeze.causal.push(id);
+        }
       }
     }
     if (rel === TIMELINE_FILE || (name && this.freeze.active)) {
@@ -1341,15 +1451,24 @@ export class Materializer {
         this.retryWrite("shared"); // during a freeze nothing else would rewrite it until the turn ends
       }
     }
+    let reprint = false;
     if (name && row) {
       // the saved content's causal past: its base's, plus this save's own change
-      if (rev?.kind === "carton" && rev.nonce === row.nonce) row.last = { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal: res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal } };
+      if (rev?.kind === "carton" && rev.nonce === row.nonce) {
+        // the next save's base is this save: its base's causal past and its own change. A save that repeated an edit of
+        // a change its print didn't hold has no such past (see repeatsHidden): the view is printed again at the save's
+        // own commit below, and the next save's base is that exact state (review 14 #4, round 15 #2, #3)
+        const causal = res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal;
+        reprint = await this.repeatsHidden(baseDoc, saved, held.baseSeq, causal, res.cut, upTo(res));
+        row.last = reprint ? null : { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal } };
+      }
       row.lastChange = res.id ?? null;
       await this.engine.putMeta(["view", name], row);
       const head = await this.engine.head();
       const status: StatusBody["status"] = cards.length ? "conflicts" : res.status;
       const pinned = await this.engine.pin({ owner: row.pinOwner, ttlMs: 7 * DAY });
       await this.writeStatus(name, { status, seq: res.seq ?? null, conflicts: cards, diagnostics: this.host.diagnose(saved, head), ref: refBodyOf(pinned), ...(res.reason ? { error: res.reason } : {}) }, res.id ?? null, { immediate: true });
+      if (reprint) await this.reprintView(name, row, res);
     }
     this.onHeadChange("local");
     await settle();

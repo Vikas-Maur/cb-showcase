@@ -62,11 +62,25 @@ test("another process's write right after the app's own cut switch is reported",
   t.after(() => f.stop());
   await f.check();
   await p.c.switchTo(p.a.id); // the app switches itself
+  f.served(p.a.id); // and its listeners know (the holder says so for a switch it served and printed)
   await p.other.commit({ cut: p.a.id, ops: [set("c1", "name", "external")] });
   await f.check();
   assert.deepEqual(heads, [p.a.id]);
   await f.check();
   assert.deepEqual(heads, [p.a.id], "once");
+});
+
+test("a switch made on the followed handle that nobody announced is told as a cut switch at the next look, once (Stage G round 5)", async (t) => {
+  const p = await pair(t);
+  const told: string[] = [];
+  const f = followStore(p.c, p.s, { intervalMs: 0, onHead: (cut) => { told.push(`head:${cut}`); }, onCut: (cut) => { told.push(`cut:${cut}`); } })!;
+  t.after(() => f.stop());
+  await f.check();
+  await p.c.switchTo(p.a.id);
+  await p.other.commit({ cut: p.a.id, ops: [set("c1", "name", "external")] });
+  await f.check();
+  await f.check();
+  assert.deepEqual(told, [`cut:${p.a.id}`], "the whole cut (its head included), once");
 });
 
 test("the app's own commit is never taken for another process's, though an unrelated write moved the stamp", async (t) => {

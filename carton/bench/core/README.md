@@ -103,3 +103,17 @@ disagree on the head. It runs on store-sqlite (a real `carton.db`) where that pa
 branch), else on store-memory, and says which. Opening still reads every row (History holds the log); keyframes remove
 the replay of their ops.
 
+## head.ts: head() cost, builds against each other (the freeze of documents handed out)
+
+```sh
+git worktree add /tmp/a fd07cc8 && git worktree add /tmp/c <commit>     # before the freeze (a2d2f04); the commit under test
+(cd /tmp/a/carton && npm ci) && (cd /tmp/c/carton && npm ci)
+node --expose-gc /tmp/c/carton/bench/core/head.ts A=/tmp/a/carton C=/tmp/c/carton
+```
+
+Each argument is `<name>=<the carton/ folder of a checkout with npm ci done>`; the builds load in one process, each its
+own module instance, interleaved with their order reversed every other run. N (default "1000,10000" items), RUNS (7),
+CALLS (200), OUT (the JSON, default `./head-bench-<ms>.json`). On the shared dev box wrap it in
+`flock /tmp/gfv-race/cpu.lock`. Per size: a local cut on `genDoc(N, 42)` with 20 commits; "repeat" times CALLS
+`head()` calls in a row (the materializer's and the UI's hot path), "after-commit" times the first `head()` after each
+of CALLS one-rename commits. It prints ms per call for every run and the median, with the load average before and after.

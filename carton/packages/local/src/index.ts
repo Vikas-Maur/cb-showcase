@@ -17,6 +17,7 @@ export * from "./follow.ts";
 export { nodeHasher } from "./hasher.ts";
 export * from "./notices.ts";
 export * from "./hook-cli.ts";
+export * from "./hook-send.ts";
 export * from "./materializer-engine.ts";
 export { openLocal, readProjectId, nextChangeId, defaultFactory, CartonHolderEngine } from "./open.ts";
 export type { LocalOptions, LocalCarton, HolderEngineOptions } from "./open.ts";

@@ -14,6 +14,12 @@ import { EngineThread } from "../src/engine-thread.ts";
 import { ControlServer } from "../src/ipc.ts";
 import { holderSocketPath } from "../src/holder.ts";
 import { nudgeHolder } from "../src/client.ts";
+import { mkdtempSync } from "node:fs";
+import { Carton } from "@carton/core";
+import { openSqliteStore } from "@carton/store-sqlite";
+import { CartonHolderEngine } from "../src/open.ts";
+import type { ViewPrinter } from "../src/writes.ts";
+import { scratch } from "./support/scratch.ts";
 import { adapter, bundle, doc0 } from "./support/real.ts";
 
 const here = (f: string) => fileURLToPath(new URL(f, import.meta.url));
@@ -100,4 +106,40 @@ test("B11: a cb write committed in its own process nudges the holder it passed o
   assert.equal(again.empty, true, JSON.stringify(again));
   await sleep(300);
   assert.equal(nudges.length, 1, "no nudge for an empty commit");
+});
+
+test("B11: the follower tells cardboard's materializer through onExternalHeadChange, on every other connection's write", async (t) => {
+  const path = join(mkdtempSync(join(scratch(), "b11-ext-")), "carton.db");
+  const s = await openSqliteStore(path);
+  const c = await Carton.open({ adapter, store: s, actor: me, init: { doc: doc0() } });
+  const alt = await c.fork("Alt");
+  const os = await openSqliteStore(path);
+  const other = await Carton.open({ adapter, store: os, actor: agent });
+  const calls: string[] = [];
+  const mz: ViewPrinter = {
+    printView: async (name) => ({ name, path: name, ref: name }),
+    onCb: async () => void calls.push("cb"),
+    onHeadChange: (k) => void calls.push(`head:${k}`),
+    onCutSwitch: (cut) => void calls.push(`switch:${cut === alt.id ? "alt" : cut}`),
+    onExternalHeadChange: async () => { calls.push("external"); return "head"; },
+  };
+  const engine = new CartonHolderEngine(c, { materializer: mz, follow: { intervalMs: 0 } });
+  t.after(async () => { await engine.close(); await other.close(); await c.close(); await os.close(); await s.close(); });
+  await engine.nudge();
+  assert.deepEqual(calls, [], "the first look only records where carton.db is");
+  // another process's change on the current cut: a cb call happened, and the materializer reads head itself
+  await other.commit({ author: agent, ops: [set("c1", "name", "elsewhere")] });
+  await engine.nudge();
+  assert.deepEqual(calls.splice(0), ["cb", "external"]);
+  // a write elsewhere (another cut): the materializer looks (one head read; nothing when it shows that head), no freeze
+  await other.commit({ author: agent, cut: alt.id, ops: [set("c2", "name", "on alt")] });
+  await engine.nudge();
+  assert.deepEqual(calls.splice(0), ["external"]);
+  // a cut switch: told as a switch
+  await other.switchTo(alt.id);
+  await engine.nudge();
+  assert.deepEqual(calls.splice(0), ["switch:alt"]);
+  // nothing new: nothing told
+  await engine.nudge();
+  assert.deepEqual(calls, []);
 });
