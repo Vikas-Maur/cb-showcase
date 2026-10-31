@@ -53,3 +53,61 @@ test("a part replaced while its record write fails is not listed with a dead eta
   assert.equal(info.size, R2_MIN_PART_SIZE + 10);
   await store.delete("fault/part-replace");
 });
+
+// A bucket whose put of a part record can be held until released, to replay an exact interleaving.
+function holdable(real: R2Bucket) {
+  const holds: { match: (k: string) => boolean; gate: Promise<void> }[] = [];
+  const bucket = new Proxy(real, {
+    get(t, prop) {
+      if (prop === "put")
+        return async (k: string, v: unknown, o: unknown) => {
+          const h = holds.find((x) => x.match(k));
+          if (h) {
+            holds.splice(holds.indexOf(h), 1);
+            await h.gate;
+          }
+          return (t.put as (...a: unknown[]) => unknown)(k, v, o);
+        };
+      const val = Reflect.get(t, prop);
+      return typeof val === "function" ? val.bind(t) : val;
+    },
+  }) as R2Bucket;
+  const hold = (match: (k: string) => boolean) => {
+    let release!: () => void;
+    holds.push({ match, gate: new Promise<void>((r) => (release = r)) });
+    return () => release();
+  };
+  return { bucket, hold };
+}
+
+test("two overlapping uploads of one part never leave a record naming bytes R2 doesn't hold", async () => {
+  const { bucket, hold } = holdable(proxy.env.BLOBS);
+  const store = r2BlobStore(bucket);
+  const up = await store.createMultipart("fault/overlap");
+  const releaseA = hold((k) => /\/p00001$/.test(k)); // A's record write waits after A's part is in R2
+  const a = up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(1));
+  await new Promise((r) => setTimeout(r, 300));
+  const b = await up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(2)); // B replaces it, record and all
+  releaseA();
+  await assert.rejects(a, /uploaded twice at once/);
+  const listed = await up.listParts();
+  // either unlisted (sent again on resume) or listed with the etag R2 really holds (B's)
+  assert.ok(listed.length === 0 || listed[0]!.etag === b.etag, `stale record: ${JSON.stringify(listed)}`);
+  const again = listed.length ? b : await up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(2));
+  const last = await up.uploadPart(2, new Uint8Array(10));
+  await up.complete([again, last]);
+  const got = (await store.get("fault/overlap", { offset: 0, length: 4 }))!;
+  assert.deepEqual([...got], [2, 2, 2, 2]);
+  await store.delete("fault/overlap");
+});
+
+test("uploadPart through another key touches nothing of the upload", async () => {
+  const store = r2BlobStore(proxy.env.BLOBS);
+  const up = await store.createMultipart("fault/victim");
+  const p1 = await up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(7));
+  const other = await store.resumeMultipart("fault/attacker", up.uploadId);
+  await assert.rejects(other.uploadPart(1, new Uint8Array(10)));
+  assert.deepEqual((await up.listParts()).map((p) => p.etag), [p1.etag], "the victim's part record survived");
+  await up.complete([p1]);
+  await store.delete("fault/victim");
+});

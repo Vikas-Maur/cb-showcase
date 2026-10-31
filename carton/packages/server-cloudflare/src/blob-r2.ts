@@ -174,16 +174,26 @@ export class R2BlobStore implements BlobStore {
       uploadId,
       async uploadPart(partNumber, data) {
         checkPartNumber(partNumber);
-        // The marker goes before the part and comes back after it: if anything fails in between, the part is simply
-        // not listed and a resuming client sends it again. Replacing a part the other way round could leave the old
-        // marker naming an etag R2 no longer has. (R2 deletes are free; R2 refuses parts of an aborted, completed or
-        // unknown upload itself, 10024.)
+        // the upload must belong to this key before anything is touched: an id alone must not reach another
+        // project's upload or its part records
+        await store.#checkUpload(key, uploadId);
+        // A part's record is removed before the part is sent and created after it, create-only. A failure in between
+        // leaves the part unlisted (a resuming client sends it again). If the create finds a record already there,
+        // another upload of the same part overlapped this one, and nothing tells which bytes R2 kept: the record
+        // goes, the part is unlisted, and this call fails, so the client sends it once more. A record never names
+        // bytes R2 doesn't hold. (R2 deletes are free; R2 refuses parts of an aborted, completed or unknown upload
+        // itself, 10024.)
         const marker = `${UPLOADS}${uploadId}/p${String(partNumber).padStart(5, "0")}`;
         await b.delete(marker);
         const part = await b.resumeMultipartUpload(key, uploadId).uploadPart(partNumber, data).catch(translate);
-        await b.put(marker, null, {
+        const made = await b.put(marker, null, {
+          onlyIf: { etagDoesNotMatch: "*" },
           customMetadata: { partNumber: String(partNumber), etag: part.etag, size: String(data.byteLength) },
         });
+        if (!made) {
+          await b.delete(marker);
+          throw new BlobError("InvalidPart", `part ${partNumber} was uploaded twice at once; upload it again`);
+        }
         return { partNumber, etag: part.etag };
       },
       async listParts() {
