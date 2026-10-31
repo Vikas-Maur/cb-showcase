@@ -17,8 +17,9 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 
 // Windows reports a file that another process holds open as busy: rename, link and unlink fail with EPERM, EBUSY or
-// EACCES until the holder closes it. The app's rename-retry helper retries those; so do we. These never fire on Linux
-// or macOS for the calls below.
+// EACCES until the holder closes it. A name that was just deleted while something (Defender, the indexer) still had it
+// open is "delete pending" for a moment, and every call on it, stat and mkdir too, fails with EPERM or EACCES until
+// then. The app's rename-retry helper retries those; so do we. These never fire on Linux or macOS for the calls below.
 const BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
 const sleeper = new Int32Array(new SharedArrayBuffer(4));
 const sleepMs = (ms: number): void => {
@@ -50,9 +51,9 @@ export function stampOf(s: fs.BigIntStats): string {
   return `${s.ino}:${s.size}:${s.mtimeNs}`;
 }
 
-export function statStamp(file: string): string | null {
+export function statStamp(file: string, counter?: BusyCounter): string | null {
   try {
-    return stampOf(fs.statSync(file, { bigint: true }));
+    return stampOf(retryBusy(() => fs.statSync(file, { bigint: true }), counter));
   } catch (e) {
     if (errCode(e) === "ENOENT") return null;
     throw e;
@@ -122,7 +123,7 @@ export function displaceThenInstall(target: string, tmp: string, nextSlot: () =>
 function installWithoutLinks(target: string, tmp: string, nextSlot: () => string, opts: InstallOptions): InstallResult {
   const displaced: string[] = [];
   const t0 = now();
-  const stamp = statStamp(target);
+  const stamp = statStamp(target, opts.counter);
   if (stamp !== null && stamp !== opts.lastStamp) {
     const slot = nextSlot();
     try {
