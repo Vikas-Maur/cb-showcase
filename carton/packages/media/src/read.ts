@@ -85,6 +85,11 @@ export class MediaReader implements RangeSource {
   readonly #present = new Set<string>();
   readonly #inflight = new Map<string, Promise<Uint8Array>>();
 
+  /** The range cache it reads through, if any (a stream reader keeps its entries there too). */
+  get cache(): LeafCache | undefined {
+    return this.#o.cache;
+  }
+
   constructor(opts: MediaReaderOptions) {
     this.#o = opts;
   }

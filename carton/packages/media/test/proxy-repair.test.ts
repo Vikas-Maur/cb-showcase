@@ -10,7 +10,8 @@ import { nodeHasher } from '../src/node/node-hasher.ts';
 import { closeHashWorkers } from '../src/node/hash-file.ts';
 import { shareMedia } from '../src/node/share.ts';
 import { MediaReader } from '../src/read.ts';
-import { claimProxyStream, ProxyStreamWriter, usableProxy } from '../src/stream.ts';
+import { claimProxyStream, ProxyStreamReader, ProxyStreamWriter, usableProxy } from '../src/stream.ts';
+import { startRangeServer } from '../src/node/range-server.ts';
 import { CountingMemoryStore } from '../src/testing.ts';
 import { MemoryUploadStateStore, uploadMedia } from '../src/upload.ts';
 
@@ -30,16 +31,28 @@ async function stream(store: CountingMemoryStore) {
   return { writer, part };
 }
 
-test('a tool-reported damaged part makes a live stream replaceable (finding 1)', async () => {
+test('a part a tool found damaged through the playlist makes a live stream replaceable (finding 1; S5-7: no listing)', async () => {
   const store = new CountingMemoryStore();
   const { writer, part } = await stream(store);
   store.objects.get(mediaKey(part.hash))![0] ^= 255;
-  const tool = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).toolSource();
-  await assert.rejects(async () => { for await (const _ of tool.read(part.hash, 0, part.size)); }, { name: 'LeafMismatchError' });
-  assert.ok(store.objects.has(damagedKey(part.hash)));
+  const media = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 });
+  const reader = new ProxyStreamReader({ store, media, id: writer.id });
+  const server = await startRangeServer({
+    source: media.toolSource(),
+    playlist: (id, urlFor) => reader.playlist(urlFor),
+    reportDamage: (_stream, hash) => reader.reportPartDamage(hash),
+  });
+  try {
+    const list = await (await fetch(server.playlistUrl(writer.id))).text();
+    const url = list.split("\n").find((l) => l.includes(part.hash))!;
+    assert.equal((await fetch(url)).status, 502);
+  } finally {
+    await server.close();
+  }
+  assert.ok(store.objects.has(damagedKey(writer.id)), 'reported against the stream');
+  store.list = async () => assert.fail('the reuse check lists nothing');
   assert.equal(await usableProxy(store, src, 'p1'), null, 'must not reuse corrupt live stream');
 });
-
 test('a reported proxy is not kept when its pointer lookup fails (finding 2)', async () => {
   const store = new CountingMemoryStore();
   const bytes = new Uint8Array([10, 11, 12]);

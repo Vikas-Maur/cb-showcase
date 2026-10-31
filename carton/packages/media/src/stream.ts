@@ -21,6 +21,7 @@ import type { BlobStore, Hasher } from "./contracts.ts";
 import { bytesSource, hashSource } from "./hash.ts";
 import { damagedKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
 import type { MediaStat, RangeSource } from "./range-source.ts";
+import type { LeafCache } from "./cache.ts";
 import type { MediaReader } from "./read.ts";
 import { uploadMedia, type UploadOptions } from "./upload.ts";
 
@@ -41,8 +42,8 @@ export interface StreamEnd {
   size: number;
   at: number;
   /**
-   * The hashes of its parts, init first, then the segments in order: lets a check for damage reports on its parts
-   * read one entry instead of every segment's. Absent in ends written before it was added.
+   * The hashes of its parts, init first, then the segments in order: the whole stream's content in one entry. Absent in
+   * ends written before it was added.
    */
   parts?: string[];
 }
@@ -61,7 +62,10 @@ async function putOnce(store: BlobStore, key: string, value: unknown): Promise<v
 
 async function getJson(store: BlobStore, key: string): Promise<Record<string, unknown> | null> {
   const b = await store.get(key);
-  if (!b) return null;
+  return b ? parseJson(b) : null;
+}
+
+function parseJson(b: Uint8Array): Record<string, unknown> | null {
   try {
     const v = JSON.parse(fromUtf8.decode(b)) as unknown;
     return v && typeof v === "object" ? (v as Record<string, unknown>) : null;
@@ -185,6 +189,11 @@ export interface ProxyStreamReaderOptions {
   maxPollMs?: number;
   /** Report a segment that never verifies as damaged (bad/<stream>), so the owner's next share makes a new stream. */
   reportDamage?: boolean;
+  /**
+   * Where the stream's entries are kept once read, beside the segments' leaves, so a stream played once replays with
+   * the store unreachable (e2e S5-6). Entries are written once, so a kept one is never stale. Default: `media`'s cache.
+   */
+  cache?: LeafCache;
 }
 
 export type PlayedPart = { part: "init"; bytes: Uint8Array } | { part: "segment"; segment: StreamSegment; bytes: Uint8Array };
@@ -220,13 +229,32 @@ export class ProxyStreamReader {
     this.id = o.id;
   }
 
+  get #cache(): LeafCache | undefined {
+    return this.#o.cache ?? this.#o.media.cache;
+  }
+
+  /** An entry: from the cache, else from the store (and then kept). Absent entries aren't kept: they may yet appear. */
+  async #entry(key: string): Promise<Record<string, unknown> | null> {
+    const kept = await this.#kept(key);
+    if (kept) return kept;
+    const b = await this.#o.store.get(key);
+    const v = b && parseJson(b);
+    if (v) await this.#cache?.putEntry?.(key, b).catch(() => {});
+    return v ?? null;
+  }
+
+  async #kept(key: string): Promise<Record<string, unknown> | null> {
+    const b = await this.#cache?.getEntry?.(key).catch(() => null);
+    return b ? parseJson(b) : null;
+  }
+
   async initPart(): Promise<StreamPart | null> {
-    this.#init ??= asPart(await getJson(this.#o.store, streamInitKey(this.id)));
+    this.#init ??= asPart(await this.#entry(streamInitKey(this.id)));
     return this.#init;
   }
 
   async end(): Promise<StreamEnd | null> {
-    this.#end ??= asEnd(await getJson(this.#o.store, streamEndKey(this.id)));
+    this.#end ??= asEnd(await this.#entry(streamEndKey(this.id)));
     return this.#end;
   }
 
@@ -239,10 +267,13 @@ export class ProxyStreamReader {
   }
 
   async #fill(index: number): Promise<StreamSegment | null> {
+    // A kept end says where the stream stops, without asking the store (which may be unreachable) for one more entry.
+    this.#end ??= asEnd(await this.#kept(streamEndKey(this.id)));
     // Entries land in order, so fetch the ones before it first: the cache stays a prefix.
     while (this.#segments.length <= index) {
       const i = this.#segments.length;
-      const seg = asSegment(await getJson(this.#o.store, streamSegmentKey(this.id, i)), i);
+      if (this.#end && i >= this.#end.segments) return null;
+      const seg = asSegment(await this.#entry(streamSegmentKey(this.id, i)), i);
       if (!seg) return null;
       this.#segments.push(seg);
     }
@@ -274,6 +305,17 @@ export class ProxyStreamReader {
       await sleep(wait, signal);
       wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
     }
+  }
+
+  /**
+   * A part of this stream failed verification where it was read as a plain object (a tool following the playlist's
+   * segment URLs): report the stream, so the next share makes a new one. Ignored, returning false, for a hash that
+   * isn't one of its parts.
+   */
+  async reportPartDamage(hash: string): Promise<boolean> {
+    const mine = (await this.initPart())?.hash === hash || (await this.known()).some((s) => s.hash === hash);
+    if (mine) await this.#reportDamage({ hash });
+    return mine;
   }
 
   async #reportDamage(what: Record<string, unknown>): Promise<void> {
@@ -380,7 +422,14 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
       for (const p of l.parts) {
         const from = Math.max(offset, at);
         const to = Math.min(end, at + p.size);
-        if (from < to) yield* opts.media.read(p.hash, from - at, to - from, signal);
+        if (from < to) {
+          try {
+            yield* opts.media.read(p.hash, from - at, to - from, signal);
+          } catch (e) {
+            if ((e as Error)?.name === "LeafMismatchError") await r.reportPartDamage(p.hash).catch(() => false);
+            throw e;
+          }
+        }
         at += p.size;
         if (at >= end) break;
       }
@@ -479,55 +528,39 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     if ((await store.head(damagedKey(p.hash))) !== null) return true;
     return (await store.head(mediaKey(p.hash)))?.size !== p.size;
   }
+  // A damaged part is reported against its stream wherever it is read as part of one (play, the playlist's segment
+  // URLs, a whole-stream read): one HEAD, no listing, so the check works through any store (e2e S5-7).
   if ((await store.head(damagedKey(p.stream))) !== null) return true;
-  // Finished: kept unless a part was reported (its end lists them).
-  const end = await getJson(store, streamEndKey(p.stream));
-  if (end !== null) return partDamaged(store, p.stream, asEnd(end));
-  // Live: a tool reading its segments through the playlist reports bad/<hash> too (its entries are read only then).
-  if (await partDamaged(store, p.stream, null)) return true;
+  if ((await store.head(streamEndKey(p.stream))) !== null) return false;
   // Live if anything happened lately: the newest entry, or the claim itself.
+  const newest = await newestEntry(store, p.stream);
   let latest = p.at;
-  // Entry keys sort in segment order; stores list a page at a time.
-  let newest: string | undefined;
-  let cursor: string | undefined;
-  do {
-    const page = await store.list(`ps/${p.stream}/s/`, { cursor });
-    for (const b of page.blobs) if (newest === undefined || b.key > newest) newest = b.key;
-    cursor = page.cursor;
-  } while (cursor);
-  if (newest) {
-    const v = await getJson(store, newest);
+  if (newest !== null) {
+    const v = await getJson(store, streamSegmentKey(p.stream, newest));
     if (v && isCount(v.at)) latest = Math.max(latest, v.at);
   }
   return now - latest > staleMs;
 }
 
 /**
- * Whether a reader reported one of the stream's parts damaged: a tool reading a segment through the range server's
- * /m/<hash> writes bad/<hash>, not bad/<stream>. Reports are rare (an object's goes once an upload replaces it, a
- * stream's once its pointer is taken over), so list them first; then the end entry says which are this stream's.
+ * The index of a stream's newest segment entry, or null before the first. Entries are written in order without gaps,
+ * so HEADs find it: doubling until one is missing, then halving (about 2·log2(n) of them), with no listing.
  */
-async function partDamaged(store: BlobStore, stream: string, end: StreamEnd | null): Promise<boolean> {
-  const bad = new Set<string>();
-  let cursor: string | undefined;
-  do {
-    const page = await store.list("bad/", { cursor });
-    for (const b of page.blobs) bad.add(b.key.slice(4));
-    cursor = page.cursor;
-  } while (cursor);
-  if (bad.size === 0) return false;
-  if (end?.parts) return end.parts.some((h) => bad.has(h));
-  // A live stream, or an end written before it listed its parts: read the entries.
-  const init = await getJson(store, streamInitKey(stream));
-  if (init && bad.has(init.hash as string)) return true;
-  cursor = undefined;
-  do {
-    const page = await store.list(`ps/${stream}/s/`, { cursor });
-    for (const b of page.blobs) {
-      const v = await getJson(store, b.key);
-      if (v && bad.has(v.hash as string)) return true;
-    }
-    cursor = page.cursor;
-  } while (cursor);
-  return false;
+async function newestEntry(store: BlobStore, stream: string): Promise<number | null> {
+  const has = async (i: number) => (await store.head(streamSegmentKey(stream, i))) !== null;
+  if (!(await has(0))) return null;
+  let lo = 0; // present
+  let hi = 1; // probed next
+  const MAX = 999_999;
+  while (hi <= MAX && (await has(hi))) {
+    lo = hi;
+    hi = Math.min(MAX + 1, hi * 2);
+  }
+  // lo is present, hi is missing (or past the last possible index).
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (await has(mid)) lo = mid;
+    else hi = mid;
+  }
+  return lo;
 }

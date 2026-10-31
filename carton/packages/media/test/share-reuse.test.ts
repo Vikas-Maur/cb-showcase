@@ -13,6 +13,7 @@ import { CountingMemoryStore } from "../src/testing.ts";
 import { uploadMedia } from "../src/upload.ts";
 import { closeHashWorkers } from "../src/node/hash-file.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
+import { startRangeServer } from "../src/node/range-server.ts";
 import { shareMedia, type Segmenter, type ShareMediaOptions } from "../src/node/share.ts";
 import { scratchDir } from "./helpers.ts";
 
@@ -104,18 +105,28 @@ test("a whole-object proxy reported damaged is made and uploaded again (finding 
   assert.deepEqual([...ok], [...bytes]);
 });
 
-test("a segment a tool found damaged gets the stream made again, by a fresh share and a re-share (finding 8)", async () => {
+test("a segment a tool found damaged gets the stream made again, by a fresh share and a re-share (finding 8; S5-7)", async () => {
   const store = new CountingMemoryStore();
   const o = await options(store);
   const first = await shareMedia(o);
   const id = first.record.proxy!.stream!;
-  const seg0 = (await new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher }), id }).segment(0))!;
+  const media = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 });
+  const reader = new ProxyStreamReader({ store, media, id });
+  const seg0 = (await reader.segment(0))!;
   store.objects.get(mediaKey(seg0.hash))![0] ^= 255;
-  const tool = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).toolSource();
-  await assert.rejects(async () => {
-    for await (const _ of tool.read(seg0.hash, 0, seg0.size));
-  }, { name: "LeafMismatchError" });
-  assert.ok(store.objects.has(damagedKey(seg0.hash)), "the tool's reader reported the segment");
+  // A tool following the stream's playlist on the range server.
+  const server = await startRangeServer({
+    source: media.toolSource(),
+    playlist: (_id, urlFor) => reader.playlist(urlFor),
+    reportDamage: (_stream, hash) => reader.reportPartDamage(hash),
+  });
+  try {
+    const list = await (await fetch(server.playlistUrl(id))).text();
+    assert.equal((await fetch(list.split("\n").find((l) => l.includes(seg0.hash))!)).status, 502);
+  } finally {
+    await server.close();
+  }
+  assert.ok(store.objects.has(damagedKey(id)), "the stream is reported");
   const before = runs;
   const again = await shareMedia({ ...o, record: first.record });
   assert.equal(runs, before + 1);
@@ -169,4 +180,20 @@ test("a store that can't answer the proxy check doesn't block the rest of the sh
   const r = await shareMedia({ ...o, record: { ...o.record, hash: await originalHash(), proxy }, local: { ...o.local, t1: { poster } }, policy: { originals: false, proxies: false } });
   assert.ok(r.record.t1?.poster, "the poster went up");
   assert.deepEqual(r.record.proxy, proxy, "the record's proxy is left as it was");
+});
+
+test("sharing the same clip again works through a store with no list (e2e S5-7)", async () => {
+  const store = new CountingMemoryStore();
+  store.list = async () => {
+    throw new Error("the host HTTP API has no list");
+  };
+  const o = await options(store);
+  const first = await shareMedia(o);
+  const before = runs;
+  const again = await shareMedia({ ...o, record: first.record });
+  const teammate = await shareMedia(o);
+  assert.equal(runs, before, "reused, not encoded again");
+  assert.equal(again.record.proxy?.stream, first.record.proxy?.stream);
+  assert.equal(teammate.record.proxy?.stream, first.record.proxy?.stream);
+  assert.deepEqual(Object.keys(teammate.record.proxy!).sort(), ["encoder", "profile", "size", "stream"]);
 });
