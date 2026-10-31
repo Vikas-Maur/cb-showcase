@@ -12,6 +12,20 @@ export interface LeafCache {
   putLeaf(hash: string, leaf: number, bytes: Uint8Array): Promise<void>;
   getManifest(hash: string): Promise<Uint8Array | null>;
   putManifest(hash: string, bytes: Uint8Array): Promise<void>;
+  /**
+   * A segmented proxy's entries (stream.ts: `ps/<stream>/init`, `/s/<n>`, `/end`, by store key), kept like manifests so
+   * a stream played once replays offline (e2e S5-6). Each is written once in the store, so a kept one is never stale.
+   * Optional: a cache without them just doesn't keep streams' entries.
+   */
+  getEntry?(key: string): Promise<Uint8Array | null>;
+  putEntry?(key: string, bytes: Uint8Array): Promise<void>;
+}
+
+/** `ps/<stream>/init`, `ps/<stream>/end`, `ps/<stream>/s/<000000>`: the stream id, and a file-name-safe entry name. */
+export function streamEntryName(key: string): { stream: string; name: string } {
+  const m = /^ps\/([0-9a-f]{64})\/(init|end|s\/\d{6})$/.exec(key);
+  if (!m) throw new TypeError(`not a stream entry key: ${key}`);
+  return { stream: m[1], name: `entry-${m[2].replace("/", "-")}` };
 }
 
 /** Leaves in memory, least recently used dropped first once over `maxBytes`. Manifests are small and kept. */
@@ -69,5 +83,15 @@ export class MemoryLeafCache implements LeafCache {
 
   async putManifest(hash: string, bytes: Uint8Array): Promise<void> {
     this.#manifests.set(hash, bytes);
+  }
+
+  readonly #entries = new Map<string, Uint8Array>();
+  async getEntry(key: string): Promise<Uint8Array | null> {
+    streamEntryName(key);
+    return this.#entries.get(key) ?? null;
+  }
+  async putEntry(key: string, bytes: Uint8Array): Promise<void> {
+    streamEntryName(key);
+    this.#entries.set(key, copyBytes(bytes));
   }
 }

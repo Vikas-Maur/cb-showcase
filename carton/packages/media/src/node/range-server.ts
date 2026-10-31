@@ -44,6 +44,12 @@ export interface RangeServerOptions {
    * `urlFor` gives the URL of each segment on this server (/m/<hash>), so a tool follows the stream while it uploads.
    */
   playlist?: (id: string, urlFor: (hash: string) => string, signal: AbortSignal) => Promise<string | null>;
+  /**
+   * A segment read through a playlist's URL (which names its stream) failed verification: report the stream, so the
+   * next share makes a new one (e2e S5-5/S5-7: the reuse check reads bad/<stream>, it can't list part reports). Wire
+   * to `ProxyStreamReader.reportPartDamage`, which ignores a hash that isn't one of the stream's parts.
+   */
+  reportDamage?: (stream: string, hash: string) => Promise<unknown>;
 }
 
 export interface RangeRequestInfo {
@@ -100,7 +106,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   };
 
   let hostOk = (_host: string | undefined): boolean => false; // set once the port is known
-  let mediaUrl = (_hash: string, _ext?: string): string => ""; // likewise
+  let mediaUrl = (_hash: string, _ext?: string, _stream?: string): string => ""; // likewise
 
   // Responses not closed yet. close() waits for them, so once it resolves every read it started has been told to abort
   // and the caller can shut the source down. (onRequest waits for the reads themselves to end.)
@@ -157,19 +163,22 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   };
 
   const respond = async (req: IncomingMessage, res: ServerResponse, ac: AbortController, info: RangeRequestInfo): Promise<void> => {
+    let ofStream = ""; // the stream a playlist's segment URL names (s=)
     try {
       if (!hostOk(req.headers.host)) return reply(res, 403, CLOSE);
       const url = req.url ?? "";
       const q = url.indexOf("?");
       const path = q < 0 ? url : url.slice(0, q);
-      if (!tokenOk(q < 0 ? null : new URLSearchParams(url.slice(q + 1)).get("t"))) return reply(res, 403, CLOSE);
+      const params = new URLSearchParams(q < 0 ? "" : url.slice(q + 1));
+      if (!tokenOk(q < 0 ? null : params.get("t"))) return reply(res, 403, CLOSE);
+      ofStream = params.get("s") ?? "";
       const head = req.method === "HEAD";
       // A request with another method may carry a body; closing is cheaper than reading it to keep the connection.
       if (!head && req.method !== "GET") return reply(res, 405, { Allow: "GET, HEAD", ...CLOSE });
       const stream = path.length === STREAM_PATH.length + 64 + 5 && path.startsWith(STREAM_PATH) && path.endsWith(".m3u8") ? path.slice(STREAM_PATH.length, -5) : "";
       if (isMediaHash(stream) && opts.playlist) {
         info.hash = stream;
-        const text = await opts.playlist(stream, (h) => mediaUrl(h, ".m4s"), ac.signal);
+        const text = await opts.playlist(stream, (h) => mediaUrl(h, ".m4s", stream), ac.signal);
         if (ac.signal.aborted) return;
         if (text === null) return reply(res, 404);
         const body = Buffer.from(text, "utf8");
@@ -222,6 +231,9 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
       // the response so it can't mistake it for a complete one. Before that, a plain 502 says "try again".
       if (res.headersSent) res.destroy();
       else reply(res, 502);
+      if (e instanceof LeafMismatchError && opts.reportDamage && isMediaHash(ofStream) && info.hash) {
+        await opts.reportDamage(ofStream, info.hash).catch(() => {});
+      }
     }
   };
 
@@ -245,7 +257,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
   hostOk = (h) => h !== undefined && (h === allowed[0] || h.toLowerCase() === allowed[1]);
   const query = `?t=${encodeURIComponent(token)}`;
-  mediaUrl = (hash, ext = "") => `http://127.0.0.1:${port}${MEDIA_PATH}${hash}${ext}${query}`;
+  mediaUrl = (hash, ext = "", stream) => `http://127.0.0.1:${port}${MEDIA_PATH}${hash}${ext}${query}${stream ? `&s=${stream}` : ""}`;
 
   let closing: Promise<void> | undefined;
   return {
