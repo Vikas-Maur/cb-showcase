@@ -4,7 +4,6 @@
 // server-node); machine B gets a copy of A's carton.db without local tables (support/clone.ts) and its own lease.
 import assert from "node:assert/strict";
 import type { test } from "node:test";
-import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeMachine, itemNamed, SAMPLE, type Machine } from "./project.ts";
 import { Procs, runOnce, type Proc } from "./procs.ts";
@@ -20,15 +19,9 @@ export interface Side { m: Machine; app: Proc; link: Link }
 
 /** `@carton/local`'s default helper engine factory (what a plain `cb` starts). */
 export const LOCAL_FACTORY = pkg("local", "src", "factory.ts");
-/** The machine's helper config for shared cuts (see startApp). */
-export const helperConfigFile = (m: Machine): string => join(m.home, "e2e-helper.json");
 
 export async function startApp(procs: Procs, m: Machine, host: Host, account: string, link: Link, extra: Record<string, unknown> = {}): Promise<Proc> {
   const tokenFile = await host.tokenFile(m.home, account, m.projectId);
-  // what a helper a `cb` call starts needs to sync this machine's shared cut, read by support/cbwrite.ts. It stands in
-  // for B7's fix (the product records no sync config for a project, so a plain cb's helper can't sync): a helper that
-  // takes the lease from a busy app (B3, frequent on a loaded CI runner) must still push. The B7 test removes it.
-  writeFileSync(helperConfigFile(m), JSON.stringify({ factory: LOCAL_FACTORY, config: { sync: { url: link.url(m.projectId), tokenFile } } }));
   procs.watchHelpers(m.dbDir);
   const app = procs.start(`app-${account}`, [support("app.ts"), m.bundle, m.projectId, JSON.stringify({ sync: { url: link.url(m.projectId), tokenFile }, remoteRewriteMs: 200, ...extra })]);
   await app.next((x) => x.ready, 60_000);
@@ -65,7 +58,9 @@ export async function twoMachines(t: test.TestContext, kind: HostKind, appConfig
   let shareRows: unknown = null;
   const rows = await host.rows(ma.projectId);
   if (rows) {
-    const mine = await until(async () => { const r = (await host!.rows(ma.projectId))!; return r.length >= localIds.length + 1 && r; }, 30_000, "the server to hold the adopted log and the commit made during it");
+    let seen: unknown = null;
+    const mine = await until(async () => { const r = (await host!.rows(ma.projectId))!; seen = r.map((x) => x.id); return r.length >= localIds.length + 1 && r; }, 30_000, "the server to hold the adopted log and the commit made during it")
+      .catch((e) => { throw new Error(`${(e as Error).message}: server rows ${JSON.stringify(seen)}, local ${JSON.stringify(localIds)}, during ${during.id}`); });
     assert.deepEqual(mine.slice(0, localIds.length).map((r) => r.id), localIds, "seqs 1..n adopted verbatim (R3-03)");
     assert.equal(mine[localIds.length]!.id, during.id, "the commit made during the hand-off is the next seq");
     assert.equal(new Set(mine.map((r) => r.id)).size, mine.length, "no change id twice on the server");

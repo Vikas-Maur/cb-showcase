@@ -11,12 +11,9 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { findRev } from "@carton/cardboard";
-import { openLocal } from "@carton/local";
-import { cardboardAdapter } from "@carton/cardboard";
-import type { HostAdapter } from "@carton/core";
 import { makeMachine, itemNamed, SAMPLE, type Machine } from "../support/project.ts";
 import { Procs, type Proc } from "../support/procs.ts";
-import { dataDirFor, support, until } from "../support/env.ts";
+import { support, until } from "../support/env.ts";
 import { cb, cbOk, cbWrite, setOp } from "../support/cb.ts";
 import { named, untilShown } from "../support/head.ts";
 
@@ -74,33 +71,24 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   assert.equal((await cbOk(m, ["history"])).versions[0].ref.seq, mainSeq, "a fold with cards saved nothing");
 
   // fold in some of it: keep the logo change out, keep main's opacity
-  const foldAt = Date.now();
   const some = await cbOk(m, ["fold", CUT, "--reject", `timelineItems/${ids.logo}`, "--keep", "mine"]);
   assert.equal(some.status, "confirmed", JSON.stringify(some));
-  const folded = await untilShown(t, m, foldAt, (l) => named(l, SAMPLE.title)?.textContent === "30s version", "the fold");
+  const folded = await untilShown(m, (l) => named(l, SAMPLE.title)?.textContent === "30s version", "the fold");
   assert.equal(named(folded, SAMPLE.clipA)!.opacity, 0.2, "--keep mine kept main's value");
   assert.equal(named(folded, SAMPLE.logo)!.zIndex, 2, "the rejected record stayed out");
   const h = await cbOk(m, ["history", "--limit", "10"]);
   assert.deepEqual(h.versions.slice(0, 2).map((v: any) => v.kind), ["partial-revert", "merge"], "a merge, then an inverse change that lists what was kept out");
   assert.equal((await cbOk(m, ["credits", SAMPLE.title])).by.id, "director/chat2/turn1", "the folded edit keeps its author");
 
-  // later: fold in the rest (R2-14: "Accept the rest later reverts that inverse")
-  const rest = await cb(m, ["fold", CUT]);
-  t.diagnostic(`cb fold after a partial fold: ${rest.stdout.trim()}`);
-  await t.test("B4: `cb fold <cut>` after a partial fold folds in the rest", { todo: "B4, local-cli (cli-mcp): no cb/MCP path to fold in the rest; cb fold answers 'Already folded in'" }, async () => {
-    await until(() => itemNamed(m, SAMPLE.logo)?.zIndex === 7, 5_000, "the logo change folded in");
-  });
-  // what that command would run: core's revert of the inverse change (History.acceptRest), as a cb write
-  const inverse = h.versions[0].change as string;
-  const restAt = Date.now();
-  const local = await openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as HostAdapter, actor: { kind: "human", id: "human:me", name: "me" } });
-  try {
-    const r = await local.write({ kind: "revert", changeId: inverse });
-    assert.equal(r.status, "confirmed", JSON.stringify(r));
-  } finally {
-    await local.close();
-  }
-  const rest2 = await untilShown(t, m, restAt, (l) => named(l, SAMPLE.logo)?.zIndex === 7, "the rest folded in");
+  // later: fold in the rest (R2-14: "Accept the rest later reverts that inverse"): `cb fold <cut>` again (B4, fixed by
+  // local-cli f9a656c)
+  const rest = await cbOk(m, ["fold", CUT]);
+  assert.equal(rest.status, "confirmed", JSON.stringify(rest));
+  assert.match(String(rest.text ?? rest.message ?? JSON.stringify(rest)), /rest/i, `says it folded in the rest: ${JSON.stringify(rest)}`);
+  const rest2 = await untilShown(m, (l) => named(l, SAMPLE.logo)?.zIndex === 7, "the rest folded in");
+  const top = (await cbOk(m, ["history", "--limit", "3"])).versions[0];
+  t.diagnostic(JSON.stringify({ afterRest: top }));
+  assert.equal(top.kind, "revert", `folding in the rest reverts the inverse change: ${JSON.stringify(top)}`);
   assert.equal(named(rest2, SAMPLE.clipA)!.opacity, 0.2, "folding in the rest left the decided card alone");
   assert.equal((await cbOk(m, ["fold", CUT, "--check"])).status, "up-to-date");
 });
@@ -122,7 +110,7 @@ test("S2 conflict cards: an agent's stale save clashes; `cb conflicts` lists the
   assert.equal(itemNamed(m, SAMPLE.clipA)!.opacity, 0.6, "head kept the person's newer value");
   const listed = await cbOk(m, ["conflicts"], { actor });
   t.diagnostic(JSON.stringify({ cbConflicts: listed }));
-  await t.test("B5: a view save's conflict card is listed by `cb conflicts` and resolved by `cb resolve`", { todo: "B5, cardboard-adapter + local-cli: a file save's cards reach the agent as a notice without cards, which cb conflicts skips" }, async () => {
+  await t.test("B5: a view save's conflict card is listed by `cb conflicts` and resolved by `cb resolve`", async () => {
     assert.equal(listed.cards.length, 1, JSON.stringify(listed));
     const r = await cbOk(m, ["resolve", "1", "--keep", "mine"], { actor });
     assert.equal(r.status, "confirmed");
@@ -138,10 +126,10 @@ test("S2 cut switch: the files follow the current cut, and an agent's view save 
   await until(() => sharedRef(m)?.startsWith("Main cut@2"), 20_000, "the GUI save on main");
   await cbOk(m, ["cut", "new", CUT]);
   await cbOk(m, ["cut", "switch", CUT]);
-  await t.test("B6a: after `cb cut switch` the shared timeline.tsx (and project.json) show the new cut", { todo: "B6, local-cli: runWrite's switch never tells the materializer head moved" }, async () => {
+  await t.test("B6a: after `cb cut switch` the shared timeline.tsx (and project.json) show the new cut", async () => {
     await until(() => sharedRef(m)?.startsWith(`${CUT}@`), 5_000, `timeline.tsx to show "${CUT}" after cb cut switch`);
   });
-  await t.test("B6b: an agent's view save on the cut it switched to gets its status sidecar", { todo: "B6, cardboard-adapter: the freeze keeps the old cut's baseSeq; the R7-01 rewrite pins it on the new cut and throws 'state unknown' (or pins a wrong state) after the commit, so no sidecar" }, async () => {
+  await t.test("B6b: an agent's view save on the cut it switched to gets its status sidecar", async () => {
     const ag = await runAgent(procs, m, "director/chat2/turn2", [{ op: "set", name: SAMPLE.badge, set: { zIndex: 4 } }], 10_000);
     assert.equal(ag.results[0].status, "confirmed");
   });

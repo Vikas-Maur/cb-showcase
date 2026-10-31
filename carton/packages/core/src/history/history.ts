@@ -250,7 +250,15 @@ export class History {
   }
   /** The state at a node; null when it isn't held (a shallow node whose state wasn't carried). Never the live head. */
   stateOf(id: NodeId): Doc | null {
-    id = this.canon(id);
+    const c = this.canon(id);
+    const d = this.#stateAt(c);
+    if (d) return d;
+    // a version whose state is gone (compacted after a fork was made from it, in another process or behind a handle
+    // that hadn't seen the compaction: review SF1-1) is still the state its fork keeps a copy of
+    for (const cut of this.#cuts.values()) if (cut.root && cut.rec.forkOf && this.canon(cut.rec.forkOf) === c) return cut.root;
+    return null;
+  }
+  #stateAt(id: NodeId): Doc | null {
     const { branchId: b, seq: s } = parseNode(id);
     const br = this.#cuts.get(b);
     if (!br || br.rec.shallow) {
@@ -271,14 +279,15 @@ export class History {
     return doc;
   }
   hashOf(id: NodeId): string | null {
-    id = this.canon(id);
-    const ln = this.#lineage.get(id);
+    const c = this.canon(id);
+    const ln = this.#lineage.get(c);
     if (ln) return ln.hash;
-    let h = this.#hash.get(id);
+    let h = this.#hash.get(c);
     if (!h) {
-      const d = this.stateOf(id);
-      if (!d) return null;
-      this.#hash.set(id, (h = E.hashDoc(d, this.schema)));
+      const d = this.stateOf(c);
+      // a squashed version's state is gone, but not its identity (SF3-5)
+      if (!d) return this.changeAt(c)?.squashedHash ?? null;
+      this.#hash.set(c, (h = E.hashDoc(d, this.schema)));
     }
     return h;
   }
@@ -1140,6 +1149,44 @@ export class History {
     return nodes;
   }
   /**
+   * A sender whose cut has the id of one of ours but another history (the project's folder copied with its carton.db
+   * before either edited: the same local cut ids). Its nodes on that cut that aren't ours (past our log, or another
+   * state at the same seq) belong to the sender's own copy of the cut: they are taken as a separate cut,
+   * `<cut>.<sender hash>` (a node id can't hold `~`), whose lineage still reaches the versions we share, so a fold
+   * finds the real common ancestor (e2e-qa S3-4: they were dropped as "ours", and folding the sender's head read past
+   * our log).
+   */
+  #unclash(pkg: ShallowExport): ShallowExport {
+    const renamed = new Map<string, string>();
+    const moved = new Set<NodeId>();
+    // the sender's first version on the cut that isn't ours names its copy: the same content, the same id, across later
+    // files from that sender; never the display name, which two copies share (review SF3-2)
+    const first = new Map<string, DagNode>();
+    for (const n of pkg.nodes) {
+      const br = this.#cuts.get(n.branchId);
+      if (!br || br.rec.shallow) continue;
+      if (n.seq <= br.log.length) {
+        const ours = this.hashOf(nodeId(n.branchId, n.seq));
+        // ours, or one we can't compare (compacted before squashed versions kept their hash): taken as ours
+        if (ours === n.hash || ours === null) continue;
+      }
+      moved.add(n.id);
+      const f = first.get(n.branchId);
+      if (!f || n.seq < f.seq) first.set(n.branchId, n);
+    }
+    for (const [b, n] of first) renamed.set(b, `${b}.${n.hash.slice(0, 8)}`);
+    if (!moved.size) return pkg;
+    const map = (id: NodeId): NodeId => {
+      if (!moved.has(id)) return id;
+      const { branchId, seq } = parseNode(id);
+      return nodeId(renamed.get(branchId)!, seq);
+    };
+    const nodes = pkg.nodes.map((n) => ({ ...n, id: map(n.id), branchId: moved.has(n.id) ? renamed.get(n.branchId)! : n.branchId, parents: n.parents.map((p) => ({ ...p, id: map(p.id) })) }));
+    const branches = { ...pkg.branches };
+    for (const [ours, theirs] of renamed) branches[theirs] = { ...(pkg.branches[ours] ?? { name: "?" }), name: `${pkg.branches[ours]?.name ?? "?"} (${pkg.sender})` };
+    return { ...pkg, nodes, branches, head: map(pkg.head) };
+  }
+  /**
    * Lineage from elsewhere (a `.cbproj`, a shared cut's closure) as read-only tracking knowledge: a node already known
    * keeps its parents (lineage is immutable; an import only adds kinds), nodes of cuts held in full are ours, the graph
    * must stay a DAG, and every carried state must match its hash. All of it is checked before anything is kept.
@@ -1154,6 +1201,8 @@ export class History {
       const br = this.#cuts.get(n.branchId);
       if (br && !br.rec.shallow) continue;
       const prev = this.#lineage.get(n.id);
+      // a node's identity never changes: one we hold under this id with another state is a different version (SF3-2)
+      if (prev && prev.hash !== n.hash) throw new Error(`shallow export: node ${n.id} is another version than the one held under that id`);
       const bn = branches[n.branchId]?.name;
       incoming.set(n.id, { ...n, ...(prev ? { parents: prev.parents } : {}), kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
     }
@@ -1248,6 +1297,7 @@ export class History {
       if (!known) return { status: "no-shared-lineage", newProjectId: randomHex(8) };
     }
     if (!pkg.nodes.some((n) => n.id === pkg.head)) throw new Error("shallow export: its head is not one of its nodes");
+    pkg = this.#unclash(pkg);
     const headState = (pkg.states[pkg.headHash] as { doc?: Doc } | undefined)?.doc;
     this.#takeLineage(pkg.nodes, pkg.branches, Object.entries(pkg.states).map(([hash, st]) => [hash, "doc" in st ? st.doc : headState && E.apply(E.fork(headState, this.schema), st.delta, this.schema)]));
     this.#importedAuthors.set(pkg.head, pkg.lastAuthor ?? {});

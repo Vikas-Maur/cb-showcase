@@ -140,9 +140,10 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     own: (author: Actor) => carton.own(author),
     cut,
     async headRef() {
+      // the optimistic head: on a shared cut offline, a commit queues a pending change without moving the seq
       const c = cut();
       const h = await carton.head(c);
-      return JSON.stringify([c, h.ref.branchId, h.ref.seq]);
+      return JSON.stringify([c, h.ref.branchId, h.ref.seq, h.ref.pending ?? []]);
     },
     newChangeId: () => carton.newChangeId(),
     getMeta,

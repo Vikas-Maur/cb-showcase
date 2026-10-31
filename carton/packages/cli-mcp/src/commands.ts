@@ -295,8 +295,8 @@ const undo: CommandSpec = {
       const turn = a.turn === true || a.turn === "" ? ctx.actor.turn : String(a.turn);
       if (!turn) throw new UsageError("no turn to undo: pass --turn <turn id> (see `cb history`)");
       const r = await ctx.project.write({ kind: "undoTurn", turn, cut }, { actor: ctx.actor });
-      // cards before anything was saved (no change id): the turn is all or nothing, so nothing was undone. With a change
-      // id (a shared cut: the server found a clash after the undo was sent), it landed except those cards
+      // what the turn changed that was changed again since keeps its newer value as a card, and the rest is undone (the
+      // answer says it landed). Cards with nothing landed (no change id: a holder from before that) undid nothing
       if (r.status === "conflicts" && r.id === undefined && r.landed === undefined) {
         const n = r.conflicts.length;
         const text = [...noticeLines(r.notices ?? []), `Not undone: ${n} thing${n === 1 ? "" : "s"} the turn changed ${n === 1 ? "was" : "were"} changed again since, nothing was saved.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i)}`)].join("\n");
