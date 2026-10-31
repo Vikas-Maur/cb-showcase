@@ -54,3 +54,4 @@ export const cardboardAdapter: HostAdapter<CardboardProject> = {
 
 export { parseActor, subagentActorId, cardboardIdentity } from "./identity.ts";
 export * from "./header.ts";
+export * from "./codec.ts";
