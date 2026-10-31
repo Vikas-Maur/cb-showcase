@@ -133,3 +133,79 @@ test("a host from before the route: one head per key, for an editor (404) and a 
   const watcher = await client("viewer", ["pub-1"]);
   await assert.rejects(watcher.heads(["project.json"]), (e: unknown) => e instanceof HostApiError && e.status === 403);
 });
+
+// REQ-11 review round 1: keys were checked by the generic rules only, so a key the store's scope can't hold (its
+// prefix leaves less room) failed only when its turn came, after earlier keys had been claimed.
+test("a key the store's scope can't hold refuses the whole batch before any call: nothing is claimed", async () => {
+  const root = createMemoryBlobStore();
+  const bytes = new Uint8Array(LEAF_SIZE + 5).map((_, i) => i & 0xff);
+  const m = await mediaHash(bytes, webCryptoHasher());
+  const teammate = projectMediaStore(root, "q", "t1");
+  await teammate.put(manifestKey(m.hash), m.bytes);
+  await teammate.put(mediaKey(m.hash), bytes);
+  const { raw } = host(projectMediaStore(root, "p", "t1"), { maxBlobHeads: 1 });
+  const tooLong = "x".repeat(1024); // a valid key on its own, too long under projects/p/media/
+  const r = await raw(JSON.stringify({ keys: [mediaKey(m.hash), tooLong] }), "editor");
+  assert.equal(r.status, 400);
+  assert.equal(((await r.json()) as { code?: string }).code, "InvalidKey");
+  assert.deepEqual(await (await raw(JSON.stringify({ keys: [mediaKey(m.hash)] }), "viewer")).json(), { blobs: [null] }, "not claimed");
+  // a plain scoped store too
+  const scoped = host(projectMediaStore(createMemoryBlobStore(), "p", null));
+  assert.equal((await scoped.raw(JSON.stringify({ keys: [`m/${hex(1)}`, tooLong] }))).status, 400);
+});
+
+// REQ-11 review round 1: after one head failed, the others went on starting heads after the answer (and after a
+// host's close had resolved). Now no head starts after a failure, and the answer waits for those started.
+test("a head that fails ends the batch: the answer waits for the heads started, and none starts after it", async () => {
+  const store = createMemoryBlobStore();
+  let started = 0, release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const head = store.head.bind(store);
+  store.head = async (key) => {
+    started++;
+    if (key === `m/${hex(1)}`) throw new Error("the store failed");
+    await gate;
+    return head(key);
+  };
+  const { raw } = host(store);
+  let answered = false;
+  // a store's failure isn't the API's to answer: handleHttp throws it, and the host answers 500
+  const answer = raw(JSON.stringify({ keys: Array.from({ length: 50 }, (_, i) => `m/${hex(i)}`) })).then(
+    () => assert.fail("answered"),
+    (e: unknown) => ((answered = true), e),
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(answered, false, "not before the started heads end");
+  const atFailure = started;
+  release();
+  assert.match(String(await answer), /the store failed/);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(started, atFailure, "no head started after the failure");
+  assert.ok(started <= 8, `${started} heads started`);
+});
+
+test("the client's fallback to one head per key stops the same way", async () => {
+  let started = 0, release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const old = (async (url: string | URL | Request) => {
+    const u = new URL(url instanceof Request ? url.url : url);
+    if (u.pathname.endsWith("/blobs/heads")) return Response.json({ error: "no such route" }, { status: 404 });
+    started++;
+    if (u.searchParams.get("key") === `m/${hex(1)}`) return Response.json({ error: "the store failed" }, { status: 500 });
+    await gate;
+    return Response.json({ error: "no such blob" }, { status: 404 });
+  }) as typeof globalThis.fetch;
+  const media = hostMediaBlobs({ origin: "http://host", projectId: "p", token: "t", fetch: old });
+  let settled = false;
+  const done = media.heads(Array.from({ length: 50 }, (_, i) => `m/${hex(i)}`)).then(
+    () => assert.fail("resolved"),
+    (e: unknown) => ((settled = true), e),
+  );
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(settled, false);
+  const atFailure = started;
+  release();
+  assert.ok((await done) instanceof HostApiError);
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(started, atFailure, "no head started after the failure");
+});

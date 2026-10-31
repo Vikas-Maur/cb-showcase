@@ -279,7 +279,10 @@ every host runs the same function. The host:
    `POST …/blobs/heads {keys}` takes up to 1,000 keys and 1 MiB of JSON (1,000 keys of the longest a store takes
    fit), and answers `{blobs}`: one entry per key, in order, `{size}` or null. HEAD's rules hold for the whole
    batch: one key that is invalid or outside the session's scope (a watch link reads only media named by content and
-   its cut's files) refuses all of it (400, 403), and an editor's batch claims team objects as its HEAD does. A host
+   its cut's files) refuses all of it (400, 403) before any store call, and an editor's batch claims team objects as
+   its HEAD does. Keys are checked by the store's own rules where it states them (`checkKey`, `ChecksKeys` in
+   `@carton/blob-memory/rules`: a scoped store's prefix leaves less than 1,024 bytes). A store call that fails ends
+   the batch: no head starts after it, and the answer waits for those already started. A host
    answers for at most `maxBlobHeads` keys (default 1,000), a prefix of them, and the client asks again for the rest.
    The Worker checks 200 a request (`BLOB_HEADS_PER_REQUEST`), since each key costs one to four R2 calls and
    Cloudflare limits a request's subrequests. `hostMediaBlobs.heads(keys)` does the splitting, follows a smaller

@@ -8,6 +8,7 @@
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
 import { SHA256_HEADER } from "@carton/blob-memory/signed";
 import { platformFetch } from "@carton/http-node";
+import { eachLimit } from "./pool.ts";
 
 export interface HostBlobsOptions {
   /** The host's origin, e.g. `https://carton.example` or `http://127.0.0.1:8787`. */
@@ -250,14 +251,10 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
           // a host from before the route: one head per key, a few at a time
           const rest = keys.slice(i);
           const got: ({ size: number } | null)[] = new Array(rest.length);
-          let next = 0;
-          await Promise.all(Array.from({ length: Math.min(8, rest.length) }, async () => {
-            while (next < rest.length) {
-              const n = next++;
-              const info = await store.head(rest[n]!);
-              got[n] = info ? { size: info.size } : null;
-            }
-          }));
+          await eachLimit(rest, 8, async (k, n) => {
+            const info = await store.head(k);
+            got[n] = info ? { size: info.size } : null;
+          });
           return out.concat(got);
         }
         if (!r.ok) await failed(r);

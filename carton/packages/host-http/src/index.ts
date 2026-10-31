@@ -38,7 +38,8 @@
 import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins";
 import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "@carton/server";
 import { createBlobUrlSigner, serveSignedBlob, readBody, BodyTooLarge, type BlobUrlSigner } from "@carton/blob-memory/signed";
-import { BlobError, MAX_PARTS, checkKey } from "@carton/blob-memory/rules";
+import { BlobError, MAX_PARTS, checkKey, checksKeys } from "@carton/blob-memory/rules";
+import { eachLimit } from "./pool.ts";
 import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
 import { isTeamMediaStore, mediaLockScope } from "./team.ts";
 
@@ -330,23 +331,19 @@ async function headsFor(req: Request, ctx: AuthContext, store: BlobStore, deps: 
   const keys = b?.keys;
   if (!Array.isArray(keys) || !keys.every((k): k is string => typeof k === "string")) return err(400, "keys must be an array of strings");
   if (keys.length > MAX_BLOB_HEADS) return err(400, `at most ${MAX_BLOB_HEADS} keys a request`);
-  for (const k of keys) checkKey(k);
+  // every key, by the store's own rules (a scope's prefix leaves less room), before any call: one it would refuse
+  // refuses the whole batch, and nothing is claimed
+  for (const k of keys) checksKeys(store) ? store.checkKey(k) : checkKey(k);
   if (!keys.every((k) => mayRead(ctx, k))) return err(403, "outside this link's scope");
   const budget = Math.max(1, Math.min(MAX_BLOB_HEADS, Math.floor(deps.maxBlobHeads ?? MAX_BLOB_HEADS)));
   const todo = keys.slice(0, budget);
   // a key named twice is looked up once
   const unique = [...new Set(todo)];
   const found = new Map<string, { size: number } | null>();
-  let next = 0;
-  await Promise.all(
-    Array.from({ length: Math.min(HEADS_AT_ONCE, unique.length) }, async () => {
-      while (next < unique.length) {
-        const k = unique[next++]!;
-        const info = await headFor(ctx, store, k);
-        found.set(k, info ? { size: info.size } : null);
-      }
-    }),
-  );
+  await eachLimit(unique, HEADS_AT_ONCE, async (k) => {
+    const info = await headFor(ctx, store, k);
+    found.set(k, info ? { size: info.size } : null);
+  });
   return json({ blobs: todo.map((k) => found.get(k) ?? null) });
 }
 
