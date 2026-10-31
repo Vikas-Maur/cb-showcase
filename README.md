@@ -401,7 +401,8 @@ accelerator tests.
 ### Carton: version history for a project (off unless `CARDBOARD_CARTON=1`)
 
 Carton gives a Cardboard project permanent history with authors, cuts (variants) you can fold into each other, undo
-by actor, and, later, live collaboration (`carton\`, plan in `carton\docs\INTEGRATION-1.4.0.md`). The build includes
+by actor, and, later, live collaboration. Its code is in `carton\`; how it hooks into Cardboard is in
+`carton\docs\INTEGRATION-1.4.0.md`. The build includes
 it, and it stays **off** unless Cardboard starts with `CARDBOARD_CARTON=1`. With it off, every hook below runs
 Cardboard's own code. Gates G1 and G2 below decide when the default flips.
 
