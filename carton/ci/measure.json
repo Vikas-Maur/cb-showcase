@@ -937,6 +937,96 @@
       ]
     },
     {
+      "id": "cardboard-race-windows",
+      "agent": "cardboard-adapter",
+      "runner": "windows-latest",
+      "claim": "P10 on NTFS (notes 2: the [GATE] run is the user's laptop on mains power; this is a hosted Windows VM with Defender on): the portable matrix on the shipped code, run-windows.ps1's defaults (3 trials x 3000 rounds), node race.ts as the script runs it",
+      "timeout": 80,
+      "steps": [
+        {
+          "label": "the volume's file system (Get-Volume)",
+          "run": [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "(Get-Volume -FilePath $env:RUNNER_TEMP).FileSystemType"
+          ],
+          "stdoutTo": "{results}/race-windows-fs.txt"
+        },
+        {
+          "label": "bench/race/race.ts, 3 trials x 3000 rounds, NTFS",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "race.ts",
+            "--dir",
+            "{tmp}/carton-race",
+            "--fs",
+            "windows-NTFS",
+            "--trials",
+            "3",
+            "--rounds",
+            "3000",
+            "--out",
+            "{results}/race-windows.jsonl"
+          ],
+          "stdoutTo": "{results}/race-windows.log"
+        },
+        {
+          "label": "bench/race/summarize.ts",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "summarize.ts",
+            "{results}/race-windows.jsonl"
+          ],
+          "stdoutTo": "{results}/race-windows-summary.md"
+        }
+      ],
+      "reports": [
+        {
+          "file": "race-windows.jsonl",
+          "groupBy": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "ignore": [
+            "round",
+            "trial",
+            "rounds",
+            "ms",
+            "at",
+            "base",
+            "fsLabel",
+            "oracle",
+            "keep",
+            "size",
+            "jitter",
+            "pace"
+          ],
+          "optionalKeys": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "expect": {
+            "rows": 57
+          }
+        }
+      ]
+    },
+    {
       "id": "core-s8",
       "agent": "foundation-core",
       "claim": "S8 again after foundation's append turn (4fbc336): Carton on carton.db, three real processes committing back to back (stores' TIGHT=1 test), 20 runs; before: 1 of 20 failed with 'the store changed under this write'",
