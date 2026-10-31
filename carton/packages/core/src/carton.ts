@@ -155,7 +155,11 @@ export interface CartonSync {
   /** Stop; `drain`: push nothing new and resolve once nothing is in flight (a lease hand-over). */
   disconnect(opts?: { drain?: boolean; timeoutMs?: number }): Promise<void>;
   presence(state: PresenceState | null): void;
-  /** What a write learned within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed, conflicts, rejected or pending. */
+  /**
+   * What a write learned within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed, conflicts, rejected or pending.
+   * A settled outcome resolves once it is in the store too (its author's notice written, its pending row gone), so a
+   * caller that reports it can mark that notice delivered rather than have it told again on the next call.
+   */
   waitFor(id: ChangeId, ms: number, cut?: string): Promise<WriteOutcome>;
 }
 
@@ -341,7 +345,12 @@ class CartonImpl implements Carton {
         presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#actor(), state),
         waitFor: async (id, ms, cut) => {
           const sc = self.#shared.get(cut ?? self.#h.current);
-          if (sc) return sc.waitFor(id, ms);
+          if (sc) {
+            const o = await sc.waitFor(id, ms);
+            // the event that settled it queued its store writes (#settleShared) before this wait could resume
+            if (o.status !== "pending") await self.#queue;
+            return o;
+          }
           const done = self.#h.confirmedById(id);
           return done ? { status: "confirmed", id, seq: done.seq } : { status: "pending", id };
         },
@@ -977,8 +986,7 @@ class CartonImpl implements Carton {
         this.#emit({ type: "absorbed", branchId: cut, id: e.id, cards: e.cards });
         break;
       case "rejected":
-        this.#emit({ type: "notice", notice: { to: actorKey(this.#actor()), kind: "rejected", text: `the server refused a change: ${e.reason}`, change: e.id } });
-        break;
+        break; // a notice for the change's author is written when it settles (#settleShared)
     }
     // confirmed rows go into History and the store, settled edits leave the pending table, and a finished hand-off
     // is recorded on the cut; serialized behind every other write of this handle
@@ -1006,7 +1014,16 @@ class CartonImpl implements Carton {
     const late = e.type === "confirmed" ? e.lateCards : e.type === "absorbed" ? e.cards : [];
     const lateId = e.type === "confirmed" || e.type === "absorbed" ? e.id : null;
     let lateNotice: Notice | null = null;
-    if (late.length && lateId) {
+    if (e.type === "rejected") {
+      // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
+      const author = (await this.store.get<PendingRow>(T.pending, [cut, e.id]))?.author;
+      if (author) {
+        const at = this.#opts.clock?.() ?? Date.now();
+        const why = e.reason === "too large" ? "it is larger than the server accepts; the edits after it still went through" : e.reason;
+        lateNotice = { to: actorKey(author), kind: "rejected", text: `Your change ${e.id} wasn't saved: ${why}`, change: e.id, at };
+        writes.push({ table: T.notices, key: [lateNotice.to, at, 0, randomHex(4)], value: lateNotice });
+      }
+    } else if (late.length && lateId) {
       const author = (e.type === "confirmed" ? this.#h.findChange(lateId)?.author : undefined) ?? (await this.store.get<PendingRow>(T.pending, [cut, lateId]))?.author;
       if (author) {
         const at = this.#opts.clock?.() ?? Date.now();

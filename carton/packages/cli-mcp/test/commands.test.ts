@@ -178,3 +178,12 @@ test("usage errors exit 2 and print usage; --json errors are JSON", async () => 
   assert.equal(j.json().status, "error");
   assert.match((await cb(ctx, ["help"])).out, /cut new <name>/);
 });
+
+test("Stage F wording: an absorbed change is confirmed, already in place; a too-large one fails alone", () => {
+  const a = resultText({ status: "confirmed", seq: 4, ref: null, notices: [], absorbed: true });
+  assert.match(a, /^Saved: confirmed, already in place \(an identical edit was already there/);
+  assert.equal(exitCodeOf({ status: "confirmed", seq: 4, ref: null, notices: [], absorbed: true }), 0, "never an error");
+  const t = resultText({ status: "rejected", reason: "too large", notices: [] });
+  assert.match(t, /not saved: this edit is larger than the server accepts .* The edits after it still went through/);
+  assert.equal(exitCodeOf({ status: "rejected", reason: "too large", notices: [] }), 1);
+});
