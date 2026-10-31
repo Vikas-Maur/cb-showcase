@@ -1,7 +1,7 @@
 // The Store plug-in on IndexedDB (PLAN §3.1, §15): one database per project, shared by every tab and worker of the
 // origin.
 //
-// Every Carton table lives in one object store, `kv`, under the key `[table, ...key]`. IndexedDB's own array-key order
+// Every Carton table lives in one object store, `kv`, under the key `[table, ...key]`, with the value as JSON text. IndexedDB's own array-key order
 // is the Store contract's key order (element-wise; numbers before strings; numbers numerically; strings by UTF-16 code
 // units; a key before its extensions), so a range is one key range, and new tables never need a schema upgrade (which
 // would have to wait for every other tab to close the database).
@@ -9,6 +9,10 @@
 // `write` is one readwrite transaction: IndexedDB runs readwrite transactions on one object store one at a time across
 // all tabs, so the conditions and the writes are the local sequencer's compare-and-swap. After a write commits, the
 // other tabs hear about it on a BroadcastChannel and their `watch` listeners fire.
+//
+// Values are JSON text, not structured clones: in Chromium reading 10k changes back was faster as text plus
+// JSON.parse than as clones, in every run of bench/exp-values.ts, and JSON gives exactly store-sqlite's value
+// semantics (an `undefined` member dropped, -0 read back as 0).
 
 import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";
@@ -44,12 +48,12 @@ export class IdbStore implements Store {
     this.#durability = durability;
     // Another tab upgrading or deleting the database waits for every connection to close; never make it wait.
     db.onversionchange = () => void this.close();
+    // The browser closed it (storage cleared, disk error): later calls say so instead of failing obscurely.
+    db.onclose = () => void this.close();
     // Every handle announces its writes, whether or not it watches; listeners hear the other tabs'.
     if (typeof BroadcastChannel !== "undefined") {
       this.#channel = new BroadcastChannel(name);
-      this.#channel.onmessage = (ev: MessageEvent<{ tables: string[] }>) => {
-        for (const l of this.#listeners) l(ev.data.tables);
-      };
+      this.#channel.onmessage = (ev: MessageEvent<{ tables: string[] }>) => notify(this.#listeners, ev.data.tables);
       // In Node (a fake IndexedDB in tests) an open channel would keep the process alive.
       (this.#channel as { unref?: () => void }).unref?.();
     }
@@ -65,7 +69,8 @@ export class IdbStore implements Store {
 
   async get<T = unknown>(table: string, key: StoreKey): Promise<T | undefined> {
     const k = idbKey(table, key);
-    return run(this.#open(), KV, "readonly", (tx) => req(tx.objectStore(KV).get(k)) as Promise<T | undefined>);
+    const v = await run(this.#open(), KV, "readonly", (tx) => req(tx.objectStore(KV).get(k) as IDBRequest<string | undefined>));
+    return v === undefined ? undefined : (JSON.parse(v) as T);
   }
 
   async range<T = unknown>(table: string, r: StoreRange = {}): Promise<{ key: StoreKey; value: T }[]> {
@@ -78,13 +83,13 @@ export class IdbStore implements Store {
         // Two bulk reads in one transaction see the same state, so keys and values line up.
         const [keys, values] = await Promise.all([req(s.getAllKeys(range, limit)), req(s.getAll(range, limit))]);
         const out = new Array<{ key: StoreKey; value: T }>(keys.length);
-        for (let i = 0; i < keys.length; i++) out[i] = { key: (keys[i] as Key).slice(1), value: values[i] as T };
+        for (let i = 0; i < keys.length; i++) out[i] = { key: (keys[i] as Key).slice(1), value: JSON.parse(values[i] as string) as T };
         return out;
       }
       const out: { key: StoreKey; value: T }[] = [];
       let c = await req(s.openCursor(range, "prev"));
       while (c && (limit === undefined || out.length < limit)) {
-        out.push({ key: (c.primaryKey as Key).slice(1), value: c.value as T });
+        out.push({ key: (c.primaryKey as Key).slice(1), value: JSON.parse(c.value as string) as T });
         c.continue();
         c = await req(c.request as IDBRequest<IDBCursorWithValue | null>);
       }
@@ -94,9 +99,8 @@ export class IdbStore implements Store {
 
   async write(writes: readonly StoreWrite[], conditions: readonly StoreCondition[] = []): Promise<boolean> {
     const conds = conditions.map((c) => ({ k: idbKey(c.table, c.key), expect: c.expect }));
-    // Values are stored as structured clones. The contract allows JSON values only, and callers keep to it (core
-    // writes nothing else), so they are not walked again here: that would cost every commit a pass over its value.
-    const ops = writes.map((w) => ({ k: idbKey(w.table, w.key), v: w.value }));
+    // Serialized before the transaction opens, so it stays short.
+    const ops = writes.map((w) => ({ k: idbKey(w.table, w.key), v: w.value === undefined ? undefined : json(w.value) }));
     const ok = await run(
       this.#open(),
       KV,
@@ -117,7 +121,7 @@ export class IdbStore implements Store {
     );
     if (ok) {
       const tables = [...new Set(writes.map((w) => w.table))];
-      for (const l of this.#listeners) l(tables);
+      notify(this.#listeners, tables);
       this.#channel?.postMessage({ tables });
     }
     return ok;
@@ -201,5 +205,22 @@ function keyRange(table: string, r: StoreRange): IDBKeyRange | null {
 function holds(found: unknown, expect: StoreCondition["expect"]): boolean {
   if (expect === "absent") return found === undefined;
   if (expect === "present") return found !== undefined;
-  return found !== undefined && canonical(found) === canonical(expect.equals);
+  return found !== undefined && canonical(JSON.parse(found as string)) === canonical(expect.equals);
+}
+
+// The batch is committed whatever a listener does: a throwing listener is reported, never turned into a failed write.
+function notify(listeners: Set<(tables: readonly string[]) => void>, tables: readonly string[]): void {
+  for (const l of listeners) {
+    try {
+      l(tables);
+    } catch (e) {
+      (globalThis as { reportError?: (e: unknown) => void }).reportError?.(e) ?? console.error("carton store: a watch listener threw", e);
+    }
+  }
+}
+
+function json(v: unknown): string {
+  const s = JSON.stringify(v);
+  if (s === undefined) throw new TypeError("store: value is not JSON");
+  return s;
 }
