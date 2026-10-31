@@ -13,8 +13,9 @@
 import { readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { BlobStore, Hasher, ProxyEncoder } from "../contracts.ts";
-import { damagedKey, mediaKey, proxyPointerKey, type ProxyPointer } from "../keys.ts";
-import { claimProxyStream, findProxy, newStreamId, ProxyStreamReader, ProxyStreamWriter } from "../stream.ts";
+import { isDamaged, reportDamage } from "../damage.ts";
+import { proxyPointerKey, type ProxyPointer } from "../keys.ts";
+import { claimProxyStream, newStreamId, ProxyStreamReader, ProxyStreamWriter, usableProxy } from "../stream.ts";
 import { MediaReader } from "../read.ts";
 import type { Manifest } from "../manifest.ts";
 import { COLLAB_PROXY_720P, encodeProxy, ProxyChainError, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
@@ -101,8 +102,9 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
 
   // Shared objects a reader reported damaged (bad/<hash>, e2e S5-5) count as not shared: they are planned again, and
   // their upload replaces the stored copy instead of deduping on it. A damaged proxy stream is made anew.
-  const reported = async (id: string | undefined) => id !== undefined && (await o.store.head(damagedKey(id)).catch(() => null)) !== null;
-  if (record.proxy && (await reported(record.proxy.stream ?? record.proxy.hash))) delete record.proxy;
+  const reported = async (id: string | undefined) => id !== undefined && (await isDamaged(o.store, id).catch(() => false));
+  // (The proxy is checked further down, through its pointer, once the record's hash is known.)
+  if (record.proxy && record.hash === undefined && (await reported(record.proxy.stream ?? record.proxy.hash))) delete record.proxy;
   if (record.original === "shared" && (await reported(record.hash))) delete record.original;
   for (const kind of Object.keys(record.t1!) as T1Kind[]) if (await reported(record.t1![kind]?.hash)) delete record.t1![kind];
 
@@ -119,6 +121,23 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
     record.hash = original.hash;
     record.size = original.size;
     o.onEvent?.({ type: "hashed", what: "original", hash: original.hash });
+  }
+  // The record's proxy counts only while it is the shared one and still usable. One replaced since (its stream was
+  // abandoned, or a part reported damaged) becomes the replacement, in the record's own profile; one with nothing
+  // usable in its place is planned again (or dropped, without the original here). Checked by whoever shares, with the
+  // original or not. A store that can't answer leaves the record as it is, unless its proxy was reported damaged: the
+  // steps below find out for themselves.
+  if (record.proxy && record.hash !== undefined) {
+    const was = record.proxy;
+    try {
+      const p = await usableProxy(o.store, record.hash, was.profile, { staleMs: o.staleMs });
+      if (p === null) delete record.proxy;
+      else if ("stream" in p ? p.stream !== was.stream : p.hash !== was.hash) record.proxy = await proxyOf(o, p, was.profile, hasher);
+    } catch {
+      o.signal?.throwIfAborted();
+      // Still drop one reported damaged: kept, it would plan no proxy work at all.
+      if (await reported(was.stream ?? was.hash)) delete record.proxy;
+    }
   }
   // T1 files: sizes first, so files the policy leaves out (a .context over its cap) are never read; then a hash of
   // each candidate. One unreadable T1 file is skipped, not a reason to fail the whole clip.
@@ -208,15 +227,13 @@ async function shareProxy(
   upload: (what: string, path: string, m: Manifest, contentType?: string) => Promise<UploadResult>,
 ): Promise<NonNullable<MediaRecord["proxy"]>> {
   const pointerKey = proxyPointerKey(original.hash, profile.id);
-  const p = await findProxy(o.store, original.hash, profile.id);
+  const p = await usableProxy(o.store, original.hash, profile.id, { staleMs: o.staleMs });
   if (p && "hash" in p) {
-    const head = await o.store.head(mediaKey(p.hash));
-    if (head && head.size === p.size) {
-      o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
-      return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
-    }
+    o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
+    return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
   }
-  // No pointer, a broken one, or one to an object that's gone: make the proxy again and overwrite it.
+  // No pointer, a broken one, one to an object that's gone or was reported damaged (its upload below replaces it):
+  // make the proxy again and overwrite the pointer.
   const input = { path: o.local.original! };
   let path: string | null = null;
   let encoder = "cardboard-proxy";
@@ -246,6 +263,10 @@ async function shareProxy(
 
 /** T2 as a segmented stream (e2e S5-1): see the top of this file. */
 async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profile: CollabProfile, hasher: Hasher): Promise<NonNullable<MediaRecord["proxy"]>> {
+  const reuse = (p: ProxyPointer) => proxyOf(o, p, profile.id, hasher);
+  // Someone's proxy first: reusing it needs no encoder here.
+  const shared = await usableProxy(o.store, original.hash, profile.id, { staleMs: o.staleMs });
+  if (shared) return reuse(shared);
   const input = { path: o.local.original! };
   // What can make the segments: Cardboard's own proxy, remuxed (no re-encode), then the ffmpeg encoders that run here.
   let host: string | null = null;
@@ -273,17 +294,7 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
   if (!first) throw new ProxyChainError(attempts);
 
   const claim = await claimProxyStream(o.store, original.hash, profile.id, first.name, { staleMs: o.staleMs });
-  if (!claim.claimed) {
-    const p = claim.pointer;
-    if ("hash" in p) {
-      o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
-      return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
-    }
-    // A teammate's stream, finished or still growing: theirs plays for everyone.
-    const end = await new ProxyStreamReader({ store: o.store, media: new MediaReader({ store: o.store, hasher }), id: p.stream }).end();
-    o.onEvent?.({ type: "proxy", how: "teammate's", stream: p.stream });
-    return { stream: p.stream, size: end?.size, profile: profile.id, encoder: p.encoder };
-  }
+  if (!claim.claimed) return reuse(claim.pointer); // a teammate claimed it meanwhile
 
   const segmenter = o.segmenter ?? encodeSegments;
   const pointerKey = proxyPointerKey(original.hash, profile.id);
@@ -321,7 +332,7 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
       if (o.signal?.aborted) throw o.signal.reason;
       if (writer.segments > 0) {
         // Teammates may be playing it already: don't switch it under them. Report it, so the next share replaces it.
-        await o.store.put(damagedKey(stream), new TextEncoder().encode(JSON.stringify({ unfinished: true, at: Date.now() })), { contentType: "application/json" }).catch(() => {});
+        await giveUp(o.store, stream);
         throw e;
       }
       attempts.push({ encoder: c.name, outcome: "failed", error: e instanceof Error ? e.message : String(e) });
@@ -329,5 +340,21 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
   }
+  // Every encoder failed: the claim points at a stream that will never have a segment. Report it, so the next share
+  // (here, once an encoder works again, or a teammate's) takes it over instead of reusing a fresh-looking claim.
+  await giveUp(o.store, stream);
   throw new ProxyChainError(attempts);
 }
+
+/** The record's proxy for a shared one (a teammate's, finished or still growing: theirs plays for everyone). */
+async function proxyOf(o: ShareMediaOptions, p: ProxyPointer, profile: string, hasher: Hasher): Promise<NonNullable<MediaRecord["proxy"]>> {
+  if ("hash" in p) {
+    o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
+    return { hash: p.hash, size: p.size, profile, encoder: p.encoder };
+  }
+  const end = await new ProxyStreamReader({ store: o.store, media: new MediaReader({ store: o.store, hasher }), id: p.stream }).end();
+  o.onEvent?.({ type: "proxy", how: "teammate's", stream: p.stream });
+  return { stream: p.stream, size: end?.size, profile, encoder: p.encoder };
+}
+
+const giveUp = (store: ShareMediaOptions["store"], stream: string): Promise<unknown> => reportDamage(store, stream, { unfinished: true });

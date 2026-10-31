@@ -131,8 +131,15 @@ What follows from that:
 - Grants are never revoked. A project that drops a media record keeps access to bytes it once had.
 
 A sound team object can't be replaced from another project: a manifest must verify against its hash, and a write of
-`m/<hash>` over an object of the manifest's size is a no-op. A damaged object is removed only through the repair
-path, below. Proxy pointers (`px/`) stay per project, because they don't verify themselves.
+`m/<hash>` over an object of the manifest's size is a no-op. Bytes need their manifest first, and must be the
+manifest's size. A write that found nothing there is create-only, so if a teammate's upload lands first, even in
+another process, that copy stays. A damaged object is removed only through the repair path, below. Proxy pointers
+(`px/`) stay per project, because they don't verify themselves.
+
+Known limits, on hosts of many processes (Workers) only: a multipart complete can't be made conditional, and neither
+can the replacement of a wrong-sized object. So a teammate racing an upload there can leave bytes of the right size
+but the wrong content. Every reader verifies each leaf against the manifest, so those bytes are never used. They are
+reported, removed by the repair path and uploaded again. server-node serializes these writes per team.
 
 ## A new SequencerHost
 
@@ -156,7 +163,12 @@ every host runs the same function. The host:
    save `state` with the socket after each message that changed it.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
-     `hello`;
+     `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from
+     `@carton/cardboard`), as server-node and server-cloudflare do: a hard-coded number goes stale at the adapter's
+     next bump and the host then refuses every client (H-SV). An operator may pin a version (server-node's
+     `schemaVersion`, the Worker's `SCHEMA_VERSION`). The rule for a client newer than the host: it is refused with
+     an error saying to update the server, and the sync client emits it as an `error` event for the app to show. A
+     host never accepts a version it wasn't built for, because it can't vouch for documents it doesn't know;
    - pass `blobs` to `createSequencer`. Any message over 1 MiB, either way, then travels as an envelope through the
      blob store, so no message gets near a WebSocket's limit, whatever the project's size. The host carries
      envelopes like any other message; `@carton/host-http` gives clients the two routes they need (below). Cap one
@@ -185,7 +197,11 @@ every host runs the same function. The host:
    **The repair path (§11).** A reader whose leaf never verifies reports it with `POST …/blobs/damaged {key, leaf}`.
    The host loads the manifest, which the hash itself verifies, re-reads that leaf, and removes the object only if
    its stored bytes really are wrong and it wasn't replaced meanwhile. The owner's next share then finds it missing
-   and uploads it again. A report can't remove a sound object.
+   and uploads it again. A report can't remove a sound object. Writes of that key through the API wait for a check
+   in progress, and the check waits for them, within one process. The lock is per store scope: a team's media, which
+   its projects share, or one project's. Another project's write of the same hash doesn't wait. On a host of many processes (Workers) a write
+   served by another one can still land between the check and the delete, since BlobStore has no conditional
+   delete; that write is undone, and the uploader's next share uploads it again.
 
    **Signed URLs** are built from the request's origin, so build the `Request` with the address the client used. A
    URL carrying an internal address can't be reached from outside. server-node takes, in order: `publicOrigin`;
@@ -242,6 +258,9 @@ const host = await startNodeHost({
   adminToken: process.env.CARTON_ADMIN_TOKEN, port: 8787, staticDir: "./web",
 });
 ```
+
+blob-fs's object paths and server-node's room files are pre-release layouts: until Carton's first release they may
+change without a migration. After it, any change to them ships with one.
 
 **Cloudflare, local only:** run `npm run dev` in `packages/server-cloudflare`, which starts `wrangler dev`. Copy
 `.dev.vars.example` to `.dev.vars` first. `wrangler.toml` binds R2. Remove the `[[r2_buckets]]` block to run on the

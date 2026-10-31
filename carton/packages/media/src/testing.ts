@@ -36,8 +36,13 @@ export class CountingMemoryStore implements BlobStore {
   async head(key: string): Promise<BlobInfo | null> {
     this.counters.heads++;
     const o = this.objects.get(key);
-    return o ? { key, size: o.length } : null;
+    if (!o) return null;
+    // Each stored object (a put, a completed upload, or one a test set directly) has its own ETag, as on S3.
+    let etag = this.#objectEtags.get(o);
+    if (!etag) this.#objectEtags.set(o, (etag = `o${this.#nextEtag++}`));
+    return { key, size: o.length, etag };
   }
+  readonly #objectEtags = new WeakMap<Uint8Array, string>();
   async get(key: string, range?: ByteRange): Promise<Uint8Array | null> {
     this.counters.gets++;
     const o = this.objects.get(key);

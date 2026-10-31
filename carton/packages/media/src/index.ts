@@ -25,8 +25,10 @@ export {
 export { blobSource, bytesSource, hashSource, webCryptoHasher, type ByteSource, type HashOptions } from "./hash.ts";
 export { HashScheduler, MemoryManifestCache, type HashJobOptions, type HashPriority, type HashSchedulerOptions, type HashTarget, type ManifestCache } from "./scheduler.ts";
 export { damagedKey, manifestKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
+export { isDamaged, markRepaired, openReport, repairedKey, reportDamage, reportToHost, type HostDamageReporting } from "./damage.ts";
 export {
   claimProxyStream,
+  usableProxy,
   findProxy,
   newStreamId,
   ProxyStreamReader,

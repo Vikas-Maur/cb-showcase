@@ -44,13 +44,18 @@ test("openLocal without sync keeps the handle local-only (sync is null)", async 
   }
 });
 
-test("openLocal passes name to Carton.open: a new cut's owner is the person's name, not \"replica\" (S3-1)", async () => {
-  const { dir, projectId } = bundle("open-name");
-  const lc = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: { kind: "human", id: "human:alice" }, name: "Alice" });
+test("openLocal takes `name` and `sync` together: the synced handle carries the given display name", async () => {
+  const tokens = new Map<string, AuthContext>([["tok", { account: "alice", credential: "alice/install", role: "owner", projectId: "p", expires: Date.now() + 3600_000 }]]);
+  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
+  const { dir, projectId } = bundle("open-sync-name");
+  const lc = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: { kind: "agent", id: "worker" }, name: "Alice's laptop", sync: { transport: host.transport, url: host.url, token: "tok", autoConnect: false } });
   try {
-    const cut = await lc.carton.fork("30s cut");
-    assert.equal(cut.owner, "Alice");
+    assert.ok(lc.carton.sync, "the handle has sync");
+    assert.equal((await lc.carton.exportShallow({ to: "bob" })).sender, "Alice's laptop", "and the name given");
   } finally {
     await lc.close();
+    host.close();
   }
 });
+

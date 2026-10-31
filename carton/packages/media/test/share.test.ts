@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { isDamaged } from "../src/damage.ts";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { chmodSync, mkdirSync, readdirSync, truncateSync, writeFileSync } from "node:fs";
@@ -247,7 +248,7 @@ test("a shared file a reader reported damaged is uploaded again by the next shar
   const reader = new MediaReader({ store, hasher: nodeHasher });
   assert.equal((await reader.readVerified(posterHash, 0, first.record.t1!.poster!.size)).length, first.record.t1!.poster!.size, "the poster verifies again");
   assert.equal((await reader.readVerified(first.record.hash!, 0, first.record.size)).length, first.record.size, "so does the original");
-  assert.equal(store.objects.has(damagedKey(posterHash)), false);
+  assert.equal(await isDamaged(store, posterHash), false);
   assert.ok(store.counters.bytesUp - up >= first.record.size, "both went up again");
 });
 

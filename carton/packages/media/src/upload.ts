@@ -13,7 +13,8 @@
 
 import type { BlobStore, Hasher, MultipartUpload } from "./contracts.ts";
 import type { ByteSource } from "./hash.ts";
-import { damagedKey, manifestKey, mediaKey } from "./keys.ts";
+import { markRepaired, openReport } from "./damage.ts";
+import { manifestKey, mediaKey } from "./keys.ts";
 import { equalBytes } from "./bytes.ts";
 import { LEAF_SIZE, leafDigest, type Manifest } from "./manifest.ts";
 
@@ -151,6 +152,19 @@ async function readVerified(o: UploadOptions, offset: number, length: number): P
   return bytes;
 }
 
+/** Whether the stored object at `key` holds exactly the manifest's bytes: read leaf by leaf, stopping at the first miss. */
+async function storedMatches(store: BlobStore, key: string, m: Manifest, hasher: Hasher, signal?: AbortSignal): Promise<boolean> {
+  for (let i = 0, at = 0; at < m.size; i++, at += LEAF_SIZE) {
+    signal?.throwIfAborted();
+    const length = Math.min(LEAF_SIZE, m.size - at);
+    const bytes = await untilAborted(store.get(key, { offset: at, length }), signal);
+    if (!bytes || bytes.length !== length) return false;
+    if (!equalBytes(await untilAborted(hasher.sha256(bytes), signal), leafDigest(m, i))) return false;
+  }
+  signal?.throwIfAborted();
+  return true;
+}
+
 /** `stop`: checked after each backoff, so a retry doesn't go out once the work it belongs to has failed elsewhere. */
 async function withRetries<T>(o: UploadOptions, what: () => Promise<T>, stop?: () => boolean): Promise<T> {
   const retries = o.retries ?? 4;
@@ -174,6 +188,57 @@ async function withRetries<T>(o: UploadOptions, what: () => Promise<T>, stop?: (
 // completion, below.
 const inFlight = new WeakMap<BlobStore, Map<string, Promise<unknown>>>();
 
+/**
+ * One upload, again if the saved upload it resumed went away (CI #27): another process resuming the same saved upload
+ * (the app and a `cb` call, one state store) completed it, or it expired. Wait a little for the object (some gateways
+ * drop the upload id before the completed object shows), then go again: the next run dedups on the object if it is
+ * there with its size, else starts a fresh upload. Bounded: a fresh upload can only be lost the same way again if
+ * someone else completes it, which the run after finds.
+ */
+async function uploadSettled(o: UploadOptions): Promise<UploadResult> {
+  const { store, manifest: m } = o;
+  const key = mediaKey(m.hash);
+  const base = o.retryDelayMs ?? 250;
+  // One session's totals across the runs: bytesSent and progress `sent` count what every run sent (they never go back).
+  const acc: Session = { partsSent: 0, bytesSent: 0 };
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await uploadOnce(o, acc);
+    } catch (e) {
+      if (!uploadGone(e) || attempt >= 2) throw e;
+      let there = false;
+      for (const wait of [base, 2 * base, 4 * base]) {
+        await sleep(wait, o.signal);
+        const h = await untilAborted(store.head(key), o.signal).catch((err) => (isAbort(err) || o.signal?.aborted ? Promise.reject(err) : null));
+        if (h && h.size === m.size) {
+          there = true;
+          break;
+        }
+      }
+      // It showed up while a report is open (a repair whose completion answer came back as NoSuchUpload): the next run
+      // would replace it again, and again. Verify it instead, and answer the report if it holds the manifest's bytes.
+      // Every wait here gives way to cancellation; other errors just leave it to the next run.
+      const abortable = <T>(p: Promise<T>, otherwise: T): Promise<T> =>
+        untilAborted(p, o.signal).catch((err) => (isAbort(err) || o.signal?.aborted ? Promise.reject(o.signal?.reason ?? err) : otherwise));
+      const report = there ? await abortable(openReport(store, m.hash), null) : null;
+      if (report && (await abortable(storedMatches(store, key, m, o.hasher, o.signal), false))) {
+        await abortable(markRepaired(store, m.hash, report), undefined);
+        // No state to forget: the run that met NoSuchUpload forgot it under its turn. (Doing it here, a cancelled call
+        // could leave a deletion running that removes the state of an upload after it.)
+        o.signal?.throwIfAborted();
+        return { hash: m.hash, size: m.size, deduped: true, partSize: acc.partSize ?? 0, resumedParts: 0, partsSent: acc.partsSent, bytesSent: acc.bytesSent };
+      }
+    }
+  }
+}
+
+/** What one uploadMedia call has sent so far, over every run of uploadOnce. */
+interface Session {
+  partsSent: number;
+  bytesSent: number;
+  partSize?: number;
+}
+
 /** Makes sure m/<hash> and mf/<hash> are in the store, sending only what is missing. */
 export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   let byKey = inFlight.get(o.store);
@@ -184,7 +249,7 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   const turn = (byKey.get(key) ?? Promise.resolve()).catch(() => {});
   const mine = (async () => {
     await untilAborted(turn, o.signal);
-    return uploadOnce(o);
+    return uploadSettled(o);
   })();
   // What the next caller waits for: our upload, or (if we left the line) the caller before us. The entry goes when that
   // settles, not when we return: an aborted waiter returns at once while the upload before it is still running.
@@ -211,7 +276,7 @@ function untilAborted<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   });
 }
 
-async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
+async function uploadOnce(o: UploadOptions, session: Session = { partsSent: 0, bytesSent: 0 }): Promise<UploadResult> {
   const { store, manifest: m } = o;
   if (o.source.size !== m.size) throw new SourceChangedError(`file is ${o.source.size} bytes, manifest says ${m.size}`);
   const key = mediaKey(m.hash);
@@ -222,11 +287,17 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   // size would throw away every part already sent.
   const resumable = state && state.hash === m.hash && state.size === m.size && (forced === undefined || forced === state.partSize);
   const partSize = forced ?? (resumable ? state!.partSize : choosePartSize(m.size, o.bytesPerSecond));
-  const result: UploadResult = { hash: m.hash, size: m.size, deduped: false, partSize, resumedParts: 0, partsSent: 0, bytesSent: 0 };
+  // Shared with the session (uploadSettled), so a run that fails still counts what it sent.
+  const result = session as UploadResult;
+  Object.assign(result, { hash: m.hash, size: m.size, deduped: false, partSize, resumedParts: 0 });
 
   const head = await withRetries(o, () => store.head(key));
   // A reader found leaves of the stored object that never verify (e2e S5-5): replace it rather than dedup on it.
-  const damaged = head !== null && (await withRetries(o, () => store.head(damagedKey(m.hash)))) !== null;
+  // A report a repair already answered (repaired/<hash>) doesn't count: reports are never deleted (damage.ts).
+  // Read even when the object is gone: a host may have removed it for a report (team mode), which this upload answers.
+  // Without an object it only decides what to answer, so it's best effort there: a report left unread stays open.
+  const report = head === null ? await withRetries(o, () => openReport(store, m.hash)).catch((e) => (isAbort(e) ? Promise.reject(e) : null)) : await withRetries(o, () => openReport(store, m.hash));
+  const damaged = head !== null && report !== null;
   if (head && head.size === m.size && !damaged) {
     await ensureManifest(o);
     if (state) {
@@ -235,23 +306,23 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
       await states.delete(key);
     }
     result.deduped = true;
-    o.onProgress?.({ done: m.size, total: m.size, sent: 0 });
+    o.onProgress?.({ done: m.size, total: m.size, sent: result.bytesSent });
     return result;
   }
   // A different size at a content-addressed key, or a reported damage, means a broken object: the upload below
-  // replaces it, and the damage note goes once it has.
+  // replaces it, and once it has, the report is answered (repaired/<hash>; nothing is deleted).
   await ensureManifest(o);
   const repaired = async <T>(r: T): Promise<T> => {
-    if (damaged) await store.delete(damagedKey(m.hash)).catch(() => {});
+    if (report) await markRepaired(store, m.hash, report).catch(() => {});
     return r;
   };
 
   if (m.size <= partSize && !resumable) {
     const bytes = await readVerified(o, 0, m.size);
     await withRetries(o, () => store.put(key, bytes, { contentType: o.contentType }));
-    result.partsSent = 1;
-    result.bytesSent = m.size;
-    o.onProgress?.({ done: m.size, total: m.size, sent: m.size });
+    result.partsSent += 1;
+    result.bytesSent += m.size;
+    o.onProgress?.({ done: m.size, total: m.size, sent: result.bytesSent });
     return repaired(result);
   }
 
@@ -281,7 +352,11 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
         .map((p) => ({ partNumber: p.partNumber, etag: p.etag, size: p.size }));
     } catch (e) {
       if (isAbort(e)) throw e;
-      if (uploadGone(e)) state = null;
+      if (uploadGone(e)) {
+        // Completed by another process resuming it too, or expired: uploadSettled looks for the object, then goes again.
+        await states.delete(key);
+        throw e;
+      }
       // Otherwise the store can't list parts: trust the parts recorded as they landed.
     }
   }
@@ -297,7 +372,7 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   result.resumedParts = done.size;
   let doneBytes = 0;
   for (const n of done.keys()) doneBytes += partLength(n);
-  o.onProgress?.({ done: doneBytes, total: m.size, sent: 0 });
+  o.onProgress?.({ done: doneBytes, total: m.size, sent: result.bytesSent });
 
   // Saves are chained so a slow save can't overwrite a newer one.
   let saving: Promise<void> = Promise.resolve();
@@ -346,11 +421,23 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   // finished object), whatever a sibling's own last error was.
   const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
   const bad = failures.find((r) => uploadGone(r.reason)) ?? failures[0];
-  const finished = async () => {
+  // `thorough`: when an ETag can't tell (none, or the same one: S3's multipart ETag depends only on the bytes and the
+  // part layout, so replacing a falsely reported object with the same bytes keeps it), read the object and verify it.
+  // Only the last check after a failure does that: it downloads the object.
+  const finished = async (thorough = false) => {
     const h = await store.head(key).catch(() => null);
     if (h === null || h.size !== m.size) return false;
     // Replacing a damaged object: the old one has the right size too. Only a new ETag says someone replaced it.
-    return !damaged || (h.etag !== undefined && head?.etag !== undefined && h.etag !== head.etag);
+    if (!damaged || (h.etag !== undefined && head?.etag !== undefined && h.etag !== head.etag)) return true;
+    if (!thorough) return false;
+    try {
+      return await storedMatches(store, key, m, o.hasher, o.signal);
+    } catch (e) {
+      // A cancellation, whatever its reason (a custom one, AbortSignal.timeout's), is not a failed verification.
+      if (o.signal?.aborted) throw o.signal.reason;
+      if (isAbort(e)) throw e;
+      return false;
+    }
   };
   try {
     if (bad) throw bad.reason;
@@ -384,10 +471,14 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     if (isAbort(e)) throw e;
     // The upload may be gone, or completion refused: either another caller completed the object (success), or the
     // store dropped the upload (forget it, so the next attempt starts over instead of failing again).
-    if (await finished()) {
+    if (await finished(true)) {
+      // Ours may still hold parts (a part failed, and the object turned out fine): don't leave them stored and
+      // forgotten. An upload that completed or is gone just refuses.
+      if (!uploadGone(e)) await upload.abort().catch(() => {});
       await states.delete(key);
       result.deduped = true;
-      return result;
+      // A damaged object replaced (a new ETag), or read back and verified: the report can go.
+      return repaired(result);
     }
     if (uploadGone(e)) await states.delete(key);
     throw e;

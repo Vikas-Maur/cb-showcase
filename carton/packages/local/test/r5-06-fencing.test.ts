@@ -10,6 +10,8 @@
 // The worker test keeps 500 ms: there no helper should start at all.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { World, sleep } from "./support/world.ts";
 
 const ops = (id: string, v: string) => [{ op: "set", path: ["timelineItems", id, "name"], value: v }];
@@ -84,15 +86,25 @@ async function workerStall(name: string, engineThread: boolean) {
   const nonce0 = worker.ready.nonce;
   worker.send(`commit gui.1 ${JSON.stringify(ops("c0", "gui"))}`);
   await worker.next((x) => x.committed === "gui.1");
-  // the library worker's main loop chews on a multi-MB project.json for 500 ms; an agent's cb lands meanwhile
+  // the library worker's main loop chews on a multi-MB project.json; an agent's cb lands meanwhile, once the stall is
+  // certainly on (its marker file). 500 ms for the engine thread. The control's stall must outlast the patience a `cb`
+  // has with the app since B3 (pings of 100, 300 and 1000 ms: 1.4 s) with room for a loaded box, or the cb simply waits
+  // it out and no takeover happens (CI #21: a 500 ms stall never provoked one after B3)
+  const stall = engineThread ? 500 : 4000;
   const agent = w.cbArmed({ ops: ops("c1", "D") });
   await agent.ready;
-  worker.send("stall 500");
-  await sleep(50);
+  const marker = join(w.dir, "stalling");
+  worker.send(`stall ${stall} ${marker}`);
+  for (const end = Date.now() + 10_000; !existsSync(marker); await sleep(5)) if (Date.now() > end) throw new Error("the worker never stalled");
   agent.go();
   const r = await agent.result;
   const stalled = await worker.next((x) => x.stalled);
-  await sleep(engineThread ? 500 : 3500); // the control's worker takes the lease back after 2 s
+  if (engineThread) await sleep(500);
+  else {
+    // the control's worker takes the lease back (2 s after it found itself fenced): wait for it, bounded
+    const back = () => { const ev = w.events(); const take = ev.find((e) => e.type === "lease" && e.pid !== worker.proc.pid); return !!take && ev.some((e) => e.type === "lease" && e.pid === worker.proc.pid && e.t > take.t); };
+    for (const end = Date.now() + 20_000; !back() && Date.now() < end; ) await sleep(50);
+  }
   worker.send("nonce");
   const now = await worker.next((x) => "nonce" in x && !("ready" in x) && x !== worker.ready);
   return { w, worker, nonce0, r, stalled, now };

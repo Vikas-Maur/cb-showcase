@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { concatBytes, equalBytes } from "../src/bytes.ts";
 import { MemoryLeafCache } from "../src/cache.ts";
 import { damagedKey, mediaKey, proxyPointerKey, streamSegmentKey } from "../src/keys.ts";
+import { FsLeafCache } from "../src/node/fs-cache.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
 import { LeafMismatchError } from "../src/range-source.ts";
 import { MediaReader } from "../src/read.ts";
 import { claimProxyStream, findProxy, ProxyStreamReader, ProxyStreamWriter, streamRangeSource, type PlayedPart } from "../src/stream.ts";
 import { CountingMemoryStore, FaultyStore } from "../src/testing.ts";
-import { xorshiftBytes } from "./helpers.ts";
+import { scratchDir, xorshiftBytes } from "./helpers.ts";
 
 const KiB = 1024;
 const seg = (i: number) => xorshiftBytes(300 * KiB + i * 7, 100 + i);
@@ -186,4 +187,153 @@ test("a finished stream whose entry can't be read fails the play instead of wait
   assert.equal(outcome, "StreamDamagedError");
   assert.deepEqual(got, [0]);
   assert.ok(store.objects.has(damagedKey(writer.id)), "reported, so the owner's next share replaces it");
+});
+
+test("overlapping reads of the same entry keep the cache in order (S5 review round, finding 1)", async () => {
+  const { writer, reader } = setup();
+  await writer.init(INIT);
+  for (let i = 0; i < 3; i++) await writer.segment(seg(i), 2);
+  await writer.end();
+  await Promise.all([reader.segment(0), reader.segment(0), reader.segment(1)]);
+  assert.equal((await reader.segment(1))!.index, 1);
+  assert.deepEqual((await reader.known()).map((s) => s.index), [0, 1, 2]);
+});
+
+test("a stream that ends between the reader's two reads is not damaged (S5 review round, finding 2)", async () => {
+  const { store, writer, reader } = setup();
+  await writer.init(INIT);
+  const get = store.get.bind(store);
+  let raced = false;
+  // The segment's read sees nothing; before the end's read, the writer puts the segment and ends.
+  store.get = async (key, range) => {
+    const got = await get(key, range);
+    if (key === streamSegmentKey(writer.id, 0) && !raced) {
+      raced = true;
+      await writer.segment(seg(0), 2);
+      await writer.end();
+    }
+    return got;
+  };
+  const s0 = await reader.waitFor(0);
+  assert.equal(s0?.index, 0);
+  assert.equal(raced, true);
+  assert.equal(store.objects.has(damagedKey(writer.id)), false);
+});
+
+test("the playlist of a finished stream missing an entry fails and reports it, instead of staying live (S5 review round, finding 3)", async () => {
+  const { store, writer, reader } = setup();
+  await writer.init(INIT);
+  await writer.segment(seg(0), 2);
+  await writer.segment(seg(1), 2);
+  await writer.end();
+  store.objects.delete(streamSegmentKey(writer.id, 1));
+  await assert.rejects(reader.playlist((h) => `/m/${h}`), { name: "StreamDamagedError" });
+  assert.ok(store.objects.has(damagedKey(writer.id)));
+});
+
+test("a finished stream whose segment fails a whole-stream read is reported, and taken over by the next claim (finding 8; S5-7)", async () => {
+  const store = new CountingMemoryStore();
+  const src = "ab".repeat(32);
+  const a = await claimProxyStream(store, src, "p1", "libx264");
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, id: (a.pointer as { stream: string }).stream });
+  await w.init(INIT);
+  await w.segment(seg(0), 2);
+  const s1 = await w.segment(seg(1), 2);
+  await w.end();
+  store.list = async () => assert.fail("the reuse check lists nothing");
+  await store.put(damagedKey("cd".repeat(32)), new Uint8Array([1])); // someone else's report
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, false);
+  store.objects.get(mediaKey(s1.hash))![5] ^= 255;
+  const media = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 });
+  const reader = new ProxyStreamReader({ store, media, id: w.id });
+  const whole = streamRangeSource({ streams: (id) => (id === w.id ? reader : null), media: media.toolSource() });
+  await assert.rejects(async () => {
+    for await (const _ of whole.read(w.id, 0, 1e9));
+  }, LeafMismatchError);
+  assert.ok(store.objects.has(damagedKey(w.id)), "reported against the stream");
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
+});
+
+test("a whole-object proxy whose stored size is wrong is replaced (S5 review round, finding 7)", async () => {
+  const store = new CountingMemoryStore();
+  const src = "cd".repeat(32);
+  const h = "ef".repeat(32);
+  await store.put(proxyPointerKey(src, "p1"), new TextEncoder().encode(JSON.stringify({ hash: h, size: 3, encoder: "libx264" })));
+  await store.put(mediaKey(h), new Uint8Array(2));
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
+});
+
+test("checking a finished stream for damage reads no segment entry; a takeover deletes nothing (round 2, finding 4)", async () => {
+  const store = new CountingMemoryStore();
+  const src = "ab".repeat(32);
+  const a = await claimProxyStream(store, src, "p1", "libx264");
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, id: (a.pointer as { stream: string }).stream });
+  await w.init(INIT);
+  for (let i = 0; i < 3; i++) await w.segment(seg(i), 2);
+  await w.end();
+  await store.put(damagedKey("cd".repeat(32)), new Uint8Array([1])); // someone else's report
+  const got: string[] = [];
+  const get = store.get.bind(store);
+  store.get = async (k, r) => {
+    got.push(k);
+    return get(k, r);
+  };
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, false);
+  assert.equal(got.filter((k) => k.startsWith(`ps/${w.id}/s/`)).length, 0, "no segment entry read");
+  store.get = get;
+  // Reported: taken over, and the old stream's report goes with it (nothing points at that stream now).
+  await store.put(damagedKey(w.id), new Uint8Array([1]));
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
+  assert.ok(store.objects.has(damagedKey(w.id)), "the old stream's report stays: nothing is deleted, nothing points at it");
+});
+
+const offlineDir = scratchDir("stream-offline");
+after(() => offlineDir.cleanup());
+
+test("a stream played once replays with the store unreachable: its entries are kept beside its leaves (e2e S5-6)", async () => {
+  const store = new CountingMemoryStore();
+  const writer = new ProxyStreamWriter({ store, hasher: nodeHasher });
+  await writer.init(INIT);
+  for (let i = 0; i < 3; i++) await writer.segment(seg(i), 2);
+  await writer.end();
+  const cache = new FsLeafCache(offlineDir.dir);
+  const play = async (from: CountingMemoryStore) => {
+    const reader = new ProxyStreamReader({ store: from, media: new MediaReader({ store: from, hasher: nodeHasher, cache }), id: writer.id, pollMs: 5 });
+    const got: Uint8Array[] = [];
+    for await (const p of reader.play()) got.push(p.bytes);
+    return { got, playlist: await reader.playlist((h) => `/m/${h}`) };
+  };
+  const online = await play(store);
+  assert.equal(online.got.length, 4);
+  // Offline: every store call fails, as with no network.
+  const down = new CountingMemoryStore();
+  for (const m of ["get", "head", "put", "list", "delete"] as const) {
+    (down as unknown as Record<string, unknown>)[m] = async () => {
+      throw new Error("NetworkError: the store is unreachable");
+    };
+  }
+  const offline = await play(down);
+  assert.equal(offline.got.length, 4, "init + 3 segments, from the disk cache");
+  assert.ok(offline.got.every((b, i) => equalBytes(b, online.got[i])));
+  assert.equal(offline.playlist, online.playlist, "the playlist too, ended");
+});
+
+test("an abandoned stream is found by HEADs, without listing the store (e2e S5-7)", async () => {
+  const store = new CountingMemoryStore();
+  store.list = async () => assert.fail("no list: a Carton host's HTTP API has none");
+  const src = "ab".repeat(32);
+  let now = 1_000_000;
+  const clock = { now: () => now, staleMs: 60_000 };
+  const a = await claimProxyStream(store, src, "p1", "libx264", clock);
+  const id = (a.pointer as { stream: string }).stream;
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, id });
+  await w.init(INIT);
+  for (let i = 0; i < 11; i++) {
+    const e = await w.segment(seg(i % 3), 2);
+    store.objects.set(streamSegmentKey(id, i), new TextEncoder().encode(JSON.stringify({ ...e, at: now + i * 10_000 })));
+  }
+  now += 150_000; // the newest entry (index 10) is 50 s old: live, though the claim and the first ten are older
+  assert.equal((await claimProxyStream(store, src, "p1", "x", clock)).claimed, false);
+  now += 11_000; // 61 s since the newest
+  assert.equal((await claimProxyStream(store, src, "p1", "x", clock)).claimed, true);
 });

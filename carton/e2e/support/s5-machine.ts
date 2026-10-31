@@ -5,6 +5,10 @@
 // printed as they happen, so the scenario can act mid-upload (kill this process, cut its link).
 //   S5_STORE=<store JSON> s5-machine <home>
 //
+// Collab proxies are segmented streams (media's stream.ts): `share` with `holdEnd` puts every segment but holds the
+// stream's `end` entry until `release` (prints {endHeld}, then {endSent}), so "while the proxy uploads" lasts as long
+// as a test needs; `play` reads a stream as a player does (init, then each segment, verified, waiting for the rest).
+//
 // The store goes in the environment, not the command line, since it may hold keys. Store JSON: {kind:"fs", root} | {kind:"s3", endpoint, bucket, region, accessKeyId, secretAccessKey}
 //           | {kind:"http", baseUrl, projectId, token}
 //
@@ -14,7 +18,7 @@
 // the app finds what a teammate shared; `proxyOf` follows a source's proxy pointer in the store (§11).
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
-import { open } from "node:fs/promises";
+import { open, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
@@ -24,7 +28,7 @@ import { createFsBlobStore } from "@carton/blob-fs";
 import { createS3BlobStore } from "@carton/blob-s3";
 import { cardboardAdapter } from "@carton/cardboard";
 import { openLocal } from "@carton/local";
-import { COLLAB_PROXY_720P, mediaHash, MediaReader, proxyPointerKey, serveMedia, toMediaRecord, uploadMedia, type RangeSource, type ReaderEvent } from "@carton/media";
+import { COLLAB_PROXY_720P, mediaHash, MediaReader, ProxyStreamReader, proxyPointerKey, serveMedia, toMediaRecord, uploadMedia, type RangeSource, type ReaderEvent } from "@carton/media";
 import { FsLeafCache, FsUploadStateStore, fileSource, hashFile, hostProxyEncoder, nodeHasher, shareMedia, startRangeServer, type RangeServer, type ShareEvent } from "@carton/media/node";
 import { locateCartonDb } from "@carton/store-sqlite";
 import { assertInScratch, dataDirFor } from "./env.ts";
@@ -130,6 +134,27 @@ function holdCompletes(s: BlobStore): BlobStore {
   };
 }
 
+/** `s` with a stream's `end` entry (ps/<stream>/end) held until `releaseHeld()`: its segments go up, it never ends. */
+function holdStreamEnd(s: BlobStore): BlobStore {
+  const gate = new Promise<void>((r) => (releaseHeld = r));
+  return new Proxy(s, {
+    get(target, prop) {
+      if (prop !== "put") {
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? v.bind(target) : v; // stores may be classes with private fields
+      }
+      return async (key: string, data: Uint8Array, opts?: unknown) => {
+        if (/^ps\/[0-9a-f]{64}\/end$/.test(key)) {
+          out({ endHeld: key });
+          await gate;
+          out({ endSent: key });
+        }
+        return (target.put as (k: string, d: Uint8Array, o?: unknown) => Promise<unknown>)(key, data, opts);
+      };
+    },
+  });
+}
+
 /** The player's route: `GET /p/<hash>` answered by serveMedia, as protocol.handle("cardboard-media") would. */
 async function startPlayer(source: RangeSource): Promise<string> {
   const server = createServer((req, res) => {
@@ -166,7 +191,8 @@ async function run(c: Cmd): Promise<Record<string, unknown>> {
     case "share": {
       const shareEvents: ShareEvent[] = [];
       const r = await shareMedia({
-        store,
+        store: c.holdEnd ? holdStreamEnd(store) : store,
+        ...(process.env.FFMPEG ? { ffmpeg: process.env.FFMPEG } : {}),
         record: toMediaRecord(c.record),
         local: { original: c.original },
         policy: { originals: c.originals === true, proxies: c.proxies !== false },
@@ -222,6 +248,31 @@ async function run(c: Cmd): Promise<Record<string, unknown>> {
       // the collab proxy made from source `hash` with the app's profile: the pointer keyed by (source hash, profile)
       const b = await store.get(proxyPointerKey(c.hash, c.profile ?? COLLAB_PROXY_720P.id));
       return { pointer: b ? JSON.parse(new TextDecoder().decode(b)) : null };
+    }
+    case "play": {
+      // a stream as a player reads it: init, then each segment verified, waiting for the ones still uploading; `segments`
+      // stops after that many (a teammate mid-upload); `save` writes what was played (for ffprobe)
+      events = [];
+      const sr = new ProxyStreamReader({ store, media: reader, id: c.stream, pollMs: 100, maxPollMs: 500 });
+      const parts: Uint8Array[] = [];
+      let segments = 0;
+      let init = 0;
+      let failed: string | undefined;
+      try {
+        for await (const p of sr.play()) {
+          parts.push(p.bytes.slice());
+          if (p.part === "init") init = p.bytes.length;
+          else if (++segments === c.segments) break;
+        }
+      } catch (e) {
+        failed = `${(e as Error).name}: ${(e as Error).message}`;
+      }
+      const all = Buffer.concat(parts);
+      if (c.save) {
+        assertInScratch(c.save, "played stream");
+        await writeFile(c.save, all);
+      }
+      return { init, segments, bytes: all.length, sha256: sha(all), ended: (await sr.end().catch(() => null)) ?? null, failed, events };
     }
     case "stat":
       return { stat: await reader.stat(c.hash) };

@@ -1,0 +1,108 @@
+{
+  "format": "cardboard-project",
+  "version": 1,
+  "project": {
+    "id": "demo-project",
+    "name": "Demo",
+    "createdAt": "2026-10-31T09:00:00.000Z",
+    "updatedAt": "2026-10-31T09:00:00.000Z",
+    "stateUpdatedAt": 1793437200000,
+    "aspectRatio": "16:9",
+    "media": [
+      {
+        "id": "m-intro",
+        "createdAt": "2026-10-31T09:00:00.000Z",
+        "addedAt": "2026-10-31T09:00:00.000Z",
+        "data": {
+          "type": "text",
+          "presetId": "custom",
+          "content": "Intro",
+          "fileName": "Text: Intro",
+          "format": "text",
+          "size": 0
+        }
+      },
+      {
+        "id": "m-middle",
+        "createdAt": "2026-10-31T09:00:00.000Z",
+        "addedAt": "2026-10-31T09:00:00.000Z",
+        "data": {
+          "type": "text",
+          "presetId": "custom",
+          "content": "Middle",
+          "fileName": "Text: Middle",
+          "format": "text",
+          "size": 0
+        }
+      },
+      {
+        "id": "m-outro",
+        "createdAt": "2026-10-31T09:00:00.000Z",
+        "addedAt": "2026-10-31T09:00:00.000Z",
+        "data": {
+          "type": "text",
+          "presetId": "custom",
+          "content": "Outro",
+          "fileName": "Text: Outro",
+          "format": "text",
+          "size": 0
+        }
+      }
+    ],
+    "tracks": [
+      {
+        "id": "titles",
+        "name": "Titles",
+        "order": 0,
+        "locked": false,
+        "visible": true,
+        "muted": false
+      }
+    ],
+    "timelineItems": [
+      {
+        "id": "intro",
+        "trackId": "titles",
+        "type": "text",
+        "startTime": 0,
+        "endTime": 3,
+        "trimStart": 0,
+        "trimEnd": 3,
+        "name": "Intro",
+        "textContent": "Intro",
+        "fontSize": 96,
+        "color": "#f3eee6",
+        "mediaItemId": "m-intro"
+      },
+      {
+        "id": "middle",
+        "trackId": "titles",
+        "type": "text",
+        "startTime": 3,
+        "endTime": 6,
+        "trimStart": 0,
+        "trimEnd": 3,
+        "name": "Middle",
+        "textContent": "Middle",
+        "fontSize": 96,
+        "color": "#f3eee6",
+        "mediaItemId": "m-middle"
+      },
+      {
+        "id": "outro",
+        "trackId": "titles",
+        "type": "text",
+        "startTime": 6,
+        "endTime": 8,
+        "trimStart": 0,
+        "trimEnd": 2,
+        "name": "Outro",
+        "textContent": "Outro",
+        "fontSize": 96,
+        "color": "#f3eee6",
+        "mediaItemId": "m-outro"
+      }
+    ]
+  },
+  "media": []
+}

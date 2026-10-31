@@ -18,7 +18,8 @@ import { hookDelivered, isFallbackActor } from "./identity.ts";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
 export type WriteOp =
-  | { kind: "commit"; cut?: string; base?: string; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string }
+  /** `base`: the version the edit was made on, as Carton gave it: a StateRef, or a printed header (default: head). */
+  | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string }
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs" }
   | { kind: "restore"; ref: string; cut?: string }
   | { kind: "revert"; changeId: ChangeId; cut?: string }
@@ -294,7 +295,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // `cb resolve` in the same atomic batch as the append, so no crash or concurrent writer can separate them.
       // The base is fixed once per request (default: head now): a retry after core lost its append race must merge
       // from the same base, never re-apply the proposal on a newer head.
-      if (op.base === undefined) op.base = (await carton.head(op.cut)).ref as unknown as string;
+      if (op.base === undefined) op.base = (await carton.head(op.cut)).ref;
       const store = storeOf(carton);
       const receipt = store ? await store.get<Receipt>("notices", receiptKey(req.id)) : undefined;
       if (receipt && !receipt.shared) {
@@ -333,13 +334,14 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
         ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices, id: req.id })
         : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
       // nothing new to fold in, but a partial fold of this cut kept some of it out: folding again folds in the rest
-      // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4)
-      if (r?.status === "up-to-date" && !op.check && !op.reject?.length) {
-        // its own id (the fold above may have recorded the request's id as a no-op); a retry finds that change again
-        const restId = `${req.id}.rest`;
-        const inverse = (await revertedBy(carton, restId)) ?? (await keptOut(carton, op.from, op.into));
+      // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4).
+      // A retry finds the first try's answer recorded as a no-op (confirmed, empty) and carries on from there
+      const nothingNew = r?.status === "up-to-date" || (r?.status === "confirmed" && r.empty);
+      if (nothingNew && !op.check && !op.reject?.length) {
+        const inverse = await restOf(carton, req.id, op.from, op.into);
         if (inverse) {
-          r = await carton.revert(inverse, { author, cut: op.into, id: restId });
+          // its own id (the fold above recorded the request's id as a no-op); a retry gets this revert's answer again
+          r = await carton.revert(inverse, { author, cut: op.into, id: `${req.id}.rest` });
           extra = { rest: true, inverse };
         }
       }
@@ -453,13 +455,17 @@ async function answeredBefore(carton: Carton, id: ChangeId): Promise<string | nu
 
 /**
  * The newest partial fold of `from` into the cut whose kept-out part isn't folded in yet: its inverse change (a
- * `partial-revert` whose `reverts` is a merge of `from`, and that no later change reverts). From the Store's confirmed
- * log; only read when a fold finds nothing new.
+ * `partial-revert` whose `reverts` is a merge of `from`, and that no later change reverts). `from` is a cut (any of its
+ * versions' partial folds, newest first) or one version of it, `cut@seq` (that version's only). From the Store's
+ * confirmed log; only read when a fold finds nothing new.
  */
 async function keptOut(carton: Carton, from: string, into?: string): Promise<ChangeId | null> {
+  const at = /^(.+)@(\d+)(?:~[0-9a-f]+)?$/.exec(from);
+  const fromCut = at ? at[1]! : from;
+  const fromSeq = at ? Number(at[2]) : null;
   const store = storeOf(carton);
   if (!store) return null;
-  type Row = { id: ChangeId; kind?: string; reverts?: ChangeId | ChangeId[]; mergeOf?: { branchId: string } };
+  type Row = { id: ChangeId; kind?: string; reverts?: ChangeId | ChangeId[]; mergeOf?: { branchId: string; seq: number } };
   const rows = (await store.range<Row>("changes", { prefix: [into ?? carton.cut] })).map((r) => r.value);
   const reverted = new Set<ChangeId>();
   for (const c of rows) if (c.kind !== "partial-revert") for (const x of [c.reverts ?? []].flat()) reverted.add(x);
@@ -469,9 +475,27 @@ async function keptOut(carton: Carton, from: string, into?: string): Promise<Cha
     if (c.kind !== "partial-revert" || reverted.has(c.id)) continue;
     const merge = byId.get([c.reverts ?? []].flat()[0] ?? "");
     // a partial fold whose merge was undone since has nothing left to complete
-    if (merge && !reverted.has(merge.id) && merge.mergeOf && (from === merge.mergeOf.branchId || from.startsWith(`${merge.mergeOf.branchId}@`))) return c.id;
+    if (merge && !reverted.has(merge.id) && merge.mergeOf?.branchId === fromCut && (fromSeq === null || merge.mergeOf.seq === fromSeq)) return c.id;
   }
   return null;
+}
+
+/**
+ * What a fold request folds in as "the rest": decided once per request and recorded before acting (local `notices`
+ * table, `["@fold-rest", id]`, which no actor reads), so a retry, or a second copy of the request, replays that
+ * decision: the same inverse, or nothing, never a partial fold made after the request was answered.
+ */
+async function restOf(carton: Carton, requestId: ChangeId, from: string, into?: string): Promise<ChangeId | null> {
+  const store = storeOf(carton);
+  const key = ["@fold-rest", requestId];
+  type Decision = { inverse: ChangeId | null };
+  const done = await revertedBy(carton, `${requestId}.rest`);
+  if (done || !store) return done ?? (await keptOut(carton, from, into));
+  const prior = await store.get<Decision>("notices", key);
+  if (prior) return prior.inverse;
+  const inverse = await keptOut(carton, from, into);
+  if (await store.write([{ table: "notices", key, value: { inverse } satisfies Decision }], [{ table: "notices", key, expect: "absent" }])) return inverse;
+  return (await store.get<Decision>("notices", key))?.inverse ?? null; // another copy decided first
 }
 
 /** The change a confirmed revert with this id reverted (a retried "fold in the rest"), or null. */

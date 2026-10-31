@@ -961,7 +961,8 @@
             "widen",
             "settle",
             "engine",
-            "reader"
+            "reader",
+            "lock"
           ],
           "ignore": [
             "round",
@@ -985,7 +986,8 @@
             "widen",
             "settle",
             "engine",
-            "reader"
+            "reader",
+            "lock"
           ]
         }
       ]
@@ -994,7 +996,7 @@
       "id": "cardboard-race-macos",
       "agent": "cardboard-adapter",
       "runner": "macos-latest",
-      "claim": "P10 on APFS (macOS), the portable matrix on the shipped code (notes 2: 'APFS: node race.ts on a Mac')",
+      "claim": "P10 on APFS (macOS), the portable matrix on the shipped code (26 configs incl. in-place writers and the --lock retry reader) (notes 2: 'APFS: node race.ts on a Mac')",
       "timeout": 30,
       "steps": [
         {
@@ -1038,7 +1040,8 @@
             "widen",
             "settle",
             "engine",
-            "reader"
+            "reader",
+            "lock"
           ],
           "ignore": [
             "round",
@@ -1062,7 +1065,8 @@
             "widen",
             "settle",
             "engine",
-            "reader"
+            "reader",
+            "lock"
           ]
         }
       ]
@@ -1071,7 +1075,7 @@
       "id": "cardboard-race-windows",
       "agent": "cardboard-adapter",
       "runner": "windows-latest",
-      "claim": "P10 on NTFS (notes 2: the [GATE] run is the user's laptop on mains power; this is a hosted Windows VM with Defender on): the portable matrix on the shipped code, run-windows.ps1's defaults (3 trials x 3000 rounds), node race.ts as the script runs it",
+      "claim": "P10 on NTFS (notes 2: the [GATE] run is the user's laptop on mains power; this is a hosted Windows VM with Defender on): the portable matrix on the shipped code (26 configs incl. in-place writers and the --lock retry reader), run-windows.ps1's defaults (3 trials x 3000 rounds), node race.ts as the script runs it",
       "timeout": 80,
       "steps": [
         {
@@ -1125,7 +1129,8 @@
             "widen",
             "settle",
             "engine",
-            "reader"
+            "reader",
+            "lock"
           ],
           "ignore": [
             "round",
@@ -1149,10 +1154,11 @@
             "widen",
             "settle",
             "engine",
-            "reader"
+            "reader",
+            "lock"
           ],
           "expect": {
-            "rows": 57
+            "rows": 78
           }
         }
       ]

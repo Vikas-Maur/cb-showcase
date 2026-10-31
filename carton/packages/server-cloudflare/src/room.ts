@@ -23,6 +23,7 @@ import type { Env } from "./env.ts";
 import { doSqlStorage } from "./storage.ts";
 import { r2BlobStore } from "./blob-r2.ts";
 import { doBlobStore } from "./blob-do.ts";
+import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 
 export const AUTH_HEADER = "x-carton-auth";
 export const PROJECT_HEADER = "x-carton-project";
@@ -82,6 +83,16 @@ function teamOf(env: Env, projectId: string): string | undefined {
 export const mediaBlobs = (env: Env, projectId: string): BlobStore | undefined =>
   env.BLOBS ? projectMediaStore(r2BlobStore(env.BLOBS), projectId, teamOf(env, projectId)) : projectBlobs(env, projectId, "media");
 
+// The newest document schemaVersion the room accepts in hello: SCHEMA_VERSION when set (to pin a deployment), else the
+// Cardboard adapter's CARDBOARD_SCHEMA_VERSION, so a Worker built with an adapter takes that adapter's clients (H-SV).
+export function schemaVersionOf(env: Pick<Env, "SCHEMA_VERSION">): number {
+  const v = env.SCHEMA_VERSION?.trim();
+  if (!v) return CARDBOARD_SCHEMA_VERSION;
+  const n = Number(v);
+  if (!Number.isSafeInteger(n) || n < 1) throw new Error(`SCHEMA_VERSION must be a positive integer, not ${JSON.stringify(env.SCHEMA_VERSION)}`);
+  return n;
+}
+
 export class ProjectRoom {
   readonly #ctx: DurableObjectState;
   readonly #env: Env;
@@ -117,7 +128,7 @@ export class ProjectRoom {
       storage: doSqlStorage(this.#ctx.storage),
       auth: trusted,
       projectId,
-      schemaVersion: Number(this.#env.SCHEMA_VERSION ?? 1),
+      schemaVersion: schemaVersionOf(this.#env),
       maxEnvelopeBytes: maxEnvelopeOf(this.#env),
       ...(blobs ? { blobs } : {}),
       onEvent: (e) => {
