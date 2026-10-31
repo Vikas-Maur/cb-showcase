@@ -16,9 +16,10 @@
 //     (ranges, tools through the loopback range server), and bad bytes in the store are never handed to a tool. The
 //     upload's completion is held in those cases (s5-machine's `holdComplete`), so "while it uploads" is a fact, not
 //     a race with the runner's speed;
-//   - bugs and gaps found here, each a minimal `todo` test named after its id (S5-2 … S5-5): signed media URLs from a
-//     host reached through a proxy or a port map; an upload the store dropped mid-way; a damaged object repaired by
-//     sharing again; the same footage in two projects of one team.
+//   - bugs and gaps found here, each a minimal `todo` test named after its id while open (S5-2, S5-3): signed media
+//     URLs from a host reached through a proxy or a port map; the same footage in two projects of one team. Fixed ones
+//     stay as normal tests (S5-1, S5-4, S5-5, S5-6 offline replay of a proxy stream, S5-7 re-sharing through a host,
+//     and an upload the store dropped mid-way, which now starts over once within the same call).
 import { after, before, test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
@@ -151,9 +152,6 @@ for (const kind of ["blob-fs", "blob-s3", "host-http"] as const) {
   test(`S5 share a clip through ${kind}: the teammate's process reads every byte back verified; sharing it again, or from the teammate's machine with the same footage, uploads nothing; offline, the teammate replays from its cache`, {
     timeout: 240_000,
     skip: NO_FF || skipFor(kind),
-    // S5-7: sharing again checks the stream for damage and staleness with store.list (bad/, ps/<stream>/s/); a Carton
-    // host's HTTP media API has no list route, so the second share of any clip through a host fails
-    todo: kind === "host-http" ? "S5-7, media + hosts-plugins: re-sharing a stream proxy needs store.list, which the host's HTTP media API lacks" : undefined,
   }, async (t) => {
     const w = await world(t, kind);
     const original = placeOriginal(w.owner, clips.original);
@@ -217,14 +215,13 @@ for (const kind of ["blob-fs", "blob-s3", "host-http"] as const) {
   });
 }
 
-// S5-6: a teammate who played a stream proxy can't play it again offline. Its segments' bytes are in the disk cache
+// S5-6 (fixed by media; was todo): a teammate who played a stream proxy couldn't play it again offline. Its segments' bytes are in the disk cache
 // (MediaReader), but the stream's entries (ps/<stream>/init, /s/<n>, /end) are read from the store on every play and
 // never cached, so the player can't even find the init segment with the store unreachable. Before streams, a whole
 // proxy replayed offline (this scenario's old check).
 test("S5-6 offline: a teammate who played the proxy stream replays it from the disk cache with the store unreachable", {
   timeout: 240_000,
   skip: NO_FF || S3_SKIP,
-  todo: "S5-6, media: a stream's entries aren't cached, so a played stream proxy can't be replayed offline",
 }, async (t) => {
   const w = await world(t, "blob-s3");
   const original = placeOriginal(w.owner, clips.original);
@@ -430,7 +427,11 @@ for (const kind of ["blob-s3", "host-http"] as const) {
 // racy there. The concurrent-resume test above shows the same waste on S3 in its diagnostics.
 // (S5-4, fixed in media d5508fb1: uploadMedia retried uploadPart on NoSuchUpload, re-sending every in-flight part up to
 // 5 times to an upload that could never take it)
-test("an upload the store dropped mid-way (expired, or completed by another process) costs at most the parts that were in flight (host-http)", {
+// The host drops an open upload (expired, or completed by another process) with no object behind it. Since media's CI
+// #27 fix (14222eb) the uploader starts the upload over within the same call (the orchestrator's decision, CI #28: the
+// person never has to retry, and a retry would re-send the whole file anyway). Bound: the parts that were in flight when
+// it was dropped, plus at most one full re-upload; one restart at most (a new upload on the host), and the object intact.
+test("an upload the store dropped mid-way starts over once within the same call: at most the parts in flight plus one full re-upload, and the object verifies (host-http)", {
   timeout: 180_000,
 }, async (t) => {
   const w = await world(t, "host-http");
@@ -440,13 +441,26 @@ test("an upload the store dropped mid-way (expired, or completed by another proc
   const up = owner.ask({ cmd: "upload", path: clips.big, contentType: "video/mp4", retryDelayMs: 50 }, 120_000).then((r) => r.result, (e: Error) => e);
   await until(() => partsRecorded(w.owner, want.hash) >= 1, 60_000, "a first part recorded by the uploader", POLL);
   const st = JSON.parse(readFileSync(statePath(w.owner, want.hash), "utf8")) as { uploadId: string; partSize: number };
-  rmSync(join(w.side.host!.blobRoot, "uploads", st.uploadId), { recursive: true, force: true }); // the host drops it
+  const uploadsDir = join(w.side.host!.blobRoot, "uploads");
+  rmSync(join(uploadsDir, st.uploadId), { recursive: true, force: true }); // the host drops it
   const atDrop = link.upBytes;
+  // every upload the host opens after the drop (a folder per upload id; a full re-upload lives for seconds on this link)
+  const opened = new Set<string>();
+  const watch = setInterval(() => { try { for (const id of readdirSync(uploadsDir)) if (id !== st.uploadId) opened.add(id); } catch { /* not there yet */ } }, 25);
   const outcome = await up;
+  clearInterval(watch);
   const after = link.upBytes - atDrop;
-  t.diagnostic(JSON.stringify({ size: want.size, partSize: st.partSize, bytesUpAfterTheDrop: after, outcome: outcome instanceof Error ? outcome.message : outcome }));
-  assert.equal(partsRecorded(w.owner, want.hash), 0, "the dead upload is forgotten, so the next attempt starts a new one");
-  assert.ok(after <= 2 * st.partSize + CHATTER, `${after} bytes went up after the host dropped the upload; at most the 2 parts in flight should`);
+  t.diagnostic(JSON.stringify({ size: want.size, partSize: st.partSize, bytesUpAfterTheDrop: after, uploadsOpenedAfterTheDrop: opened.size, outcome: outcome instanceof Error ? outcome.message : outcome }));
+  assert.ok(!(outcome instanceof Error), `the call carried on to the end: ${outcome instanceof Error ? outcome.message : ""}`);
+  assert.deepEqual([outcome.hash, outcome.size, outcome.deduped], [want.hash, want.size, false], "the whole object, uploaded");
+  assert.ok(opened.size <= 1, `started over at most once (${opened.size} new uploads on the host)`);
+  assert.ok(after <= 2 * st.partSize + want.size + CHATTER, `${after} bytes went up after the drop; at most the 2 parts in flight plus one full re-upload should`);
+  assert.equal(partsRecorded(w.owner, want.hash), 0, "no open upload left recorded");
+  // the object is intact: a teammate's process reads every byte back, verified against its id
+  const mate = await startMachine(w.procs, "mate", w.mate.home, w.side.storeFor("mate"));
+  const back = await mate.ask({ cmd: "read", hash: want.hash, mode: "verified" }, 120_000);
+  assert.equal(back.failed, undefined, back.failed);
+  assert.equal(back.mediaHash, want.hash, "every byte verifies against the clip's id");
 });
 
 test("S5 the host restarts mid-upload, then loses an open upload: the uploader resumes after the restart, and starts over when the host no longer knows its upload", { timeout: 240_000 }, async (t) => {
