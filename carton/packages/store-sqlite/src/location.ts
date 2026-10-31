@@ -276,7 +276,9 @@ export function projectKey(projectId: string): string {
   if (/^[a-z0-9][a-z0-9_-]{0,99}$/.test(projectId) && !/^(con|prn|aux|nul|com\d|lpt\d)$/.test(projectId)) return projectId;
   return `_${sha256hex(projectId).slice(0, 32)}`;
 }
-const sha256hex = (s: string) => createHash("sha256").update(s).digest("hex");
+// Over the UTF-16 code units, not UTF-8: UTF-8 turns every lone surrogate into U+FFFD, which would give ids that
+// differ only there one folder.
+const sha256hex = (s: string) => createHash("sha256").update(Buffer.from(s, "utf16le")).digest("hex");
 
 const pathFor = (platform: NodeJS.Platform) => (platform === "win32" ? nodePath.win32 : nodePath.posix);
 // Windows and macOS (by default) compare paths case-insensitively.
@@ -337,17 +339,37 @@ const SYNC_ROOTS_MAX_AGE_MS = 10 * 60_000;
  * and its answer is saved (null means it failed: nothing is saved). `cb` is a short process started for each agent
  * call, so an in-process cache alone would still spawn reg.exe every time.
  */
-export function cachedSyncRoots(file: string, query: () => string[] | null, now = Date.now()): string[] {
+export function cachedSyncRoots(file: string, query: () => string[] | null, now = Date.now()): string[] | null {
+  return readSyncRoots(file, query, now)?.roots ?? null;
+}
+
+// The roots and when they were asked for (the file's time when they came from the file, so they expire with it).
+function readSyncRoots(file: string, query: () => string[] | null, now: number): { roots: string[]; at: number } | null {
   try {
     const c = JSON.parse(fs.readFileSync(file, "utf8")) as { at?: unknown; roots?: unknown };
     const age = typeof c.at === "number" ? now - c.at : -1;
-    if (age >= 0 && age < SYNC_ROOTS_MAX_AGE_MS && Array.isArray(c.roots) && c.roots.every((r) => typeof r === "string")) return c.roots as string[];
+    if (age >= 0 && age < SYNC_ROOTS_MAX_AGE_MS && Array.isArray(c.roots) && c.roots.every((r) => typeof r === "string")) return { roots: c.roots as string[], at: c.at as number };
   } catch {
     // missing, half-written by an older process, or not JSON: ask again
   }
   const roots = query();
   if (roots) writeQuietly(file, JSON.stringify({ at: now, roots }));
-  return roots ?? [];
+  return roots ? { roots, at: now } : null;
+}
+
+/**
+ * `nodeProbe().windowsSyncRoots`: the file cache, with the answer also kept in memory for as long as the file keeps
+ * it, so a long-running app sees a sync client installed while it runs. A failed query is kept nowhere: the next
+ * call asks again (until then no sync root is known, which is all a failure can say).
+ */
+export function makeSyncRootsProbe(file: string, query: () => string[] | null, clock: () => number = Date.now): () => string[] {
+  let mem: { at: number; roots: string[] } | null = null;
+  return () => {
+    const now = clock();
+    if (mem && now >= mem.at && now - mem.at < SYNC_ROOTS_MAX_AGE_MS) return mem.roots;
+    mem = readSyncRoots(file, query, now);
+    return mem?.roots ?? [];
+  };
 }
 
 // Write through a temp file and a rename, so a reader never sees half a file. A cache: failures are ignored.
@@ -380,7 +402,7 @@ function exportSyncRoots(): string[] | null {
   }
 }
 
-let syncRootsCache: string[] | null = null;
+let syncRoots: (() => string[]) | null = null;
 let macMounts: { at: number; table: string | null } | null = null;
 
 /** The real OS behind `LocationProbe`. */
@@ -428,8 +450,8 @@ export function nodeProbe(): LocationProbe {
     linkProbe: makeLinkProbe(fs),
     windowsSyncRoots: () => {
       if (process.platform !== "win32") return [];
-      syncRootsCache ??= cachedSyncRoots(nodePath.join(defaultAppDataDir({ platform: process.platform, env: process.env, home: os.homedir() }), "sync-roots.json"), exportSyncRoots);
-      return syncRootsCache;
+      syncRoots ??= makeSyncRootsProbe(nodePath.join(defaultAppDataDir({ platform: process.platform, env: process.env, home: os.homedir() }), "sync-roots.json"), exportSyncRoots);
+      return syncRoots();
     },
   };
 }

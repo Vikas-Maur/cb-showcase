@@ -7,7 +7,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
-import { openProjectStore, openSqliteStore, MovedError, PlacementConflictError } from "../src/index.ts";
+import { openProjectStore, openSqliteStore, MovedError, PlacementConflictError, isThisMachine, machineMark, FORMAT_VERSION } from "../src/index.ts";
 import { scratch } from "./scratch.ts";
 
 const root = scratch("move");
@@ -119,8 +119,9 @@ test("an interrupted move (copy in place, old file never marked) is redone from 
   // The state a crash between "rename the copy into place" and "mark the old file" leaves: a copy that says whose
   // copy it is, and an old file without the mark, which kept taking writes.
   await a.store.exportCopy(p.inAppData, []);
+  const dbId = (a.store.db.raw.prepare(`SELECT v FROM "_carton" WHERE k = 'dbId'`).get() as { v: string }).v;
   const copy = new DatabaseSync(p.inAppData);
-  copy.prepare(`INSERT INTO "_carton"(k, v) VALUES ('copyOf', ?)`).run(JSON.stringify({ path: p.inBundle, token: "0badc0de0badc0de" }));
+  copy.prepare(`INSERT INTO "_carton"(k, v) VALUES ('copyOf', ?)`).run(JSON.stringify({ path: p.inBundle, token: "0badc0de0badc0de", dbId: JSON.parse(dbId) }));
   copy.close();
   await a.store.write(put(2));
   await a.store.close();
@@ -162,7 +163,8 @@ test("several processes opening a project whose placement just changed move it o
   for (let i = 1; i <= 50; i++) await a.store.write(put(i));
   await a.store.close();
   p.startSyncing();
-  const src = path.join(path.dirname(new URL(import.meta.url).pathname), "../src/index.ts");
+  // A file: URL, not a path: an ES import of "C:\\…" fails on Windows.
+  const src = new URL("../src/index.ts", import.meta.url).href;
   const runs = await Promise.all(
     [0, 1, 2, 3].map(
       (w) =>
@@ -179,4 +181,203 @@ test("several processes opening a project whose placement just changed move it o
   const s = await openSqliteStore(p.inAppData);
   assert.deepEqual(await seqs(s), [...Array.from({ length: 50 }, (_, i) => i + 1), 100, 101, 102, 103], "one move; every process wrote into the moved history");
   await s.close();
+});
+
+test("a source recreated after its cleanup (empty, or a new unrelated history) never destroys the moved history", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  for (const i of [1, 2]) await a.store.write(put(i));
+  await a.store.close();
+  p.startSyncing();
+  (await openProjectStore(p)).store.close();
+  assert.ok(!fs.existsSync(p.inBundle), "moved and cleaned up");
+  // A stray opener recreates the old path: first as an empty file, then as a fresh carton.db of its own.
+  new DatabaseSync(p.inBundle).close();
+  let b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1, 2], "an empty file at the old place is ignored");
+  await b.store.close();
+  fs.rmSync(p.inBundle);
+  const stray = await openSqliteStore(p.inBundle);
+  await stray.write(put(99));
+  await stray.close();
+  await assert.rejects(openProjectStore(p), PlacementConflictError, "a different file is a second history, never an interrupted move");
+  b = { store: await openSqliteStore(p.inAppData), location: b.location };
+  assert.deepEqual(await seqs(b.store), [1, 2], "and the moved history is intact");
+  await b.store.close();
+});
+
+test("a history Carton can't write is never copied as if it were frozen", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  const dir = path.dirname(p.inBundle);
+  fs.chmodSync(p.inBundle, 0o444);
+  fs.chmodSync(dir, 0o555);
+  try {
+    p.startSyncing();
+    await assert.rejects(openProjectStore(p), /can't write/);
+    assert.ok(!fs.existsSync(p.inAppData), "nothing published at the new place");
+  } finally {
+    fs.chmodSync(dir, 0o755);
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+  const check = await openSqliteStore(p.inBundle);
+  assert.deepEqual(await seqs(check), [1]);
+  await check.close();
+});
+
+test("a carton.db of a newer format is never moved, rewritten or deleted", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  const raw = new DatabaseSync(p.inBundle);
+  raw.exec(`PRAGMA user_version=${FORMAT_VERSION + 1}; CREATE TABLE future(x, y, z)`);
+  raw.close();
+  p.startSyncing();
+  await assert.rejects(openProjectStore(p), /newer Carton/);
+  assert.ok(!fs.existsSync(p.inAppData));
+  const check = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.equal((check.prepare("PRAGMA user_version").get() as { user_version: number }).user_version, FORMAT_VERSION + 1);
+  assert.ok(check.prepare("SELECT 1 FROM sqlite_schema WHERE name = 'future'").get(), "its own tables are untouched");
+  check.close();
+});
+
+test("tables whose names merely look like SQLite's own (sqlitecache) move and export with the rest", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write([...put(1), { table: "sqlitecache", key: ["k"], value: "kept" }]);
+  await a.store.exportCopy(path.join(path.dirname(p.bundleDir), "export.db"), []);
+  await a.store.close();
+  const exp = await openSqliteStore(path.join(path.dirname(p.bundleDir), "export.db"), { readOnly: true });
+  assert.equal(await exp.get("sqlitecache", ["k"]), "kept");
+  await exp.close();
+  p.startSyncing();
+  const b = await openProjectStore(p);
+  assert.equal(await b.store.get("sqlitecache", ["k"]), "kept");
+  await b.store.close();
+});
+
+test("a carton.db another machine made, found where this project's history goes, is set aside, never adopted", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write([...put(1), { table: "pathMap", key: ["m"], value: "D:\\their\\footage.mov" }]);
+  await a.store.close();
+  const raw = new DatabaseSync(p.inBundle);
+  raw.prepare(`UPDATE "_carton" SET v = ? WHERE k = 'machine'`).run(JSON.stringify({ id: "0".repeat(32), host: "fedcba9876543210" }));
+  raw.close();
+  const b = await openProjectStore(p);
+  assert.equal(b.location.placement, "bundle");
+  assert.ok(b.location.setAside && fs.existsSync(b.location.setAside) && /carton\.from-fedcba98-/.test(b.location.setAside));
+  assert.deepEqual(await seqs(b.store), [], "a fresh history of this machine's own");
+  assert.equal(await b.store.get("pathMap", ["m"]), undefined, "none of their local tables");
+  await b.store.close();
+  const theirs = await openSqliteStore(b.location.setAside!, { readOnly: true });
+  assert.deepEqual(await seqs(theirs), [1], "theirs is kept whole for the host to offer");
+  await theirs.close();
+});
+
+test("this machine is recognised by its install id or its host, so renaming the computer or wiping app data alone changes nothing", () => {
+  const me = machineMark();
+  assert.ok(isThisMachine(me));
+  assert.ok(isThisMachine({ id: me.id, host: "renamed-computer" }), "computer renamed");
+  assert.ok(isThisMachine({ id: "f".repeat(32), host: me.host }), "app data wiped");
+  assert.ok(!isThisMachine({ id: "f".repeat(32), host: "0123456789abcdef" }), "another machine");
+  assert.ok(isThisMachine(undefined), "no mark (an export, an older file)");
+  assert.equal(machineMark(), me, "stable for the process");
+});
+
+test("an opener paused between settling and opening is never overtaken by a move (the placement lock covers the open)", async () => {
+  const p = project();
+  const seed = await openProjectStore(p);
+  await seed.store.write(put(1));
+  await seed.store.close();
+  let other: Promise<Awaited<ReturnType<typeof openProjectStore>>> | null = null;
+  const first = await openProjectStore(p, {
+    afterSettle: async () => {
+      // While this opener sits between "settled: the bundle" and opening it, the folder becomes synced and another
+      // open starts: it must wait for the lock, then move the history this opener now has open.
+      p.startSyncing();
+      other = openProjectStore(p);
+      await new Promise((r) => setTimeout(r, 200));
+    },
+  });
+  assert.equal(first.store.path, p.inBundle);
+  const second = await other!;
+  assert.equal(second.store.path, p.inAppData);
+  assert.deepEqual(await seqs(second.store), [1], "the history moved, nothing was recreated empty");
+  await assert.rejects(first.store.write(put(2)), MovedError, "the first opener's file is fenced, not a second history");
+  await first.store.close();
+  await second.store.close();
+  const third = await openProjectStore(p);
+  assert.deepEqual(await seqs(third.store), [1]);
+  assert.ok(!fs.existsSync(p.inBundle), "and the old copy is gone once nobody has it open");
+  await third.store.close();
+});
+
+test("a machine mark in the earlier form (the host hash alone) is still this machine's, and is upgraded", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  const raw = new DatabaseSync(p.inBundle);
+  raw.prepare(`UPDATE "_carton" SET v = ? WHERE k = 'machine'`).run(JSON.stringify(machineMark().host));
+  raw.close();
+  const b = await openProjectStore(p);
+  assert.equal(b.location.setAside, undefined, "not mistaken for another machine's");
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+  const check = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.deepEqual(JSON.parse((check.prepare(`SELECT v FROM "_carton" WHERE k = 'machine'`).get() as { v: string }).v), machineMark());
+  check.close();
+});
+
+test("a source without a file id (an export) gets one before it is moved, so its copy always names it", async () => {
+  const p = project();
+  const elsewhere = await openSqliteStore(path.join(path.dirname(p.bundleDir), "elsewhere", "carton.db"));
+  await elsewhere.write(put(1));
+  await elsewhere.exportCopy(p.inBundle, []); // a full-history copy: no _carton rows at all
+  await elsewhere.close();
+  p.startSyncing();
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1]);
+  const copyOf = JSON.parse((b.store.db.raw.prepare(`SELECT v FROM "_carton" WHERE k = 'copyOf'`).get() as { v: string }).v);
+  assert.match(copyOf.dbId, /^[0-9a-f]{16}$/, "an interrupted move of it could be recognised");
+  await b.store.close();
+});
+
+test("a crash right after publishing an export's copy: the source's id was committed first, and recovery keeps later writes", async () => {
+  const p = project();
+  const elsewhere = await openSqliteStore(path.join(path.dirname(p.bundleDir), "elsewhere", "carton.db"));
+  await elsewhere.write(put(1));
+  await elsewhere.exportCopy(p.inBundle, []); // no _carton rows: no file id yet
+  await elsewhere.close();
+  p.startSyncing();
+  // A process moves it and dies between publishing the copy and marking the source.
+  const src = new URL("../src/index.ts", import.meta.url).href;
+  const code = `import { openProjectStore } from ${JSON.stringify(src)}; await openProjectStore(${JSON.stringify({ bundleDir: p.bundleDir, appDataDir: p.appDataDir, projectId: p.projectId })}, { afterPublish: () => process.exit(0) });`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "inherit"] });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+  const meta = (file: string, k: string) => {
+    const raw = new DatabaseSync(file, { readOnly: true });
+    try {
+      const row = raw.prepare(`SELECT v FROM "_carton" WHERE k = ?`).get(k) as { v: string } | undefined;
+      return row ? JSON.parse(row.v) : undefined;
+    } finally {
+      raw.close();
+    }
+  };
+  const sourceId = meta(p.inBundle, "dbId");
+  assert.match(sourceId, /^[0-9a-f]{16}$/, "the source's id survived the crash: it was committed before the copy");
+  assert.equal(meta(p.inAppData, "copyOf").dbId, sourceId, "and the published copy names it");
+  assert.equal(meta(p.inBundle, "movedTo"), undefined, "the move was never confirmed");
+  // The source is still the history: a write lands there before anyone reopens through openProjectStore.
+  const late = await openSqliteStore(p.inBundle);
+  await late.write(put(2));
+  await late.close();
+  const b = await openProjectStore(p);
+  assert.equal(b.store.path, p.inAppData);
+  assert.deepEqual(await seqs(b.store), [1, 2], "the unconfirmed copy was redone from the source, with its later write");
+  await b.store.close();
 });

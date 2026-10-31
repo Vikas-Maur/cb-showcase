@@ -10,9 +10,9 @@
 // all tabs, so the conditions and the writes are the local sequencer's compare-and-swap. After a write commits, the
 // other tabs hear about it on a BroadcastChannel and their `watch` listeners fire.
 //
-// Values are JSON text, not structured clones: in Chromium reading 10k changes back was faster as text plus
-// JSON.parse than as clones, in every run of bench/exp-values.ts, and JSON gives exactly store-sqlite's value
-// semantics (an `undefined` member dropped, -0 read back as 0).
+// Values are JSON text, not structured clones: JSON gives exactly store-sqlite's value semantics (an `undefined`
+// member dropped, -0 read back as 0), and in one unverified run of bench/exp-values.ts (Chromium, 10k changes) text
+// plus JSON.parse read back faster than clones; that measurement waits for the verification phase.
 
 import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";

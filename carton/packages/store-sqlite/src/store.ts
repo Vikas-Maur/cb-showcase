@@ -18,12 +18,9 @@ import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite
 import { Db, type DbOptions } from "./db.ts";
 import { encodeKey, decodeKey, prefixEnd } from "./key.ts";
 import { encodeValue, decodeValue } from "./value.ts";
-import { META, MOVED_TO, COPY_OF, MACHINE, machineId, MovedError, readMark, renameRetry } from "./move.ts";
+import { MovedError } from "./move.ts";
+import { APPLICATION_ID, FORMAT_VERSION, META, MOVED_TO, DB_ID, MACHINE, USER_TABLES, machineMark, isThisMachine, readMeta, writeMeta, newDbId } from "./format.ts";
 
-/** "CRTN": marks carton.db files, so Carton never mistakes another SQLite file for its own. */
-const APPLICATION_ID = 0x4352544e;
-/** On-disk format. A newer format is refused, never misread. */
-export const FORMAT_VERSION = 1;
 
 export interface SqliteStoreOptions extends DbOptions {}
 
@@ -51,7 +48,7 @@ export class SqliteStore implements Store {
     try {
       await init(db, !!opts.readOnly);
       // History that moved to another placement (§6.4) is read there; this file only says where.
-      const moved = opts.readOnly ? undefined : await db.read(() => readMark(db.raw, MOVED_TO));
+      const moved = opts.readOnly ? undefined : await db.read(() => readMeta<{ path: string }>(db.raw, MOVED_TO));
       if (moved) throw new MovedError(file, moved.path);
       return new SqliteStore(db);
     } catch (e) {
@@ -158,15 +155,15 @@ export class SqliteStore implements Store {
    * LOCAL_TABLES: path map, pins, notices, ephemeral data, sync lease). Those tables are never written into the copy
    * at all, so no absolute path or user name can survive in its free pages. The copy is one consistent snapshot, made
    * through a separate connection in batches, so the event loop keeps running and other writers are never blocked.
-   * It appears at `toPath` only when complete.
+   * It appears at `toPath` only when complete. `toPath` must not exist yet: the copy is published with a call that
+   * refuses to replace anything (a hard link, or an exclusive copy where there are none), because replacing a file
+   * that a process has open leaves its -wal behind, which SQLite would replay into the copy (bringing dropped tables
+   * back), and checking first then renaming would race with that process.
    */
   async exportCopy(toPath: string, dropTables: readonly string[]): Promise<void> {
-    // Never over a live database: replacing a WAL database's file leaves its -wal behind, which SQLite would replay
-    // into the copy (bringing dropped tables back), and replacing this store's own file would lose it.
     if (sameFile(toPath, this.path)) throw new Error(`exportCopy: ${toPath} is this store's own database`);
-    for (const side of ["-wal", "-shm", "-journal"]) {
-      if (fs.existsSync(toPath + side)) throw new Error(`exportCopy: ${toPath} is a database in use (${path.basename(toPath + side)} exists)`);
-    }
+    const busy = () => [toPath, `${toPath}-wal`, `${toPath}-shm`, `${toPath}-journal`].find((f) => fs.existsSync(f));
+    if (busy()) throw new Error(`exportCopy: ${busy()} already exists; remove it first`);
     const drop = new Set(dropTables.map(tableName));
     const tmp = `${toPath}.part-${process.pid}-${Date.now().toString(36)}`;
     fs.mkdirSync(path.dirname(path.resolve(toPath)), { recursive: true });
@@ -177,15 +174,10 @@ export class SqliteStore implements Store {
       src.prepare("ATTACH DATABASE ? AS x").run(tmp);
       src.exec(`PRAGMA x.auto_vacuum=INCREMENTAL; PRAGMA x.application_id=${APPLICATION_ID}; PRAGMA x.user_version=${FORMAT_VERSION}`);
       src.exec("BEGIN"); // the snapshot: every table is copied as of this transaction's first read
-      const tables = (src.prepare("SELECT name FROM main.sqlite_schema WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all() as { name: string }[])
-        .map((r) => r.name)
-        .filter((n) => !drop.has(n));
+      const tables = (src.prepare(USER_TABLES).all() as { name: string }[]).map((r) => r.name).filter((n) => !drop.has(n));
       for (const t of tables) {
-        if (t === META) {
-          src.exec(`CREATE TABLE x."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
-          // A shared copy carries neither placement marks nor this machine's id.
-          src.prepare(`INSERT INTO x."${META}" SELECT k, v FROM main."${META}" WHERE k NOT IN (?, ?, ?)`).run(MOVED_TO, COPY_OF, MACHINE);
-        }
+        // A shared copy carries none of this file's own rows: no machine id, file id or placement marks.
+        if (t === META) src.exec(`CREATE TABLE x."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
         else {
           src.exec(`CREATE TABLE x."${t}" (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID`);
           const first = src.prepare(`INSERT INTO x."${t}" SELECT k, v FROM main."${t}" ORDER BY k LIMIT ?`);
@@ -207,7 +199,22 @@ export class SqliteStore implements Store {
       throw e;
     }
     src.close();
-    await renameRetry(tmp, toPath);
+    try {
+      await publish(tmp, toPath);
+    } finally {
+      fs.rmSync(tmp, { force: true });
+    }
+  }
+
+  /**
+   * store-sqlite's own rows (`_carton`), outside the Store contract and never exported: what importProject records
+   * about the import. Keys are the constants in format.ts.
+   */
+  async getOwn<T = unknown>(key: string): Promise<T | undefined> {
+    return this.db.read(() => readMeta<T>(this.db.raw, key));
+  }
+  async setOwn(key: string, value: unknown): Promise<void> {
+    await this.db.write(() => writeMeta(this.db.raw, key, value));
   }
 
   /** Give the pages freed by deletes (pruned keyframes, released pins) back to the file system. */
@@ -247,6 +254,28 @@ function notify(listeners: Set<(tables: readonly string[]) => void>, tables: str
       l(tables);
     } catch (e) {
       console.error("carton store: a watch listener threw", e);
+    }
+  }
+}
+
+// Put a finished file at `to` without ever replacing one: a hard link fails if `to` exists (EEXIST). On file systems
+// without hard links (FAT, exFAT) an exclusive copy does the same, at the cost of the copy being visible while it is
+// written. A SQLite opener creates the main file before any -wal, so once `to` is ours no stale WAL can be beside it.
+async function publish(tmp: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.linkSync(tmp, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "EEXIST") throw new Error(`exportCopy: ${to} appeared while the copy was being made; nothing was replaced`);
+      if (process.platform === "win32" && attempt < 40 && (code === "EBUSY" || code === "EACCES")) {
+        await new Promise((r) => setTimeout(r, Math.min(250, 10 * (attempt + 1))));
+        continue;
+      }
+      // No hard links here: an exclusive copy refuses an existing `to` just the same.
+      fs.copyFileSync(tmp, to, fs.constants.COPYFILE_EXCL);
+      return;
     }
   }
 }
@@ -291,14 +320,31 @@ function identify(raw: DatabaseSync, file: string): "ours" | "new" {
 }
 
 async function init(db: Db, readOnly: boolean): Promise<void> {
-  if ((await db.read(() => identify(db.raw, db.path))) === "ours" || readOnly) return;
+  if (readOnly) return;
+  if ((await db.read(() => identify(db.raw, db.path))) === "ours") {
+    // A file from an export or an older build has no id or machine mark yet, or the earlier form of the mark (the
+    // host hash alone): give it this machine's, once.
+    const stale = () => readMeta(db.raw, DB_ID) === undefined || typeof readMeta(db.raw, MACHINE) !== "object";
+    if (await db.read(stale)) {
+      await db.write(() => {
+        if (!stale()) return;
+        db.raw.exec(`CREATE TABLE IF NOT EXISTS "${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
+        if (readMeta(db.raw, DB_ID) === undefined) writeMeta(db.raw, DB_ID, newDbId());
+        const m = readMeta(db.raw, MACHINE);
+        if (m === undefined || (typeof m === "string" && isThisMachine(m))) writeMeta(db.raw, MACHINE, machineMark());
+      });
+    }
+    return;
+  }
   // A new file, or one another process is creating right now: mark it in one write transaction. The mark and the
   // first table appear together, so no other process ever sees a table without the mark.
   await db.write(() => {
     if (identify(db.raw, db.path) === "ours") return; // the other process finished first
     db.raw.exec(`CREATE TABLE IF NOT EXISTS "${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
-    // Which machine made it: a copy that a sync client brings to another machine is never adopted there (move.ts).
-    db.raw.prepare(`INSERT OR IGNORE INTO "${META}"(k, v) VALUES (?, ?)`).run(MACHINE, JSON.stringify(machineId));
+    // Which file and which machine: a copy that a sync client brings to another machine is never adopted there, and
+    // an interrupted move is recognised by its source's id (move.ts).
+    writeMeta(db.raw, DB_ID, newDbId());
+    writeMeta(db.raw, MACHINE, machineMark());
     db.raw.exec(`PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=${FORMAT_VERSION}`);
   });
 }
