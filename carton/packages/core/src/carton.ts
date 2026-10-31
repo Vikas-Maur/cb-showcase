@@ -18,7 +18,7 @@ import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { ReplicaQueue, type HistoryFields, type QueuedChange } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
-import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type Tail } from "./history/common.ts";
+import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import type {
@@ -288,7 +288,8 @@ export interface Carton {
 
   /** `.cbproj` collaboration (§13). */
   exportShallow(opts?: { cut?: string; to?: string }): Promise<ShallowExport>;
-  importShallow(pkg: ShallowExport): Promise<{ status: string; cut?: string }>;
+  /** §13: `forked` (`cut`, `head`), `imported` (`head`), `other-project`, or `no-shared-lineage` with `newProjectId`. */
+  importShallow(pkg: ShallowExport): Promise<ShallowImport>;
 
   on(listener: (event: CartonEvent) => void): () => void;
   /** Present when opened with `sync`. */
@@ -1248,7 +1249,7 @@ class CartonImpl implements Carton {
     });
     return pkg;
   }
-  async importShallow(pkg: ShallowExport): Promise<{ status: string; cut?: string }> {
+  async importShallow(pkg: ShallowExport): Promise<ShallowImport> {
     let res!: ReturnType<History["importShallow"]>;
     let prior!: ReturnType<History["knowledge"]>;
     let before!: Set<string>;
@@ -1268,7 +1269,8 @@ class CartonImpl implements Carton {
         idempotent: true,
       },
     );
-    return { status: res.status, ...("cut" in res ? { cut: res.cut } : {}) };
+    // all of it: the new project id a same-id file without shared lineage gets, and the head it brought (S3-3)
+    return res;
   }
 
   // ------------------------------------------------------------ shared cuts (§5.3, §6.2, §12): through SharedCut
