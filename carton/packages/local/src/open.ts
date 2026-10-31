@@ -124,6 +124,28 @@ async function finishImport(carton: Carton, doc: Doc): Promise<void> {
   await carton.commit({ doc, base: h.ref, cut: cuts[0]!.id, author: { kind: "system", id: "import", name: "Import" }, id: `import.${carton.projectId}` });
 }
 
+/**
+ * The starting version (`main@1`, the import) is a point every copy of the project shares: a teammate whose folder is
+ * a copy of this one (carton.db and all) starts from it too. A `.cbproj` carries a cut's lineage compressed to its
+ * root, forks, merges and exports, so without a mark their export would name only the empty root as what both copies
+ * share, and bringing it in would fold from nothing: every record added on both sides, a field the copies hold at
+ * different values a card with no base (e2e-qa S3-4, regressed by the import change). Core's own way to make a version
+ * part of the lineage graph is an export of it (R4-01: the export node is persisted, its state kept as a keyframe), so
+ * the starting version is exported once, while it is the head, to no one. Done again on a later open only if a stop
+ * came between the import and the mark and nothing was written since. (Asked of foundation-core: carry an import
+ * change in the lineage like a root; this goes then.)
+ */
+async function markStartingState(carton: Carton, store: Store): Promise<void> {
+  const at = await store.get<[string, number]>("ids", [`import.${carton.projectId}`]);
+  if (!at || at[1] !== 1) return;
+  const [cut] = at;
+  if ((await carton.head(cut)).ref.seq !== 1) return; // written since: too late to mark it this way (and not needed for a new copy)
+  if ((await store.range("meta", { prefix: ["export", `${cut}@1`], limit: 1 })).length) return;
+  await carton.exportShallow({ cut, to: STARTING_STATE });
+}
+/** The recipient of the starting version's export (no one: it only makes that version a lineage point). */
+const STARTING_STATE = "carton:starting-state";
+
 /** The adapter local's default factory opens carton.db with. */
 const DEFAULT_ADAPTER = "cardboard";
 
@@ -148,6 +170,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   if (opts.init && (opts.init.asChange ?? true)) {
     try {
       await finishImport(carton, opts.init.doc as Doc);
+      await markStartingState(carton, store);
     } catch (e) {
       await carton.close();
       await store.close();
