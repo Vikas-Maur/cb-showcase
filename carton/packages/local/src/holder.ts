@@ -9,7 +9,9 @@
 // nonce we saw). A live helper is asked to hand over; a worker never waits for a helper's 60 s idle timeout.
 // Losing it: every heartbeat is fenced on our nonce, and so is the sync client's every dequeue. The first failed one
 // stops this holder for good: it pushes and rebases nothing more, and a helper exits.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ControlServer, ControlClient, RpcError } from "./ipc.ts";
 import { Lease, LEASE_BEAT_MS, LEASE_EXPIRY_MS, PING_TIMEOUT_MS } from "./lease.ts";
 import type { HolderKind, LeaseRow } from "./lease.ts";
@@ -198,8 +200,16 @@ export class Holder {
 }
 
 /** A socket path for a holder: next to carton.db, carrying the pid and a random part (never reused). */
-export function holderSocketPath(dir: string, kind: HolderKind): string {
-  return `${dir.replace(/[\\/]+$/, "")}/${kind}-${process.pid}-${randomBytes(3).toString("hex")}.sock`;
+/**
+ * A socket path for a holder: next to carton.db, carrying the pid and a random part (never reused). A Unix socket path
+ * must fit `sun_path` (104 bytes on macOS, 108 on Linux), so a deep library folder falls back to a per-project name in
+ * the OS temp folder. Windows maps the path to a named pipe (`pipeName`), which has no such limit.
+ */
+export function holderSocketPath(dir: string, kind: HolderKind, platform: string = process.platform): string {
+  const name = `${kind}-${process.pid}-${randomBytes(3).toString("hex")}.sock`;
+  const near = join(dir, name);
+  if (platform === "win32" || Buffer.byteLength(near) <= 100) return near;
+  return join(tmpdir(), `carton-${createHash("sha256").update(dir).digest("hex").slice(0, 12)}-${name}`);
 }
 
 /**
