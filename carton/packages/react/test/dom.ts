@@ -20,7 +20,62 @@ g.IS_REACT_ACT_ENVIRONMENT = true;
 
 export const runtime = process.env.CARTON_RUNTIME === "preact" ? "preact" : "react";
 
+/**
+ * Renders per component name, on either runtime, so tests can catch re-render storms (U6/U7).
+ * - React: its DevTools commit hook, installed before react-dom loads. A component counts when its fiber is a new
+ *   object since the last commit and flagged as having rendered; a subtree React skipped keeps its old fiber objects
+ *   (and their old flags), so it isn't counted.
+ * - Preact: its render hook (options.__r), once per component render.
+ */
+export const renders = new Map<string, number>();
+const bump = (n: string) => renders.set(n, (renders.get(n) ?? 0) + 1);
+const fiberName = (t: unknown): string | undefined => {
+  if (typeof t === "function") return (t as { displayName?: string; name?: string }).displayName || (t as { name?: string }).name;
+  if (t && typeof t === "object") return fiberName((t as { type?: unknown }).type ?? (t as { render?: unknown }).render);
+  return undefined;
+};
+if (runtime === "react") {
+  let seen = new WeakSet<object>();
+  type Fiber = { type: unknown; flags: number; child: Fiber | null; sibling: Fiber | null };
+  (g as Record<string, unknown>).__REACT_DEVTOOLS_GLOBAL_HOOK__ = {
+    supportsFiber: true,
+    renderers: new Map(),
+    inject: () => 1,
+    checkDCE() {},
+    onScheduleFiberRoot() {},
+    onCommitFiberUnmount() {},
+    onPostCommitFiberRoot() {},
+    onCommitFiberRoot(_id: number, root: { current: Fiber }) {
+      const now = new WeakSet<object>();
+      const walk = (f: Fiber | null) => {
+        for (; f; f = f.sibling) {
+          now.add(f);
+          if ((typeof f.type === "function" || (f.type && typeof f.type === "object")) && f.flags & 1 && !seen.has(f)) {
+            const n = fiberName(f.type);
+            if (n) bump(n);
+          }
+          walk(f.child);
+        }
+      };
+      walk(root.current.child);
+      seen = now;
+    },
+  };
+}
+
 const React = await import("react");
+if (runtime === "preact") {
+  const { options } = await import("preact");
+  const o = options as unknown as Record<string, (v: { type: unknown }) => void>;
+  const prev = o.__r;
+  o.__r = (vnode) => {
+    if (typeof vnode.type === "function") {
+      const n = fiberName(vnode.type);
+      if (n) bump(n);
+    }
+    prev?.(vnode);
+  };
+}
 const client = await import("react-dom/client");
 type Act = (fn: () => unknown) => Promise<void>;
 const act: Act =

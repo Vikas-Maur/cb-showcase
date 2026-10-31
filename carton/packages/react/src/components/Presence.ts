@@ -6,7 +6,7 @@
 
 import { createElement as h, memo, useEffect, useMemo, useRef } from "react";
 import { actorColor, actorLabel } from "../actors.ts";
-import { useCartonUi, useCurrentCut, usePeers, useWords } from "../hooks.ts";
+import { useCartonUi, useCurrentCutId, usePeers, useWords } from "../hooks.ts";
 import type { Actor, Ghost, Peer } from "../model.ts";
 import { Avatar, cx } from "./ui.ts";
 
@@ -55,9 +55,10 @@ const PeerAvatar = memo(function PeerAvatar({ peer, size }: { peer: Peer; size: 
 
 export function PresenceAvatars({ max = 5, cutId, className }: PresenceProps) {
   const peers = usePeers();
-  const current = useCurrentCut();
+  // The current cut's id only: a commit moving the head doesn't re-render the avatars (U6).
+  const currentId = useCurrentCutId();
   const words = useWords();
-  const on = cutId === undefined ? current?.id : cutId;
+  const on = cutId === undefined ? currentId : cutId;
   const groups = useMemo(() => groupPeers(on == null ? peers : peers.filter((p) => p.cutId === on)), [peers, on]);
   if (!groups.length) return null;
   const shown = groups.slice(0, max);

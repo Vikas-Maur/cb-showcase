@@ -23,6 +23,24 @@ export function seconds(s: number): string {
 
 const MIN = 60_000, HOUR = 60 * MIN, DAY = 24 * HOUR;
 
+// Intl formatters, built once per locale and style. toLocaleTimeString() and friends build a new formatter on every
+// call, which was the biggest cost of mounting a History row while scrolling (U3); the output is identical.
+type Style = "time" | "weekday" | "dayMonth" | "dayMonthYear" | "exact";
+const STYLES: Record<Style, Intl.DateTimeFormatOptions> = {
+  time: { hour: "2-digit", minute: "2-digit" },
+  weekday: { weekday: "short" },
+  dayMonth: { day: "numeric", month: "short" },
+  dayMonthYear: { day: "numeric", month: "short", year: "numeric" },
+  exact: { dateStyle: "medium", timeStyle: "short" },
+};
+const formatters = new Map<string, Intl.DateTimeFormat>();
+function format(style: Style, at: number | Date, locale?: string): string {
+  const key = `${locale ?? ""}|${style}`;
+  let f = formatters.get(key);
+  if (!f) formatters.set(key, (f = new Intl.DateTimeFormat(locale, STYLES[style])));
+  return f.format(at);
+}
+
 /**
  * When something happened, short and in the reader's locale: "just now", "4 min ago", "2 h ago", "Yesterday 14:05",
  * "Mon 14:05" within a week, then "3 Oct" (and the year when it differs).
@@ -32,22 +50,20 @@ export function when(at: number, now: number, locale?: string, justNow = "just n
   if (d < MIN) return justNow;
   if (d < HOUR) return `${Math.floor(d / MIN)} min ago`;
   const then = new Date(at), today = new Date(now);
-  const time = then.toLocaleTimeString(locale, { hour: "2-digit", minute: "2-digit" });
   if (d < 6 * HOUR && then.getDate() === today.getDate()) return `${Math.floor(d / HOUR)} h ago`;
   const startOfToday = new Date(today.getFullYear(), today.getMonth(), today.getDate()).getTime();
-  if (at >= startOfToday) return time;
-  if (at >= startOfToday - DAY) return `Yesterday ${time}`;
-  if (at >= startOfToday - 6 * DAY) return `${then.toLocaleDateString(locale, { weekday: "short" })} ${time}`;
-  const sameYear = then.getFullYear() === today.getFullYear();
-  return then.toLocaleDateString(locale, sameYear ? { day: "numeric", month: "short" } : { day: "numeric", month: "short", year: "numeric" });
+  if (at >= startOfToday) return format("time", then, locale);
+  if (at >= startOfToday - DAY) return `Yesterday ${format("time", then, locale)}`;
+  if (at >= startOfToday - 6 * DAY) return `${format("weekday", then, locale)} ${format("time", then, locale)}`;
+  return format(then.getFullYear() === today.getFullYear() ? "dayMonth" : "dayMonthYear", then, locale);
 }
 
 /** A full date and time for tooltips. */
 export function exactTime(at: number, locale?: string): string {
-  return new Date(at).toLocaleString(locale, { dateStyle: "medium", timeStyle: "short" });
+  return format("exact", at, locale);
 }
 
 /** A short date for names like "Offline edits (31 Oct)". */
 export function shortDate(at: number, locale?: string): string {
-  return new Date(at).toLocaleDateString(locale, { day: "numeric", month: "short" });
+  return format("dayMonth", at, locale);
 }
