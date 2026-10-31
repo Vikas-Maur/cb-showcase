@@ -226,8 +226,10 @@ export class SyncClient {
       let c: TransportConnection | null = null;
       try {
         c = await this.o.connect();
-      } catch {
+      } catch (e) {
         c = null;
+        // why it couldn't connect (a refused token, no host): an owner shows it (REQ-8)
+        if (!this.stopped) this.emit({ type: "error", error: `connect: ${e instanceof Error ? e.message : String(e)}` });
       }
       if (this.stopped) {
         c?.close();

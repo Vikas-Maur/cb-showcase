@@ -36,6 +36,8 @@ export type SharedCutEvent =
   | { type: "overwritten"; id: string; by: string; author: unknown }
   | { type: "presence"; branchId: string; actor: unknown; state: PresenceState | null }
   | { type: "state"; state: SyncState }
+  /** Caught up after a welcome: the host accepted this replica (an earlier error is over). */
+  | { type: "online" }
   | { type: "error"; error: string };
 
 /** What a write learns within its wait (§6.2, L14). */
@@ -231,6 +233,7 @@ export class SharedCut {
         else if (e.type === "presence") this.emit({ type: "presence", branchId: this.branchId, actor: e.actor, state: e.state });
         else if (e.type === "overwritten") this.emit({ type: "overwritten", id: e.id, by: e.by, author: e.author });
         else if (e.type === "error") this.emit({ type: "error", error: e.error });
+        else if (e.type === "online") this.emit({ type: "online" });
         else if (e.type === "push") this.emit({ type: "sent", ids: e.ids });
       },
     }).start();

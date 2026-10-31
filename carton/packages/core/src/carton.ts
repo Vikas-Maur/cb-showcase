@@ -48,6 +48,7 @@ import type {
   ShallowExport,
   ShotDiff,
   StateRef,
+  SyncError,
   UndoEntry,
   Version,
 } from "./types.ts";
@@ -194,6 +195,12 @@ export interface CartonSync {
    * caller that reports it can mark that notice delivered rather than have it told again on the next call.
    */
   waitFor(id: ChangeId, ms: number, cut?: string): Promise<WriteOutcome>;
+  /**
+   * Why the cut's sync is failing (default: the current cut), or null: a hello refused (an older host: "update the
+   * server"), a token the host doesn't accept, a host it can't reach. Cleared by a later welcome or ack; each change
+   * is also a `sync-error` event (web-demo REQ-8).
+   */
+  error(cut?: string): SyncError | null;
 }
 
 export interface CartonMedia {
@@ -375,6 +382,23 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
   ...(p.head !== undefined ? { head: p.head } : {}),
 });
+/** A sync client's error, classified for a status line (the words are kept as they came). */
+function syncError(message: string): SyncError {
+  const code: SyncError["code"] = /schemaVersion \d+ is newer than this server/.test(message)
+    ? "update-server"
+    : /^connect: /.test(message)
+      ? /unauthori[sz]ed|forbidden|token|401|403/i.test(message)
+        ? "unauthorized"
+        : "unreachable"
+      : /forbidden|can't read|unauthori[sz]ed|foreign id|read-only branch/i.test(message)
+        ? "unauthorized"
+        : /^unknown branch/.test(message)
+          ? "unknown-cut"
+          : /over the server's limit|too large/i.test(message)
+            ? "too-large"
+            : "server";
+  return { code, message: message.replace(/^connect: /, "") };
+}
 /** The queue's confirmed state when it is ahead of the stored rows (meta table, per cut): see `#gapWrites`. */
 const QUEUE_HEAD = "queue-head";
 /** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
@@ -464,6 +488,8 @@ class CartonImpl implements Carton {
    * next settle of the cut, and a wait answers `pending` until one stores them (review SF1-6).
    */
   #unsettled = new Map<string, SharedCutEvent[]>();
+  /** Per cut, why its sync is failing, until a welcome or an ack (`sync.error`, `sync-error` events). */
+  #syncErrors = new Map<string, SyncError>();
   /** Per cut, the seq of the queue state saved as `["queue-head", cut]` (0: none): see `#gapWrites`. */
   #gapSaved = new Map<string, number>();
   readonly media: CartonMedia | null = null;
@@ -501,6 +527,7 @@ class CartonImpl implements Carton {
           return this.state().status;
         },
         state: (cut?: string) => self.#shared.get(cut ?? self.#h.current)?.state() ?? offline,
+        error: (cut?: string) => self.#syncErrors.get(cut ?? self.#h.current) ?? null,
         connect: async (o = {}) => {
           self.#connected = { nonce: o.nonce ?? randomHex(8), ...(o.fence ? { fence: o.fence } : {}) };
           self.#settleConds = o.conditions ?? [];
@@ -1533,6 +1560,20 @@ class CartonImpl implements Carton {
   }
   #onShared(cut: string, e: SharedCutEvent): void {
     switch (e.type) {
+      // a sync failure, until a welcome or an ack says the host accepts this replica again (web-demo REQ-8)
+      case "error": {
+        const err = syncError(e.error);
+        const was = this.#syncErrors.get(cut);
+        if (!was || was.code !== err.code || was.message !== err.message) {
+          this.#syncErrors.set(cut, err);
+          this.#emit({ type: "sync-error", branchId: cut, error: err });
+        }
+        break;
+      }
+      case "online":
+      case "confirmed":
+        if (this.#syncErrors.delete(cut)) this.#emit({ type: "sync-error", branchId: cut, error: null });
+        break;
       case "state":
         this.#emit({ type: "sync", status: e.state.status === "connecting" ? "syncing" : e.state.status, waiting: e.state.pending });
         break;

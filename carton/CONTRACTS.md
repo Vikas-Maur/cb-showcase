@@ -84,7 +84,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   catch-up's skipped rows aren't saved yet, the queue's state is (meta `["queue-head", cut]`), and a restart resumes
   there, offline too; a stored edit made on an older head (another process's) is rebased onto what was confirmed
   since, with cards for what clashed. A settle that fails keeps its outcome for the next one; a wait answers
-  `pending` until it is stored.
+  `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
+  the server"; a token it doesn't accept; no host) is `sync.error(cut?)` and a `sync-error` event (`SyncError`:
+  `code`, `message`), until a later welcome or ack clears it (`error: null`).
   `carton.media` is null: `@carton/media` calls Carton, not the reverse.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
