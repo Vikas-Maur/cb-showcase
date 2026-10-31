@@ -1,6 +1,7 @@
 // The timeline.tsx header contract (§5.2): Carton refs, the print nonce, legacy 1.4.0 timestamps.
 import test from "node:test";
 import assert from "node:assert/strict";
+import { branchToken as coreBranchToken } from "@carton/core";
 import { renderRev, findRev, setRev, parseRevBody, printNonce, revBody, branchToken } from "../src/header.ts";
 
 // The shape of Cardboard's printed header block (our own sample text, not Cardboard's printer).
@@ -55,6 +56,7 @@ test("only the first rev line counts; a file without one gets it on top", () => 
 const CORE_REF = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
 
 test("b: names any cut id in the 8 lowercase hex characters core reads; ids core makes keep their first 8 (local-cli)", () => {
+  assert.equal(branchToken, coreBranchToken, "core's one definition, re-exported: the header format has one owner");
   assert.equal(branchToken("b7e1c2d3-0000-4000-8000-000000000000"), "b7e1c2d3", "a UUID (core's ids): as core prints it");
   assert.equal(branchToken("0123456789abcdef01234567.2"), "01234567", "`cb cut new`'s ids: as core prints it");
   const odd = ["b6b.alt", "ab-cdef01234", "\u00c9CLAT-cut", "main", "B7E1C2D3-0000", "abc"];

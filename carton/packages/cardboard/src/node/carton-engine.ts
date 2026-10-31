@@ -51,16 +51,17 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
   };
   const toHeld = (r: { doc: Doc; seq: number; causal: string[] }): HeldBase => ({ baseDoc: r.doc, baseSeq: r.seq, causal: r.causal });
   /**
-   * A printed header's state as core reads it: the cut whose `branchToken` the header's `b:` is, so any cut id round
-   * trips (core's own lookup only matches an id that starts with those 8 characters). Two cuts with one token: the
-   * one with the header's cut name. None found: the header as text, for core's own lookup and error.
+   * A printed header's state. Core matches `b:` to the cut whose `branchToken` it is (core's one definition, which this
+   * package re-exports), so the header goes to core as text, except when several cuts share the token: core ranks the
+   * header's cut name above "has the printed state", so a print on a cut renamed since, with a same-token cut now under
+   * that name, would be refused "state unknown: re-print" (review 14 #5). Then the cut that has the state is taken here.
    */
   const refOf = async (rev: CartonRev): Promise<StateRef | string> => {
     const m = STATE_TOKEN.exec(rev.ref);
     if (!m || !rev.branch8) return revBody(rev);
     const same = (await carton.cuts()).filter((c) => branchToken(c.id) === rev.branch8);
+    if (same.length <= 1) return revBody(rev);
     const on = (id: string): StateRef => ({ branchId: id, seq: Number(m[2]), hash8: m[3]! });
-    if (same.length <= 1) return same.length ? on(same[0]!.id) : revBody(rev);
     // two cuts with one token (a hash collision, or ids sharing their first 8 characters): the one that has this state
     // (review 14 #5: a name can be shared or renamed since the print); of several (the same state), the current cut's,
     // then the one with the printed name

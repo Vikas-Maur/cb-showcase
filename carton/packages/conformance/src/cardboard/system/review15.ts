@@ -9,7 +9,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { Carton } from "@carton/core";
-import { cardboardAdapter, findRev, toHost } from "@carton/cardboard";
+import { branchToken, cardboardAdapter, findRev, toHost } from "@carton/cardboard";
 import { TIMELINE_FILE, statusPath } from "@carton/cardboard/node";
 import { openWorld, clip, find, render, parseFile, BOB, type Item } from "./world.ts";
 
@@ -153,7 +153,7 @@ test("review 15 #4: a cut another process switches to while the save's changes a
 
 test("review 15 #5: a store failure while two same-token cuts are told apart is thrown (the save is retried), not taken as the other cut [real engine]", async (t) => {
   const w = await openWorld(t, { items: ITEMS(), tracks: ["V1", "T2"] });
-  const twin = await w.carton.fork("Twin", { id: "fa91abc4-other" });
+  const twin = await w.carton.fork("Twin", { id: `${branchToken("b6b.alt")}-other` }); // shares b6b.alt's token
   const cut = await w.carton.fork("Alt", { id: "b6b.alt" });
   await w.carton.switchTo(cut.id);
   await w.mz.onCutSwitch(cut.id);
