@@ -23,8 +23,16 @@ export interface Env {
   ARCHIVE_KEEP?: string;
   ARCHIVE_SEGMENT?: string;
   ARCHIVE_EVERY_MS?: string;
+  // a socket that shows presence and sends nothing, not even its keepalive `ping`, for this long is closed, so its
+  // teammates stop showing its cursor (default 120000: clients ping every 25 s, a background tab about once a minute;
+  // "0" = never). Checked from the alarm, only while some socket shows presence.
+  PRESENCE_TIMEOUT_MS?: string;
   // media dedup within a team (§11), with R2 only: a JSON object from project id to team id, e.g.
   // {"film-a":"studio","film-b":"studio"}. A listed project's media bytes and manifests live once under
   // teams/<team>/media/, and the project reads only what it was granted (host-http's team.ts).
   TEAMS?: string;
+  // the most keys one POST /blobs/heads checks (default 200; at most 1000): each key is one to four R2 calls (a team
+  // store's claim and grant check), and Cloudflare limits a Worker request's subrequests, R2 calls included. The
+  // client asks again for the rest, so a lower value costs requests, never answers.
+  BLOB_HEADS_PER_REQUEST?: string;
 }

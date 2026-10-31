@@ -27,6 +27,10 @@ export const DDL: readonly string[] = [
     PRIMARY KEY (branch, coll, id, seq)) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS branches (branch TEXT PRIMARY KEY, rec TEXT) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS rids (rid TEXT PRIMARY KEY, credential TEXT) WITHOUT ROWID`,
+  // the people (windows-sync R3): a device credential's person, beside the rids bound to it; "the rids of a person"
+  // reads the index
+  `CREATE INDEX IF NOT EXISTS rids_by_credential ON rids (credential)`,
+  `CREATE TABLE IF NOT EXISTS people (credential TEXT PRIMARY KEY, id TEXT, name TEXT) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS keyframes (branch TEXT, seq INTEGER, hash TEXT, blob TEXT, doc TEXT,
     PRIMARY KEY (branch, seq)) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS segments (branch TEXT, hi INTEGER, lo INTEGER, blob TEXT, ids TEXT,
@@ -120,6 +124,7 @@ export class Tables {
       this.branches.clear();
       this.decl.clear();
       this.ridCache.clear();
+      this.peopleCache = null;
       throw e;
     }
   }
@@ -438,6 +443,46 @@ export class Tables {
   bindRid(rid: string, credential: string): void {
     this.write("INSERT OR IGNORE INTO rids (rid, credential) VALUES (?, ?)", rid, credential);
     this.ridCache.delete(rid); // re-read: OR IGNORE keeps an existing binding
+    const p = this.peopleCache?.get(credential);
+    if (p && this.ridOwner(rid) === credential && !p.rids.includes(rid)) p.rids.push(rid);
+  }
+
+  // ---------------------------------------------------------------- people (windows-sync R3)
+  // Every person with the rids bound to their credential, read once (one join over the index) and kept up to date by
+  // setPerson and bindRid, so a welcome reads no rows for it; a rolled-back transaction drops it.
+  private peopleCache: Map<string, { id: string; name: string; rids: string[] }> | null = null;
+  private peopleMap(): Map<string, { id: string; name: string; rids: string[] }> {
+    if (this.peopleCache) return this.peopleCache;
+    const m = new Map<string, { id: string; name: string; rids: string[] }>();
+    for (const r of this.all<{ credential: SqlValue; id: SqlValue; name: SqlValue; rid: SqlValue }>(
+      "SELECT p.credential AS credential, p.id AS id, p.name AS name, r.rid AS rid FROM people p LEFT JOIN rids r ON r.credential = p.credential",
+    )) {
+      const cred = text(r.credential);
+      let p = m.get(cred);
+      if (!p) m.set(cred, (p = { id: text(r.id), name: text(r.name), rids: [] }));
+      if (r.rid !== null && r.rid !== undefined) p.rids.push(text(r.rid));
+    }
+    return (this.peopleCache = m);
+  }
+  /** The person a device credential set, if any. */
+  person(credential: string): { id: string; name: string } | undefined {
+    const p = this.peopleMap().get(credential);
+    return p && { id: p.id, name: p.name };
+  }
+  /** Sets a credential's person (its rids stay bound as they are). */
+  setPerson(credential: string, id: string, name: string): void {
+    this.write("INSERT OR REPLACE INTO people (credential, id, name) VALUES (?, ?, ?)", credential, id, name);
+    const m = this.peopleMap(), p = m.get(credential);
+    if (p) Object.assign(p, { id, name });
+    else m.set(credential, { id, name, rids: this.all<{ rid: SqlValue }>("SELECT rid FROM rids WHERE credential = ?", credential).map((r) => text(r.rid)) });
+  }
+  /** The rids bound to a credential that has a person ([] without one). */
+  ridsOfPerson(credential: string): string[] {
+    return [...(this.peopleMap().get(credential)?.rids ?? [])];
+  }
+  /** Every person with the rids bound to their credential (copies). */
+  people(): { id: string; name: string; rids: string[] }[] {
+    return [...this.peopleMap().values()].map((p) => ({ id: p.id, name: p.name, rids: [...p.rids] }));
   }
 
   // ---------------------------------------------------------------- keyframes

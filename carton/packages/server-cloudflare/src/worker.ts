@@ -27,6 +27,7 @@ export function depsFor(env: Env): HttpDeps {
     blobsFor: (projectId) => mediaBlobs(env, projectId),
     sequencerBlobsFor: (projectId) => sequencerBlobs(env, projectId),
     maxEnvelopeBytes: maxEnvelopeOf(env),
+    maxBlobHeads: Number(env.BLOB_HEADS_PER_REQUEST ?? 200) || 200,
     // an envelope upload arms the room's sweep, so an upload whose message never comes is still swept
     async onEnvelope(projectId) {
       const room = env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(projectId));

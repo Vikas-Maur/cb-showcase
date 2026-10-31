@@ -28,7 +28,7 @@
 // revoked: a project that drops a media record keeps the right to the bytes it once had.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { BlobError } from "@carton/blob-memory/rules";
+import { BlobError, checkKey, checksKeys, markCreated, type ChecksKeys } from "@carton/blob-memory/rules";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { decodeManifest, manifestKey, webCryptoHasher, type Manifest } from "@carton/media";
 
@@ -130,8 +130,14 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
     abort: () => u.abort(),
   });
 
-  const store: TeamMediaStore = {
+  const store: TeamMediaStore & ChecksKeys = {
     kind: `${team.kind}+team`,
+    // the scope a key goes to decides its room
+    checkKey(key) {
+      const to = shared(key) ? team : project;
+      if (checksKeys(to)) to.checkKey(key);
+      else checkKey(key);
+    },
     async claim(key) {
       const hash = shared(key);
       if (!hash || !(await team.head(key))) return false;
@@ -150,7 +156,7 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
       }
       await grant(hash);
       const seen = await inspect(key, hash);
-      if (seen.sound) return seen.info!;
+      if (seen.sound) return opts?.ifAbsent ? markCreated({ ...seen.info! }, false) : seen.info!; // a create-only put kept it
       if (key.startsWith("m/")) {
         const m = await manifestFor(hash);
         if (data.byteLength !== m.size) throw new BlobError("InvalidPart", `${data.byteLength} bytes; the manifest says ${m.size}`);

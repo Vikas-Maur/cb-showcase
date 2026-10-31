@@ -66,6 +66,12 @@ Use `@carton/blob-memory/rules` for the argument checks, so a bad call fails the
   0, is an empty array, not an error. R2 throws there, so `blob-r2` translates.
 - **Replacing** is atomic: a reader sees the old bytes or the new, never a mix. `ifAbsent` never touches existing
   bytes.
+- **Say whether an `ifAbsent` put created the key** (recommended): mark the info it returns with `markCreated(info,
+  created)` from `@carton/blob-memory/rules` (a non-enumerable `PUT_CREATED` symbol, so the info's JSON is unchanged).
+  `serveSignedBlob` answers a create-only PUT by it, exactly, even when another writer raced to the same key with
+  bytes of the same size. A wrapper that copies the info keeps the mark (`withCreated`). Without it, the host can only
+  answer 200 when the client's `X-Carton-Sha256` and size match the kept object, and 412 otherwise. The suite checks
+  the mark when a store opts in (`reportsCreated`).
 - **Your buffers are yours.** A blob is the bytes at put time: copy, or never keep the caller's array.
 - **Multipart:** parts are numbered 1–10,000. All parts but the last have the same size, and the last is no larger,
   as R2 requires. S3 and R2 need parts of at least 5 MiB except the last. `complete` joins the parts in part-number
@@ -96,12 +102,37 @@ R2's binding, the DO-blob vault and `blob-fs` can't presign. They take a signer 
 with single HTTP ranges, so a `<video>` element or ffmpeg can seek, and also PUT. `blob-s3` presigns with SigV4
 instead.
 
+A signed PUT takes two optional headers, neither signed, since each can only narrow what the URL allows:
+`If-None-Match: *` makes it create-only, applied atomically by the store (`put`'s `ifAbsent`), and
+`X-Carton-Sha256: <64 hex>` is `put`'s `sha256`: `serveSignedBlob` refuses a body that doesn't hash to it (400)
+before writing, so every store gives the same guarantee (R2 checks it again), and the store keeps it for `head`.
+`hostMediaBlobs` sends both. A client of its own (a browser's) should too, rather than a `head` before the PUT.
+
+A signed PUT answers with the stored object's info as JSON (`key`, `size`, `etag`, `contentType`, `sha256`; `etag`
+in its header too): 200 when its bytes went in, and 412, as S3 and R2 answer, when `If-None-Match: *` found the key
+already there, with the earlier object's info and nothing written. So a create-only PUT needs no read-back: a
+client takes the info from either answer (or, reading only the status, heads the key after a 412). The host heads
+the key under the same per-key lock its other writes of the key take (host-http locks media keys, `m/<hash>`). A writer
+outside that lock that creates the key in between still loses nothing: the store's `ifAbsent` keeps the first object,
+and says whether this PUT created it (above), so of two create-only PUTs racing on one key exactly one gets 200,
+whatever their bytes. A store that doesn't say gets 200 only when the PUT's `X-Carton-Sha256` proves the kept bytes are
+its own, else 412. A `hostMediaBlobs` from before this takes the 412 for an error.
+
+Not every PUT answer holds that info, so a client decides by the answer, not by which host signed the URL. A URL a
+host presigns straight to its bucket (S3's or R2's presigned URLs, not `serveSignedBlob`) gets the bucket's answer:
+200 with an etag and no body, or 412 with an XML error. So does a host from before this (200 and an etag, whatever
+happened). `hostMediaBlobs.put` takes the info only from a JSON body holding a numeric `size`; without it, a
+create-only PUT reads back with `head` (after a 200 as after a 412), and a plain PUT reports its own bytes with the
+answer's etag. A client of its own should do the same.
+
 On Node, `blob-s3` and host-http's clients (`hostMediaBlobs`, `hostMessageBlobs`) send their requests through
 `@carton/http-node`, which uses `node:http` and `node:https` instead of the global `fetch`. When a server ended the
 connection while a reader had paused the body, Node's built-in undici either crashed the process with an uncaught
 `assert(!this.paused)` (CI #29) or left the read hanging forever; `node:http` rejects the read instead. A streamed
-upload is held to its declared length. Workers and browsers use `fetch`, and a `fetch` passed in the options is used
-as given. `packages/blob-s3/bench/transport.ts` compares the two transports' throughput (see its header to run it).
+upload is held to its declared length. Redirects are followed as `fetch` follows them: Authorization,
+Proxy-Authorization, Cookie and Host never go on to another origin, a Location with credentials is refused, and a
+streamed body ends the request at any redirect but a 303. Workers and browsers use `fetch`, and a `fetch` passed in
+the options is used as given. `packages/blob-s3/bench/transport.ts` compares the two transports' throughput (see its header to run it).
 
 ### One bucket, many projects
 
@@ -111,6 +142,9 @@ another project's keys. Both hosts go one step further and give each project two
 `projects/<id>/media/` for what the HTTP API signs and uploads. An editor can write media, but never a record the
 sequencer relies on, which may belong to a cut they may not write. A signed URL's MAC also covers its route
 (`/blob/<id>/`), so a URL for one project never opens the same key under another.
+
+S3 and R2 cap the whole key at 1,024 bytes, prefix included, so a scoped store takes keys up to 1,024 bytes less its
+prefix: about 1,000 in a project's media scope. It refuses a longer one with `InvalidKey`, naming that limit.
 
 ### Media dedup within a team
 
@@ -166,8 +200,43 @@ every host runs the same function. The host:
 3. **Feeds connections.** A connection is `{ id, auth, state, send }`. Call `sequencer.handle(conn, msg)` for each
    JSON text message, `sequencer.disconnect(conn)` on close, and `sequencer.attach(conn)` for every socket that
    survives a restart or hibernation, with its saved `state`. The sequencer mutates `conn.state` (the branches a
-   socket follows, its dead epoch). If your host can evict a project while sockets stay open, as Durable Objects do,
-   save `state` with the socket after each message that changed it.
+   socket follows, its dead epoch, the actors it shows). If your host can evict a project while sockets stay open,
+   as Durable Objects do, save `state` with the socket after each message that changed it.
+   - **Presence leaves.** A client that crashes or loses its network never sends its `presence(null)`, so
+     `disconnect` sends the branch's other subscribers `state: null` for each actor the connection still showed
+     (`state.shown`, at most 4 actors). So call it for every way a socket ends, including a timeout. A client
+     that lost its network sends no FIN either: drop a socket that has been silent for too long. server-node pings
+     after `idleTimeoutMs` (30 s) of silence and drops the socket after as long again. The Durable Object closes a
+     socket that shows presence and has neither sent anything nor pinged (its `ping` auto-response) for
+     `PRESENCE_TIMEOUT_MS` (120 s). It checks from its alarm, every half of that, only while some socket shows
+     presence. A socket's last message time rides in its attachment (written at most once a second), so a wake
+     from hibernation is never taken for its activity. Maintenance keeps its own due time
+     (`carton_room.maintain_at`), so these checks never run it early; a room whose alarm was set before that row
+     existed takes the alarm as its due time. Presence still queued when its connection goes is dropped, never
+     relayed. The conformance host suite drops a client and silences one (also across wakes), and checks that its
+     peers see the leaves.
+   - **People** (windows-sync R3). A GUI save's author is the generic person; the sequencer keeps each device
+     credential's person (`hello.identity`, `identity`), so teammates resolve it by the change's replica id, which the
+     sequencer already binds to that credential (§6.3). A host needs nothing more: the record is two of the
+     sequencer's own tables (`people`, and an index on `rids` by credential), created like the rest on any storage,
+     the Durable Object's included. The sequencer's rules: an identity's `id` must be the session's account
+     (`forbidden` otherwise; the connection goes on), and its name is the person's own choice, 1–200 characters with
+     no control characters (`bad-request`). Changes to a person are capped per connection (5, then one every 12 s),
+     since any role may set one and each is a row and a message to everyone; the cap rides in the connection's state,
+     so a Durable Object's wake doesn't reset it. Every welcome page that subscribes
+     carries `people` (every person, with every rid bound to them; `[]` says the host keeps them); a person set or
+     renamed, and a rid newly bound to a credential with a person (a hello's claim, a push, a hand-off's rows once its
+     transaction commits), go to every connection of the project before the row the rid binds (as an envelope when
+     big: a hello claims up to 4,096 rids). A reader scoped to some cuts (a Published cut's watch link) gets
+     `people: []` and no `people` messages: a link never tells a stranger the team's accounts and names. The
+     conformance host suite checks the refusal, the order, a rename, the cap across a wake, and that the people survive
+     a hibernation and a restart.
+
+     **Known limit: a watch link's viewers see the generic person.** The privacy rule above has a cost: in a Published
+     cut, every change saved from the GUI shows its author as the generic person, never by name, while editors of the
+     same project see the names. A later option is to send a watch link only the display names of the authors in its
+     cut, keyed by the rids of that cut's rows and never with account ids, so its viewers see who made the cut without
+     learning the team's accounts or anyone outside the cut.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from
@@ -199,7 +268,27 @@ every host runs the same function. The host:
    `PUT /api/projects/<p>/messages/messages/c/…` (a writer's upload) and `GET …/messages/messages/s/…` (the
    server's). A client passes `hostMessageBlobs({ origin, projectId, token })` from `@carton/host-http/client` as
    its sync client's `blobs`, and `hostMediaBlobs({ origin, projectId, token })` as `@carton/media`'s store: signed
-   ranged reads and PUTs, resumable multipart through the session's routes, and `reportDamaged(key, leaf)`.
+   ranged reads and PUTs, resumable multipart through the session's routes, `reportDamaged(key, leaf)`, and
+   `heads(keys)`.
+   `handleHttp` stops reading a body at its budget and answers 413 with the rest of the body unread: a host on
+   `node:http` must then close the connection (server-node answers `connection: close`), or a client that keeps it
+   in its pool sends its next request on it and gets ECONNRESET.
+
+   **Many heads at once (REQ-11).** Media parts live in one flat namespace (`m/<hash>`), so checking that a long
+   stream's parts are all there took one HEAD each, about 2,000 requests for a 2,000-part stream.
+   `POST …/blobs/heads {keys}` takes up to 1,000 keys and 1 MiB of JSON (1,000 keys of the longest a store takes
+   fit), and answers `{blobs}`: one entry per key, in order, `{size}` or null. HEAD's rules hold for the whole
+   batch: one key that is invalid or outside the session's scope (a watch link reads only media named by content and
+   its cut's files) refuses all of it (400, 403) before any store call, and an editor's batch claims team objects as
+   its HEAD does. Keys are checked by the store's own rules where it states them (`checkKey`, `ChecksKeys` in
+   `@carton/blob-memory/rules`: a scoped store's prefix leaves less than 1,024 bytes). A store call that fails ends
+   the batch: no head starts after it, and the answer waits for those already started. A host
+   answers for at most `maxBlobHeads` keys (default 1,000), a prefix of them, and the client asks again for the rest.
+   The Worker checks 200 a request (`BLOB_HEADS_PER_REQUEST`), since each key costs one to four R2 calls and
+   Cloudflare limits a request's subrequests. `hostMediaBlobs.heads(keys)` does the splitting, follows a smaller
+   budget, and on a host from before the route makes one HEAD per key. It isn't part of BlobStore, so code that takes
+   any store looks for it (`hasHeads(store)` from `@carton/host-http/client`). Through server-node, a 2,000-part
+   check is then 2 requests; through the Worker, 10.
 
    **The repair path (§11).** A reader whose leaf never verifies reports it with `POST …/blobs/damaged {key, leaf}`.
    The host loads the manifest, which the hash itself verifies, re-reads that leaf, and removes the object only if
@@ -213,7 +302,10 @@ every host runs the same function. The host:
    **Signed URLs** are built from the request's origin, so build the `Request` with the address the client used. A
    URL carrying an internal address can't be reached from outside. server-node takes, in order: `publicOrigin`;
    `X-Forwarded-Host`/`-Proto`, only with `trustProxy` (a client could otherwise choose them); a well-formed `Host`
-   header; the listen address. A Worker's request URL already carries the client's host.
+   header; the listen address. A Worker's request URL already carries the client's host. So a Node host that clients
+   reach directly (as `localhost`, a LAN name or an IP) needs no setting; behind a reverse proxy or a tunnel that
+   rewrites `Host`, set `trustProxy` if the proxy sets `X-Forwarded-Host`, or else `publicOrigin` to the address
+   clients use.
 
 The two shipped hosts are short and worth reading first:
 
@@ -300,7 +392,13 @@ add none of their own. Measured in a local `ProjectRoom`, with wrangler dev coun
 Archiving is the line to watch: every archived row costs one more row written. `maintain()` follows §18 (rows
 older than the newest 10,000, in gzip segments of 10,000), so a branch pays it only once it has more than 20,000
 live changes. `ARCHIVE_KEEP` and `ARCHIVE_SEGMENT` override it. The WebSocket keepalive (`ping` → `pong`) is
-answered by the runtime without waking the room, so idle sockets cost nothing.
+answered by the runtime without waking the room, so idle sockets cost nothing. While a socket shows presence, the
+alarm wakes the room every `PRESENCE_TIMEOUT_MS / 2` (60 s) to check for silent sockets. Each check reads one row,
+the maintenance due time, and sets the alarm; it writes no table rows.
+
+Each `POST …/blobs/heads` key is one R2 call (a team project's editor: up to four, for the claim and the grant
+check). The Worker checks at most 200 keys a request, under Cloudflare's per-request subrequest limit; raise
+`BLOB_HEADS_PER_REQUEST` (to 1,000 at most) if your plan's limit allows more.
 
 ## Windows
 

@@ -16,6 +16,6 @@ if (missing) {
     createS3BlobStore({ endpoint: gw.endpoint, bucket: "carton-conformance", region: gw.region, ...gw.credentials, payload });
   // VersityGW's POSIX backend (like MinIO's) can't keep an object at `a` beside objects under `a/`; AWS and R2 can.
   const posix = { reason: "VersityGW's POSIX backend refuses an object whose key is a folder of others (ObjectParentIsFile)" };
-  blobStoreSuite("s3 (VersityGW, unsigned payload)", make("unsigned"), { minPartSize: S3_MIN_PART_SIZE, expiryWaitMs: 2100, objectsBesideFolders: posix });
-  blobStoreSuite("s3 (VersityGW, signed payload)", make("signed"), { minPartSize: S3_MIN_PART_SIZE, objectsBesideFolders: posix });
+  blobStoreSuite("s3 (VersityGW, unsigned payload)", make("unsigned"), { minPartSize: S3_MIN_PART_SIZE, expiryWaitMs: 2100, objectsBesideFolders: posix, reportsCreated: true });
+  blobStoreSuite("s3 (VersityGW, signed payload)", make("signed"), { minPartSize: S3_MIN_PART_SIZE, objectsBesideFolders: posix, reportsCreated: true });
 }

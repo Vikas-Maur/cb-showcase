@@ -59,6 +59,9 @@ export interface NodeHostOptions {
   /** Largest WebSocket message (default 32 MiB, Cloudflare's own cap, so both hosts accept the same messages). This
    * is the protocol's limit, separate from the sequencer's 1 MB threshold for keeping a change body inline. */
   maxMessageBytes?: number;
+  /** A socket silent this long is pinged; one still silent after as long again is dropped (default 30 s, 0 = never).
+   * A client that lost its network goes, and so does its presence on its teammates' screens, within twice this. */
+  idleTimeoutMs?: number;
   /** The origin clients reach this host at (`https://carton.example`), for the signed URLs it hands out. Without
    * it, each request's own Host header is used, so a URL works at the address the client used. */
   publicOrigin?: string;
@@ -73,6 +76,8 @@ export interface NodeHostOptions {
   /** The largest message carried as an envelope, read by the sequencer and taken by the upload route (default 64
    * MiB, the sequencer's own). */
   maxEnvelopeBytes?: number;
+  /** The most keys one POST /blobs/heads checks (default and most 1000); the client asks again for the rest. */
+  maxBlobHeads?: number;
   durability?: "full" | "normal";
   onError?: (e: unknown) => void;
 }
@@ -127,7 +132,7 @@ function toRequest(req: IncomingMessage, origin: string): Request {
   return new Request(new URL(req.url ?? "/", origin), init);
 }
 
-async function send(res: ServerResponse, r: Response): Promise<void> {
+async function send(res: ServerResponse, r: Response, req?: IncomingMessage): Promise<void> {
   // the connection may be gone already (the client left, or the host closed it): its "close" event has fired, so
   // nothing below would ever settle
   if (res.destroyed) {
@@ -136,6 +141,10 @@ async function send(res: ServerResponse, r: Response): Promise<void> {
   }
   const headers: Record<string, string> = {};
   r.headers.forEach((v, k) => (headers[k] = v));
+  // answered before its body was read whole (a 413 at the budget, which cancelled the read): the rest of the body is
+  // still on the connection, so it can't carry another request. Without this the client keeps it in its pool, and a
+  // later request on it fails (ECONNRESET).
+  if (req && !req.complete) headers.connection = "close";
   res.writeHead(r.status, headers);
   if (!r.body) return void res.end();
   const body = Readable.fromWeb(r.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>);
@@ -363,6 +372,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     blobsFor,
     sequencerBlobsFor: (projectId) => scoped(projectId, "seq"),
     ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
+    ...(opts.maxBlobHeads !== undefined ? { maxBlobHeads: opts.maxBlobHeads } : {}),
     // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes;
     // while closing no room opens, so the project is registered with a `.id` file for the next start's sweep
     onEnvelope: (projectId) => {
@@ -380,7 +390,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     const work = (async () => {
       try {
         const r = await handleHttp(toRequest(req, originOf(req)), deps);
-        if (r) return await send(res, r);
+        if (r) return await send(res, r, req);
         if (staticRoot && (req.method === "GET" || req.method === "HEAD")) return serveStatic(staticRoot, req, res);
         res.writeHead(404, { "content-type": "text/plain" }).end("not found");
       } catch (e) {
@@ -411,6 +421,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
             protocols: (offered) => (offered.includes(WS_PROTOCOL) ? WS_PROTOCOL : null),
             maxPayload: opts.maxMessageBytes ?? MAX_MESSAGE,
             maxBufferedBytes: 16 << 20,
+            ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
           });
           if (!ws) return;
           try {
