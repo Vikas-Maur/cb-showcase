@@ -21,11 +21,11 @@
 //   - The person decides in History: the same card (path and both values) goes from every `@human` row and from the
 //     agent's notices. It would mislead there: `cb resolve --keep mine` would undo the person's explicit choice, and
 //     the Stop hook would hold the agent's turn for a question already answered.
-//   - The agent decides first (`cb resolve` closes its card): the person's copy is no longer shown. A panel opened later
-//     reads only cards still open on the agent's side. An open panel drops it when a change lands (`--keep mine`
-//     commits); `--keep theirs` commits nothing and leaves head as the card says, so the card stays true until the panel
-//     next reads. If the person picks on it before then, their pick still holds: "Keep yours" puts their value back
-//     (an empty commit if it is still there) and "Keep <agent>'s" commits the agent's.
+//   - The agent decides first (`cb resolve` closes its card): the person's copy is no longer shown, and goes. A panel
+//     opened later reads only cards still open on the agent's side. An open panel re-reads them 0.3 s and 2 s after a
+//     change lands in this process (`--keep mine` is one); `--keep theirs` commits nothing and leaves head as the card
+//     says, so there the card stays true until the next change or read. A pick made before then still holds: "Keep
+//     yours" puts the person's value back (no version when it is still there) and "Keep <agent>'s" commits the agent's.
 //   - The agent's turn ends: what it left unresolved becomes the person's (R3-09). The facade's `notices` service is
 //     how the Director's Stop hook takes its notices; just before, `detach` marks the person's copies of that agent's
 //     cards that are still open as handed over, so they no longer depend on the agent's rows. `@carton/local`'s
@@ -33,6 +33,7 @@
 //     shown too (identical cards show once).
 //   - The view's `.status` sidecar is the record of that save's result (the Materializer's file): it keeps listing the
 //     card until the view is saved again. `cb conflicts` is the live list.
+import { apply } from "@carton/core";
 import { casUpdate, SKIP, HUMAN_CARDS } from "@carton/local";
 import { cardOps } from "@carton/react";
 
@@ -197,23 +198,27 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       if (choice === "both") throw new Error("Keep both isn't offered for this card");
       const raw = raws.get(handle), agentKey = card[AGENT], c = plain(card);
       if (!raw) throw new Error("This card's panel isn't set up for agents' cards");
-      if (choice === "theirs") {
-        // fromCarton's "mine" commits core's `theirs` (the agent's value) on the card's cut, as the person
-        await raw(id, "mine");
-      } else {
+      // A side's value, committed by the person who chose it, as a document: when it is there already core finds nothing
+      // to change and History gets no version (ops setting a field to the value it has would make one). A clash with a
+      // change made since (a moment's window) comes back as the person's own card.
+      const take = async (value) => {
+        const head = await lc.carton.head();
+        const r = await lc.carton.commit({ doc: apply(structuredClone(head.doc), cardOps(c, value), lc.carton.schema), base: head.ref, author: me });
+        if (r.status === "rejected") throw new Error(r.reason);
+        if (r.status === "conflicts") handle.reportConflicts(r.cards);
+      };
+      if (choice === "theirs") await take(c.theirs);
+      else {
         // Keep yours. While nobody has decided the card (still open on the agent's side, or handed over to the person),
         // head has the person's value: nothing to commit. Once someone has (the agent with cb resolve, or another panel,
-        // before this one re-read), this pick is the latest: the person's value is put back, an empty commit when it is
-        // still there. (The person's copy of a card the agent decided may already be gone: `shown` prunes it.)
+        // before this one re-read), this pick is the latest: the person's value is put back. (The person's copy of a
+        // card the agent decided may already be gone: `shown` prunes it.)
         const same = (x) => sameCard(x, c);
         const open = (await openFor(lc.store, agentKey)).some(same) || (await rows(lc.store)).some((r) => handed(r.value) && r.value.cards.some(same));
-        if (!open) {
-          const r = await lc.carton.commit({ ops: cardOps(c, c.ours), author: me });
-          if (r.status === "rejected") throw new Error(r.reason);
-          if (r.status === "conflicts") handle.reportConflicts(r.cards);
-        }
-        await raw(id, "theirs");
+        if (!open) await take(c.ours);
       }
+      // fromCarton's own resolve with its "theirs" (the side on screen) drops the card from this panel and commits nothing
+      await raw(id, "theirs");
       await close(lc, c, agentKey);
       return true;
     },

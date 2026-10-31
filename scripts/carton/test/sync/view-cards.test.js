@@ -126,14 +126,30 @@ async function clash(lc, actorId, item, field, mine, theirs, extra = {}) {
   out.three.pickedBy = (await lc.carton.log({ limit: 1 }))[0].author?.id;
   await sleep(2500);
   out.three.openPanel = shown("p3b").filter((x) => x.path === c.path).length;
-  // And the agent decides first with nothing for the person to pick on: a panel opened afterwards has no card.
+  out.three.laterPanel = shown("p3d").filter((x) => x.path === c.path).length; // opened after the agent decided
+  // The agent keeps the person's value (cb resolve --keep theirs: its card closed, nothing committed), and the person
+  // picks "Keep yours" on a panel that still shows it (before any re-check): no new version.
   const c2 = await clash(lc, "director/c1/t1", VIDEO, "opacity", 0.2, 0.25);
+  await open("p3e");
+  const card3e = shown("p3e").find((x) => x.path === c2.path);
   const n2 = (await services.notices({ bundlePath: bundle, actor: "director/c1/t1" })).find((n) => (n.cards ?? []).some((x) => x.path === c2.path));
   await lc.write({ kind: "closeCard", change: n2.change ?? null, path: c2.path }, { actor: agent });
-  await open("p3c");
-  out.three.laterPanel = shown("p3c").filter((x) => x.path === c2.path).length;
-  // the person's copy of a card the agent decided goes for good (not just hidden)
-  out.three.keptForPerson = (await humanRows(lc)).filter((x) => x.path === c2.path && x.theirs === 0.25).length;
+  const v3 = (await lc.carton.log({})).length;
+  out.three.stillShown = !!shown("p3e").find((x) => x.path === c2.path);
+  await call("p3e", "resolve", card3e.id, "mine");
+  out.three.keepYoursAgain = { opacity: await fieldAt(lc, VIDEO, "opacity"), newVersions: (await lc.carton.log({})).length - v3 };
+  // The agent takes its own value (--keep mine) and the person, on a panel that still shows the card, takes the agent's
+  // too: nothing new to commit, no version.
+  const c3 = await clash(lc, "director/c1/t1", VIDEO, "opacity", 0.35, 0.45);
+  await open("p3f");
+  const card3f = shown("p3f").find((x) => x.path === c3.path);
+  const n3 = (await services.notices({ bundlePath: bundle, actor: "director/c1/t1" })).find((n) => (n.cards ?? []).some((x) => x.path === c3.path));
+  await lc.write({ kind: "commit", ops: [{ op: "set", path: ["timelineItems", VIDEO, "opacity"], value: 0.45 }] }, { actor: agent });
+  await lc.write({ kind: "closeCard", change: n3.change ?? null, path: c3.path }, { actor: agent });
+  const v4 = (await lc.carton.log({})).length;
+  out.three.stillShown2 = !!shown("p3f").find((x) => x.path === c3.path);
+  await call("p3f", "resolve", card3f.id, "theirs");
+  out.three.takeAgain = { opacity: await fieldAt(lc, VIDEO, "opacity"), newVersions: (await lc.carton.log({})).length - v4 };
 
   // 4. The Director's Stop hook takes its notices (main's in-process hook, through this service): the card it left is
   //    the person's from then on, shown in a panel opened later; the agent's own is gone with the take.
@@ -227,7 +243,10 @@ test("the agent decides first: a pick made on the card still holds, an open pane
   assert.deepEqual([out.three.picked, out.three.pickedBy], [120, "person"], "Keep yours puts the person's value back over the agent's");
   assert.equal(out.three.openPanel, 0);
   assert.equal(out.three.laterPanel, 0);
-  assert.equal(out.three.keptForPerson, 0, "its copy for the person is gone from carton.db");
+  assert.equal(out.three.stillShown, true, "picked while still on screen");
+  assert.deepEqual(out.three.keepYoursAgain, { opacity: 0.2, newVersions: 0 }, "Keep yours after the agent kept it: an empty commit, no version");
+  assert.equal(out.three.stillShown2, true, "picked while still on screen");
+  assert.deepEqual(out.three.takeAgain, { opacity: 0.45, newVersions: 0 }, "Keep Director's after the agent took it: no version");
 });
 
 test("the Director's Stop hook takes its notices: what it left stays the person's", opt, () => {
