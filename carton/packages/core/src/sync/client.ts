@@ -91,6 +91,9 @@ export interface SyncClientOptions {
   maxMessageBytes?: number;
 }
 
+/** The most presence updates a client sends a second (§12: 10–20 Hz while dragging). */
+export const PRESENCE_PER_SEC = 10;
+
 let CONN = 0;
 
 export class SyncClient {
@@ -111,6 +114,9 @@ export class SyncClient {
   caughtUp = false;
   private quiesced = false;
   private retry: unknown = null;
+  private presenceAt = -Infinity;
+  private presenceNext: { actor: Change["author"]; state: PresenceState | null } | null = null;
+  private presenceTimer: unknown = null;
   private waiters: ((ok: boolean) => void)[] = [];
   private statusListeners: ((s: SyncStatus) => void)[] = [];
   private _status: SyncStatus = "offline";
@@ -174,6 +180,9 @@ export class SyncClient {
     this.unsubscribe?.();
     this.unsubscribe = null;
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
+    if (this.presenceTimer !== null) this.timers.clearTimeout(this.presenceTimer);
+    this.presenceTimer = null;
+    this.presenceNext = null;
     const c = this.conn;
     this.conn = null;
     c?.close();
@@ -492,8 +501,30 @@ export class SyncClient {
     this.send(msg);
   }
 
+  /**
+   * Presence goes out at most PRESENCE_PER_SEC times a second: within the interval only the latest state is kept and
+   * sent when it ends, so a drag at 60 Hz costs the relay 10 messages a second and the last position always arrives.
+   * (The server also drops anything over a per-connection cap.)
+   */
   sendPresence(actor: Change["author"], state: PresenceState | null): void {
-    if (this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor, state });
+    if (!this.conn?.open) return;
+    const now = (this.o.clock ?? Date.now)();
+    const wait = this.presenceAt + 1000 / PRESENCE_PER_SEC - now;
+    if (wait <= 0 && this.presenceTimer === null) {
+      this.presenceAt = now;
+      this.send({ type: "presence", branchId: this.branchId, actor, state });
+      return;
+    }
+    this.presenceNext = { actor, state };
+    if (this.presenceTimer !== null) return;
+    this.presenceTimer = this.timers.setTimeout(() => {
+      this.presenceTimer = null;
+      const p = this.presenceNext;
+      this.presenceNext = null;
+      if (!p || !this.conn?.open) return;
+      this.presenceAt = (this.o.clock ?? Date.now)();
+      this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
+    }, Math.max(0, wait));
   }
 
   // ---------------------------------------------------------------- pushing

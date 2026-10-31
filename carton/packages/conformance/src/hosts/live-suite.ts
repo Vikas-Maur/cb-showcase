@@ -28,6 +28,34 @@ async function until(cond: () => boolean, what: string, dump: () => string, ms =
   }
 }
 
+async function share(f: HostFixture, branch: string): Promise<void> {
+  // the server adopts the cut (§5.3) from a raw connection, as the hand-off upload does
+  const owner = await f.transport.connect(f.host.url, { token: await f.token("owner") });
+  const adopted = new Promise((ok) => owner.onMessage((m) => m.type === "adopted" && ok(m)));
+  owner.send({ type: "adopt", branchId: branch, n: 0, stateHash: "", rows: [], rec: { id: branch, name: "main", forkOf: null, owner: "owner", kind: "main", sequencer: { kind: "server", since: 0 } }, doc0: DOC0, closure: [] } as unknown as sync.ClientMessage);
+  await adopted;
+  owner.close();
+}
+
+async function makeReplica(f: HostFixture, branch: string, who: string, clients: sync.SyncClient[]) {
+  const q = new sync.ReplicaQueue(schema);
+  q.addBranch({ id: branch, name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, DOC0);
+  const token = await f.token("editor"); // one device per replica, kept across a restart
+  const events: sync.SyncEvent[] = [];
+  const blobs = f.clientBlobs?.(token);
+  const client = sync.createSyncClient(q, { transport: f.transport, url: f.host.url, token, branchId: branch, schemaVersion: 1, backoffMs: 100, onEvent: (e) => events.push(e), ...(blobs ? { blobs } : {}) });
+  clients.push(client);
+  client.start();
+  const rid = crypto.getRandomValues(new Uint8Array(12)).reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
+  let n = 0;
+  // the owner (core's History) commits, then tells its one pusher to push
+  const commit = (ops: sync.CommitInput["ops"]) => {
+    q.commit(branch, { id: `${rid}.${++n}`, author: { kind: "human", id: who }, ops, at: Date.now() });
+    client.pump();
+  };
+  return { q, client, events, commit, settled: () => q.pending(branch).length === 0 };
+}
+
 export function liveSyncSuite(name: string, make: () => Promise<HostFixture>): void {
   describe(`Live sync through the host: ${name}`, () => {
     const clients: sync.SyncClient[] = [];
@@ -41,30 +69,9 @@ export function liveSyncSuite(name: string, make: () => Promise<HostFixture>): v
       fx = await make();
       const f = fx;
       const branch = `live-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
-      // share the cut: the server adopts it (§5.3) from a raw connection, as the hand-off upload does
-      const owner = await f.transport.connect(f.host.url, { token: await f.token("owner") });
-      const adopted = new Promise((ok) => owner.onMessage((m) => m.type === "adopted" && ok(m)));
-      owner.send({ type: "adopt", branchId: branch, n: 0, stateHash: "", rows: [], rec: { id: branch, name: "main", forkOf: null, owner: "owner", kind: "main", sequencer: { kind: "server", since: 0 } }, doc0: DOC0, closure: [] } as unknown as sync.ClientMessage);
-      await adopted;
-      owner.close();
+      await share(f, branch);
 
-      const replica = async (who: string) => {
-        const q = new sync.ReplicaQueue(schema);
-        q.addBranch({ id: branch, name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, DOC0);
-        const token = await f.token("editor"); // one device per replica, kept across the restart
-        const events: sync.SyncEvent[] = [];
-        const client = sync.createSyncClient(q, { transport: f.transport, url: f.host.url, token, branchId: branch, schemaVersion: 1, backoffMs: 100, onEvent: (e) => events.push(e) });
-        clients.push(client);
-        client.start();
-        const rid = crypto.getRandomValues(new Uint8Array(12)).reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
-        let n = 0;
-        // the owner (core's History) commits, then tells its one pusher to push
-        const commit = (ops: sync.CommitInput["ops"]) => {
-          q.commit(branch, { id: `${rid}.${++n}`, author: { kind: "human", id: who }, ops, at: Date.now() });
-          client.pump();
-        };
-        return { q, client, events, commit, settled: () => q.pending(branch).length === 0 };
-      };
+      const replica = (who: string) => makeReplica(f, branch, who, clients);
       const a = await replica("alice"), b = await replica("bob");
       const dump = () => JSON.stringify({ a: { head: a.q.headSeq(branch), pending: a.q.pending(branch).length, ev: a.events.slice(-12) }, b: { head: b.q.headSeq(branch), pending: b.q.pending(branch).length, ev: b.events.slice(-12) } });
       await until(() => a.client.online && b.client.online, "both online", dump);
@@ -87,6 +94,26 @@ export function liveSyncSuite(name: string, make: () => Promise<HostFixture>): v
       assert.deepEqual(a.q.confirmedState(branch, head2), b.q.confirmedState(branch, head2));
       const c0 = (b.q.confirmedState(branch, head2) as unknown as { timelineItems: { id: string; name: string }[] }).timelineItems.find((c) => c.id === "c0");
       assert.equal(c0?.name, "after restart");
+    });
+
+    test("a change over 32 MiB travels as envelopes, up to the host and down to the other replica", async (t) => {
+      const f = fx ?? (fx = await make());
+      if (!f.clientBlobs) return t.skip("the host gives clients no blob store for envelopes");
+      const branch = `big-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+      await share(f, branch);
+      const a = await makeReplica(f, branch, "alice", clients), b = await makeReplica(f, branch, "bob", clients);
+      const dump = () => JSON.stringify({ a: { head: a.q.headSeq(branch), pending: a.q.pending(branch).length, ev: a.events.slice(-8) }, b: { head: b.q.headSeq(branch), ev: b.events.slice(-8) } }).slice(0, 2000);
+      await until(() => a.client.online && b.client.online, "both online", dump);
+      // every WebSocket host refuses a message over 32 MiB (Cloudflare's own cap): this one only fits as an envelope
+      const notes = "envelope ".repeat(Math.ceil((33 << 20) / 9));
+      a.commit([{ op: "set", path: ["timelineItems", "c2", "notes"], value: notes }]);
+      await until(() => a.settled() && b.q.headSeq(branch) === a.q.headSeq(branch) && a.q.headSeq(branch) >= 1, "the 33 MiB change confirmed and fanned out", dump, 180_000);
+      const got = (b.q.confirmedState(branch, b.q.headSeq(branch)) as unknown as { timelineItems: { id: string; notes?: string }[] }).timelineItems.find((c) => c.id === "c2");
+      assert.equal(got?.notes?.length, notes.length);
+      assert.ok(got?.notes === notes, "the other replica got different bytes");
+      // and small edits keep flowing on the same connections after it
+      b.commit([{ op: "set", path: ["timelineItems", "c0", "name"], value: "after the big one" }]);
+      await until(() => b.settled() && a.q.headSeq(branch) === b.q.headSeq(branch), "a small edit after the envelope", dump);
     });
   });
 }

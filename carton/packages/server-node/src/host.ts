@@ -45,7 +45,8 @@ export interface NodeHostOptions {
   adminToken?: string;
   /** Close a room's database this long after its last connection (default 5 minutes). */
   idleCloseMs?: number;
-  /** Archive rows older than the newest `archiveKeep` per branch, `archiveSegment` per segment (§18 defaults). */
+  /** Archive rows older than the newest `archiveKeep` per branch, `archiveSegment` per segment. Default: the
+   * sequencer's own (§18: 10,000 and 10,000). */
   archiveKeep?: number;
   archiveSegment?: number;
   archiveEveryMs?: number;
@@ -141,17 +142,20 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     room = { projectId, storage, sequencer, conns: new Map(), idle: null, archive: null, pending: new Set(), closeWhenDrained: false };
     if (blobs) {
       const r = room;
-      r.archive = setInterval(() => void track(r, archive(r)), archiveEvery);
+      r.archive = setInterval(() => void track(r, maintain(r)), archiveEvery);
       r.archive.unref();
     }
     rooms.set(projectId, room);
     return room;
   }
 
-  async function archive(room: Room): Promise<void> {
-    const keep = opts.archiveKeep ?? 10_000, segmentRows = opts.archiveSegment ?? 10_000;
+  // The sequencer's periodic work: archive old rows to gzip segments and sweep expired envelope blobs.
+  async function maintain(room: Room): Promise<void> {
+    const o: { keep?: number; segmentRows?: number } = {};
+    if (opts.archiveKeep !== undefined) o.keep = opts.archiveKeep;
+    if (opts.archiveSegment !== undefined) o.segmentRows = opts.archiveSegment;
     try {
-      for (const id of room.sequencer.tables.branchIds()) if (!room.sequencer.tables.branch(id)?.tracking) await room.sequencer.archive(id, { keep, segmentRows });
+      await room.sequencer.maintain(o);
     } catch (e) {
       onError(e);
     }
@@ -241,6 +245,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     auth: opts.auth,
     secret: opts.secret ?? new Uint8Array(32),
     blobsFor,
+    sequencerBlobsFor: (projectId) => scoped(projectId, "seq"),
     // a plain GET on the socket route (no Upgrade header): the upgrade itself goes through server.on("upgrade")
     upgrade: async () => new Response("expected a WebSocket upgrade", { status: 426 }),
   };
