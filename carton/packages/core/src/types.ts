@@ -534,4 +534,19 @@ export type CartonEvent =
   /** A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1). */
   | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
   | { type: "presence"; branchId: string; actor: Actor; state: unknown }
-  | { type: "warning"; branchId: string; warnings: SoftWarning[] };
+  | { type: "warning"; branchId: string; warnings: SoftWarning[] }
+  /**
+   * The host refused or failed this replica's sync of a cut (a hello refused, a token the host doesn't accept, a host
+   * it can't reach, an upload over the host's limit): `error`, until a later welcome or ack clears it (`null`).
+   */
+  | { type: "sync-error"; branchId: string; error: SyncError | null };
+
+/**
+ * Why a cut's sync is failing, for a sync status line. `code`: `update-server` (the host is older than this app's
+ * document schema), `unauthorized` (its token or scope), `unreachable` (no connection), `unknown-cut`, `too-large`,
+ * or `server` (anything else the host said). `message`: the host's or connection's own words.
+ */
+export interface SyncError {
+  code: "update-server" | "unauthorized" | "unreachable" | "unknown-cut" | "too-large" | "server";
+  message: string;
+}

@@ -3,7 +3,7 @@
 
 import { createElement as h } from "react";
 import type { Root } from "react-dom/client";
-import type { Actor, Carton, CutRecord, Doc } from "@carton/core";
+import type { Actor, Carton, CutRecord, Doc, SyncError } from "@carton/core";
 import { fromCarton, CartonProvider } from "@carton/react";
 import { openIdbStore } from "@carton/store-idb";
 import { webSocketTransport } from "@carton/server-node/transport";
@@ -11,7 +11,6 @@ import { App } from "./app.ts";
 import { describeCardWith } from "./cards.ts";
 import { parseDescriptor, watchHash } from "./descriptor.ts";
 import { ensureWatchFile } from "./watch-file.ts";
-import { watchHostErrors } from "./host-errors.ts";
 import { ImageCache } from "./images.ts";
 import { LiveDoc } from "./live-doc.ts";
 import { startMedia } from "./media-client.ts";
@@ -41,12 +40,13 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const cached = keys.get(`carton.descriptor.${session.projectId}`);
   const known = cached ? parseDescriptor(cached) : await readDescriptor(session);
   if (!cached) keys.set(`carton.descriptor.${session.projectId}`, JSON.stringify(known));
-  // the host's refusals (an older host than the document, H-SV) go to the sync status, not into a silent stall
-  const hostProblems = watchHostErrors(webSocketTransport());
-  const syncProblem = cell<string | null>(null);
-  hostProblems.subscribe((p) => syncProblem.set(p));
-  const { carton, descriptor } = await openProject({ session, me, store, transport: hostProblems.transport, autoConnect: false, descriptor: known });
+  const { carton, descriptor } = await openProject({ session, me, store, transport: webSocketTransport(), autoConnect: false, descriptor: known });
   const waiting = cell(false);
+  // why the current cut's sync is failing (a host refusing this client, H-SV): shown in place of the sync words
+  const syncProblem = cell<SyncError | null>(carton.sync?.error() ?? null);
+  carton.on((e) => {
+    if (e.type === "sync-error" || e.type === "sync") syncProblem.set(carton.sync?.error() ?? null);
+  });
   const lock = await holdPushLock(`${session.projectId}:${session.account}`, carton, waiting.set, () => location.reload());
   const live = await LiveDoc.open(carton);
   const presence = new PresenceSender((s) => carton.sync?.presence(s));

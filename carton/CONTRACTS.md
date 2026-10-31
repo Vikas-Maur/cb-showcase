@@ -78,8 +78,16 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
   client's message limit is refused before it is sent (`rejected` / "too large", its author told; the edits after it
   go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
-  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. `carton.media` is null:
-  `@carton/media` calls Carton, not the reverse.
+  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. A pending edit survives a
+  restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
+  when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. While a keyframe
+  catch-up's skipped rows aren't saved yet, the queue's state is (meta `["queue-head", cut]`), and a restart resumes
+  there, offline too; a stored edit made on an older head (another process's) is rebased onto what was confirmed
+  since, with cards for what clashed. A settle that fails keeps its outcome for the next one; a wait answers
+  `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
+  the server"; a token it doesn't accept; no host) is `sync.error(cut?)` and a `sync-error` event (`SyncError`:
+  `code`, `message`), until a later welcome or ack clears it (`error: null`).
+  `carton.media` is null: `@carton/media` calls Carton, not the reverse.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
   Published cut's welcome carries `source: { branchId, at, head }` (`sync.WelcomeMsg`): the cut it came from, the
@@ -93,7 +101,8 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   helper it starts that takes the lease; only a write to a local cut with no holder commits in its own process
   (`local/src/client.ts` `submit`, `local/src/open.ts`; tests R3-03, R4-04, R5-06). A process that commits to a shared
   cut itself, without the lease, gets `pending`: the edit is kept in `carton.db` and pushed by the next holder to
-  start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"). The holder passes
+  start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"); a running holder's
+  settles leave that row alone until its id is confirmed. The holder passes
   its fence as `sync.connect({ nonce, fence, conditions })`: once replaced, it records nothing more and stops.
 - **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
   whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
@@ -106,10 +115,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   replays only the rows after it. A replica that caught up through a server keyframe fetches the rows it jumped and
   checks that they rebuild it before History takes them.
 - **Retention (§5.4):** changes are kept forever. `compact({ cut?, olderThanDays = 90 })` is optional: on local cuts it
-  squashes each old auto-version's micro-changes (a run of one actor group and turn) into its last change. Named,
+  squashes each old auto-version's micro-changes (a run of one actor, in one group and turn) into its last change. Named,
   fold, export, Published, undo, revert and restore versions, what they undid, fork points, folded-in and pinned
   versions, and the last K changes are never squashed. Seqs and ids stay; a squashed version leaves the log and its
-  state is no longer held (`StateUnknown`).
+  state is no longer held (`StateUnknown`). A fork keeps its own copy of its fork state, so a fork made from a
+  version another process (or a handle that hadn't seen the compaction) squashes still opens.
 
 ## Using it
 

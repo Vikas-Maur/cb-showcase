@@ -4,7 +4,6 @@
 // Prints one JSON line: {"url": "...", "adminToken": "..."}. Local use only. The auth secret and admin token come from
 // CARTON_AUTH_SECRET / CARTON_ADMIN_TOKEN, else they are made once per data dir (never in code).
 
-import { cardboardAdapter } from "@carton/cardboard";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,17 +28,14 @@ function secretIn(dir: string, name: string, env: string | undefined): string {
   return v;
 }
 
-/**
- * `schemaVersion`: the newest document schema the host accepts; the demo's own (Cardboard's) unless a test asks for an
- * older host. A host behind the documents refuses every hello (H-SV), so the demo never leaves it at the default.
- */
+/** `schemaVersion`: only for a test of an older host (the host's default is Cardboard's schema version). */
 export async function serveDemo(o: { dataDir: string; staticDir: string; port?: number; host?: string; sessionTtlMs?: number; schemaVersion?: number }): Promise<DemoNodeHost> {
   mkdirSync(o.dataDir, { recursive: true });
   const secret = secretIn(o.dataDir, "auth-secret", process.env.CARTON_AUTH_SECRET);
   const adminToken = secretIn(o.dataDir, "admin-token", process.env.CARTON_ADMIN_TOKEN);
   const auth = createHmacAuth({ secret, ...(o.sessionTtlMs ? { sessionTtlMs: o.sessionTtlMs } : {}) });
   const blobs = createFsBlobStore({ root: join(o.dataDir, "blobs"), durable: false });
-  const host = await startNodeHost({ dataDir: o.dataDir, auth, secret, blobs, port: o.port ?? 0, host: o.host ?? "127.0.0.1", staticDir: o.staticDir, adminToken, schemaVersion: o.schemaVersion ?? cardboardAdapter.schemaVersion, onError: (e) => console.error("host error:", e) });
+  const host = await startNodeHost({ dataDir: o.dataDir, auth, secret, blobs, port: o.port ?? 0, host: o.host ?? "127.0.0.1", staticDir: o.staticDir, adminToken, ...(o.schemaVersion !== undefined ? { schemaVersion: o.schemaVersion } : {}), onError: (e) => console.error("host error:", e) });
   return { host, url: host.httpUrl, adminToken, close: () => host.close() };
 }
 

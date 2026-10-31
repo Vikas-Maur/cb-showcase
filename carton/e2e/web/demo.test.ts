@@ -299,7 +299,8 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       if (shots) for (const [who, page] of pages) await page.screenshot({ path: join(shots, `${kind}-FAILED-${who}.png`) }).catch(() => {});
       for (const [who, page] of pages) {
         const peers = await page.evaluate(() => (window as unknown as { __carton: { ui: { peers(): { actor: { key: string }; idle: boolean }[] } } }).__carton.ui.peers().map((p) => p.actor.key + (p.idle ? " (idle)" : ""))).catch(() => []);
-        console.error(`[${who}] sync: ${await syncWords(page).catch(() => "?")}; peers: ${peers.join(", ")}; notes: ${await page.locator(".carton-undo-note, [role=alert]").allTextContents().catch(() => [])}`);
+        const error = await page.evaluate(() => JSON.stringify((window as unknown as { __carton: { carton: { sync: { error(): unknown } | null } } }).__carton.carton.sync?.error() ?? null)).catch(() => "?");
+        console.error(`[${who}] sync: ${await syncWords(page).catch(() => "?")}; error: ${error}; peers: ${peers.join(", ")}; notes: ${await page.locator(".carton-undo-note, [role=alert]").allTextContents().catch(() => [])}`);
       }
       throw e;
     } finally {

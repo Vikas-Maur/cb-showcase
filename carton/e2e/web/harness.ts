@@ -2,7 +2,6 @@
 // the Worker under `wrangler dev`: local only, never deployed), the seed, Chromium through Playwright (required by
 // path: no runner, node:test drives it), and a person joining from an invite link.
 
-import { cardboardAdapter } from "@carton/cardboard";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdirSync, rmSync } from "node:fs";
@@ -85,7 +84,7 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
   const wrangler = join(carton, "node_modules", ".bin", "wrangler");
   const proc = spawn(
     wrangler,
-    ["dev", "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--var", `SCHEMA_VERSION:${cardboardAdapter.schemaVersion}`, "--log-level", process.env.CARTON_E2E_HOSTLOG ? "debug" : "warn", "--show-interactive-dev-session=false"],
+    ["dev", "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--log-level", process.env.CARTON_E2E_HOSTLOG ? "debug" : "warn", "--show-interactive-dev-session=false"],
     { cwd: join(carton, "packages", "server-cloudflare"), stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", XDG_CONFIG_HOME: join(dir, "xdg") } },
   );
   let log = "";

@@ -4,9 +4,9 @@
 // in, conflict cards, Credits, Undo turn, Published cut, Watch the changes, presence, sync words) on its `cardboard`
 // skin; this file only lays them out and connects the timeline's edits to Carton.
 
-import { problemWords } from "./host-errors.ts";
+import { shownProblem, syncProblemWords } from "./sync-problem.ts";
 import { createElement as h, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { Actor, Carton, Doc, HeldBase, Op, Rec } from "@carton/core";
+import type { Actor, Carton, Doc, HeldBase, Op, Rec, SyncError } from "@carton/core";
 import {
   ConflictList,
   CreditsPopover,
@@ -53,7 +53,7 @@ export interface AppProps {
   /** The media Service Worker controls the page: until then the player shows posters, never a /media/ URL. */
   mediaReady: { subscribe: (l: () => void) => () => void; get: () => boolean };
   /** What the host refused (shown in place of the sync words while it stands). */
-  syncProblem: { subscribe: (l: () => void) => () => void; get: () => string | null };
+  syncProblem: { subscribe: (l: () => void) => () => void; get: () => SyncError | null };
   /** Read-only preview doc (§9 R2-16), set by fromCarton's onPreview. */
   previewDoc: { subscribe: (l: () => void) => () => void; get: () => Doc | null };
   /** Another tab of this person holds the push lock. */
@@ -156,7 +156,7 @@ export function App(p: AppProps) {
 
 function TopBar(p: AppProps & { onFoldIn: (from: Cut, into: Cut) => void }) {
   const status = useSyncStatus();
-  const problem = useStore(p.syncProblem);
+  const problem = shownProblem(useStore(p.syncProblem));
   const [offline, setOffline] = useState(p.isOffline());
   const [invite, setInvite] = useState<string | null>(null);
   const shared = status.kind !== "local";
@@ -168,7 +168,7 @@ function TopBar(p: AppProps & { onFoldIn: (from: Cut, into: Cut) => void }) {
     h("span", { className: "cb-sep" }),
     h(CutsMenu, { onFoldIn: p.onFoldIn }),
     problem
-      ? h("span", { className: "carton-sync cb-sync-problem", "data-state": "error", role: "alert", "data-testid": "sync-problem", title: problem }, problemWords(problem))
+      ? h("span", { className: "carton-sync cb-sync-problem", "data-state": "error", role: "alert", "data-testid": "sync-problem", "data-code": problem.code, title: problem.message }, syncProblemWords(problem))
       : h(SyncStatusWords),
     h("span", { className: "cb-flex" }),
     h(PresenceAvatars),

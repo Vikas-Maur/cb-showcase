@@ -121,6 +121,21 @@ export interface CommitInput {
   history?: HistoryFields;
 }
 
+/** A pending change as a store kept it across a restart (`ReplicaQueue.restore`). */
+export interface RestoreInput extends CommitInput {
+  /** Its latest version's rebase count. */
+  k: number;
+  supersedes: readonly string[];
+  /** The cards each rebase raised, by rebase count (only rebases that raised any). */
+  cards: readonly { k: number; cards: ConflictCard[] }[];
+  /** Every base a version of it was pushed on. */
+  sentBases: readonly number[];
+  /** Refused here after a copy was sent: it waits for its withdraw, then is reported rejected with this. */
+  rejecting?: string;
+  /** The confirmed seq its ops were made on (with the changes stored before it on that seq); default: the queue's head. */
+  head?: number;
+}
+
 export const last = <T>(a: readonly T[]): T => a[a.length - 1]!;
 const ridOf = (id: string) => id.slice(0, Math.max(0, id.indexOf(".")));
 
@@ -317,6 +332,91 @@ export class ReplicaQueue {
     this.invalidate(b);
     this.emit({ type: "pending", branchId: b, change: p });
     return { id: ch.id, status: "pending" };
+  }
+
+  /**
+   * Pending changes back in the queue after a restart, in their queue order, as they were (web-demo REQ-7): each at
+   * its rebase count and with its supersedes, the cards each rebase raised (reported when it settles: `lateCards` up
+   * to the confirmed version, or all of them if it is absorbed), the bases it was sent on (claimed in hello; an
+   * emptied one is withdrawn, not dropped, since a copy may still be confirmed) and a refusal here that is waiting for
+   * its withdraw. Its stored ops were made on the confirmed state at its `head` plus the changes stored before it on
+   * that head: on an older head than this queue's, it is rebased onto what was confirmed since, as an integrate would
+   * have done (review SF2-2: another process's row, kept for the next holder, was applied as if made on the newer
+   * head). A head whose state this replica can't rebuild is taken as the current one. Returns the ids restored (not:
+   * already queued, or empty, never sent and with nothing to report).
+   */
+  restoreAll(b: string, inputs: readonly RestoreInput[]): string[] {
+    const S = this.schema;
+    const out: string[] = [];
+    // per recorded head: its confirmed state plus the changes restored on it so far, as stored
+    const chains = new Map<number, { doc: Doc; ids: string[] } | null>();
+    for (const ch of inputs) {
+      const queue = this.queues.get(b)!;
+      if (queue.some((p) => p.id === ch.id)) continue;
+      const reports = ch.cards.some((c) => c.cards.length > 0) || ch.rejecting !== undefined;
+      if (!ch.ops.length && !keepsWhenEmpty(ch.history) && !ch.sentBases.length && !reports) continue;
+      this.rids.add(ridOf(ch.id));
+      const head = this.headSeq(b);
+      const o = this.optimistic(b);
+      const at = ch.head ?? head;
+      if (at < head && !chains.has(at)) {
+        let doc: Doc | null = null;
+        try {
+          doc = this.confirmedState(b, at);
+        } catch {
+          // inside a stretch held only through a keyframe: not rebuildable here
+        }
+        chains.set(at, doc && { doc, ids: [] });
+      }
+      const chain = at < head ? chains.get(at) : null;
+      const intent = ch.intent ?? null;
+      const onBase = (baseDoc: Doc, base: ChangeBase, ops: Op[], i: Intent | null, k: number, supersedes: string[], cards: ConflictCard[]): QueueVersion => {
+        const decl = declare(S, baseDoc, ops, i);
+        return { k, base, baseDoc, ops, intent: i, kinds: ch.kinds ?? null, policy: policyFor(ch.policy ?? "merge", decl), hash: hashOps(ops, i), decl, supersedes, cards };
+      };
+      const byK = new Map(ch.cards.map((c) => [c.k, c.cards]));
+      const current = { seq: head, pending: queue.filter((p) => last(p.versions).ops.length).map((p) => p.id) };
+      let top: QueueVersion;
+      let rebased: QueueVersion | null = null;
+      if (chain) {
+        // as stored, on its own head; then rebased onto what was confirmed since and the changes restored before it
+        top = onBase(chain.doc, { seq: at, pending: [...chain.ids] }, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
+        if (ch.ops.length) {
+          chain.doc = apply(fork(chain.doc, S), ch.ops, S);
+          chain.ids.push(ch.id);
+        }
+        const concurrent = this.logs.get(b)!.slice(at, head).filter((r): r is ConfirmedChange & { withdrawn?: boolean } => !r.placeholder && !(r as { withdrawn?: boolean }).withdrawn);
+        const r = this.rebaseOne(top, o.doc, concurrent);
+        rebased = onBase(o.doc, current, r.ops, r.intent, ch.k + 1, [...top.supersedes, `${ch.id}#${ch.k}`], r.cards);
+        rebased.policy = policyFor(top.policy, rebased.decl);
+      } else top = onBase(o.doc, current, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
+      // the earlier versions are gone; each stands in only for the cards its rebase raised (indexed by rebase count, as
+      // `confirmed` and `finishAbsorb` read them). The last is the one pushed.
+      const versions: QueueVersion[] = [...Array.from({ length: ch.k }, (_, k) => ({ ...top, k, cards: byK.get(k) ?? [] })), top, ...(rebased ? [rebased] : [])];
+      // its own array: rebases append to both (review SF2-1: one shared array got every append twice)
+      this.versions.set(ch.id, [...versions]);
+      const p: QueuedChange = {
+        id: ch.id,
+        author: ch.author,
+        branchId: b,
+        created: ch.at,
+        versions,
+        cards: [],
+        sentConn: null,
+        sentEpoch: -1,
+        sends: 0,
+        sentBases: [...ch.sentBases],
+        withdrawSent: null,
+        meta: ch.meta ?? {},
+        ...(ch.history ? { history: pickHistory(ch.history) } : {}),
+        ...(ch.rejecting !== undefined ? { rejecting: ch.rejecting } : {}),
+      };
+      queue.push(p);
+      this.invalidate(b);
+      out.push(ch.id);
+      this.emit({ type: "pending", branchId: b, change: p });
+    }
+    return out;
   }
 
   // ---------------------------------------------------------------- integrating confirmed rows

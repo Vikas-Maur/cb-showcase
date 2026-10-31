@@ -16,7 +16,7 @@ import type { Schema } from "../schema.ts";
 import type { Actor, ConfirmedChange, ConflictCard, Doc } from "../types.ts";
 import { SyncClient, type SyncClientOptions, type SyncStatus, type Timers } from "./client.ts";
 import type { PresenceState } from "./messages.ts";
-import { ReplicaQueue, type CommitInput, type QueueBranch, type QueueEvent } from "./queue.ts";
+import { ReplicaQueue, type CommitInput, type QueueBranch, type QueueEvent, type RestoreInput } from "./queue.ts";
 
 export interface SyncState {
   status: SyncStatus;
@@ -31,9 +31,13 @@ export type SharedCutEvent =
   | { type: "absorbed"; id: string; cards: ConflictCard[]; withdrawn: boolean }
   | { type: "rejected"; id: string; reason: string }
   | { type: "remote"; rows: ConfirmedChange[] }
+  /** Pending changes went up (each now has the base it was sent on): a store-backed owner keeps that (REQ-7). */
+  | { type: "sent"; ids: string[] }
   | { type: "overwritten"; id: string; by: string; author: unknown }
   | { type: "presence"; branchId: string; actor: unknown; state: PresenceState | null }
   | { type: "state"; state: SyncState }
+  /** Caught up after a welcome: the host accepted this replica (an earlier error is over). */
+  | { type: "online" }
   | { type: "error"; error: string };
 
 /** What a write learns within its wait (§6.2, L14). */
@@ -161,6 +165,12 @@ export class SharedCut {
     this.refreshState();
     return r;
   }
+  /** Pending changes kept across a restart, back in the queue in order, as they were (`ReplicaQueue.restoreAll`). */
+  restoreAll(inputs: readonly RestoreInput[]): string[] {
+    const r = this.queue.restoreAll(this.branchId, inputs);
+    this.refreshState();
+    return r;
+  }
   /**
    * The outcome of change `id` within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed@seq, conflicts (late cards,
    * or absorbed with cards), rejected (validation), or still pending.
@@ -223,6 +233,8 @@ export class SharedCut {
         else if (e.type === "presence") this.emit({ type: "presence", branchId: this.branchId, actor: e.actor, state: e.state });
         else if (e.type === "overwritten") this.emit({ type: "overwritten", id: e.id, by: e.by, author: e.author });
         else if (e.type === "error") this.emit({ type: "error", error: e.error });
+        else if (e.type === "online") this.emit({ type: "online" });
+        else if (e.type === "push") this.emit({ type: "sent", ids: e.ids });
       },
     }).start();
     this.refreshState();

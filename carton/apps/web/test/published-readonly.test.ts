@@ -22,7 +22,7 @@ async function until(pred: () => boolean | Promise<boolean>, ms = 5000): Promise
   }
 }
 
-test("REQ-1: a shared Published cut is read-only to restore, undo and fold too, not only commit (web-demo review R1-6)", { todo: "foundation-core: guard the shared planned writes" }, async () => {
+test("a shared Published cut is read-only to restore, undo and fold too, not only commit (web-demo review R1-6, REQ-1)", async () => {
   const tokens = new Map<string, AuthContext>([["tok", { account: "alice", credential: "alice/i", role: "owner", projectId: "p", expires: Date.now() + 3600_000 }]]);
   const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
   const host = createInProcessHost({ storage: sqliteStorage(), auth });
