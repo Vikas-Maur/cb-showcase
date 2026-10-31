@@ -196,3 +196,31 @@ export const cardboardSchema: Schema = defineSchema({
 
 /** An item of an engine doc by id. */
 export const itemOf = (doc: Doc, id: string): Rec | undefined => getIn(doc, [ITEMS, id], cardboardSchema) as Rec | undefined;
+
+/**
+ * Diagnostics for the status sidecar (R5-04), as 1.4.0 lists them in its `// diagnostics:` header: hard problems in
+ * the content an agent saved (core turns those into "invalid" cards instead of committing them) and soft ones (overlaps
+ * on a track) at head.
+ */
+export function diagnose(saved: Doc, head: Doc): string[] {
+  const hardOf = (d: Doc) => {
+    const out: string[] = [];
+    for (const it of (d[ITEMS] ?? []) as Rec[]) for (const p of hard(ITEMS, it, d)) out.push(`error: ${String(it.id)}: ${p}`);
+    return out;
+  };
+  const softOf = (d: Doc) => {
+    const out: string[] = [];
+    const byTrack = new Map<unknown, Rec[]>();
+    for (const it of (d[ITEMS] ?? []) as Rec[]) {
+      let l = byTrack.get(it.trackId);
+      if (!l) byTrack.set(it.trackId, (l = []));
+      l.push(it);
+    }
+    for (const [t, l] of byTrack) {
+      l.sort((a, b) => (a.startTime as number) - (b.startTime as number));
+      for (let i = 1; i < l.length; i++) if ((l[i]!.startTime as number) < (l[i - 1]!.endTime as number) - 1e-9) out.push(`warning: ${String(l[i - 1]!.id)} and ${String(l[i]!.id)} overlap on ${String(t)}`);
+    }
+    return out;
+  };
+  return [...new Set([...hardOf(saved), ...hardOf(head)]), ...softOf(head)];
+}
