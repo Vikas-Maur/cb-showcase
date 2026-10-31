@@ -3,7 +3,8 @@
 //   - a caller's own helperFactory is what its helper runs;
 //   - with none, a caller starts what the app's engine thread recorded (its factory, its adapter);
 //   - a caller on another adapter than Cardboard's, with no factory of its own and none recorded, starts no helper and
-//     says why, rather than a helper with Cardboard's adapter.
+//     says why, rather than a helper with Cardboard's adapter;
+//   - under Electron (the app's library worker, a utility process) the helper is started as Node, not a second app.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync } from "node:fs";
@@ -12,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { openLocal } from "../src/open.ts";
 import { EngineThread } from "../src/engine-thread.ts";
 import { NO_HELPER } from "../src/client.ts";
+import { helperEnv } from "../src/helper.ts";
 import { adapter, bundle, doc0 } from "./support/real.ts";
 
 const here = (f: string) => fileURLToPath(new URL(f, import.meta.url));
@@ -84,4 +86,16 @@ test("a caller on another adapter, with no factory of its own and none recorded,
   } finally {
     await local.close();
   }
+});
+
+test("under Electron a helper is started as Node (ELECTRON_RUN_AS_NODE=1), not as a second copy of the app", () => {
+  // the app's library worker: execPath is Cardboard.exe and the variable isn't set there (cb's shims set it)
+  const worker = { PATH: "/bin", CARDBOARD_HOME: "/home/me/Cardboard" };
+  const env = helperEnv(worker, "43.7.0");
+  assert.equal(env.ELECTRON_RUN_AS_NODE, "1");
+  assert.equal(env.CARDBOARD_HOME, "/home/me/Cardboard", "the rest of the environment is passed on");
+  assert.equal(worker.hasOwnProperty("ELECTRON_RUN_AS_NODE"), false, "the caller's own environment is left alone");
+  // already Node (cb's shim, or plain Node): unchanged
+  assert.equal(helperEnv({ ELECTRON_RUN_AS_NODE: "1" }, "43.7.0").ELECTRON_RUN_AS_NODE, "1");
+  assert.deepEqual(helperEnv(worker, undefined), worker, "plain Node: nothing added");
 });
