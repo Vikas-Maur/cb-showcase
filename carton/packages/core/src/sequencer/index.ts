@@ -170,9 +170,19 @@ export function createLocalSequencer(doc: Doc, schema: Schema, opts: Partial<Rul
       const base = Math.min(change.base?.seq ?? 0, log.length);
       if (v.kind === "duplicate") return { ok: true, duplicate: true, seq: v.seq, change: log[v.seq - 1]!, notices: [], missing: [] };
       if (v.kind === "reject") {
-        // describe the clash with overlap(x, y) when a caller wants it: not computed here, so the shipped bundle
-        // (History only reads the reason) doesn't carry it
         const r: PushResult = { ok: false, reason: v.reason, head: log.length, missing: log.slice(base) };
+        // describe the clash (the first confirmed change after the base it overlaps): only on a reject, which is rare
+        if (v.reason === "overlap") {
+          const past = new Set(change.base.pending);
+          for (const c of log.slice(base)) {
+            if (past.has(c.id)) continue;
+            const o = overlap(change, c);
+            if (o.path || o.read || o.span || o.order) {
+              r.overlap = o;
+              break;
+            }
+          }
+        }
         if (v.detail) r.invalid = { error: v.detail };
         return r;
       }

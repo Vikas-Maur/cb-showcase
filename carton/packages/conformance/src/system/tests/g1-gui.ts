@@ -32,9 +32,19 @@ function humanEdit(w: World, gui: Gui): [string, unknown][] | null {
   return touched;
 }
 
-async function scenario({ adoptMode, minutes, seed }: { adoptMode: WorkerOptions["adoptMode"]; minutes: number; seed: number }) {
+async function scenario({ adoptMode, minutes, seed, faultDropGui = false }: { adoptMode: WorkerOptions["adoptMode"]; minutes: number; seed: number; faultDropGui?: boolean }) {
   const w = world({ seed });
   const m1 = w.replica({ name: "m1-human", link: w.net.link({ rtt: 100 }) });
+  if (faultDropGui) {
+    // the negative control (review round 1, finding 19): every GUI save leaves the queue at once, with no card
+    const commit = m1.store.commit.bind(m1.store);
+    m1.store.commit = (branch, ch) => {
+      const r = commit(branch, ch);
+      const p = r.status === "pending" && ch.meta?.gui ? m1.store.pending(branch).find((x) => x.id === ch.id) : undefined;
+      if (p) m1.store.absorbLocally(branch, p);
+      return r;
+    };
+  }
   const remotes = [1, 2, 3].map((i) => w.replica({ name: `remote${i}`, link: w.net.link({ rtt: 100 }) }));
   const b = w.shared(doc({ items: clips(40) }), [m1, ...remotes]);
   await m1.startApp({ adoptMode });
@@ -63,7 +73,16 @@ async function scenario({ adoptMode, minutes, seed }: { adoptMode: WorkerOptions
       // held them. Anything else is lost.
       const ab = m1.absorbed.find((a) => a.id === s.id);
       if (ab?.cards) { cardedEdits += s.saved.size; continue; }
-      if (ab) { const h = m1.store.optimistic(b).doc; absorbedSame += [...s.saved].filter(([p, v]) => A.getIn(h, p.split("/")) === v).length; continue; }
+      // without cards, head held every saved value when it was absorbed (checked against head at that moment: finding
+      // 19, the prototype's audit counted these without checking); a value head didn't hold is lost
+      if (ab) {
+        for (const [p, v] of s.saved) {
+          const now = A.getIn(ab.head, p.split("/"));
+          if (now === v || (typeof now === "number" && Math.round(now * 10) / 10 === v)) absorbedSame++;
+          else lost++;
+        }
+        continue;
+      }
       lost += s.saved.size;
       continue;
     }
@@ -85,6 +104,12 @@ async function scenario({ adoptMode, minutes, seed }: { adoptMode: WorkerOptions
 }
 
 export function register(): void {
+  test(`G1 audit control (review round 1, finding 19): GUI saves dropped from the queue without a card are counted as lost [${ENGINE}]`, async (t) => {
+    const s = await scenario({ adoptMode: "h5", minutes: 2, seed: 160, faultDropGui: true });
+    assert.ok(s.lost > 0, `the audit sees the loss (lost ${s.lost})`);
+    report(t, { lost: s.lost, saves: s.saves });
+  });
+
   test(`G1 logic: 3 remote writers × 1/s × 10 min: 0 local GUI edits lost silently (clashes become cards), 0 remote changes re-committed as the human's (3 seeds) [${ENGINE}]`, async (t) => {
     for (const seed of [160, 163, 164]) {
       const s = await scenario({ adoptMode: "h5", minutes: 10, seed });

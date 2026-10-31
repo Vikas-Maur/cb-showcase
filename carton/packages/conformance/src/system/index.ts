@@ -26,13 +26,15 @@ import * as r78 from "./tests/r7-r8-shared-file.ts";
 import * as timeGroup from "./tests/time-group.ts";
 import * as v11 from "./tests/v11-server.ts";
 import * as v14 from "./tests/v14-holes.ts";
+import * as sharedCuts from "./tests/shared-cuts.ts";
+import * as envelope from "./tests/envelope.ts";
 
 export { hostSuite } from "./host-suite.ts";
 export { runOnce as p9RunOnce, s2 as p9S2, summarize as p9Summarize } from "./p9.ts";
 export { sqliteStorage } from "./sqlite.ts";
 
 /** Every file of the suite, in the prototype's order, then the v14 holes. */
-export const SYSTEM_FILES = { chaos, g1, p9, r101, r202, r203, r208, r301, r303, r402, r403, r404, r504, r505, r506, r78, timeGroup, v11, v14 } as const;
+export const SYSTEM_FILES = { chaos, g1, p9, r101, r202, r203, r208, r301, r303, r402, r403, r404, r504, r505, r506, r78, timeGroup, v11, v14, sharedCuts, envelope } as const;
 
 export interface SystemSuiteOptions {
   /** The sequencer's storage for every simulated world (default: node:sqlite in memory). */
