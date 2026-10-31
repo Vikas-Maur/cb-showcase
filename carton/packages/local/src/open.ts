@@ -17,7 +17,7 @@ import { spawnHelper } from "./helper.ts";
 import { Lease } from "./lease.ts";
 import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
-import { destCut, IDEMPOTENT, runWrite, WAIT_MS } from "./writes.ts";
+import { destCut, IDEMPOTENT, runWrite, WAIT_MS, withRaceRetry } from "./writes.ts";
 import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
 import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
@@ -112,7 +112,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
         spawnHelper: (seen) => void spawnHelper({ dbPath, seen, factory, config: { projectDir: opts.projectDir, projectId, dataDir: opts.dataDir, ...opts.helperConfig } }),
       });
       if (r.via === "holder") return r.result as CbResult;
-      if (r.via === "in-process") return runWrite(carton, req);
+      if (r.via === "in-process") return withRaceRetry(IDEMPOTENT.has(op.kind), () => runWrite(carton, req));
       return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
     },
     async close() {
@@ -138,7 +138,7 @@ export class CartonHolderEngine implements HolderEngine {
   serve(req: unknown): Promise<unknown> {
     const r = req as WriteRequest;
     if (!r?.id || !r.actor || !r.op) return Promise.reject(Object.assign(new Error("bad carton.commit request"), { code: -32602 }));
-    return runWrite(this.carton, r, { online: () => this.carton.sync?.status === "up-to-date", materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) });
+    return withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online: () => this.carton.sync?.status === "up-to-date", materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
   }
 
   /** Hooked agents' views are named after their actor id; others get a fresh `agent-xxxx` (or the name they asked for). */

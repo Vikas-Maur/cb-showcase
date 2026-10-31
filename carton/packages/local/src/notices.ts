@@ -56,14 +56,24 @@ export class StoreNoticeBox implements NoticeBox {
     }
   }
   async handToHumanAsync(actorId: string, ids: string[]): Promise<void> {
-    const at = this.now();
     let n = 0;
     for (const r of await this.rows(actorId)) {
       if (!ids.includes(idOf(r.key))) continue;
-      let card: Row | null = null;
-      const ok = await casUpdate<Row>(this.store, TABLE, r.key, (cur) => (cur.handedToHuman || !cur.cards?.length ? SKIP : ((card = cur), { ...cur, handedToHuman: at })), r.value);
-      // the person's copy holds the cards as they were when handed over (after any the agent resolved)
-      if (ok && card) await this.store.write([{ table: TABLE, key: [HUMAN_CARDS, at, n++, Math.random().toString(16).slice(2, 10)], value: { ...(card as Row), to: HUMAN_CARDS, handedToHuman: at, from: actorId } }]);
+      // one batch, conditional on the row as read: the actor's row is marked and the person's copy made together, so a
+      // crash in between can't hide the cards from both (the copy holds the cards left after any the agent resolved)
+      let cur: Row | undefined = r.value;
+      for (let i = 0; i < 16 && cur && !cur.handedToHuman && cur.cards?.length; i++) {
+        const at = this.now();
+        const ok = await this.store.write(
+          [
+            { table: TABLE, key: r.key, value: { ...cur, handedToHuman: at } },
+            { table: TABLE, key: [HUMAN_CARDS, at, n++, Math.random().toString(16).slice(2, 10)], value: { ...cur, to: HUMAN_CARDS, handedToHuman: at, from: actorId } },
+          ],
+          [{ table: TABLE, key: r.key, expect: { equals: cur } }],
+        );
+        if (ok) break;
+        cur = await this.store.get<Row>(TABLE, r.key);
+      }
     }
   }
 

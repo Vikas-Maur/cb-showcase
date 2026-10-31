@@ -36,45 +36,7 @@ function scripted(store: Store, steps: ((input: any) => any)[], landed: Record<s
 
 const cardsOf = async (store: Store) => (await store.range<any>("notices", { prefix: [actorKey(agent)] })).flatMap((r) => r.value.cards ?? []);
 
-test("a card met only in the committing merge pass (another writer between passes) is kept and returned", async () => {
-  const store = createMemoryStore();
-  const carton = scripted(store, [
-    () => ({ status: "conflicts", cards: [card("c1", "mine-1", "head-1")], ref }),
-    (input) => {
-      // the retry meets one more card: core decides it "ours" too (head keeps both values)
-      for (const c of [card("c1", "mine-1", "head-1"), card("c2", "mine-2", "head-2")]) assert.equal(input.choices(c, 0), "ours");
-      return { status: "confirmed", seq: 2, ref: { ...ref, seq: 2 }, change: { id: "r.1" }, rebased: 1, notices: [] };
-    },
-  ], { c1: "head-1", c2: "head-2" });
-  const r = await runWrite(carton, { id: "r.1", actor: agent, op: { kind: "commit", ops: [] } });
-  assert.equal(r.status, "conflicts");
-  assert.deepEqual((r as any).conflicts.map((c: any) => c.path).sort(), ["timelineItems/c1/name", "timelineItems/c2/name"]);
-  assert.deepEqual((await cardsOf(store)).map((c) => c.path).sort(), ["timelineItems/c1/name", "timelineItems/c2/name"]);
-});
-
-test("a card whose value landed after all (a later pass merged cleanly) is not kept", async () => {
-  const store = createMemoryStore();
-  const carton = scripted(store, [
-    () => ({ status: "conflicts", cards: [card("c1", "mine-1", "head-1")], ref }),
-    () => ({ status: "confirmed", seq: 2, ref: { ...ref, seq: 2 }, change: { id: "r.2" }, rebased: 1, notices: [] }),
-  ], { c1: "mine-1" });
-  const r = await runWrite(carton, { id: "r.2", actor: agent, op: { kind: "commit", ops: [] } });
-  assert.equal(r.status, "confirmed");
-  assert.deepEqual(await cardsOf(store), []);
-});
-
-test("the cards are written before the append: a holder that dies right after it leaves them for the retry", async () => {
-  const base = createMemoryStore();
-  let noticeWrites = 0;
-  const store: Store = { ...base, info: base.info, get: base.get.bind(base), range: base.range.bind(base), close: base.close.bind(base),
-    async write(w, c) { if (w.some((x) => x.table === "notices") && ++noticeWrites === 2) throw new Error("holder died"); return base.write(w, c); } };
-  const carton = scripted(store, [
-    () => ({ status: "conflicts", cards: [card("c1", "mine-1", "head-1")], ref }),
-    () => ({ status: "confirmed", seq: 2, ref: { ...ref, seq: 2 }, change: { id: "r.3" }, rebased: 1, notices: [] }),
-  ], { c1: "head-1" });
-  await assert.rejects(runWrite(carton, { id: "r.3", actor: agent, op: { kind: "commit", ops: [] } }), /holder died/);
-  assert.deepEqual((await cardsOf(base)).map((c) => c.path), ["timelineItems/c1/name"], "the card is there for cb conflicts / cb resolve");
-});
+// (the card-keeping tests moved to review-3.test.ts, on real Carton, when the design changed in round 3)
 
 test("delivering notices never resurrects a card resolved meanwhile", async () => {
   const base = createMemoryStore();
