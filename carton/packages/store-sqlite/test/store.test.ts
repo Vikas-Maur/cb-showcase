@@ -565,7 +565,9 @@ test("openRetryMs must be finite and not negative (NaN or Infinity would retry f
   let attempts = 0;
   for (const bad of [NaN, Infinity, -1]) {
     await assert.rejects(openRetrying("x", async () => { attempts++; throw ioerr(); }, "win32", bad), TypeError);
-    await assert.rejects(openSqliteStore(fresh(), { openRetryMs: bad }), /openRetryMs must be a finite number/);
+    const file = fresh();
+    await assert.rejects(openSqliteStore(file, { openRetryMs: bad }), /openRetryMs must be a finite number/);
+    assert.ok(!fs.existsSync(path.dirname(path.dirname(file))), "refused before any folder was made");
   }
   assert.equal(attempts, 0, "refused before any attempt");
   let zero = 0;

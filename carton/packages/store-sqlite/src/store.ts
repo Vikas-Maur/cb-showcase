@@ -43,9 +43,10 @@ export class SqliteStore implements Store {
 
   /** Open (creating if needed) the store at a carton.db path. */
   static async open(file: string, opts: SqliteStoreOptions = {}): Promise<SqliteStore> {
-    if (!opts.readOnly) fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-    // The whole open is one attempt (Windows retries a held file: openRetrying): every step is safe to repeat.
+    // The whole open is one attempt (Windows retries a held file: openRetrying): every step is safe to repeat. The
+    // folder is made inside it, so a refused option leaves nothing behind.
     return openRetrying(file, async () => {
+      if (!opts.readOnly) fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
       const db = await Db.open(file, opts, (raw) => identify(raw, file));
       try {
         await init(db, !!opts.readOnly);
