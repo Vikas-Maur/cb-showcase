@@ -34,8 +34,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { displaceThenInstall, retryBusy, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/files/displace.ts";
-import { DisplacedFiles } from "../../packages/cardboard/src/files/displaced.ts";
+import { displaceThenInstall, retryBusy, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/node/displace.ts";
+import { DisplacedFiles } from "../../packages/cardboard/src/node/displaced.ts";
 
 const SELF = fileURLToPath(import.meta.url);
 const VIEW = "view.json";

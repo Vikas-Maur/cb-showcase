@@ -4,7 +4,7 @@ Can Carton's materializer destroy a write that another process made to a file it
 `timeline.tsx`, a per-agent view)? `race.ts` races three replacement protocols against foreign writers and accounts
 for every foreign write. It is a TypeScript port of the verified prototype `proofs/race/race.mjs`. The one change is
 that the `displace` protocol now calls the shipped code: `displaceThenInstall`, and with `--settle 2` the hold rule
-`DisplacedFiles`, both from `@carton/cardboard` (`packages/cardboard/src/files/`).
+`DisplacedFiles`, both from `@carton/cardboard` (`packages/cardboard/src/node/`).
 
 | protocol | steps | where a foreign write can be destroyed |
 |---|---|---|

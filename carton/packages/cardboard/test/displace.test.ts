@@ -4,8 +4,8 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { displaceThenInstall, hardLinksWork, statStamp } from "../src/files/displace.ts";
-import { DisplacedFiles } from "../src/files/displaced.ts";
+import { displaceThenInstall, hardLinksWork, statStamp } from "../src/node/displace.ts";
+import { DisplacedFiles } from "../src/node/displaced.ts";
 
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
 
