@@ -55,6 +55,17 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 - **Hashes** are SHA-256 hex over `canonical()` JSON (sorted keys, `undefined` dropped).
 - **Policy** is `"merge"` (the plan's `cas`) or `"lww"`; `lww` on a change with a span or group path is rejected.
 
+## Carton handle notes
+
+- **Refs** passed to `checkout`, `diff`, `fold`, `restore`, `preview` may be a printed header, a `StateRef`, a node id
+  `"<cutId>@<seq>"`, or a cut id (its head). A ref that can't be rebuilt exactly throws `StateUnknown`.
+- **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
+  this machine doesn't have.
+- **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
+  (a lease fence); a lost cross-process append race rebuilds from the store and retries.
+- **Shared cuts** (`sequencer.kind !== "local"`) and `carton.sync` are wired by the sync client (sync-sequencer);
+  until then they throw. `carton.media` is null: `@carton/media` calls Carton, not the reverse.
+
 ## Using it
 
 ```ts
@@ -63,6 +74,7 @@ import { createMemoryStore } from "@carton/store-memory";
 import { cardboardAdapter } from "@carton/cardboard";
 
 const carton = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { doc }, actor });
+const pin = await carton.pin({ owner: "turn-42" });            // pin.header goes into the printed file
 const r = await carton.commit({ doc: edited, base: header });  // {status: "confirmed", seq, ref} | pending | conflicts
 const cut = await carton.fork("30s Instagram cut");
 const folded = await carton.fold(cut.id, { into: carton.cut });

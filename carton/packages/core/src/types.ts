@@ -283,8 +283,8 @@ export interface RefHeader {
 /** One owner of a pin: a turn, a view, or an MCP ref. The row is released when its last owner releases or expires. */
 export interface PinOwner {
   owner: string;
-  /** ms epoch; agent pins end with their turn, MCP refs after 7 days. */
-  expires: number;
+  /** ms epoch; agent pins end with their turn, MCP refs after 7 days. null: no expiry (until released). */
+  expires: number | null;
 }
 
 export interface PinRow {
