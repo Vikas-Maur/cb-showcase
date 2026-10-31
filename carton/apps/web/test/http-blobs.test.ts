@@ -118,6 +118,58 @@ test("put with ifAbsent keeps the first bytes", async () => {
   assert.ok(sameBytes((await s.get("once"))!, seededBytes(8, 4)));
 });
 
+// REQ-10: a host's answer to a signed PUT carries the stored object's info (200 written, 412 kept), so put reads
+// nothing back; an answer without it (a bucket's own on a presigned URL, an older host's) falls back to a head.
+const heads = (calls: { url: URL }[]) => calls.filter((c) => c.url.pathname.endsWith("/blobs/head")).length;
+
+test("a create-only put of a new key takes the stored info from the answer: no read-back", async () => {
+  const rec = recordingFetch();
+  const data = seededBytes(40, 40);
+  const hex = createHash("sha256").update(data).digest("hex");
+  const info = await store(rec.fetch).put("fresh-key", data, { ifAbsent: true, contentType: "image/jpeg", sha256: hex });
+  assert.deepEqual(rec.calls.map((c) => c.method), ["POST", "PUT"], "sign, PUT: nothing else");
+  assert.equal(info.size, 40);
+  assert.equal(info.contentType, "image/jpeg");
+  assert.equal(info.sha256, hex);
+  assert.equal(info.etag, (await store().head("fresh-key"))?.etag);
+});
+
+test("a create-only put of an existing key gets 412 with the kept object's info: no read-back, no write", async () => {
+  await store().put("kept-key", seededBytes(8, 41), { contentType: "text/plain" });
+  const rec = recordingFetch();
+  const statuses: number[] = [];
+  const info = await store(async (input, init) => {
+    const r = await rec.fetch(input, init);
+    if (init?.method === "PUT") statuses.push(r.status);
+    return r;
+  }).put("kept-key", seededBytes(30, 42), { ifAbsent: true, contentType: "image/png" });
+  assert.deepEqual(statuses, [412]);
+  assert.equal(heads(rec.calls), 0, "no head");
+  assert.deepEqual([info.key, info.size, info.contentType], ["kept-key", 8, "text/plain"]);
+  assert.ok(sameBytes((await store().get("kept-key"))!, seededBytes(8, 41)), "the first bytes stay");
+});
+
+test("an answer with no info (a bucket's, an older host's) falls back to a head for a create-only put only", async () => {
+  // what a bucket answers on a presigned URL, or a host before REQ-10: the status and an etag, no JSON body
+  const bare: typeof fetch = async (input, init) => {
+    const r = await fetch(input, init);
+    if (init?.method !== "PUT") return r;
+    await r.body?.cancel();
+    return new Response(null, { status: r.status, headers: r.headers.get("etag") ? { etag: r.headers.get("etag")! } : {} });
+  };
+  const rec = recordingFetch(bare);
+  await store().put("old-key", seededBytes(8, 43));
+  const kept = await store(rec.fetch).put("old-key", seededBytes(30, 44), { ifAbsent: true });
+  assert.equal(kept.size, 8, "the stored object's size, read back");
+  assert.equal(heads(rec.calls), 1);
+  const fresh = await store(rec.fetch).put("new-key-bare", seededBytes(12, 45), { ifAbsent: true });
+  assert.equal(fresh.size, 12);
+  assert.equal(heads(rec.calls), 2, "create-only reads back: the answer can't say whose bytes are stored");
+  const plain = await store(rec.fetch).put("plain-bare", seededBytes(5, 46));
+  assert.equal(plain.size, 5);
+  assert.equal(heads(rec.calls), 2, "a plain put stored these bytes: nothing to read back");
+});
+
 test("ifAbsent is atomic: of writers racing for a new key, one writes and all of them report its bytes", async () => {
   const s = store();
   const tries = [1, 2, 3, 4, 5, 6].map((i) => seededBytes(10 * i, 20 + i));

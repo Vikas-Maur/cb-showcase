@@ -68,6 +68,26 @@ async function errorOf(res: Response, what: string): Promise<HttpBlobError> {
   return new HttpBlobError(res.status, `${what}: ${message}`, code);
 }
 
+/**
+ * The stored object's info a PUT's answer carries (a Carton host's 200 or 412: `key`, `size`, `etag`, `contentType`,
+ * `sha256`), under the caller's key; null for an answer without a JSON body holding a numeric `size`: a bucket's own
+ * answer on a presigned URL, or an older host's. Consumes the body.
+ */
+async function storedInfo(res: Response, key: string): Promise<BlobInfo | null> {
+  let j: Partial<Record<keyof BlobInfo, unknown>> | null = null;
+  try {
+    j = JSON.parse(await res.text());
+  } catch {
+    return null; // empty, or not JSON (a bucket's XML)
+  }
+  if (!j || typeof j !== "object" || typeof j.size !== "number") return null;
+  const info: BlobInfo = { key, size: j.size };
+  if (typeof j.etag === "string") info.etag = j.etag;
+  if (typeof j.contentType === "string") info.contentType = j.contentType;
+  if (typeof j.sha256 === "string") info.sha256 = j.sha256;
+  return info;
+}
+
 export function httpBlobStore(o: HttpBlobStoreOptions): HttpBlobStore {
   const base = o.baseUrl.replace(/\/+$/, "");
   const api = `${base}/api/projects/${encodeURIComponent(o.projectId)}`;
@@ -220,13 +240,17 @@ export function httpBlobStore(o: HttpBlobStoreOptions): HttpBlobStore {
       // the host refuses a body that doesn't hash to it (400), and its store keeps it for `head`
       if (opts.sha256) headers[SHA256_HEADER] = opts.sha256;
       const res = await doFetch(await sign("PUT", key, 300), { method: "PUT", headers, body: data as Uint8Array<ArrayBuffer> });
-      if (!res.ok) throw await errorOf(res, `PUT ${key}`);
-      await res.body?.cancel();
-      // An ifAbsent PUT that found the key answers 200 like one that wrote, with the stored object's etag only; `put`
-      // must resolve the stored object's info, so read it back (hosts-plugins request REQ-10 would make this unneeded).
+      const kept = opts.ifAbsent === true && res.status === 412; // the key was there: an earlier writer's object stays
+      if (!res.ok && !kept) throw await errorOf(res, `PUT ${key}`);
+      // `put` resolves the stored object's info, which a host's answer carries (REQ-10): no read-back
+      const said = await storedInfo(res, key);
+      if (said) return said;
+      // An answer without it (a bucket's, an older host's 200 whatever happened): a create-only put reads back, as the
+      // stored object may be an earlier writer's; a plain put stored these bytes.
       if (opts.ifAbsent) {
         const stored = await head(key);
         if (stored) return stored;
+        if (kept) throw new HttpBlobError(412, `PUT ${key}: the key was there, and is gone now`, "PreconditionFailed");
       }
       const etag = res.headers.get("etag");
       return {
