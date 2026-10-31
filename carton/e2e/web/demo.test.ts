@@ -9,6 +9,8 @@
 //   6. Real offline (the browser's network off): Bob's edit waits, then lands when the network is back.
 //   7. Watch the changes: Alice compares the first version with now and plays the changes.
 //   8. Alice publishes; a viewer opens the watch page (the published version), and is told when newer edits exist.
+// A second test per host: Fold in, including partial ("fold in some of it") and "Fold in the rest" later, from a cut
+// on Alice's machine into the shared Main cut.
 // Hosts: CARTON_E2E_HOST=node (default) | cloudflare (`wrangler dev`, local) | both.
 // Video for the demo recording: CARTON_E2E_VIDEO=<dir> (one .webm per person) and CARTON_E2E_SLOWMO=<ms>.
 // Screenshots of each step go to CARTON_E2E_SHOTS=<dir> when set.
@@ -270,6 +272,64 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       throw e;
     } finally {
       await bot?.stop();
+      for (const c of contexts) await c.close().catch(() => {});
+      await host.close();
+    }
+  });
+}
+
+for (const kind of hosts as ("node" | "cloudflare")[]) {
+  test(`Fold in some of it, then the rest, into the shared Main cut on ${kind === "node" ? "server-node" : "server-cloudflare (wrangler dev)"}`, { timeout: 180_000 }, async () => {
+    const host: TestHost = await startHost(kind, "fold");
+    const contexts: { close(): Promise<void> }[] = [];
+    try {
+      const seed: SeedResult = await seedDemo({ baseUrl: host.url, adminToken: host.adminToken, media: fakeMedia ? { given: fakeMedia } : { generate: { clipsDir: join(process.env.HOME ?? ".", "gfv-scratch", "carton", "web-demo", "clips") } } });
+      const aliceCtx = await newPerson(browser), bobCtx = await newPerson(browser);
+      contexts.push(aliceCtx, bobCtx);
+      const alice = await joinAs(aliceCtx, seed.alice, "Alice");
+      const bob = await joinAs(bobCtx, seed.bob, "Bob");
+      const cuts = alice.locator(".carton-cuts-trigger");
+      // a cut of her own, from Main's head: it lives on her machine
+      await cuts.click();
+      await alice.getByRole("menuitem", { name: "New cut from here" }).click();
+      await alice.getByPlaceholder("30s Instagram cut").fill("30s Instagram cut");
+      await alice.getByRole("button", { name: "Create" }).click();
+      await alice.locator(".carton-cuts-name", { hasText: "30s Instagram cut" }).waitFor();
+      const c1 = await clipTimes(alice, "clip-1");
+      await drag(alice, "clip-1", "end", -40);
+      const trimmed = await clipTimes(alice, "clip-1");
+      assert.ok(trimmed.end < c1.end);
+      await editCaption(alice, "cap-4", "Follow for part two");
+      await pause(300);
+      assert.equal((await clipTimes(bob, "clip-1")).end, c1.end, "Bob's Main cut doesn't see the cut's edits");
+      // fold in some of it: the trim, not the caption
+      await cuts.click();
+      await alice.getByRole("menuitem", { name: /^Fold into/ }).click();
+      const dialog = alice.locator(".carton-dialog");
+      await dialog.waitFor();
+      const caption = dialog.locator("li, .carton-fold-change", { hasText: "Follow for part two" }).locator("input[type=checkbox]");
+      await caption.uncheck();
+      await shot(alice, `${kind}-fold-dialog`);
+      await dialog.getByRole("button", { name: "Fold in 1 of 2" }).click();
+      await dialog.waitFor({ state: "detached", timeout: 10_000 });
+      await waitClip(bob, "clip-1", "data-end", trimmed.end);
+      assert.equal(await captionOf(bob, "cap-4"), "See you next weekend", "the left-out edit stays out");
+      // back on Main, "Fold in the rest" from History
+      await cuts.click();
+      await alice.getByRole("menuitemradio", { name: "Main cut" }).click();
+      await alice.locator(".carton-cuts-name", { hasText: "Main cut" }).waitFor();
+      // the newest version is the fold's inverse (the part left out): its menu offers the rest
+      const row = alice.locator(".carton-version").first();
+      await row.waitFor({ timeout: 10_000 });
+      await row.hover();
+      await row.locator(".carton-version-more").click();
+      await alice.getByRole("menuitem", { name: "Fold in the rest" }).click();
+      await waitCaption(bob, "cap-4", "Follow for part two");
+      await shot(bob, `${kind}-fold-rest-bob`);
+    } catch (e) {
+      if (shots) for (const [i, c] of contexts.entries()) for (const pg of (c as unknown as { pages(): Page[] }).pages()) await pg.screenshot({ path: join(shots, `${kind}-fold-FAILED-${i}.png`) }).catch(() => {});
+      throw e;
+    } finally {
       for (const c of contexts) await c.close().catch(() => {});
       await host.close();
     }
