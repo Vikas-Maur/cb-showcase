@@ -426,41 +426,76 @@ export class FsBlobStore implements BlobStore {
       },
       async complete(parts) {
         const { dir, contentType } = await store.#uploadMeta(key, uploadId);
-        const stored = await store.#parts(dir);
-        const order = checkCompleteParts(parts, (n) => stored.get(n), store.#minPart);
-        const file = store.#file(key);
-        await store.#mkdirp(dirname(file));
-        const buf = new Uint8Array(COPY_CHUNK);
-        let size = 0;
-        const { tmp, fp } = await store.#writeTmp(async (out) => {
-          for (const n of order) {
-            const src = await open(stored.get(n)!.file, "r");
+        for (const p of parts) checkPartNumber(p.partNumber);
+        // Each listed part is opened once, and the open handles are both validated and copied: a concurrent
+        // uploadPart renames a new file over the name, which never changes a file already open, so a replaced part
+        // can't slip in under the old etag.
+        const open_ = new Map<number, { fh: FileHandle; etag: string; size: number }>();
+        try {
+          for (const n of new Set(parts.map((p) => p.partNumber))) {
+            let fh: FileHandle;
             try {
-              for (;;) {
-                const { bytesRead } = await src.read(buf, 0, buf.byteLength, null);
-                if (bytesRead === 0) break;
-                await out.write(buf, 0, bytesRead);
+              fh = await open(join(dir, `${n}.part`), "r");
+            } catch (e) {
+              if (isCode(e, "ENOENT")) continue; // checkCompleteParts reports it
+              throw e;
+            }
+            const st = await fh.stat({ bigint: true });
+            open_.set(n, { fh, etag: `"${fingerprint(st)}"`, size: Number(st.size) });
+          }
+          const order = checkCompleteParts(parts, (n) => open_.get(n), store.#minPart);
+          const file = store.#file(key);
+          await store.#mkdirp(dirname(file));
+          const buf = new Uint8Array(COPY_CHUNK);
+          let size = 0;
+          const { tmp, fp } = await store.#writeTmp(async (out) => {
+            for (const n of order) {
+              const { fh, size: partSize } = open_.get(n)!;
+              for (let at = 0; at < partSize; ) {
+                const { bytesRead } = await fh.read(buf, 0, Math.min(buf.byteLength, partSize - at), at);
+                if (bytesRead === 0) throw new Error(`part ${n} ended early: ${at} of ${partSize} bytes`);
+                await writeAll(out, buf, bytesRead);
+                at += bytesRead;
                 size += bytesRead;
               }
-            } finally {
-              await src.close();
             }
-          }
-        });
-        if (contentType) await store.#writeMeta(file, { fp, key, contentType });
-        else if (store.#needsMeta(file)) await store.#writeMeta(file, { fp, key });
-        else await retrying(() => unlink(metaOf(file))).catch(() => {});
-        await retrying(() => rename(tmp, file));
-        await store.#syncDir(dirname(file));
-        await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
-        const info: BlobInfo = { key, size, etag: `"${fp}"` };
-        if (contentType) info.contentType = contentType;
-        return info;
+          });
+          if (contentType) await store.#writeMeta(file, { fp, key, contentType });
+          else if (store.#needsMeta(file)) await store.#writeMeta(file, { fp, key });
+          else await retrying(() => unlink(metaOf(file))).catch(() => {});
+          await retrying(() => rename(tmp, file));
+          await store.#syncDir(dirname(file));
+          for (const { fh } of open_.values()) await fh.close().catch(() => {});
+          open_.clear();
+          await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+          const info: BlobInfo = { key, size, etag: `"${fp}"` };
+          if (contentType) info.contentType = contentType;
+          return info;
+        } finally {
+          for (const { fh } of open_.values()) await fh.close().catch(() => {});
+        }
       },
+      // Idempotent for a gone upload, but bound to the key (an id alone must not reach another project's upload).
       async abort() {
-        await rm(store.#uploadDir(uploadId), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+        const dir = store.#uploadDir(uploadId); // a malformed id is refused, never resolved to a path
+        try {
+          await store.#uploadMeta(key, uploadId);
+        } catch (e) {
+          if (e instanceof BlobError && /another key/.test(e.message)) throw e;
+          return;
+        }
+        await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
       },
     };
+  }
+}
+
+// FileHandle.write may write fewer bytes than asked; loop until all are written, and fail rather than spin.
+export async function writeAll(fh: Pick<FileHandle, "write">, buf: Uint8Array, length: number): Promise<void> {
+  for (let off = 0; off < length; ) {
+    const { bytesWritten } = await fh.write(buf, off, length - off);
+    if (!(bytesWritten > 0)) throw new Error(`write made no progress at ${off} of ${length} bytes`);
+    off += bytesWritten;
   }
 }
 

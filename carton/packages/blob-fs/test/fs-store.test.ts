@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, writeFileSync, utimesSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { FsBlobStore } from "../src/index.ts";
+import { FsBlobStore, writeAll } from "../src/index.ts";
 import { scratchDir } from "./scratch.ts";
 
 const fresh = () => mkdtempSync(join(scratchDir(), "fs-"));
@@ -95,5 +95,29 @@ test("a completed multipart upload leaves no upload folder or temp file behind",
   assert.deepEqual(readdirSync(join(dir, "uploads")), []);
   assert.deepEqual(readdirSync(join(dir, "tmp")), []);
   assert.equal((await s.head("mp"))?.contentType, "video/mp4");
+  rmSync(dir, { recursive: true });
+});
+
+test("writeAll finishes short writes and refuses a write that makes no progress", async () => {
+  const got: number[] = [];
+  const short = { write: async (b: Uint8Array, off: number, len: number) => { const n = Math.min(3, len); got.push(...b.subarray(off, off + n)); return { bytesWritten: n, buffer: b }; } };
+  await writeAll(short as never, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 8);
+  assert.deepEqual(got, [1, 2, 3, 4, 5, 6, 7, 8]);
+  const stuck = { write: async (b: Uint8Array) => ({ bytesWritten: 0, buffer: b }) };
+  await assert.rejects(writeAll(stuck as never, new Uint8Array(4), 4), /no progress/);
+});
+
+test("complete copies the part it validated, even if the part is replaced meanwhile", async () => {
+  const dir = fresh();
+  const s = new FsBlobStore({ root: dir });
+  const up = await s.createMultipart("race");
+  const old = await up.uploadPart(1, new Uint8Array(1000).fill(1));
+  const done = up.complete([old]);
+  await up.uploadPart(1, new Uint8Array(1000).fill(2)).catch(() => {}); // races the copy
+  const info = await done.catch((e) => e);
+  if (!(info instanceof Error)) {
+    const got = (await s.get("race"))!;
+    assert.ok(got.every((x) => x === 1), "complete([old]) published the replacement's bytes");
+  }
   rmSync(dir, { recursive: true });
 });
