@@ -20,9 +20,8 @@ under `wrangler dev`, locally only), and TCP links that really drop. The project
 | `test/s6-crash.test.ts` | crash safety: helper killed mid-push, app killed mid-save, server restart mid-sync |
 
 Known bugs are pinned as `todo` tests named after their id; the notes of agent e2e-qa route them and record each fix.
-Open now: H-SV (both hosts as shipped refuse the current Cardboard client's schema version, hosts-plugins +
-cardboard-adapter; the other live scenarios configure their hosts with it), S3-4 (a `.cbproj` from a copied project
-crashes the fold, foundation-core), S5-2, S5-3 (hosts). A bug's test turns into a normal test when its owner's fix lands.
+Open now: none (every routed bug has landed; their tests are normal tests). Hosts run as shipped, except S5-3's,
+which puts its two projects in one team (team dedup is off by default). A bug's test turns into a normal test when its owner's fix lands.
 
 ## Run
 

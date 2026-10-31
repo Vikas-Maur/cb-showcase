@@ -527,11 +527,11 @@ test("S3-1 a .cbproj names its sender (not \"replica\"), a copied cut keeps its 
   }
 });
 
-// S3-4 (foundation-core): a teammate whose project is a copy of yours (the bundle folder copied with its .carton, so
+// S3-4 (FIXED by foundation 6e47903; was foundation-core): a teammate whose project is a copy of yours (the bundle folder copied with its .carton, so
 // the same local "Main cut" id) edits and sends a .cbproj; bringing it in crashes `History.fold` with a TypeError
 // ("Cannot read properties of undefined (reading 'mergeOf')", history.ts #ancOf: the sender's head names a seq on that
 // cut id which the recipient's log doesn't have) instead of folding the edit in or refusing it with a reason.
-test("S3-4 a .cbproj from a teammate whose project is a copy of yours brings their edit in (or says why not), never a crash", { todo: "S3-4, foundation-core: History.#ancOf reads br.log[i] past the recipient's log for a node on a same-id local cut" }, async () => {
+test("S3-4 a .cbproj from a teammate whose project is a copy of yours brings their edit in (or says why not), never a crash", async () => {
   const { openLocal } = await import("@carton/local");
   const { cardboardAdapter, toHost } = await import("@carton/cardboard");
   const { bringInTheirChanges, readProjectForImport } = await import("@carton/cardboard/node");

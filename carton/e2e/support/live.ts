@@ -28,13 +28,13 @@ export async function startApp(procs: Procs, m: Machine, host: Host, account: st
   return app;
 }
 
-export async function twoMachines(t: test.TestContext, kind: HostKind, appConfig: Record<string, unknown> = {}, hostOpts: { shipped?: boolean } = {}): Promise<{ host: Host; a: Side; b: Side; procs: Procs; shareRows: unknown }> {
+export async function twoMachines(t: test.TestContext, kind: HostKind, appConfig: Record<string, unknown> = {}): Promise<{ host: Host; a: Side; b: Side; procs: Procs; shareRows: unknown }> {
   const procs = new Procs();
   const links: Link[] = [];
   let host: Host | null = null;
   t.after(async () => { await procs.close(); for (const l of links) await l.close(); await host?.stop(); });
   const dir = scratch(`s4-${kind}`);
-  host = await startHost(kind, dir, procs, hostOpts);
+  host = await startHost(kind, dir, procs);
   const linkA = await Link.open(host.port), linkB = await Link.open(host.port);
   links.push(linkA, linkB);
 
