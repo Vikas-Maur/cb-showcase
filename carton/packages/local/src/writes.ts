@@ -317,8 +317,6 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     // spent with no effect of its own: an identical edit was already there. Saved, in effect: never an error
     if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
     if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
-    // spent by a withdraw: an identical edit was confirmed first, so this one's effect is already at `seq`
-    if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true });
     for (const x of await deliverNotices(carton, req.actor)) if (x.change !== r.id) notices.push(x);
     return o.status === "rejected" ? rejectedResult(r.id, o.reason, notices) : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
   }
