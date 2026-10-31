@@ -596,6 +596,8 @@ class CartonImpl implements Carton {
   #kf = new Map<string, { periodic: number; bytes: number }>();
   /** Rows a backfill fetched and checked, by cut and seq, for the next settlement to store in place of placeholders. */
   #filled = new Map<string, Map<number, ConfirmedChange>>();
+  /** Export rows (meta ["export", node, at, nonce]) this handle has taken in: read at load, written by its own exports. */
+  #exportRows = new Set<string>();
 
   constructor(opts: OpenOptions) {
     this.#opts = opts;
@@ -760,9 +762,9 @@ class CartonImpl implements Carton {
     const lineage = (await s.range<DagNode>(T.lineage)).map((e) => e.value);
     const states = (await s.range<Doc>(T.states)).map((e): [string, Doc] => [e.key[0] as string, e.value]);
     const authors = (await s.range<Record<PathKey, Actor>>(T.meta, { prefix: ["authors"] })).map((e): [NodeId, Record<PathKey, Actor>] => [e.key[1] as string, e.value]);
-    const exportsBy = new Map<NodeId, { to: string; at: number }[]>();
-    for (const e of await s.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) (exportsBy.get(e.key[1] as string) ?? exportsBy.set(e.key[1] as string, []).get(e.key[1] as string)!).push(e.value);
-    h.loadKnowledge({ lineage, states, authors, exports: [...exportsBy] });
+    h.loadKnowledge({ lineage, states, authors });
+    this.#exportRows = new Set();
+    await this.#takeExports(h);
     const cuts = (await s.range<CutRecord>(T.cuts)).map((e) => e.value);
     const done = new Set<string>();
     const byId = new Map(cuts.map((c) => [c.id, c]));
@@ -828,6 +830,21 @@ class CartonImpl implements Carton {
     // another process's rows: its replica id and what it learnt of people may be new too
     if (loaded) await this.#loadPeople();
     await this.#loadPins(this.#h);
+  }
+  /**
+   * The export rows this handle hasn't taken in yet, another process's too: each exported version is a lineage point
+   * (R4-01), so a `.cbproj` this handle writes after `cb` sent one carries that version (local-cli request 9). Read at
+   * load and before each export, not on every refresh: nothing else here depends on them.
+   */
+  async #takeExports(h: History): Promise<void> {
+    const by = new Map<NodeId, { to: string; at: number }[]>();
+    for (const e of await this.store.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) {
+      const k = e.key.join("|");
+      if (this.#exportRows.has(k)) continue;
+      this.#exportRows.add(k);
+      by.set(e.key[1] as string, [...(by.get(e.key[1] as string) ?? []), e.value]);
+    }
+    if (by.size) h.loadKnowledge({ exports: [...by] });
   }
   /** People as the store holds them (any process may add to them): the server's, this replica's, this store's rids. */
   async #loadPeople(): Promise<void> {
@@ -925,7 +942,7 @@ class CartonImpl implements Carton {
     if (n) this.#h.noteNoop(id, n[0], n[1]);
   }
   /** Run a History mutation under the handle's queue, persist what it confirmed, and retry after losing a race. */
-  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId } = {}): Promise<R> {
+  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId; exports?: boolean } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
       // Starvation-free appends (VERIFIED S8): a writer that lost the race twice takes the append turn, and while it
@@ -937,6 +954,7 @@ class CartonImpl implements Carton {
       try {
         for (let lost = 0; ; ) {
           await this.#refresh(cut);
+          if (opts.exports) await this.#takeExports(this.#h);
           await this.#noopOf(opts.id);
           this.#confirmed.length = 0;
           this.#noops.length = 0;
@@ -1548,9 +1566,12 @@ class CartonImpl implements Carton {
         // an exported version keeps a keyframe (§5.4): a later fold of the copy comes back to it
         const { branchId, seq } = parseNode(pkg.head);
         const doc = seq > 0 && branchId === cut ? this.#h.stateOf(pkg.head) : null;
-        return { writes: [...(made ? [{ table: T.meta, key: ["export", pkg.head, made.at, randomHex(4)], value: made }] : []), ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        const key = ["export", pkg.head, made?.at ?? 0, randomHex(4)];
+        if (made) this.#exportRows.add(key.join("|"));
+        return { writes: [...(made ? [{ table: T.meta, key, value: made }] : []), ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
+      exports: true,
     });
     return pkg;
   }

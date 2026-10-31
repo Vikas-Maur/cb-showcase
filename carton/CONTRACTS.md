@@ -84,6 +84,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   versions are still recognized in their copy. The import change (`asChange`) is a lineage point like an export
   (lineage kind `"import"`, its state carried, delta-encoded), so two copies of an imported project fold from it,
   not from the empty root. A hand-off closure lists it without its state.
+- **Every exported version is a lineage point**, whichever process exported it: an export writes a row (meta
+  `["export", node, at, nonce]`), and a handle reads the rows it hasn't seen at load and before each export it makes
+  (not on `head()` or a commit), so the app's next `.cbproj` carries a version `cb` sent meanwhile (local-cli request 9).
 - **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
   file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
   in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it

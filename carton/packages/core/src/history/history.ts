@@ -349,12 +349,12 @@ export class History {
   knowledge(): { lineage: DagNode[]; states: [string, Doc][]; authors: [NodeId, Record<PathKey, Actor>][]; exports: [NodeId, { to: string; at: number }[]][] } {
     return { lineage: [...this.#lineage.values()], states: [...this.#states], authors: [...this.#importedAuthors], exports: [...this.#exportsMade] };
   }
-  /** Restore persisted knowledge (before the cuts that fork from lineage nodes). */
+  /** Restore persisted knowledge (before the cuts that fork from lineage nodes); exports add to those held. */
   loadKnowledge(k: Partial<ReturnType<History["knowledge"]>>): void {
     for (const n of k.lineage ?? []) this.#lineage.set(n.id, n);
     for (const [h, d] of k.states ?? []) this.#states.set(h, d);
     for (const [n, a] of k.authors ?? []) this.#importedAuthors.set(n, a);
-    for (const [n, e] of k.exports ?? []) this.#exportsMade.set(n, e);
+    for (const [n, e] of k.exports ?? []) this.#exportsMade.set(n, [...(this.#exportsMade.get(n) ?? []), ...e]);
     this.#anc.clear();
   }
 
