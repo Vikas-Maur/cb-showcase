@@ -13,6 +13,10 @@ import type { Declaration, Doc, Intent, Op, Rec, RemapMaps, Span } from "../type
 import { getIn } from "./doc.ts";
 import { pathKey } from "./json.ts";
 
+const nums = (xs: unknown[]): number[] => xs.filter((x): x is number => typeof x === "number" && !Number.isNaN(x));
+const lo = (...xs: unknown[]): number => Math.min(...nums(xs));
+const hi = (...xs: unknown[]): number => Math.max(...nums(xs));
+
 export function declare(schema: Schema, base: Doc, ops: readonly Op[], intent: Intent | null = null): Declaration {
   const tl = schema.timeline;
   const paths: string[] = [],
@@ -64,7 +68,7 @@ export function declare(schema: Schema, base: Doc, ops: readonly Op[], intent: I
         if (old) span(old[tl.lane], old[tl.start], old[tl.end]);
         if (whole.op === "insert" && whole.value) {
           const v = whole.value as Rec;
-          span(v[tl.lane], v[tl.start], v[tl.end]);
+          span(v[tl.lane], lo(v[tl.start], v[tl.end]), hi(v[tl.start], v[tl.end]));
         }
         continue;
       }
@@ -80,12 +84,16 @@ export function declare(schema: Schema, base: Doc, ops: readonly Op[], intent: I
         }
       }
       if (!timing) continue;
-      const os = old[tl.start] as number,
-        oe = old[tl.end] as number;
+      // the min and max of the old and new edges (§6.1), so the span holds the new edges even when they are invalid
+      // (end before start): the change then reaches the hard validators instead of failing the span check
+      const os = old[tl.start],
+        oe = old[tl.end],
+        ns = nw[tl.start] ?? os,
+        ne = nw[tl.end] ?? oe;
       if (nw[tl.lane] !== old[tl.lane]) {
-        span(old[tl.lane], os, oe);
-        span(nw[tl.lane], nw[tl.start] ?? os, nw[tl.end] ?? oe);
-      } else span(old[tl.lane], Math.min(os, (nw[tl.start] as number) ?? os), Math.max(oe, (nw[tl.end] as number) ?? oe));
+        span(old[tl.lane], lo(os, oe), hi(os, oe));
+        span(nw[tl.lane], lo(ns, ne), hi(ns, ne));
+      } else span(old[tl.lane], lo(os, oe, ns, ne), hi(os, oe, ns, ne));
     }
   const remapped = new Map<string, number>();
   for (const maps of remapMaps)

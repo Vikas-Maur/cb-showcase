@@ -25,6 +25,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@carton/core": "0.1.0"
+    "@carton/core": "0.1.0",
+    "@carton/blob-memory": "0.1.0"
   }
 }
