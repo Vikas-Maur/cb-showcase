@@ -529,14 +529,15 @@ class CartonImpl implements Carton {
   async fold(from: string | StateRef, opts: FoldOptions & { into?: string } = {}): Promise<FoldResult> {
     const into = opts.into ?? this.#h.current;
     const author = this.#actor(opts.author);
-    const r = await this.#mutate(into, () => this.#h.fold(into, this.#node(from), { ...opts, author }), { idempotent: true });
+    // refresh every cut: the one folded in may have grown in another process
+    const r = await this.#mutate(undefined, () => this.#h.fold(into, this.#node(from), { ...opts, author }), { idempotent: true });
     const { retry: _r, merge: _m, base: _b, ...out } = r as FoldResult & { retry?: unknown; merge?: unknown; base?: unknown };
     return out as FoldResult;
   }
   async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult> {
     const into = opts.into ?? this.#h.current;
     const author = this.#actor(opts.author);
-    const r = await this.#mutate(into, () => this.#h.foldSome(into, this.#node(from), { ...opts, author }), { idempotent: true });
+    const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#node(from), { ...opts, author }), { idempotent: true });
     const { fold: _f, ...out } = r as FoldResult & { fold?: unknown };
     return out as FoldResult;
   }

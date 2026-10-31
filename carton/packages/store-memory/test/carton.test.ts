@@ -80,6 +80,16 @@ test("fork a cut, edit both, fold in: both edits kept; credits name the variant'
   assert.equal((await c.fold(v.id)).status, "up-to-date");
 });
 
+test("a fold sees the source cut's changes made by another process", async () => {
+  const data = createMemoryData();
+  const a = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), init: { doc: doc0() }, actor: human });
+  const v = await a.fork("variant");
+  const b = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: bob });
+  await b.commit({ cut: v.id, ops: [set("d", "name", "from b")] });
+  assert.equal((await a.fold(v.id)).status, "confirmed");
+  assert.equal(item((await a.head()).doc, "d")!.name, "from b");
+});
+
 test("pin for an owner: its header checks out until the last owner releases it, then 'state unknown'", async () => {
   const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() }, actor: human });
   const edited = (await c.head()).doc;
