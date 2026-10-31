@@ -1,5 +1,6 @@
-// Joining a shared cut from nothing (`init: {join}`: a browser opening an invite link) and undo on a shared cut (the
-// §17 script's "undo the agent's turn"), against a real sequencer (the in-process host of @carton/server).
+// Joining a shared cut from nothing (`init: {join}`: a browser opening an invite link), and the writes History plans on
+// a shared cut's confirmed head: undo (the §17 script's "undo the agent's turn"), restore, revert ("Fold in the
+// rest") and fold in some of it, against a real sequencer (the in-process host of @carton/server).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton, hashDoc, type Actor, type CutRecord } from "@carton/core";
@@ -130,5 +131,72 @@ test("undo on a shared cut gives cards when a teammate changed the same field si
   assert.equal(a.sync!.state().pending, 0, "nothing queued");
   assert.equal(item((await a.head()).doc, "a")!.name, "bob's");
   for (const c of [a, b, bot]) await c.close();
+  w.host.close();
+});
+
+test("restore and revert on a shared cut are queued as their own changes, confirmed, and seen by the other replica", async () => {
+  const w = world();
+  const { a, join } = await sharedProject(w);
+  const b = await Carton.open({ adapter, store: createMemoryStore(), init: { join }, actor: bob, sync: w.sync("bob") });
+  await until(() => b.sync!.status === "up-to-date", 5000, "connected");
+  assert.equal((await a.commit({ ops: [set("a", "name", "one")], wait: 5000 })).status, "confirmed");
+  const two = await a.commit({ ops: [set("a", "name", "two"), set("b", "name", "two")], wait: 5000 });
+  assert.equal(two.status, "confirmed");
+  // restore the version with "one": a new version, nothing lost
+  const r = await a.restore(`${a.cut}@1`);
+  assert.ok(r.status === "pending" || r.status === "confirmed", r.status);
+  await until(async () => (await a.log()).length === 4, 5000, "the restore confirmed");
+  assert.equal((await a.log())[0]!.kind, "restore");
+  await until(async () => item((await b.head()).doc, "b")!.name === "b", 5000, "bob sees the restore");
+  assert.equal(item((await b.head()).doc, "a")!.name, "one");
+  // revert the restore itself: back to "two"
+  const restoreId = (await a.log())[0]!.change!;
+  const v = await a.revert(restoreId);
+  assert.ok(v.status === "pending" || v.status === "confirmed", v.status);
+  await until(async () => item((await b.head()).doc, "a")!.name === "two", 5000, "bob sees the revert");
+  assert.equal((await a.log())[0]!.kind, "revert");
+  for (const c of [a, b]) await c.close();
+  w.host.close();
+});
+
+test("fold in some of it into a shared cut: the fold, then its inverse, confirmed in order; the rest folds in later", async () => {
+  const w = world();
+  const { a, join } = await sharedProject(w);
+  const main = a.cut;
+  const b = await Carton.open({ adapter, store: createMemoryStore(), init: { join }, actor: bob, sync: w.sync("bob") });
+  await until(() => b.sync!.status === "up-to-date", 5000, "connected");
+  const v = await a.fork("30s Instagram cut");
+  await a.commit({ cut: v.id, ops: [set("a", "name", "short A")] });
+  await a.commit({ cut: v.id, ops: [set("b", "name", "short B")] });
+  const r = await a.foldSome(v.id, { into: main, reject: ["items/b"] });
+  assert.ok(r.status === "pending" || r.status === "confirmed", r.status);
+  await until(async () => (await a.log({ cut: main })).length === 3, 5000, "the fold and its inverse confirmed");
+  const [inv, fold] = await a.log({ cut: main });
+  assert.equal(fold!.kind, "merge");
+  assert.equal(inv!.kind, "partial-revert");
+  await until(async () => item((await b.head()).doc, "a")!.name === "short A", 5000, "bob sees the fold");
+  assert.equal(item((await b.head()).doc, "b")!.name, "b", "the left-out record stays as it was");
+  assert.equal((await a.fold(v.id, { into: main })).status, "up-to-date", "the merge edge is recorded");
+  // "Fold in the rest": revert the inverse
+  const rest = await a.revert(inv!.change!, { cut: main });
+  assert.ok(rest.status === "pending" || rest.status === "confirmed", rest.status);
+  await until(async () => item((await b.head()).doc, "b")!.name === "short B", 5000, "the rest folded in");
+  for (const c of [a, b]) await c.close();
+  w.host.close();
+});
+
+test("planned writes on a shared cut wait for this replica's own edits, and refuse while they can't sync", async () => {
+  const w = world();
+  const { a } = await sharedProject(w);
+  await a.commit({ ops: [set("a", "name", "x")], wait: 5000 });
+  await a.sync!.disconnect();
+  await a.commit({ ops: [set("b", "name", "offline")] });
+  await assert.rejects(a.restore(`${a.cut}@0`), /1 edit waiting to sync/);
+  await a.sync!.connect();
+  // the edit lands first; the restore is then planned on the head that holds it
+  const r = await a.restore(`${a.cut}@0`);
+  assert.ok(r.status === "pending" || r.status === "confirmed", r.status);
+  await until(async () => item((await a.head()).doc, "b")!.name === "b" && a.sync!.state().pending === 0, 5000, "restored");
+  await a.close();
   w.host.close();
 });

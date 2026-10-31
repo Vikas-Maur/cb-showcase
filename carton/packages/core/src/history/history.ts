@@ -778,6 +778,20 @@ export class History {
     // retried with its id: the inverse (`<id>.inverse`) or, if only the fold landed, the fold
     const done = this.#done(opts.id && `${opts.id}.inverse`) ?? this.#done(opts.id);
     if (done) return done;
+    const plan = this.foldSomePlan(into, from, opts);
+    if (!("inverse" in plan)) return plan;
+    const r = this.fold(into, from, opts);
+    if (r.status !== "confirmed" || !("change" in r) || !r.change) return r;
+    const inv = this.commit(into, { ops: plan.inverse, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", ...(opts.id ? { id: `${opts.id}.inverse` } : {}), extra: { rejected: plan.reject, reverts: r.change.id } });
+    const { merge: _m, ...invOnly } = inv as CommitResult & { merge?: unknown };
+    return { ...invOnly, fold: r, inverse: inv } as FoldResult & { fold: FoldResult; inverse: CommitResult };
+  }
+  /**
+   * What "fold in some of it" would commit, without committing: the fold's dry run (its resolved state `fold.doc`,
+   * merge and base) and the inverse ops that set the rejected records back on top of it, both checked; or the result
+   * that stops it. `foldSome` commits the plan; a shared cut queues it for its server instead (Carton).
+   */
+  foldSomePlan(into: string, from: NodeId, opts: FoldOptions & { reject: PathKey[] | readonly (readonly string[])[] }): (FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; doc?: Doc }) | { fold: FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; doc: Doc }; inverse: Op[]; reject: PathKey[] } {
     const dry = this.fold(into, from, { ...opts, check: true });
     if (dry.status !== "confirmed" || !dry.doc) return dry;
     const pre = this.stateOf(this.head(into))!,
@@ -795,22 +809,21 @@ export class History {
     if (notes.length) return { status: "rejected", reason: "invalid", invalid: { path: E.pathKey(notes[0]!.op.path), error: "that part was removed by the fold: leave out the whole record instead" } };
     const bad = E.validateHard(this.schema, after, touched);
     if (bad.length) return { status: "rejected", reason: "invalid", invalid: { path: bad[0]!.path, error: `rejecting it would leave it invalid: ${bad[0]!.errors.join("; ")}` } };
-    const r = this.fold(into, from, opts);
-    if (r.status !== "confirmed" || !("change" in r) || !r.change) return r;
-    const inv = this.commit(into, { ops, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", ...(opts.id ? { id: `${opts.id}.inverse` } : {}), extra: { rejected: reject, reverts: r.change.id } });
-    const { merge: _m, ...invOnly } = inv as CommitResult & { merge?: unknown };
-    return { ...invOnly, fold: r, inverse: inv } as FoldResult & { fold: FoldResult; inverse: CommitResult };
+    return { fold: dry as FoldResult & { doc: Doc }, inverse: ops, reject };
   }
   /** Undo one change: its inverse at the head, as a 3-way merge (git revert). Intents invert as intents. */
   revert(cutId: string, changeId: ChangeId, { author, kind = "revert", id }: { author?: Actor; kind?: ChangeKind; id?: ChangeId } = {}): CommitResult {
     const done = this.#done(id);
     if (done) return done;
-    const br = this.#mustCut(cutId);
-    const c = br.log.find((x) => x.id === changeId);
-    if (!c) throw new Error(`no change ${changeId}`);
-    const doc = this.#inverted(cutId, [c]);
-    if ("cards" in doc) return { status: "conflicts", cards: doc.cards, ref: this.#refAt(cutId, br.log.length), merge: doc.merge };
+    const { change: c, inverse: doc } = this.revertPlan(cutId, changeId);
+    if ("cards" in doc) return { status: "conflicts", cards: doc.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: doc.merge };
     return this.commit(cutId, { doc: doc.doc, author: author ?? c.author, kind, ...(id ? { id } : {}), ...(isEmptyMap(doc.maps) ? {} : { intent: { kind: "inverse", maps: doc.maps } }), extra: { reverts: changeId } });
+  }
+  /** What `revert` would commit: the change and its inverse at the head (or the cards that stop it). */
+  revertPlan(cutId: string, changeId: ChangeId): { change: ConfirmedChange; inverse: Inverted } {
+    const c = this.#mustCut(cutId).log.find((x) => x.id === changeId);
+    if (!c) throw new Error(`no change ${changeId}`);
+    return { change: c, inverse: this.#inverted(cutId, [c]) };
   }
   // The head with `changes` (newest last) inverted one by one, newest first, and the remap that inversion applies at
   // the head. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates

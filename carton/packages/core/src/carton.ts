@@ -44,6 +44,7 @@ import type {
   PinRow,
   Policy,
   Rec,
+  RemapMaps,
   ShallowExport,
   ShotDiff,
   StateRef,
@@ -879,7 +880,7 @@ class CartonImpl implements Carton {
   }
   async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult> {
     const into = opts.into ?? this.#h.current;
-    this.#localOnly(into, "foldSome");
+    if (this.#isShared(into)) return this.#foldSomeShared(into, from, opts);
     const author = this.#actor(opts.author);
     const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#foldable(from), { ...opts, author }), { idempotent: true, ...(opts.id ? { id: opts.id } : {}) });
     const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
@@ -897,14 +898,14 @@ class CartonImpl implements Carton {
   }
   async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    this.#localOnly(cut, "restore");
+    if (this.#isShared(cut)) return this.#restoreShared(cut, ref, this.#actor(opts.author), opts.id);
     // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
     // its head as of now (inside the mutation, after the refresh), never a cached one
     return this.#mutate(undefined, () => this.#h.restore(cut, typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    this.#localOnly(cut, "revert");
+    if (this.#isShared(cut)) return this.#revertShared(cut, changeId, this.#actor(opts.author), opts.id);
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
@@ -1151,12 +1152,11 @@ class CartonImpl implements Carton {
     return this.#commitShared(into, { ops }, author, opts.id ?? `${this.#rid}.${++this.#n}`, history);
   }
   /**
-   * ⌘Z on a shared cut (§8, "undo the agent's turn" in the §17 script): History plans the inverse of the group's
-   * newest entry (an agent turn as one) on the confirmed head, and the SharedCut queues it as an undo change whose
-   * `reverts` lists what it undid, so every replica's undo stack drops those entries once it is confirmed. The plan is
-   * made on the confirmed head, so this replica's own edits still waiting to sync are given a moment to land first.
+   * Before History plans a write on a shared cut's confirmed head (undo, restore, revert, fold some): this replica's
+   * own edits still waiting to sync get a moment to land, the confirmed rows are in History, and while any edit is
+   * still waiting the write is refused (it would be planned against a state those edits change), as a fold is.
    */
-  async #undoShared(cut: string, group: string, author: Actor, id?: ChangeId): Promise<CommitResult & { entry?: UndoEntry }> {
+  async #sharedPlanning(cut: string, what: string): Promise<SharedCut> {
     const sc = await this.#ensureShared(cut);
     const waiting = sc.queue.pending(cut).map((p) => p.id);
     if (waiting.length && sc.state().status !== "offline") await Promise.all(waiting.map((w) => sc.waitFor(w, 3000)));
@@ -1164,22 +1164,74 @@ class CartonImpl implements Carton {
     await this.#refresh(cut);
     if (this.#h.headSeq(cut) < sc.queue.headSeq(cut)) await this.#settleShared(cut, { type: "remote", rows: [] });
     const left = sc.queue.pending(cut).length;
-    if (left) throw new Error(`Carton.undo: ${left} edit${left === 1 ? "" : "s"} waiting to sync on this cut; undo once it is up to date`);
+    if (left) throw new Error(`Carton.${what}: ${left} edit${left === 1 ? "" : "s"} waiting to sync on this cut; ${what} once it is up to date`);
+    return sc;
+  }
+  /** A planned state (the inverse of changes, a restored version) queued as one change with its history fields. */
+  #queueState(cut: string, doc: Doc, maps: RemapMaps, author: Actor, id: ChangeId | undefined, history: HistoryFields): Promise<CommitResult> {
+    const ops = E.diff(this.#h.stateOf(this.#h.head(cut))!, doc, this.schema);
+    const intent: Intent | undefined = E.isEmptyMap(maps) ? undefined : { kind: "inverse", maps };
+    return this.#commitShared(cut, { ops, ...(intent ? { intent } : {}) }, author, id ?? `${this.#rid}.${++this.#n}`, history);
+  }
+  /**
+   * ⌘Z on a shared cut (§8, "undo the agent's turn" in the §17 script): History plans the inverse of the group's
+   * newest entry (an agent turn as one) on the confirmed head, and the SharedCut queues it as an undo change whose
+   * `reverts` lists what it undid, so every replica's undo stack drops those entries once it is confirmed.
+   */
+  async #undoShared(cut: string, group: string, author: Actor, id?: ChangeId): Promise<CommitResult & { entry?: UndoEntry }> {
+    await this.#sharedPlanning(cut, "undo");
     const done = this.#h.confirmedById(id);
     if (done) return done;
     const plan = this.#h.undoPlan(cut, group);
     if (!plan) return { status: "confirmed", seq: this.#h.headSeq(cut), ref: this.#sharedRef(cut), change: null, empty: true, rebased: 0, notices: [] };
     const inv = plan.inverse;
     if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#sharedRef(cut), merge: inv.merge };
-    const ops = E.diff(this.#h.stateOf(this.#h.head(cut))!, inv.doc, this.schema);
     const ids = plan.changes.map((c) => c.id);
-    const intent: Intent | undefined = E.isEmptyMap(inv.maps) ? undefined : { kind: "inverse", maps: inv.maps };
-    const r = await this.#commitShared(cut, { ops, ...(intent ? { intent } : {}) }, author, id ?? `${this.#rid}.${++this.#n}`, { kind: "undo", reverts: ids.length === 1 ? ids[0]! : ids });
-    return { ...r, entry: plan.top };
+    return { ...(await this.#queueState(cut, inv.doc, inv.maps, author, id, { kind: "undo", reverts: ids.length === 1 ? ids[0]! : ids })), entry: plan.top };
   }
-  /** Writes History can't make on a shared cut yet: they say so instead of confirming locally. */
-  #localOnly(cut: string, what: string): void {
-    if (this.#isShared(cut)) throw new Error(`Carton.${what}: not available on a shared cut yet (commit and fold are)`);
+  /** Restore on a shared cut: the version's state, queued as a restore change (nothing in between is lost). */
+  async #restoreShared(cut: string, ref: StateRef | string, author: Actor, id?: ChangeId): Promise<CommitResult> {
+    await this.#sharedPlanning(cut, "restore");
+    const done = this.#h.confirmedById(id);
+    if (done) return done;
+    return this.#queueState(cut, this.#doc(ref), {}, author, id, { kind: "restore" });
+  }
+  /** Revert one change on a shared cut ("Fold in the rest" reverts a partial fold's inverse). */
+  async #revertShared(cut: string, changeId: ChangeId, author: Actor, id?: ChangeId): Promise<CommitResult> {
+    await this.#sharedPlanning(cut, "revert");
+    const done = this.#h.confirmedById(id);
+    if (done) return done;
+    const { inverse: inv } = this.#h.revertPlan(cut, changeId);
+    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#sharedRef(cut), merge: inv.merge };
+    return this.#queueState(cut, inv.doc, inv.maps, author, id, { kind: "revert", reverts: changeId });
+  }
+  /**
+   * Fold in some of it, into a shared cut (§5.3 R2-14): History checks the fold and its inverse on the confirmed head;
+   * the SharedCut queues the fold (with its merge edge) and then the inverse that lists the records left out, in that
+   * order, as History would commit them.
+   */
+  async #foldSomeShared(into: string, from: string | StateRef, opts: FoldOptions & { reject: PathKey[] }): Promise<FoldResult> {
+    await this.#sharedPlanning(into, "foldSome");
+    const done = this.#h.confirmedById(opts.id && `${opts.id}.inverse`) ?? this.#h.confirmedById(opts.id);
+    if (done) return done;
+    const author = this.#actor(opts.author);
+    const y = this.#foldable(from);
+    const plan = this.#h.foldSomePlan(into, y, { ...opts, author });
+    if (!("inverse" in plan)) {
+      const { merge: _m, base: _b, doc: _d, retry: _r, ...out } = plan as FoldResult & { merge?: unknown; base?: unknown; doc?: unknown; retry?: unknown };
+      return out as FoldResult;
+    }
+    const { merge, base, doc } = plan.fold;
+    const foldId = opts.id ?? `${this.#rid}.${++this.#n}`;
+    const fold = await this.#commitShared(into, { ops: E.diff(this.#h.stateOf(this.#h.head(into))!, doc, this.schema) }, author, foldId, {
+      kind: "merge",
+      mergeOf: parseNode(this.#h.canon(y)),
+      mergeEdges: merge ? { first: merge.edges.ours, second: merge.edges.theirs } : { first: {}, second: {} },
+      mergeBase: base?.node ? [base.node] : base?.nodes ?? [],
+    });
+    if (fold.status !== "pending" && fold.status !== "confirmed") return fold;
+    const inverse = await this.#commitShared(into, { ops: plan.inverse }, author, `${foldId}.inverse`, { kind: "partial-revert", rejected: plan.reject, reverts: foldId });
+    return { ...inverse, fold, inverse } as unknown as FoldResult;
   }
 
   on(listener: (event: CartonEvent) => void) {
