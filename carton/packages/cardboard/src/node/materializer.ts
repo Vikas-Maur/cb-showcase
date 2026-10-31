@@ -309,13 +309,14 @@ export class Materializer {
   // ------------------------------------------------------------------ lifecycle
 
   /**
-   * Finishes what an earlier process left in `.carton/displaced`, imports saves made while nobody watched, then writes
-   * project.json and the shared file from head.
+   * Finishes what an earlier process left in `.carton/displaced`, imports saves made while nobody watched (per-agent
+   * views too: their agents wait on the sidecar), then writes project.json and the shared file from head.
    */
   start(): Promise<void> {
     return this.run(async () => {
       await this.recoverDisplaced();
       await this.reviewDisplaced();
+      await this.importUnseenViews();
       if (this.opts.writeProject) await this.writeProjectNow("start");
       await this.writeSharedNow("start");
     });
@@ -833,6 +834,30 @@ export class Materializer {
     if (!(await this.parses(rel, f.bytes))) return; // displaced by the install, then kept and reported if it never parses
     this.log.imported.push({ t: this.clock.now(), path: rel });
     await this.applySave(rel, f.bytes, f.hash, f.stamp);
+  }
+
+  /**
+   * View saves written while no materializer watched (the app crashed or closed before applying them): each printed
+   * view's file is read as at a watch event, so the save is applied, credited to its owner, and its sidecar written
+   * (B8). One view that fails doesn't stop the others.
+   */
+  private async importUnseenViews(): Promise<void> {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.abs(VIEWS_DIR)).sort();
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      const rel = this.watched(`${VIEWS_DIR}/${n}`);
+      const name = rel ? viewName(rel) : null;
+      if (!rel || !name || !(await this.engine.getMeta<ViewRow>(["view", name]))) continue;
+      try {
+        await this.importUnseen(rel);
+      } catch (e) {
+        this.log.errors.push({ t: this.clock.now(), path: rel, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
   }
 
   /**
