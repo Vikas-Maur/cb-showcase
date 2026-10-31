@@ -10,6 +10,8 @@ import type { ReplicaQueue } from "./queue.ts";
 export * from "./messages.ts";
 export * from "./queue.ts";
 export * from "./client.ts";
+export * from "./replica.ts";
+export * from "./envelope.ts";
 
 /**
  * What the sync client needs from the replica it pushes for: a `ReplicaQueue` (synchronous and in memory, as core's

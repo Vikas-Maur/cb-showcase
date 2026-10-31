@@ -82,6 +82,8 @@ export interface HistoryCommit {
   id?: ChangeId;
   /** Cards that `choices` (a list or map) doesn't name: "card" (default) returns them as conflicts; "prefer" decides them. */
   unchosen?: "card" | "prefer";
+  /** The one change a Published cut takes: the held state it publishes (internal: Carton.publish). */
+  publish?: boolean;
   /** Unused (the prototype's flag): an empty commit is confirmed empty; an empty fold or undo is always recorded. */
   allowEmpty?: boolean;
   name?: string;
@@ -108,6 +110,8 @@ export interface FoldOptions {
   missingBase?: "dialog" | "all-cards";
   /** Dry run (`cb fold --check`): report cards without committing. */
   check?: boolean;
+  /** A stable id (a retried `cb fold`): a fold already confirmed under it is returned, never made twice. */
+  id?: ChangeId;
   /**
    * Cards a list or map of `choices` doesn't name (new since the caller reviewed the plan): "card" (default) returns
    * them as conflicts; "prefer" decides them by `prefer`. A function decides every card itself.

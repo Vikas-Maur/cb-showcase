@@ -332,6 +332,8 @@ export interface CutRecord {
   sequencer: SequencerState;
   /** ms epoch of creation. */
   at?: number;
+  /** A Published cut: the cut it was published from (its fork node alone can't say: a fork node is canonical). */
+  source?: string;
 }
 
 /** A version: a confirmed state, optionally named. `ref` prints as `main@57`. */
