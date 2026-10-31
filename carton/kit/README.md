@@ -228,10 +228,10 @@ Bob back online: Up to date; Alice sees his edit
 History on Alice's side: @… Bob, @… Bob, @… Alice
 ```
 
-Alice shares her cut, so the host orders its changes from now on. Bob joins with an editor invite and a copy of the
-history (what a `.cbproj` saved with "Include history" carries). They edit at once, each sees the other's edit, and
-Bob's offline edit waits and then syncs. Stop the host with Ctrl+C. Sharing moved Main cut to the host, so start
-again from step 1 in a fresh folder to try the earlier steps once more.
+Alice shares her cut, so the host orders its changes from now on. Bob joins from nothing: an editor invite, the shared
+cut's record and its starting state from Alice, an empty history of his own, and every change from the host. They
+edit at once, each sees the other's edit, and Bob's offline edit waits and then syncs. Stop the host with Ctrl+C.
+Sharing moved Main cut to the host, so start again from step 1 in a fresh folder to try the earlier steps once more.
 
 ### Check that it all still works
 

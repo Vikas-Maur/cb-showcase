@@ -1,26 +1,22 @@
 # What Carton can't do yet
 
 This is the plan's list of limitations (§21, L1–L19), checked against the code that was built, plus what building it
-revealed. It describes the merged snapshot of every package on 2026-10-31 (branch `ci/carton`). Where a fix has
-landed on a package's own branch but not yet in that snapshot, it says "landing".
+revealed. It describes the merged snapshot of every package on 2026-10-31 (branch `ci/carton`, as merged into the
+kit's branch at about 12:40 UTC).
 
 ## Numbers
 
-**No performance or size number about the built code is verified yet.** Several were measured once, on a shared,
-loaded machine; their owners list them under "Measurements to run", and an independent re-run is pending. This kit
-quotes none of them. The plan's verified numbers (§20: P1–P10) were measured on the **prototypes**, not on the built
-`@carton/*` packages. They show the design holds; they don't say how fast the built code is. Every speed or size claim
-about the built code is **pending verification**.
+**This kit quotes no performance or size number.** An independent re-run of the packages' own measurements on clean CI
+machines has started. It has confirmed some claims, refuted others, and led to fixes. Until a number is in that
+verified list, treat every speed or size claim about the built code as **pending verification**. The plan's verified
+numbers (§20: P1–P10) were measured on the **prototypes**, not on the built `@carton/*` packages. They show the design
+holds; they don't say how fast the built code is.
 
 ## For everyone
 
-- **Opening a project replays its whole history** (new). Only each cut's root state is stored as a keyframe; the
-  periodic keyframes are kept in memory. So opening a project, and every `cb` call, reads and applies every change of
-  every cut. It grows with the history, and nothing prunes or compacts it yet (§5.4's retention is optional and not
-  built).
-- **Many writers on one `carton.db` can run out of retries** (new). A commit that loses its append race rebuilds and
-  tries again, up to 5 times, then throws "the store changed under this write". `cb` writes retry under the same id (so
-  they never land twice); other callers should do the same with a stable `id`.
+- **Opening a project still reads every change row** (new). Keyframes are stored (every 64 changes, and at named,
+  fold, export and published versions), so only the changes after the newest one are replayed. But every row of every
+  cut is still read into memory on each open, and every `cb` call opens the project. Compaction is optional.
 - **Documents are values.** A record of a document Carton gave you is shared with the version it came from. Change a
   record in place and the commit sees no difference. Always copy the record you change. (`head()` says "an owned
   copy"; it isn't one, for speed. Reported to its owner.)
@@ -46,7 +42,7 @@ about the built code is **pending verification**.
   displacement; atomic writers lose nothing. The plan's rate is the prototype's; the built code's NTFS and APFS runs are
   still to do.
 - **Displace-then-install retries without a limit** (new) when another writer keeps re-creating the file. A broken
-  writer can make it spin and fill `.carton/displaced/`. Busy-file retries are bounded.
+  writer can make it spin and fill `.carton/displaced/`. Busy-file waits are bounded.
 - **A shallow `.cbproj` (L17)** carries who last changed each clip and the net ripple, not every change. "Undo this
   agent turn" for the sender's agents needs the opt-in full-history export.
 - **The first version.** `importProject` makes the current document `main@1`, as §16 says. `openLocal({ init })`
@@ -78,19 +74,12 @@ anything.
 
 ## Shared cuts and live editing
 
-- **"Invite to edit" from a fresh device** isn't in the snapshot: opening a shared cut needs a copy of its history (a
-  store copy, or a `.cbproj` with history). Landing: `Carton.open({ init: { join } })` opens a shared cut from an invite
-  on a device that holds nothing (foundation-core).
-- **Undo, revert, restore and fold in some of it don't work on a shared cut** in the snapshot. They throw "not
-  available on a shared cut yet". Commit and fold do. Landing: all four on shared cuts (foundation-core). `cb undo
-  --turn` on a shared cut is untested.
-- **Sharing uploads no ancestry** in the snapshot: the states a cut's fork point and earlier folds depend on stay on
-  the device that shared it. Landing: the hand-off keeps them (foundation-core and sync-sequencer).
-- **After a keyframe catch-up**, the stretch of history the replica learned only from the keyframe is missing locally:
-  History, credits and reading those versions. The head is right.
-- **Large changes.** The protocol carries messages over 1 MiB as blob "envelopes", and both hosts handle them. But
-  `Carton.open`'s `sync` takes no blob store, so Carton's own clients don't use envelopes: one change, or one share of a
-  cut's history, over 32 MiB is refused as too large.
+- **"Invite to edit" needs the invite to carry the cut.** `Carton.open({ init: { join } })` opens a shared cut on a
+  device that holds nothing; the rows come from the host. But the joiner needs the cut's record and its root state
+  from whoever invited them (the quickstart's `live.ts` passes them along); the host's API doesn't hand them out yet.
+- **Large changes need a blob store on the client.** Messages over 1 MiB can travel as blob "envelopes" when
+  `Carton.open`'s `sync` is given the host's blob store (`sync.blobs`). Without one, a change or a share over the
+  message limit (32 MiB) is refused as too large. `@carton/local`'s engine and helper don't pass one yet.
 - **Version ids are provisional until confirmed (L5).** A share started offline stays "Syncing" until the device
   reaches the server; cancelling a share is a server-side operation only.
 - **A process that doesn't hold the sync lease** keeps its own commits on a shared cut queued until it connects. `cb`
@@ -115,17 +104,18 @@ anything.
 
 ## What hasn't run where
 
-Everything has run on Linux at most (and headless Chromium for the browser parts). Not run yet:
+Not run yet:
 
 | Area | Not run |
 |---|---|
-| Any package | Windows and macOS (L7: there is no Mac at all). A cross-platform CI run is being set up |
-| `store-sqlite` | Several processes on NTFS; the placement rules on real OneDrive, Dropbox and iCloud folders, mapped network drives and FAT/exFAT |
-| `store-idb` | Safari, Firefox, Chromium on Windows or Mac |
-| `@carton/cardboard` (files) | The displace/install race gate on NTFS and APFS; Windows' busy-file retries, watcher names and case folding; the FAT/exFAT fallback |
-| `@carton/local`, `cli-mcp` | Named pipes, the headless helper's start and stop, and Claude Code hooks, on Windows |
+| Any package | Each snapshot's test suites run on Linux, Windows and macOS CI machines. A few Windows- and macOS-only failures are open with their owners. Nothing has run on a user's own Mac (L7) or Windows laptop yet |
+| `store-sqlite` | The placement rules on real OneDrive, Dropbox and iCloud folders, mapped network drives and FAT/exFAT |
+| `store-idb` | Safari, Firefox |
+| `@carton/cardboard` (files) | The full displace/install race gate on NTFS (small runs on CI so far); the FAT/exFAT fallback |
+| `@carton/local`, `cli-mcp` | Claude Code's hooks on Windows |
 | `@carton/media` | GPU encoders; the range cache under Windows antivirus |
-| Hosts | `wrangler dev` on Linux only; no deploy |
+| Hosts | No deploy |
+| The kit's own tests | `kit/test/*` run on Linux only (they are outside the workspace's test run) |
 | Gates (§16) | G1 (3 remote writers at 1/s for 10 minutes), G2 (GUI save latency with 4 agents), on real machines |
 
 ## Our Windows build (for reference)

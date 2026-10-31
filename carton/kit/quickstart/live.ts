@@ -1,15 +1,15 @@
 // Quickstart: live editing, two people on one shared cut through the host from host.ts.
 //   node kit/quickstart/live.ts <bundle> <host data dir> [http://127.0.0.1:8787]
-// Alice owns <bundle> (made by import.ts). She shares its current cut; Bob gets a copy of its history (what a
-// `.cbproj` with "Include history" carries) and joins with an editor invite. Both edit at once, each sees the other's
-// edit, then Bob goes offline, edits, and comes back. Bob's copy goes in a new folder next to the bundle,
-// `Bob's copy-XXXXXX/`.
+// Alice owns <bundle> (made by import.ts). She shares its current cut and invites Bob as an editor. Bob joins from
+// nothing: an empty history of his own, the invite's cut record and root state, and every row from the host. Both edit
+// at once, each sees the other's edit, then Bob goes offline, edits, and comes back. Bob's history goes in a new
+// folder next to the bundle, `Bob-XXXXXX/`.
 import { mkdtempSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { Carton, LOCAL_TABLES, type Actor, type Doc, type Rec } from "@carton/core";
+import { Carton, hashDoc, type Actor, type CutRecord, type Doc, type JoinInit, type Rec } from "@carton/core";
 import { cardboardAdapter } from "@carton/cardboard";
 import { nodeHasher, readProjectId } from "@carton/local";
-import { webSocketTransport } from "@carton/server-node";
+import { webSocketTransport } from "@carton/server-node/transport";
 import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 
 const [bundleArg, hostDir, origin = "http://127.0.0.1:8787"] = process.argv.slice(2);
@@ -31,8 +31,9 @@ async function session(account: string, role: "owner" | "editor"): Promise<strin
 }
 
 const wsUrl = `${origin.replace(/^http/, "ws")}/api/projects/${projectId}/ws`;
-const open = async (store: Awaited<ReturnType<typeof openSqliteStore>>, actor: Actor, token: string) =>
-  Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, actor, sync: { transport: webSocketTransport(), url: wsUrl, token } });
+// `join`: open a shared cut on a device that holds nothing of the project (an invite)
+const open = async (store: Awaited<ReturnType<typeof openSqliteStore>>, actor: Actor, token: string, join?: JoinInit) =>
+  Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, actor, ...(join ? { init: { join } } : {}), sync: { transport: webSocketTransport(), url: wsUrl, token } });
 const until = async (what: string, ok: () => Promise<boolean>, ms = 10_000) => {
   for (const end = Date.now() + ms; !(await ok()); await new Promise((r) => setTimeout(r, 50))) if (Date.now() > end) throw new Error(`timed out: ${what}`);
 };
@@ -50,11 +51,14 @@ await a.share();
 await until("the host to take the cut", async () => (await a.cuts()).find((c) => c.id === a.cut)!.sequencer.kind === "server");
 console.log(`Alice shared "${(await a.cuts()).find((c) => c.id === a.cut)!.name}": ${a.sync!.state().label}`);
 
-// Bob gets a copy of the history (without Alice's local tables) and joins
-const bobDir = mkdtempSync(join(dirname(bundle), "Bob's copy-"));
-await aliceStore.exportCopy(join(bobDir, "carton.db"), [...LOCAL_TABLES]);
+// What the invite carries to Bob besides the session: the shared cut's record and its root state (with its hash)
+const cut = (await a.cuts()).find((c) => c.id === a.cut)! as CutRecord;
+const doc0 = await a.checkout(`${cut.id}@0`);
+const invite: JoinInit = { projectId, cut, doc0, rootHash: hashDoc(doc0, a.schema) };
+// Bob joins from nothing: an empty carton.db of his own; the host sends him every row
+const bobDir = mkdtempSync(join(dirname(bundle), "Bob-"));
 const bobStore = await openSqliteStore(join(bobDir, "carton.db"));
-const b = await open(bobStore, bob, await session("bob", "editor"));
+const b = await open(bobStore, bob, await session("bob", "editor"), invite);
 await until("Bob to connect", async () => b.sync!.status === "up-to-date");
 console.log(`Bob joined: ${b.sync!.state().label}`);
 

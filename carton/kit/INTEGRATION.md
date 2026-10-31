@@ -629,9 +629,9 @@ cuts (`branches`), for remote agents.
   `carton.share()` hands the cut to the host: the log is uploaded and the host orders it from then on (§5.3). A second
   client must not import the same project on its own, or the project has two unrelated histories. Other clients join
   the shared cut: `Carton.open({ init: { join: { projectId, cut, doc0, rootHash } }, sync })` opens it on a device that
-  holds nothing, and the rows come from the host. That call is landing in core and isn't in the merged snapshot yet
-  ([LIMITS.md](LIMITS.md)); meanwhile give them the history itself (a `.cbproj` with history, or a copy of the store
-  without its local tables, as the quickstart's `live.ts` does).
+  holds nothing, and the rows come from the host. The invite carries `cut` (the shared cut's record) and `doc0` (its
+  state at seq 0, with `rootHash = hashDoc(doc0, schema)`) from the inviting machine, as the quickstart's `live.ts`
+  does; the host's API doesn't serve them yet ([LIMITS.md](LIMITS.md)).
 - **Opening a 1.4.0 `.cbproj`** without Carton's entry imports its document as `main@1` like any project.
 - **Numeric revs.** 1.4.0's `// cardboard:rev <13 digits>` and `cb undo <rev>` keep working if you keep a map from
   each rev to the version it was written with (our facade keeps it in `carton.db`'s local `views` table).

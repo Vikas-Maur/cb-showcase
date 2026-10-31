@@ -79,4 +79,4 @@ machines (gates G1 and G2 in INTEGRATION.md, "Rolling it out safely").
 ```
 
 What to expect: steps 0–3 give history, cuts, folds, credits and agent undo with no server. Step 4 makes the editor
-safe next to agents. Step 5 is live editing, and it needs the pieces [LIMITS.md](LIMITS.md) lists as landing.
+safe next to agents. Step 5 is live editing; [LIMITS.md](LIMITS.md) says what it can't do yet.
