@@ -135,6 +135,11 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     },
     own: (author: Actor) => carton.own(author),
     cut,
+    async headRef() {
+      const c = cut();
+      const h = await carton.head(c);
+      return JSON.stringify([c, h.ref.branchId, h.ref.seq]);
+    },
     newChangeId: () => carton.newChangeId(),
     getMeta,
     putMeta,

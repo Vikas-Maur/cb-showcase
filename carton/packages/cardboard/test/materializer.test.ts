@@ -918,3 +918,64 @@ test("review 6: a view left half-written while the app was down is refused at th
   assert.match(status.error, /doesn't parse/);
   assert.equal(s.engine.commits.length, 0);
 });
+
+// B11: carton.db's head moved in another process (a `cb` committed in its own process, a takeover helper); the
+// materializer hears of it only through `onExternalHeadChange`, which local's store follower and the worker call.
+test("B11: an external head change reaches project.json and timeline.tsx, under the install lock; asked again, nothing happens", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const lock = path.join(s.bundle, ".carton", "install.lock");
+  const linked: boolean[] = [];
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (to === s.abs(TIMELINE_FILE) || to === s.abs(PROJECT_FILE)) linked.push(fs.existsSync(lock));
+    return real(from, to);
+  });
+  assert.equal(await s.mz.onExternalHeadChange(), "unchanged", "nothing moved since start");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "by cb, elsewhere")); // no onHeadChange: another process
+  assert.equal(await s.mz.onExternalHeadChange(), "head");
+  await s.tick(50);
+  assert.equal(s.read().items[0]!.name, "by cb, elsewhere", "timeline.tsx follows");
+  assert.equal(JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8")).project.timelineItems[0].name, "by cb, elsewhere", "project.json follows");
+  assert.ok(linked.length >= 2 && linked.every(Boolean), "both installs under the lock");
+  let pinCalls = 0;
+  const realPin = s.engine.pin.bind(s.engine);
+  s.engine.pin = async (o) => (pinCalls++, realPin(o));
+  const rewrites = s.mz.log.rewrites.length, n = linked.length;
+  for (let i = 0; i < 5; i++) assert.equal(await s.mz.onExternalHeadChange(), "unchanged");
+  await s.tick(50);
+  assert.deepEqual([pinCalls, s.mz.log.rewrites.length, linked.length], [0, rewrites, n], "idempotent and cheap: no pin, no rewrite, no install");
+});
+
+test("B11/B3: two materializers on one bundle (the app and a takeover helper) don't answer each other's installs: no commit, no ping-pong", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5), clip("b", 5, 10)]);
+  const other = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => other.close());
+  await other.start();
+  const both = [s.mz, other];
+  const watch = async () => {
+    for (const m of both) for (const rel of [PROJECT_FILE, TIMELINE_FILE]) m.onFsEvent(rel);
+    await s.clock.advance(300, async () => {
+      for (const m of both) await m.idle();
+    });
+  };
+  s.engine.external((d) => ((d.timelineItems as Item[])[1]!.name = "moved"));
+  await other.onExternalHeadChange(); // the helper materializes first
+  for (let i = 0; i < 3; i++) await watch();
+  const settled = s.mz.log.rewrites.length + other.log.rewrites.length;
+  for (let i = 0; i < 6; i++) await watch();
+  assert.equal(s.mz.log.rewrites.length + other.log.rewrites.length, settled, "no install answers another");
+  assert.equal(s.engine.commits.length, 0, "nothing committed: each saw the other's files as the states they name");
+  assert.equal(s.read().items[1]!.name, "moved");
+});
+
+test("a save of timeline.tsx that changes nothing (the state its header names) commits nothing and isn't regenerated", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const r = s.read();
+  const rewrites = s.mz.log.rewrites.length;
+  s.writeAtomic(TIMELINE_FILE, s.edited(r, () => undefined));
+  await s.event();
+  await s.tick(50);
+  assert.equal(s.engine.commits.length, 0);
+  assert.equal(s.mz.log.rewrites.length, rewrites, "not answered with a rewrite");
+  assert.ok(s.mz.log.applied.some((a) => a.status === "unchanged"));
+});

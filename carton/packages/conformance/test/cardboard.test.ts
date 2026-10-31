@@ -15,6 +15,7 @@ import "../src/cardboard/system/review4.ts";
 import "../src/cardboard/system/wording.ts";
 import "../src/cardboard/system/b6-cut-switch.ts";
 import "../src/cardboard/system/b5-file-save-cards.ts";
+import "../src/cardboard/system/b11-external-head.ts";
 import "../src/cardboard/cli-codec.test.ts";
 
 await cardboardSuite();

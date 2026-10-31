@@ -95,6 +95,11 @@ export interface MaterializerEngine {
   shared(): boolean;
   /** The current cut's id: pins and commits go to it. The freeze view belongs to the cut it started on (B6). */
   cut?(): string;
+  /**
+   * The current cut's head as a short key (cut, branch, seq), read fresh from the store: another process may have
+   * moved it (B11). Without it, `onExternalHeadChange` always rewrites (still idempotent: unchanged files stay).
+   */
+  headRef?(): Promise<string>;
 }
 
 /** The host's document conversions the materializer needs (Cardboard's are in `@carton/cardboard`). */
@@ -227,6 +232,18 @@ type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp:
 type Origin = { rel: string; mtimeNs: bigint; viewGen?: number };
 
 const sha = (b: Uint8Array | string): string => createHash("sha256").update(b).digest("hex");
+/** `headRef` keys are JSON [cut, branch, seq]. */
+const cutOfKey = (key: string): unknown => (JSON.parse(key) as unknown[])[0];
+/** Structural equality of two documents (key order aside). */
+function sameDoc(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) return a.length === (b as unknown[]).length && a.every((x, i) => sameDoc(x, (b as unknown[])[i]));
+  const ka = Object.keys(a as object).filter((k) => (a as Record<string, unknown>)[k] !== undefined);
+  const kb = Object.keys(b as object).filter((k) => (b as Record<string, unknown>)[k] !== undefined);
+  return ka.length === kb.length && ka.every((k) => sameDoc((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k]));
+}
 const push = <T>(list: T[], x: T, keep: number): void => {
   list.push(x);
   if (list.length > keep) list.splice(0, list.length - keep);
@@ -266,6 +283,8 @@ export class Materializer {
   /** Where each held displaced file came from. */
   private readonly origin = new Map<string, Origin>();
   private readonly quietTimers = new Map<string, unknown>();
+  /** The head (`headRef`) the files were last brought up to, or were scheduled to be (B11). */
+  private knownHead: string | null = null;
   /** Paths whose save is being applied right now (its finishing steps read the path again: R7-01). */
   private readonly applying = new Set<string>();
   private readonly retryTimers = new Map<string, unknown>();
@@ -323,6 +342,7 @@ export class Materializer {
    */
   start(): Promise<void> {
     return this.run(async () => {
+      this.knownHead = await this.headKey(); // before the writes, which show this head or a newer one
       await this.recoverDisplaced();
       await this.reviewDisplaced();
       await this.importUnseenViews();
@@ -443,11 +463,40 @@ export class Materializer {
    */
   onCutSwitch(_cut?: string): Promise<void> {
     return this.run(async () => {
-      await this.freezeOnCurrentCut(true);
-      this.projectPin = null; // project.json's pin was on the old cut
-      if (this.opts.writeProject) await this.writeProjectNow("cut");
-      await this.writeSharedNow("cut", true);
+      this.knownHead = await this.headKey();
+      await this.cutSwitchNow();
     });
+  }
+  private async cutSwitchNow(): Promise<void> {
+    await this.freezeOnCurrentCut(true);
+    this.projectPin = null; // project.json's pin was on the old cut
+    if (this.opts.writeProject) await this.writeProjectNow("cut");
+    await this.writeSharedNow("cut", true);
+  }
+
+  /**
+   * carton.db may have moved under this materializer (B11): a `cb` write committed in its own process or by a helper
+   * that took the lease over, or a cut another process switched. Call it whenever the store may have changed (local's
+   * data_version poll, a nudge, the worker after its own commits); it is idempotent and cheap: one head read, and
+   * nothing else when the head is the one already seen. A moved head is handled as a local change (files follow,
+   * under the install lock as every install), a switched cut as `onCutSwitch`.
+   */
+  onExternalHeadChange(): Promise<"unchanged" | "head" | "cut"> {
+    return this.run(async () => {
+      const key = await this.headKey();
+      if (key !== null && key === this.knownHead) return "unchanged";
+      const was = this.knownHead;
+      this.knownHead = key; // read before the rewrite, which shows this head or a newer one
+      if (key !== null && was !== null && cutOfKey(key) !== cutOfKey(was)) {
+        await this.cutSwitchNow();
+        return "cut";
+      }
+      this.onHeadChange("local");
+      return "head";
+    });
+  }
+  private async headKey(): Promise<string | null> {
+    return this.engine.headRef ? await this.engine.headRef() : null;
   }
 
   /**
@@ -478,11 +527,7 @@ export class Materializer {
    */
   onHeadChange(cause: "local" | "gui" | "remote"): void {
     if (this.closed) return;
-    if (this.opts.writeProject && !this.projectTimer)
-      this.projectTimer = this.clock.setTimeout(() => {
-        this.projectTimer = null;
-        this.fire(() => this.writeProjectNow(cause));
-      }, this.opts.localRewriteMs);
+    this.scheduleProjectWrite(cause);
     if (this.freeze.active) return;
     if (cause === "remote" && this.engine.shared()) {
       if (this.remoteTimer) return;
@@ -501,6 +546,15 @@ export class Materializer {
       this.fire(async () => {
         if (!this.freeze.active) await this.writeSharedNow(cause);
       });
+    }, this.opts.localRewriteMs);
+  }
+
+  /** project.json follows head promptly (coalesced). */
+  private scheduleProjectWrite(cause: string): void {
+    if (this.closed || !this.opts.writeProject || this.projectTimer) return;
+    this.projectTimer = this.clock.setTimeout(() => {
+      this.projectTimer = null;
+      this.fire(() => this.writeProjectNow(cause));
     }, this.opts.localRewriteMs);
   }
 
@@ -673,9 +727,12 @@ export class Materializer {
     const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     const body = refBodyOf(p);
     const next = this.host.toProject(p.doc, cur);
-    if (!fresh && cur && same({ ...env, project: next })) {
+    if (cur && same({ ...env, project: next })) {
+      // the file already says this (also when it is a fresh foreign envelope: another materializer's install of the
+      // same head, B11/B3; rewriting it would answer that install with one of ours, back and forth)
       this.projectPin = body;
       await this.engine.putMeta(["file", PROJECT_FILE, "pin"], body);
+      if (fresh && overlay) await this.engine.putMeta(["file", PROJECT_FILE, "consumed"], overlay.id);
       return;
     }
     // 1.4.0's rev: stateUpdatedAt is forced monotonic, max(now, prev + 1) (writeTimeline)
@@ -688,6 +745,21 @@ export class Materializer {
     // this install holds that overlay's fields; one applied during the install (newer) stays unconsumed for the next
     if (overlay) await this.engine.putMeta(["file", PROJECT_FILE, "consumed"], overlay.id);
     this.log.rewrites.push({ t: now, path: PROJECT_FILE, cause, ref: body });
+  }
+
+  /**
+   * A foreign project.json's unversioned fields (Cardboard's own data) are the source for the next project.json Carton
+   * writes; stored before the save's receipt, so a failure in between retries the save instead of deleting its file.
+   * An older file (a displaced save reviewed late) never replaces a newer one's fields: overlays keep write order, and
+   * the overlay is never deleted, so it is also the watermark.
+   */
+  private async storeOverlay(text: string, stamp: string | null): Promise<void> {
+    const mtimeNs = stamp ? (stamp.split(":")[2] ?? "0") : "0";
+    const cur = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
+    if (!cur || BigInt(cur.mtimeNs ?? "0") <= BigInt(mtimeNs)) {
+      const ov: Overlay = { id: randomBytes(6).toString("hex"), envelope: JSON.parse(text) as Record<string, unknown>, mtimeNs };
+      await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], ov);
+    }
   }
 
   /** Displace, then install: never replaces a name, so a foreign save at `rel` is moved aside and imported. */
@@ -1122,6 +1194,21 @@ export class Materializer {
       if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
+    if (!name && (sameDoc(saved, baseDoc) || sameDoc(saved, await this.engine.head()))) {
+      // nothing to version: the file shows the state its header names, or head itself (another materializer's install
+      // of carton.db's state, a takeover helper's while it held the lease, B11/B3; or a save that changed nothing). No
+      // commit, and no regeneration, which would answer one materializer's install with another's, back and forth.
+      // project.json's own fields are still kept (its overlay).
+      if (rel === PROJECT_FILE) {
+        await this.storeOverlay(text, stamp);
+        this.scheduleProjectWrite("overlay"); // its fields reach the file (nothing to write if the file has them)
+      }
+      if (!o.fromDisplaced) ps.last = hash;
+      if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
+      await this.saveState(rel);
+      this.log.applied.push({ t: this.clock.now(), path: rel, id: null, status: "unchanged", cards: 0, actor: actor.id, hash });
+      return true;
+    }
     // A retry of this same save after a failure below (or a crash) must not commit again: the engine would confirm it
     // as empty, without the change's id that a view's causal past and the freeze view need. So the save records its
     // change id before committing, and its result right after; a retry commits with the same id (dedup by id) or reuses
@@ -1155,18 +1242,7 @@ export class Materializer {
       await settle();
       return failed();
     }
-    if (rel === PROJECT_FILE) {
-      // the file's unversioned fields (Cardboard's own data) are the source for the next project.json Carton writes;
-      // stored before the receipt below, so a failure in between retries this save instead of deleting its file
-      // An older file (a displaced save reviewed late) never replaces a newer one's fields: overlays keep write order,
-      // and the overlay is never deleted, so it is also the watermark.
-      const mtimeNs = stamp ? (stamp.split(":")[2] ?? "0") : "0";
-      const cur = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
-      if (!cur || BigInt(cur.mtimeNs ?? "0") <= BigInt(mtimeNs)) {
-        const ov: Overlay = { id: randomBytes(6).toString("hex"), envelope: JSON.parse(text) as Record<string, unknown>, mtimeNs };
-        await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], ov);
-      }
-    }
+    if (rel === PROJECT_FILE) await this.storeOverlay(text, stamp);
     // Cards are data too: stored before the receipt, so a failure in between retries this file instead of deleting the
     // only copy of a save whose every edit carded. The id is stable for the same file, so a retry rewrites the same key.
     const cards = res.cards ?? [];
