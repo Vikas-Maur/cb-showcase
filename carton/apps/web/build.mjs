@@ -29,21 +29,35 @@ const common = {
   alias,
   metafile: true,
 };
-const entries = [
-  { in: "src/main.ts", out: "app.js", format: "esm" },
-  { in: "src/watch.ts", out: "watch.js", format: "esm" },
-  { in: "src/sw.ts", out: "sw.js", format: "iife" },
-].filter((e) => existsSync(join(here, e.in)));
-const results = await Promise.all(entries.map((e) => build({ ...common, entryPoints: [join(here, e.in)], outfile: join(out, e.out), format: e.format })));
+// The editor and the watch page in one build with code splitting (ESM): shared code (Preact, core, the skin) is one
+// chunk both use, and the editor's heavy part (core, the panels) is a chunk the join screen doesn't wait for.
+const pages = await build({ ...common, entryPoints: { app: join(here, "src/main.ts"), watch: join(here, "src/watch.ts") }, outdir: out, format: "esm", splitting: true, chunkNames: "chunks/[name]-[hash]" });
+const results = [pages];
+if (existsSync(join(here, "src/sw.ts"))) results.push(await build({ ...common, entryPoints: [join(here, "src/sw.ts")], outfile: join(out, "sw.js"), format: "iife" }));
 cpSync(join(here, "public"), out, { recursive: true });
+
+// modulepreload every chunk a page loads (static and dynamic imports), so the browser fetches them in parallel with
+// the entry instead of discovering them one level at a time
+const outputs = pages.metafile.outputs;
+const rel = (f) => "/" + f.slice(f.indexOf(out.split("/").pop() + "/") + out.split("/").pop().length + 1);
+function closure(file, seen = new Set()) {
+  for (const i of outputs[file]?.imports ?? []) if (!seen.has(i.path)) (seen.add(i.path), closure(i.path, seen));
+  return seen;
+}
+for (const [page, entry] of [["index.html", "app.js"], ["watch.html", "watch.js"]]) {
+  const file = Object.keys(outputs).find((f) => f.endsWith("/" + entry));
+  const links = [...closure(file)].map((f) => `<link rel="modulepreload" href="${rel(f)}">`).join("\n");
+  const html = join(out, page);
+  writeFileSync(html, readFileSync(html, "utf8").replace("<!--preload-->", links));
+}
 
 const rows = [];
 for (const r of results)
   for (const [file, o] of Object.entries(r.metafile.outputs)) {
     if (file.endsWith(".map")) continue;
     const bytes = readFileSync(file);
-    rows.push({ file: file.split("/").pop(), min: o.bytes, gzip: gzipSync(bytes, { level: 9 }).length });
+    rows.push({ file: rel(file).slice(1), min: o.bytes, gzip: gzipSync(bytes, { level: 9 }).length });
   }
 writeFileSync(join(out, "sizes.json"), JSON.stringify(rows, null, 2));
-for (const r of rows) console.log(`${r.file.padEnd(10)} ${(r.min / 1024).toFixed(1).padStart(7)} KB min  ${(r.gzip / 1024).toFixed(1).padStart(6)} KB min+gz`);
+for (const r of rows) console.log(`${r.file.padEnd(28)} ${(r.min / 1024).toFixed(1).padStart(7)} KB min  ${(r.gzip / 1024).toFixed(1).padStart(6)} KB min+gz`);
 console.log(`built ${out}`);

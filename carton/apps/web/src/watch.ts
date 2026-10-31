@@ -17,6 +17,7 @@ import { readBlob, readDescriptor } from "./project.ts";
 import { Session, type KeyStore } from "./session.ts";
 import { appCss } from "./styles.ts";
 import { formatTime } from "./timeline.ts";
+import { Btn } from "./ui.ts";
 import { docLength } from "./edit.ts";
 
 const keys: KeyStore = { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) };
@@ -53,7 +54,7 @@ function WatchPage(p: { descriptor: ProjectDescriptor; state: State; images: Ima
             "div",
             { className: "cb-viewer", style: { height: "60vh" } },
             h(Player, { doc, media: p.descriptor.media, time, playing, onTime: setTime, onPause: () => setPlaying(false), mediaUrl: p.mediaUrl, poster: (k: string) => p.images.get(k) }),
-            h("div", { className: "cb-transport" }, h("button", { className: "carton-btn", "data-testid": "play", onClick: () => (playing ? setPlaying(false) : (time >= length - 0.05 && setTime(0), setPlaying(true))) }, playing ? "❚❚ Pause" : "▶ Play"), h("span", { className: "cb-time" }, `${formatTime(time)} / ${formatTime(length)}`)),
+            h("div", { className: "cb-transport" }, h(Btn, { "data-testid": "play", onClick: () => (playing ? setPlaying(false) : (time >= length - 0.05 && setTime(0), setPlaying(true))) }, playing ? "❚❚ Pause" : "▶ Play"), h("span", { className: "cb-time" }, `${formatTime(time)} / ${formatTime(length)}`)),
           )
         : h("p", { className: "cb-dim" }, "Loading the published version…"),
     ),
