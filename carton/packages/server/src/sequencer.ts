@@ -252,13 +252,23 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   const conns = new Map<string, HostConnection>();
   const stateOf = (c: HostConnection): ConnectionState => (c.state ??= { subs: [], deadEpoch: -1 });
   const attach = (c: SequencerConnection) => {
+    // a connection that replaces another under its id (a host restoring a socket): the old one's sends, presence cap
+    // and waiting presence go with it, never to the replacement
+    const was = conns.get(c.id);
+    if (was && was !== c) retire(was);
     conns.set(c.id, c as HostConnection);
     stateOf(c as HostConnection);
   };
+  /** What the sequencer holds for a connection besides its state, keyed by the connection itself (never its id). */
+  function retire(c: HostConnection): void {
+    outboxes.delete(c);
+    presenceBuckets.delete(c);
+    clearTrailing(c);
+  }
 
   // ---------------------------------------------------------------- sending: in order, oversized ones as envelopes
   const envelopeBytes = opts.envelopeBytes ?? sync.ENVELOPE_BYTES;
-  const outboxes = new Map<string, sync.Outbox<ServerMessage>>();
+  const outboxes = new Map<HostConnection, sync.Outbox<ServerMessage>>();
   /** The envelope for `msg` when it is over the threshold (its upload started); null: it goes inline. */
   function sealed(msg: ServerMessage): Promise<sync.EnvelopeMsg> | null {
     if (!opts.blobs || !MAYBE_BIG.has(msg.type)) return null;
@@ -270,8 +280,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
   /** Send on `c` after what was sent before; `env`: the envelope already made for this message (a fan-out's). */
   function send(c: HostConnection, msg: ServerMessage, env?: Promise<sync.EnvelopeMsg> | null): void {
-    let out = outboxes.get(c.id);
-    if (!out) outboxes.set(c.id, (out = new sync.Outbox((m) => c.send(m))));
+    let out = outboxes.get(c);
+    if (!out) outboxes.set(c, (out = new sync.Outbox((m) => c.send(m))));
     const e = stateOf(c).envelopes ? (env === undefined ? sealed(msg) : env) : null;
     out.push(msg, e ?? undefined);
   }
@@ -1026,13 +1036,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   // Per connection, a token bucket: PRESENCE_BURST updates at once, refilled at PRESENCE_PER_SEC. Clients send at most
   // 10 a second (the sync client coalesces); anything over the cap is dropped, so a misbehaving client can't make the
   // relay, and on a Durable Object the fan-out work, grow with its sending rate.
-  const presenceBuckets = new Map<string, { tokens: number; at: number }>();
+  const presenceBuckets = new Map<HostConnection, { tokens: number; at: number }>();
   function presenceAllowed(c: HostConnection): boolean {
     const now = clock();
-    const b = presenceBuckets.get(c.id) ?? { tokens: PRESENCE_BURST, at: now };
+    const b = presenceBuckets.get(c) ?? { tokens: PRESENCE_BURST, at: now };
     b.tokens = Math.min(PRESENCE_BURST, b.tokens + ((now - b.at) / 1000) * PRESENCE_PER_SEC);
     b.at = now;
-    presenceBuckets.set(c.id, b);
+    presenceBuckets.set(c, b);
     if (b.tokens < 1) return false;
     b.tokens -= 1;
     return true;
@@ -1041,16 +1051,16 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   // The latest presence a connection had dropped by its cap, per branch, relayed when its bucket refills: a burst
   // (updates that queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position
   // or its `state: null` always reaches each branch's others. The rate itself stays per connection.
-  const presenceTrailing = new Map<string, Map<string, { msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>>();
-  function clearTrailing(id: string, branchId?: string): void {
-    const byBranch = presenceTrailing.get(id);
+  const presenceTrailing = new Map<HostConnection, Map<string, { msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>>();
+  function clearTrailing(c: HostConnection, branchId?: string): void {
+    const byBranch = presenceTrailing.get(c);
     if (!byBranch) return;
     for (const [b, t] of byBranch) {
       if (branchId !== undefined && b !== branchId) continue;
       clearTimeout(t.timer);
       byBranch.delete(b);
     }
-    if (byBranch.size === 0) presenceTrailing.delete(id);
+    if (byBranch.size === 0) presenceTrailing.delete(c);
   }
 
   // Who a connection shows (ConnectionState.shown), noted as each presence is accepted, so a leave is owed for every
@@ -1085,20 +1095,20 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     noteShown(c, m.branchId, actor, msg.state !== null);
     if (!presenceAllowed(c)) {
       stats.presenceDropped++;
-      const byBranch = presenceTrailing.get(c.id) ?? new Map();
-      presenceTrailing.set(c.id, byBranch);
+      const byBranch = presenceTrailing.get(c) ?? new Map();
+      presenceTrailing.set(c, byBranch);
       const waiting = byBranch.get(m.branchId);
       if (waiting) {
         waiting.msg = msg;
         return;
       }
-      const b = presenceBuckets.get(c.id)!;
+      const b = presenceBuckets.get(c)!;
       const ms = Math.max(1, Math.ceil(((1 - b.tokens) / PRESENCE_PER_SEC) * 1000));
       const branchId = m.branchId;
       const entry = {
         msg,
         timer: setTimeout(function relay() {
-          if (conns.get(c.id) !== c || !stateOf(c).subs.includes(branchId)) return clearTrailing(c.id, branchId);
+          if (conns.get(c.id) !== c || !stateOf(c).subs.includes(branchId)) return clearTrailing(c, branchId);
           // one token per relay, as any update; a connection with several branches waiting takes its turns
           if (!presenceAllowed(c)) {
             entry.timer = setTimeout(relay, Math.max(1, Math.ceil(1000 / PRESENCE_PER_SEC)));
@@ -1106,7 +1116,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
             return;
           }
           byBranch.delete(branchId);
-          if (byBranch.size === 0) presenceTrailing.delete(c.id);
+          if (byBranch.size === 0) presenceTrailing.delete(c);
           fanout(branchId, entry.msg, c.id);
         }, ms),
       };
@@ -1114,7 +1124,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       byBranch.set(branchId, entry);
       return;
     }
-    clearTrailing(c.id, m.branchId); // this newer state supersedes the one waiting on its branch
+    clearTrailing(c, m.branchId); // this newer state supersedes the one waiting on its branch
     fanout(m.branchId, msg, c.id);
   }
 
@@ -1185,11 +1195,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     },
     attach,
     disconnect(conn) {
-      // once per connection; not one already replaced under its id (its replacement is another connection)
-      if (conns.get(conn.id) !== conn) return;
-      conns.delete(conn.id);
-      outboxes.delete(conn.id);
-      presenceBuckets.delete(conn.id);
+      const c = conn as HostConnection;
+      // once per connection; one already replaced under its id leaves its replacement be (another connection, which
+      // shows the same person), and was retired when the replacement came
+      if (conns.get(c.id) !== c) return retire(c);
+      conns.delete(c.id);
+      outboxes.delete(c);
+      presenceBuckets.delete(c);
       // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
       // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
       // Not while another connection shows the same actor there: the same person reconnected (the old socket timed out
@@ -1198,8 +1210,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         for (const o of conns.values()) if (stateOf(o).shown?.some((s) => s.branchId === branchId && sameActor(s.actor, actor as sync.PresenceFanoutMsg["actor"]))) return true;
         return false;
       };
-      for (const [, t] of presenceTrailing.get(conn.id) ?? []) if (t.msg.state === null && !shownElsewhere(t.msg.branchId, t.msg.actor)) fanout(t.msg.branchId, t.msg, conn.id);
-      clearTrailing(conn.id);
+      for (const [, t] of presenceTrailing.get(c) ?? []) if (t.msg.state === null && !shownElsewhere(t.msg.branchId, t.msg.actor)) fanout(t.msg.branchId, t.msg, conn.id);
+      clearTrailing(c);
       const st = stateOf(conn);
       for (const s of st.shown ?? []) if (!shownElsewhere(s.branchId, s.actor)) fanout(s.branchId, { type: "presence", branchId: s.branchId, actor: s.actor, state: null }, conn.id);
       delete st.shown;
