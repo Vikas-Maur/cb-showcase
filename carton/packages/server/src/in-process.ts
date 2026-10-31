@@ -1,9 +1,11 @@
 // An in-process SequencerHost and its Transport, for tests and single-process setups: the same sequencer core a real
 // host runs, with messages structured-cloned and delivered on the microtask queue, in order, at most once. A test can
-// drop a connection (`host.drop`) to exercise reconnects and lost acks.
+// drop a connection (`host.drop`) to exercise reconnects and lost acks. Like a WebSocket host it has a per-message cap
+// (`maxMessageBytes`, 32 MiB; Infinity: none): a bigger message, either way, closes the connection ("message too big"). Bigger
+// messages travel as envelopes through the blob store (`sync/envelope.ts`), which the host never sees.
 
 import type { AuthProvider, BlobStore, SequencerHost, SequencerStorage, Transport, TransportConnection } from "@carton/core/plugins";
-import type { sync } from "@carton/core";
+import { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, type SequencerOptions } from "./sequencer.ts";
 
 export interface InProcessHost extends SequencerHost {
@@ -12,12 +14,25 @@ export interface InProcessHost extends SequencerHost {
   /** Break one connection, or every connection, as a dropped link would: both sides see it close. */
   drop(connId?: string): void;
   readonly connections: number;
+  /** Messages refused for being over `maxMessageBytes` (each closed its connection). */
+  readonly tooBig: number;
 }
 
 let hosts = 0;
 
-export function createInProcessHost(opts: Omit<SequencerOptions, "storage" | "auth"> & { storage: SequencerStorage; auth: AuthProvider; blobs?: BlobStore; name?: string }): InProcessHost {
+export function createInProcessHost(
+  opts: Omit<SequencerOptions, "storage" | "auth"> & { storage: SequencerStorage; auth: AuthProvider; blobs?: BlobStore; name?: string; maxMessageBytes?: number },
+): InProcessHost {
   const url = `inproc://${opts.name ?? `host-${++hosts}`}`;
+  const cap = opts.maxMessageBytes ?? 32 << 20;
+  let tooBig = 0;
+  /** Over the cap: the connection closes, as a WebSocket host's would (close code 1009). */
+  const refuse = (id: string, msg: unknown): boolean => {
+    if (cap === Infinity || !sync.oversized(msg, cap)) return false;
+    tooBig++;
+    shut(id, "message too big");
+    return true;
+  };
   const sequencer = createSequencer(opts);
   const live = new Map<string, { server: HostConnection; client: ClientSide }>();
   let closed = false;
@@ -55,7 +70,7 @@ export function createInProcessHost(opts: Omit<SequencerOptions, "storage" | "au
         auth,
         state,
         send(msg) {
-          if (!client.open) return;
+          if (!client.open || refuse(id, msg)) return;
           const copy = structuredClone(msg);
           queueMicrotask(() => {
             if (client.open) for (const f of client.listeners) f(copy);
@@ -69,7 +84,7 @@ export function createInProcessHost(opts: Omit<SequencerOptions, "storage" | "au
           return client.open;
         },
         send(msg) {
-          if (!client.open) return;
+          if (!client.open || refuse(id, msg)) return;
           const copy = structuredClone(msg);
           queueMicrotask(() => {
             if (live.has(id)) void sequencer.handle(server, copy);
@@ -99,6 +114,9 @@ export function createInProcessHost(opts: Omit<SequencerOptions, "storage" | "au
     },
     get connections() {
       return live.size;
+    },
+    get tooBig() {
+      return tooBig;
     },
     async close() {
       closed = true;

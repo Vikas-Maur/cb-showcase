@@ -18,6 +18,10 @@ let storageFactory: () => SequencerStorage = () => sqliteStorage();
 export function useStorage(f: () => SequencerStorage): void {
   storageFactory = f;
 }
+/** A fresh sequencer storage of the suite's kind (for tests that run a real host, not a simulated world). */
+export function suiteStorage(): SequencerStorage {
+  return storageFactory();
+}
 /** A world on the suite's storage. */
 export function world(opts: Omit<WorldOptions, "storage"> = {}): World {
   return new World({ ...opts, storage: storageFactory });

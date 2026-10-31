@@ -969,6 +969,19 @@ export function conformanceTests(S: Schema, opts: ConformanceOptions = {}): void
     assert.deepEqual(paths, ["name", "timelineItems/credits", "timelineItems/music", "timelineItems/outro", "timelineItems/tmp"], "every difference is a card");
   });
 
+  test("missing LCA, every difference decided: an all-cards fold commits as a recorded merge, so the next fold is up to date (ui review c)", () => {
+    const { alice, A, carolHead } = diamond({ carry: "head-only" });
+    const cmp = alice.fold(A, carolHead, { author: HUMAN, missingBase: "all-cards" });
+    assert.equal(cmp.status, "compare");
+    const cards = cmp.status === "compare" ? cmp.cards : [];
+    const partial = alice.fold(A, carolHead, { author: HUMAN, missingBase: "all-cards", choices: { [cards[0]!.path]: "theirs" } });
+    assert.equal(partial.status, "compare", "a difference left undecided commits nothing");
+    const r = alice.fold(A, carolHead, { author: HUMAN, missingBase: "all-cards", choices: Object.fromEntries(cards.map((c) => [c.path, "theirs"])) });
+    assert.equal(r.status, "confirmed");
+    assert.deepEqual(alice.changes(A).at(-1)!.mergeOf, { branchId: carolHead.slice(0, carolHead.lastIndexOf("@")), seq: Number(carolHead.slice(carolHead.lastIndexOf("@") + 1)) });
+    assert.equal(alice.fold(A, carolHead, { author: HUMAN }).status, "up-to-date", "the merge is recorded: no missing base the second time");
+  });
+
   test(".cbproj Alice → Bob → Alice twice, then a third merge: each LCA is the last exchanged node and nothing is reverted", () => {
     const d0 = doc(
       ["V"],
@@ -1208,6 +1221,13 @@ export function conformanceTests(S: Schema, opts: ConformanceOptions = {}): void
     assert.deepEqual((d.media as Json[])[0], { id: "m", contentHash: "h", data: { type: "video", fileName: "a.mp4" } });
     const changed = fromHost({ ...host, timelineItems: [clip("x", "V", 0, 5, { annotations: [{ a: 2 }], borderDrawProgress: 0.9, autoReframeSegmentationStatus: "done" })] }, d);
     assert.deepEqual(E.diff(d, changed, S), [], "changing local-only state is not a change");
+  });
+
+  test("§4.1 incremental soft validation: a confirmed local change that extends a clip into an unchanged neighbour warns (review R2-4)", () => {
+    const r = History.create(S, doc(["T"], [clip("a", "T", 0, 5), clip("b", "T", 5, 10)]));
+    const res = r.commit(r.current, { ops: [set(["timelineItems", "a", "endTime"], 7), set(["timelineItems", "a", "trimEnd"], 7)], author: HUMAN });
+    assert.equal(res.status, "confirmed");
+    assert.deepEqual(res.status === "confirmed" && res.warnings, [{ kind: "overlap", items: ["a", "b"] }]);
   });
 
   test("§4.1 soft validators: an overlap that only the merge creates is a warning on the merge, not a card", () => {

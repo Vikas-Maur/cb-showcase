@@ -4,7 +4,7 @@
 // through merge3 under v3 (and missed by per-item paths, which is why per-item isn't the plan).
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { sequencer as rules } from "@carton/core";
+import type { Keying } from "../rule-variants.ts";
 import { runOnce, s2, pct, type P9Run } from "../p9.ts";
 import { report, ENGINE } from "../helpers.ts";
 
@@ -31,7 +31,7 @@ export function register(): void {
   for (const rtt of [300, 50]) {
     test(`P9 single track, RTT ${rtt}, seeds 1..20 pooled: v3 spans (v11) meet the 1.5 × per-item target${rtt === 300 ? "; v10's rule misses it" : ""}; bounded retries, exactly once [${ENGINE}]`, async (t) => {
       const res: Record<string, { p99: number; slowerThan1Rtt: number; seedsWithP99Over1_5xRtt: number; maxRejectsOneChange: number; rejectRate: number; absorbed: number; withdrawn: number }> = {};
-      for (const keying of ["v3-spans", "per-item", "v2-layout", "v3-spans-v10"] as rules.Keying[]) {
+      for (const keying of ["v3-spans", "per-item", "v2-layout", "v3-spans-v10"] as Keying[]) {
         const runs: P9Run[] = [];
         for (let seed = 1; seed <= 20; seed++) runs.push(await runOnce({ keying, rtt, seed }));
         for (const r of runs) {

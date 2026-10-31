@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { defineSchema } from "../../src/schema.ts";
 import { timeAlgebra, hashDoc } from "../../src/engine/index.ts";
-import { ReplicaQueue, SyncClient, type ClientMessage, type ServerMessage } from "../../src/sync/index.ts";
+import { ReplicaQueue, SharedCut, SyncClient, type ClientMessage, type ServerMessage, type Timers } from "../../src/sync/index.ts";
 import type { TransportConnection } from "../../src/plugins.ts";
 import type { ConfirmedChange, Doc, Op } from "../../src/types.ts";
 
@@ -185,4 +185,108 @@ test("fencing: a client whose lease nonce changed stops for good and never touch
   assert.equal(client.status, "stopped");
   c.feed({ type: "changes", branchId: B, rows: [rowOf(q, "o.1", 1, [set("c2", "name", "o")])] });
   assert.equal(q.headSeq(B), 0, "a stopped client integrates nothing");
+});
+
+// ---------------------------------------------------------------- review round 1 (GPT 6.1 Sol, f50da49)
+test("finding 3: rows out of order (a gap) make the client catch up again, never throw", async () => {
+  const { q, client, c } = await setup();
+  const before = c.sent.length;
+  c.feed({ type: "changes", branchId: B, rows: [rowOf(q, "o.3", 3, [set("c2", "name", "o")])] });
+  assert.equal(q.headSeq(B), 0, "nothing appended");
+  assert.equal(c.sent.slice(before).at(-1)?.type, "hello", "a resync hello");
+  client.stop();
+});
+
+test("finding 10: an incomplete confirmed list makes the client ask for the rest before it acts on any of it", async () => {
+  const { q, client, c } = await setup();
+  q.commit(B, { id: "r1.1", author: me, ops: [set("c0", "name", "a")], at: 0 });
+  client.pump();
+  q.pending(B)[0]!.sentBases.push(40, 300); // pushed on several bases over time (all fates unknown)
+  c.drop();
+  await new Promise((r) => setTimeout(r, 10));
+  const c2 = (client as unknown as { conn: Scripted }).conn;
+  c2.feed({ type: "hello", branchId: B, head: 0, rows: [], confirmed: [], uncheckedFrom: 40 });
+  const again = c2.last("hello")!;
+  assert.deepEqual(again.pending, [{ id: "r1.1", bases: [40, 300] }], "only the unchecked bases are claimed again");
+  assert.equal(client.caughtUp, false, "not caught up on a partial answer");
+  client.stop();
+});
+
+test("finding 13: a fold-in's history travels with the change, and an empty fold is kept and pushed, not absorbed", async () => {
+  const { q, client, c } = await setup();
+  const res = q.commit(B, { id: "r1.1", author: me, ops: [], at: 0, history: { kind: "merge", mergeOf: { branchId: "V", seq: 3 } } });
+  assert.equal(res.status, "pending", "an empty fold is a DAG node: it is recorded");
+  client.pump();
+  await flush();
+  const pushed = c.last("push")!.changes[0]!;
+  assert.deepEqual([pushed.kind, pushed.mergeOf], ["merge", { branchId: "V", seq: 3 }]);
+  assert.equal(c.sent.filter((m) => m.type === "withdraw").length, 0);
+  client.stop();
+});
+
+test("finding 14: a keyframe that fails its hash is refused; the client catches up by rows only", async () => {
+  const { q, client, c, conns } = await setup();
+  const errors: string[] = [];
+  (client as unknown as { o: { onEvent?: (e: { type: string; error?: string }) => void } }).o.onEvent = (e) => e.type === "error" && errors.push(e.error!);
+  c.drop();
+  await new Promise((r) => setTimeout(r, 10));
+  const c2 = conns[1]!;
+  c2.feed({ type: "hello", branchId: B, head: 200, keyframe: { seq: 128, stateHash: "forged", doc: d0 }, rows: [], confirmed: [] });
+  assert.equal(q.headSeq(B), 0, "not installed");
+  assert.match(errors.join(), /doesn't match/);
+  assert.equal(c2.last("hello")!.noKeyframe, true);
+  client.stop();
+});
+
+test("finding 18: a change confirmed through the server's list keeps its version id", async () => {
+  const q = new ReplicaQueue(schema);
+  q.addBranch({ id: B, name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
+  q.commit(B, { id: "r1.1", author: me, ops: [set("c0", "name", "a")], at: 0 });
+  q.jumpTo(B, { seq: 10, stateHash: hashDoc(d0, schema), doc: d0 });
+  q.confirmFromList(B, [{ id: "r1.1", seq: 4, rebase: 0 }]);
+  assert.deepEqual(q.versionId(B, "r1.1"), { id: `${B}@4`, provisional: false });
+});
+
+test("finding 20: a commit after catching up turns the status back to syncing until it is confirmed", async () => {
+  const { q, client, c } = await setup();
+  assert.equal(client.status, "up-to-date");
+  q.commit(B, { id: "r1.1", author: me, ops: [set("c0", "name", "a")], at: 0 });
+  assert.equal(client.status, "syncing");
+  await flush();
+  const id = c.last("push")!.changes[0]!.id;
+  c.feed({ type: "changes", branchId: B, rows: [{ ...rowOf(q, id, 1, [set("c0", "name", "a")]), author: me }] });
+  c.feed({ type: "ack", branchId: B, id, seq: 1, epoch: client.epoch });
+  assert.equal(client.status, "up-to-date");
+  client.stop();
+});
+
+test("a settled waitFor or connect clears its timer, so it never keeps a process (a `cb` write) alive", async () => {
+  const live = new Set<unknown>();
+  const timers: Timers = {
+    setTimeout(f, ms) {
+      const h = setTimeout(() => (live.delete(h), f()), ms);
+      if (ms >= 1000) live.add(h);
+      return h;
+    },
+    clearTimeout(h) {
+      live.delete(h);
+      clearTimeout(h as ReturnType<typeof setTimeout>);
+    },
+  };
+  const conns: Scripted[] = [];
+  const transport = { connect: async () => { const c = new Scripted(); conns.push(c); return c; } };
+  const cut = new SharedCut({ schema, branch: { id: B, name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, doc0: d0, transport, url: "x", token: "t", schemaVersion: 1, client: { timers, defer: (fn) => queueMicrotask(fn) } });
+  const joined = cut.connect({ nonce: "n", timeoutMs: 60_000 });
+  await tick();
+  conns[0]!.feed({ type: "hello", branchId: B, head: 0, rows: [], confirmed: [] });
+  assert.equal(await joined, true);
+  cut.commit({ id: "r1.1", author: me, ops: [set("c0", "name", "a")], at: 0 });
+  const out = cut.waitFor("r1.1", 60_000);
+  await flush();
+  const push = conns[0]!.last("push")!;
+  conns[0]!.feed({ type: "changes", branchId: B, rows: [rowOf(cut.queue, "r1.1", 1, push.changes[0]!.ops)] });
+  conns[0]!.feed({ type: "ack", branchId: B, id: "r1.1", seq: 1, epoch: push.epoch });
+  assert.deepEqual(await out, { status: "confirmed", id: "r1.1", seq: 1 });
+  assert.equal(live.size, 0, "no 60 s timer left running");
+  cut.close();
 });

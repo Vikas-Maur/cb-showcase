@@ -14,7 +14,7 @@
 import { mkdirSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { runOnce, s2, summarize, table, type P9Config, type P9Run } from "../../packages/conformance/src/system/p9.ts";
-import type { sequencer as rules } from "@carton/core";
+import type { Keying } from "../../packages/conformance/src/system/rule-variants.ts";
 
 const argv = process.argv.slice(2);
 const arg = (k: string): string | true | undefined => {
@@ -27,12 +27,12 @@ const SEEDS = Number(arg("seeds") ?? 30);
 const SEED0 = Number(arg("seed0") ?? 1);
 const OUT = typeof arg("out") === "string" ? (arg("out") as string) : "carton/bench/p9/results/p9";
 const only = arg("only");
-const keyings = (typeof only === "string" ? only.split(",").filter((k) => k !== "none") : ["v2-layout", "v3-spans", "per-item"]) as rules.Keying[];
+const keyings = (typeof only === "string" ? only.split(",").filter((k) => k !== "none") : ["v2-layout", "v3-spans", "per-item"]) as Keying[];
 
 const configs: Omit<P9Config, "seed">[] = [];
 const oneKeying = arg("keying"), oneRtt = arg("rtt");
 if (typeof oneKeying === "string") {
-  const c: Omit<P9Config, "seed"> = { keying: oneKeying as rules.Keying, rtt: Number(oneRtt ?? 300) };
+  const c: Omit<P9Config, "seed"> = { keying: oneKeying as Keying, rtt: Number(oneRtt ?? 300) };
   if (typeof arg("jitter") === "string") c.jitter = Number(arg("jitter"));
   if (arg("one-push")) c.pipeline = false;
   configs.push(c);
