@@ -44,6 +44,8 @@ export {
 export { MemoryLeafCache, type LeafCache } from "./cache.ts";
 export { MediaMissingError, MediaReader, type MediaReaderOptions, type ReaderEvent } from "./read.ts";
 export { LeafMismatchError, type MediaStat, type RangeSource } from "./range-source.ts";
+export { serveMedia, type ServeMediaOptions } from "./fetch-handler.ts";
+export { parseRange, type ByteSpan } from "./http-range.ts";
 export {
   CONTEXT_CAP_BYTES,
   planShare,
