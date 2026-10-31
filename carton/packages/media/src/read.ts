@@ -20,7 +20,8 @@
 import { equalBytes } from "./bytes.ts";
 import type { LeafCache } from "./cache.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
-import { damagedKey, manifestKey, mediaKey } from "./keys.ts";
+import { reportDamage, reportToHost } from "./damage.ts";
+import { manifestKey, mediaKey } from "./keys.ts";
 import { decodeManifest, LEAF_SIZE, leafDigest, leafSpan, type Manifest } from "./manifest.ts";
 import { LeafMismatchError, type MediaStat, type RangeSource } from "./range-source.ts";
 
@@ -64,7 +65,8 @@ export interface MediaReaderOptions {
   /**
    * When a leaf still fails after its repair attempts, the store's copy is damaged (disk rot, a bad copy): write
    * bad/<hash> so the next upload of this media replaces the object instead of deduping on it (e2e S5-5). Default on;
-   * a reader without write access just fails to report.
+   * a reader without write access just fails to report. A store with a host check (`reportDamaged`, team mode) is
+   * also asked to verify and remove the object.
    */
   reportDamage?: boolean;
 }
@@ -84,6 +86,11 @@ export class MediaReader implements RangeSource {
   readonly #manifests = new Map<string, Promise<Manifest>>();
   readonly #present = new Set<string>();
   readonly #inflight = new Map<string, Promise<Uint8Array>>();
+
+  /** The range cache it reads through, if any (a stream reader keeps its entries there too). */
+  get cache(): LeafCache | undefined {
+    return this.#o.cache;
+  }
 
   constructor(opts: MediaReaderOptions) {
     this.#o = opts;
@@ -256,8 +263,11 @@ export class MediaReader implements RangeSource {
     }
     this.#o.onEvent?.({ type: "repair-failed", hash, leaf: i });
     if (this.#o.reportDamage !== false) {
-      const note = new TextEncoder().encode(JSON.stringify({ leaf: i, at: Date.now() }));
-      await this.#o.store.put(damagedKey(hash), note, { contentType: "application/json" }).catch(() => {});
+      // The host's own check first, where the store has one (it removes a damaged object), then our record
+      // (bad/<hash>). In that order an upload can't answer the report, its no-op PUT kept by a team host, before the
+      // host removes the object it was about: once the report is up, the removal is done.
+      await reportToHost(this.#o.store, hash, i);
+      await reportDamage(this.#o.store, hash, { leaf: i });
     }
     throw new LeafMismatchError(hash, i);
   }
