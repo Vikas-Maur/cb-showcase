@@ -67,7 +67,9 @@ const cartonHeader = (cli, root, extra) => {
   const r = spawnSync(process.execPath, ["-e", `require(process.argv[1]).internals.local(process.argv[2]).then((l) => console.log(l.ref))`, path.join(extra.CARTON_DIR, "carton-node.cjs"), path.join(root, "Demo.cardboard")], { env: env(), encoding: "utf8", timeout: 60_000 });
   assert.equal(r.status, 0, r.stderr);
   const ref = JSON.parse(r.stdout.trim().split("\n").pop());
-  return `${cut.name}@${ref.seq}~${ref.hash.slice(0, 8)} b:${ref.branchId.replace(/-/g, "").slice(0, 8)} p:0a1b2c3d by codec-test`;
+  // (core's branchToken: the id's first 8 characters when they are lowercase hex, else its SHA-256's)
+  const token = /^[0-9a-f]{8}/.test(ref.branchId) ? ref.branchId.slice(0, 8) : require("crypto").createHash("sha256").update(ref.branchId).digest("hex").slice(0, 8);
+  return `${cut.name}@${ref.seq}~${ref.hash.slice(0, 8)} b:${token} p:0a1b2c3d by codec-test`;
 };
 const PRINT_AGAIN = /This timeline was printed from version Main cut@\d+~deadbeef, which is no longer available\. Print it again \(cb source print\) and redo the edit\./;
 

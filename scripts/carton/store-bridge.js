@@ -57,7 +57,9 @@ module.exports = ({ dir, slice, who, codec }) => {
   const path = require("node:path");
   // H3: Carton's header form on Cardboard's rev line, read with @carton/cardboard's grammar (header.ts: findRev,
   // parseRevBody): the first "// cardboard:rev" line counts; a body of digits is 1.4.0's rev (ms), any other body is
-  // a Carton ref, "<cut name>@<seq>~<hash8> b:<cut8> p:<nonce> by <who>", whose ref runs up to " b:".
+  // a Carton ref, "<cut name>@<seq>~<hash8> b:<cut token> p:<nonce> by <who>". Its ref is read as core reads it (up to
+  // the last "@<seq>~<hash8> b:<8 hex>"), else up to the first " b:"; core resolves the whole body.
+  const CORE_BODY = /^(.+@\d+~[0-9a-f]{8}) b:([0-9a-f]{8})(?: p:([0-9A-Za-z]+))?(?: by (.*))?$/;
   const REV_BODY = /^(.+?)(?: b:([0-9A-Za-z_-]+))?(?: p:([0-9A-Za-z]+))?(?: by (.*))?$/;
   const cartonRevOf = (text) => {
     const b = REV_LINE.exec(text)?.[1].trim();
@@ -245,7 +247,7 @@ module.exports = ({ dir, slice, who, codec }) => {
     // does a project without history (Carton then answers as 1.4.0 does).
     async missingRev(rev, current, bundlePath) {
       if (rev === undefined || !carton() || !(await carton().hasHistory(bundlePath))) return current;
-      const version = typeof rev === "string" ? REV_BODY.exec(rev)?.[1] ?? rev : rev;
+      const version = typeof rev === "string" ? (CORE_BODY.exec(rev) ?? REV_BODY.exec(rev))?.[1] ?? rev : rev;
       throw new Error("This timeline was printed from version " + version + ", which is no longer available. Print it again (cb source print) and redo the edit.");
     },
     // H3: the apply's parse of a file whose first rev line is Carton's (a view's, or the shared file the Materializer
