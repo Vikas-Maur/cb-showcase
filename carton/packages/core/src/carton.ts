@@ -14,7 +14,7 @@
 
 import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreKey, StoreWrite, Transport } from "./plugins.ts";
 import type { FieldSpec, Schema } from "./schema.ts";
-import type { KeyframeData, PresenceState } from "./sync/messages.ts";
+import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { ReplicaQueue, type HistoryFields, type QueuedChange, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
@@ -154,10 +154,19 @@ export interface Preview {
 
 /** Who last changed a record, when, and in which change (`at`/`change` are null for a record from an imported `.cbproj`). */
 export interface Credit {
+  /** Who: the generic person told by person where known (`authoredAs` then holds the actor as recorded). */
   actor: Actor;
   at: number | null;
   change: ChangeId | null;
+  authoredAs?: Actor;
 }
+
+/**
+ * The id of the generic person: Cardboard's GUI saves are `{kind: "human", id: "person"}` on every computer. A change by
+ * it is told as the person behind its replica (windows-sync R3): `Carton.setIdentity`, and the server's people.
+ */
+export const PERSON = "person";
+export type { Person, PersonRids } from "./sync/messages.ts";
 
 /** A Published cut, the cut it was published from, and whether that cut has moved on since. */
 export interface Publication {
@@ -317,6 +326,16 @@ export interface Carton {
   readonly sync: CartonSync | null;
   /** Present when opened with `media`. */
   readonly media: CartonMedia | null;
+  /**
+   * The person at this replica (windows-sync R3): `id` the sync session's account (the server refuses any other), `name`
+   * what teammates see. Kept in the store and sent to the server on every connection. From then on `log()` and
+   * `credits()` tell a change by the generic person (`PERSON`) as the person behind its replica: this store's own
+   * replicas as this person, a teammate's as the server says (every replica id their device credential used, edits
+   * from before a share included). The recorded actor stays in `authoredAs`; hashes and history are untouched.
+   */
+  setIdentity(who: Person): Promise<void>;
+  /** This replica's person (`setIdentity`), or null. */
+  identity(): Person | null;
   close(): Promise<void>;
 }
 
@@ -556,6 +575,13 @@ class CartonImpl implements Carton {
   #noops: { id: ChangeId; cut: string; seq: number }[] = [];
   #pinSnap = new Map<string, PinRow>();
   #ridSaved = false;
+  /** People by replica id, as the server said (meta ["person", rid]); this replica's own person (meta ["identity"]). */
+  #people = new Map<string, Person>();
+  #me: Person | null = null;
+  /** This store's replica ids (meta ["rid", rid]): the person here made their changes. */
+  #ownRids = new Set<string>();
+  /** The last write of people the server sent: a reload waits for it, so it never reads the store from before it. */
+  #peopleSaved: Promise<unknown> = Promise.resolve();
   #closed = false;
   /** Joined cuts whose lineage is still to fetch from their server (meta ["join", cut]). */
   #joining = new Set<string>();
@@ -591,7 +617,8 @@ class CartonImpl implements Carton {
           self.#connected = null;
           for (const sc of self.#shared.values()) await sc.disconnect(o);
         },
-        presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#actor(), state),
+        // as this replica's person once set (windows-sync R3): teammates' cursors are told apart, never all "person"
+        presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#who(self.#actor(), `${self.#rid}.0`)!, state),
         waitFor: async (id, ms, cut) => {
           const b = cut ?? self.#h.current;
           const sc = self.#shared.get(b);
@@ -764,6 +791,7 @@ class CartonImpl implements Carton {
     const current = await s.get<string>(T.meta, CURRENT);
     if (current && byId.has(current)) h.current = current;
     this.#joining = new Set((await s.range(T.meta, { prefix: ["join"] })).map((e) => e.key[1] as string));
+    await this.#loadPeople();
     this.#kf = kfState;
     h.onConfirmed = (cut, change) => this.#confirmed.push({ cut, change });
     h.onNoop = (id, cut, seq) => this.#noops.push({ id, cut, seq });
@@ -787,11 +815,22 @@ class CartonImpl implements Carton {
       if (E.canonical(known) !== E.canonical(e.value)) this.#h.updateCut(e.value.id, { name: e.value.name, kind: e.value.kind, sequencer: e.value.sequencer, ...(e.value.protected !== undefined ? { protected: e.value.protected } : {}), ...(e.value.source ? { source: e.value.source } : {}) });
     }
     const cuts = cut ? [cut] : this.#h.cuts().filter((c) => !c.shallow).map((c) => c.id);
+    let loaded = false;
     for (const id of cuts) {
       const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [id], gt: [id, this.#h.headSeq(id)] })).map((e) => e.value);
-      if (rows.length) this.#h.load(id, rows);
+      if (rows.length) (loaded = true), this.#h.load(id, rows);
     }
+    // another process's rows: its replica id and what it learnt of people may be new too
+    if (loaded) await this.#loadPeople();
     await this.#loadPins(this.#h);
+  }
+  /** People as the store holds them (any process may add to them): the server's, this replica's, this store's rids. */
+  async #loadPeople(): Promise<void> {
+    const s = this.store;
+    await this.#peopleSaved;
+    this.#people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
+    this.#me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
+    this.#ownRids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
   }
   /** A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite. */
   #pinWrite(ref: StateRef): { write: StoreWrite; cond: StoreCondition } {
@@ -1017,7 +1056,10 @@ class CartonImpl implements Carton {
   async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    const versions = this.#h.log(cut, opts);
+    const versions = this.#h.log(cut, opts).map((v) => {
+      const who = this.#who(v.author, v.change);
+      return who === v.author ? v : { ...v, author: who, authoredAs: v.author! };
+    });
     if (!opts.summary || !versions.length) return versions;
     // one state per page, walked forward: each version is described against the state just before it
     const lo = versions[versions.length - 1]!.ref.seq;
@@ -1059,7 +1101,65 @@ class CartonImpl implements Carton {
   async credits(record: PathKey | readonly string[], opts: { cut?: string; detail?: boolean } = {}): Promise<Actor | Credit | null> {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    return opts.detail ? this.#h.creditsDetail(cut, record) : this.#h.credits(cut, record);
+    const c = this.#h.creditsDetail(cut, record);
+    const who = c && this.#who(c.actor, c.actor.kind === "human" && c.actor.id === PERSON ? this.#creditChange(c.change, record) : c.change)!;
+    if (!opts.detail) return who;
+    return c && who !== c.actor ? { ...c, actor: who!, authoredAs: c.actor } : c;
+  }
+  // ---------------------------------------------------------------- people (windows-sync R3)
+  identity(): Person | null {
+    return this.#me;
+  }
+  async setIdentity(who: Person): Promise<void> {
+    const id = typeof who?.id === "string" ? who.id.trim() : "",
+      name = typeof who?.name === "string" ? who.name.trim() : "";
+    if (!id || !name || name.length > 200) throw new Error("Carton.setIdentity: an id and a name (1-200 characters)");
+    const me = { id, name };
+    await this.store.write([{ table: T.meta, key: ["identity"], value: me }]);
+    this.#me = me;
+    for (const sc of this.#shared.values()) sc.identify();
+    this.#emit({ type: "people" });
+  }
+  /** What the server says about people: kept (the store too, so history is told by person offline), then told. */
+  #takePeople(people: readonly PersonRids[]): void {
+    const writes: StoreWrite[] = [];
+    for (const p of people) {
+      if (typeof p?.id !== "string" || typeof p.name !== "string" || !Array.isArray(p.rids)) continue;
+      for (const rid of p.rids) {
+        const had = this.#people.get(rid);
+        if (typeof rid !== "string" || (had?.id === p.id && had.name === p.name)) continue;
+        this.#people.set(rid, { id: p.id, name: p.name });
+        writes.push({ table: T.meta, key: ["person", rid], value: { id: p.id, name: p.name } });
+      }
+    }
+    if (!writes.length) return;
+    // knowledge, not history: a write that fails is learnt again at the next welcome
+    this.#peopleSaved = this.#peopleSaved.then(() => this.store.write(writes)).catch(() => {});
+    this.#emit({ type: "people" });
+  }
+  /**
+   * The change whose author a credit names. A fold credits a record to who last changed it on the cut folded in
+   * (`lastAuthors`), not to the fold: that cut's change then, or null where it isn't held here (a shallow joiner), so a
+   * generic person is never told as whoever folded.
+   */
+  #creditChange(change: ChangeId | null, record: PathKey | readonly string[]): ChangeId | null {
+    const ch = change ? this.#h.findChange(change) : null;
+    const key = typeof record === "string" ? record : E.pathKey(record);
+    if (ch?.kind !== "merge" || !ch.lastAuthors?.[key]) return change;
+    const from = ch.mergeOf,
+      rec = from && this.#h.cut(from.branchId);
+    if (!from || !rec || rec.shallow || from.seq > this.#h.headSeq(from.branchId)) return null;
+    return this.#h.creditsDetail(from.branchId, key, from.seq)?.change ?? null;
+  }
+  /**
+   * The generic person's change told by person: the person behind its replica, as the server said, else this replica's
+   * own person for this store's replicas. Anyone else (an agent, a named human) as recorded.
+   */
+  #who(a: Actor | null, change: ChangeId | null): Actor | null {
+    if (a?.kind !== "human" || a.id !== PERSON || !change) return a;
+    const rid = change.slice(0, Math.max(0, change.indexOf(".")));
+    const p = this.#people.get(rid) ?? (this.#me && (rid === this.#rid || this.#ownRids.has(rid)) ? this.#me : undefined);
+    return p ? { ...a, id: p.id, name: p.name } : a;
   }
   async undoStack(group?: string, opts: { cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
@@ -1578,7 +1678,7 @@ class CartonImpl implements Carton {
       url: sync.url,
       token: sync.token,
       schemaVersion: this.#opts.adapter.schemaVersion,
-      client: { adoptPayload: () => this.#adoptPayload(cut), ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
+      client: { adoptPayload: () => this.#adoptPayload(cut), identity: () => this.#me, onPeople: (p) => this.#takePeople(p), ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
     });
     this.#shared.set(cut, sc);
     // edits an earlier session queued and the server never answered: back in the queue in their queue order. Each row

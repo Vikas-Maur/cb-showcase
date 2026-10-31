@@ -119,6 +119,24 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`; a failed connect's transport code: `unreachable`,
   `unauthorized`, `protocol`, `closed`), by the words only when there is none.
   `carton.media` is null: `@carton/media` calls Carton, not the reverse.
+- **People (windows-sync R3).** Cardboard's GUI saves are the generic person `{kind: "human", id: PERSON}` ("person")
+  on every computer.
+  - `log()` and `credits()` tell such a change as the person behind its replica (the `<rid>` of its id), keeping the
+    actor's `group`. The actor as recorded stays in `authoredAs` (`Version`, `Credit`). Agents, subagents and named
+    humans are never resolved. Hashes and rows don't change: the people live beside them.
+  - `carton.setIdentity({ id, name })` sets this replica's person: `id` is the sync session's account, `name` what
+    teammates see. It is kept in the store (meta `["identity"]`) and sent in every hello, and as `identity` on a live
+    connection to a host that keeps people.
+  - This store's replicas (meta `["rid", …]`, every process that saved here) resolve to it at once, offline too.
+  - A teammate's replicas resolve as the host says (`WelcomeMsg.people`, then `people` messages, kept in meta
+    `["person", rid]`). The host keeps one person per device credential, takes it only under the session's own account
+    (`forbidden` otherwise), and names every replica id that credential used, the edits uploaded by a share included.
+    So each replica writes only its own entry; the name is the person's own choice.
+  - A fold credits a record to its author on the cut folded in: told by that cut's change, and as recorded where that
+    cut isn't held here.
+  - Presence goes out as the resolved person.
+  - A `people` event says authors may read differently.
+  - An app shows its own edits as "You" by passing its resolved person as `me` (`identity()`, with its `group`).
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
   Published cut's welcome carries `source: { branchId, at, head }` (`sync.WelcomeMsg`): the cut it came from, the
