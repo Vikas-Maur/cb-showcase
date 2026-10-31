@@ -236,6 +236,31 @@ test("cb on the shared project with the app open: the agent's edit goes through 
   }
 });
 
+test("offline, cb with the app open from a print one version behind: Alice's file keeps Bob's change and the agent's", t, async () => {
+  const tsx = path.join(alice.root, "Demo.cardboard", "timeline.tsx");
+  await S.until(() => /fontSize=\{77\}/.test(fs.readFileSync(tsx, "utf8")), 10_000, "alice's timeline.tsx at head");
+  const printed = fs.readFileSync(tsx, "utf8");
+  await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Bob again" } : null));
+  await S.until(async () => S.textOf(await S.projectOf(alice, id)).textContent === "Bob again", 20_000, "bob's text at alice");
+  const port = host.port;
+  await host.stop();
+  await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "alice offline");
+  // The holder is offline, so the agent's edit stays pending, merged onto Bob's text in the holder. cb's own handle
+  // holds the confirmed rows only: what cb writes into project.json must be the holder's state, not its document from
+  // the older print (round 2 #2: that would drop Bob's text from Alice's file, with nothing to repair it offline).
+  const edit = path.join(alice.home, "edit4.tsx");
+  fs.writeFileSync(edit, printed.replace(/fontSize=\{\d+\}/, "fontSize={78}"));
+  const r = alice.cb(["source", "apply", "Demo", edit], { CARDBOARD_ACTOR: "codex/c11" });
+  assert.equal(r.code, 0, r.out + r.err);
+  await S.sleep(1500);
+  const disk = S.textOf(S.fileOf(alice)), store = S.textOf(await S.projectOf(alice, id));
+  assert.deepEqual([disk.fontSize, disk.textContent], [78, "Bob again"], "Alice's project.json has both while offline");
+  assert.deepEqual([store.fontSize, store.textContent], [78, "Bob again"], "and so does her app");
+  host = await S.startHost(path.join(S.TMP, "host"), port);
+  await S.until(async () => { const y = S.textOf(await S.projectOf(bob, id)); return y.fontSize === 78 && y.textContent === "Bob again" && y; }, 60_000, "the agent's offline edit at bob, with his text");
+  await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "up-to-date", 20_000, "alice up to date");
+});
+
 test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the pull brings Bob's edit in, the agent's edit reaches Bob, no whole-file PUT", t, async () => {
   await alice.stopWorker();
   await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, fontSize: 55 } : null));

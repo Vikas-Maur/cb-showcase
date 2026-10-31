@@ -2,8 +2,8 @@
 // carton-node.cjs from an in-memory copy of scripts/carton/carton-node.js with exactly those two changes, so the
 // requests are tested as written. Delete this file, and call ../../build.js directly, once they land.
 //   R1: open() merges each extension's openOptions({bundlePath, projectId}) into openLocal's options.
-//   R2: commit() on a shared cut asks the extension's commitShared(lc, {doc, base, author, intent, gui}), and treats
-//       `pending` like a confirmation that merged nothing in.
+//   R2: commit() on a shared cut asks the extension's commitShared(lc, {doc, base, author, intent, gui}), treats
+//       `pending` like a confirmation (`rebased` included), and writes the result's `head` when it has one.
 //   R4: materializeIn writes description, and media through Cardboard's own media scope (ownedMediaIds for records
 //       added or changed, removedMediaIds for records gone: 1.4.0's updateScoped never takes media from ownedFields).
 //   R6: before that write, each extension's materializeDoc(next, {bundlePath, projectId, current}) may fill in what
@@ -28,7 +28,9 @@ function patched() {
   s = once(s, "const r = await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });",
     "const __ext = extensions.find((e) => e.commitShared), __shared = __ext && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind !== \"local\";\n" +
     "  const r = __shared ? await __ext.commitShared(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef }) : await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });");
-  s = once(s, "if (r.status === \"confirmed\" && !r.rebased) {", "if ((r.status === \"confirmed\" && !r.rebased) || r.status === \"pending\") {");
+  // R2 (round 2 #2): pending is like confirmed, `rebased` included; the state to write is the extension's `head` when
+  // it gives one (cb's handle can't read the holder's pending state itself).
+  s = once(s, "  const head = await c.head();\n  if (r.status === \"confirmed\" && !r.rebased) {", "  const head = r.head?.doc ? r.head : await c.head();\n  if ((r.status === \"confirmed\" || r.status === \"pending\") && !r.rebased) {");
   // R4 + R6: head goes into project.json with description, and media by Cardboard's media scope; extensions fill in
   // what only the host knows first.
   s = once(s, `  const next = await headProject(library.projects.bundlePathFor(projectId), current);
@@ -62,18 +64,20 @@ async function __shimOpenOptions(o) {
 /** windows' build, then carton-node.cjs again from the shimmed facade (same esbuild options as build.js). */
 async function build(resources, assets) {
   await require("../../build.js").build(resources, assets);
+  // CARTON_TEST_FREEZE=1: Carton's documents come back deep-frozen (freeze.js), as core will return them.
+  const freeze = process.env.CARTON_TEST_FREEZE === "1" ? `import ${JSON.stringify(path.join(__dirname, "freeze.js"))};\n` : "";
   const src = patched();
-  if (!src) return;
+  if (!src && !freeze) return;
   const esbuild = require(require.resolve("esbuild", { paths: [CARTON] }));
   await esbuild.build({
     bundle: true, platform: "node", format: "cjs", target: "node24", packages: "bundle", logLevel: "error",
     banner: { js: "const __cartonUrl = require(\"node:url\").pathToFileURL(__filename).href;" },
     define: { "import.meta.url": "__cartonUrl" },
     absWorkingDir: CARTON, nodePaths: [path.join(CARTON, "node_modules")],
-    stdin: { contents: `export * from "./carton-node.shim.js";\nimport "./sync/worker.js";\n`, resolveDir: path.dirname(FACADE), sourcefile: "carton-entry.js", loader: "js" },
+    stdin: { contents: `${freeze}export * from "./carton-node.shim.js";\nimport "./sync/worker.js";\n`, resolveDir: path.dirname(FACADE), sourcefile: "carton-entry.js", loader: "js" },
     plugins: [{ name: "shim", setup(b) {
       b.onResolve({ filter: /carton-node(\.shim)?\.js$/ }, () => ({ path: FACADE, namespace: "file" }));
-      b.onLoad({ filter: /scripts[\\/]carton[\\/]carton-node\.js$/ }, () => ({ contents: src, loader: "js", resolveDir: path.dirname(FACADE) }));
+      b.onLoad({ filter: /scripts[\\/]carton[\\/]carton-node\.js$/ }, () => ({ contents: src ?? fs.readFileSync(FACADE, "utf8"), loader: "js", resolveDir: path.dirname(FACADE) }));
     } }],
     outfile: path.join(resources, "carton", "carton-node.cjs"),
   });

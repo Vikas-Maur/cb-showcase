@@ -220,25 +220,31 @@ async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
  * the holder's next settle).
  */
 async function commitShared(lc, { doc, base, author, intent }) {
+  const h = (d) => { try { return hashDoc(d, lc.carton.schema); } catch { return null; } };
+  // `rebased`: the state this edit landed in isn't the document the caller sent (another edit was merged in: a
+  // teammate's, or this computer's own still pending), so the facade writes that state, never the caller's document.
+  const rebasedFrom = (state) => (state && h(state) !== h(doc) ? 1 : 0);
   if (holding.get(lc)?.holds()) {
     let resolved = [];
     const r = await lc.carton.commit({ doc, ...(base ? { base } : {}), author, ...(intent ? { intent } : {}), choices: () => "ours" });
     if ((r.status === "pending" || r.status === "confirmed") && r.resolved?.length) resolved = r.resolved;
-    return resolved.length ? { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status } : r;
+    if (resolved.length) return { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status };
+    // Offline (pending), the holder's head is its optimistic state: what it merged this edit onto included.
+    if (r.status === "pending") return { ...r, rebased: rebasedFrom((await lc.carton.head()).doc) };
+    return r;
   }
-  const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}) }, { actor: author });
+  // Anyone else hands the commit to the holder. A pending answer (the holder offline, or the server slow) carries the
+  // holder's head (contract(local) `head`): this handle reads the confirmed rows only, which hold neither this edit nor
+  // the holder's other pending ones, so the state to write is the holder's (round 2 #2: the caller's document could
+  // land in project.json after the holder's, dropping what it had merged in, with no confirmation to repair it).
+  const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}), head: true }, { actor: author });
   if (w.status === "error") throw new Error(w.error);
   if (w.status === "rejected") return { status: "rejected", reason: w.reason };
-  const head = await lc.carton.head();
-  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: head.ref };
-  // The holder may have merged other edits in (a base older than its head): then this caller's document isn't head, and
-  // the facade must write head (`rebased`), never the document it sent. This handle reads the confirmed rows the holder
-  // wrote, so a confirmed result's head is exact. A pending one (the holder offline) isn't in this handle's head yet: the
-  // document as sent is the closest, and the holder writes its optimistic head into project.json right after (Live).
-  let same = false;
-  try { same = hashDoc(head.doc, lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch {}
-  const rebased = w.status !== "pending" && !same ? 1 : 0;
-  return { status: w.status === "pending" ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased, empty: !!w.empty, notices: [] };
+  const head = w.head?.doc ? w.head : await lc.carton.head();
+  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: head.ref, ...(w.head?.doc ? { head } : {}) };
+  // Confirmed: the holder wrote the confirmed rows before answering, so this handle's head is exact.
+  const pending = w.status === "pending";
+  return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...(w.head?.doc ? { head } : {}) };
 }
 
 /**
