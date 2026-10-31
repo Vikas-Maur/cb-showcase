@@ -121,6 +121,19 @@ export interface CommitInput {
   history?: HistoryFields;
 }
 
+/** A pending change as a store kept it across a restart (`ReplicaQueue.restore`). */
+export interface RestoreInput extends CommitInput {
+  /** Its latest version's rebase count. */
+  k: number;
+  supersedes: readonly string[];
+  /** The cards each rebase raised, by rebase count (only rebases that raised any). */
+  cards: readonly { k: number; cards: ConflictCard[] }[];
+  /** Every base a version of it was pushed on. */
+  sentBases: readonly number[];
+  /** Refused here after a copy was sent: it waits for its withdraw, then is reported rejected with this. */
+  rejecting?: string;
+}
+
 export const last = <T>(a: readonly T[]): T => a[a.length - 1]!;
 const ridOf = (id: string) => id.slice(0, Math.max(0, id.indexOf(".")));
 
@@ -317,6 +330,64 @@ export class ReplicaQueue {
     this.invalidate(b);
     this.emit({ type: "pending", branchId: b, change: p });
     return { id: ch.id, status: "pending" };
+  }
+
+  /**
+   * A pending change back in the queue after a restart, as it was (web-demo REQ-7): its latest version (ops relative
+   * to the confirmed head plus the changes queued before it, as the store keeps them) at its rebase count and with its
+   * supersedes, the cards each rebase raised (reported when it settles: `lateCards` up to the confirmed version, or all
+   * of them if it is absorbed), the bases it was sent on (claimed in hello; an emptied one is withdrawn, not dropped,
+   * since a copy may still be confirmed) and a refusal here that is waiting for its withdraw. Before, it came back as
+   * a fresh change: its cards were lost, and one a rebase had emptied was dropped. False: nothing to restore (already
+   * queued, or empty, never sent and with nothing to report).
+   */
+  restore(b: string, ch: RestoreInput): boolean {
+    const queue = this.queues.get(b)!;
+    if (queue.some((p) => p.id === ch.id)) return false;
+    const reports = ch.cards.some((c) => c.cards.length > 0) || ch.rejecting !== undefined;
+    if (!ch.ops.length && !keepsWhenEmpty(ch.history) && !ch.sentBases.length && !reports) return false;
+    this.rids.add(ridOf(ch.id));
+    const o = this.optimistic(b);
+    const intent = ch.intent ?? null;
+    const decl = declare(this.schema, o.doc, ch.ops, intent);
+    const top: QueueVersion = {
+      k: ch.k,
+      base: { seq: this.headSeq(b), pending: queue.filter((p) => last(p.versions).ops.length).map((p) => p.id) },
+      baseDoc: o.doc,
+      ops: ch.ops,
+      intent,
+      kinds: ch.kinds ?? null,
+      policy: policyFor(ch.policy ?? "merge", decl),
+      hash: hashOps(ch.ops, intent),
+      decl,
+      supersedes: [...ch.supersedes],
+      cards: [],
+    };
+    // the earlier versions are gone; each stands in only for the cards its rebase raised (indexed by rebase count, as
+    // `confirmed` and `finishAbsorb` read them). The latest is the one pushed.
+    const byK = new Map(ch.cards.map((c) => [c.k, c.cards]));
+    const versions: QueueVersion[] = Array.from({ length: ch.k + 1 }, (_, k) => ({ ...top, k, cards: byK.get(k) ?? [] }));
+    this.versions.set(ch.id, versions);
+    const p: QueuedChange = {
+      id: ch.id,
+      author: ch.author,
+      branchId: b,
+      created: ch.at,
+      versions,
+      cards: [],
+      sentConn: null,
+      sentEpoch: -1,
+      sends: 0,
+      sentBases: [...ch.sentBases],
+      withdrawSent: null,
+      meta: ch.meta ?? {},
+      ...(ch.history ? { history: pickHistory(ch.history) } : {}),
+      ...(ch.rejecting !== undefined ? { rejecting: ch.rejecting } : {}),
+    };
+    queue.push(p);
+    this.invalidate(b);
+    this.emit({ type: "pending", branchId: b, change: p });
+    return true;
   }
 
   // ---------------------------------------------------------------- integrating confirmed rows
