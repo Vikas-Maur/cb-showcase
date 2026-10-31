@@ -13,7 +13,7 @@
 // the tail is a handful of set lookups, as in the P5 sequencer (proofs/do-seq/src/seq-core.mjs).
 
 import type { Declaration, Span } from "../types.ts";
-import type { Keying, TailRow } from "./types.ts";
+import type { TailRow } from "./types.ts";
 
 export const NONE = 0;
 /** The only overlaps are identical leaf paths: the lww path may accept it (§6.1 outcome 2). */
@@ -44,14 +44,6 @@ export function isLeafPath(p: string): boolean {
   return first > 0 && p.indexOf("/", first + 1) > first + 1;
 }
 
-/** A field-group path, `coll/id/#name` (but not `#pos`): what the non-v3 keyings leave out. */
-function isFieldGroupPath(p: string): boolean {
-  const a = p.indexOf("/");
-  if (a <= 0) return false;
-  const b = p.indexOf("/", a + 1);
-  return b > a && p.charCodeAt(b + 1) === HASH && p.indexOf("/", b + 1) < 0 && p.slice(b + 1) !== "#pos";
-}
-
 function forEachStrictPrefix(p: string, fn: (prefix: string) => void): void {
   for (let i = p.indexOf("/"); i > 0; i = p.indexOf("/", i + 1)) fn(p.slice(0, i));
 }
@@ -63,7 +55,6 @@ function someStrictPrefix(p: string, set: ReadonlySet<string>): boolean {
 
 /** The incoming change, indexed for the tail scan. */
 export interface ChangeIndex {
-  keying: Keying;
   exact: ReadonlySet<string>;
   /** Strict segment-prefixes of the change's own paths. */
   prefixes: Set<string>;
@@ -81,50 +72,31 @@ export function storedPaths(d: Pick<Declaration, "paths" | "trackOrder">): strin
   return out;
 }
 
-/** Whether a path takes part in the test under a keying (group paths are v3's; reorders are not per-item's). */
-function counts(p: string, keying: Keying): boolean {
-  if (keying === "v3-spans") return true;
-  if (keying === "per-item" && p.startsWith("#trackOrder/")) return false;
-  return !isFieldGroupPath(p);
-}
-
-export function indexChange(d: Pick<Declaration, "paths" | "reads" | "spans" | "trackOrder">, structural: boolean, keying: Keying = "v3-spans", pathSet?: ReadonlySet<string>): ChangeIndex {
+export function indexChange(d: Pick<Declaration, "paths" | "reads" | "spans" | "trackOrder">, structural: boolean, pathSet?: ReadonlySet<string>): ChangeIndex {
   const prefixes = new Set<string>(), readsAtOrAbove = new Set<string>();
-  // the plan's keying counts every path: reuse the caller's set of the change's paths when it has one
-  const reuse = keying === "v3-spans" && pathSet !== undefined && !d.trackOrder.length;
-  const own = reuse ? null : new Set<string>();
-  const exact: ReadonlySet<string> = reuse ? pathSet! : own!;
-  for (const p of reuse ? d.paths : storedPaths(d)) {
-    if (own) {
-      if (!counts(p, keying)) continue;
-      own.add(p);
-    }
-    for (let i = p.indexOf("/"); i > 0; i = p.indexOf("/", i + 1)) prefixes.add(p.slice(0, i));
-  }
+  // reuse the caller's set of the change's paths when it has one (the rule builds it for the declaration check)
+  const reuse = pathSet !== undefined && !d.trackOrder.length;
+  const exact: ReadonlySet<string> = reuse ? pathSet : new Set(storedPaths(d));
+  for (const p of reuse ? d.paths : exact) for (let i = p.indexOf("/"); i > 0; i = p.indexOf("/", i + 1)) prefixes.add(p.slice(0, i));
   for (const r of d.reads) {
     readsAtOrAbove.add(r);
     forEachStrictPrefix(r, (q) => readsAtOrAbove.add(q));
   }
   const spans = new Map<string, number[]>();
-  if (keying !== "per-item") {
-    for (const s of d.spans) {
-      let a = spans.get(s.track);
-      if (!a) spans.set(s.track, (a = []));
-      a.push(s.lo, s.hi ?? Infinity); // null: a remap's open end
-    }
+  for (const s of d.spans) {
+    let a = spans.get(s.track);
+    if (!a) spans.set(s.track, (a = []));
+    a.push(s.lo, s.hi ?? Infinity); // null: a remap's open end
   }
-  return { keying, exact, prefixes, readsAtOrAbove, spans, structural };
+  return { exact, prefixes, readsAtOrAbove, spans, structural };
 }
 
+/** Half-open spans on one track that intersect, when at least one of the two changes is structural (v11). */
 function spansMeet(me: ChangeIndex, spans: readonly Span[], otherStructural: boolean): boolean {
-  if (!me.spans.size) return false;
-  const k = me.keying;
-  if (k === "per-item") return false;
-  if (k === "v3-spans" && !me.structural && !otherStructural) return false;
+  if (!me.spans.size || (!me.structural && !otherStructural)) return false;
   for (const s of spans) {
     const a = me.spans.get(s.track);
     if (!a) continue;
-    if (k === "v2-layout") return true;
     // half-open: [lo, hi) intervals that only touch don't intersect (P5 finding 5)
     const hi = s.hi ?? Infinity;
     for (let i = 0; i < a.length; i += 2) if (a[i]! < hi && s.lo < a[i + 1]!) return true;
@@ -139,7 +111,6 @@ function spansMeet(me: ChangeIndex, spans: readonly Span[], otherStructural: boo
 export function overlapKind(me: ChangeIndex, row: Pick<TailRow, "paths" | "reads" | "spans" | "structural">): OverlapKind {
   let kind: OverlapKind = NONE;
   for (const q of row.paths) {
-    if (me.keying !== "v3-spans" && !counts(q, me.keying)) continue;
     if (me.exact.has(q)) {
       if (!isLeafPath(q)) return STRUCTURE;
       kind = LEAF;

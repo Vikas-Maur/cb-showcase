@@ -10,7 +10,7 @@
 // and where does the appended clip end up?
 // Target (§6.1): v3 spans within 1.5× of per-item paths at p99, while still catching S2.
 
-import type { sequencer as rules } from "@carton/core";
+import type { Keying } from "./rule-variants.ts";
 import * as A from "./sim/adapter.ts";
 import type { Sim } from "./sim/kernel.ts";
 import { doc } from "./sim/world.ts";
@@ -50,7 +50,7 @@ function p9Edit(sim: Sim, headDoc: A.SimDoc, nominal: Map<string, { s: number; e
 export const pct = (sorted: readonly number[], p: number): number => sorted[Math.max(0, Math.ceil(p * sorted.length) - 1)]!;
 
 export interface P9Config {
-  keying: rules.Keying;
+  keying: Keying;
   rtt: number;
   seed: number;
   pipeline?: boolean;
@@ -60,7 +60,7 @@ export interface P9Config {
   durS?: number;
 }
 export interface P9Run {
-  keying: rules.Keying;
+  keying: Keying;
   rtt: number;
   seed: number;
   pipeline: boolean;
@@ -156,7 +156,7 @@ export async function runOnce({ keying, rtt, seed, pipeline = true, jitter = 0, 
  * S2 through the system: replica A records a ripple (delete i1 [0,5], everything from 5 moves −5); replica B appends
  * i4 right after i3 at [15,20] from the same base. Both orders of arrival.
  */
-export async function s2({ keying, first }: { keying: rules.Keying; first: "ripple" | "append" }) {
+export async function s2({ keying, first }: { keying: Keying; first: "ripple" | "append" }) {
   const w = world({ seed: 7, keying });
   const ra = w.replica({ name: "agent", link: w.net.link({ rtt: first === "ripple" ? 100 : 900 }) });
   const rb = w.replica({ name: "bob", link: w.net.link({ rtt: first === "ripple" ? 900 : 100 }) });

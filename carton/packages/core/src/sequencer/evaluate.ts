@@ -18,11 +18,12 @@
 //    track at head is its track at the change's base.
 // 8. existence: no insert of a live id; an item's track must exist.
 
-import { indexChange, LEAF, NONE, overlapKind, hasGroupSegment, STRUCTURE, escapeSegment } from "./overlap.ts";
+import { indexChange, NONE, overlapKind, hasGroupSegment, STRUCTURE, escapeSegment } from "./overlap.ts";
 import type { TimelineConfig } from "../schema.ts";
 import type { Op, Span } from "../types.ts";
 import type { RejectReason } from "../sync/messages.ts";
-import type { Keying, Pushed, RecordState, TailRow } from "./types.ts";
+import type { Pushed, RecordState, TailRow } from "./types.ts";
+import type { OverlapKind } from "./overlap.ts";
 
 /** The read side of a branch, as the rule needs it. */
 export interface SequencerView {
@@ -40,14 +41,24 @@ export interface RulesConfig {
   timeline: TimelineConfig | null;
   /** K: how far behind head a base may be (§6.3). */
   maxBehind?: number;
-  keying?: Keying;
   /**
    * The field group a field belongs to, if any (`"time"` for the time group). A change that sets a grouped field
    * must declare the group path `coll/id/#group`. Defaults to the timeline's time group.
    */
   groupOf?: (coll: string, field: string) => string | undefined;
+  /**
+   * Another overlap test in place of the plan's (§6.1). Only the P9 comparisons and the conformance controls inject one
+   * (`@carton/conformance` rule-variants), so the shipped bundle carries the plan's rule alone.
+   */
+  overlap?: OverlapRule;
   /** Controls for the conformance suite's negative tests only. Never set them in a host. */
   controls?: RuleControls;
+}
+
+/** An overlap test: index the incoming change once, then classify each concurrent row. */
+export interface OverlapRule {
+  index(d: Pick<Pushed, "paths" | "reads" | "spans" | "trackOrder">, structural: boolean): unknown;
+  kind(index: unknown, row: Pick<TailRow, "paths" | "reads" | "spans" | "structural">): OverlapKind;
 }
 
 export interface RuleControls {
@@ -55,8 +66,8 @@ export interface RuleControls {
   spanCheck?: boolean;
   /** false: skip the "lww on structure" guard (R11-01 control). */
   lwwCheck?: boolean;
-  /** true: the pre-v12 classifier, where `#time` counts as a leaf and spans don't block lww (a control). */
-  groupIsLeaf?: boolean;
+  /** true: spans don't stop an lww accept, as before v12 (the R11-01 control, with its overlap rule). */
+  lwwWithSpans?: boolean;
 }
 
 /** A row to append to `records` when the change is confirmed: an insert, a remove, or a timeline item's new track. */
@@ -229,7 +240,6 @@ export function spansCover(view: SequencerView, ch: Pushed, timeline: TimelineCo
 export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig): Verdict {
   const tl = cfg.timeline ?? NO_TIMELINE;
   const K = cfg.maxBehind ?? DEFAULT_MAX_BEHIND;
-  const keying = cfg.keying ?? "v3-spans";
   const controls = cfg.controls ?? {};
   const bad = shapeError(ch);
   if (bad) return { kind: "reject", reason: "bad change", detail: bad };
@@ -261,12 +271,11 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   const overwrote: TailRow[] = [];
   let any = false, blocking = false;
   if (tail.length) {
-    const me = indexChange(ch, structural, keying, declared);
+    const rule = cfg.overlap;
+    const me = rule ? rule.index(ch, structural) : indexChange(ch, structural, declared);
     for (const row of tail) {
       if (row.withdrawn || past.has(row.id)) continue;
-      let k = overlapKind(me, row);
-      // the pre-v12 control: a `#time` clash counted as a leaf (and spans were ignored for lww)
-      if (k === STRUCTURE && controls.groupIsLeaf && ch.policy === "lww" && onlyGroupClash(me, row)) k = LEAF;
+      const k = rule ? rule.kind(me, row) : overlapKind(me as ReturnType<typeof indexChange>, row);
       if (k === NONE) continue;
       any = true;
       if (k === STRUCTURE) blocking = true;
@@ -275,7 +284,7 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   }
   let lww = false;
   if (any) {
-    if (ch.policy === "lww" && !blocking && (controls.groupIsLeaf || ch.spans.length === 0)) lww = true;
+    if (ch.policy === "lww" && !blocking && (controls.lwwWithSpans || ch.spans.length === 0)) lww = true;
     else return { kind: "reject", reason: "overlap" };
   }
 
@@ -316,11 +325,3 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
 }
 
 const unescape = (s: string): string => (s.includes("~") ? s.replaceAll("~1", "/").replaceAll("~0", "~") : s);
-
-// The groupIsLeaf control: true when every structural clash with this row comes from identical group paths.
-function onlyGroupClash(me: ReturnType<typeof indexChange>, row: TailRow): boolean {
-  const stripped = { ...row, paths: row.paths.filter((p) => !(me.exact.has(p) && hasGroupSegment(p))), spans: [] as Span[] };
-  const meNoSpans = { ...me, spans: new Map<string, number[]>() };
-  const k = overlapKind(meNoSpans, stripped);
-  return k !== STRUCTURE;
-}

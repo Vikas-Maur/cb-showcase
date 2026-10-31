@@ -81,7 +81,8 @@ export interface SequencerStats {
 
 /** Controls for the conformance suite's negative tests and the P9 comparisons only. Never set them in a host. */
 export interface SequencerControls extends rules.RuleControls {
-  keying?: rules.Keying;
+  /** Another overlap test (the P9 comparison keyings, the pre-v12 classifier): `@carton/conformance` rule-variants. */
+  overlap?: rules.OverlapRule;
   /** "connection": bind rids to one connection, not the device credential (the R10-02 control). false: no binding. */
   bindRid?: "credential" | "connection" | false;
   /** "latest-only": v10's one row per record (the per-branch existence control). */
@@ -175,7 +176,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   const cfg: rules.RulesConfig = {
     timeline,
     maxBehind: K,
-    keying: controls.keying ?? "v3-spans",
+    ...(controls.overlap ? { overlap: controls.overlap } : {}),
     groupOf: opts.groupOf ?? rules.timeGroupOf(timeline),
     controls,
   };
