@@ -85,11 +85,12 @@ test("the message routes reach exactly the two envelope key patterns of the sequ
   const sha = "a".repeat(64);
   const call = (method: string, key: string, token = editor, body?: Uint8Array) =>
     handleHttp(req(`/api/projects/p/messages/${key}`, { method, headers: { authorization: `Bearer ${token}` }, ...(body ? { body: body as Uint8Array<ArrayBuffer> } : {}) }), d);
-  const up = `messages/c/481234/${sha}-0123abcd`;
+  const hour = Math.floor(Date.now() / 3600_000);
+  const up = `messages/c/${hour}/${sha}-0123abcd`;
   assert.equal((await call("PUT", up, editor, new TextEncoder().encode("{}")))?.status, 200);
   assert.ok(await seq.head(up), "the upload lands under the client envelope key");
   assert.equal((await call("PUT", up, viewer, new TextEncoder().encode("{}")))?.status, 403, "a viewer uploaded");
-  for (const bad of [`messages/s/481234/${sha}`, "keyframes/main/0", `segments/main/10000.json.gz`, `messages/c/1/${sha}`, "messages/c/../x"])
+  for (const bad of [`messages/s/${hour}/${sha}`, "keyframes/main/0", `segments/main/10000.json.gz`, `messages/c/1/${sha}`, "messages/c/../x", `messages/c/999999999999/${sha}-0123abcd`, `messages/c/${hour - 30}/${sha}-0123abcd`])
     assert.notEqual((await call("PUT", bad, editor, new Uint8Array([1])))?.status, 200, `PUT ${bad}`);
   await seq.put(`messages/s/481234/${sha}`, new TextEncoder().encode('{"type":"changes"}'));
   await seq.put("keyframes/main/0", new TextEncoder().encode("secret state"));

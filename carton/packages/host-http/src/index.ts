@@ -168,6 +168,8 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
 // A client's envelope upload and the server's envelopes it reads: exactly the keys core's envelope code makes.
 const CLIENT_ENVELOPE = /^messages\/c\/\d{1,12}\/([0-9a-f]{64})-[0-9a-f]{8,64}$/;
 const SERVER_ENVELOPE = /^messages\/s\/\d{1,12}\/[0-9a-f]{64}$/;
+// A client envelope's key hour may differ from the server's clock by this many hours (clock skew).
+const ENVELOPE_HOUR_SKEW = 2;
 // The sequencer reads at most 64 MiB from one client envelope by default (createSequencer's maxEnvelopeBytes).
 const MAX_ENVELOPE = 64 << 20;
 
@@ -177,6 +179,9 @@ async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: 
   if (req.method === "PUT") {
     const m = CLIENT_ENVELOPE.exec(key);
     if (!m) return err(404, "not a client envelope key");
+    // the key's hour decides when the sweep removes it: one far from now would never expire (or expire at once)
+    const hour = Number(key.split("/")[2]), now = Math.floor(Date.now() / 3600_000);
+    if (Math.abs(hour - now) > ENVELOPE_HOUR_SKEW) return err(400, "envelope key hour too far from the server's clock");
     // only writers send messages big enough to need one (pushes, adoptions, keyframes)
     if (!canPush(ctx)) return err(403, "read-only role");
     let data: Uint8Array;
