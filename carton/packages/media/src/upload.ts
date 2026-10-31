@@ -188,6 +188,30 @@ async function withRetries<T>(o: UploadOptions, what: () => Promise<T>, stop?: (
 // completion, below.
 const inFlight = new WeakMap<BlobStore, Map<string, Promise<unknown>>>();
 
+/**
+ * One upload, again if the saved upload it resumed went away (CI #27): another process resuming the same saved upload
+ * (the app and a `cb` call, one state store) completed it, or it expired. Wait a little for the object (some gateways
+ * drop the upload id before the completed object shows), then go again: the next run dedups on the object if it is
+ * there with its size, else starts a fresh upload. Bounded: a fresh upload can only be lost the same way again if
+ * someone else completes it, which the run after finds.
+ */
+async function uploadSettled(o: UploadOptions): Promise<UploadResult> {
+  const key = mediaKey(o.manifest.hash);
+  const base = o.retryDelayMs ?? 250;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await uploadOnce(o);
+    } catch (e) {
+      if (!uploadGone(e) || attempt >= 2) throw e;
+      for (const wait of [base, 2 * base, 4 * base]) {
+        await sleep(wait, o.signal);
+        const h = await o.store.head(key).catch(() => null);
+        if (h && h.size === o.manifest.size) break;
+      }
+    }
+  }
+}
+
 /** Makes sure m/<hash> and mf/<hash> are in the store, sending only what is missing. */
 export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   let byKey = inFlight.get(o.store);
@@ -198,7 +222,7 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   const turn = (byKey.get(key) ?? Promise.resolve()).catch(() => {});
   const mine = (async () => {
     await untilAborted(turn, o.signal);
-    return uploadOnce(o);
+    return uploadSettled(o);
   })();
   // What the next caller waits for: our upload, or (if we left the line) the caller before us. The entry goes when that
   // settles, not when we return: an aborted waiter returns at once while the upload before it is still running.
@@ -298,7 +322,11 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
         .map((p) => ({ partNumber: p.partNumber, etag: p.etag, size: p.size }));
     } catch (e) {
       if (isAbort(e)) throw e;
-      if (uploadGone(e)) state = null;
+      if (uploadGone(e)) {
+        // Completed by another process resuming it too, or expired: uploadSettled looks for the object, then goes again.
+        await states.delete(key);
+        throw e;
+      }
       // Otherwise the store can't list parts: trust the parts recorded as they landed.
     }
   }
