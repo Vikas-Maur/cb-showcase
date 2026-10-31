@@ -5,7 +5,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { merge3, diff, hashDoc, declare } from "@carton/core";
 import type { Doc, Rec } from "@carton/core";
-import { cardboardSchema as S, fromHost, toHost, projectGuiSave, materializeProject, itemOf, hard, standInProjection, createCardboardAdapter } from "../src/index.ts";
+import { cardboardSchema as S, fromHost, toHost, projectGuiSave, materializeProject, itemOf, hard, standInProjection, createCardboardAdapter, CARDBOARD_SCHEMA_VERSION } from "../src/index.ts";
 
 const clip = (id: string, s: number, e: number, extra: Rec = {}): Rec => ({ id, trackId: "V1", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: e - s, ...extra });
 const doc = (items: Rec[], extra: Rec = {}): Doc => fromHost({ name: "P", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0, locked: false, visible: true, muted: false }], timelineItems: items, ...extra }, null);
@@ -201,8 +201,11 @@ test("S5-G3: a GUI save whose media entry lacks Carton's fields (Cardboard never
   assert.deepEqual(file.media[0], { id: "m", createdAt: "t", thumbnail: "blob:x", contentHash: "src-hash", shared: { size: 10, proxy: proxyRef }, data: { type: "video", fileName: "renamed.mp4", src: "/Users/alice/a.mp4" } });
 });
 
-test("S5-G3: the schema version moved with the versioned slice", () => {
-  assert.equal(createCardboardAdapter().schemaVersion, 2);
+test("the schema version and the hosts' defaults (H-SV): a bump ships with the hosts accepting it", () => {
+  // Bumping it? Hosts refuse a newer client's hello, so raise in the same change: server-node's `schemaVersion` default
+  // (startNodeHost) and server-cloudflare's SCHEMA_VERSION (wrangler.toml, room.ts), then update the 2 here.
+  assert.equal(CARDBOARD_SCHEMA_VERSION, 2, "CARDBOARD_SCHEMA_VERSION changed: raise the hosts' accepted schemaVersion defaults with it (H-SV)");
+  assert.equal(createCardboardAdapter().schemaVersion, CARDBOARD_SCHEMA_VERSION, "what the adapter sends in hello");
 });
 
 test("S5-G2: data.content that 1.4.0's store strips (media types without it) is kept from the base, not unset", () => {

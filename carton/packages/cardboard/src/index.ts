@@ -10,7 +10,16 @@ import { cardboardSchema, diagnose } from "./schema.ts";
 import { fromHost, toHost, projectGuiSave, projectDoc, materializeProject, type CardboardProject, type ItemProjection } from "./host.ts";
 import { identityProjection } from "./projection.ts";
 
-/** Bumped when the versioned slice changes; sent in hello. 2: media entries version the shared media record (`shared`). */
+/**
+ * Bumped when the versioned slice changes; every Cardboard client sends it in `hello`, and a host's sequencer refuses a
+ * client newer than the version it accepts (silently, as far as the person can tell: H-SV). So a bump ships together
+ * with the hosts' defaults: server-node's `startNodeHost({ schemaVersion })` default and server-cloudflare's
+ * `SCHEMA_VERSION` (wrangler.toml and room.ts). Deployments can read this constant to configure theirs. The tests
+ * "the schema version and the hosts' defaults" (cardboard) and "hosts accept the Cardboard schema version"
+ * (conformance) fail on a bump until both are raised.
+ *   1: the first versioned slice.
+ *   2: media entries version the shared media record (`shared`, S5-G3).
+ */
 export const CARDBOARD_SCHEMA_VERSION = 2;
 
 export interface CardboardAdapterOptions {
