@@ -23,7 +23,7 @@ the scratch dir at run time and appends one export line to the copy (as the prot
 ## bench.ts: the P4 cells
 
 ```sh
-node --expose-gc carton/bench/core/bench.ts [sizes...]     # default 100 1000 10000
+node --expose-gc carton/bench/core/bench.ts [sizes...]     # default 100 1000 10000; holds the CPU lock for the whole run (GFV_LOCK)
 ```
 
 Each cell is timed by `measure()` (the prototype's loop): 3 warm-up calls, a probe call that sets `reps` so a run lasts

@@ -27,12 +27,3 @@ export interface RecordState {
   /** For a timeline item, its lane (track) as of that row. */
   lane?: string;
 }
-
-/**
- * Which rule decides an overlap. Only `"v3-spans"` is the plan's rule (§6.1); the others exist so the P9 load test
- * can compare against them, as the prototype did:
- * - `"v3-spans-v10"`: any two intersecting spans conflict, and there are no group paths;
- * - `"v2-layout"`: any two span-bearing changes on one track conflict (v2's per-track key);
- * - `"per-item"`: leaf paths and reads only, no spans, no group paths, no track order (the critic's baseline).
- */
-export type Keying = "v3-spans" | "v3-spans-v10" | "v2-layout" | "per-item";
