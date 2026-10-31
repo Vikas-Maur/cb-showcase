@@ -114,6 +114,11 @@ export interface MaterializerHost {
   toProject(doc: Doc, current: Project | null): Project;
   /** Three-way merge of docs; used to gather agents' saves into the freeze view (R8-01). */
   merge3(base: Doc, ours: Doc, theirs: Doc): Doc;
+  /**
+   * The changes from one doc to another, each as a comparable string (the same edit made from either side gives the
+   * same string). Finds a save that took in part of what the freeze hides; without it, such a save is merged as any.
+   */
+  changes?(from: Doc, to: Doc): string[];
   /** Hard and soft findings for the status sidecar, as 1.4.0's `// diagnostics:` lists them. */
   diagnose(saved: Doc, head: Doc): string[];
 }
@@ -526,6 +531,14 @@ export class Materializer {
     this.freeze.baseSeq = h.baseSeq;
     this.freeze.causal = [...h.causal];
     this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
+  }
+  /** What the freeze hides now: the changes from the freeze view to its cut's head (null: unknown, or the cut moved). */
+  private async hiddenChanges(): Promise<Set<string> | null> {
+    const on = this.engine.cut?.() ?? null;
+    if (!this.host.changes || on !== this.freeze.cut) return null;
+    const head = await this.engine.head();
+    const view = this.freeze.view;
+    return view && (this.engine.cut?.() ?? null) === on ? new Set(this.host.changes(view, head)) : null;
   }
   /** Whether `h` was pinned on the current cut (or the engine has no cuts). */
   private onCurrentCut(h: HeldBase): boolean {
@@ -1320,6 +1333,8 @@ export class Materializer {
       slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
       await this.engine.putMeta(attemptKey, slot);
     }
+    // what the freeze hides just before this save lands (its own change isn't in head yet)
+    const hidden = !slot.result && this.freeze.active && this.freeze.view && rel !== PROJECT_FILE ? await this.hiddenChanges() : null;
     const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
     if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res });
     const settle = async () => {
@@ -1356,8 +1371,15 @@ export class Materializer {
       const cut = this.freeze.cut;
       await this.freezeOnCurrentCut();
       if (cut === this.freeze.cut) {
-        this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
-        if (res.id && !this.freeze.causal.includes(res.id)) this.freeze.causal.push(res.id);
+        if (hidden?.size && this.host.changes!(baseDoc, saved).some((c) => hidden.has(c))) {
+          // the save made an edit the freeze hides (an agent saving the ripple a remote made, alone or with edits of
+          // its own): merged in, the view would hold it without its change's id, and core would map later saves
+          // through it again. The freeze restarts from head, with head's causal past (round 13; review 9 #1 in general)
+          this.restartFreeze(await this.currentHead());
+        } else {
+          this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
+          if (res.id && !this.freeze.causal.includes(res.id)) this.freeze.causal.push(res.id);
+        }
       }
     }
     if (rel === TIMELINE_FILE || (name && this.freeze.active)) {
