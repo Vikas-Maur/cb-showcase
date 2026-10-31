@@ -170,8 +170,10 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
     }
     if (t) {
       const sourceId = readMeta<string>(src, DB_ID);
-      // `other` has no mark, so a copy of this very file at the target is a move that never got confirmed.
-      const interrupted = t.copyOf !== undefined && same(t.copyOf.path, other) && sourceId !== undefined && t.copyOf.dbId === sourceId;
+      // `other` has no mark, so a copy of this very file at the target is a move that never got confirmed. Such a
+      // copy never moved on itself: one that did (it has its own movedTo) became the history, and a file at `other`
+      // with the same id is an older state of it (a backup put back), never a reason to delete it.
+      const interrupted = t.movedTo === undefined && t.copyOf !== undefined && same(t.copyOf.path, other) && sourceId !== undefined && t.copyOf.dbId === sourceId;
       // `target` is an old copy whose history moved here, to `other`: only if `other` is the very copy its mark
       // vouches for. Anything else now at `other` (an unrelated history put there) leaves `target` the history.
       const stale = t.movedTo !== undefined && same(t.movedTo.path, other) && isCopyOf({ copyOf: readMeta<Mark>(src, COPY_OF) }, target, t.movedTo.token);
