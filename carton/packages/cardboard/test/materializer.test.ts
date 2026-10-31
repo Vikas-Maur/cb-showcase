@@ -1154,3 +1154,24 @@ test("review 8 #2: a shared-file save that failed right after its commit is fini
   assert.equal(await s.engine.getMeta(["attempt", TIMELINE_FILE]), undefined, "finished: its attempt settled");
   assert.ok(!s.mz.log.applied.some((x) => x.status === "unchanged"), "not taken for a no-op");
 });
+
+test("review 9 #2: a cut switched while a failed rewrite waits for its retry is still told as a cut switch", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20)]);
+  // project.json's rewrite fails once (a locked database)
+  let fail = 1;
+  const realPin = s.engine.pin.bind(s.engine);
+  s.engine.pin = async (o) => {
+    if (fail && o.owner === "project-file") {
+      fail--;
+      throw new Error("database is locked");
+    }
+    return realPin(o);
+  };
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "moved"));
+  assert.equal(await s.mz.onExternalHeadChange(), "head");
+  await s.tick(30); // the scheduled project.json rewrite fails; its retry waits
+  assert.equal(fail, 0);
+  // another process switches the current cut meanwhile
+  s.engine.headRef = async () => JSON.stringify(["cut-b", "b7e1c2d3-0000-4000-8000-00000000000b", 0, []]);
+  assert.equal(await s.mz.onExternalHeadChange(), "cut", "the cut it was on is remembered");
+});

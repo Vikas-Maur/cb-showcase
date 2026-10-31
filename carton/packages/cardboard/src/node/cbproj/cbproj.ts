@@ -284,7 +284,8 @@ export async function bringInTheirChanges(
   // checked before anything is imported (afterwards a same-id cut's lineage may read as ours)
   const clash = await sameCutConflict(target, contents.shallow);
   if (clash?.behind) return { status: "behind", cut: clash.cut, reason: `This file has newer versions of "${clash.cut}" than this computer has yet. Sync, then bring it in again.` };
-  // a diverged copy (S3-4) is core's to bring in, as a cut of its own; only if core refuses or fails is the reason ours
+  // a diverged copy (S3-4) is core's to bring in, as a cut of its own; only if core refuses or fails is the reason ours.
+  // Its answers otherwise stand, "up-to-date" too (the same file brought in a second time)
   const diverged = (detail: string): BringInResult => ({
     status: "diverged-copy",
     cut: clash!.cut,
@@ -301,8 +302,6 @@ export async function bringInTheirChanges(
     if (imp.status === "forked") return { status: "forked", ...(imp.cut ? { cut: imp.cut } : {}), ...h };
     const { choices, check, missingBase } = opts;
     const fold = await target.fold(imp.head ?? contents.shallow.head, { ...(choices ? { choices } : {}), ...(check !== undefined ? { check } : {}), ...(missingBase ? { missingBase } : {}) });
-    // a file naming states this replica doesn't have can't be "up to date": core took their states for ours
-    if (clash && fold.status === "up-to-date") return diverged("their changes were taken for this project's own");
     return { status: "folded", fold, ...h };
   } catch (e) {
     if (clash) return diverged(e instanceof Error ? e.message : String(e));

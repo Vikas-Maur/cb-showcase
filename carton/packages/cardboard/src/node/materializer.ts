@@ -285,6 +285,8 @@ export class Materializer {
   private readonly quietTimers = new Map<string, unknown>();
   /** The head (`headRef`) the files were last brought up to, or were scheduled to be (B11). */
   private knownHead: string | null = null;
+  /** Whether the files show `knownHead` (false while a failed rewrite waits for its retry). */
+  private headShown = true;
   private readonly writeRetryTimers = new Map<"shared" | "project", unknown>();
   /** Paths whose save is being applied right now (its finishing steps read the path again: R7-01). */
   private readonly applying = new Set<string>();
@@ -344,6 +346,7 @@ export class Materializer {
   start(): Promise<void> {
     return this.run(async () => {
       this.knownHead = await this.headKey(); // before the writes, which show this head or a newer one
+      this.headShown = true;
       await this.recoverDisplaced();
       await this.reviewDisplaced();
       await this.importUnseenViews();
@@ -465,6 +468,7 @@ export class Materializer {
   onCutSwitch(_cut?: string): Promise<void> {
     return this.run(async () => {
       this.knownHead = await this.headKey();
+      this.headShown = true;
       await this.cutSwitchNow();
     });
   }
@@ -485,9 +489,10 @@ export class Materializer {
   onExternalHeadChange(): Promise<"unchanged" | "head" | "cut"> {
     return this.run(async () => {
       const key = await this.headKey();
-      if (key !== null && key === this.knownHead) return "unchanged";
+      if (key !== null && key === this.knownHead && this.headShown) return "unchanged";
       const was = this.knownHead;
       this.knownHead = key; // read before the rewrite, which shows this head or a newer one
+      this.headShown = true;
       if (key !== null && was !== null && cutOfKey(key) !== cutOfKey(was)) {
         await this.cutSwitchNow();
         return "cut";
@@ -565,7 +570,7 @@ export class Materializer {
    * growing delay. Meanwhile the head it was for counts as not shown yet, so `onExternalHeadChange` acts on it again.
    */
   private retryWrite(which: "shared" | "project", attempt = 0): void {
-    this.knownHead = null;
+    this.headShown = false; // the cut it was on is kept: a cut switched meanwhile is still told apart
     if (this.closed || this.writeRetryTimers.has(which) || attempt >= 12) return;
     this.writeRetryTimers.set(
       which,
@@ -1248,17 +1253,16 @@ export class Materializer {
     // finished below from its recorded result, even though its content now equals head
     const earlier = await this.engine.getMeta<Attempt>(["attempt", rel]);
     const resumed = !!earlier && earlier.gen === sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
-    if (!name && !resumed && (sameDoc(saved, baseDoc) || sameDoc(saved, await this.engine.head()))) {
+    const asBase = !name && !resumed && sameDoc(saved, baseDoc);
+    const asHead = !name && !resumed && !asBase && sameDoc(saved, await this.engine.head());
+    if (asBase || asHead) {
       // nothing to version: the file shows the state its header names, or head itself (another materializer's install
       // of carton.db's state, a takeover helper's while it held the lease, B11/B3; or a save that changed nothing). No
       // commit, and no regeneration, which would answer one materializer's install with another's, back and forth.
-      // project.json's own fields are still kept (its overlay); a frozen shared file's view takes the save's content
-      // (an agent saving what head already has, hidden from the freeze view: its next print must show it)
-      if (rel === TIMELINE_FILE && this.freeze.active && this.freeze.view) {
-        const cut = this.freeze.cut;
-        await this.freezeOnCurrentCut();
-        if (cut === this.freeze.cut) this.freeze.view = this.host.merge3(baseDoc, this.freeze.view, saved);
-      }
+      // project.json's own fields are still kept (its overlay). An agent saving head's content into a frozen shared
+      // file has taken in what the freeze hid: the freeze view restarts from head, with head's whole causal past (a
+      // merge into the old view without those changes' ids would map later saves through them again)
+      if (rel === TIMELINE_FILE && asHead && this.freeze.active) await this.freezeOnCurrentCut(true);
       if (rel === PROJECT_FILE) {
         await this.storeOverlay(text, stamp);
         this.scheduleProjectWrite("overlay"); // its fields reach the file (nothing to write if the file has them)

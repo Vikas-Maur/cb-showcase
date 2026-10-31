@@ -357,7 +357,8 @@ for (const bothEdited of [false, true])
     await edit(bob, BOB, (its) => void (find(its, "c1").name = "Bob's edit"));
     if (bothEdited) await edit(alice, ALICE, (its) => void (find(its, "c2").name = "Alice's edit"));
     const mine = alice.cut;
-    const r = await bringInTheirChanges(alice, { shallow: await bob.exportShallow({ to: "alice" }) });
+    const file = await bob.exportShallow({ to: "alice" });
+    const r = await bringInTheirChanges(alice, { shallow: file });
     assert.equal(r.status, "folded", JSON.stringify(r));
     assert.equal(r.status === "folded" ? r.fold.status : "", "confirmed");
     const items = toHost((await alice.head()).doc).timelineItems as Item[];
@@ -367,11 +368,14 @@ for (const bothEdited of [false, true])
     const theirs = (await alice.cuts()).filter((c) => c.id !== mine && c.id.startsWith(mine));
     assert.equal(theirs.length, 1, "their same-id cut came in as a cut of its own");
     assert.ok(theirs[0]!.tracking || theirs[0]!.shallow, "read-only: theirs");
+    // review 9 #3: the same file brought in again is up to date, not a failed copy
+    const again = await bringInTheirChanges(alice, { shallow: file });
+    assert.deepEqual([again.status, again.status === "folded" ? again.fold.status : null], ["folded", "up-to-date"], JSON.stringify(again));
   });
 
 // The fallback is only a fallback: with a file that clashes with one of this replica's own cuts, it answers only when
-// core refuses (a status it doesn't know), throws, or calls a clashing file up to date; a core that brings the copy in
-// (as a cut of its own) is left to do so. Without a clash, core's errors are core's.
+// core refuses (a status it doesn't know) or throws; a core that brings the copy in (as a cut of its own) is left to do
+// so, and its "up-to-date" stands (the same file a second time). Without a clash, core's errors are core's.
 test(".cbproj S3-4: the diverged-copy answer is only a fallback for when core refuses or fails", async () => {
   const pkg = { format: "carton-shallow/1", projectId: "p", sender: "s", head: "c1@3", headHash: "theirs", branches: {}, states: {}, lastAuthor: {}, nodes: [{ id: "c1@3", branchId: "c1", seq: 3, hash: "theirs", kinds: ["head"], parents: [] }] } as unknown as ShallowExport;
   const target = (fold: () => Promise<{ status: string }>, clash = true) => ({
@@ -387,7 +391,7 @@ test(".cbproj S3-4: the diverged-copy answer is only a fallback for when core re
   const threw = await bringInTheirChanges(target(async () => Promise.reject(new TypeError("Cannot read properties of undefined (reading 'mergeOf')"))), { shallow: pkg });
   assert.equal(threw.status, "diverged-copy");
   assert.match(threw.status === "diverged-copy" ? threw.reason : "", /copy of this project.*mergeOf/);
-  assert.equal((await bringInTheirChanges(target(async () => ({ status: "up-to-date" })), { shallow: pkg })).status, "diverged-copy", "a clashing file is never up to date");
+  assert.deepEqual(await bringInTheirChanges(target(async () => ({ status: "up-to-date" })), { shallow: pkg }), { status: "folded", fold: { status: "up-to-date" } }, "core's up-to-date stands");
   await assert.rejects(bringInTheirChanges(target(async () => Promise.reject(new Error("database is locked")), false), { shallow: pkg }), /database is locked/, "no clash: core's error is core's");
 });
 
