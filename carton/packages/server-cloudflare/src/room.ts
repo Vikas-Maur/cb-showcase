@@ -25,9 +25,12 @@ import { doBlobStore } from "./blob-do.ts";
 
 export const AUTH_HEADER = "x-carton-auth";
 export const PROJECT_HEADER = "x-carton-project";
-// The platform's own cap on a WebSocket message (32 MiB, measured in workerd), so the room refuses nothing workerd
-// would deliver; separate from the sequencer's 1 MB threshold for keeping a change body inline.
-const MAX_MESSAGE = 32 << 20;
+// The largest message the room takes in, inline or as an envelope (the sequencer's maxEnvelopeBytes; the Worker's
+// upload route uses the same). A message of N bytes holds about 3N while it is handled (its bytes, their text, then
+// the parsed message; again when it is stored and fanned out), and a Durable Object has 128 MB, so the default is
+// 24 MiB [E] (MAX_ENVELOPE_BYTES; measurement listed in the hosts-plugins notes). Bigger messages travel on Node.
+export const DEFAULT_MAX_ENVELOPE = 24 << 20;
+export const maxEnvelopeOf = (env: Env) => Number(env.MAX_ENVELOPE_BYTES ?? DEFAULT_MAX_ENVELOPE);
 const ALARM_RETRY_MS = 60_000;
 
 interface Attachment {
@@ -87,6 +90,7 @@ export class ProjectRoom {
       auth: trusted,
       projectId,
       schemaVersion: Number(this.#env.SCHEMA_VERSION ?? 1),
+      maxEnvelopeBytes: maxEnvelopeOf(this.#env),
       ...(blobs ? { blobs } : {}),
       onEvent: (e) => {
         if (e.type === "accept" && !this.#alarmArmed) void this.#armAlarm();
@@ -132,6 +136,14 @@ export class ProjectRoom {
       this.#adopt(server, att);
       return new Response(null, { status: 101, webSocket: client, headers: { "sec-websocket-protocol": WS_PROTOCOL } } as ResponseInit);
     }
+    // the Worker took an envelope upload for this project: make sure the sweep (the alarm) will run, even if no
+    // socket ever sends the message it was for
+    if (url.pathname.endsWith("/sweep") && req.method === "POST") {
+      this.#sequencer(projectId);
+      if (!this.#alarmArmed) await this.#armAlarm();
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname.endsWith("/alarm") && req.method === "GET") return Response.json({ alarm: await this.#ctx.storage.getAlarm() });
     if (url.pathname.endsWith("/stats") && req.method === "GET") {
       const seq = this.#sequencer(projectId);
       const st = seq.stats;
@@ -150,7 +162,7 @@ export class ProjectRoom {
     if (!conn) return ws.close(1011, "unknown socket");
     if (conn.auth.expires < Date.now()) return ws.close(4001, "token expired");
     const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-    if (text.length > MAX_MESSAGE) return ws.close(1009, "message too large");
+    if (text.length > maxEnvelopeOf(this.#env)) return ws.close(1009, "message too large");
     let msg: sync.ClientMessage;
     try {
       msg = JSON.parse(text);
@@ -212,7 +224,11 @@ export class ProjectRoom {
     try {
       // archives old rows to gzip segments and sweeps expired envelope blobs
       await seq.maintain(o);
-      this.#alarmArmed = false; // re-armed by the next push or hello
+      this.#alarmArmed = false; // re-armed by the next push, hello or envelope upload...
+      // ...or now, while envelope blobs remain: they expire hours after they were made, and nothing else may wake
+      // the room to sweep them
+      const left = await sequencerBlobs(this.#env, this.#projectId!)!.list("messages/", { limit: 1 });
+      if (left.blobs.length) await this.#armAlarm();
     } catch {
       await this.#ctx.storage.setAlarm(Date.now() + ALARM_RETRY_MS);
     }

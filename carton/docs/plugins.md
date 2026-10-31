@@ -130,13 +130,18 @@ every host runs the same function. The host:
      `hello`;
    - pass `blobs` to `createSequencer`. Any message over 1 MiB, either way, then travels as an envelope through the
      blob store, so no message gets near a WebSocket's limit, whatever the project's size. The host carries
-     envelopes like any other message; `@carton/host-http` gives clients the two routes they need (below). A host
-     may still cap a single WebSocket message, and both shipped hosts accept up to 32 MiB, Cloudflare's own cap;
+     envelopes like any other message; `@carton/host-http` gives clients the two routes they need (below). Cap one
+     message by what your host can hold, since a message of N bytes holds about 3N while it is handled. server-node
+     takes 64 MiB, the sequencer's default. A Durable Object, with 128 MB, takes 24 MiB (`MAX_ENVELOPE_BYTES`) on
+     its socket, on its envelope reads and on the Worker's upload route alike;
    - answer a `ping` text frame with `pong`;
    - close a socket whose token expired with 4001, so the client refreshes and reconnects with the same credential
      and its replica ids. Check before every outgoing message, so a silent subscriber stops getting rows too;
    - call `sequencer.maintain()` on a timer or alarm, never on a push. It archives old rows to gzip segments (§18's
-     defaults: rows older than the newest 10,000, in segments of 10,000) and sweeps expired envelope blobs;
+     defaults: rows older than the newest 10,000, in segments of 10,000) and sweeps expired envelope blobs. Envelope
+     blobs expire hours after they were made, so keep sweeping after activity stops, and also when an upload came
+     with no socket. The Durable Object re-arms its alarm while envelopes remain, and an upload arms it. server-node
+     sweeps every project from a host-level timer;
    - never close a project's storage, or let a second sequencer open it, while a `handle` or `archive` is still
      waiting on the blob store.
 5. **Serves the HTTP API** by mounting `handleHttp(request, deps)` from `@carton/host-http` (web-standard
