@@ -21,6 +21,7 @@ import { cardboardAdapter, materializeProject } from "@carton/cardboard";
 import { CartonHolderEngine, localGroup, nodeHasher, openLocal } from "@carton/local";
 import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 import { webSocketTransport } from "@carton/server-node";
+import { hostMessageBlobs } from "@carton/host-http/client";
 import * as host from "./host.js";
 import * as store from "./store.js";
 import { Live, caughtUp } from "./live.js";
@@ -47,7 +48,19 @@ const transport = webSocketTransport();
  */
 function lazySync(bundlePath, projectId) {
   const session = store.sessionFor(bundlePath, projectId);
+  // A change or an upload bigger than the host takes in one message goes as an envelope through the host's blob routes
+  // (hosts-plugins' client, as local-cli's helper does), resolved at use like the connection.
+  let msgs = null, msgsHost = null;
+  const envelopes = () => {
+    const cfg = store.readConfig(bundlePath, projectId);
+    if (!cfg) throw new Error("This project isn't shared from this computer");
+    if (!msgs || msgsHost !== cfg.host) { msgs = hostMessageBlobs({ origin: host.origin(cfg.host), projectId, token: () => session.token() }); msgsHost = cfg.host; }
+    return msgs;
+  };
+  const METHODS = new Set(["put", "get", "head", "delete", "list", "createMultipart", "resumeMultipart"]);
+  const blobs = new Proxy({ kind: "host-messages" }, { get: (t, k) => (k === "kind" ? t.kind : METHODS.has(k) ? (...a) => envelopes()[k](...a) : undefined) });
   return {
+    blobs,
     transport: {
       connect(_url, o) {
         const cfg = store.readConfig(bundlePath, projectId);
@@ -357,7 +370,7 @@ extend({
   async openOptions({ bundlePath, projectId }) {
     const cfg = projectId && store.readConfig(bundlePath, projectId);
     // S3-1: in a shared project the replica is named after the person (lineage, cut owners, dialogs).
-    const helper = cfg ? { name: cfg.name ?? cfg.account, helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } } : {};
+    const helper = cfg ? { name: cfg.name ?? cfg.account, helperFactory: helperFactory(), helperConfig: { cardboardSync: { bundlePath, projectId } } } : {};
     if (!inWorker) return helper;
     const actor = person(bundlePath, projectId);
     return { ...helper, sync: lazySync(bundlePath, projectId), ...(actor ? { actor } : {}) };
@@ -533,7 +546,7 @@ const cli = {
   async pull(lib, projectId) {
     const bundlePath = shared(lib, projectId);
     if (!bundlePath) return false;
-    const lc = await openLocal({ projectDir: bundlePath, projectId, helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } });
+    const lc = await openLocal({ projectDir: bundlePath, projectId, helperFactory: helperFactory(), helperConfig: { cardboardSync: { bundlePath, projectId } } });
     try {
       // Any write reaches the holder; a short pin is one that changes nothing (the holder catches up before it answers).
       const w = await lc.write({ kind: "pin", owner: "cloud-pull", ttlMs: 1000 });

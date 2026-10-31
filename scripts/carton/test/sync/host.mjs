@@ -46,9 +46,9 @@ const node = await startNodeHost({
   port: Number(port ?? 0),
   host: "127.0.0.1",
   durability: "normal",
-  // The newest document schema the app's adapter writes: an older one refuses the app's hello (and the app stays at
-  // "Syncing").
-  schemaVersion: CARDBOARD_SCHEMA_VERSION,
+  // The newest document schema the app's adapter writes (CARTON_TEST_SCHEMA_VERSION plays a host older than the app,
+  // which refuses its hello).
+  schemaVersion: Number(process.env.CARTON_TEST_SCHEMA_VERSION) || CARDBOARD_SCHEMA_VERSION,
 });
 process.stdout.write(JSON.stringify({ ready: true, port: node.port, origin: node.httpUrl }) + "\n");
 setTimeout(() => process.exit(0), 600_000).unref();

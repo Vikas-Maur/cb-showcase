@@ -10,7 +10,9 @@
 //   its writes to the holder, so the worker is carton.db's one writer and a stall is CPU, never a SQLite lock wait.
 // - What other replicas confirm (and what cb writes through this holder) goes into project.json at once, and the
 //   pages adopt it (H5's Carton path: no undo entry, the pending save goes first).
-// - Status and presence also go to the pages as `{kind: "carton", id, topic: "live"}` events for the Share panel.
+// - Status and presence also go to the pages as `{kind: "carton", id, topic: "live"}` events for the Share panel, with
+//   why sync is failing when it is (core's `sync-error`, foundation's REQ-8: a host too old for this app, a refused
+//   token, an unreachable host), in plain words, instead of "Syncing" for ever.
 // - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut.
 import path from "node:path";
 import { keepLease, holderSocketPath, CartonHolderEngine } from "@carton/local";
@@ -33,6 +35,7 @@ export class Live {
     this.timer = null;
     this.peers = new Map(); // actor key → {actor, cut, activity, at}
     this.status = lc.carton.sync?.state() ?? { status: "offline", pending: 0, label: "Offline" };
+    this.error = lc.carton.sync?.error?.() ?? null;
     this.stopped = false;
   }
 
@@ -92,6 +95,12 @@ export class Live {
         this.status = this.lc.carton.sync?.state() ?? this.status;
         this.#publish();
         break;
+      case "sync-error":
+        if (e.branchId !== this.lc.carton.cut) break;
+        this.error = e.error ?? null;
+        if (this.error) this.log({ type: "sync-error", code: this.error.code, message: this.error.message });
+        this.#publish();
+        break;
       case "presence": {
         // `who` is the person behind it, as the sender knows them (their account on the host): the handle's own actor
         // is fixed when it opens, which for the sharer was before the share.
@@ -123,7 +132,7 @@ export class Live {
   view() {
     const now = Date.now();
     const peers = [...this.peers.values()].map((p) => ({ actor: p.actor, cut: p.cut, activity: p.activity, idle: now - p.at > PEER_IDLE_MS }));
-    return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers };
+    return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers, problem: problemOf(this.error) };
   }
   #publish() {
     this.api.emit({ kind: "carton", id: this.projectId, topic: "live", live: this.view() });
@@ -142,6 +151,17 @@ export class Live {
     await this.lease?.stop().catch(() => {});
   }
 }
+
+// Why sync is failing, in the words the Share panel shows (null when it isn't).
+const PROBLEM = {
+  "update-server": "The host is older than this app: it needs an update before this project can sync.",
+  unauthorized: "The host refused this computer's access: ask for a new invite.",
+  unreachable: "The host can't be reached. Edits wait here and go out when it can.",
+  "unknown-cut": "The host doesn't have this project's cut.",
+  "too-large": "A change is too big for this host.",
+  server: "The host had a problem.",
+};
+export const problemOf = (err) => (err ? { code: err.code, words: PROBLEM[err.code] ?? PROBLEM.server, detail: err.message ?? null } : null);
 
 export const actorKey = (a) => [a?.kind, a?.id, a?.agentId].filter(Boolean).join("/");
 

@@ -66,9 +66,9 @@ async function build() {
   return (built = { ...s, carton: path.join(bundle, "carton"), clip, clip2 });
 }
 
-async function startHost(dir, port) {
+async function startHost(dir, port, env = {}) {
   if (!port) fs.rmSync(dir, { recursive: true, force: true });
-  const h = proc(path.join(__dirname, "host.mjs"), [dir, String(port ?? 0)], process.env);
+  const h = proc(path.join(__dirname, "host.mjs"), [dir, String(port ?? 0)], { ...process.env, ...env });
   const r = await h.next((x) => x.ready);
   return { ...h, port: r.port, origin: r.origin, stop: async () => {
     h.send("exit");

@@ -5,7 +5,7 @@
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js
 // One scenario, in order (each step needs the one before): share with history, invite, join in the other library,
 // concurrent edits, presence, media, offline and rejoin, cb on the shared project with the app open, then with the
-// app closed in cb's cloud mode (a headless helper syncs; H13).
+// app closed in cb's cloud mode (a headless helper syncs; H13), and a host too old for the app (the panel says why).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path");
@@ -231,4 +231,21 @@ test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the p
   }
   await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 66, 30_000, "the agent's edit at bob");
   assert.equal(bob.cb(["history", "Demo"]).json().versions[0].by?.id, "codex/c10", "credited to the agent on Bob's computer");
+});
+
+test("a host older than the app: Bob's panel says the host needs an update, instead of \"Syncing\" for ever", t, async () => {
+  const port = host.port;
+  await host.stop();
+  host = await S.startHost(path.join(S.TMP, "host"), port, { CARTON_TEST_SCHEMA_VERSION: "1" });
+  // (While the host restarts the problem is "unreachable"; once it answers, its refusal.)
+  const st = await S.until(async () => { const s = await bob.call("carton.liveStatus", { projectId: id }); return s.problem?.code === "update-server" && s; }, 30_000, "the host's refusal at bob");
+  assert.equal(st.problem.code, "update-server", JSON.stringify(st));
+  assert.match(st.problem.words, /needs an update/);
+  assert.match(st.problem.detail ?? "", /update the server/, "the host's own message, shown under the words");
+  const ev = bob.events().filter((e) => e.change?.topic === "live" && e.change.id === id).map((e) => e.change.live.problem).reverse()[0];
+  assert.equal(ev?.code, "update-server", "the Share panel was told too");
+  // A host that takes the app's schema again: the problem goes.
+  await host.stop();
+  host = await S.startHost(path.join(S.TMP, "host"), port);
+  await S.until(async () => { const s = await bob.call("carton.liveStatus", { projectId: id }); return !s.problem && s.status === "up-to-date"; }, 30_000, "bob back to up to date");
 });
