@@ -1,11 +1,13 @@
 // Regressions from Stage F review round 2, on real Carton handles and the in-process sequencer host: a settle never
-// removes a pending row that is still being written, whichever write started first; a handle fenced off and connected
-// again pushes what it had pending and settles it; an empty shared save whose holder was replaced answers with the
-// store's outcome, never a second one for the same id, and its retry names the same version; an empty `undo --turn`
-// retried after new conflicting work stays empty; notices: a failed delivery gives none away, and two copies of one
-// request both get what was delivered to it.
-// The first four need core changes requested from foundation-core (notes: "Requests for foundation-core" 1–4): `todo`
-// until they land. They fail fast (every wait has a deadline), so they never hold up the suite.
+// leaves a pending row behind, whichever write started first; a handle fenced off and connected again pushes what it
+// had pending and settles it; an empty shared save whose holder was replaced answers with the store's outcome, never a
+// second one for the same id, and its retry names the same version; an empty `undo --turn` retried after new
+// conflicting work stays empty; notices: a failed delivery gives none away, and two copies of one request both get
+// what was delivered to it.
+// Requests 1-4 to foundation-core landed in `3160e3e`. Their core runs a shared commit's pending-row write in the
+// commit's turn, so request 1 and 4's scenarios are set up as foundation's own tests do (a late pending-row write; edits
+// waiting offline). Request 5 (a refused edit's row removed in one batch with its author's notice) is `todo` until it
+// lands; it fails fast (every wait has a deadline).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton } from "@carton/core";
@@ -32,6 +34,17 @@ function within<T>(ms: number, p: Promise<T>, what: string): Promise<T> {
   return Promise.race([p, new Promise<T>((_, no) => (t = setTimeout(() => no(new Error(`timed out waiting for ${what}`)), ms)))]).finally(() => clearTimeout(t));
 }
 const req = (n: number) => ({ todo: `foundation-core request ${n} (local-cli notes)`, timeout: 30_000 });
+const landed = { timeout: 30_000 };
+/**
+ * Cleanup that runs even when a test times out (node:test doesn't run a timed-out test's `finally`): open every gate,
+ * then close the handles, each close bounded, so nothing waits on a gated write after the test.
+ */
+function cleanupAfter(t: { after(fn: () => Promise<void>): void }, g: { restore(): void }, handles: () => (Carton | null)[]) {
+  t.after(async () => {
+    g.restore();
+    for (const h of handles()) if (h) await within(5000, h.close(), "closing a handle").catch(() => {});
+  });
+}
 
 function world() {
   const tokens = new Map<string, AuthContext>();
@@ -64,39 +77,35 @@ function gated(store: Store) {
 }
 const pendingOf = (id: string) => (w: Parameters<Store["write"]>[0]) => w.some((x) => x.table === "pending" && (x.value as { id?: string } | undefined)?.id === id);
 
-test("a settle never removes a pending row still being written, though its write started after the settle did", req(1), async () => {
+test("a settle never leaves a pending row behind, though a row's write starts while the settle waits", landed, async (t) => {
   const w = world();
-  const store = createMemoryStore();
+  const mem = createMemoryStore();
+  // every change's first pending-row write lands late, as on a busy carton.db
+  const first = new Set<string>();
+  const store: Store = Object.assign(Object.create(mem) as Store, {
+    write: async (ws: Parameters<Store["write"]>[0], cd?: Parameters<Store["write"]>[1]) => {
+      const fresh = ws.filter((x) => x.table === "pending" && x.value !== undefined && !first.has(String(x.key[1])));
+      for (const x of fresh) first.add(String(x.key[1]));
+      if (fresh.length) await sleep(120);
+      return mem.write(ws, cd);
+    },
+  });
   const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
-  const g = gated(store);
-  try {
-    await c.share();
-    assert.ok(await c.sync!.connect({ nonce: "n" }));
-    await until(async () => (await c.cuts()).find((x) => x.id === c.cut)!.sequencer.kind === "server", 5000, "the hand-off");
-    const one = g.gate(pendingOf("sf2.one"));
-    const two = g.gate(pendingOf("sf2.two"));
-    const p1 = c.commit({ id: "sf2.one", ops: [set("c1", "name", "one")] });
-    await one.reached;
-    await until(() => c.sync!.state().status === "up-to-date", 5000, "sf2.one confirmed by the server");
-    const p2 = c.commit({ id: "sf2.two", ops: [set("c2", "name", "two")] });
-    await two.reached;
-    await until(() => c.sync!.state().status === "up-to-date", 5000, "sf2.two confirmed by the server");
-    one.release();
-    await within(5000, p1, "sf2.one's commit");
-    await sleep(100);
-    assert.equal(await store.get("ids", ["sf2.two"]), undefined, "the settle waits for sf2.two's row before recording it");
-    two.release();
-    await within(5000, p2, "sf2.two's commit");
-    await until(async () => (await store.get("ids", ["sf2.two"])) !== undefined, 5000, "sf2.two recorded");
-    await c.head();
-    for (const id of ["sf2.one", "sf2.two"]) assert.equal(await store.get("pending", [c.cut, id]), undefined, `${id} is not left pending`);
-  } finally {
-    g.restore();
-    await c.close();
-  }
+  t.after(() => within(5000, c.close(), "closing").catch(() => {}));
+  await c.share();
+  assert.ok(await c.sync!.connect({ nonce: "n" }));
+  await until(async () => (await c.cuts()).find((x) => x.id === c.cut)!.sequencer.kind === "server", 5000, "the hand-off");
+  // two cb writes, the second while the first's settle waits for its row
+  const one = runWrite(c, { id: "sf2.one", actor: agent, op: { kind: "commit", ops: [set("c1", "name", "one")] } });
+  await sleep(30);
+  const two = runWrite(c, { id: "sf2.two", actor: agent, op: { kind: "commit", ops: [set("c2", "name", "two")] } });
+  for (const r of await within(10_000, Promise.all([one, two]), "both writes")) assert.equal(r.status, "confirmed", JSON.stringify(r));
+  await sleep(300);
+  assert.deepEqual((await mem.range("pending")).map((e) => e.key[1]), [], "no row left behind");
+  for (const id of ["sf2.one", "sf2.two"]) assert.ok(await mem.get("ids", [id]), `${id} recorded`);
 });
 
-test("a handle fenced off, then connected again under the new nonce, pushes what it had pending and settles it", req(2), async () => {
+test("a handle fenced off, then connected again under the new nonce, pushes what it had pending and settles it", landed, async () => {
   const w = world();
   const store = createMemoryStore();
   const lease = new Lease(store);
@@ -117,6 +126,36 @@ test("a handle fenced off, then connected again under the new nonce, pushes what
     assert.ok(await store.get("pending", [c.cut, "sf2.big"]), "still pending in the store");
     // the same handle gets the lease back (the app's engine thread re-acquires): the edit is answered and recorded
     assert.ok(await c.sync!.connect({ nonce: newer.nonce, conditions: [fence(newer.nonce)] }));
+    const told = async () => (await store.range<{ change?: string; kind: string }>("notices", { prefix: [actorKey(agent)] })).some((n) => n.value.change === "sf2.big" && n.value.kind === "rejected");
+    await until(told, 5000, "its author to be told");
+    assert.equal(await store.get("pending", [c.cut, "sf2.big"]), undefined, "and the refused edit is settled");
+  } finally {
+    await c.close();
+  }
+});
+
+test("a refused edit's pending row goes in one batch with its author's notice: never gone untold", req(5), async () => {
+  const w = world();
+  const store = createMemoryStore();
+  const lease = new Lease(store);
+  const old = (await lease.take(null, { pid: 1, socketPath: "/old", kind: "worker" }))!;
+  const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
+  try {
+    let stopped = false;
+    c.on((e) => { if (e.type === "sync" && e.status === "stopped") stopped = true; });
+    await c.share();
+    assert.ok(await c.sync!.connect({ nonce: old.nonce, conditions: [fence(old.nonce)] }));
+    await until(async () => (await c.cuts()).find((x) => x.id === c.cut)!.sequencer.kind === "server", 5000, "the hand-off");
+    const newer = (await lease.take(old.nonce, { pid: 2, socketPath: "/new", kind: "worker" }))!;
+    // refused at once (over the client's own 32 MiB limit): its settle is fenced off, so nothing is recorded and the
+    // handle stops
+    const r = await within(20_000, c.commit({ id: "sf2.big", author: agent, ops: [set("c1", "name", "x".repeat(33 << 20))] }), "the big commit");
+    assert.equal(r.status, "pending");
+    await until(() => stopped, 5000, "the fenced handle to stop");
+    assert.ok(await store.get("pending", [c.cut, "sf2.big"]), "still pending in the store");
+    // the same handle gets the lease back (the app's engine thread re-acquires): the edit is answered and recorded
+    assert.ok(await c.sync!.connect({ nonce: newer.nonce, conditions: [fence(newer.nonce)] }));
+    // the first moment the row is gone, the notice is there (a crash in between would lose the edit untold)
     await until(async () => (await store.get("pending", [c.cut, "sf2.big"])) === undefined, 5000, "the refused edit to be settled");
     const notices = await store.range<{ change?: string; kind: string }>("notices", { prefix: [actorKey(agent)] });
     assert.ok(notices.some((n) => n.value.change === "sf2.big" && n.value.kind === "rejected"), "its author is told");
@@ -125,7 +164,7 @@ test("a handle fenced off, then connected again under the new nonce, pushes what
   }
 });
 
-test("an empty shared save whose holder was replaced mid-write answers with the store's outcome, never a no-op beside a change", req(3), async () => {
+test("an empty shared save whose holder was replaced mid-write answers with the store's outcome, never a no-op beside a change", landed, async (t) => {
   const w = world();
   const store = createMemoryStore();
   const lease = new Lease(store);
@@ -133,14 +172,15 @@ test("an empty shared save whose holder was replaced mid-write answers with the 
   const a = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
   const g = gated(store);
   let b: Carton | null = null;
-  try {
+  cleanupAfter(t, g, () => [b, a]);
+  {
     await a.share();
     assert.ok(await a.sync!.connect({ nonce: old.nonce, fence: () => true, conditions: [fence(old.nonce)] }));
     await until(async () => (await a.cuts()).find((x) => x.id === a.cut)!.sequencer.kind === "server", 5000, "the hand-off");
     const hold = g.gate((wr) => wr.some((x) => x.table === "meta" && x.key[0] === "noop" && x.key[1] === "sf2.empty"));
     const req = { id: "sf2.empty", actor: agent, op: { kind: "commit" as const, ops: [set("c1", "name", "c1")] } };
     const first = runWrite(a, structuredClone(req));
-    await hold.reached;
+    await within(5000, hold.reached, "the no-op record's write");
     // the lease moves; the replacement sees someone rename c1, then gets the retry: unanswered, so it applies
     const newer = (await lease.take(old.nonce, { pid: 2, socketPath: "/new", kind: "worker" }))!;
     b = await Carton.open({ adapter, store, actor: agent, sync: w.sync("bob") });
@@ -156,41 +196,26 @@ test("an empty shared save whose holder was replaced mid-write answers with the 
     assert.ok(!late.empty && late.id === req.id, `the replaced holder answers with the change the store holds: ${JSON.stringify(late)}`);
     assert.equal(await store.get("meta", ["noop", req.id]), undefined, "no no-op recorded beside the change");
     assert.equal(await nameOf(b, "c1"), "c1");
-  } finally {
-    g.restore();
-    await b?.close();
-    await a.close();
   }
 });
 
-test("an empty shared save names the same version on retry, even when the queue was ahead of the log", req(4), async () => {
+test("an empty shared save names the same version on retry, with edits still waiting to sync", landed, async (t) => {
   const w = world();
   const store = createMemoryStore();
   const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
-  const g = gated(store);
-  try {
-    await c.share();
-    assert.ok(await c.sync!.connect({ nonce: "n" }));
-    await until(async () => (await c.cuts()).find((x) => x.id === c.cut)!.sequencer.kind === "server", 5000, "the hand-off");
-    // a pin's write holds the handle's queue, so the next confirmation is in the queue but not yet in the log
-    const pins = g.gate((wr) => wr.some((x) => x.table === "pins"));
-    const pin = c.pin({ owner: "hold" });
-    await pins.reached;
-    const r = await c.commit({ id: "sf2.ahead", ops: [set("c1", "name", "new")] });
-    assert.equal(r.status, "pending");
-    await until(() => c.sync!.state().status === "up-to-date", 5000, "the change confirmed by the server");
-    const first = await within(5000, c.commit({ id: "sf2.noop", ops: [] }), "the empty commit");
-    assert.equal(first.status, "confirmed");
-    const recorded = await store.get<[string, number]>("meta", ["noop", "sf2.noop"]);
-    assert.equal(recorded![1], first.status === "confirmed" ? first.seq : -1, "recorded at the version it answered with");
-    pins.release();
-    await within(5000, pin, "the pin");
-    const retry = await within(5000, c.commit({ id: "sf2.noop", ops: [] }), "the retried empty commit");
-    assert.deepEqual([retry.status, retry.status === "confirmed" && retry.seq], ["confirmed", first.seq]);
-  } finally {
-    g.restore();
-    await c.close();
-  }
+  t.after(() => within(5000, c.close(), "closing").catch(() => {}));
+  await c.share();
+  assert.ok(await c.sync!.connect({ nonce: "n" }));
+  await until(async () => (await c.cuts()).find((x) => x.id === c.cut)!.sequencer.kind === "server", 5000, "the hand-off");
+  await c.sync!.disconnect();
+  const waiting = await runWrite(c, { id: "sf2.waiting", actor: agent, op: { kind: "commit", ops: [set("c1", "name", "new")] } }, { online: () => false });
+  assert.equal(waiting.status, "pending");
+  // a save with nothing new (the file as head shows it), and its retry
+  const save = { id: "sf2.noop", actor: agent, op: { kind: "commit" as const, ops: [set("c1", "name", "new")] } };
+  const first = await runWrite(c, structuredClone(save), { online: () => false });
+  const retry = await runWrite(c, structuredClone(save), { online: () => false });
+  assert.equal(first.status === "confirmed" && first.empty, true, JSON.stringify(first));
+  assert.deepEqual([retry.status, retry.status === "confirmed" && retry.seq, retry.ref], [first.status, first.status === "confirmed" && first.seq, first.ref], "the same answer, version and ref");
 });
 
 test("an empty `undo --turn` retried after new conflicting work in the turn stays the empty answer", async () => {
@@ -215,8 +240,9 @@ test("notices: a delivery that fails gives none away; two copies of one request 
   try {
     await store.write(["old.1", "old.2"].map((change, i) => ({ table: "notices", key: [actorKey(agent), i, 0], value: { to: actorKey(agent), kind: "rejected", text: change, change } })));
     const original = store.write.bind(store);
+    // the write that marks old.2 fails: one batch gives neither away (row by row, old.1 would be gone already)
     (store as { write: Store["write"] }).write = async (wr, conds) => {
-      if (wr.some((x) => x.table === "notices" && (x.value as { deliveredAt?: number } | undefined)?.deliveredAt)) throw new Error("disk unavailable");
+      if (wr.some((x) => x.table === "notices" && (x.value as { change?: string; deliveredAt?: number } | undefined)?.deliveredAt && (x.value as { change?: string }).change === "old.2")) throw new Error("disk unavailable");
       return original(wr, conds);
     };
     await assert.rejects(runWrite(c, { id: "sf2.failed", actor: agent, op: { kind: "printView" } }, view), /disk unavailable/);

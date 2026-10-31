@@ -184,7 +184,7 @@ const cutSwitch: CommandSpec = {
 const fold: CommandSpec = {
   path: ["fold"],
   gitAlias: ["merge"],
-  summary: "Fold a cut into the current cut (or --into). --check reports cards without saving; --reject keeps parts out",
+  summary: "Fold a cut into the current cut (or --into). --check reports cards without saving; --reject keeps parts out (fold it again later to fold in the rest)",
   args: [{ name: "cut", description: "the cut (or version) to fold in", required: true }],
   options: [
     { name: "into", type: "string", description: "fold into this cut instead of the current one" },
@@ -217,7 +217,7 @@ const fold: CommandSpec = {
     const r = await ctx.project.write({ kind: "fold", from, into, reject: a.reject, missingBase, keep: a.keep }, { actor: ctx.actor });
     if ((r as any).upToDate) return out(r, "Already folded in: nothing to do");
     if ((r as any).dialog) return { json: r, text: (r as any).dialog.text, exitCode: 1 };
-    return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : "Folded in");
+    return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : (r as any).rest ? "Folded in the rest (what an earlier partial fold kept out)" : "Folded in");
   },
 };
 

@@ -85,6 +85,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   cut itself, without the lease, gets `pending`: the edit is kept in `carton.db` and pushed by the next holder to
   start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"). The holder passes
   its fence as `sync.connect({ nonce, fence, conditions })`: once replaced, it records nothing more and stops.
+- **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
+  whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
+  pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.
 - **Concurrent writers** on one store never fail a write for being busy: a writer that keeps losing the append race
   takes the append turn (`lease` table, `["append-turn"]`), and the others wait for it (`#mutate`).
 - **Keyframes (§5.4):** a cut's state is stored every K confirmed changes (`keyframeEvery`, default 64) or after
