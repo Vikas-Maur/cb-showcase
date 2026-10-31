@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { Carton } from "@carton/core";
 import type { Actor } from "@carton/core";
 import { createMemoryStore } from "@carton/store-memory";
-import { hookEventFor, prefixCommand } from "../src/hooks.ts";
+import { hookEventFor, prefixCommand, preToolUse } from "../src/hooks.ts";
 import { hookDelivered, parseActorId } from "../src/identity.ts";
 import { hookSettings, runHook } from "../src/hook-cli.ts";
 import { actorKey, runWrite } from "../src/writes.ts";
@@ -19,7 +19,7 @@ const dir = join("/", "work", "Demo.cardboard");
 const at = (...p: string[]) => join(dir, ...p);
 const session = { session_id: "abcdef1234" };
 
-test("hookEventFor: a Read of the shared file, a Write/Edit of it or project.json, a stop; the prefixer's actor", () => {
+test("hookEventFor: a Read of the shared file, a Write/Edit of it, a stop; the prefixer's actor", () => {
   const read = hookEventFor("pre-tool-use", { ...session, tool_name: "Read", tool_input: { file_path: at("timeline.tsx") } }, { projectDir: dir })!;
   assert.deepEqual(read.op, { kind: "hook", event: "read", file: "timeline.tsx" });
   assert.equal(read.actor.id, "claude-code/abcdef12");
@@ -34,11 +34,12 @@ test("hookEventFor: a Read of the shared file, a Write/Edit of it or project.jso
   assert.equal(director.actor.id, "director/c1/t9");
   assert.equal(director.actor.turn, "t9");
 
-  assert.deepEqual(hookEventFor("pre-tool-use", { ...session, tool_name: "MultiEdit", tool_input: { file_path: at("project.json") } }, { projectDir: dir })?.op, { kind: "hook", event: "write", file: "project.json" });
+  assert.deepEqual(hookEventFor("pre-tool-use", { ...session, tool_name: "MultiEdit", tool_input: { file_path: at("timeline.tsx") } }, { projectDir: dir })?.op, { kind: "hook", event: "write", file: "timeline.tsx" });
   assert.deepEqual(hookEventFor("pre-tool-use", { ...session, tool_name: "Write", tool_input: { file_path: "timeline.tsx" }, cwd: dir }, { projectDir: dir })?.op, { kind: "hook", event: "write", file: "timeline.tsx" }, "relative to the hook's cwd");
   assert.deepEqual(hookEventFor("pre-tool-use", { ...session, tool_name: "Edit", tool_input: { file_path: at("Timeline.tsx") } }, { projectDir: dir, foldCase: true })?.op, { kind: "hook", event: "write", file: "timeline.tsx" }, "case-insensitive file systems");
   const none: [string, string, boolean?][] = [
     ["Read", at("project.json")], // reading project.json starts no freeze
+    ["Edit", at("project.json")], // denied (preToolUse), never credited
     ["Read", at(".scratch", "views", "mine.tsx")], // a view: its own pins, no hook needed
     ["Edit", at(".scratch", "views", "mine.tsx")], // credited to its owner without a hook
     ["Write", at("media", "notes.tsx")],
@@ -50,6 +51,24 @@ test("hookEventFor: a Read of the shared file, a Write/Edit of it or project.jso
   for (const [tool, file, fold] of none) assert.equal(hookEventFor("pre-tool-use", { ...session, tool_name: tool, tool_input: { file_path: file } }, { projectDir: dir, ...(fold === false ? { foldCase: false } : {}) }), null, `${tool} ${file}`);
   assert.equal(hookEventFor("pre-tool-use", { ...session, tool_name: "Read", tool_input: { file_path: at("timeline.tsx") } }), null, "no project: nothing to match");
   assert.deepEqual(hookEventFor("stop", { ...session, hook_event_name: "SubagentStop", agent_type: "editor", agent_id: "q" })!.op, { kind: "hook", event: "stop" });
+});
+
+test("preToolUse: a Write, Edit or MultiEdit of the project's project.json is denied, with the way to edit instead (§6.4, review H8 #5)", () => {
+  for (const tool of ["Write", "Edit", "MultiEdit"]) {
+    const r = preToolUse({ ...session, tool_name: tool, tool_input: { file_path: at("project.json") } }, { projectDir: dir });
+    assert.equal(r.event, null, `${tool}: nothing told, the write won't happen`);
+    const h = (r.output as any).hookSpecificOutput;
+    assert.deepEqual([h.hookEventName, h.permissionDecision], ["PreToolUse", "deny"], tool);
+    assert.match(h.permissionDecisionReason, /cb source print --view <name>/);
+    assert.equal(h.updatedInput, undefined);
+  }
+  // case-insensitive file systems; relative to the hook's cwd
+  assert.equal((preToolUse({ ...session, tool_name: "Write", tool_input: { file_path: at("Project.JSON") } }, { projectDir: dir, foldCase: true }).output as any).hookSpecificOutput?.permissionDecision, "deny");
+  assert.equal((preToolUse({ ...session, tool_name: "Edit", tool_input: { file_path: "project.json" }, cwd: dir }, { projectDir: dir }).output as any).hookSpecificOutput?.permissionDecision, "deny");
+  // not denied: reading it, another project's, a project.json deeper in the bundle, no project known
+  for (const [tool, file, o] of [["Read", at("project.json"), { projectDir: dir }], ["Edit", join("/", "other", "project.json"), { projectDir: dir }], ["Edit", at("media", "project.json"), { projectDir: dir }], ["Edit", at("project.json"), {}]] as const) {
+    assert.deepEqual(preToolUse({ ...session, tool_name: tool, tool_input: { file_path: file } }, o).output, {}, `${tool} ${file}`);
+  }
 });
 
 /** A materializer that records the hook calls (and can be made to fail, or to take a while). */
@@ -111,7 +130,7 @@ test("runWrite `hook`: the materializer's hookRead / hookWrite / hookStop with t
   }
 });
 
-test("runWrite `hook`: one request id is told once (a retry, or the same request twice at once); a failed call may be retried", async () => {
+test("runWrite `hook`: one request id is told once (a retry, or the same request twice at once, or after it failed)", async () => {
   const c = await opened();
   try {
     const { mz, calls, failNext, hold } = recorder();
@@ -127,15 +146,38 @@ test("runWrite `hook`: one request id is told once (a retry, or the same request
     const [a, b] = await both;
     assert.equal(calls.length, 2);
     assert.deepEqual([hookOf(a)?.again, hookOf(b)?.again], [undefined, true]);
-    // a call that failed was not told: its retry tells it
+    // a call that failed may have taken effect first (cardboard's hookWrite queues the credit, then updates the freeze):
+    // its retry gets the failure, and the materializer isn't called again (review H8 #3)
     failNext();
     await assert.rejects(runWrite(c, { ...req, id: "h.fails" }, { materializer: mz }), /materializer busy/);
-    assert.deepEqual(hookOf(await runWrite(c, { ...req, id: "h.fails" }, { materializer: mz })), { event: "write", delivered: true });
-    assert.equal(calls.length, 4);
+    await assert.rejects(runWrite(c, { ...req, id: "h.fails" }, { materializer: mz }), /materializer busy/);
+    assert.equal(calls.length, 3);
     // another materializer (a new holder) was never told: the retry tells it
     const other = recorder();
     assert.deepEqual(hookOf(await runWrite(c, req, { materializer: other.mz })), { event: "write", delivered: true });
     assert.equal(other.calls.length, 1);
+  } finally {
+    await c.close();
+  }
+});
+
+test("runWrite `hook`: a request in flight, or one settled earlier, is still known after hundreds of others (review H8 #4)", async () => {
+  const c = await opened();
+  try {
+    const { mz, calls, hold } = recorder();
+    const req = (id: string) => ({ id, actor: agent, op: { kind: "hook" as const, event: "write" as const, file: "timeline.tsx" } });
+    await runWrite(c, req("h.early"), { materializer: mz });
+    const open = hold();
+    const slow = runWrite(c, req("h.slow"), { materializer: mz }); // still running while the others come and go
+    await new Promise((r) => setTimeout(r, 5));
+    open();
+    await Promise.all(Array.from({ length: 700 }, (_, i) => runWrite(c, req(`h.n${i}`), { materializer: mz })));
+    await slow;
+    const n = calls.length;
+    assert.equal(n, 702);
+    assert.deepEqual(hookOf(await runWrite(c, req("h.slow"), { materializer: mz })), { event: "write", delivered: true, again: true });
+    assert.deepEqual(hookOf(await runWrite(c, req("h.early"), { materializer: mz })), { event: "write", delivered: true, again: true });
+    assert.equal(calls.length, n, "neither was told again");
   } finally {
     await c.close();
   }
@@ -172,10 +214,12 @@ test("runHook `send`: file tools and an allowed stop are told; a blocked stop is
   const send = async (e: { actor: Actor; op: { event: string; file?: string } }) => { sent.push(`${e.op.event} ${e.actor.id}${e.op.file ? ` ${e.op.file}` : ""}`); };
   const pre = (tool: string, input: object) => runHook("pre-tool-use", { ...session, tool_name: tool, ...input }, { env: {}, projectDir: dir, send });
   assert.deepEqual(await pre("Read", { tool_input: { file_path: at("timeline.tsx") } }), {});
-  assert.deepEqual(await pre("Edit", { tool_input: { file_path: at("project.json") } }), {});
+  assert.deepEqual(await pre("Edit", { tool_input: { file_path: at("timeline.tsx") } }), {});
+  const denied: any = await pre("Edit", { tool_input: { file_path: at("project.json") } });
+  assert.equal(denied.hookSpecificOutput.permissionDecision, "deny", "§6.4: agents don't edit project.json");
   const bash: any = await pre("Bash", { tool_input: { command: "cb history Demo" } });
   assert.match(bash.hookSpecificOutput.updatedInput.command, /^export CARDBOARD_ACTOR='claude-code\/abcdef12'; /, "the prefixer as before");
-  assert.deepEqual(sent, ["read claude-code/abcdef12 timeline.tsx", "write claude-code/abcdef12 project.json"]);
+  assert.deepEqual(sent, ["read claude-code/abcdef12 timeline.tsx", "write claude-code/abcdef12 timeline.tsx"], "nothing sent for the denied write");
 
   // the Stop hook: a late conflict blocks the stop once (nothing told), then the stop goes through (told)
   const store = createMemoryStore();

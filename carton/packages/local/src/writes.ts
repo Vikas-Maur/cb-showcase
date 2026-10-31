@@ -260,8 +260,7 @@ const receiptKey = (requestId: ChangeId) => ["@request", requestId];
 /**
  * `shared`: written with a shared cut's pending row; it holds the cards, and core says whether the change landed.
  * `cut`: the cut the request went to, so a retry's WriteOp `head` is of that cut even after a switch (older receipts
- * have none: the op's cut, else the current one). The landed change's own cut: core picks the current cut when it
- * commits, after this write read it, so a switch in between moves the change; with nothing landed, the cut read.
+ * have none: the op's cut, else the current one). runWrite fixes it once per request and commits there.
  */
 interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number; shared?: boolean; cut?: string }
 
@@ -293,15 +292,28 @@ export interface ViewPrinter {
 }
 
 const HOOK_EVENTS: ReadonlySet<string> = new Set(["read", "write", "stop"]);
-/** Hook requests a materializer was told, by request id (the latest 512): a retry is answered, not applied again. */
-const hooksTold = new WeakMap<ViewPrinter, Map<ChangeId, Promise<void>>>();
-const HOOKS_KEPT = 512;
+/** Hook requests a materializer was told, by request id: the call, and when it settled. */
+interface Told { call: Promise<void>; settled?: number }
+const hooksTold = new WeakMap<ViewPrinter, Map<ChangeId, Told>>();
+/** A settled request is remembered this long (a retry comes within seconds), and at most this many. */
+const HOOKS_KEEP_MS = 10 * 60_000;
+const HOOKS_KEPT = 10_000;
+/** Forget settled requests past HOOKS_KEEP_MS, then the oldest settled past HOOKS_KEPT; a call in flight never. */
+function forgetTold(told: Map<ChangeId, Told>, now: number): void {
+  for (const [id, t] of told) if (t.settled !== undefined && now - t.settled >= HOOKS_KEEP_MS) told.delete(id);
+  for (const [id, t] of told) {
+    if (told.size <= HOOKS_KEPT) break;
+    if (t.settled !== undefined) told.delete(id);
+  }
+}
 
 /**
  * WriteOp `hook`: tell the materializer, once per request id. A retry of a request it was told (an answer lost on the
  * socket) waits for that call instead of making it again: `hookWrite` queues one credit per call, so a second would
- * credit the agent with someone else's next save. A call that failed may be made again. A new holder has a new
- * materializer that was never told: the retry tells it.
+ * credit the agent with someone else's next save. A call that failed isn't made again either: it may have taken
+ * effect before it failed (cardboard's hookWrite queues the credit, then updates the freeze), so its retry gets its
+ * failure (review H8 #3). A call in flight is never forgotten (#4). A new holder has a new materializer that was never
+ * told: the retry tells it.
  */
 async function hookEvent(op: HookOp, actor: Actor, id: ChangeId, mz: ViewPrinter | null, notices: Notice[]): Promise<CbResult> {
   if (!HOOK_EVENTS.has(op.event)) return { status: "error", error: `unknown hook event ${JSON.stringify(op.event)}`, notices };
@@ -311,15 +323,16 @@ async function hookEvent(op: HookOp, actor: Actor, id: ChangeId, mz: ViewPrinter
   if (!mz || !call) return { status: "confirmed", seq: 0, ref: null, notices, hook: { event: op.event, delivered: false } };
   let told = hooksTold.get(mz);
   if (!told) hooksTold.set(mz, (told = new Map()));
-  let p = told.get(id);
-  const again = !!p;
-  if (!p) {
-    const mine = (p = call());
-    told.set(id, mine);
-    if (told.size > HOOKS_KEPT) told.delete(told.keys().next().value!);
-    mine.catch(() => { if (told!.get(id) === mine) told!.delete(id); });
+  let t = told.get(id);
+  const again = !!t;
+  if (!t) {
+    if (told.size >= 256) forgetTold(told, Date.now());
+    const entry: Told = (t = { call: Promise.resolve().then(call) }); // a materializer that throws at once is a failed call too
+    const settle = () => { entry.settled = Date.now(); };
+    entry.call.then(settle, settle);
+    told.set(id, entry);
   }
-  await p;
+  await t.call;
   return { status: "confirmed", seq: 0, ref: null, notices, hook: { event: op.event, delivered: true, ...(again ? { again: true } : {}) } };
 }
 /** A hook's file: project-relative with `/`, no `..`, not absolute; null when it isn't one. */
@@ -382,8 +395,12 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // is lost). Core's own rebase loop decides every card "ours" (keeping its intents, inferred remaps and policy as
       // it would for any rebase) and reports the cards it decided; they are written as a notice for `cb conflicts` /
       // `cb resolve` in the same atomic batch as the append, so no crash or concurrent writer can separate them.
-      // The base is fixed once per request (default: head now): a retry after core lost its append race must merge
-      // from the same base, never re-apply the proposal on a newer head.
+      // The cut and base are fixed once per request (default: the current cut, its head now): a retry after core lost
+      // its append race must merge from the same base, never re-apply the proposal on a newer head. The cut is read
+      // once and given to core: a switch served while this write waits moves nothing, so the cut core commits on is
+      // the one its base, its shared check and its receipt name (review H8 #1: one read here and core's own later one
+      // could differ, even for a save whose every edit was carded, which has no change to name its cut).
+      if (op.cut === undefined) op.cut = carton.cut;
       if (op.base === undefined) op.base = (await carton.head(op.cut)).ref;
       const store = storeOf(carton);
       const receipt = store ? await store.get<Receipt>("notices", receiptKey(req.id)) : undefined;
@@ -396,7 +413,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       }
       // on a shared cut core deduplicates a retried id itself (pending, confirmed, or recorded as a no-op) and says
       // where it is now; the receipt, written with its pending row, keeps the cards it answered with
-      const cutId = op.cut ?? carton.cut;
+      const cutId = op.cut;
       const sharedCut = (await carton.cuts()).find((c) => c.id === cutId)?.sequencer.kind !== "local";
       r = await carton.commit({
         id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
@@ -405,7 +422,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
           ? {
               cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [
                 cardsRow(author, req.id, change?.id ?? null, cards),
-                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), cut: change?.branchId ?? cutId, ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
+                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), cut: cutId, ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
               ],
             }
           : {}),
