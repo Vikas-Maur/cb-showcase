@@ -208,6 +208,20 @@ every host runs the same function. The host:
      existed takes the alarm as its due time. Presence still queued when its connection goes is dropped, never
      relayed. The conformance host suite drops a client and silences one (also across wakes), and checks that its
      peers see the leaves.
+   - **People** (windows-sync R3). A GUI save's author is the generic person; the sequencer keeps each device
+     credential's person (`hello.identity`, `identity`), so teammates resolve it by the change's replica id, which the
+     sequencer already binds to that credential (§6.3). A host needs nothing more: the record is two of the
+     sequencer's own tables (`people`, and an index on `rids` by credential), created like the rest on any storage,
+     the Durable Object's included. The sequencer's rules: an identity's `id` must be the session's account
+     (`forbidden` otherwise; the connection goes on), and its name is the person's own choice, 1–200 characters with
+     no control characters (`bad-request`). Changes to a person are capped per connection (5, then one every 12 s),
+     since any role may set one and each is a row and a message to everyone. Every welcome page that subscribes
+     carries `people` (every person, with every rid bound to them; `[]` says the host keeps them); a person set or
+     renamed, and a rid newly bound to a credential with a person (a hello's claim, a push, a hand-off's rows once its
+     transaction commits), go to every connection of the project before the row the rid binds. A reader scoped to some
+     cuts (a Published cut's watch link) gets `people: []` and no `people` messages: a link never tells a stranger the
+     team's accounts and names, so its viewers see the generic person. The conformance host suite checks the refusal,
+     the order, a rename, and that the people survive a hibernation and a restart.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from

@@ -512,8 +512,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   type ClosureKeyframe = { branch: string; seq: number; hash: string; where: { blob: string } | { inline: string } };
   function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string, closureKfs: readonly ClosureKeyframe[] = []): void {
     const root = init.rootSeq ?? 0;
+    const handed: string[] = []; // the uploaded rows' rids this hand-off bound to the uploader
     try {
       tables.transaction(() => {
+        handed.length = 0;
         tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey, ...(init.closure?.length ? { closure: init.closure.map((t) => t.branchId) } : {}) });
         if (kf) tables.putKeyframe(rec.id, root, init.stateHash ?? "", kf);
         const doc = init.doc0 as Record<string, unknown> | null;
@@ -525,7 +527,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           const clean = rowFrom(row, rec.id, row.seq);
           const stored = { paths: rules.storedPaths(clean), structural: rules.isStructural(clean.ops, clean.intent, timeline) };
           tables.append(rec.id, clean, stored, recordWritesOf(clean.ops), { inline: Tables.body(clean) });
-          if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) tables.bindRid(ridOf(row.id), rids);
+          if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) {
+            tables.bindRid(ridOf(row.id), rids);
+            handed.push(ridOf(row.id));
+          }
         }
         for (const t of init.closure ?? []) {
           const had = tables.branch(t.branchId);
@@ -544,6 +549,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       tables.forget(rec.id);
       throw e;
     }
+    // committed: the uploader's earlier edits are told by person (a rolled-back hand-off told nothing)
+    if (rids !== undefined) announce(rids, handed);
   }
 
   /**
@@ -589,9 +596,54 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const bound = tables.ridOwner(rid);
     if (bound === undefined) {
       tables.bindRid(rid, who);
+      announce(who, [rid]); // before the row it binds fans out
       return true;
     }
     return bound === who;
+  }
+
+  // ---------------------------------------------------------------- people (windows-sync R3)
+  // A device credential's person: who a generic "person" author is, resolved by the change's rid (bound to the
+  // credential, §6.3). Kept beside the rows, never in them. A replica sets only its own credential's entry, under its
+  // session's account; the name is its own choice. A reader scoped to some cuts (a Published cut's watch link) learns
+  // none of it: its welcome says `people: []` and no `people` message reaches it, so a link never tells a stranger
+  // the team's accounts and names.
+  const seesPeople = (c: HostConnection) => WRITE_ROLES.has(c.auth.role) || !c.auth.branches;
+  /** A change to the people, to every connection of the project that may see them, once per cut it follows (the sync
+   * client is per cut); a connection still paging its welcome gets the whole list on its last page. */
+  function toPeople(people: sync.PersonRids[]): void {
+    for (const c of conns.values()) if (seesPeople(c)) for (const b of stateOf(c).subs) send(c, { type: "people", branchId: b, people });
+  }
+  /** rids newly bound to `credential`, told when it has a person. */
+  function announce(credential: string, rids: string[]): void {
+    if (!rids.length) return;
+    const p = tables.person(credential);
+    if (p) toPeople([{ ...p, rids }]);
+  }
+  const identityBuckets = new Map<string, { tokens: number; at: number }>();
+  function identityAllowed(c: HostConnection): boolean {
+    const now = clock();
+    const b = identityBuckets.get(c.id) ?? { tokens: IDENTITY_BURST, at: now };
+    b.tokens = Math.min(IDENTITY_BURST, b.tokens + (now - b.at) / IDENTITY_EVERY_MS);
+    b.at = now;
+    identityBuckets.set(c.id, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+  /** `hello.identity` or an `identity` message: refused with an error (the connection stays), or recorded and told. */
+  function identify(c: HostConnection, who: unknown): void {
+    const p = (who && typeof who === "object" ? who : {}) as { id?: unknown; name?: unknown };
+    if (p.id !== c.auth.account) return send(c, { type: "error", code: "forbidden", reason: `identity: ${JSON.stringify(typeof p.id === "string" ? p.id.slice(0, 100) : p.id ?? null)} isn't this session's account` });
+    const name = typeof p.name === "string" ? p.name.trim() : "";
+    const chars = [...name].length;
+    if (chars < 1 || chars > PERSON_NAME_MAX || CONTROL_CHARS.test(name)) return send(c, { type: "error", code: "bad-request", reason: `identity: the name must be 1-${PERSON_NAME_MAX} characters, none of them control characters` });
+    const cred = credentialOf(c);
+    const was = tables.person(cred);
+    if (was?.id === p.id && was.name === name) return;
+    if (!identityAllowed(c)) return send(c, { type: "error", code: "bad-request", reason: "identity: changed too often; try again in a minute" });
+    tables.setPerson(cred, p.id, name);
+    toPeople([{ id: p.id, name, rids: tables.ridsOfPerson(cred) }]); // the sender's copy confirms it
   }
 
   /** May this connection write to `branchId` (role and the token's cut scope, §14)? Checked by every mutation. */
@@ -630,16 +682,22 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
     if (controls.helloRidClaim !== false && controls.bindRid !== false && WRITE_ROLES.has(c.auth.role)) {
       const who = credentialOf(c);
+      const fresh: string[] = [];
       for (const rid of (m.rids ?? []).slice(0, 4096)) {
         if (typeof rid !== "string") continue;
         const bound = tables.ridOwner(rid);
-        if (bound === undefined) tables.bindRid(rid, who);
-        else if (bound !== who) {
+        if (bound === undefined) {
+          tables.bindRid(rid, who);
+          fresh.push(rid);
+        } else if (bound !== who) {
           stats.ridClaimConflicts++;
           emit({ type: "ridClaimConflict", rid });
         }
       }
+      announce(who, fresh);
     }
+    // the sender's person before its welcome is built, so the welcome holds it (an old client sends none)
+    if (m.identity !== undefined) identify(c, m.identity);
     const head = tables.head(m.branchId);
     const claimsAfter = Number.isInteger(m.claimsAfter) ? (m.claimsAfter as number) : -1;
     const { list: confirmed, uncheckedFrom, checkedThrough } = confirmedOf(m.branchId, m.pending, { after: claimsAfter, budget: catchupBytes });
@@ -667,11 +725,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
     budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
+    // every page that subscribes or may (rows, a keyframe) holds the people, [] too: it says this server keeps them
+    budget -= sync.jsonBytesBound(seesPeople(c) ? tables.people() : [], Infinity);
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
     const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
-    const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
+    // taken after the rows' read, so no change to them can fall between this list and the subscription below
+    const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed, people: seesPeople(c) ? tables.people() : [] };
     if (keyframe) msg.keyframe = keyframe;
     // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
     const src = publishedSource(b.rec);
@@ -1074,6 +1135,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return onFork(c, msg);
       case "keyframe":
         return onKeyframe(c, msg);
+      case "identity":
+        return identify(c, msg.identity);
       case "presence":
         return onPresence(c, msg);
       case "history":
@@ -1111,6 +1174,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       conns.delete(conn.id);
       outboxes.delete(conn.id);
       presenceBuckets.delete(conn.id);
+      identityBuckets.delete(conn.id);
       // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
       // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
       // Not while another connection shows the same actor there: the same person reconnected (the old socket timed out
@@ -1278,6 +1342,12 @@ const PRESENCE_ID_MAX = 200;
 /** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
 const PRESENCE_BURST = 20;
 const PRESENCE_PER_SEC = 20;
+/** A person's name (windows-sync R3): 1–200 characters after trimming, no control characters. */
+const PERSON_NAME_MAX = 200;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+/** Changes to a person per connection: a burst of 5, then one every 12 s; each one is a row and a fan-out to everyone. */
+const IDENTITY_BURST = 5;
+const IDENTITY_EVERY_MS = 12_000;
 /** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
 const ARCHIVE_KEEP = 10_000;
 const ARCHIVE_SEGMENT = 10_000;
