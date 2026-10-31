@@ -3,7 +3,8 @@
 // It runs after the Windows patches, on the files they wrote. Each Windows patch script starts again from its pristine
 // copy, so a rebuild runs both in order; this script refuses a file that already has Carton in it.
 // With Carton off at run time (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code; only the .cbproj
-// exclusions (H11) apply either way. build-windows.js --no-carton leaves this script out.
+// exclusions (H11: .carton/ and Carton's own view files) apply either way. build-windows.js --no-carton leaves this
+// script out.
 // Usage: node patch-carton.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>
 //        node patch-carton.js --app <dist/main.js> <dist/library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>
 const fs = require("fs");
@@ -53,7 +54,7 @@ const STORE = {
       ["return this.options.bundles.updateScoped(Lm(o),{ownedFields:[..._a],", "return this.options.bundles.updateScoped(Lm(o),{carton:__cm,ownedFields:[..._a],"],
     ],
     mirror: ["await Uh(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):Uh(this.mirrorPath(t),r,\"utf8\")))}"],
-    archive: ["if(a&&(nS.has(i.name)||i.name===re)||", "if(__carton.skipInArchive(o,i.name)||a&&(nS.has(i.name)||i.name===re)||"],
+    archive: ["if(a&&(nS.has(i.name)||i.name===re)||", "if(__carton.skipInArchive(o,i.name,n)||a&&(nS.has(i.name)||i.name===re)||"],
   },
   worker: {
     who: "app",
@@ -81,7 +82,7 @@ const STORE = {
       ["return this.options.bundles.updateScoped(vI(i),{ownedFields:[...My],", "return this.options.bundles.updateScoped(vI(i),{carton:__cm,ownedFields:[...My],"],
     ],
     mirror: ["await(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\")))}"],
-    archive: ["if(o&&(rH.has(a.name)||a.name===Mt)||", "if(__carton.skipInArchive(i,a.name)||o&&(rH.has(a.name)||a.name===Mt)||"],
+    archive: ["if(o&&(rH.has(a.name)||a.name===Mt)||", "if(__carton.skipInArchive(i,a.name,n)||o&&(rH.has(a.name)||a.name===Mt)||"],
   },
 };
 
@@ -118,7 +119,8 @@ const patchStore = (replace, k) => {
   replace(...s.applyWrite);
   for (const [from, to] of s.writeTimeline) replace(from, to);
   replace(...s.mirror);
-  // H11: no .carton/ and no .scratch/views/ in a .cbproj.
+  // H11: no .carton/ and none of Carton's view files in .scratch/views/ in a .cbproj (the store bridge's skipInArchive,
+  // given the folder the walk reads, `n` in both copies, so it can tell Carton's files by their content).
   replace(...s.archive);
 };
 

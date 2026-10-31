@@ -4,19 +4,21 @@
 // carton-node.cjs the way the store bridge does (the same file, so the same module instance). Every Carton hook is
 // behind `__carton.on`: with Carton off the bundles run 1.4.0's code, including its "This project ID already exists in
 // your library". If carton-node.cjs can't load, the hooks also fall back to 1.4.0's behaviour. One step runs with
-// Carton off too (round 2 #1, kept by the orchestrator): removing `.carton/` and `.scratch/views/` from a staged bundle.
-// It only acts on archives that contain Carton's data, so a stock .cbproj opens exactly as before (an agent's own
-// working folder that happens to be `.scratch/views/` goes the same way). It stops someone else's carton.db and views
-// from landing silently in a Carton-off library and surfacing as foreign history if Carton is switched on later. The
-// archive itself is untouched, so nothing is lost. README "Saves on Windows" lists every Carton-off difference.
+// Carton off too (round 2 #1, kept by the orchestrator): removing what Carton itself wrote from a staged bundle, its
+// `.carton/` folder and its view files in `.scratch/views/` (told by Carton's header or status format: the store
+// bridge's cartonView), never anything else. It only acts on archives that contain Carton's data, so a stock .cbproj
+// opens exactly as before, and a person's or an agent's own files in `.scratch/views/` stay. It stops someone else's
+// carton.db and views from landing silently in a Carton-off library and surfacing as foreign history if Carton is
+// switched on later. The archive itself is untouched, so nothing is lost. README "Saves on Windows" lists every
+// Carton-off difference.
 //   Save As     the entry list Cardboard's own walk made gains `.carton-export/shallow.json` (and loses any old one),
 //               and `.carton-export/history.db` with "Include history" (CARTON_CBPROJ_HISTORY=1), a copy in `.carton/tmp/`
 //               removed once the zip is written (or failed to be).
-//   Open        a staged project from a .cbproj loses any `.carton/` and `.scratch/views/` the file put in it (Carton on
-//               or off: Cardboard's extractor takes every member, and a crafted carton.db could carry a shared cut and a
-//               helper recipe naming a module a later cb run would load); with Carton on its history then starts from
-//               the sender's (prepare runs first on it); whatever Carton opened in the staged bundle is closed when
-//               Cardboard's prepare ends, before Cardboard removes its staging folder.
+//   Open        a staged project from a .cbproj loses any `.carton/` and Carton view files the file put in it
+//               (Carton on or off: Cardboard's extractor takes every member, and a crafted carton.db could carry a
+//               shared cut and a helper recipe naming a module a later cb run would load); with Carton on its history
+//               then starts from the sender's (prepare runs first on it); whatever Carton opened in the staged
+//               bundle is closed when Cardboard's prepare ends, before Cardboard removes its staging folder.
 //   Open        a .cbproj of a project the library has, with history: "Bring in their changes" instead of the error.
 
 // The preamble: `dir` is the folder that holds carton-node.cjs, as the store bridge names it in that bundle.
@@ -34,11 +36,13 @@ var __cartonCbprojExport = async (bundle, entries) => {
 };
 // After the zip is written, or failed to be: the history copy made for it goes.
 var __cartonCbprojSaved = (entries) => { globalThis.__cartonCbproj?.saved(entries).catch(() => {}); };
-// Open Project, before the staged bundle is first read. Carton's local state never comes from a file: its folders are
-// removed whether Carton is on or not (a bundle opened with Carton off would hand them to Carton once it is turned on,
-// as foreign history), case-insensitively where the file system folds case. Only the staged copy: the .cbproj itself
-// is untouched. Cardboard has already refused links and special files in the
-// staged bundle. A folder that can't be removed (Windows: something holds a file in it for good) fails the open.
+// Open Project, before the staged bundle is first read. Carton's local state never comes from a file: what Carton
+// wrote is removed whether Carton is on or not (a bundle opened with Carton off would hand it to Carton once it is
+// turned on, as foreign history), case-insensitively where the file system folds case. That is .carton/, and in
+// .scratch/views/ only the files __carton.cartonView tells as Carton's views and status files: anything else there
+// (a person's or an agent's own files, subfolders) stays, as with Cardboard 1.4.0. Only the staged copy: the .cbproj
+// itself is untouched. Cardboard has already refused links and special files in the staged bundle. What can't be
+// removed (Windows: something holds a file for good) fails the open.
 var __cartonCbprojScrub = async (bundle) => {
   const fs = require("node:fs"), path = require("node:path");
   const fold = process.platform === "win32" || process.platform === "darwin";
@@ -54,7 +58,13 @@ var __cartonCbprojScrub = async (bundle) => {
   };
   for (const n of names(bundle)) {
     if (is(n, ".carton")) await rm(path.join(bundle, n));
-    else if (is(n, ".scratch")) for (const v of names(path.join(bundle, n))) if (is(v, "views")) await rm(path.join(bundle, n, v));
+    else if (is(n, ".scratch")) {
+      for (const v of names(path.join(bundle, n))) {
+        if (!is(v, "views")) continue;
+        const views = path.join(bundle, n, v);
+        for (const f of names(views)) if (__carton.cartonView(path.join(views, f))) await rm(path.join(views, f));
+      }
+    }
   }
 };
 var __cartonCbprojSeed = async (bundle, on) => {

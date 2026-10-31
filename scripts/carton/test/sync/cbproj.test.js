@@ -3,7 +3,8 @@
 // server. Alice saves a .cbproj with history, Bob opens it (a project he doesn't have: her versions come along), adds a
 // clip, edits and saves one back with history; Alice, who edited meanwhile, opens it: their changes, Bob's versions and
 // his clip's file come in, hers stay, and a clash puts theirs in with hers on a conflict card `cb resolve --keep mine`
-// takes back. A crafted file's `.carton/` and view files never survive Open Project (Carton on or off); a file whose
+// takes back. A crafted file's `.carton/` and Carton's view files never survive Open Project (Carton on or off), and
+// never go into a Save As; a person's or an agent's own files in `.scratch/views/` always do. A file whose
 // history is another project's still brings its changes in; a clip's file a first copy lacked, or that this library
 // lost, comes in from Bob's file when it comes again. Carton off, or a file without Carton's entry, keeps 1.4.0's
 // import and its error. Cardboard's bundles are not in git: CARDBOARD_PRISTINE names them (see ../patches.test.js);
@@ -76,6 +77,26 @@ function remix(from, to, more = {}, drop = []) {
 }
 
 const bundleOf = (pc) => path.join(pc.root, "Demo.cardboard");
+// `.scratch/views/` (H11): Carton's view files (a print and its status sidecar) never travel in a .cbproj or survive
+// Open Project; a person's or an agent's own files there do, as in Cardboard 1.4.0 (views.test.js tells them apart).
+const VIEWS = ".scratch/views/";
+const cartonViews = (name) => Object.keys(S.cartonViewFiles(name)).map((n) => VIEWS + n);
+const ownViews = () => Object.keys(S.ownViewFiles()).map((n) => VIEWS + n);
+function plantViews(bundle, files) {
+  fs.mkdirSync(path.join(bundle, ...VIEWS.split("/")), { recursive: true });
+  for (const [n, d] of Object.entries(files)) fs.writeFileSync(path.join(bundle, ...VIEWS.split("/"), n), d);
+}
+const has = (bundle, rel) => fs.existsSync(path.join(bundle, ...rel.split("/")));
+/** A .cbproj's members: everything of a person's own in `.scratch/views/`, nothing of Carton's. */
+function viewsTravel(names, carton) {
+  for (const n of ownViews()) assert.ok(names.includes(n), "the file carries " + n + ": " + JSON.stringify(names));
+  for (const n of names) assert.ok(!n.startsWith(".carton/") && !cartonViews(carton).includes(n), "never " + n);
+}
+/** A bundle after Open Project: a person's own view-folder files kept, Carton's gone. */
+function viewsKept(bundle, carton, who) {
+  for (const n of ownViews()) assert.ok(has(bundle, n), `${who}: ${n} is kept`);
+  for (const n of cartonViews(carton)) assert.ok(!has(bundle, n), `${who}: ${n} is gone`);
+}
 const text = async (pc) => S.textOf(await S.projectOf(pc, id));
 const cbOk = (pc, args, extra) => { const r = pc.cb(args, extra); assert.equal(r.code, 0, args.join(" ") + ": " + r.out + r.err); return r; };
 /** An agent's edit on a computer, through cb (the printed timeline, one field changed). */
@@ -124,14 +145,13 @@ test.after(async () => {
 });
 
 test("Save As (cb) with history: the file carries the shallow export and the history copy as their own entries, never Carton's database or view files", t, async () => {
-  fs.mkdirSync(path.join(bundleOf(alice), ".scratch", "views"), { recursive: true });
-  fs.writeFileSync(path.join(bundleOf(alice), ".scratch", "views", "director_c_t1.tsx"), "// a view file\n");
+  plantViews(bundleOf(alice), { ...S.cartonViewFiles("director_c_t1"), ...S.ownViewFiles() });
   const file = path.join(alice.home, "a1.cbproj");
   cbOk(alice, ["project", "save-as", "Demo", file], HISTORY);
   const z = zip(file);
   assert.ok(z.names.includes(SHALLOW) && z.names.includes(FULL), JSON.stringify(z.names));
   assert.ok(z.names.includes("project.json") && z.names.includes("timeline.tsx"), JSON.stringify(z.names));
-  for (const n of z.names) assert.ok(!n.startsWith(".carton/") && !n.startsWith(".scratch/views/"), "never " + n);
+  viewsTravel(z.names, "director_c_t1");
   const pkg = JSON.parse(z.read(SHALLOW).toString("utf8"));
   assert.equal(pkg.format, "carton-shallow/1");
   assert.equal(pkg.projectId, id);
@@ -166,6 +186,7 @@ test("Open Project (app) of a project Bob doesn't have: imported as 1.4.0 does, 
   assert.equal(p.id, id);
   assert.ok(fs.existsSync(path.join(bundleOf(bob), ".carton", "carton.db")), "Bob's copy has history");
   assert.ok(!fs.existsSync(path.join(bundleOf(bob), ".carton-export")), "the export entry isn't kept in the bundle");
+  viewsKept(bundleOf(bob), "director_c_t1", "Bob's Open Project");
   assert.equal((await text(bob)).fontSize, 140);
   const { cut, versions } = readOnlyCut(bob, () => true);
   assert.ok(cut, "Alice's cut is a read-only cut at Bob's");
@@ -173,7 +194,7 @@ test("Open Project (app) of a project Bob doesn't have: imported as 1.4.0 does, 
   assert.ok(by.includes("director/chat1/turn1") && by.includes("director/chat1/turn2/sub-Explore-a1"), JSON.stringify(by));
 });
 
-test("A crafted .cbproj's .carton/ and view files never survive Open Project: the app (Carton on) seeds from the export, cb's copy (Carton off) removes them too", t, async () => {
+test("A crafted .cbproj's .carton/ and Carton view files never survive Open Project, and a person's own files in .scratch/views/ do: the app (Carton on) seeds from the export, cb's copy (Carton off) removes them too; the app's Save As with Carton off leaves Carton's view files out", t, async () => {
   const { openSqliteStore } = S.facade(b);
   // A carton.db as a crafted file would carry it: Alice's history, plus a helper recipe naming a module of the
   // attacker's (a later cb write would import it).
@@ -189,7 +210,7 @@ test("A crafted .cbproj's .carton/ and view files never survive Open Project: th
   const file = path.join(alice.home, "crafted.cbproj");
   remix(path.join(alice.home, "a1.cbproj"), file, {
     ".carton/carton.db": fs.readFileSync(path.join(work, "carton.db")),
-    ".scratch/views/x.tsx": "// planted view\n",
+    ...Object.fromEntries(Object.entries(S.cartonViewFiles("x")).map(([n, d]) => [VIEWS + n, d])),
     "./.carton/extra.json": "{}",
   });
   assert.ok(zip(file).names.includes(".carton/carton.db"));
@@ -200,7 +221,7 @@ test("A crafted .cbproj's .carton/ and view files never survive Open Project: th
   assert.equal(p.id, id);
   const db = path.join(bundleOf(carol), ".carton", "carton.db");
   assert.ok(fs.existsSync(db), "Carol's copy has history");
-  assert.ok(!fs.existsSync(path.join(bundleOf(carol), ".scratch", "views")), "the planted view files are gone");
+  viewsKept(bundleOf(carol), "x", "Carol's Open Project");
   assert.ok(!fs.existsSync(path.join(bundleOf(carol), ".carton", "extra.json")), "nothing else of the planted .carton/ is left");
   const s = await openSqliteStore(db, { readOnly: true });
   try {
@@ -218,7 +239,20 @@ test("A crafted .cbproj's .carton/ and view files never survive Open Project: th
   assert.equal(off.ok, true, off.error);
   assert.ok(fs.existsSync(path.join(bundleOf(dave), "project.json")));
   assert.ok(!fs.existsSync(path.join(bundleOf(dave), ".carton")), "no .carton/ with Carton off either");
-  assert.ok(!fs.existsSync(path.join(bundleOf(dave), ".scratch", "views")), "no view files with Carton off either");
+  viewsKept(bundleOf(dave), "x", "Dave's Open Project, Carton off");
+
+  // The app's Save As with Carton off (the worker's copy of the walk): Dave's own files go into the file, Carton's
+  // view files (here as a Carton build elsewhere would have left them) don't.
+  plantViews(bundleOf(dave), S.cartonViewFiles("y"));
+  await dave.startWorker({ CARDBOARD_CARTON: "" });
+  // the app lists its projects at start; until then the worker's Save As finds none (and answers null)
+  assert.ok((await dave.call("projects.list")).some((x) => x.id === id), "Dave's library has the project");
+  const daveFile = path.join(dave.home, "d1.cbproj");
+  assert.equal((await dave.call("projects.saveArchive", id, daveFile))?.path, daveFile);
+  await dave.stopWorker();
+  const dz = zip(daveFile);
+  viewsTravel(dz.names, "y");
+  assert.ok(dz.names.includes("project.json"), JSON.stringify(dz.names));
 });
 
 test("Bob adds a clip, his agent and he edit, and he saves a .cbproj with history from the app (the worker's Save As)", t, async () => {
@@ -228,13 +262,14 @@ test("Bob adds a clip, his agent and he edit, and he saves a .cbproj with histor
   applyAt(bob, "start={0.5}", "start={0.25}", "director/chatB/turnB1");
   assert.deepEqual(await bob.call("carton.nameTurn", { projectId: id, chat: "chatB", turn: "turnB1", prompt: "Start the title earlier. Then more." }), { status: "named" });
   await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Hello from Bob" } : null));
+  plantViews(bundleOf(bob), S.cartonViewFiles("b"));
   const file = path.join(bob.home, "b1.cbproj");
   const r = await bob.call("projects.saveArchive", id, file);
   assert.equal(r.path, file);
   const z = zip(file);
   assert.ok(z.names.includes(SHALLOW) && z.names.includes(FULL), JSON.stringify(z.names));
   assert.ok(z.names.some((n) => n.startsWith("media/" + bobClip.mediaId)), JSON.stringify(z.names));
-  for (const n of z.names) assert.ok(!n.startsWith(".carton/"), "never " + n);
+  viewsTravel(z.names, "b");
   const tmp = path.join(bundleOf(bob), ".carton", "tmp");
   assert.deepEqual(fs.existsSync(tmp) ? fs.readdirSync(tmp).filter((n) => n.startsWith("history-")) : [], [], "the history copy is removed once the file is written");
 });

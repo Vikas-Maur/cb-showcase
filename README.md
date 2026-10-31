@@ -344,14 +344,17 @@ it was already retried; the removal now retries the same way (adding `ENOTEMPTY`
 **With Carton off** (see "Carton" below), every Carton hook runs Cardboard's own code, except for three changes that
 apply whether Carton is on or off:
 - The staging folder's removal retries on Windows, as above.
-- Open Project of a `.cbproj` removes `.carton\` and `.scratch\views\` from the staged copy before Cardboard reads
-  it: the folders where Carton keeps a project's history and the agents' views. It only acts on archives that contain
-  Carton's data, so a stock `.cbproj` opens exactly as before (an agent's own working folder that happens to be
-  `.scratch\views\` goes the same way). It stops someone else's `carton.db` and views from landing silently in a
-  Carton-off library and surfacing as foreign history if Carton is switched on later. The archive itself is
-  untouched, so nothing is lost. (`scripts\carton\sync\patches\cbproj.js`)
-- Save As of a `.cbproj` leaves the same two folders out, so a file never carries this computer's history database
-  (local paths, this device's pins) or view files. (`scripts\carton\store-bridge.js`)
+- Open Project of a `.cbproj` removes only what Carton itself wrote from the staged copy, before Cardboard reads it:
+  the `.carton\` folder, where Carton keeps a project's history, and Carton's view files in `.scratch\views\`. A view
+  file is Carton's when its name is a view's and its content is Carton's: a `.tsx` whose `// cardboard:rev` line has
+  the form only Carton writes (`main@3~5e1f0c2a b:…`; Cardboard's own is a bare number), or a `.status` file in
+  Carton's format. Anything else under `.scratch\views\`, a person's or an agent's own files, stays. It only acts on
+  archives that contain Carton's data, so a stock `.cbproj` opens exactly as before. It stops someone else's
+  `carton.db` and views from landing silently in a Carton-off library and surfacing as foreign history if Carton is
+  switched on later. The archive itself is untouched, so nothing is lost. (`scripts\carton\sync\patches\cbproj.js`)
+- Save As of a `.cbproj` leaves the same files out, so a file never carries this computer's history database (local
+  paths, this device's pins) or Carton's view files. Everything else in `.scratch\views\` goes in, as in Cardboard
+  1.4.0. (`scripts\carton\store-bridge.js`)
 
 `scripts\patch-cli-media.js` (applied to `resources\cli\chunks\chunk-LL26E55H.mjs`) makes the same
 media changes in the CLI's own copy of Cardboard's media code. `cb media add`, `cb media proxy` and
@@ -471,7 +474,8 @@ History tab have only been tested on stand-ins: they need the Windows run below.
    the new file in, so a write by anything else is kept and imported, never overwritten (`.carton\displaced\`).
 2. History and undo read Carton's versions first, then the old `.revs`; an apply's base is the exact version its
    header names; Carton's merge replaces Cardboard's.
-3. A `.cbproj` never carries `.carton\` or `.scratch\views\` (on or off: the database holds local paths).
+3. A `.cbproj` never carries `.carton\` or Carton's view files in `.scratch\views\` (on or off: the database holds
+   local paths); anything else in `.scratch\views\` goes in.
 4. `cb`: the commands, WHO in `cb history`, `undo --turn`, the MCP tools, and a `cb carton-hook` command host Claude
    Code runs for its hooks.
 5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent; `Stop` and
@@ -496,10 +500,11 @@ node --test --test-concurrency=1 "scripts/carton/test/*.test.js"
 ```
 
 They check that with Carton off `cb`'s output and files equal this build's without Carton, that `.cbproj` leaves out
-`.carton\` and `.scratch\views\`, that with Carton on every hook reaches Carton with the right arguments (a
-recording stand-in), that the real library worker runs patched (on Node, standing in for Electron's port), and the
-editor's and main's bridges on stand-ins, with the methods each answers itself, and that a read catching
-`project.json` in the middle of an install waits for it instead of reporting the project removed. 28 tests.
+`.carton\` and Carton's view files and keeps the rest of `.scratch\views\`, that with Carton on every hook reaches
+Carton with the right arguments (a recording stand-in), that the real library worker runs patched (on Node, standing
+in for Electron's port), and the editor's and main's bridges on stand-ins, with the methods each answers itself, and
+that a read catching `project.json` in the middle of an install waits for it instead of reporting the project removed.
+28 tests.
 
 On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
 
@@ -571,8 +576,9 @@ with Carton off none of it runs at all.
   yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History panel).
   Clips they added come with their files. Opening one of a project you don't have starts its history from theirs;
   whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
-  move or remove an open file). A `.carton\` or `.scratch\views\` folder inside a `.cbproj` is never kept: Open
-  Project removes them, even with Carton off (see "Saves on Windows", With Carton off). **Include history**:
+  move or remove an open file). A `.carton\` folder or Carton's view files inside a `.cbproj` are never kept: Open
+  Project removes them, even with Carton off, and keeps anything else in `.scratch\views\` (see "Saves on Windows",
+  With Carton off). **Include history**:
   Cardboard's Save As dialog has no switch for it, so set `CARTON_CBPROJ_HISTORY=1` in the environment of the app or
   of `cb` before saving. The file then also carries every version, with its author and name, and whoever opens it sees
   them on a read-only cut. History never includes your local data (pins, notices, sync settings). Saved while edits to
@@ -590,12 +596,13 @@ syncing through a real host on 127.0.0.1): share with history, invite and join, 
 range, by URL and through the agent's `grab_frame`, media while it uploads, offline and rejoin, `cb` with the app open
 (from a print one version behind), and with it closed in cloud mode, another program's save and an offline restore
 with the app closed, a host too old for the app; `.cbproj` Save As, Open and "Bring in their changes" in both copies,
-with history, and saved offline (`cbproj-offline.test.js`); the save path's merges (`facade.test.js`); and the panel's
-words when sync fails (`ui.test.js`).
+with history, and saved offline (`cbproj-offline.test.js`); which files in `.scratch\views\` are Carton's, against
+the files Carton's own materializer writes (`views.test.js`); the save path's merges (`facade.test.js`); and the
+panel's words when sync fails (`ui.test.js`).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/ui.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/ui.test.js
 ```
 
 Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview

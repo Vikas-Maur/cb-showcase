@@ -2,16 +2,52 @@
 // them: the CLI's (chunk-LL26E55H.mjs) and the library worker's (library-worker.js). patch-carton.js places the hooks;
 // carton/docs/INTEGRATION-1.4.0.md §4.1–4.2 says what each one does and why.
 // With Carton off (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code and nothing of Carton is
-// loaded. Only the .cbproj exclusions (H11) apply either way.
+// loaded. Only the .cbproj exclusions (H11: .carton/ and Carton's own view files) apply either way.
 // Usage: require("./carton/store-bridge")({ dir, slice, who }) → the preamble's text. `dir` is a JS expression for the
 // folder that holds carton-node.cjs. `slice` names the bundle's own function that cuts a project down to what `.revs`
 // keeps: tracks, items and aspect ratio, with code sources inlined. `who` is the actor when nothing else says:
 // "cli" for a terminal cb, "app" for the worker's own bookkeeping.
 module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
-  // H11: a .cbproj never carries Carton's database, which holds local paths and the device's pins, or the per-agent
-  // view files. Cardboard's walk compares only top-level names, so the nested folder is checked here.
-  const skipInArchive = (dirRel, name) => dirRel === "" ? name === ".carton" : dirRel === ".scratch" && name === "views";
-  if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive };
+  // H11: a .cbproj never carries Carton's database, which holds local paths and the device's pins, or the view files
+  // Carton writes for agents in .scratch/views/. Only Carton's own: anything else there is a person's or an agent's
+  // (stock Cardboard tells agents to keep their working files in .scratch/) and goes into the file as in Cardboard
+  // 1.4.0. Cardboard's walk compares only top-level names, so the nested files are checked here, by name and content
+  // (cartonView); the walk passes the folder it reads. Carton's names compare case-insensitively where the file system
+  // does (Windows, macOS), as the Open Project scrub compares them (sync/patches/cbproj.js).
+  const fold = process.platform === "win32" || process.platform === "darwin";
+  const folded = (name) => (fold ? name.toLowerCase() : name);
+  // A file Carton wrote in .scratch/views/: a view, "<view>.tsx" whose first cardboard:rev line is Carton's
+  // ("<cut>@<seq>~<hash8> b:<cut8>", as core's refString prints it; Cardboard 1.4.0's is a bare number), or its status
+  // sidecar "<view>.status", Carton's JSON with exactly its fields (the materializer's StatusBody). A file that doesn't
+  // read as one of them, or can't be read, is not Carton's: it is kept.
+  const VIEW_TSX = /^[a-z0-9._-]+\.tsx$/i, VIEW_STATUS = /^[a-z0-9._-]+\.status$/i;
+  const REV_LINE = /^[ \t]*\/\/[ \t]*cardboard:rev[ \t]+([^\r\n]*?)[ \t]*\r?$/m;
+  const CARTON_REV = /^.+@\d+~[0-9a-f]{8} b:[0-9A-Za-z_-]+(?: p:[0-9A-Za-z]+)?(?: by .*)?$/;
+  const STATUS_FIELDS = ["status", "ref", "seq", "conflicts", "diagnostics", "change", "at", "error"];
+  const cartonStatus = (o) => !!o && typeof o === "object" && !Array.isArray(o)
+    && Object.keys(o).every((k) => STATUS_FIELDS.includes(k))
+    && ["confirmed", "pending", "conflicts", "rejected", "error"].includes(o.status)
+    && "ref" in o && "seq" in o && "change" in o && Array.isArray(o.conflicts) && Array.isArray(o.diagnostics) && typeof o.at === "number";
+  const cartonView = (file) => {
+    const fs = require("node:fs"), name = require("node:path").basename(file);
+    const tsx = VIEW_TSX.test(name), status = !tsx && VIEW_STATUS.test(name);
+    if (!tsx && !status) return false;
+    let fd = null;
+    try {
+      const st = fs.lstatSync(file);
+      if (!st.isFile()) return false;
+      if (status) return st.size <= 16 * 1024 * 1024 && cartonStatus(JSON.parse(fs.readFileSync(file, "utf8")));
+      // the header block is at the top of a print
+      fd = fs.openSync(file, "r");
+      const head = Buffer.alloc(Math.min(st.size, 64 * 1024));
+      const m = REV_LINE.exec(head.toString("utf8", 0, fs.readSync(fd, head, 0, head.length, 0)));
+      return !!m && CARTON_REV.test(m[1]);
+    } catch { return false; } finally { if (fd !== null) try { fs.closeSync(fd); } catch {} }
+  };
+  const skipInArchive = (dirRel, name, dir) => dirRel === ""
+    ? folded(name) === ".carton"
+    : folded(dirRel) === ".scratch/views" && cartonView(require("node:path").join(dir, name));
+  if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive, cartonView };
   const path = require("node:path");
   let api;
   // carton-node.cjs is loaded on first use, so a cb command that never touches a project pays nothing for it. If it
@@ -35,6 +71,7 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
   const self = {
     on: true,
     skipInArchive,
+    cartonView,
     // A read of project.json or timeline.tsx can find the name missing for a moment while Carton installs the file
     // (displace, then link; in CI's NTFS race about a quarter of a tight loop's reads did). 1.4.0's saves never left a
     // gap, and its readers take a missing project.json for a removed project: the watcher tells the pages so, and the

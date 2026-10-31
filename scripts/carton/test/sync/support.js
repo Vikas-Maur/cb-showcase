@@ -207,4 +207,20 @@ function zipOf(file) {
   };
 }
 
-module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf };
+/**
+ * The view files Carton's materializer writes in `.scratch/views/` for view `name` (H11): the print, under Carton's
+ * header line, and its status sidecar. views.test.js checks these read as Carton's, as the materializer's own do.
+ */
+const cartonViewFiles = (name) => ({
+  [name + ".tsx"]: "// Cardboard timeline. Edit and save it.\n// cardboard:rev main@3~5e1f0c2a b:b7e1c2d3 p:ad2f48ea by director/c/t1\nexport default (<timeline aspect=\"16:9\" />);\n",
+  [name + ".status"]: JSON.stringify({ status: "confirmed", ref: "main@3~5e1f0c2a b:b7e1c2d3", seq: 3, conflicts: [], diagnostics: [], change: "c1", at: 1730000000000 }),
+});
+/** A person's or an agent's own files in `.scratch/views/`: never Carton's. */
+const ownViewFiles = () => ({
+  "plan.md": "An agent's own notes, in .scratch/views/\n",
+  // Cardboard 1.4.0's own print: its rev is a bare number
+  "mine.tsx": "// cardboard:rev 1730000000000\nexport default (<timeline aspect=\"16:9\" />);\n",
+  "todo.status": JSON.stringify({ status: "done", next: "trim the intro" }),
+});
+
+module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf, cartonViewFiles, ownViewFiles };
