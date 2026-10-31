@@ -1,0 +1,10 @@
+{
+  // The browser side (the page and the Service Worker): DOM types, no node:* types.
+  "extends": "../../tsconfig.dom.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": [
+    "src"
+  ]
+}

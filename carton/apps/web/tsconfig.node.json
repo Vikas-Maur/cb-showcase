@@ -1,0 +1,14 @@
+{
+  // The Node side (seed, Director bot, sample media scripts) and the tests. The tests also check src/ with Node types,
+  // since they run its browser code under Node.
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "noEmit": true
+  },
+  "include": [
+    "scripts",
+    "test",
+    "src"
+  ]
+}
