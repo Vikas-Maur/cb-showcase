@@ -2,6 +2,7 @@
 // (commander, see commander.ts) and by the MCP tools (mcp.ts). Reads run in the calling process straight from
 // carton.db; writes go through `project.write`, which hands them to the sync-lease holder (§6.2) and answers with the
 // cb result contract: confirmed@seq, pending, or conflicts, with the actor's late-conflict notices first.
+import { join } from "node:path";
 import { pathKey } from "@carton/core";
 import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, Version } from "@carton/core";
 import type { CbResult, WriteOp } from "@carton/local";
@@ -11,6 +12,8 @@ import { resolveCut, resolveVersion, UsageError, versionName } from "./refs.ts";
 /** An open project, as `@carton/local`'s `openLocal` returns it. */
 export interface CbProject {
   readonly carton: Carton;
+  /** The project folder (`openLocal`'s): paths a command answers with are made absolute against it. */
+  readonly projectDir?: string;
   /** Run a write through the sync-lease holder (or in this process for a local-only cut). */
   write(op: WriteOp, opts?: { actor?: Actor; waitMs?: number }): Promise<CbResult>;
 }
@@ -41,6 +44,11 @@ export interface CommandSpec {
   write?: boolean;
   /** A git word for it (README: agents think in git). */
   gitAlias?: string[];
+  /**
+   * Carton runs it only when this holds; otherwise it is the host's own command of that name, run as it was
+   * (Cardboard's `source print`, extended with `--view`). The standalone `carton` answers a usage error then.
+   */
+  only?: { when(a: Record<string, any>): boolean; otherwise: string };
   run(ctx: CbContext, a: Record<string, any>): Promise<Output>;
 }
 
@@ -404,6 +412,27 @@ const resolve: CommandSpec = {
   },
 };
 
+const sourcePrint: CommandSpec = {
+  path: ["source", "print"],
+  summary: "Print your own view of the timeline to edit (.scratch/views/<name>.tsx); each save is applied, and its status file says how it went",
+  args: [],
+  options: [{ name: "view", type: "string", description: "your view's name (a hooked agent's view is named after it, whatever it asks)" }],
+  write: true,
+  only: { when: (a) => a.view !== undefined, otherwise: "plain `source print` is Cardboard's own command (`cb source print <project>`); Carton prints your own view: `source print --view <name>`" },
+  async run(ctx, a) {
+    if (a.view === undefined) throw new UsageError(sourcePrint.only!.otherwise);
+    const r = await ctx.project.write({ kind: "printView", name: String(a.view) }, { actor: ctx.actor });
+    const v = r.view as { name: string; path: string; ref: string; status: string } | undefined;
+    if (r.status !== "confirmed" || !v) return { json: r, text: resultText(r, "Print your view"), exitCode: r.status === "confirmed" ? 1 : exitCodeOf(r) };
+    // the materializer answers project-relative paths; the agent may be anywhere
+    const dir = ctx.project.projectDir;
+    const abs = (rel: string) => (dir ? join(dir, ...rel.split("/")) : rel);
+    const view = { ...v, file: abs(v.path), statusFile: abs(v.status) };
+    const lines = [...noticeLines(r.notices ?? []), `Your view "${view.name}" is at ${view.file} (version ${v.ref}).`, `Edit it and save it: each save is applied, and how it went (confirmed, conflicts, or what was wrong) is written to ${view.statusFile}.`];
+    return { json: { ...r, view }, text: lines.join("\n") };
+  },
+};
+
 const activity: CommandSpec = {
   path: ["activity"],
   summary: "Who has been editing: recent versions grouped by person, agent turn and subagent (C5)",
@@ -433,7 +462,7 @@ const activity: CommandSpec = {
   },
 };
 
-export const COMMANDS: readonly CommandSpec[] = [history, cutList, cutNew, cutSwitch, share, fold, credits, restore, undo, compare, publish, conflicts, resolve, activity];
+export const COMMANDS: readonly CommandSpec[] = [history, cutList, cutNew, cutSwitch, share, fold, credits, restore, undo, compare, publish, conflicts, resolve, activity, sourcePrint];
 
 /** git word → Carton command (README; §0.1). `branch <name>` starts a cut; plain `branch` lists them. */
 export const GIT_ALIASES: Readonly<Record<string, string>> = {

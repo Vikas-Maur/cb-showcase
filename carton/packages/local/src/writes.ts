@@ -14,7 +14,9 @@
 import { merge3 } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
+import { statusPath } from "@carton/cardboard/node";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
+import type { HookOp } from "./hooks.ts";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
 export type WriteOp =
@@ -36,8 +38,18 @@ export type WriteOp =
   | { kind: "switch"; cut: string }
   | { kind: "name"; ref: string; name: string }
   | { kind: "pin"; owner: string; cut?: string; ttlMs?: number }
-  /** `cb source print --view [name]`: the materializer prints a per-agent view (§6.4); needs a holder that runs one. */
+  /**
+   * `cb source print --view <name>`: the materializer prints a per-agent view (§6.4); needs a holder that runs one. A
+   * hooked agent's view is named after it whatever it asks; others get the name asked, else `agent-<4 chars>`.
+   */
   | { kind: "printView"; name?: string }
+  /**
+   * An agent's Claude Code hook event (hooks.ts `HookOp`: read, write, stop) for the holder's materializer: the
+   * freeze of the shared file, credits for a hooked agent's save, the turn's pins (§6.4, H8). Never starts a helper,
+   * never counts as a `cb` call, never delivers notices (no agent reads a hook's answer); applied once per request id
+   * by the same materializer. With no materializer to tell: `hook: {event, delivered: false}`.
+   */
+  | HookOp
   /** Share a cut (§5.3): the holder hands it from the local sequencer to the server (local → handing off → server). */
   | { kind: "share"; cut?: string }
   /** `cb resolve` closed a card: drop it from the actor's late-conflict notices. */
@@ -74,7 +86,7 @@ export const WAIT_MS = 5000;
  * receiving a write is simply asked again. (`submit`'s `idempotent: false` path stays for any future write without an
  * id; none uses it now.)
  */
-export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share"]);
+export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
 
 /**
  * Run an idempotent write again when Carton lost its append race too many times in a row (many writers on one
@@ -248,14 +260,18 @@ const receiptKey = (requestId: ChangeId) => ["@request", requestId];
 /**
  * `shared`: written with a shared cut's pending row; it holds the cards, and core says whether the change landed.
  * `cut`: the cut the request went to, so a retry's WriteOp `head` is of that cut even after a switch (older receipts
- * have none: the op's cut, else the current one). The landed change's own cut: core picks the current cut when it
- * commits, after this write read it, so a switch in between moves the change; with nothing landed, the cut read.
+ * have none: the op's cut, else the current one). runWrite fixes it once per request and commits there.
  */
 interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number; shared?: boolean; cut?: string }
 
 /** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
 export interface ViewPrinter {
-  printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string }>;
+  /** `status`: the view's status file (project-relative); default `.scratch/views/<name>.status` (cardboard's). */
+  printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string; status?: string }>;
+  /** Hook events (WriteOp `hook`): a hooked agent read the shared file, is about to write `rel`, ended its turn. */
+  hookRead?(actor: Actor): Promise<void>;
+  hookWrite?(actor: Actor, rel: string): Promise<void>;
+  hookStop?(actor: Actor): Promise<void>;
   onCb?(): Promise<void>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
   /**
@@ -275,6 +291,58 @@ export interface ViewPrinter {
   onChangeUpdate?(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; reason?: string }): Promise<void>;
 }
 
+const HOOK_EVENTS: ReadonlySet<string> = new Set(["read", "write", "stop"]);
+/** Hook requests a materializer was told, by request id: the call, and when it settled. */
+interface Told { call: Promise<void>; settled?: number }
+const hooksTold = new WeakMap<ViewPrinter, Map<ChangeId, Told>>();
+/** A settled request is remembered this long (a retry comes within seconds), and at most this many. */
+const HOOKS_KEEP_MS = 10 * 60_000;
+const HOOKS_KEPT = 10_000;
+/** Forget settled requests past HOOKS_KEEP_MS, then the oldest settled past HOOKS_KEPT; a call in flight never. */
+function forgetTold(told: Map<ChangeId, Told>, now: number): void {
+  for (const [id, t] of told) if (t.settled !== undefined && now - t.settled >= HOOKS_KEEP_MS) told.delete(id);
+  for (const [id, t] of told) {
+    if (told.size <= HOOKS_KEPT) break;
+    if (t.settled !== undefined) told.delete(id);
+  }
+}
+
+/**
+ * WriteOp `hook`: tell the materializer, once per request id. A retry of a request it was told (an answer lost on the
+ * socket) waits for that call instead of making it again: `hookWrite` queues one credit per call, so a second would
+ * credit the agent with someone else's next save. A call that failed isn't made again either: it may have taken
+ * effect before it failed (cardboard's hookWrite queues the credit, then updates the freeze), so its retry gets its
+ * failure (review H8 #3). A call in flight is never forgotten (#4). A new holder has a new materializer that was never
+ * told: the retry tells it.
+ */
+async function hookEvent(op: HookOp, actor: Actor, id: ChangeId, mz: ViewPrinter | null, notices: Notice[]): Promise<CbResult> {
+  if (!HOOK_EVENTS.has(op.event)) return { status: "error", error: `unknown hook event ${JSON.stringify(op.event)}`, notices };
+  const file = op.event === "write" ? hookFile(op.file) : null;
+  if (op.event === "write" && !file) return { status: "error", error: `a write hook event names a file inside the project, not ${JSON.stringify(op.file ?? null)}`, notices };
+  const call = !mz ? null : op.event === "read" ? mz.hookRead && (() => mz.hookRead!(actor)) : op.event === "write" ? mz.hookWrite && (() => mz.hookWrite!(actor, file!)) : mz.hookStop && (() => mz.hookStop!(actor));
+  if (!mz || !call) return { status: "confirmed", seq: 0, ref: null, notices, hook: { event: op.event, delivered: false } };
+  let told = hooksTold.get(mz);
+  if (!told) hooksTold.set(mz, (told = new Map()));
+  let t = told.get(id);
+  const again = !!t;
+  if (!t) {
+    if (told.size >= 256) forgetTold(told, Date.now());
+    const entry: Told = (t = { call: Promise.resolve().then(call) }); // a materializer that throws at once is a failed call too
+    const settle = () => { entry.settled = Date.now(); };
+    entry.call.then(settle, settle);
+    told.set(id, entry);
+  }
+  await t.call;
+  return { status: "confirmed", seq: 0, ref: null, notices, hook: { event: op.event, delivered: true, ...(again ? { again: true } : {}) } };
+}
+/** A hook's file: project-relative with `/`, no `..`, not absolute; null when it isn't one. */
+function hookFile(f: unknown): string | null {
+  if (typeof f !== "string" || !f) return null;
+  const rel = f.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+  if (!rel || rel.startsWith("/") || /^[A-Za-z]:/.test(rel) || rel.split("/").some((s) => s === ".." || s === "")) return null;
+  return rel;
+}
+
 /** Run one write on a Carton handle and answer with the cb result contract. */
 export async function runWrite(carton: Carton, req: WriteRequest, opts: { online?: (cut?: string) => boolean; materializer?: ViewPrinter | null; viewName?: (actor: Actor, wanted?: string) => Promise<string> } = {}): Promise<CbResult> {
   // filled once the result exists (every result below holds this array): a call that fails gives no notice away
@@ -290,14 +358,16 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   // listen before writing: on a shared cut the ack can arrive before commit() returns
   const outcomes = watchOutcomes(carton);
   try {
-    // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers)
-    await opts.materializer?.onCb?.();
+    // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers); a
+    // hook event isn't one (a Stop would freeze the file again just as the turn ends)
+    if (op.kind !== "hook") await opts.materializer?.onCb?.();
     let result = await run();
     // WriteOp `head`: the holder's head of the cut the write went to, never of whichever cut is current now
     if ("head" in op && op.head && (result.status === "confirmed" || result.status === "pending" || result.status === "conflicts")) {
       result = { ...result, head: await carton.head(into ?? destCut(op)) } as CbResult;
     }
-    notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
+    // a hook's answer goes to the hook process, never to the agent: its notices stay for its next `cb` call
+    if (op.kind !== "hook") notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
     return result;
   } finally {
     outcomes.close();
@@ -317,15 +387,20 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // caller is the view file (two terminal agents on one machine look alike; their views don't, §6.4)
       const owner: Actor = isFallbackActor(author) ? { kind: "external", id: `external:.scratch/views/${name}.tsx`, name: `${author.name ?? "Terminal"} (view ${name})`, group: author.group } : author;
       const v = await opts.materializer.printView(name, owner, { hooked: hookDelivered(author) });
-      return { status: "confirmed", seq: 0, ref: v.ref, notices, view: v };
+      return { status: "confirmed", seq: 0, ref: v.ref, notices, view: { ...v, status: v.status ?? statusPath(v.name) } };
     }
+    case "hook": return hookEvent(op, author, req.id, opts.materializer ?? null, notices);
     case "commit": {
       // A save whose merge raises cards: the rest lands, and each card keeps head's value until someone picks (nothing
       // is lost). Core's own rebase loop decides every card "ours" (keeping its intents, inferred remaps and policy as
       // it would for any rebase) and reports the cards it decided; they are written as a notice for `cb conflicts` /
       // `cb resolve` in the same atomic batch as the append, so no crash or concurrent writer can separate them.
-      // The base is fixed once per request (default: head now): a retry after core lost its append race must merge
-      // from the same base, never re-apply the proposal on a newer head.
+      // The cut and base are fixed once per request (default: the current cut, its head now): a retry after core lost
+      // its append race must merge from the same base, never re-apply the proposal on a newer head. The cut is read
+      // once and given to core: a switch served while this write waits moves nothing, so the cut core commits on is
+      // the one its base, its shared check and its receipt name (review H8 #1: one read here and core's own later one
+      // could differ, even for a save whose every edit was carded, which has no change to name its cut).
+      if (op.cut === undefined) op.cut = carton.cut;
       if (op.base === undefined) op.base = (await carton.head(op.cut)).ref;
       const store = storeOf(carton);
       const receipt = store ? await store.get<Receipt>("notices", receiptKey(req.id)) : undefined;
@@ -338,7 +413,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       }
       // on a shared cut core deduplicates a retried id itself (pending, confirmed, or recorded as a no-op) and says
       // where it is now; the receipt, written with its pending row, keeps the cards it answered with
-      const cutId = op.cut ?? carton.cut;
+      const cutId = op.cut;
       const sharedCut = (await carton.cuts()).find((c) => c.id === cutId)?.sequencer.kind !== "local";
       r = await carton.commit({
         id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
@@ -347,7 +422,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
           ? {
               cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [
                 cardsRow(author, req.id, change?.id ?? null, cards),
-                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), cut: change?.branchId ?? cutId, ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
+                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), cut: cutId, ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
               ],
             }
           : {}),

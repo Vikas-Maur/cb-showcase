@@ -5,7 +5,6 @@
 //   - none, and the cut is local → commit here: the local sequencer is carton.db itself (CAS), nothing to push.
 import { randomBytes } from "node:crypto";
 import { hostname, userInfo } from "node:os";
-import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Carton } from "@carton/core";
@@ -13,7 +12,9 @@ import type { Actor, CartonEvent, HostAdapter, OpenOptions } from "@carton/core"
 import type { IdentitySource, Store } from "@carton/core/plugins";
 import { openProjectStore } from "@carton/store-sqlite";
 import type { SqliteStore } from "@carton/store-sqlite";
-import { submit } from "./client.ts";
+import { NO_HELPER, submit } from "./client.ts";
+import { HOOK_NO_HELPER, hookUndelivered } from "./hook-send.ts";
+import { readProjectId } from "./project-id.ts";
 import { spawnHelper } from "./helper.ts";
 import { Lease, fence as leaseFence, readHelperRecipe } from "./lease.ts";
 import { identify } from "./identity.ts";
@@ -71,6 +72,8 @@ export interface LocalCarton {
   readonly carton: Carton;
   readonly store: SqliteStore;
   readonly dbPath: string;
+  /** The project (bundle) folder: per-agent views and their status files are inside it. */
+  readonly projectDir: string;
   readonly lease: Lease;
   readonly actor: Actor;
   /** Hand a write to the lease holder (or commit it here for a local-only cut). The cb result contract. */
@@ -83,15 +86,7 @@ const RID = randomBytes(12).toString("hex");
 let n = 0;
 export const nextChangeId = (): string => `${RID}.${++n}`;
 
-export function readProjectId(projectDir: string): string {
-  try {
-    const p = JSON.parse(readFileSync(join(projectDir, "project.json"), "utf8"));
-    // Cardboard's envelope is {format, version, project: {id, …}, media}; a bare project keeps `id` at the top
-    const id = p?.project?.id ?? p?.id;
-    if (typeof id === "string" && id) return id;
-  } catch { /* no project.json: a non-Cardboard host */ }
-  throw new Error(`no project id: ${join(projectDir, "project.json")} has none; pass projectId`);
-}
+export { readProjectId };
 
 async function defaultAdapter(): Promise<HostAdapter> {
   const m = await import("@carton/cardboard");
@@ -178,6 +173,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
     carton,
     store,
     dbPath,
+    projectDir: opts.projectDir,
     lease,
     actor,
     async write(op, o = {}) {
@@ -188,22 +184,26 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
       // a helper runs this process's factory, never one with another adapter (R2-03): without a factory of its own or a
       // recorded one, only a process on Cardboard's adapter may start local's default
       const helperOk = !!(opts.helperFactory || recipe) || adapter.name === DEFAULT_ADAPTER;
+      // a hook event is for a running holder's materializer: it never starts a helper (one would have nothing to freeze
+      // or credit, and a hook runs before every tool call); with no holder answering, nobody is told
+      const hook = op.kind === "hook";
       const r = await submit("carton.commit", req, {
         lease,
         // route by the cut the write changes (a fold's is `into`): a shared one needs the pusher
         // sharing starts the pusher, so it always runs on a lease holder (a helper when the app is closed)
-        needsHelper: async () => op.kind === "share" || (await needsHelper(destCut(op))),
-        ...(helperOk ? {} : { noHelper: `a helper would open this project with Cardboard's adapter, not "${adapter.name}": pass helperFactory` }),
+        needsHelper: async () => !hook && (op.kind === "share" || (await needsHelper(destCut(op)))),
+        ...(hook ? { noHelper: HOOK_NO_HELPER } : helperOk ? {} : { noHelper: `a helper would open this project with Cardboard's adapter, not "${adapter.name}": pass helperFactory` }),
         idempotent: IDEMPOTENT.has(op.kind),
         spawnHelper: (seen) => void spawnHelper({ dbPath, seen, factory: recipe?.factory ?? factory, config: { name, ...recipe?.config, projectDir: opts.projectDir, projectId, dataDir: opts.dataDir, ...opts.helperConfig } }),
       });
+      if (hook && r.via === "error" && r.code === NO_HELPER) return hookUndelivered(op.event);
       if (r.via === "error") return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
       const out = r.via === "holder" ? (r.result as CbResult) : await withRaceRetry(IDEMPOTENT.has(op.kind), () => runWrite(carton, req));
       // written without the holder the probe found (it didn't answer, or its lease had expired): if it is alive after
       // all (the app's engine thread, busy for a moment), tell it to look at carton.db now (B11). Best effort, not
       // awaited: the app follows carton.db by itself within a poll
       const passed = r.passedOver;
-      if (passed && ((out.status === "confirmed" && !out.empty) || out.status === "pending") && !(r.via === "holder" && r.holder.socketPath === passed.socketPath)) void nudgeHolder(passed.socketPath);
+      if (passed && !hook && ((out.status === "confirmed" && !out.empty) || out.status === "pending") && !(r.via === "holder" && r.holder.socketPath === passed.socketPath)) void nudgeHolder(passed.socketPath);
       return out;
     },
     async close() {

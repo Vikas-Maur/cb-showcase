@@ -8,9 +8,12 @@ import assert from "node:assert/strict";
 import { Carton } from "@carton/core";
 import type { Actor, Doc, Rec } from "@carton/core";
 import { createMemoryStore } from "@carton/store-memory";
+import type { AuthContext, AuthProvider } from "@carton/core/plugins";
+import { createInProcessHost } from "@carton/server";
+import { sqliteStorage } from "../../conformance/src/system/sqlite.ts";
 import { runWrite } from "../src/writes.ts";
 import type { CbResult, WriteHead } from "../src/writes.ts";
-import { adapter, doc0 } from "./support/real.ts";
+import { adapter, doc0, schema } from "./support/real.ts";
 
 const me: Actor = { kind: "human", id: "human:me" };
 const set = (id: string, f: string, v: unknown) => ({ op: "set" as const, path: ["timelineItems", id, f], value: v });
@@ -113,38 +116,90 @@ test("the cost: the head shares the holder's frozen records, so an answer copies
   }
 });
 
-test("a retry answered from its receipt gets the head of the cut the change went to, though the cut switched mid-write", async () => {
-  // windows-sync's 3977f66 records the receipt's cut from the current cut, read before an await; core picks its own
-  // when it commits. A switch in between (another process's `cb cut switch`, served while this write waits) put the
-  // change on the new cut and the receipt on the old one, so the retry's head was of a cut that doesn't have it.
+/** The current cut switches to `to` while the write reads the cut list: after it began, before core commits. */
+function switchMidWrite(c: Carton, to: string) {
+  const cuts = c.cuts.bind(c);
+  const state = { armed: true };
+  (c as unknown as { cuts: typeof c.cuts }).cuts = async () => {
+    const x = await cuts();
+    if (state.armed) { state.armed = false; await c.switchTo(to); }
+    return x;
+  };
+  return state;
+}
+
+test("a cut switched mid-write moves nothing: the save lands on the cut it began on, and its retry's head is that cut's", async () => {
+  // windows-sync's 3977f66 + review H8 #1: the write read the cut, then core read it again when it committed; a switch
+  // in between (another process's `cb cut switch`, served while this write waited) split them
   const c = await opened();
   try {
     const main = c.cut;
+    const root = (await c.head()).ref;
+    assert.equal((await write(c, { kind: "commit", ops: [set("c1", "name", "newer")] })).status, "confirmed");
     const other = (await c.fork("Other")).id;
-    // the write is made on Other's base; Other's c1 changes since (the stale clash: a card, the rest lands)
-    const base = (await c.head(other)).ref;
-    assert.equal((await write(c, { kind: "commit", cut: other, ops: [set("c1", "name", "newer")] })).status, "confirmed");
-    // the switch lands while the write reads the cut list (after it noted the current cut, before core commits)
-    const cuts = c.cuts.bind(c);
-    let armed = true;
-    (c as unknown as { cuts: typeof c.cuts }).cuts = async () => {
-      const x = await cuts();
-      if (armed) { armed = false; await c.switchTo(other); }
-      return x;
-    };
-    const req = { id: "wh.moved", actor: me, op: { kind: "commit" as const, base, ops: [set("c1", "name", "stale"), set("c3", "name", "mine")], head: true } };
+    const sw = switchMidWrite(c, other);
+    const req = { id: "wh.moved", actor: me, op: { kind: "commit" as const, base: root, ops: [set("c1", "name", "stale"), set("c3", "name", "mine")], head: true } };
     const first = await runWrite(c, structuredClone(req) as never);
-    assert.ok(!armed, "the switch happened mid-write");
+    assert.ok(!sw.armed, "the switch happened mid-write");
+    assert.equal(c.cut, other);
     assert.equal(first.status, "conflicts", JSON.stringify(first));
-    assert.equal(headOf(first)?.ref.branchId, other, "core committed on the cut it found current");
-    assert.equal(rec(headOf(first)!.doc, "c3").name, "mine");
-
-    await c.switchTo(main);
+    assert.equal(headOf(first)?.ref.branchId, main, "on the cut it began on");
+    assert.equal(rec((await c.head(main)).doc, "c3").name, "mine");
+    assert.notEqual(rec((await c.head(other)).doc, "c3").name, "mine", "not on the cut switched to");
     const again = await runWrite(c, structuredClone(req) as never);
     assert.equal(again.status, "conflicts", JSON.stringify(again));
-    assert.equal(headOf(again)?.ref.branchId, other, "the receipt names the cut the change went to");
+    assert.equal(headOf(again)?.ref.branchId, main, "the receipt names it");
     assert.equal(rec(headOf(again)!.doc, "c3").name, "mine");
-    assert.notEqual(rec((await c.head(main)).doc, "c3").name, "mine", "main never had it");
+  } finally {
+    await c.close();
+  }
+});
+
+test("a save whose every edit was carded (no change to name a cut), the cut switched mid-write: answer and retry agree", async () => {
+  const c = await opened();
+  try {
+    const main = c.cut;
+    const root = (await c.head()).ref;
+    assert.equal((await write(c, { kind: "commit", ops: [set("c1", "name", "newer")] })).status, "confirmed");
+    const other = (await c.fork("Other")).id;
+    switchMidWrite(c, other);
+    const req = { id: "wh.carded", actor: me, op: { kind: "commit" as const, base: root, ops: [set("c1", "name", "stale")], head: true } };
+    const first = await runWrite(c, structuredClone(req) as never);
+    assert.equal(first.status, "conflicts", JSON.stringify(first));
+    const again = await runWrite(c, structuredClone(req) as never);
+    assert.equal(again.status, "conflicts", JSON.stringify(again));
+    assert.deepEqual([headOf(first)?.ref.branchId, headOf(again)?.ref.branchId], [main, main], "the answer and its retry name the same cut");
+  } finally {
+    await c.close();
+  }
+});
+
+test("a switch to a shared cut mid-write: the save stays on the local cut it began on; its retry isn't told it confirmed elsewhere", async () => {
+  // before: core committed on the shared cut (pending) while the receipt said local, so a retry answered "confirmed"
+  const tokens = new Map<string, AuthContext>();
+  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (cl, f) => schema.collections[cl]?.groupOf.get(f)?.name });
+  tokens.set("tok", { account: "alice", credential: "alice/install", role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
+  const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() }, actor: me, sync: { transport: host.transport, url: host.url, token: "tok", autoConnect: false } });
+  try {
+    const main = c.cut;
+    const root = (await c.head()).ref;
+    assert.equal((await write(c, { kind: "commit", ops: [set("c1", "name", "newer")] })).status, "confirmed");
+    const shared = (await c.fork("Shared")).id;
+    await c.share(shared);
+    assert.ok(await c.sync!.connect({ nonce: "n" }));
+    for (const end = Date.now() + 5000; (await c.cuts()).find((x) => x.id === shared)!.sequencer.kind !== "server"; await new Promise((r) => setTimeout(r, 10))) if (Date.now() > end) throw new Error("the hand-off");
+    switchMidWrite(c, shared);
+    const req = { id: "wh.toShared", actor: me, op: { kind: "commit" as const, base: root, ops: [set("c1", "name", "stale"), set("c3", "name", "mine")], head: true } };
+    const first = await runWrite(c, structuredClone(req) as never);
+    assert.equal(c.cut, shared);
+    assert.equal(first.status, "conflicts", JSON.stringify(first));
+    assert.equal(first.landed, "confirmed", "confirmed on the local cut, not pending on the shared one");
+    assert.equal(headOf(first)?.ref.branchId, main);
+    const again = await runWrite(c, structuredClone(req) as never);
+    assert.deepEqual([again.status, again.landed, headOf(again)?.ref.branchId], ["conflicts", "confirmed", main], JSON.stringify(again));
+    assert.notEqual(rec((await c.head(shared)).doc, "c3").name, "mine", "nothing went to the shared cut");
+    assert.equal(rec((await c.head(main)).doc, "c3").name, "mine");
   } finally {
     await c.close();
   }
