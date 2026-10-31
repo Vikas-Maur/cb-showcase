@@ -80,6 +80,8 @@ export interface SequencerStats {
   adoptRepeats: number;
   ridClaimConflicts: number;
   keyframes: number;
+  /** Presence updates dropped by the per-connection cap. */
+  presenceDropped: number;
   rowsRead: number;
   rowsWritten: number;
   /** Envelopes opened (from clients) and sealed (to clients: one per message, however many connections). */
@@ -215,6 +217,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     adoptRepeats: 0,
     ridClaimConflicts: 0,
     keyframes: 0,
+    presenceDropped: 0,
     get rowsRead() {
       return opts.storage.stats?.().rowsRead ?? tables.meter.rowsRead;
     },
@@ -849,6 +852,31 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     emit({ type: "keyframe", branchId: m.branchId, seq: k.seq, mismatch: false });
   }
 
+  // Per connection, a token bucket: PRESENCE_BURST updates at once, refilled at PRESENCE_PER_SEC. Clients send at most
+  // 10 a second (the sync client coalesces); anything over the cap is dropped, so a misbehaving client can't make the
+  // relay, and on a Durable Object the fan-out work, grow with its sending rate.
+  const presenceBuckets = new Map<string, { tokens: number; at: number }>();
+  function presenceAllowed(c: HostConnection): boolean {
+    const now = clock();
+    const b = presenceBuckets.get(c.id) ?? { tokens: PRESENCE_BURST, at: now };
+    b.tokens = Math.min(PRESENCE_BURST, b.tokens + ((now - b.at) / 1000) * PRESENCE_PER_SEC);
+    b.at = now;
+    presenceBuckets.set(c.id, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
+  // The latest presence a connection had dropped by its cap, relayed when its bucket refills: a burst (updates that
+  // queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position or its
+  // `state: null` always reaches the others.
+  const presenceTrailing = new Map<string, { branchId: string; msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>();
+  function clearTrailing(id: string): void {
+    const t = presenceTrailing.get(id);
+    if (t) clearTimeout(t.timer);
+    presenceTrailing.delete(id);
+  }
+
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
     if (!stateOf(c).subs.includes(m.branchId)) return;
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
@@ -856,6 +884,30 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
+    if (!presenceAllowed(c)) {
+      stats.presenceDropped++;
+      const waiting = presenceTrailing.get(c.id);
+      if (waiting) {
+        waiting.branchId = m.branchId;
+        waiting.msg = msg;
+        return;
+      }
+      const b = presenceBuckets.get(c.id)!;
+      const ms = Math.max(1, Math.ceil(((1 - b.tokens) / PRESENCE_PER_SEC) * 1000));
+      const entry = {
+        branchId: m.branchId,
+        msg,
+        timer: setTimeout(() => {
+          presenceTrailing.delete(c.id);
+          if (!conns.has(c.id) || !stateOf(c).subs.includes(entry.branchId)) return;
+          if (presenceAllowed(c)) fanout(entry.branchId, entry.msg, c.id);
+        }, ms),
+      };
+      (entry.timer as { unref?: () => void }).unref?.();
+      presenceTrailing.set(c.id, entry);
+      return;
+    }
+    clearTrailing(c.id); // this newer state supersedes the waiting one
     fanout(m.branchId, msg, c.id);
   }
 
@@ -917,6 +969,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     disconnect(conn) {
       conns.delete(conn.id);
       outboxes.delete(conn.id);
+      presenceBuckets.delete(conn.id);
+      clearTrailing(conn.id);
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
@@ -1054,6 +1108,9 @@ function utf8Over(text: string, limit: number): boolean {
 function declarationTooLarge(ch: Change): boolean {
   return (ch.paths?.length ?? 0) + (ch.reads?.length ?? 0) > 200_000 || (ch.spans?.length ?? 0) > 50_000 || (ch.trackOrder?.length ?? 0) > 10_000 || (ch.base?.pending?.length ?? 0) > 10_000;
 }
+/** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
+const PRESENCE_BURST = 20;
+const PRESENCE_PER_SEC = 20;
 /** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
 const ARCHIVE_KEEP = 10_000;
 const ARCHIVE_SEGMENT = 10_000;

@@ -49,9 +49,19 @@ export class Lease {
   constructor(store: Store) { this.store = store; }
 
   async read(): Promise<LeaseRow | null> {
-    const [nonce, row] = await Promise.all([this.store.get<string>(LEASE_TABLE, NONCE_KEY), this.store.get<LeaseRow>(LEASE_TABLE, ROW_KEY)]);
-    // the nonce key is the truth; a row from an older holder (written in another batch) never names the holder
-    return nonce && row?.nonce === nonce ? row : null;
+    return (await this.snapshot()).row;
+  }
+  /**
+   * The nonce and the row, as one observation. The two keys are written in one batch but read with two gets, so a
+   * take or release landing between them shows as a mismatch; the pair is then read again. `row` is null when the lease
+   * is free (`nonce` null too).
+   */
+  async snapshot(): Promise<{ nonce: string | null; row: LeaseRow | null }> {
+    for (let i = 0; ; i++) {
+      const nonce = (await this.store.get<string>(LEASE_TABLE, NONCE_KEY)) ?? null;
+      const row = (await this.store.get<LeaseRow>(LEASE_TABLE, ROW_KEY)) ?? null;
+      if ((row?.nonce ?? null) === nonce || i >= 8) return { nonce, row: nonce && row?.nonce === nonce ? row : null };
+    }
   }
   async nonce(): Promise<string | null> {
     return (await this.store.get<string>(LEASE_TABLE, NONCE_KEY)) ?? null;
@@ -61,17 +71,21 @@ export class Lease {
   async take(seen: string | null, who: { pid: number; socketPath: string; kind: HolderKind }, now = Date.now()): Promise<LeaseRow | null> {
     const row: LeaseRow = { ...who, nonce: newNonce(), heartbeat: now, expires: now + LEASE_EXPIRY_MS };
     const ok = await this.store.write(
-      [{ table: LEASE_TABLE, key: NONCE_KEY, value: row.nonce }, { table: LEASE_TABLE, key: ROW_KEY, value: row }],
+      [{ table: LEASE_TABLE, key: NONCE_KEY, value: row.nonce }, { table: LEASE_TABLE, key: ROW_KEY, value: { ...row } }],
       [{ table: LEASE_TABLE, key: NONCE_KEY, expect: seen === null ? "absent" : { equals: seen } }],
     );
-    return ok ? row : null;
+    return ok ? row : null; // the caller's copy; the Store keeps its own
   }
 
-  /** Heartbeat. False when the lease no longer carries `nonce`: this holder was replaced and must stop. */
+  /**
+   * Heartbeat. False when the lease no longer carries `nonce`: this holder was replaced and must stop. Writes a fresh row
+   * (Store values are immutable once written) and updates the caller's copy only when the write landed.
+   */
   async beat(row: LeaseRow, now = Date.now()): Promise<boolean> {
-    row.heartbeat = now;
-    row.expires = now + LEASE_EXPIRY_MS;
-    return this.store.write([{ table: LEASE_TABLE, key: ROW_KEY, value: { ...row } }], [fence(row.nonce)]);
+    const next: LeaseRow = { ...row, heartbeat: now, expires: now + LEASE_EXPIRY_MS };
+    const ok = await this.store.write([{ table: LEASE_TABLE, key: ROW_KEY, value: next }], [fence(row.nonce)]);
+    if (ok) { row.heartbeat = next.heartbeat; row.expires = next.expires; }
+    return ok;
   }
 
   /** Release our own lease (never someone else's). */

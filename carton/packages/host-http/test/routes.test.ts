@@ -13,7 +13,8 @@ const req = (path: string, init: RequestInit = {}) => new Request(`http://host${
 
 function deps(over: Partial<HttpDeps> = {}): HttpDeps {
   const store = createMemoryBlobStore();
-  return { auth: createHmacAuth({ secret: SECRET }), secret: SECRET, blobsFor: () => store, upgrade: async () => new Response("upgraded", { status: 299 }), ...over };
+  const seq = createMemoryBlobStore();
+  return { auth: createHmacAuth({ secret: SECRET }), secret: SECRET, blobsFor: () => store, sequencerBlobsFor: () => seq, upgrade: async () => new Response("upgraded", { status: 299 }), ...over };
 }
 
 test("non-API paths are left to the host (static files); unknown API paths are 404", async () => {
@@ -46,4 +47,55 @@ test("an AuthProvider without invite links answers 501 on the invite routes, and
 test("oversized JSON bodies are refused", async () => {
   const r = await handleHttp(req("/api/projects/p/join", { method: "POST", body: "x".repeat(70_000) }), deps());
   assert.equal(r?.status, 413);
+});
+
+test("a chunked body with no Content-Length is cut off at the budget, and its stream cancelled", async () => {
+  let pulled = 0, cancelled = false;
+  const endless = new ReadableStream<Uint8Array>({
+    pull(c) {
+      pulled++;
+      c.enqueue(new Uint8Array(16 * 1024));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const r = await handleHttp(new Request("http://host/api/projects/p/join", { method: "POST", body: endless, duplex: "half" } as RequestInit), deps());
+  assert.equal(r?.status, 413);
+  assert.ok(cancelled, "the stream was not cancelled");
+  assert.ok(pulled < 16, `read ${pulled} chunks past a 64 KB budget`);
+});
+
+test("a complete request for the maximum 10,000 parts is not refused for its size", async () => {
+  const d = deps();
+  const tok = await d.auth.issue!({ ...ctx, ttlMs: 60_000 });
+  const store = d.blobsFor("p")!;
+  const up = await store.createMultipart("big");
+  const parts = Array.from({ length: 10_000 }, (_, i) => ({ partNumber: i + 1, etag: `"${"e".repeat(32)}"` }));
+  const r = await handleHttp(req(`/api/projects/p/uploads/${up.uploadId}/complete?key=big`, { method: "POST", headers: { authorization: `Bearer ${tok}` }, body: JSON.stringify({ parts }) }), d);
+  assert.notEqual(r?.status, 413);
+  assert.equal(r?.status, 400, "the store refuses the parts (never uploaded), not the HTTP layer");
+});
+
+test("the message routes reach exactly the two envelope key patterns of the sequencer's scope", async () => {
+  const d = deps();
+  const seq = d.sequencerBlobsFor!("p")!;
+  const editor = await d.auth.issue!({ ...ctx, ttlMs: 60_000 });
+  const viewer = await d.auth.issue!({ ...ctx, credential: "v/dev", role: "viewer", ttlMs: 60_000 });
+  const sha = "a".repeat(64);
+  const call = (method: string, key: string, token = editor, body?: Uint8Array) =>
+    handleHttp(req(`/api/projects/p/messages/${key}`, { method, headers: { authorization: `Bearer ${token}` }, ...(body ? { body: body as Uint8Array<ArrayBuffer> } : {}) }), d);
+  const up = `messages/c/481234/${sha}-0123abcd`;
+  assert.equal((await call("PUT", up, editor, new TextEncoder().encode("{}")))?.status, 200);
+  assert.ok(await seq.head(up), "the upload lands under the client envelope key");
+  assert.equal((await call("PUT", up, viewer, new TextEncoder().encode("{}")))?.status, 403, "a viewer uploaded");
+  for (const bad of [`messages/s/481234/${sha}`, "keyframes/main/0", `segments/main/10000.json.gz`, `messages/c/1/${sha}`, "messages/c/../x"])
+    assert.notEqual((await call("PUT", bad, editor, new Uint8Array([1])))?.status, 200, `PUT ${bad}`);
+  await seq.put(`messages/s/481234/${sha}`, new TextEncoder().encode('{"type":"changes"}'));
+  await seq.put("keyframes/main/0", new TextEncoder().encode("secret state"));
+  const got = await call("GET", `messages/s/481234/${sha}`);
+  assert.equal(got?.status, 200);
+  assert.equal(await got!.text(), '{"type":"changes"}');
+  for (const bad of ["keyframes/main/0", up, `messages/s/481234/${"b".repeat(64)}x`]) assert.notEqual((await call("GET", bad))?.status, 200, `GET ${bad}`);
+  assert.equal((await handleHttp(req(`/api/projects/p/messages/${up}`, { method: "PUT", body: "{}" }), d))?.status, 401, "no session");
 });

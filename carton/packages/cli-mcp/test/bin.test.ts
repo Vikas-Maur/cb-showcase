@@ -24,7 +24,7 @@ test("carton hook pre-tool-use: a Bash call that runs cb gets the actor exported
   const r = run(["hook", "pre-tool-use"], JSON.stringify({ hook_event_name: "PreToolUse", session_id: "0011223344", tool_name: "Bash", tool_input: { command: "cb source apply Demo" }, agent_id: "z9", agent_type: "editor" }));
   assert.equal(r.status, 0);
   const out = JSON.parse(r.stdout);
-  assert.equal(out.hookSpecificOutput.permissionDecision, "allow");
+  assert.equal(out.hookSpecificOutput.permissionDecision, undefined, "attribution never grants a permission");
   assert.equal(out.hookSpecificOutput.updatedInput.command, "export CARDBOARD_ACTOR='claude-code/00112233/sub-editor-z9'; cb source apply Demo");
   assert.deepEqual(JSON.parse(run(["hook", "pre-tool-use"], JSON.stringify({ tool_input: { command: "ls" } })).stdout), {});
   assert.deepEqual(JSON.parse(run(["hook", "pre-tool-use"], "not json").stdout), {}, "a hook never breaks the turn");

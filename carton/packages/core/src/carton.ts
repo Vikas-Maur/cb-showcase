@@ -163,8 +163,11 @@ export interface CartonSync {
   /**
    * Start pushing every shared cut (the lease holder passes its nonce; `fence(nonce)` is asked before every step that
    * touches the queue, and false stops the client for good). Resolves once caught up, or after `timeoutMs`.
+   * `conditions` (the holder's `fence(nonce)` as a Store condition) go with every write that settles the server's
+   * answers: a holder replaced before its own fence noticed writes nothing, reloads what the store holds and stops
+   * (a `sync` event, status `stopped`), so its replacement alone records outcomes and authors' notices.
    */
-  connect(opts?: { nonce?: string; fence?: (nonce: string) => boolean; timeoutMs?: number }): Promise<boolean>;
+  connect(opts?: { nonce?: string; fence?: (nonce: string) => boolean; conditions?: StoreCondition[]; timeoutMs?: number }): Promise<boolean>;
   /** Stop; `drain`: push nothing new and resolve once nothing is in flight (a lease hand-over). */
   disconnect(opts?: { drain?: boolean; timeoutMs?: number }): Promise<void>;
   presence(state: PresenceState | null): void;
@@ -253,6 +256,11 @@ export interface Carton {
    * already confirmed returns that confirmation and never makes a second change.
    */
   undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId }): Promise<CommitResult & { entry?: UndoEntry }>;
+  /**
+   * Optional compaction (§5.4): on this replica's local cuts, squash the micro-changes of every auto-version older than
+   * `olderThanDays` (default 90) into the auto-version's last change. Returns how many changes were squashed.
+   */
+  compact(opts?: { cut?: string; olderThanDays?: number }): Promise<{ squashed: number }>;
   undoStack(group?: string, opts?: { cut?: string }): Promise<UndoEntry[]>;
   /** Read-only preview of a state. */
   preview(ref: StateRef | string): Promise<Preview>;
@@ -294,6 +302,8 @@ const pendingRow = (p: QueuedChange, order: number): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
   return { id: p.id, author: p.author, ops: v.ops, at: p.created, order, intent: v.intent, kinds: v.kinds, policy: v.policy, ...(p.history ? { history: p.history } : {}) };
 };
+/** A keyframe also after this many bytes of ops since the last one (a big import), so opening never replays more. */
+const KF_BYTES = 1 << 20;
 const PROJECT = ["project"] as const;
 const CURRENT = ["current"] as const;
 const NODE_RE = /^[^~\s]+@\d+$/;
@@ -325,6 +335,16 @@ class CartonImpl implements Carton {
   #rq: ReplicaQueue | null = null;
   #shared = new Map<string, SharedCut>();
   #connected: { nonce: string; fence?: (nonce: string) => boolean } | null = null;
+  /** Store conditions every settling write carries (`connect({ conditions })`); `#fenced` once one failed. */
+  #settleConds: StoreCondition[] = [];
+  #fenced = false;
+  /** Pending rows being written: a settle waits for them, so it never runs before the row it settles exists. */
+  #inflight = new Set<Promise<unknown>>();
+  /**
+   * The author of each change this handle queued, until its own outcome is settled: an earlier settlement may already
+   * have dropped its pending row (it left the queue), and its notice must still go to its author.
+   */
+  #authors = new Map<ChangeId, Actor>();
   readonly media: CartonMedia | null = null;
   #opts: OpenOptions;
   #h!: History;
@@ -343,6 +363,8 @@ class CartonImpl implements Carton {
   #joining = new Set<string>();
   /** History fetches running per cut (a joined cut's lineage, a keyframe catch-up's stretch). */
   #fetching = new Map<string, Promise<void>>();
+  /** Per cut: the newest periodic keyframe this handle knows of, and the op bytes confirmed since the last keyframe. */
+  #kf = new Map<string, { periodic: number; bytes: number }>();
   /** Rows a backfill fetched and checked, by cut and seq, for the next settlement to store in place of placeholders. */
   #filled = new Map<string, Map<number, ConfirmedChange>>();
 
@@ -360,6 +382,8 @@ class CartonImpl implements Carton {
         state: (cut?: string) => self.#shared.get(cut ?? self.#h.current)?.state() ?? offline,
         connect: async (o = {}) => {
           self.#connected = { nonce: o.nonce ?? randomHex(8), ...(o.fence ? { fence: o.fence } : {}) };
+          self.#settleConds = o.conditions ?? [];
+          self.#fenced = false;
           let ok = true;
           for (const c of self.#h.cuts()) if (self.#isShared(c.id)) ok = (await (await self.#ensureShared(c.id)).connect({ ...self.#connected, timeoutMs: o.timeoutMs ?? 5000 })) && ok;
           return ok;
@@ -483,8 +507,17 @@ class CartonImpl implements Carton {
       h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}) });
       if (c.protected !== undefined || c.sequencer.kind !== "local" || c.source) h.updateCut(c.id, { ...(c.protected !== undefined ? { protected: c.protected } : {}), sequencer: c.sequencer, ...(c.source ? { source: c.source } : {}) });
       done.add(c.id);
-      if (!c.shallow) h.load(c.id, (await s.range<ConfirmedChange>(T.changes, { prefix: [c.id] })).map((e) => e.value));
+      if (c.shallow) return;
+      // §5.4: from the cut's newest keyframe; only the rows after it are replayed
+      const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [c.id] })).map((e) => e.value);
+      const kf = (await s.range<Doc>(T.keyframes, { prefix: [c.id], gt: [c.id, 0], lte: [c.id, rows.length], reverse: true, limit: 1 }))[0];
+      const at = kf ? (kf.key[1] as number) : 0;
+      h.load(c.id, rows, kf ? [[at, kf.value]] : []);
+      let bytes = 0;
+      for (const r of rows.slice(at)) bytes += JSON.stringify(r.ops).length;
+      kfState.set(c.id, { periodic: at && !h.milestone(nodeId(c.id, at)) ? at : 0, bytes });
     };
+    const kfState = new Map<string, { periodic: number; bytes: number }>();
     for (const c of cuts) await add(c);
     for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) h.nameVersion(nodeId(e.key[0] as string, e.key[1] as number), e.value.name, e.value.by);
     await this.#loadPins(h);
@@ -492,6 +525,7 @@ class CartonImpl implements Carton {
     const current = await s.get<string>(T.meta, CURRENT);
     if (current && byId.has(current)) h.current = current;
     this.#joining = new Set((await s.range(T.meta, { prefix: ["join"] })).map((e) => e.key[1] as string));
+    this.#kf = kfState;
     h.onConfirmed = (cut, change) => this.#confirmed.push({ cut, change });
     h.onNoop = (id, cut, seq) => this.#noops.push({ id, cut, seq });
     this.#h = h;
@@ -539,6 +573,31 @@ class CartonImpl implements Carton {
     return w;
   }
   /** Writes for every change History confirmed since the last flush, each conditioned on its slot being free. */
+  /**
+   * Keyframes to persist after these confirmed rows of `cut` (§5.4): every K changes or KF_BYTES of ops since the last
+   * keyframe, and at every named, fold, export or Published version. A periodic keyframe replaces the previous periodic
+   * one (opening starts from the newest; milestones stay, as states folds and exports come back to). Returns the writes
+   * and the state to keep once they are stored.
+   */
+  #keyframeWrites(cut: string, rows: readonly ConfirmedChange[]): { writes: StoreWrite[]; next: { periodic: number; bytes: number } } {
+    const K = this.#opts.keyframeEvery ?? 64;
+    const next = { ...(this.#kf.get(cut) ?? { periodic: 0, bytes: 0 }) };
+    const writes: StoreWrite[] = [];
+    for (const r of rows) {
+      next.bytes += JSON.stringify(r.ops).length;
+      const node = nodeId(cut, r.seq);
+      const milestone = this.#h.milestone(node);
+      if (!milestone && r.seq % K !== 0 && next.bytes < KF_BYTES) continue;
+      const doc = this.#h.stateOf(node);
+      if (!doc) continue;
+      writes.push({ table: T.keyframes, key: [cut, r.seq], value: doc });
+      next.bytes = 0;
+      if (milestone) continue;
+      if (next.periodic > 0 && next.periodic < r.seq && !this.#h.milestone(nodeId(cut, next.periodic))) writes.push({ table: T.keyframes, key: [cut, next.periodic], value: undefined });
+      next.periodic = r.seq;
+    }
+    return { writes, next };
+  }
   async #flush(extra: StoreWrite[] = [], conditions: StoreCondition[] = []): Promise<boolean> {
     const confirmed = this.#confirmed.splice(0);
     const writes: StoreWrite[] = [...extra];
@@ -560,8 +619,16 @@ class CartonImpl implements Carton {
     }
     // every replica id that committed here (R10-02: claimed in hello), one key each
     if (confirmed.length && !this.#ridSaved) writes.push({ table: T.meta, key: ["rid", this.#rid], value: { at: this.#opts.clock?.() ?? Date.now() } });
+    // keyframes go in the same batch as their rows: a keyframe never exists without the rows it summarizes
+    const kfs = new Map<string, { periodic: number; bytes: number }>();
+    for (const cut of new Set(confirmed.map((c) => c.cut))) {
+      const k = this.#keyframeWrites(cut, confirmed.filter((c) => c.cut === cut).map((c) => c.change));
+      writes.push(...k.writes);
+      kfs.set(cut, k.next);
+    }
     if (!writes.length) return true;
     const ok = await this.store.write(writes, conds);
+    if (ok) for (const [cut, k] of kfs) this.#kf.set(cut, k);
     if (ok && confirmed.length) this.#ridSaved = true;
     if (ok) for (const { cut, change } of confirmed) this.#emit({ type: "change", branchId: cut, seq: change.seq, change, local: true });
     return ok;
@@ -948,7 +1015,9 @@ class CartonImpl implements Carton {
     await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, this.#actor()), {
       extra: () => {
         const { branchId, seq } = parseNode(node);
-        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by: this.#actor() } }] };
+        // a named version keeps a keyframe (§5.4)
+        const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by: this.#actor() } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });
@@ -973,6 +1042,96 @@ class CartonImpl implements Carton {
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
+  // ------------------------------------------------------------ retention (§5.4)
+  /**
+   * Changes are kept forever; compaction is optional. An auto-version (PLAN §0.1: a save batch, a Director turn) is a run
+   * of consecutive changes by one actor group and turn; its micro-changes are squashed into its last change, which then
+   * holds their combined effect and remap. Never squashed, and each ending a run: named, fold, export and Published
+   * versions, undo / revert / restore changes and what they undid, fork points, folded-in versions, pinned versions, and
+   * the last K changes. Only local cuts (a shared cut's rows are its server's). Seqs and ids stay, so refs, dedup and
+   * credits keep working; a squashed version leaves the log and its state is no longer held ("state unknown").
+   */
+  async compact(opts: { cut?: string; olderThanDays?: number } = {}): Promise<{ squashed: number }> {
+    let squashed = 0;
+    const plan: StoreWrite[] = [];
+    await this.#mutate(
+      undefined,
+      () => {
+        plan.length = 0;
+        squashed = 0;
+        const cutoff = (this.#opts.clock?.() ?? Date.now()) - (opts.olderThanDays ?? 90) * 864e5;
+        for (const rec of this.#h.cuts()) {
+          if ((opts.cut && rec.id !== opts.cut) || rec.sequencer.kind !== "local" || rec.tracking || rec.shallow || rec.kind === "published") continue;
+          squashed += this.#compactCut(rec.id, cutoff, plan);
+        }
+      },
+      { extra: () => ({ writes: plan }), idempotent: true },
+    );
+    if (squashed) {
+      // rows were rewritten, not appended: History is rebuilt from the store, behind every other write
+      const p = this.#queue.then(() => this.#rebuild());
+      this.#queue = p.catch(() => {});
+      await p;
+    }
+    return { squashed };
+  }
+  #compactCut(cut: string, cutoff: number, writes: StoreWrite[]): number {
+    const h = this.#h;
+    const log = h.changes(cut);
+    const keep = new Set<number>();
+    const seqOf = new Map(log.map((c) => [c.id, c.seq]));
+    for (const c of log) {
+      if (c.kind && c.kind !== "edit") keep.add(c.seq); // undo, revert, restore, fold, partial revert
+      for (const id of Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : []) if (seqOf.has(id)) keep.add(seqOf.get(id)!);
+    }
+    for (const other of h.cuts()) {
+      if (other.forkOf) {
+        const f = parseNode(h.canon(other.forkOf));
+        if (f.branchId === cut) keep.add(f.seq);
+      }
+      for (const c of h.changes(other.id)) if (c.mergeOf?.branchId === cut) keep.add(c.mergeOf.seq);
+    }
+    for (const p of h.pinRows()) if (p.branchId === cut) keep.add(p.seq);
+    const last = log.length - (this.#opts.keyframeEvery ?? 64);
+    let n = 0;
+    let run: ConfirmedChange[] = [];
+    const flush = () => {
+      if (run.length >= 2) n += this.#squash(cut, run, writes);
+      run = [];
+    };
+    for (const c of log.slice(0, Math.max(0, last))) {
+      if (c.squashedInto) continue; // already squashed: transparent inside a run
+      const eligible = c.at < cutoff && !keep.has(c.seq) && !h.milestone(nodeId(cut, c.seq)) && !c.mergeOf;
+      if (!eligible) {
+        flush();
+        continue;
+      }
+      const p = run[run.length - 1];
+      if (p && (groupOf(p.author) !== groupOf(c.author) || p.author.turn !== c.author.turn)) flush();
+      run.push(c);
+    }
+    flush();
+    return n;
+  }
+  /** One auto-version's changes squashed into its last: that one gets their combined ops and remap, the rest none. */
+  #squash(cut: string, run: readonly ConfirmedChange[], writes: StoreWrite[]): number {
+    const h = this.#h;
+    const lastRow = run[run.length - 1]!;
+    const from = run[0]!.squashedFrom ?? run[0]!.seq;
+    const before = h.stateOf(nodeId(cut, from - 1)),
+      after = h.stateOf(nodeId(cut, lastRow.seq));
+    if (!before || !after) return 0;
+    const maps = E.composeMaps(...run.map((c) => c.intent?.maps));
+    writes.push({ table: T.changes, key: [cut, lastRow.seq], value: { ...lastRow, ops: E.diff(before, after, this.schema), intent: E.isEmptyMap(maps) ? null : { maps }, kinds: null, squashedFrom: from } });
+    let n = 0;
+    for (const c of h.changes(cut).slice(from - 1, lastRow.seq - 1)) {
+      // rows squashed earlier point at this run's last change now; their keyframes go (their states are gone)
+      writes.push({ table: T.changes, key: [cut, c.seq], value: { ...c, ops: [], intent: null, kinds: null, squashedInto: lastRow.seq } }, { table: T.keyframes, key: [cut, c.seq], value: undefined });
+      if (!c.squashedInto) n++;
+    }
+    return n;
+  }
+
   // ------------------------------------------------------------ .cbproj (§13)
   async exportShallow(opts: { cut?: string; to?: string } = {}): Promise<ShallowExport> {
     const cut = opts.cut ?? this.#h.current;
@@ -981,7 +1140,10 @@ class CartonImpl implements Carton {
       // the export node is part of the lineage graph from now on (R4-01): persist it, one key per export
       extra: () => {
         const made = this.#h.knowledge().exports.find(([n]) => n === pkg.head)?.[1].at(-1);
-        return { writes: made ? [{ table: T.meta, key: ["export", pkg.head, made.at, randomHex(4)], value: made }] : [] };
+        // an exported version keeps a keyframe (§5.4): a later fold of the copy comes back to it
+        const { branchId, seq } = parseNode(pkg.head);
+        const doc = seq > 0 && branchId === cut ? this.#h.stateOf(pkg.head) : null;
+        return { writes: [...(made ? [{ table: T.meta, key: ["export", pkg.head, made.at, randomHex(4)], value: made }] : []), ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });
@@ -1043,7 +1205,11 @@ class CartonImpl implements Carton {
     // holds its latest version's ops, relative to the stored confirmed head plus the rows before it (rewritten at every
     // settlement), so re-queuing them in order rebuilds the same optimistic state
     const pending = (await this.store.range<PendingRow>(T.pending, { prefix: [cut] })).map((e) => e.value).sort((x, y) => x.order - y.order);
-    for (const p of pending) if (!this.#h.confirmedById(p.id) && !sc.queue.pending(cut).some((q) => q.id === p.id)) sc.commit({ id: p.id, author: p.author, ops: p.ops, at: p.at, intent: p.intent, kinds: p.kinds, policy: p.policy, inferIntent: false, ...(p.history ? { history: p.history } : {}) });
+    for (const p of pending) {
+      if (this.#h.confirmedById(p.id) || sc.queue.pending(cut).some((q) => q.id === p.id)) continue;
+      this.#authors.set(p.id, p.author);
+      sc.commit({ id: p.id, author: p.author, ops: p.ops, at: p.at, intent: p.intent, kinds: p.kinds, policy: p.policy, inferIntent: false, ...(p.history ? { history: p.history } : {}) });
+    }
     sc.on((e) => this.#onShared(cut, e));
     if (this.#connected) void sc.connect(this.#connected);
     return sc;
@@ -1095,14 +1261,19 @@ class CartonImpl implements Carton {
    * handle. A write that fails leaves History where the store is, and the next event settles again.
    */
   #settle(cut: string, e: SharedCutEvent): Promise<void> {
-    const run = () => this.#settleShared(cut, e);
+    // after any pending row still being written: a change settled at once (refused as too large before it was sent)
+    // must find its author there, and its row must not land after the settle removed it (it would come back pending)
+    const run = async () => {
+      if (this.#inflight.size) await Promise.allSettled([...this.#inflight]);
+      return this.#settleShared(cut, e);
+    };
     return (this.#queue = this.#queue.then(run, run).catch((err: unknown) => {
       this.#emit({ type: "notice", notice: { to: actorKey(this.#actor()), kind: "rejected", text: `couldn't save what the server confirmed (it is retried): ${String(err)}` } });
     }));
   }
   async #settleShared(cut: string, e: SharedCutEvent): Promise<void> {
     const sc = this.#shared.get(cut);
-    if (!sc || this.#closed) return;
+    if (!sc || this.#closed || this.#fenced) return;
     const q = sc.queue;
     const writes: StoreWrite[] = [];
     // rows the server confirmed (ours and others'), up to the first stretch known only through a keyframe
@@ -1132,7 +1303,7 @@ class CartonImpl implements Carton {
     // server refused: a notice for its author, in the same batch, returned at the start of that actor's next cb/MCP
     // result and by the Stop hook
     const notices: Notice[] = [];
-    const authorOf = (id: string) => stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
+    const authorOf = (id: string) => this.#authors.get(id) ?? stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
     const late = e.type === "confirmed" ? e.lateCards : e.type === "absorbed" ? e.cards : [];
     if (late.length && (e.type === "confirmed" || e.type === "absorbed")) notices.push({ to: actorKey(authorOf(e.id)), kind: "late-conflict", text: `Your change ${e.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: e.id, cards: late });
     // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
@@ -1144,10 +1315,24 @@ class CartonImpl implements Carton {
     const rec = this.#h.cut(cut)!;
     const handed = E.canonical(qs) !== E.canonical(rec.sequencer) ? { ...rec, sequencer: qs } : null;
     if (handed) writes.push({ table: T.cuts, key: [cut], value: handed });
-    if (writes.length) await this.store.write(writes); // the store first: History only moves to what is saved
-    if (fresh.length) this.#h.load(cut, fresh);
+    // the store first: History only moves to what is saved. Under the holder's fence: a holder the lease has moved on
+    // from records nothing more, reloads what the store holds and stops; its replacement settles the same answers once
+    if (writes.length && !(await this.store.write(writes, this.#settleConds))) {
+      this.#fenced = true;
+      await this.#rebuild();
+      for (const s of this.#shared.values()) await s.disconnect();
+      this.#emit({ type: "sync", status: "stopped", waiting: 0 });
+      return;
+    }
+    if (fresh.length) {
+      this.#h.load(cut, fresh);
+      // keyframes for rows the server confirmed: a write of their own (a lost one only means a longer replay at open)
+      const k = this.#keyframeWrites(cut, fresh);
+      if (k.writes.length && (await this.store.write(k.writes, this.#settleConds))) this.#kf.set(cut, k.next);
+    }
     if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs });
+    if (e.type === "confirmed" || e.type === "absorbed" || e.type === "rejected") this.#authors.delete(e.id);
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     for (const n of notices) this.#emit({ type: "notice", notice: n });
   }
@@ -1258,7 +1443,9 @@ class CartonImpl implements Carton {
   #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name">, history?: HistoryFields): CommitResult {
     const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
     const at = this.#opts.clock?.() ?? Date.now();
+    this.#authors.set(id, author);
     const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}) });
+    if (r.status === "confirmed") this.#authors.delete(id);
     const seq = sc.queue.headSeq(cut);
     if (r.status === "confirmed") {
       // nothing to record: the id is spent anyway, so its retry stays a no-op (here and in other processes)
@@ -1276,7 +1463,16 @@ class CartonImpl implements Carton {
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
     const writes: StoreWrite[] = [];
     sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
-    if (writes.length || extra.length) await this.store.write([...writes, ...extra]);
+    // started before anything can settle it: a settle waits for #inflight
+    if (writes.length || extra.length) {
+      const w = this.store.write([...writes, ...extra]);
+      this.#inflight.add(w);
+      try {
+        await w;
+      } finally {
+        this.#inflight.delete(w);
+      }
+    }
     if (!wait) return r;
     const o = await sc.waitFor(id, wait);
     // a confirmation is answered once History holds the row (the result carries the change)
@@ -1316,6 +1512,8 @@ class CartonImpl implements Carton {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };
     if (o.status === "conflicts") return { status: "conflicts", cards: o.cards, ref: this.#sharedRef(cut) };
     if (o.status === "rejected") return { status: "rejected", reason: o.reason };
+    // spent with no effect of its own (an identical edit was already there): saved, in effect, with nothing to record
+    if (o.status === "absorbed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: null, empty: true, rebased: 0, notices: [] };
     return { status: "pending", id: o.id, ref: this.#sharedRef(cut), notices: [] };
   }
   async share(cut: string = this.#h.current): Promise<CutRecord> {

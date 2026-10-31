@@ -10,9 +10,9 @@
 // all tabs, so the conditions and the writes are the local sequencer's compare-and-swap. After a write commits, the
 // other tabs hear about it on a BroadcastChannel and their `watch` listeners fire.
 //
-// Values are JSON text, not structured clones: in Chromium reading 10k changes back was faster as text plus
-// JSON.parse than as clones, in every run of bench/exp-values.ts, and JSON gives exactly store-sqlite's value
-// semantics (an `undefined` member dropped, -0 read back as 0).
+// Values are JSON text, not structured clones: JSON gives exactly store-sqlite's value semantics (an `undefined`
+// member dropped, -0 read back as 0), and in one unverified run of bench/exp-values.ts (Chromium, 10k changes) text
+// plus JSON.parse read back faster than clones; that measurement waits for the verification phase.
 
 import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";
@@ -75,8 +75,10 @@ export class IdbStore implements Store {
 
   async range<T = unknown>(table: string, r: StoreRange = {}): Promise<{ key: StoreKey; value: T }[]> {
     const range = keyRange(table, r);
-    if (!range || (r.limit !== undefined && r.limit <= 0)) return [];
+    // A limit counts whole rows: 2.7 reads 2, and anything below 1 reads none. (A count of 0 would mean "all" to
+    // IndexedDB's getAll, so it never reaches it.)
     const limit = r.limit === undefined ? undefined : Math.floor(r.limit);
+    if (!range || (limit !== undefined && !(limit >= 1))) return [];
     return run(this.#open(), KV, "readonly", async (tx) => {
       const s = tx.objectStore(KV);
       if (!r.reverse) {

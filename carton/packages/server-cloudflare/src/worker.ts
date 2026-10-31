@@ -7,7 +7,7 @@ import type { AuthContext } from "@carton/core/plugins";
 import { createHmacAuth, type HmacAuth, offersCartonProtocol } from "@carton/server";
 import { handleHttp, type HttpDeps } from "@carton/host-http";
 import type { Env } from "./env.ts";
-import { ProjectRoom, blobsFor, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
+import { ProjectRoom, mediaBlobs, sequencerBlobs, maxEnvelopeOf, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
 import { BlobVault } from "./blob-do.ts";
 
 export { ProjectRoom, BlobVault };
@@ -24,7 +24,15 @@ export function depsFor(env: Env): HttpDeps {
   const deps: HttpDeps = {
     auth: authFor(env),
     secret: env.AUTH_SECRET,
-    blobsFor: (projectId) => blobsFor(env, projectId),
+    blobsFor: (projectId) => mediaBlobs(env, projectId),
+    sequencerBlobsFor: (projectId) => sequencerBlobs(env, projectId),
+    maxEnvelopeBytes: maxEnvelopeOf(env),
+    // an envelope upload arms the room's sweep, so an upload whose message never comes is still swept
+    async onEnvelope(projectId) {
+      const room = env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(projectId));
+      const sweeper = { account: "worker", credential: "worker/sweep", role: "owner", projectId, expires: Date.now() + 60_000 };
+      await room.fetch(new Request(`https://room/${projectId}/sweep`, { method: "POST", headers: { [PROJECT_HEADER]: projectId, [AUTH_HEADER]: JSON.stringify(sweeper) } }));
+    },
     async upgrade(req: Request, auth: AuthContext, projectId: string) {
       if (req.headers.get("upgrade")?.toLowerCase() !== "websocket") return new Response("expected a WebSocket upgrade", { status: 426 });
       if (!offersCartonProtocol(req.headers) && !req.headers.get("authorization"))

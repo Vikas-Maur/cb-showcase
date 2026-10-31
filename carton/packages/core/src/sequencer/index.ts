@@ -89,8 +89,11 @@ export interface LocalSequencer {
   /** Validate and order one change. A duplicate id is acked with its existing seq whatever its hash. */
   push(change: Change & { baseDoc?: Doc }): PushResult;
   pull(since: number): ConfirmedChange[];
-  /** Adopt rows confirmed elsewhere (a reload from the Store). */
-  load(rows: readonly ConfirmedChange[]): void;
+  /**
+   * Adopt rows confirmed elsewhere (a reload from the Store). `keyframe`: the state after row `seq` of these rows (a
+   * persisted keyframe, §5.4), so the rows up to it are taken without replaying their ops.
+   */
+  load(rows: readonly ConfirmedChange[], keyframe?: { seq: number; doc: Doc }): void;
 }
 
 export const actorKey = (a: Actor | null | undefined): string => (a ? `${a.kind}/${a.id}${a.agentId ? `/${a.agentId}` : ""}` : "unknown");
@@ -209,12 +212,15 @@ export function createLocalSequencer(doc: Doc, schema: Schema, opts: Partial<Rul
     pull(since) {
       return log.slice(since);
     },
-    load(rows) {
+    load(rows, keyframe) {
+      const kf = keyframe && keyframe.seq > log.length ? keyframe : undefined;
+      if (kf && !rows.some((r) => r.seq === kf.seq)) throw new Error(`sequencer load: keyframe at ${kf.seq} is past the rows`);
       for (const r of rows) {
         if (r.seq <= log.length) continue;
         if (r.seq !== log.length + 1) throw new Error(`sequencer load: gap, have ${log.length}, got ${r.seq}`);
-        head = apply(head, r.ops, schema);
+        if (!kf || r.seq > kf.seq) head = apply(head, r.ops, schema);
         append(r);
+        if (kf && r.seq === kf.seq) head = fork(kf.doc, schema);
       }
     },
   };

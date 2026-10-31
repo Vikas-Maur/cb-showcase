@@ -17,8 +17,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import type { Choices, ShallowExport } from "@carton/core";
-import { ZipReader, ZipWriter, type ZipWriteResult } from "./zip.ts";
+import type { Choices, Doc, ShallowExport } from "@carton/core";
+import { ZipReader, ZipWriter, sanitizeEntryName, type ZipWriteResult } from "./zip.ts";
 import { walkBundle, excludedFromExport, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
 
 export interface CbprojExportOptions {
@@ -33,6 +33,12 @@ export interface CbprojExportOptions {
   extraFiles?: { archivePath: string; sourcePath: string }[];
   /** `carton.exportShallow({ to })`. */
   shallow: ShallowExport | null;
+  /**
+   * The engine's head when the file is written, with the host's conversion: the manifest's project is then that head
+   * (unversioned fields kept from the manifest), so Cardboard opening the file sees the same timeline the shallow export
+   * carries, even if project.json on disk hasn't caught up yet.
+   */
+  head?: { doc: Doc; toProject: (doc: Doc, current: Record<string, unknown> | null) => Record<string, unknown> };
   /** "Include history": writes a copy of carton.db without local tables to the given path (store-sqlite's `exportCopy`). */
   fullHistory?: (toPath: string) => Promise<void>;
 }
@@ -44,7 +50,8 @@ export interface CbprojExportResult extends ZipWriteResult {
 
 export async function exportCbproj(o: CbprojExportOptions): Promise<CbprojExportResult> {
   const files = await walkBundle(o.bundle);
-  const manifest = o.manifest ?? (JSON.parse(await fs.promises.readFile(path.join(o.bundle, MANIFEST), "utf8")) as Record<string, unknown>);
+  let manifest = o.manifest ?? (JSON.parse(await fs.promises.readFile(path.join(o.bundle, MANIFEST), "utf8")) as Record<string, unknown>);
+  if (o.head) manifest = { ...manifest, project: o.head.toProject(o.head.doc, (manifest.project as Record<string, unknown> | undefined) ?? null) };
   const zip = await ZipWriter.create(o.out);
   const entries: string[] = [];
   let tmpDb: string | null = null;
@@ -94,6 +101,8 @@ export interface CbprojContents {
 }
 
 const SHALLOW_MAX_BYTES = 256 * 1024 * 1024;
+// Two names that differ only in case land on one file on Windows and macOS.
+const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
 
 /** Reads a `.cbproj`: the manifest, Carton's entries, and which bundle files it holds. */
 export async function readCbproj(file: string): Promise<CbprojContents> {
@@ -104,13 +113,20 @@ export async function readCbproj(file: string): Promise<CbprojContents> {
     const shallow = z.has(SHALLOW_ENTRY) ? (JSON.parse((await z.readEntry(SHALLOW_ENTRY, SHALLOW_MAX_BYTES)).toString("utf8")) as ShallowExport) : null;
     const files: string[] = [];
     const ignored: string[] = [];
+    const taken = new Set<string>([MANIFEST]);
     for (const e of z.entries) {
       if (e.name === MANIFEST || e.name === SHALLOW_ENTRY || e.name === FULL_ENTRY) continue;
-      // 1.4.0's importer (yauzl, strictFileNames off) turns `\` into `/` before its own name check, so a member named
-      // `.scratch\views\x.tsx` would land in `.scratch/views/`: judge names the way it will extract them
-      const n = e.name.replace(/\\/g, "/");
-      if (n === EXPORT_DIR || n.startsWith(`${EXPORT_DIR}/`) || excludedFromExport(n)) ignored.push(e.name);
-      else files.push(e.name);
+      // Judge every name the way 1.4.0's importer will extract it: yauzl (strictFileNames off) turns `\` into `/`, and
+      // the extraction drops empty and `.` segments, so `.scratch\views\x.tsx` and `./.carton/carton.db` land in the
+      // excluded folders. Unsafe names, and a second member that lands on the same path, are ignored too.
+      const n = sanitizeEntryName(e.name.replace(/\\/g, "/").split("/").filter((seg) => seg !== "" && seg !== ".").join("/"));
+      const key = n !== null && FOLD_CASE ? n.toLowerCase() : n;
+      if (n === null || key === null || taken.has(key) || n === EXPORT_DIR || n.startsWith(`${EXPORT_DIR}/`) || excludedFromExport(n)) {
+        ignored.push(e.name);
+        continue;
+      }
+      taken.add(key);
+      files.push(e.name);
     }
     return { manifest, shallow, hasFullHistory: z.has(FULL_ENTRY), files, ignored };
   } finally {

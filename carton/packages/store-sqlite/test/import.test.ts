@@ -28,14 +28,16 @@ test("a project is imported as main@1: one insert-all change, credited to the im
   assert.deepEqual(log.map((v) => v.ref.seq), [1, 0]);
   assert.equal(log[0].author?.id, IMPORT_AUTHOR.id);
   assert.equal(log[0].change, importChangeId("proj-1"));
-  assert.equal(log[0].name, "Imported");
+  assert.equal(log[0].kind, "import");
   assert.deepEqual(names(await r.carton.checkout({ branchId: head.ref.branchId, seq: 0 })), [], "main@0 is the empty root");
   assert.equal(r.carton.projectId, "proj-1");
   await r.carton.close();
   await r.store.close();
 
   // Opening again imports nothing: it is the same history.
-  const again = await importProject({ bundleDir, projectId: "proj-1", adapter, host: { ...projectDoc(), name: "Changed on disk" }, appDataDir: path.join(root, "appdata") });
+  let converted = 0;
+  const again = await importProject({ bundleDir, projectId: "proj-1", adapter, host: () => (converted++, { ...projectDoc(), name: "Changed on disk" }), appDataDir: path.join(root, "appdata") });
+  assert.equal(converted, 0, "an imported project's file isn't even converted again");
   assert.equal(again.imported, false);
   assert.equal((await again.carton.head()).ref.seq, 1);
   assert.equal((await again.carton.head()).doc.name, "Promo");
@@ -108,4 +110,42 @@ test("Carton on carton.db: three processes committing at once all confirm, and h
   assert.equal(new Set(log.map((v) => v.change)).size, log.length, "no change recorded twice");
   await r.carton.close();
   await r.store.close();
+});
+
+test("an import that stopped between creating the cut and main@1 is finished by the next open", async () => {
+  const bundleDir = path.join(root, "Stopped.cardboard");
+  const { Carton } = await import("@carton/core");
+  const { openProjectStore } = await import("../src/index.ts");
+  // Step one of the import only: the empty cut (as if the process died before main@1).
+  const empty: Record<string, unknown> = {};
+  for (const c of Object.keys(adapter.schema.collections)) empty[c] = [];
+  const first = await openProjectStore({ bundleDir, projectId: "proj-stopped" });
+  const c0 = await Carton.open({ adapter, store: first.store, init: { doc: empty, projectId: "proj-stopped" } });
+  assert.equal((await c0.head()).ref.seq, 0);
+  await c0.close();
+  await first.store.close();
+  const r = await importProject({ bundleDir, projectId: "proj-stopped", adapter, host: projectDoc() });
+  assert.equal(r.imported, true);
+  const log = await r.carton.log();
+  assert.deepEqual(log.map((v) => v.ref.seq), [1, 0]);
+  assert.equal(log[0].change, importChangeId("proj-stopped"));
+  assert.deepEqual(names((await r.carton.head()).doc), ["a", "b"]);
+  await r.carton.close();
+  await r.store.close();
+});
+
+test("an empty project imports once: it stays at main@0 (nothing to insert) and is never re-read or re-imported", async () => {
+  const bundleDir = path.join(root, "Empty.cardboard");
+  let reads = 0;
+  const host = () => (reads++, { tracks: [], items: [] });
+  const r = await importProject({ bundleDir, projectId: "proj-empty", adapter, host });
+  assert.equal(r.imported, true);
+  assert.equal((await r.carton.head()).ref.seq, 0);
+  await r.carton.close();
+  await r.store.close();
+  const again = await importProject({ bundleDir, projectId: "proj-empty", adapter, host });
+  assert.equal(again.imported, false);
+  assert.equal(reads, 1, "the empty file was read once, by the import");
+  await again.carton.close();
+  await again.store.close();
 });

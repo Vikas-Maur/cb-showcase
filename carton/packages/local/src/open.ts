@@ -14,11 +14,13 @@ import { openProjectStore } from "@carton/store-sqlite";
 import type { SqliteStore } from "@carton/store-sqlite";
 import { submit } from "./client.ts";
 import { spawnHelper } from "./helper.ts";
-import { Lease } from "./lease.ts";
+import { Lease, fence as leaseFence } from "./lease.ts";
 import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
-import { runWrite, WAIT_MS } from "./writes.ts";
-import type { CbResult, WriteOp, WriteRequest } from "./writes.ts";
+import { destCut, IDEMPOTENT, runWrite, WAIT_MS, withRaceRetry } from "./writes.ts";
+import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
+import { viewNameFor } from "@carton/cardboard/node";
+import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
 
 export interface LocalOptions {
@@ -104,12 +106,15 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
       const req: WriteRequest = { id: o.id ?? nextChangeId(), actor: o.actor ?? actor, op, waitMs: o.waitMs ?? WAIT_MS };
       const r = await submit("carton.commit", req, {
         lease,
-        needsHelper: () => needsHelper((op as { cut?: string }).cut),
+        // route by the cut the write changes (a fold's is `into`): a shared one needs the pusher
+        // sharing starts the pusher, so it always runs on a lease holder (a helper when the app is closed)
+        needsHelper: async () => op.kind === "share" || (await needsHelper(destCut(op))),
+        idempotent: IDEMPOTENT.has(op.kind),
         spawnHelper: (seen) => void spawnHelper({ dbPath, seen, factory, config: { projectDir: opts.projectDir, projectId, dataDir: opts.dataDir, ...opts.helperConfig } }),
       });
       if (r.via === "holder") return r.result as CbResult;
-      if (r.via === "in-process") return runWrite(carton, req);
-      return { status: "error", error: r.error, notices: [] };
+      if (r.via === "in-process") return withRaceRetry(IDEMPOTENT.has(op.kind), () => runWrite(carton, req));
+      return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
     },
     async close() {
       await carton.close();
@@ -124,28 +129,43 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
  */
 export class CartonHolderEngine implements HolderEngine {
   readonly carton: Carton;
+  readonly materializer: ViewPrinter | null;
   private off: (() => void) | null = null;
-  constructor(carton: Carton) { this.carton = carton; }
+  constructor(carton: Carton, opts: { materializer?: ViewPrinter | null } = {}) {
+    this.carton = carton;
+    this.materializer = opts.materializer ?? null;
+  }
 
   serve(req: unknown): Promise<unknown> {
     const r = req as WriteRequest;
     if (!r?.id || !r.actor || !r.op) return Promise.reject(Object.assign(new Error("bad carton.commit request"), { code: -32602 }));
-    return runWrite(this.carton, r, { online: () => this.carton.sync?.status === "up-to-date" });
+    // the written cut connected (catching up or up to date): wait up to 5 s for the ack; not: pending at once (L14)
+    const online = (cut?: string) => { const st = this.carton.sync?.state(cut).status; return st === "up-to-date" || st === "syncing"; };
+    return withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
   }
 
-  async startSync(nonce: string, onFenced: () => void): Promise<void> {
-    const sync = this.carton.sync as (null | { connect(o?: { nonce: string }): Promise<void> });
+  /** Hooked agents' views are named after their actor id; others get a fresh `agent-xxxx` (or the name they asked for). */
+  private async viewName(actor: Actor, wanted?: string): Promise<string> {
+    const store = (this.carton as unknown as { store: Store }).store;
+    const taken = new Set((await store.range("views", { prefix: ["view"] })).map((r) => String(r.key[1])));
+    return viewNameFor(actor, { hooked: hookDelivered(actor), wanted, taken: (n) => taken.has(n), random: () => randomBytes(2).toString("hex") });
+  }
+
+  async startSync(nonce: string, onFenced: () => void, fence: (nonce: string) => boolean): Promise<void> {
+    const sync = this.carton.sync;
     if (!sync) return;
     this.off?.();
     this.off = this.carton.on((e: CartonEvent) => {
-      if (e.type === "sync" && (e.status as string) === "stopped") onFenced();
+      if (e.type === "sync" && e.status === "stopped") onFenced();
     });
-    await sync.connect({ nonce });
+    // don't hold up the lease while the server is out of reach: cb writes answer `pending` until it is back. Settling
+    // the server's answers is conditional on the lease in the store (the fence above is this holder's own knowledge,
+    // refreshed by heartbeats): a holder replaced in between records nothing and stops
+    void sync.connect({ nonce, fence, conditions: [leaseFence(nonce)] }).catch(() => {});
   }
 
   async quiesce(): Promise<void> {
-    const sync = this.carton.sync as (null | { disconnect(o?: { drain?: boolean }): Promise<void> });
-    await sync?.disconnect({ drain: true });
+    await this.carton.sync?.disconnect({ drain: true });
   }
 
   async stop(): Promise<void> {

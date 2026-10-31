@@ -63,8 +63,26 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   this machine doesn't have.
 - **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
-- **Shared cuts** (`sequencer.kind !== "local"`) and `carton.sync` are wired by the sync client (sync-sequencer);
-  until then they throw. `carton.media` is null: `@carton/media` calls Carton, not the reverse.
+- **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
+  sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
+  cut's ancestry closure (`history` request) and loads it as read-only lineage.
+- **Shared cuts** (`sequencer.kind !== "local"`) go through `SharedCut` (sync-sequencer's queue and client): `commit`,
+  `fold`, `foldSome`, `undo`, `revert` and `restore` all queue an ordinary change with its intent, kind and `reverts`
+  under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the
+  author. Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
+  shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
+  the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). `carton.media` is null:
+  `@carton/media` calls Carton, not the reverse.
+- **Keyframes (§5.4):** a cut's state is stored every K confirmed changes (`keyframeEvery`, default 64) or after
+  1 MiB of ops, in the same batch as the row, and at every named, fold, export and Published version. A new periodic
+  keyframe replaces the previous periodic one; milestone ones stay. Opening reads each cut's newest keyframe and
+  replays only the rows after it. A replica that caught up through a server keyframe fetches the rows it jumped and
+  checks that they rebuild it before History takes them.
+- **Retention (§5.4):** changes are kept forever. `compact({ cut?, olderThanDays = 90 })` is optional: on local cuts it
+  squashes each old auto-version's micro-changes (a run of one actor group and turn) into its last change. Named,
+  fold, export, Published, undo, revert and restore versions, what they undid, fork points, folded-in and pinned
+  versions, and the last K changes are never squashed. Seqs and ids stay; a squashed version leaves the log and its
+  state is no longer held (`StateUnknown`).
 
 ## Using it
 

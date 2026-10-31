@@ -70,7 +70,9 @@ Use `@carton/blob-memory/rules` for the argument checks, so a bad call fails the
 - **Multipart:** parts are numbered 1–10,000. All parts but the last have the same size, and the last is no larger,
   as R2 requires. S3 and R2 need parts of at least 5 MiB except the last. `complete` joins the parts in part-number
   order. Re-uploading a part replaces it, and the old etag no longer completes. `listParts` must work on a handle made
-  with `resumeMultipart(key, id)` alone. A bogus, aborted or completed id fails.
+  with `resumeMultipart(key, id)` alone. A bogus, aborted or completed id fails. An upload is bound to its key:
+  through another key, `listParts` and `complete` fail and `abort` leaves it alone. Behind a scoped store an upload
+  id is all another project would need otherwise.
 - **`sha256`** is the real hash of the bytes. A store may verify it, as R2 does, and refuse a mismatch.
 
 ### Running the suite
@@ -96,8 +98,12 @@ instead.
 
 ### One bucket, many projects
 
-Wrap a store with `scopedBlobStore(store, "projects/<id>/")` (`@carton/blob-memory/scoped`). Both hosts do this, so
-a project can't name another project's keys.
+Wrap a store with `scopedBlobStore(store, "projects/<id>/")` (`@carton/blob-memory/scoped`), so a project can't name
+another project's keys. Both hosts go one step further and give each project two scopes that no route can cross:
+`projects/<id>/seq/` for the sequencer's keyframes, archived segments and large change bodies, and
+`projects/<id>/media/` for what the HTTP API signs and uploads. An editor can write media, but never a record the
+sequencer relies on, which may belong to a cut they may not write. A signed URL's MAC also covers its route
+(`/blob/<id>/`), so a URL for one project never opens the same key under another.
 
 ## A new SequencerHost
 
@@ -120,13 +126,31 @@ every host runs the same function. The host:
    socket follows, its dead epoch). If your host can evict a project while sockets stay open, as Durable Objects do,
    save `state` with the socket after each message that changed it.
 4. **Keeps the rest thin:**
+   - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
+     `hello`;
+   - pass `blobs` to `createSequencer`. Any message over 1 MiB, either way, then travels as an envelope through the
+     blob store, so no message gets near a WebSocket's limit, whatever the project's size. The host carries
+     envelopes like any other message; `@carton/host-http` gives clients the two routes they need (below). Cap one
+     message by what your host can hold, since a message of N bytes holds about 3N while it is handled. server-node
+     takes 64 MiB, the sequencer's default. A Durable Object, with 128 MB, takes 24 MiB (`MAX_ENVELOPE_BYTES`) on
+     its socket, on its envelope reads and on the Worker's upload route alike;
    - answer a `ping` text frame with `pong`;
    - close a socket whose token expired with 4001, so the client refreshes and reconnects with the same credential
-     and its replica ids;
-   - run archiving (`sequencer.archive(branch, { keep, segmentRows })`) on a timer or alarm, never on a push.
+     and its replica ids. Check before every outgoing message, so a silent subscriber stops getting rows too;
+   - call `sequencer.maintain()` on a timer or alarm, never on a push. It archives old rows to gzip segments (§18's
+     defaults: rows older than the newest 10,000, in segments of 10,000) and sweeps expired envelope blobs. Envelope
+     blobs expire hours after they were made, so keep sweeping after activity stops, and also when an upload came
+     with no socket. The Durable Object re-arms its alarm while envelopes remain, and an upload arms it. server-node
+     sweeps every project from a host-level timer;
+   - never close a project's storage, or let a second sequencer open it, while a `handle` or `archive` is still
+     waiting on the blob store.
 5. **Serves the HTTP API** by mounting `handleHttp(request, deps)` from `@carton/host-http` (web-standard
    Request/Response). It covers join, refresh, invites, signed media URLs and resumable uploads, so clients talk to
-   every host the same way. Supply `blobsFor(projectId)` and your WebSocket upgrade.
+   every host the same way. Supply your WebSocket upgrade and two blob scopes per project: `blobsFor` (media) and
+   `sequencerBlobsFor` (the sequencer's own). Of the sequencer's scope, the API reaches only the envelope keys:
+   `PUT /api/projects/<p>/messages/messages/c/…` (a writer's upload) and `GET …/messages/messages/s/…` (the
+   server's). A client passes `hostMessageBlobs({ origin, projectId, token })` from `@carton/host-http/client` as
+   its sync client's `blobs`.
 
 The two shipped hosts are short and worth reading first:
 
@@ -204,13 +228,13 @@ add none of their own. Measured in a local `ProjectRoom`, with wrangler dev coun
 | Clip insert or remove | 2 |
 | A device's first `hello` (its replica-id claim) | 1, once |
 | A later `hello` | 0 |
-| Presence | 0 (relayed, never stored) |
+| Presence | 0 (relayed, never stored; a client sends at most 10 a second, coalesced, and the sequencer drops anything over 20 a second per connection) |
 | Archiving a change to a blob segment | +1 (a DELETE is billed like an INSERT) |
 
-Archiving is the line to watch. The sequencer's own `maintain()` keeps only 400 live rows per branch, which would
-archive almost every change and nearly double the cost. So both hosts call `archive` with §18's numbers instead:
-rows older than the newest 10,000, in segments of 10,000 (`ARCHIVE_KEEP`, `ARCHIVE_SEGMENT`). The WebSocket
-keepalive (`ping` → `pong`) is answered by the runtime without waking the room, so idle sockets cost nothing.
+Archiving is the line to watch: every archived row costs one more row written. `maintain()` follows §18 (rows
+older than the newest 10,000, in gzip segments of 10,000), so a branch pays it only once it has more than 20,000
+live changes. `ARCHIVE_KEEP` and `ARCHIVE_SEGMENT` override it. The WebSocket keepalive (`ping` → `pong`) is
+answered by the runtime without waking the room, so idle sockets cost nothing.
 
 ## Windows
 

@@ -29,8 +29,9 @@ function fromB64url(s: string): Uint8Array | null {
   return out;
 }
 
-// `baseUrl` is where the host mounts the route, e.g. `https://carton.example/blob`. The signing key is derived from
-// `secret` with a label, so a blob URL's MAC can never pass as an auth token's, or the reverse.
+// `baseUrl` is where the host mounts the route for one scope, e.g. `https://carton.example/blob/<project>`. The
+// signing key is derived from `secret` with a label, so a blob URL's MAC can never pass as an auth token's, or the
+// reverse; the route path is part of the signed message, so a URL never works under another scope.
 export function createBlobUrlSigner(opts: { secret: string | Uint8Array; baseUrl: string; clock?: () => number }): BlobUrlSigner {
   const base = new URL(opts.baseUrl);
   const prefix = base.pathname.replace(/\/+$/, "") + "/";
@@ -40,7 +41,9 @@ export function createBlobUrlSigner(opts: { secret: string | Uint8Array; baseUrl
     .importKey("raw", raw as Uint8Array<ArrayBuffer>, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
     .then((k) => crypto.subtle.sign("HMAC", k, enc.encode("carton-blob-url.v1")))
     .then((derived) => crypto.subtle.importKey("raw", derived, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]));
-  const message = (method: string, k: string, exp: number) => enc.encode(`${method}\n${k}\n${exp}`);
+  // The scope (the route prefix, `/blob/<project>/`) is signed too: every project shares one secret, so a URL signed
+  // for project A must not open the same key under project B's route.
+  const message = (method: string, k: string, exp: number) => enc.encode(`${method}\n${prefix}\n${k}\n${exp}`);
   return {
     async sign(method, k, expiresInSec) {
       checkKey(k);
@@ -89,6 +92,59 @@ export function parseRange(header: string | null, size: number): { offset: numbe
   return { offset: a, length: b - a + 1 };
 }
 
+export class BodyTooLarge extends Error {
+  readonly status = 413;
+  constructor(max: number) {
+    super(`request body over ${max} bytes`);
+    this.name = "BodyTooLarge";
+  }
+}
+
+// Reads a request body into memory up to `max` bytes, counting as it reads: a body with no Content-Length (chunked)
+// is cut off, and its stream cancelled, the moment it passes the budget, instead of being buffered whole first.
+export async function readBody(req: Request, max: number): Promise<Uint8Array> {
+  const declared = Number(req.headers.get("content-length") ?? NaN);
+  if (declared > max) throw new BodyTooLarge(max);
+  if (!req.body) return new Uint8Array(0);
+  const reader = req.body.getReader();
+  // with a declared length, the bytes go straight into one buffer of that size, so a body is never held twice
+  if (Number.isSafeInteger(declared) && declared >= 0) {
+    const out = new Uint8Array(declared);
+    let at = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (at + value.byteLength > declared) {
+        await reader.cancel().catch(() => {});
+        throw new BodyTooLarge(declared);
+      }
+      out.set(value, at);
+      at += value.byteLength;
+    }
+    return at === declared ? out : out.subarray(0, at);
+  }
+  const chunks: Uint8Array[] = [];
+  let n = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    n += value.byteLength;
+    if (n > max) {
+      await reader.cancel().catch(() => {});
+      throw new BodyTooLarge(max);
+    }
+    chunks.push(value);
+  }
+  if (chunks.length === 1) return chunks[0]!;
+  const out = new Uint8Array(n);
+  let at = 0;
+  for (const c of chunks) {
+    out.set(c, at);
+    at += c.byteLength;
+  }
+  return out;
+}
+
 export interface ServeOptions {
   // Bodies of a signed PUT above this are refused (Workers' request limit is 100 MB on the Free plan). Large media go
   // through multipart instead.
@@ -101,11 +157,13 @@ export async function serveSignedBlob(req: Request, store: BlobStore, signer: Bl
   const key = await signer.verify(url, req.method);
   if (!key) return new Response("forbidden", { status: 403 });
   if (req.method === "PUT") {
-    const max = opts.maxPutBytes ?? 100 * 1024 * 1024;
-    const declared = Number(req.headers.get("content-length") ?? NaN);
-    if (declared > max) return new Response("too large", { status: 413 });
-    const body = new Uint8Array(await req.arrayBuffer());
-    if (body.byteLength > max) return new Response("too large", { status: 413 });
+    let body: Uint8Array;
+    try {
+      body = await readBody(req, opts.maxPutBytes ?? 100 * 1024 * 1024);
+    } catch (e) {
+      if (e instanceof BodyTooLarge) return new Response("too large", { status: 413 });
+      throw e;
+    }
     const ct = req.headers.get("content-type");
     const info = await store.put(key, body, ct ? { contentType: ct } : {});
     return new Response(null, { status: 200, headers: info.etag ? { etag: info.etag } : {} });

@@ -236,6 +236,12 @@ export interface Change extends Declaration {
 /** A change confirmed by its sequencer: a row of the `changes` table. */
 export interface ConfirmedChange extends Change {
   seq: number;
+  /**
+   * Compaction (§5.4): this change now holds the micro-changes from `squashedFrom` up to it, as one change; the
+   * changes it holds keep their seq and id but no ops (`squashedInto` names this one) and their versions are gone.
+   */
+  squashedFrom?: number;
+  squashedInto?: number;
 }
 
 /** A pending change in a replica's queue: every version it had (each rebase adds one), newest last. */

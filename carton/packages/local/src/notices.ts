@@ -7,7 +7,7 @@
 import type { Actor, Notice } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import type { ConflictNotice, NoticeBox } from "./hooks.ts";
-import { actorKey } from "./writes.ts";
+import { actorKey, casUpdate, SKIP } from "./writes.ts";
 import { parseActorId } from "./identity.ts";
 
 const TABLE = "notices";
@@ -47,36 +47,63 @@ export class StoreNoticeBox implements NoticeBox {
   async blockedAsync(actorId: string): Promise<ConflictNotice[]> {
     return (await this.rows(actorId)).filter((r) => r.value.blockedAt && !r.value.handedToHuman).map(this.toNotice);
   }
-  async markBlockedAsync(actorId: string, ids: string[]): Promise<void> {
+  // Each update is conditional on the row as read (casUpdate): a card resolved meanwhile, or a delivery mark, is
+  // never written back over. Returns the ids this call claimed: another hook call (or the hand-over to the person)
+  // that got there first keeps the others.
+  async markBlockedAsync(actorId: string, ids: string[]): Promise<string[]> {
     const at = this.now();
-    const writes = (await this.rows(actorId)).filter((r) => ids.includes(idOf(r.key))).map((r) => ({ table: TABLE, key: r.key, value: { ...r.value, blockedAt: at } }));
-    if (writes.length) await this.store.write(writes);
+    const claimed: string[] = [];
+    for (const r of await this.rows(actorId)) {
+      if (!ids.includes(idOf(r.key))) continue;
+      if (await casUpdate<Row>(this.store, TABLE, r.key, (cur) => (cur.blockedAt || cur.handedToHuman ? SKIP : { ...cur, blockedAt: at }), r.value)) claimed.push(idOf(r.key));
+    }
+    return claimed;
   }
   async handToHumanAsync(actorId: string, ids: string[]): Promise<void> {
-    const at = this.now();
-    const writes = [];
     let n = 0;
     for (const r of await this.rows(actorId)) {
       if (!ids.includes(idOf(r.key))) continue;
-      writes.push({ table: TABLE, key: r.key, value: { ...r.value, handedToHuman: at } });
-      writes.push({ table: TABLE, key: [HUMAN_CARDS, at, n++], value: { ...r.value, to: HUMAN_CARDS, handedToHuman: at, from: actorId } });
+      // one batch, conditional on the row as read: the actor's row is marked and the person's copy made together, so a
+      // crash in between can't hide the cards from both (the copy holds the cards left after any the agent resolved)
+      let cur: Row | undefined = r.value;
+      for (let i = 0; i < 16 && cur && !cur.handedToHuman && cur.cards?.length; i++) {
+        const at = this.now();
+        const ok = await this.store.write(
+          [
+            { table: TABLE, key: r.key, value: { ...cur, handedToHuman: at } },
+            { table: TABLE, key: [HUMAN_CARDS, at, n++, Math.random().toString(16).slice(2, 10)], value: { ...cur, to: HUMAN_CARDS, handedToHuman: at, from: actorId } },
+          ],
+          [{ table: TABLE, key: r.key, expect: { equals: cur } }],
+        );
+        if (ok) break;
+        cur = await this.store.get<Row>(TABLE, r.key);
+      }
     }
-    if (writes.length) await this.store.write(writes);
   }
 
-  /** Load one actor's notices, run a synchronous hook decision against them, then write what it changed. */
+  /**
+   * Load one actor's notices, run a synchronous hook decision against them, then write what it changed. A decision to
+   * block holds only for the notices this call managed to claim: when a concurrent hook call claimed some first, it
+   * decides again on what it holds (often nothing: it lets the agent stop), so a conflict blocks once.
+   */
   async run<T>(actorId: string, fn: (box: NoticeBox) => T): Promise<T> {
     const fresh = await this.freshAsync(actorId), blocked = await this.blockedAsync(actorId);
-    const ops: (() => Promise<void>)[] = [];
-    const box: NoticeBox = {
-      freshConflicts: () => fresh,
+    const handOver: [string, string[]][] = [];
+    let claim: [string, string[]] | null = null;
+    const box = (f: ConflictNotice[], claiming: boolean): NoticeBox => ({
+      freshConflicts: () => f,
       blocked: () => blocked,
-      markBlocked: (a, ids) => void ops.push(() => this.markBlockedAsync(a, ids)),
-      handToHuman: (a, ids) => void ops.push(() => this.handToHumanAsync(a, ids)),
+      markBlocked: (a, ids) => { if (claiming) claim = [a, ids]; },
+      handToHuman: (a, ids) => void handOver.push([a, ids]),
       endTurn: (a) => this.onEndTurn?.(a),
-    };
-    const r = fn(box);
-    for (const op of ops) await op();
+    });
+    let r = fn(box(fresh, true));
+    if (claim) {
+      const [a, asked]: [string, string[]] = claim;
+      const got = await this.markBlockedAsync(a, asked);
+      if (got.length !== asked.length) r = fn(box(fresh.filter((n) => got.includes(n.id)), false));
+    }
+    for (const [a, ids] of handOver) await this.handToHumanAsync(a, ids);
     return r;
   }
 

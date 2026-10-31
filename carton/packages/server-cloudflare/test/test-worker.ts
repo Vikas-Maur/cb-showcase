@@ -46,6 +46,12 @@ export default {
       if (req.method !== "GET" && req.method !== "HEAD") init.body = await req.arrayBuffer();
       return env.BLOB_VAULT.get(env.BLOB_VAULT.idFromName(decodeURIComponent(v[1]!))).fetch(`https://vault${v[2]}${url.search}`, init);
     }
+    const al = /^\/__test\/alarm\/([^/]+)$/.exec(url.pathname);
+    if (al) {
+      const p = decodeURIComponent(al[1]!);
+      const auth = { account: "test", credential: "test/alarm", role: "owner", projectId: p, expires: Date.now() + 60_000 };
+      return env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(p)).fetch(new Request(`https://room/${p}/alarm`, { headers: { [PROJECT_HEADER]: p, [AUTH_HEADER]: JSON.stringify(auth) } }));
+    }
     const st = /^\/__test\/stats\/([^/]+)$/.exec(url.pathname);
     if (st) {
       const p = decodeURIComponent(st[1]!);

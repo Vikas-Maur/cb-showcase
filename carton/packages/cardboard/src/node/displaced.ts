@@ -13,6 +13,9 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { retryBusy, stampOf, type BusyCounter } from "./displace.ts";
 
+// Separates a slot's unique name from the tag it carries (URI-encoded, so it holds no path separators).
+const TAG = "@@";
+
 export interface OwnInstall {
   bytes: Uint8Array;
   /** The stamp right after the install (`ino:size:mtimeNs`). */
@@ -37,12 +40,15 @@ export interface Displaced {
 }
 
 export interface Review {
-  /** Foreign writes to import now. The caller removes each with `release()` once its change is stored. */
+  /** Foreign writes to import now. The caller removes each with `release()` once its change is stored, or puts it back
+   *  with `holdForeign()` if importing it failed. */
   foreign: Displaced[];
   /** Foreign writes that stayed incomplete through a quiet window: report them to their writer. Kept on disk. */
   partial: Displaced[];
   /** Carton's own displaced installs, confirmed unchanged and deleted. */
   own: number;
+  /** The paths of those deleted installs. */
+  retired: string[];
 }
 
 export interface DisplacedOptions {
@@ -76,8 +82,35 @@ export class DisplacedFiles {
     fs.mkdirSync(dir, { recursive: true });
   }
 
-  /** A fresh path for `displaceThenInstall`'s `nextSlot`. */
-  next = (): string => path.join(this.dir, this.prefix + String(this.seq++));
+  /**
+   * A fresh path for `displaceThenInstall`'s `nextSlot`. `tag` (e.g. the watched path it came from) is kept in the
+   * name, so a restart can tell where a held file belongs (`tagOf`).
+   */
+  next = (tag?: string): string => path.join(this.dir, this.prefix + String(this.seq++) + (tag ? TAG + encodeURIComponent(tag) : ""));
+
+  /** The tag a slot path was made with, or null. */
+  static tagOf(file: string): string | null {
+    const b = path.basename(file);
+    const i = b.indexOf(TAG);
+    if (i < 0) return null;
+    try {
+      return decodeURIComponent(b.slice(i + TAG.length));
+    } catch {
+      return null;
+    }
+  }
+
+  /** Whether `file` is held (waiting for its review). */
+  holds(file: string): boolean {
+    return this.held.some((h) => h.path === file);
+  }
+
+  /** Holds a file as a foreign write: one found in the folder after a restart, or one whose import failed. */
+  holdForeign(file: string): void {
+    if (this.holds(file)) return;
+    const t = this.now();
+    this.held.push({ path: file, own: null, round: this.round, heldAt: t, stamp: null, changedAt: t, reported: false });
+  }
 
   /** How many files are held (own installs waiting for their check, and foreign files not yet imported). */
   get size(): number {
@@ -100,7 +133,7 @@ export class DisplacedFiles {
    * written (tests, shutdown): every foreign file is returned for import, complete or not.
    */
   review(complete: (b: Buffer) => boolean, { final = false }: { final?: boolean } = {}): Review {
-    const out: Review = { foreign: [], partial: [], own: 0 };
+    const out: Review = { foreign: [], partial: [], own: 0, retired: [] };
     const t = this.now();
     const keep: Held[] = [];
     for (const h of this.held) {
@@ -120,6 +153,7 @@ export class DisplacedFiles {
       if (h.own && stamp === h.own.stamp && Buffer.compare(bytes, h.own.bytes) === 0) {
         retryBusy(() => fs.unlinkSync(h.path), this.counter);
         out.own++;
+        out.retired.push(h.path);
         continue;
       }
       if (stamp !== h.stamp) {

@@ -114,6 +114,13 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       assert.equal(part.status, 206);
       assert.equal(new TextDecoder().decode(await part.arrayBuffer()), "0123456789");
       assert.equal((await fetch(get.replace("clip.mp4", "other.mp4"))).status, 403, "a URL opened another key");
+      // the same key in another project: the URL is bound to its project's route, not only to the key
+      const q = project();
+      const qo = await owner(q);
+      const qput = ((await (await call(`/api/projects/${q}/blobs/sign`, { method: "POST", token: qo.token, json: { key: "media/clip.mp4", method: "PUT", expiresIn: 60 } })).json()) as { url: string }).url;
+      assert.ok((await fetch(qput, { method: "PUT", body: enc.encode("project q's bytes") })).ok);
+      assert.equal((await fetch(get.replace(`/blob/${p}/`, `/blob/${q}/`))).status, 403, "a URL for one project opened another's");
+      assert.equal((await fetch(put.replace(`/blob/${p}/`, `/blob/${q}/`), { method: "PUT", body: enc.encode("overwrite") })).status, 403, "a PUT URL wrote into another project");
       assert.equal((await fetch(put)).status, 403, "a PUT URL used for GET");
       const head = (await (await call(`/api/projects/${p}/blobs/head?key=media/clip.mp4`, { token: o.token })).json()) as { size: number };
       assert.equal(head.size, 1000);

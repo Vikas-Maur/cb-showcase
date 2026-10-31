@@ -306,17 +306,24 @@ export function transportSuite(name: string, make: () => Promise<HostFixture>): 
       await fx.close();
     });
 
-    test("messages arrive whole and in order: 500 presence updates relayed in sequence", async () => {
+    // (Presence would make a convenient stream, but the sequencer caps it per connection, so ordered changes do.)
+    test("messages arrive whole and in order: 200 pipelined changes, acked and fanned out in sequence", async () => {
       const b = newBranch();
       const a = await client(fx, await fx.token("editor"));
       const p = await client(fx, await fx.token("editor"));
       await share(a, b);
       await hello(a, b);
       await hello(p, b);
-      for (let i = 0; i < 500; i++) a.conn.send({ type: "presence", branchId: b, actor: { kind: "human", id: "a" }, state: { at: i } } as sync.ClientMessage);
-      await p.wait((m) => m.type === "presence" && (m as sync.PresenceFanoutMsg).state?.at === 499, "the 500th presence", 30_000);
-      const ats = p.got.filter((m) => m.type === "presence").map((m) => (m as sync.PresenceFanoutMsg).state?.at);
-      assert.deepEqual(ats, Array.from({ length: 500 }, (_, i) => i));
+      const rid = ridOf(), ids: string[] = [];
+      for (let i = 1; i <= 200; i++) {
+        ids.push(`${rid}.${i}`);
+        push(a, b, 1, [styleChange(b, `${rid}.${i}`, i - 1, i)]);
+      }
+      await a.wait(ackOf(`${rid}.200`), "the 200th ack", 60_000);
+      assert.deepEqual(a.got.filter((m) => m.type === "ack").map((m) => (m as sync.AckMsg).id), ids, "acks in push order");
+      await p.wait((m) => m.type === "changes" && (m as sync.ChangesMsg).rows.some((r) => r.id === `${rid}.200`), "the 200th row", 60_000);
+      const rows = p.got.filter((m) => m.type === "changes").flatMap((m) => (m as sync.ChangesMsg).rows);
+      assert.deepEqual(rows.map((r) => [r.id, r.seq]), ids.map((id, i) => [id, i + 1]), "rows in sequence, each once");
       a.conn.close();
       p.conn.close();
     });

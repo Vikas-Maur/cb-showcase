@@ -2,13 +2,14 @@
 // holder and waits for the status. When there is none:
 //   - the cut is shared (or handing off): start a detached helper that takes the lease and does headless sync, then
 //     hand the write to it. The helper keeps the connection for 60 s, so later calls cost one local round trip;
-//   - the cut is only local: there is nothing to push, so the write is committed in this process, through the
-//     store's cross-process CAS (the local sequencer is carton.db itself; P3). That saves a helper start per call.
+//   - the cut is only local and no holder has beaten within the lease expiry: there is nothing to push, so the write
+//     is committed in this process, through the store's cross-process CAS (the local sequencer is carton.db itself;
+//     P3). That saves a helper start per call. A holder that beat recently but missed the ping is taken over instead.
 //
 // A holder that dies while answering (ECONNRESET) is retried with the **same change id**: the next holder finds the
 // id already in carton.db's queue or log and never makes a second change (stable ids, R3-01).
 import { ControlClient, RpcError } from "./ipc.ts";
-import { liveHolder } from "./holder.ts";
+import { liveHolder, probeHolder } from "./holder.ts";
 import type { Lease, LeaseRow } from "./lease.ts";
 
 export interface SubmitOptions {
@@ -19,6 +20,11 @@ export interface SubmitOptions {
   spawnHelper: (seen: string | null) => void;
   /** Retry on a holder that died mid-call, with the same id (default true). */
   retryOnReset?: boolean;
+  /**
+   * The write is safe to run twice (default true). When false, a holder that dies after receiving it leaves its outcome
+   * unknown, and the call answers that instead of running it again (an undo retried would undo the next change).
+   */
+  idempotent?: boolean;
   /** How long to wait for the holder's answer: the server-ack wait (5 s) plus room for the commit itself. */
   callTimeoutMs?: number;
   /** How long a spawned helper may take to own the lease. */
@@ -31,17 +37,21 @@ export type SubmitResult =
   | { via: "in-process" }
   | { via: "error"; error: string; code?: string | number };
 
+/** A non-idempotent write whose holder died after receiving it: it may or may not have been saved. */
+export const UNKNOWN_OUTCOME = "UNKNOWN_OUTCOME";
+
 const RETRYABLE = new Set(["ECONNRESET", "ECONNREFUSED", "ENOENT", "EPIPE"]);
 
 export async function submit(method: string, params: object, opts: SubmitOptions): Promise<SubmitResult> {
-  const { lease, retryOnReset = true, callTimeoutMs = 20000, helperStartMs = 5000 } = opts;
+  const { lease, retryOnReset = true, idempotent = true, callTimeoutMs = 20000, helperStartMs = 5000 } = opts;
   const log = opts.log ?? (() => {});
   let lastError: { error: string; code?: string | number } = { error: "no lease holder" };
   for (let attempt = 1; attempt <= 6; attempt++) {
-    const holder = await liveHolder(lease);
+    const { live: holder, seen, fresh } = await probeHolder(lease);
     if (!holder) {
-      if (!(await opts.needsHelper())) return { via: "in-process" };
-      const seen = (await lease.nonce()) ?? null;
+      // in-process only when nobody holds the lease: a holder that beat recently but missed the ping is taken over
+      // (§6.2), never bypassed, or the app's materializer and GUI wouldn't hear of the change
+      if (!fresh && !(await opts.needsHelper())) return { via: "in-process" };
       const t0 = Date.now();
       opts.spawnHelper(seen);
       const got = await waitForHolder(lease, seen, helperStartMs);
@@ -50,16 +60,23 @@ export async function submit(method: string, params: object, opts: SubmitOptions
       continue;
     }
     let c: ControlClient | null = null;
+    let sent = false;
     try {
       c = await ControlClient.connect(holder.socketPath, { timeoutMs: 1000 });
+      sent = true;
       const result = await c.call(method, params, callTimeoutMs);
       return { via: "holder", holder, result, attempts: attempt };
     } catch (e: any) {
       const code = e?.code;
       lastError = { error: String(e?.message ?? e), code };
-      log({ type: "cb-error", error: lastError.error, code });
+      log({ type: "cb-error", error: lastError.error, code, sent });
+      // refused before running it (a stopped holder answers -32003), or never reached: always safe to look again
+      const refused = e instanceof RpcError && e.code === -32003;
+      if (sent && !refused && !idempotent) {
+        return { via: "error", error: "the sync-lease holder stopped while running this write: it may or may not have been saved. Check `cb history` before running it again.", code: UNKNOWN_OUTCOME };
+      }
       // the holder stopped (fenced, retiring) or died while answering: look again, same id
-      const retry = RETRYABLE.has(String(code)) || (e instanceof RpcError && e.code === -32003);
+      const retry = RETRYABLE.has(String(code)) || refused;
       if (!retry || !retryOnReset) return { via: "error", ...lastError };
     } finally {
       c?.close();

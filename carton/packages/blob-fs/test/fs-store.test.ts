@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, writeFileSync, utimesSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { FsBlobStore } from "../src/index.ts";
+import { FsBlobStore, writeAll, retrying } from "../src/index.ts";
 import { scratchDir } from "./scratch.ts";
 
 const fresh = () => mkdtempSync(join(scratchDir(), "fs-"));
@@ -96,4 +96,84 @@ test("a completed multipart upload leaves no upload folder or temp file behind",
   assert.deepEqual(readdirSync(join(dir, "tmp")), []);
   assert.equal((await s.head("mp"))?.contentType, "video/mp4");
   rmSync(dir, { recursive: true });
+});
+
+test("writeAll finishes short writes and refuses a write that makes no progress", async () => {
+  const got: number[] = [];
+  const short = { write: async (b: Uint8Array, off: number, len: number) => { const n = Math.min(3, len); got.push(...b.subarray(off, off + n)); return { bytesWritten: n, buffer: b }; } };
+  await writeAll(short as never, new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8]), 8);
+  assert.deepEqual(got, [1, 2, 3, 4, 5, 6, 7, 8]);
+  const stuck = { write: async (b: Uint8Array) => ({ bytesWritten: 0, buffer: b }) };
+  await assert.rejects(writeAll(stuck as never, new Uint8Array(4), 4), /no progress/);
+});
+
+test("complete copies the part it validated, even if the part is replaced meanwhile", async () => {
+  const dir = fresh();
+  const s = new FsBlobStore({ root: dir });
+  const up = await s.createMultipart("race");
+  const old = await up.uploadPart(1, new Uint8Array(1000).fill(1));
+  const done = up.complete([old]);
+  await up.uploadPart(1, new Uint8Array(1000).fill(2)).catch(() => {}); // races the copy
+  const info = await done.catch((e) => e);
+  if (!(info instanceof Error)) {
+    const got = (await s.get("race"))!;
+    assert.ok(got.every((x) => x === 1), "complete([old]) published the replacement's bytes");
+  }
+  rmSync(dir, { recursive: true });
+});
+
+test("complete holds one part open at a time (an upload may have thousands of parts)", async (t) => {
+  if (!existsSync("/proc/self/fd")) return t.skip("counts open handles through /proc (Linux)");
+  const dir = fresh();
+  const s = new FsBlobStore({ root: dir, durable: false });
+  const up = await s.createMultipart("many");
+  const parts = [];
+  for (let i = 1; i <= 120; i++) parts.push(await up.uploadPart(i, new Uint8Array(64).fill(i)));
+  const base = readdirSync("/proc/self/fd").length;
+  let peak = 0;
+  const timer = setInterval(() => (peak = Math.max(peak, readdirSync("/proc/self/fd").length - base)), 0);
+  const info = await up.complete(parts);
+  clearInterval(timer);
+  assert.equal(info.size, 120 * 64);
+  assert.ok(peak < 20, `${peak} more descriptors open during complete`);
+  rmSync(dir, { recursive: true });
+});
+
+test("a 1024-byte key of capitals, under a deep store root, keeps the whole path under 1024 bytes and lists by prefix", async () => {
+  const root = fresh();
+  const dir = join(root, "deep", "a".repeat(100), "b".repeat(100), "c".repeat(100));
+  const s = new FsBlobStore({ root: dir });
+  const key = Array.from({ length: 5 }, () => "B".repeat(199)).join("/") + "/" + "C".repeat(24);
+  assert.equal(Buffer.byteLength(key), 1024);
+  await s.put(key, enc("max"));
+  const files: string[] = [];
+  const walk = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) e.isDirectory() ? walk(join(d, e.name)) : files.push(join(d, e.name)); };
+  walk(join(dir, "objects"));
+  for (const f of files) assert.ok(Buffer.byteLength(f) < 1024, `${Buffer.byteLength(f)}-byte path`);
+  assert.equal(new TextDecoder().decode((await s.get(key))!), "max");
+  assert.deepEqual((await s.list("BBB")).blobs.map((b) => b.key), [key]);
+  assert.deepEqual((await s.list(key.slice(0, 400))).blobs.map((b) => b.key), [key], "a narrowed prefix finds a flat key");
+  await s.delete(key);
+  assert.equal(await s.head(key), null);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("Windows retries: a file held busy is retried within the budget, then the error surfaces", async () => {
+  let busyFor = 3, calls = 0;
+  const flaky = async () => {
+    calls++;
+    if (busyFor-- > 0) throw Object.assign(new Error("busy"), { code: "EPERM" });
+    return "ok";
+  };
+  assert.equal(await retrying(flaky, 2000, true), "ok");
+  assert.equal(calls, 4);
+  const start = Date.now();
+  await assert.rejects(retrying(async () => { throw Object.assign(new Error("held"), { code: "EBUSY" }); }, 300, true), /held/);
+  const took = Date.now() - start;
+  assert.ok(took >= 150 && took < 1500, `gave up after ${took} ms with a 300 ms budget`);
+  // not on Windows, or not a busy file: no retry
+  let once = 0;
+  await assert.rejects(retrying(async () => { once++; throw Object.assign(new Error("x"), { code: "EPERM" }); }, 2000, false));
+  await assert.rejects(retrying(async () => { once++; throw Object.assign(new Error("x"), { code: "ENOENT" }); }, 2000, true));
+  assert.equal(once, 2);
 });

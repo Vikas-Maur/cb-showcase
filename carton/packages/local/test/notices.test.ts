@@ -52,5 +52,8 @@ test("hook commands: pre-tool-use rewrites cb calls; stop reads the project's no
   assert.deepEqual(await runHook("stop", { hook_event_name: "Stop", session_id: "abcdef1234" }, { env: {}, openStore: async () => null }), {});
   const s: any = hookSettings({ command: "carton", projectDir: "/Users/x/Movies/My Project.cardboard" });
   assert.equal(s.hooks.PreToolUse[0].matcher, "Bash");
-  assert.equal(s.hooks.SubagentStop[0].hooks[0].command, `carton hook stop --project "/Users/x/Movies/My Project.cardboard"`);
+  assert.equal(s.hooks.SubagentStop[0].hooks[0].command, "carton hook stop --project '/Users/x/Movies/My Project.cardboard'");
+  // nothing in a path is expanded by the shell: single quotes, a quote inside escaped
+  const evil = hookSettings({ command: "carton", projectDir: "/p/$(touch pwned)/it's" }) as any;
+  assert.equal(evil.hooks.Stop[0].hooks[0].command, "carton hook stop --project '/p/$(touch pwned)/it'\\''s'");
 });
