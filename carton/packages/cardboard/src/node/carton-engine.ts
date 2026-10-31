@@ -107,7 +107,11 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
           kept = true;
         }
         r = await carton.commit({ doc, base: b, author, cut: cut(), choices: () => "ours", ...withId });
-      } else if (id && r.status === "confirmed") cards = (await getMeta<ConflictCard[]>(["attempt-cards", id])) ?? [];
+      } else if (id && (r.status === "confirmed" || r.status === "pending")) {
+        // a retry answered by id (confirmed, or still pending on a shared cut offline): the cards recorded on the
+        // first attempt are still this save's
+        cards = (await getMeta<ConflictCard[]>(["attempt-cards", id])) ?? [];
+      }
       if (cards.length && !kept && !id && (r.status === "confirmed" || r.status === "pending")) {
         await store.write([cardsRow(author, r.status === "confirmed" ? (r.change?.id ?? `save-${now()}`) : r.id, cards)]);
       } else if (kept && (r.status === "conflicts" || r.status === "rejected")) {
@@ -136,9 +140,10 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     own: (author: Actor) => carton.own(author),
     cut,
     async headRef() {
+      // the optimistic head: on a shared cut offline, a commit queues a pending change without moving the seq
       const c = cut();
       const h = await carton.head(c);
-      return JSON.stringify([c, h.ref.branchId, h.ref.seq]);
+      return JSON.stringify([c, h.ref.branchId, h.ref.seq, h.ref.pending ?? []]);
     },
     newChangeId: () => carton.newChangeId(),
     getMeta,

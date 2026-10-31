@@ -1223,6 +1223,51 @@
           "kind": "json"
         }
       ]
+    },
+    {
+      "id": "blob-s3-transport",
+      "agent": "hosts-plugins",
+      "claim": "CI #29 fix (blob-s3 on Node through @carton/http-node / node:http instead of fetch) doesn't slow blob transfers: multipart upload (8 MiB parts) and whole download of the e2e's big clip against VersityGW, fetch vs node alternating, each run in a fresh process (packages/blob-s3/bench/transport.ts, hosts-plugins 9453f1d)",
+      "timeout": 20,
+      "needs": [
+        "versitygw",
+        "ffmpeg"
+      ],
+      "steps": [
+        {
+          "label": "make the e2e's clips with its ffmpeg settings (e2e/support/s5-stores.ts makeClips; big.mp4 = 5.5 s testsrc2 640x360 + noise, x264 crf 16)",
+          "run": [
+            "{node}",
+            "--input-type=module",
+            "-e",
+            "const { makeClips } = await import('./e2e/support/s5-stores.ts'); const c = makeClips(process.argv[1]); if (!c.playable) { console.error('no ffmpeg: the clip would be random bytes'); process.exit(1); } const { statSync } = await import('node:fs'); console.log(c.big, statSync(c.big).size);",
+            "{tmp}/clips"
+          ]
+        },
+        {
+          "label": "transport.ts: 15 runs per mode, alternating fetch / node, 5 uploads + downloads per run, no lock (dedicated runner)",
+          "env": {
+            "CARTON_BENCH_CLIP": "{tmp}/clips/big.mp4",
+            "CARTON_BENCH_OUT": "{results}/transport-raw.log",
+            "CARTON_BENCH_RUNS": "15"
+          },
+          "run": [
+            "{node}",
+            "packages/blob-s3/bench/transport.ts"
+          ],
+          "stdoutTo": "{results}/transport-stdout.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "transport-raw.log",
+          "kind": "text",
+          "mustMatch": [
+            "^fetch: upload MB/s",
+            "^node: upload MB/s"
+          ]
+        }
+      ]
     }
   ]
 }

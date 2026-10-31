@@ -33,7 +33,8 @@ function proc(script: string, args: string[], env: Record<string, string> = {}) 
 
 async function app() {
   const { dir, projectId } = bundle("r504");
-  const init = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: { kind: "human", id: "human:me" } });
+  // the starting state as the root (main@0): the seqs and credits below count only this test's own changes
+  const init = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0(), asChange: false }, actor: { kind: "human", id: "human:me" } });
   await init.close();
   const worker = proc("./support/real-worker.ts", [dir, projectId, "./real-mz-factory.ts"]);
   await worker.next();

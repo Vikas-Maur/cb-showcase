@@ -10,6 +10,7 @@
     "packages/store-sqlite",
     "packages/store-idb",
     "packages/blob-memory",
+    "packages/http-node",
     "packages/blob-fs",
     "packages/blob-s3",
     "packages/server",
@@ -22,7 +23,8 @@
     "packages/cli-mcp",
     "packages/react",
     "packages/conformance",
-    "e2e"
+    "e2e",
+    "apps/web"
   ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",

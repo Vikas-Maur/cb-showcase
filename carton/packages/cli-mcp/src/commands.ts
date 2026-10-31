@@ -181,6 +181,28 @@ const cutSwitch: CommandSpec = {
   },
 };
 
+const share: CommandSpec = {
+  path: ["share"],
+  summary: "Share a cut with the team: from now on the sync server sequences it (with the carton command: --server <url> --token-file <file>)",
+  args: [{ name: "cut", description: "cut name or id (default: the current cut)" }],
+  options: [{ name: "server", type: "string", description: "the team's sync server (read by the carton command before the project opens)" }],
+  write: true,
+  async run(ctx, a) {
+    // the carton command takes --server before the project opens (its helper syncs there); a host that runs these
+    // commands itself (Cardboard's cb) syncs with the app's own server settings
+    if (a.server !== undefined) throw new UsageError("--server goes to the `carton` command (with --token-file); here the app's own sync settings apply");
+    const { carton } = ctx.project;
+    const cut = a.cut ? await resolveCut(carton, a.cut) : (await carton.cuts()).find((c) => c.id === carton.cut)!;
+    const r = await ctx.project.write({ kind: "share", cut: cut.id }, { actor: ctx.actor });
+    if (r.status !== "confirmed") return writeOut(r, `Shared "${cut.name}"`);
+    const rec = (r as { cut?: { sequencer?: { kind?: string } } }).cut;
+    const text = rec?.sequencer?.kind === "server"
+      ? `"${cut.name}" is shared: the team's server sequences it`
+      : `Sharing "${cut.name}": its history is going up to the team's server; edits made meanwhile stay pending until the server has it`;
+    return { json: { ...r, cut: { id: cut.id, name: cut.name, sequencer: rec?.sequencer ?? null } }, text, exitCode: 0 };
+  },
+};
+
 const fold: CommandSpec = {
   path: ["fold"],
   gitAlias: ["merge"],
@@ -295,8 +317,8 @@ const undo: CommandSpec = {
       const turn = a.turn === true || a.turn === "" ? ctx.actor.turn : String(a.turn);
       if (!turn) throw new UsageError("no turn to undo: pass --turn <turn id> (see `cb history`)");
       const r = await ctx.project.write({ kind: "undoTurn", turn, cut }, { actor: ctx.actor });
-      // cards before anything was saved (no change id): the turn is all or nothing, so nothing was undone. With a change
-      // id (a shared cut: the server found a clash after the undo was sent), it landed except those cards
+      // what the turn changed that was changed again since keeps its newer value as a card, and the rest is undone (the
+      // answer says it landed). Cards with nothing landed (no change id: a holder from before that) undid nothing
       if (r.status === "conflicts" && r.id === undefined && r.landed === undefined) {
         const n = r.conflicts.length;
         const text = [...noticeLines(r.notices ?? []), `Not undone: ${n} thing${n === 1 ? "" : "s"} the turn changed ${n === 1 ? "was" : "were"} changed again since, nothing was saved.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i)}`)].join("\n");
@@ -411,7 +433,7 @@ const activity: CommandSpec = {
   },
 };
 
-export const COMMANDS: readonly CommandSpec[] = [history, cutList, cutNew, cutSwitch, fold, credits, restore, undo, compare, publish, conflicts, resolve, activity];
+export const COMMANDS: readonly CommandSpec[] = [history, cutList, cutNew, cutSwitch, share, fold, credits, restore, undo, compare, publish, conflicts, resolve, activity];
 
 /** git word → Carton command (README; §0.1). `branch <name>` starts a cut; plain `branch` lists them. */
 export const GIT_ALIASES: Readonly<Record<string, string>> = {

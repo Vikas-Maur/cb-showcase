@@ -5,7 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { BUSY_BUDGET_MS, InstallGaveUp, displaceThenInstall, hardLinksWork, retryBusy, retryMissing, statStamp, type BusyOptions } from "../src/node/displace.ts";
+import { BUSY_BUDGET_MS, INSTALL_LOCK, InstallGaveUp, InstallLockLost, displaceThenInstall, hardLinksWork, retryBusy, retryMissing, statStamp, type BusyOptions } from "../src/node/displace.ts";
+import { withInstallLock } from "../src/node/install-lock.ts";
 import { DisplacedFiles } from "../src/node/displaced.ts";
 
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
@@ -378,4 +379,37 @@ test("a failed install's put-back never replaces a foreign save that landed mean
   const kept = fs.readdirSync(path.join(dir, ".carton", "displaced"));
   assert.equal(kept.length, 1);
   assert.equal(fs.readFileSync(path.join(dir, ".carton", "displaced", kept[0]!), "utf8"), "previous", "nothing lost");
+});
+
+test("review 7 #1: a holder whose install lock was taken over while it stalled stops instead of installing its older file", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "v1");
+  const ours = tmp("older");
+  await withInstallLock(dir, async (mine) => {
+    // stalled past the takeover: another process took the lock over and installed newer state
+    fs.writeFileSync(path.join(dir, INSTALL_LOCK, "owner"), JSON.stringify({ pid: 1, me: "successor" }));
+    fs.writeFileSync(target, "newer");
+    await assert.rejects(displaceThenInstall(target, ours, held.next, { mine }), InstallLockLost);
+  });
+  assert.equal(fs.readFileSync(target, "utf8"), "newer", "the successor's install stays");
+  assert.deepEqual(fs.readdirSync(path.join(dir, ".carton", "displaced")), [], "nothing moved aside");
+  assert.ok(fs.existsSync(path.join(dir, INSTALL_LOCK)), "and its lock isn't released by the old holder");
+});
+
+test("review 8 #1: a busy displace or link whose wait outlasts the lock stops at its next retry, installing nothing", async (t) => {
+  for (const step of ["renameSync", "linkSync"] as const) {
+    await t.test(step, async (t) => {
+      const { target, held, tmp, dir } = setup(t, WIN);
+      fs.writeFileSync(target, "v1");
+      const ours = tmp("older");
+      failFor(t, step, "EPERM", target, 60); // busy for 60 ms (Windows: the file open elsewhere)
+      let checks = 0;
+      const mine = () => ++checks === 1; // ours at the first try; taken over during the wait
+      await assert.rejects(displaceThenInstall(target, ours, held.next, { ...WIN, mine }), InstallLockLost);
+      t.mock.restoreAll();
+      assert.ok(checks >= 2, "checked again before a retry");
+      assert.equal(fs.readFileSync(target, "utf8"), "v1", "the path keeps what was there; the older file isn't installed");
+      assert.deepEqual(fs.readdirSync(path.join(dir, ".carton", "displaced")), [], "nothing left moved aside");
+    });
+  }
 });

@@ -12,7 +12,8 @@
 // system). It matters beyond Windows: stock 1.4.0 takes an unreadable project.json for a removed project (dropped from
 // the index and the rescan, the watcher says `removed`). So:
 //   - the caller holds the bundle's install lock (`.carton/install.lock/`, `withInstallLock`, shared with the app's
-//     facade) around the whole install, from step 1 to step 3;
+//     facade) around the whole install, from step 1 to step 3, and passes its `mine()`: a holder that stalled long
+//     enough to be taken over stops before step 1 instead of installing its older file over the successor's;
 //   - readers wait on ENOENT while the lock is held: the app's store bridge up to 6 s (50 ms without the lock), Carton's
 //     own through `retryMissing` (6 s, 100 ms without); agents' file tools see a transient error;
 //   - an install that fails between 1 and 2 (a link error other than EEXIST, or a busy file past its budget) puts the
@@ -89,7 +90,7 @@ async function retrying<T>(fn: () => T | Promise<T>, o: BusyOptions, start: numb
  * The install's steps: `fn` runs at once, synchronously, and only a busy file turns it into a promise that `retryBusy`
  * finishes. The fast path never yields, so the path stays missing for microseconds, not a trip around the event loop.
  */
-function atOnce(fn: () => void, o: BusyOptions): Promise<void> | undefined {
+function atOnce(fn: () => void, o: BusyOptions, again: () => void = fn): Promise<void> | undefined {
   const start = performance.now();
   try {
     fn();
@@ -97,7 +98,7 @@ function atOnce(fn: () => void, o: BusyOptions): Promise<void> | undefined {
   } catch (e) {
     if (!isBusy(e, o)) throw e;
     if (o.counter) o.counter.busy = (o.counter.busy ?? 0) + 1;
-    return retrying(fn, o, start, 0);
+    return retrying(again, o, start, 0); // `again`: each retry, after a wait the lock may have been taken over in
   }
 }
 
@@ -171,6 +172,12 @@ export interface InstallOptions extends BusyOptions {
   lastStamp?: string | null;
   /** How many foreign files one install displaces before it gives up (`InstallGaveUp`), default 50. */
   maxDisplaced?: number;
+  /**
+   * The install lock's `mine()`: checked before each displacing rename. False means another process took the lock over
+   * (this one stalled for a minute) and may have installed newer state since: this install stops (`InstallLockLost`)
+   * instead of putting its older file in place.
+   */
+  mine?: () => boolean;
 }
 
 /**
@@ -187,6 +194,16 @@ export class InstallGaveUp extends Error {
   }
 }
 
+/** The install lock was taken over while this install waited: it installed nothing (`displaced`: what it moved aside). */
+export class InstallLockLost extends Error {
+  readonly displaced: string[];
+  constructor(target: string, displaced: string[]) {
+    super(`${target}: another process took the install lock over; this install stopped (its content may be older)`);
+    this.name = "InstallLockLost";
+    this.displaced = displaced;
+  }
+}
+
 const hr = (): bigint => process.hrtime.bigint();
 
 /**
@@ -198,12 +215,18 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
   const displaced: string[] = [];
   let eexist = 0;
   let first: bigint | null = null;
+  // a busy file's retries wait on timers: before each one, the lock must still be ours (the first try runs at once,
+  // right after the check below, so the gap stays as short as it was)
+  const stillMine = (): void => {
+    if (opts.mine && !opts.mine()) throw new InstallLockLost(target, displaced);
+  };
   for (;;) {
+    stillMine();
     const slot = nextSlot();
     const t0 = hr();
     first ??= t0;
     try {
-      const busy = atOnce(() => fs.renameSync(target, slot), opts);
+      const busy = atOnce(() => fs.renameSync(target, slot), opts, () => (stillMine(), fs.renameSync(target, slot)));
       if (busy) await busy;
       displaced.push(slot);
     } catch (e) {
@@ -212,10 +235,11 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
     const t1 = hr();
     opts.between?.();
     try {
-      const busy = atOnce(() => fs.linkSync(tmp, target), opts);
+      const busy = atOnce(() => fs.linkSync(tmp, target), opts, () => (stillMine(), fs.linkSync(tmp, target)));
       if (busy) await busy;
     } catch (e) {
       if (errCode(e) !== "EEXIST") {
+        // a failure, or the lock lost while the link waited: the file this round moved aside goes back
         if (displaced.at(-1) === slot && (await putBack(slot, target, opts))) displaced.pop();
         throw e;
       }
@@ -256,6 +280,7 @@ async function installWithoutLinks(target: string, tmp: string, nextSlot: () => 
   const displaced: string[] = [];
   const t0 = hr();
   const stamp = await statStamp(target, opts);
+  if (opts.mine && !opts.mine()) throw new InstallLockLost(target, displaced);
   if (stamp !== null && stamp !== opts.lastStamp) {
     const slot = nextSlot();
     try {

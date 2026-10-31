@@ -32,6 +32,7 @@ export function hostMissing(kind: HostKind): string | null {
   return null;
 }
 
+/** A sequencer host as shipped: no schema or other setting overridden (H-SV is guarded by every live scenario). */
 export async function startHost(kind: HostKind, dir: string, procs: Procs): Promise<Host> {
   const secret = randomBytes(32).toString("base64url");
   const auth = createHmacAuth({ secret });

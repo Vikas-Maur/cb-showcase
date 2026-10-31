@@ -79,3 +79,30 @@ test("a delivery whose notices keep changing fails the call (retryable), and giv
     await c.close();
   }
 });
+
+test("an undo --turn with cards: the rest is undone, its cards are kept for the author, and its retry answers with them", async () => {
+  const store = createMemoryStore();
+  const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent });
+  try {
+    const turnAuthor = { ...agent, turn: "t3" };
+    await c.commit({ author: turnAuthor, ops: [set("c1", "name", "turn name")] });
+    await c.commit({ author: turnAuthor, ops: [set("c5", "endTime", 29), set("c5", "trimEnd", 4)] });
+    await c.commit({ author: { kind: "human", id: "human:me" }, ops: [set("c5", "endTime", 29.4), set("c5", "trimEnd", 4.4)] });
+    const req = { id: "sf3.undo-cards", actor: agent, op: { kind: "undoTurn" as const, turn: "t3" } };
+    const first = await runWrite(c, structuredClone(req));
+    assert.equal(first.status, "conflicts", JSON.stringify(first));
+    assert.equal(first.landed, "confirmed");
+    assert.deepEqual(first.status === "conflicts" && first.conflicts.map((x) => x.path), ["timelineItems/c5/#time"]);
+    const item = async (id: string) => ((await c.head()).doc.timelineItems as { id: string; name: string; endTime: number }[]).find((x) => x.id === id)!;
+    assert.equal((await item("c1")).name, "c1", "the rest is undone");
+    assert.equal((await item("c5")).endTime, 29.4, "the clash keeps the newer value");
+    const log = await c.log({ limit: 100 });
+    const again = await runWrite(c, structuredClone(req));
+    assert.deepEqual([again.status, again.status === "conflicts" && again.conflicts.map((x) => x.path)], ["conflicts", ["timelineItems/c5/#time"]], "the retry answers with the same cards");
+    assert.equal((await c.log({ limit: 100 })).length, log.length, "and undoes nothing more");
+    const rows = (await store.range<{ cards?: unknown[] }>("notices", { prefix: [actorKey(agent)] })).filter((r) => r.value.cards?.length);
+    assert.equal(rows.length, 1, "one cards notice for the author");
+  } finally {
+    await c.close();
+  }
+});

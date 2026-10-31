@@ -96,8 +96,8 @@ export interface MaterializerEngine {
   /** The current cut's id: pins and commits go to it. The freeze view belongs to the cut it started on (B6). */
   cut?(): string;
   /**
-   * The current cut's head as a short key (cut, branch, seq), read fresh from the store: another process may have
-   * moved it (B11). Without it, `onExternalHeadChange` always rewrites (still idempotent: unchanged files stay).
+   * The current cut's optimistic head as a short key (cut, branch, seq, pending change ids), read fresh from the store:
+   * another process may have moved it (B11). Without it, `onExternalHeadChange` always rewrites (still idempotent: unchanged files stay).
    */
   headRef?(): Promise<string>;
 }
@@ -285,6 +285,9 @@ export class Materializer {
   private readonly quietTimers = new Map<string, unknown>();
   /** The head (`headRef`) the files were last brought up to, or were scheduled to be (B11). */
   private knownHead: string | null = null;
+  /** Whether the files show `knownHead` (false while a failed rewrite waits for its retry). */
+  private headShown = true;
+  private readonly writeRetryTimers = new Map<"shared" | "project", unknown>();
   /** Paths whose save is being applied right now (its finishing steps read the path again: R7-01). */
   private readonly applying = new Set<string>();
   private readonly retryTimers = new Map<string, unknown>();
@@ -343,6 +346,7 @@ export class Materializer {
   start(): Promise<void> {
     return this.run(async () => {
       this.knownHead = await this.headKey(); // before the writes, which show this head or a newer one
+      this.headShown = true;
       await this.recoverDisplaced();
       await this.reviewDisplaced();
       await this.importUnseenViews();
@@ -392,7 +396,7 @@ export class Materializer {
     this.watchers = [];
     await this.run(() => this.reviewDisplaced()).catch(() => undefined);
     this.closed = true;
-    for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, this.freeze.timer, ...this.quietTimers.values(), ...this.retryTimers.values()]) if (t) this.clock.clearTimeout(t);
+    for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, ...this.writeRetryTimers.values(), this.freeze.timer, ...this.quietTimers.values(), ...this.retryTimers.values()]) if (t) this.clock.clearTimeout(t);
     await this.queue;
   }
 
@@ -464,6 +468,7 @@ export class Materializer {
   onCutSwitch(_cut?: string): Promise<void> {
     return this.run(async () => {
       this.knownHead = await this.headKey();
+      this.headShown = true;
       await this.cutSwitchNow();
     });
   }
@@ -484,9 +489,10 @@ export class Materializer {
   onExternalHeadChange(): Promise<"unchanged" | "head" | "cut"> {
     return this.run(async () => {
       const key = await this.headKey();
-      if (key !== null && key === this.knownHead) return "unchanged";
+      if (key !== null && key === this.knownHead && this.headShown) return "unchanged";
       const was = this.knownHead;
       this.knownHead = key; // read before the rewrite, which shows this head or a newer one
+      this.headShown = true;
       if (key !== null && was !== null && cutOfKey(key) !== cutOfKey(was)) {
         await this.cutSwitchNow();
         return "cut";
@@ -503,10 +509,10 @@ export class Materializer {
    * The freeze view and its seq belong to the cut the freeze started on; on another cut that seq is another state or
    * none. Once the cut has moved (told, or found here), the freeze restarts from the current cut's head.
    */
-  private async freezeOnCurrentCut(moved = false): Promise<void> {
+  private async freezeOnCurrentCut(moved = false, pinned?: HeldBase): Promise<void> {
     const cut = this.engine.cut?.() ?? null;
     if (!this.freeze.active || (!moved && cut === this.freeze.cut)) return;
-    const h = await this.pinnedHead("shared-file");
+    const h = pinned ?? (await this.pinnedHead("shared-file"));
     this.freeze.view = h.baseDoc;
     this.freeze.baseSeq = h.baseSeq;
     this.freeze.causal = [];
@@ -534,19 +540,53 @@ export class Materializer {
       const at = Math.max(this.clock.now(), this.lastRemoteRewrite + this.opts.remoteRewriteMs);
       this.remoteTimer = this.clock.setTimeout(() => {
         this.remoteTimer = null;
-        this.fire(async () => {
+        this.fire(() => this.orRetry("shared", async () => {
           if (!this.freeze.active) await this.writeSharedNow("remote");
-        });
+        }));
       }, at - this.clock.now());
       return;
     }
     if (this.localTimer) return;
     this.localTimer = this.clock.setTimeout(() => {
       this.localTimer = null;
-      this.fire(async () => {
+      this.fire(() => this.orRetry("shared", async () => {
         if (!this.freeze.active) await this.writeSharedNow(cause);
-      });
+      }));
     }, this.opts.localRewriteMs);
+  }
+
+  /** Runs a rewrite; if it fails, it is tried again (`retryWrite`) and the failure still reaches the caller's log. */
+  private async orRetry(which: "shared" | "project", fn: () => Promise<void>): Promise<void> {
+    try {
+      await fn();
+    } catch (e) {
+      this.retryWrite(which);
+      throw e;
+    }
+  }
+
+  /**
+   * A rewrite of the shared file or project.json failed (a locked database, a printer error): tried again with a
+   * growing delay. Meanwhile the head it was for counts as not shown yet, so `onExternalHeadChange` acts on it again.
+   */
+  private retryWrite(which: "shared" | "project", attempt = 0): void {
+    this.headShown = false; // the cut it was on is kept: a cut switched meanwhile is still told apart
+    if (this.closed || this.writeRetryTimers.has(which) || attempt >= 12) return;
+    this.writeRetryTimers.set(
+      which,
+      this.clock.setTimeout(() => {
+        this.writeRetryTimers.delete(which);
+        this.fire(async () => {
+          try {
+            if (which === "shared") await this.writeSharedNow("retry");
+            else if (this.opts.writeProject) await this.writeProjectNow("retry");
+          } catch (e) {
+            this.log.errors.push({ t: this.clock.now(), path: which === "shared" ? TIMELINE_FILE : PROJECT_FILE, error: `rewrite retry: ${e instanceof Error ? e.message : String(e)}` });
+            this.retryWrite(which, attempt + 1);
+          }
+        });
+      }, Math.min(30_000, 250 * 2 ** attempt)),
+    );
   }
 
   /** project.json follows head promptly (coalesced). */
@@ -554,7 +594,7 @@ export class Materializer {
     if (this.closed || !this.opts.writeProject || this.projectTimer) return;
     this.projectTimer = this.clock.setTimeout(() => {
       this.projectTimer = null;
-      this.fire(() => this.writeProjectNow(cause));
+      this.fire(() => this.orRetry("project", () => this.writeProjectNow(cause)));
     }, this.opts.localRewriteMs);
   }
 
@@ -657,8 +697,9 @@ export class Materializer {
     if (!force && cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body) return; // unchanged
     const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
     const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
-    this.sharedRef = body;
     await this.install(TIMELINE_FILE, text);
+    this.sharedRef = body; // only once installed: a failed rewrite must not read as done
+
     this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
   }
 
@@ -772,7 +813,8 @@ export class Materializer {
     let r;
     try {
       // under the bundle's install lock, shared with the app's facade: the app's readers wait while it is held
-      r = await withInstallLock(this.bundle, () => displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null }), this.busy);
+      // `mine`: a holder taken over while it stalled stops rather than install its (older) file over a newer one
+      r = await withInstallLock(this.bundle, (mine) => displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null, mine }), this.busy);
     } catch (e) {
       // a rename may have moved a file aside before the failure: hold whatever is in the folder unreviewed
       await this.recoverDisplaced();
@@ -826,11 +868,18 @@ export class Materializer {
   /** Content at the path that is the current generation already (installed, applied or tried): nothing to do. */
   private async isCurrent(rel: string, hash: string): Promise<boolean> {
     if ((await this.pathState(rel)).last !== hash) return false;
-    if (this.applying.has(rel)) return true; // being finished now
-    // stored, but not finished (it failed, or the process died, after the receipt): a view's base and sidecar are
-    // still to be written, so the save is read again and finished from its recorded result
+    return !(await this.unfinished(rel, hash));
+  }
+  /**
+   * A save stored but not finished (it failed, or the process died, after its receipt): its attempt slot still holds
+   * its result for these bytes, so a view's base and sidecar are still to be written. Such a save is read again (at
+   * its path, or displaced) and finished from its recorded result. Not while it is being finished now (R7-01 reads the
+   * path again).
+   */
+  private async unfinished(rel: string, hash: string): Promise<boolean> {
+    if (this.applying.has(rel)) return false;
     const slot = await this.engine.getMeta<Attempt>(["attempt", rel]);
-    return !(slot?.result && slot.hash === hash);
+    return !!slot?.result && slot.hash === hash;
   }
 
   // ------------------------------------------------------------------ foreign saves
@@ -854,16 +903,19 @@ export class Materializer {
       if (pending) this.clock.clearTimeout(pending);
       this.retryTimers.delete(rel);
     } catch (e) {
-      if (!this.closed && !this.retryTimers.has(rel) && attempt < 12) {
-        const timer: unknown = this.clock.setTimeout(() => {
-          if (this.retryTimers.get(rel) !== timer) return; // cancelled, or replaced
-          this.retryTimers.delete(rel);
-          if (!this.closed) this.fire(() => this.readWithRetry(rel, attempt + 1));
-        }, Math.min(30_000, 250 * 2 ** attempt));
-        this.retryTimers.set(rel, timer);
-      }
+      this.scheduleRead(rel, attempt);
       throw e;
     }
+  }
+  /** Reads `rel` again after a failure, with a growing delay (one pending retry per path). */
+  private scheduleRead(rel: string, attempt: number): void {
+    if (this.closed || this.retryTimers.has(rel) || attempt >= 12) return;
+    const timer: unknown = this.clock.setTimeout(() => {
+      if (this.retryTimers.get(rel) !== timer) return; // cancelled, or replaced
+      this.retryTimers.delete(rel);
+      if (!this.closed) this.fire(() => this.readWithRetry(rel, attempt + 1));
+    }, Math.min(30_000, 250 * 2 ** attempt));
+    this.retryTimers.set(rel, timer);
   }
 
   /** The canonical relative path of a watched file, or null. */
@@ -976,7 +1028,9 @@ export class Materializer {
       try {
         await this.importUnseen(rel, { unparsed: "wait" });
       } catch (e) {
+        // a transient failure (a locked database): read again later, as a watch event's would be; no event will come
         this.log.errors.push({ t: this.clock.now(), path: rel, error: e instanceof Error ? e.message : String(e) });
+        this.scheduleRead(rel, 0);
       }
     }
   }
@@ -1008,8 +1062,8 @@ export class Materializer {
       const ps = await this.pathState(rel);
       const stamp = stampOf(st);
       const hash = sha(bytes);
-      if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || ps.applied.includes(stamp)) {
-        await this.held.release(file); // Carton's own install, or a copy of a save already stored
+      if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || (ps.applied.includes(stamp) && !(await this.unfinished(rel, hash)))) {
+        await this.held.release(file); // Carton's own install, or a copy of a save already stored (and finished)
         continue;
       }
       if (ps.failed.includes(stamp)) {
@@ -1073,7 +1127,8 @@ export class Materializer {
       this.origin.delete(d.path);
       await this.held.release(d.path);
     };
-    if ((d.stamp && ps.applied.includes(d.stamp)) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done(); // a copy: that save is stored
+    // a copy: that save is stored (and finished; an unfinished one is applied again, from its recorded result)
+    if ((d.stamp && ps.applied.includes(d.stamp) && !(await this.unfinished(d.rel, hash))) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done();
     if (d.stamp && ps.failed.includes(d.stamp)) {
       this.origin.delete(d.path);
       this.keptFiles.add(d.path);
@@ -1194,11 +1249,23 @@ export class Materializer {
       if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
-    if (!name && (sameDoc(saved, baseDoc) || sameDoc(saved, await this.engine.head()))) {
+    // a save already committed by an earlier attempt of this same file (a failure, or a crash, after its commit) is
+    // finished below from its recorded result, even though its content now equals head
+    const earlier = await this.engine.getMeta<Attempt>(["attempt", rel]);
+    const resumed = !!earlier && earlier.gen === sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
+    const asBase = !name && !resumed && sameDoc(saved, baseDoc);
+    // during a freeze, head is pinned once: the save is compared with, and the freeze restarted from, the same state
+    // (a commit from another process landing in between must stay hidden, R8-01)
+    const frozenHead = !name && !resumed && !asBase && rel === TIMELINE_FILE && this.freeze.active ? await this.pinnedHead("shared-file") : null;
+    const asHead = !name && !resumed && !asBase && sameDoc(saved, frozenHead ? frozenHead.baseDoc : await this.engine.head());
+    if (asBase || asHead) {
       // nothing to version: the file shows the state its header names, or head itself (another materializer's install
       // of carton.db's state, a takeover helper's while it held the lease, B11/B3; or a save that changed nothing). No
       // commit, and no regeneration, which would answer one materializer's install with another's, back and forth.
-      // project.json's own fields are still kept (its overlay).
+      // project.json's own fields are still kept (its overlay). An agent saving head's content into a frozen shared
+      // file has taken in what the freeze hid: the freeze view restarts from head, with head's whole causal past (a
+      // merge into the old view without those changes' ids would map later saves through them again)
+      if (asHead && frozenHead) await this.freezeOnCurrentCut(true, frozenHead);
       if (rel === PROJECT_FILE) {
         await this.storeOverlay(text, stamp);
         this.scheduleProjectWrite("overlay"); // its fields reach the file (nothing to write if the file has them)
@@ -1271,6 +1338,7 @@ export class Materializer {
         await this.writeSharedNow("save");
       } catch (e) {
         this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: `regenerate after a save: ${e instanceof Error ? e.message : String(e)}` });
+        this.retryWrite("shared"); // during a freeze nothing else would rewrite it until the turn ends
       }
     }
     if (name && row) {

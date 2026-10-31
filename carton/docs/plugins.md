@@ -96,6 +96,13 @@ R2's binding, the DO-blob vault and `blob-fs` can't presign. They take a signer 
 with single HTTP ranges, so a `<video>` element or ffmpeg can seek, and also PUT. `blob-s3` presigns with SigV4
 instead.
 
+On Node, `blob-s3` and host-http's clients (`hostMediaBlobs`, `hostMessageBlobs`) send their requests through
+`@carton/http-node`, which uses `node:http` and `node:https` instead of the global `fetch`. When a server ended the
+connection while a reader had paused the body, Node's built-in undici either crashed the process with an uncaught
+`assert(!this.paused)` (CI #29) or left the read hanging forever; `node:http` rejects the read instead. A streamed
+upload is held to its declared length. Workers and browsers use `fetch`, and a `fetch` passed in the options is used
+as given. `packages/blob-s3/bench/transport.ts` compares the two transports' throughput (see its header to run it).
+
 ### One bucket, many projects
 
 Wrap a store with `scopedBlobStore(store, "projects/<id>/")` (`@carton/blob-memory/scoped`), so a project can't name

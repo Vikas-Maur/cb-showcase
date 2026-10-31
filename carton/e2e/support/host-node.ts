@@ -1,7 +1,7 @@
 // A real sequencer host for the live-sync scenarios: `@carton/server-node` (node:sqlite rooms, RFC 6455 WebSocket,
 // the HTTP API) on 127.0.0.1 with the demo HMAC auth. The secret comes from the environment (a random one per run),
 // never from code.
-//   host-node <dataDir> [port]          env: CARTON_E2E_SECRET
+//   host-node <dataDir> [port]          env: CARTON_E2E_SECRET (server-node otherwise as shipped)
 // Prints {ready, port, origin}; commands on stdin (JSON, answered with the same seq):
 //   {cmd: "rows", projectId}            the room's change rows: [{branch, seq, id}]
 //   {cmd: "exit"}

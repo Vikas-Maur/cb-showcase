@@ -37,6 +37,7 @@ checkpoint out only made each commit slower there (verify-ci S3c).
 | error | `code` | what to do |
 |---|---|---|
 | `BusyError` | `CARTON_DB_BUSY` | Another process held the lock longer than `busyTimeoutMs`. Retry later. |
+| `DatabaseHeldError` | `CARTON_DB_HELD` | Windows: carton.db or its -wal/-shm was still held by another process or program (an antivirus scan, a process being terminated) for the whole retry window (500 ms) at open. Retry the open shortly; `.cause` has SQLite's error. |
 | `MovedError` | `CARTON_DB_MOVED` | This handle's file was moved to `.to` by another process (placement change). Reopen through `openProjectStore`. |
 | `PlacementConflictError` | `CARTON_DB_PLACEMENT_CONFLICT` | Two separate histories at `.paths`. Carton never picks one: show both to the user. |
 | `UnwritableHistoryError` | `CARTON_DB_UNWRITABLE` | The history at `.path` can't be written (read-only file or attribute, ACL, folder), so it can't be moved where it belongs now. Nothing was copied. Ask the user to make it writable. |
@@ -46,5 +47,6 @@ was renamed `carton.from-<host>-<time>.db` and a fresh history started. Offer it
 
 ## Windows
 
-Paths may be non-ASCII; renames retry while antivirus holds a new file; sync roots come from `reg export`
+Paths may be non-ASCII; renames retry while antivirus holds a new file; an open that hits an I/O or can't-open error
+(a just-closed file still held) retries for up to 500 ms with backoff, then fails with `DatabaseHeldError`; sync roots come from `reg export`
 (UTF-16) and are cached for 10 minutes in app data; mapped network drives are detected through their UNC path.

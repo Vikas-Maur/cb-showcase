@@ -459,11 +459,11 @@ test("S3 the same project id with no shared lineage: bringing it in folds nothin
   assert.equal((await head(appX)).cuts.length, 1, "no tracking cut was added");
 });
 
-// S3-3 (todo): "A project with the same id and no shared lineage gets a new id" (§13). History.importShallow answers
+// S3-3 (fixed by foundation-core; was todo): "A project with the same id and no shared lineage gets a new id" (§13). History.importShallow answers
 // `{status: "no-shared-lineage", newProjectId}`, and bringInTheirChanges passes `imp.newProjectId` on, but
 // Carton.importShallow (core/src/carton.ts:916) returns only `{status, cut?}`: the new id (and the import's `head`) is
 // dropped between core and the adapter, so the app has no id to open the copy under.
-test("S3-3 bringing in a same-id project with no shared lineage offers a new project id", { todo: "S3-3, foundation-core: Carton.importShallow drops newProjectId (and head) from History.importShallow's answer" }, async () => {
+test("S3-3 bringing in a same-id project with no shared lineage offers a new project id", async () => {
   const { Carton } = await import("@carton/core");
   const { openSqliteStore } = await import("@carton/store-sqlite");
   const { cardboardAdapter } = await import("@carton/cardboard");
@@ -483,35 +483,94 @@ test("S3-3 bringing in a same-id project with no shared lineage offers a new pro
   }
 });
 
-// S3-1 (todo): every replica is called "replica". `Carton.open({name})` is "a display name for this replica in lineage
+// S3-1 (fixed by local-cli; was todo): every replica is called "replica". `Carton.open({name})` is "a display name for this replica in lineage
 // and dialogs ("Bob")", but no product entry point can set it (`openLocal`'s LocalOptions, local's default factory,
 // the Windows facade's openLocal call), so every cut's owner and every `.cbproj`'s sender is "replica": a recipient's
 // two "Main cut"s can't be told apart ("Bob's main", §5.3), and the missing-base dialog reads "This copy builds on a
 // version from replica… Ask replica for their copy" (§13).
-test("S3-1 a .cbproj names its sender, and the recipient can tell the sender's cut from its own", { todo: "S3-1, local-cli (+windows): no entry point passes Carton.open({name}), so every sender/owner is \"replica\"" }, async () => {
+test("S3-1 a .cbproj names its sender (not \"replica\"), a copied cut keeps its owner's name, and bringing it in keeps the recipient's", async () => {
   const { openLocal } = await import("@carton/local");
   const { cardboardAdapter } = await import("@carton/cardboard");
-  const { readProjectForImport } = await import("@carton/cardboard/node");
+  const { bringInTheirChanges, readProjectForImport } = await import("@carton/cardboard/node");
+  const person = (id: string, name: string, group: string) => ({ kind: "human", id: `human:${id}`, name, group }) as any;
+  const open = (m: Machine, who: any, init?: unknown) => openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as any, actor: who, ...(init ? { init } : {}) } as any);
+  // Alice's project; Bob's copy of it (her carton.db without local tables, his own replica)
   const A = makeMachine("s3-1-a");
-  const imp = readProjectForImport(A.bundle);
-  const la = await openLocal({ projectDir: A.bundle, projectId: A.projectId, dataDir: dataDirFor(A.bundle), adapter: cardboardAdapter as any, actor: { kind: "human", id: "human:alice", name: "Alice", group: "alice@laptop" }, init: { doc: imp.doc } });
+  const la = await open(A, person("alice", "Alice", "alice@laptop"), { doc: readProjectForImport(A.bundle).doc });
   try {
-    const pkg = await la.carton.exportShallow({ to: "bob" });
-    const owner = (await la.carton.cuts())[0]!.owner;
-    assert.notEqual(pkg.sender, "replica", "the file names who sent it");
-    assert.notEqual(owner, "replica", "the cut names whose it is");
+    const mine = await la.carton.exportShallow({ to: "bob" });
+    assert.equal(mine.sender, "Alice", "Alice's file names her");
+    assert.equal((await la.carton.cuts())[0]!.owner, "Alice", "her cut names her");
+  } finally {
+    await la.close();
+  }
+  const B = makeMachine("s3-1-b", A);
+  const cl = await runOnce("clone", [support("clone.ts"), join(A.dbDir, "carton.db"), join(B.dbDir, "carton.db")]);
+  assert.equal(cl.code, 0, cl.stderr);
+  const lb = await open(B, person("bob", "Bob", "bob@desk"));
+  let theirs;
+  try {
+    theirs = await lb.carton.exportShallow({ to: "alice" });
+    assert.equal(theirs.sender, "Bob", "Bob's file names him, not the replica he copied");
+    assert.equal((await lb.carton.cuts())[0]!.owner, "Alice", "the cut he copied stays Alice's");
+  } finally {
+    await lb.close();
+  }
+  // Alice brings in Bob's file: it is from Bob, and her own cut is still hers
+  const la2 = await open(A, person("alice", "Alice", "alice@laptop"));
+  try {
+    const r = await bringInTheirChanges(la2.carton as any, { shallow: theirs });
+    assert.equal(r.status, "folded", `brought in, not refused: ${JSON.stringify(r)}`);
+    assert.deepEqual((await la2.carton.cuts()).map((c: any) => c.owner), ["Alice"]);
+  } finally {
+    await la2.close();
+  }
+});
+
+// S3-4 (FIXED by foundation 6e47903; was foundation-core): a teammate whose project is a copy of yours (the bundle folder copied with its .carton, so
+// the same local "Main cut" id) edits and sends a .cbproj; bringing it in crashes `History.fold` with a TypeError
+// ("Cannot read properties of undefined (reading 'mergeOf')", history.ts #ancOf: the sender's head names a seq on that
+// cut id which the recipient's log doesn't have) instead of folding the edit in or refusing it with a reason.
+test("S3-4 a .cbproj from a teammate whose project is a copy of yours brings their edit in (or says why not), never a crash", async () => {
+  const { openLocal } = await import("@carton/local");
+  const { cardboardAdapter, toHost } = await import("@carton/cardboard");
+  const { bringInTheirChanges, readProjectForImport } = await import("@carton/cardboard/node");
+  const person = (id: string, name: string) => ({ kind: "human", id: `human:${id}`, name, group: `${id}@pc` }) as any;
+  const open = (m: Machine, who: any, init?: unknown) => openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as any, actor: who, ...(init ? { init } : {}) } as any);
+  const A = makeMachine("s3-4-a");
+  await (await open(A, person("alice", "Alice"), { doc: readProjectForImport(A.bundle).doc })).close();
+  const B = makeMachine("s3-4-b", A);
+  const cl = await runOnce("clone", [support("clone.ts"), join(A.dbDir, "carton.db"), join(B.dbDir, "carton.db")]);
+  assert.equal(cl.code, 0, cl.stderr);
+  const logo = itemNamed(B, SAMPLE.logo)!.id;
+  const lb = await open(B, person("bob", "Bob"));
+  let theirs;
+  try {
+    const w = await lb.write({ kind: "commit", ops: [{ op: "set", path: ["timelineItems", logo, "zIndex"], value: 4 }] } as any);
+    assert.equal(w.status, "confirmed", JSON.stringify(w));
+    theirs = await lb.carton.exportShallow({ to: "alice" });
+  } finally {
+    await lb.close();
+  }
+  const la = await open(A, person("alice", "Alice"));
+  try {
+    const r = await bringInTheirChanges(la.carton as any, { shallow: theirs });
+    if (r.status === "folded") {
+      const head = toHost((await la.carton.head()).doc) as any;
+      assert.equal(head.timelineItems.find((i: any) => i.id === logo)?.zIndex, 4, "Bob's edit is in");
+    } else assert.ok(r.status, `a status that says why: ${JSON.stringify(r)}`);
   } finally {
     await la.close();
   }
 });
 
-// S3-2 (todo): "Include history so they can see every version" (§13, L17) has no recipient path. The file carries
+// S3-2 (fixed by cardboard-adapter 2c4344a on foundation c5028c0; was todo): "Include history so they can see every version" (§13, L17) has no recipient path. The file carries
 // `.carton-export/history.db` and `extractFullHistory` writes it out ("to be opened read-only and imported as tracking
 // cuts"), but nothing imports a carton.db copy: `Carton` has no such method (History.importFull takes a JSON
 // FullExport, and Carton doesn't expose it), and `bringInTheirChanges` / an import with `init: {import}` read only the
 // shallow export. So the recipient sees the sender's cut as a shallow tracking cut with no versions, and "Undo this
 // agent turn" for the sender's agents (L17) can't work.
-test("S3-2 opening a file with history shows the sender's versions", { todo: "S3-2, foundation-core + cardboard-adapter: no API imports .carton-export/history.db as tracking cuts", timeout: 180_000 }, async (t) => {
+test("S3-2 opening a file with history shows the sender's versions", { timeout: 180_000 }, async (t) => {
   const { procs, startApp } = world(t);
   const A = makeMachine("s3-2-a");
   const appA = await startApp(A, "appA");
@@ -521,9 +580,15 @@ test("S3-2 opening a file with history shows the sender's versions", { todo: "S3
   const B = emptyMachine("s3-2-b", A.projectId);
   const opened = await openCbproj(file, B);
   const appB = await startApp(B, "appB");
-  const theirs = opened.cuts.find((c: any) => c.tracking);
-  const log = await cbOk(B, ["history", "--cut", theirs.id, "--limit", "50"]).catch((e) => ({ versions: [], error: String(e) }));
-  assert.ok(log.versions.some((v: any) => v.by?.id === "director/chatS2/turn1"), `B lists A's agent's version: ${JSON.stringify(log).slice(0, 400)}`);
+  // the history copy was opened with store-sqlite and read back: the sender's cuts, with their versions and authors
+  assert.equal(opened.history?.status, "imported", `the file's history was read: ${JSON.stringify(opened.history)}`);
+  const ids: string[] = (opened.history.cuts ?? []).map((c: any) => (typeof c === "string" ? c : c.id));
+  assert.ok(ids.length > 0, "the sender's cuts came with it");
+  const logs = [];
+  for (const id of ids) logs.push(await cbOk(B, ["history", "--cut", id, "--limit", "50"]));
+  const all = logs.flatMap((l) => l.versions);
+  assert.ok(all.some((v: any) => v.by?.id === "director/chatS2/turn1"), `B lists A's agent's version: ${JSON.stringify(logs).slice(0, 600)}`);
+  assert.ok(all.some((v: any) => v.by?.id === "human:alice" || v.by?.name === "alice"), `and A's own GUI save: ${JSON.stringify(logs).slice(0, 600)}`);
   void appB;
 });
 

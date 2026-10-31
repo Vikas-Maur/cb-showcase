@@ -126,6 +126,9 @@
           ]
         },
         {
+          "pkg": "http-node"
+        },
+        {
           "pkg": "blob-s3"
         },
         {
@@ -319,6 +322,16 @@
             "--test-concurrency=1",
             "scripts/carton/test/*.test.js"
           ]
+        },
+        {
+          "label": "the Windows build's live sync on Cardboard 1.4.0 (scripts/carton/test/sync)",
+          "cwd": "..",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-concurrency=1",
+            "scripts/carton/test/sync/*.test.js"
+          ]
         }
       ],
       "forbidSkip": [
@@ -330,6 +343,72 @@
         "npm ci",
         "no python3",
         "Cardboard 1.4.0's CLI isn't"
+      ]
+    },
+    {
+      "name": "kit",
+      "os": [
+        "linux",
+        "windows"
+      ],
+      "timeout": 15,
+      "steps": [
+        {
+          "label": "kit: quickstart, samples and ui (node --test kit/test/*.test.ts)",
+          "run": [
+            "{node}",
+            "--test",
+            "kit/test/*.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "web",
+      "os": [
+        "linux",
+        "windows"
+      ],
+      "timeout": 30,
+      "needs": {
+        "linux": [
+          "chromium",
+          "ffmpeg"
+        ],
+        "windows": [
+          "chromium",
+          "ffmpeg"
+        ]
+      },
+      "steps": [
+        {
+          "label": "web demo: the app's own tests (apps/web, happy-dom)",
+          "cwd": "apps/web",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-concurrency=2",
+            "test/**/*.test.ts"
+          ]
+        },
+        {
+          "label": "web demo e2e: the §17 demo script and Fold in, in Chromium, on server-node and wrangler dev (e2e/web)",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-concurrency=1",
+            "e2e/web/demo.test.ts"
+          ],
+          "env": {
+            "CARTON_E2E_HOST": "both"
+          },
+          "timeoutMin": 25
+        }
+      ],
+      "forbidSkip": [
+        "playwright",
+        "Chromium",
+        "ffmpeg"
       ]
     },
     {
@@ -385,6 +464,14 @@
             "1",
             "--rounds",
             "2000"
+          ]
+        },
+        {
+          "label": "kit: quickstart, samples and ui (node --test kit/test/*.test.ts)",
+          "run": [
+            "{node}",
+            "--test",
+            "kit/test/*.test.ts"
           ]
         }
       ]
