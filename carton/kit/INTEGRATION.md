@@ -31,10 +31,11 @@ own functions use them by role (`projectStore.latest(id)`), and say so.
   `tracks`, `timelineItems` and the media records' content fields. Everything else (`id`, `stateUpdatedAt`,
   `updatedAt`, `cast`…) stays Cardboard's and never becomes a change. `@carton/cardboard` converts both ways:
   `fromHost(project, base)` and `materializeProject(doc, currentProject)`.
-- **Documents are values, and frozen.** The records `head()`, `checkout()` and `resolve()` give you are frozen
-  (nested values too): an edit in place throws a `TypeError`. Replace the record you change (`{ ...clip, endTime: 4 }`)
-  in a copy of its array, and commit that. Carton shares unchanged records between versions. A record you commit
-  becomes Carton's, and is frozen once Carton hands it out.
+- **Documents are values, and frozen.** The records `head()`, `checkout()` and `resolve()` give you are frozen, with
+  their nested values: an edit in place throws a `TypeError`. Replace the record you change (`{ ...clip, endTime: 4 }`)
+  in a copy of its array, and commit that. Carton shares unchanged records between versions. Don't change an object
+  after you commit it: Carton may keep it, or values in it, and freeze them. (Carton doesn't look inside an object
+  that was already frozen, so don't commit a frozen object with values inside it that aren't.)
 - **One schema per project.** Every process that opens a project (the app, its library worker, the helper, `cb`)
   must use the same adapter. Carton stores the schema's fingerprint with the project and refuses, at open, a process
   whose schema differs at the same schema version: its states would hash and merge differently.
@@ -337,7 +338,8 @@ of your edits were replaced" (B11).
 - Listen to `carton.on(e => …)`: `{ type: "change", local: false }` for others' changes, `absorbed` for a pending edit
   that turned out to be there already, and `notice` for late conflicts. On a shared cut, `sync-error` says why the
   host refused or couldn't be reached (`error.code`: `update-server`, `unauthorized`, `unreachable`, `unknown-cut`,
-  `too-large` or `server`); a later welcome or ack clears it (`error: null`). `carton.sync.error(cut)` reads it.
+  `too-large` or `server`); a later welcome or ack clears it (`error: null`). `carton.sync?.error(cutId)` reads it
+  (no id: the current cut). `carton.sync` is `null` when the project was opened without `sync`.
 - The echo of the page's own save only moves `cartonBase`.
 - Otherwise, if a save is armed, send it first, with its base. The worker rebases the person's edits on head: on a
   clash head's value stays and the edit becomes a card. A coupled field group (a clip's times) is decided as one unit,
@@ -391,11 +393,14 @@ const silences = { kind: "remove-silences", maps: { [t]: [step(silent)] }, linea
 // lengthens
 ```
 
-A concurrent edit is then mapped through the intent once, not guessed: an agent's trim of a later clip, made before
-the ripple, lands on the moved clip. Record lineage too: when a commit is rebased over a split (or a split over an edit), an edit made on the old clip
-reaches every piece. Save several intents of one save as one (a later one composes after the earlier,
-`composeMaps`). A commit with an `intent` skips inference; without one, Carton infers a ripple only when it is
-unambiguous (`inferRipple`, L9).
+A concurrent edit is then mapped through the intent once, not guessed: an agent's trim of a later clip, made before the
+ripple, lands on the moved clip. Record lineage too. When a local cut's commit is rebased over a split (or a split over
+an edit), and when a shared cut's queued change is rebased over the host's, an edit made on the old clip also reaches
+the other pieces. It doesn't on every path yet: a fold, and a shared cut's commit made on an older version, don't use
+the other side's lineage; and edits to a clip's time fields (`startTime`, `endTime`, `trimStart`, `trimEnd`,
+`playbackSpeed`) or its track never follow it ([LIMITS.md](LIMITS.md)). Save several intents of one save as one (a later
+one composes after the earlier, `composeMaps`). A commit with an `intent` skips inference; without one, Carton infers a
+ripple only when it is unambiguous (`inferRipple`, L9).
 
 **Invariant.** A ripple is applied exactly once, however often it is rebased or re-sent.
 
@@ -493,7 +498,9 @@ project ID already exists in your library", C9).
   base.
 - **A file with "Include history"** (`readCbproj(file).hasFullHistory`): `extractFullHistory(file, toPath)` writes
   its history to a file of your own. Open that with `openSqliteStore(toPath)` and call `carton.importHistory(store)`. The sender's cuts arrive as read-only cuts with their versions, authors and names.
-  A file from another project, or made with another schema, is refused.
+  History from another project is refused, and so is history made with another schema at the same schema version.
+  Or let "Bring in their changes" do it: `bringInTheirChanges(carton, contents, { history: { file, openStore } })`
+  (with `openStore: (p) => openSqliteStore(p, { readOnly: true })`) imports it, except with `check`.
 - View files and Carton's database in a received file are never applied or unpacked (`readCbproj` lists them as
   `ignored`).
 
