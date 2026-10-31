@@ -245,7 +245,7 @@ test("H1 through the cb write path: a save that clashes on one clip lands the re
   let lc = await openLocal({ projectDir: bundleDir, actor: person });
   const { ref, doc: baseDoc } = await lc.carton.head();
   // the version both writers read, as Carton gave it (a StateRef; a printed header works too)
-  const base = ref as unknown as string;
+  const base = ref;
   await lc.write({ kind: "commit", doc: withClip(baseDoc, "intro", { textContent: "agent's" }), base }, { actor: agent("director/c/t1") });
   // the person's save was made on the same base: a clash on the intro, and an independent edit of the outro
   const mine = withClip(withClip(baseDoc, "intro", { textContent: "person's" }), "outro", { textContent: "independent" });

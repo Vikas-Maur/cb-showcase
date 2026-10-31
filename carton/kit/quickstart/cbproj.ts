@@ -10,7 +10,7 @@ import { Carton } from "@carton/core";
 import { cardboardAdapter, materializeProject } from "@carton/cardboard";
 import { bringInTheirChanges, exportCbproj, readCbproj, ZipReader } from "@carton/cardboard/node";
 import { nodeHasher, openLocal } from "@carton/local";
-import { openProjectStore } from "@carton/store-sqlite";
+import { defaultAppDataDir, openProjectStore, projectKey } from "@carton/store-sqlite";
 
 const [cmd, a, b, ...rest] = process.argv.slice(2);
 
@@ -36,6 +36,12 @@ if (cmd === "export" && a && b) {
   if (existsSync(bundle) && readdirSync(bundle).length) throw new Error(`${bundle} already exists and isn't empty: pick a new folder`);
   const contents = await readCbproj(file);
   if (!contents.shallow) throw new Error("this .cbproj has no Carton history");
+  const projectId = (contents.manifest.project as { id: string }).id;
+  // This machine may already keep this project's history in app data (a bundle in a synced folder, L15): then it isn't
+  // a project you don't have, and "Bring in their changes" is the way. Checked before anything is written, because
+  // opening the store would move that history into the new folder.
+  if (existsSync(join(defaultAppDataDir(), "projects", projectKey(projectId), "carton.db")))
+    throw new Error(`you already have project ${projectId} on this machine: use bring-in on it instead`);
   // unpack into a staging folder, then move it into place (Cardboard's Open Project does the same; files it must never
   // apply are already left out)
   mkdirSync(dirname(bundle), { recursive: true });
@@ -52,14 +58,7 @@ if (cmd === "export" && a && b) {
   }
   if (existsSync(bundle)) rmdirSync(bundle); // the empty folder checked above
   renameSync(staging, bundle);
-  const projectId = (contents.manifest.project as { id: string }).id;
   const { store } = await openProjectStore({ bundleDir: bundle, projectId });
-  // this machine may already keep this project's history outside the bundle (synced folders, L15): then it isn't a
-  // project you don't have, and "Bring in their changes" is the way
-  if ((await store.range("meta", { limit: 1 })).length) {
-    await store.close();
-    throw new Error(`you already have project ${projectId} on this machine: use bring-in on it instead`);
-  }
   // their cuts arrive as read-only tracking cuts, and a cut of your own starts from their head
   const carton = await Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, init: { import: contents.shallow } });
   const mine = (await carton.cuts()).find((c) => c.id === carton.cut)!;

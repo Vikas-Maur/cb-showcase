@@ -91,6 +91,14 @@ test("quickstart 2: .cbproj round trip, a teammate's changes brought back in wit
   assert.notEqual(refused.code, 0);
   assert.match(refused.out, /already exists and isn't empty: pick a new folder/);
   assert.equal(readFileSync(join(T, "busy", "project.json"), "utf8"), "someone else's project");
+  // a project whose history this machine already keeps in app data is refused before anything is written or moved
+  const appData = join(T, "xdg");
+  mkdirSync(join(appData, "carton", "projects", "demo-project"), { recursive: true });
+  writeFileSync(join(appData, "carton", "projects", "demo-project", "carton.db"), "their history");
+  const known = await run(qs("cbproj.ts"), ["open", join(T, "demo.cbproj"), join(T, "known", "Demo.cardboard")], { XDG_DATA_HOME: appData });
+  assert.match(known.out, /you already have project demo-project on this machine: use bring-in/);
+  assert.ok(!existsSync(join(T, "known")), "nothing was unpacked");
+  assert.equal(readFileSync(join(appData, "carton", "projects", "demo-project", "carton.db"), "utf8"), "their history");
   assert.equal((await run(qs("cbproj.ts"), ["open", join(T, "demo.cbproj"), B])).out, `Opened demo-project with their history; you are on "Main cut"`);
   assert.ok(!existsSync(join(B, ".carton", "displaced")));
   assert.match((await cb(B, "cut", "list")).out, /Main cut\s+main\s+-\s+read-only[\s\S]*\*\s+Main cut\s+main\s+@0\s+local/);

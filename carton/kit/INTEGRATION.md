@@ -377,7 +377,7 @@ import { rippleDelete, rippleInsert, step } from "@carton/core";
 const ripple = { kind: "ripple-delete", maps: { [t]: rippleDelete(start, end - start) } };
 // delete all gaps on t (gapsOnT: [start, end][]): one step that removes every gap at once
 const gaps = { kind: "delete-gaps", maps: { [t]: [step(gapsOnT)] } };
-// split: the old clip's edits follow to both pieces
+// split: record which pieces the old clip became (see the note below)
 const split = { kind: "split", lineage: { [clipId]: [leftId, rightId] } };
 // remove silences: the removed spans, and the old clip's pieces
 const silences = { kind: "remove-silences", maps: { [t]: [step(silent)] }, lineage: { [clipId]: pieceIds } };
@@ -386,7 +386,8 @@ const silences = { kind: "remove-silences", maps: { [t]: [step(silent)] }, linea
 ```
 
 A concurrent edit is then mapped through the intent once, not guessed: an agent's trim of a later clip, made before
-the ripple, lands on the moved clip. Save several intents of one save as one (a later one composes after the earlier,
+the ripple, lands on the moved clip. Record lineage too, but know that today a commit's rebase uses only the `maps`:
+an edit made on the old clip lands on the piece that kept its id, not on the other pieces ([LIMITS.md](LIMITS.md)). Save several intents of one save as one (a later one composes after the earlier,
 `composeMaps`). A commit with an `intent` skips inference; without one, Carton infers a ripple only when it is
 unambiguous (`inferRipple`, L9).
 
@@ -528,10 +529,11 @@ cuts, fold in (all, some, none), Compare, credits, the preview banner and confli
 `CartonUi`, which you give to `<CartonProvider ui={ui}>`:
 - **In the browser**, over the Carton handle itself: `const ui = fromCarton(carton, { me })`.
 - **In the desktop app**, Carton lives in the library worker and the panel in the page, so the view model travels as
-  messages. In the worker: `const server = serveUi(fromCarton(carton, { me }), send)`, which returns
-  `{ receive, close }`. In the page: `const page = remoteUi(send)`, which returns `{ ui, receive, ready }`. Each side's
-  `send` posts to the other side's `receive` over your IPC; await `page.ready` before the first render, and call
-  `server.close()` when the panel goes away.
+  messages. In the worker: `const ui = fromCarton(carton, { me })` and `const server = serveUi(ui, send)`, which
+  returns `{ receive, close }`. In the page: `const page = remoteUi(send)`, which returns `{ ui, receive, ready }`.
+  Each side's `send` posts to the other side's `receive` over your IPC; await `page.ready` before the first render.
+  When the panel goes away, call `server.close()` and `ui.dispose()`: the view model listens to Carton and runs a
+  timer until it is disposed.
 
 Load the panel only when it first shows, and subscribe only while it shows. `kit/test/ui.test.ts` runs this wiring
 with structured clones delivered later, as IPC does. See `packages/react/README.md`.

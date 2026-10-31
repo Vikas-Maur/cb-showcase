@@ -32,7 +32,7 @@ try {
     const [field, raw] = s.split("=");
     item[field] = raw !== "" && Number.isFinite(Number(raw)) ? Number(raw) : raw;
   }
-  const r = await lc.write({ kind: "commit", doc: { ...doc, timelineItems: items.with(at, item) }, base: base as string | undefined });
+  const r = await lc.write({ kind: "commit", doc: { ...doc, timelineItems: items.with(at, item) }, base });
   console.log(`${lc.actor.id}: ${resultText(r, "Saved")}`);
 } finally {
   await lc.close();

@@ -25,7 +25,7 @@ Every `cb` write (`source apply`, `fold`, `restore`, `undo`, `resolve`…) answe
 |---|---|---|
 | `confirmed` | Saved, in order, for everyone | Go on |
 | `pending` | Saved on this machine, but the server hasn't answered yet (or you are offline). It syncs by itself | Go on. If it later clashes, you hear about it on your next `cb` call |
-| `conflicts` | On a save: the rest of your edit landed, and each card kept the other side's value. On a fold or `undo --turn`: nothing was saved yet (see those sections) | Read the cards (below). Never write your edit again to get around one |
+| `conflicts` | On a save: the rest of your edit landed, and each card kept the other side's value. On `undo --turn`, and on a fold that says "Not folded in": nothing was saved (see those sections). On a fold that says "Folded in, but … came back": it landed, and the cards are yours to resolve like a save's | Read the cards (below). Never write your edit again to get around one |
 | `rejected` | Nothing was saved: the edit broke a rule (a clip ending before it starts, a missing track) | Fix the edit and save again |
 
 The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the result is
@@ -83,13 +83,17 @@ Decide with `cb fold <project> 'Director'\''s cut: tighter intro' --keep mine` (
 ```
 
 Tell the user what the fold would do. Fold only when they ask, or let them fold it in the app. A fold with cards
-saves nothing until every card is decided:
+answers "Not folded in" and saves nothing until every card is decided:
 - `cb fold <project> <cut> --keep mine` keeps the current cut's value on every card;
 - `cb fold <project> <cut> --keep theirs` takes the folded cut's;
 - `cb fold <project> <cut> --reject timelineItems/<clip id>` folds in everything except that clip ("fold in some of
   it"). Repeat `--reject` for more clips.
 
 A clip's start, end, trims and speed are decided together, so a card about `#time` keeps one side's timing whole.
+
+On a shared cut the server can find a clash after the fold was sent. Then the answer is "Folded in, but N cards came
+back": the fold landed, the other side's value was kept on each card, and the cards are in `cb conflicts`, to resolve
+like a save's (step 5 of the loop).
 
 ## Undo, restore, compare
 

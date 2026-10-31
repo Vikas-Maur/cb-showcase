@@ -24,6 +24,8 @@ test("UI: the History panel's view model across a process boundary (serveUi in t
   page = remoteUi((m) => setTimeout(() => server.receive(structuredClone(m)), 0));
   await page.ready;
   assert.deepEqual((page.ui.cuts() as readonly { name: string }[]).map((c) => c.name), ["Main cut"]);
+  // the panel goes away: close the bridge, and dispose of the view model (it listens to Carton and runs a timer)
   server.close();
+  ui.dispose();
   await carton.close();
 });
