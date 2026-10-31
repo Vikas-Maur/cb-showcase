@@ -217,10 +217,14 @@ async function uploadSettled(o: UploadOptions): Promise<UploadResult> {
       }
       // It showed up while a report is open (a repair whose completion answer came back as NoSuchUpload): the next run
       // would replace it again, and again. Verify it instead, and answer the report if it holds the manifest's bytes.
-      const report = there ? await openReport(store, m.hash).catch(() => null) : null;
-      if (report && (await storedMatches(store, key, m, o.hasher, o.signal))) {
-        await markRepaired(store, m.hash, report).catch(() => {});
-        await (o.state ?? new MemoryUploadStateStore()).delete(key);
+      // Every wait here gives way to cancellation; other errors just leave it to the next run.
+      const abortable = <T>(p: Promise<T>, otherwise: T): Promise<T> =>
+        untilAborted(p, o.signal).catch((err) => (isAbort(err) || o.signal?.aborted ? Promise.reject(o.signal?.reason ?? err) : otherwise));
+      const report = there ? await abortable(openReport(store, m.hash), null) : null;
+      if (report && (await abortable(storedMatches(store, key, m, o.hasher, o.signal), false))) {
+        await abortable(markRepaired(store, m.hash, report), undefined);
+        await abortable((o.state ?? new MemoryUploadStateStore()).delete(key), undefined);
+        o.signal?.throwIfAborted();
         return { hash: m.hash, size: m.size, deduped: true, partSize: acc.partSize ?? 0, resumedParts: 0, partsSent: acc.partsSent, bytesSent: acc.bytesSent };
       }
     }
