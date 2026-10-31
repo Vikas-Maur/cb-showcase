@@ -59,8 +59,10 @@ export const BOB: Actor = { kind: "human", id: "human:m2-bob", name: "Bob" };
 const sha = (s: string) => createHash("sha256").update(s).digest("hex");
 
 export interface WorldOptions {
-  items: Item[];
+  items?: Item[];
   tracks?: string[];
+  /** A whole project to start from instead (e.g. one Cardboard's CLI wrote). */
+  project?: Record<string, unknown>;
   codec?: TimelineCodec;
 }
 
@@ -69,7 +71,7 @@ export async function openWorld(t: TestContext, o: WorldOptions) {
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "world-"));
   t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
   const tracks = (o.tracks ?? ["V1", "T2"]).map((id, i) => ({ id, name: id, order: i, locked: false, visible: true, muted: false }));
-  const project = { id: "p-fixture", name: "Fixture", aspectRatio: "16:9", stateUpdatedAt: 1, tracks, timelineItems: o.items, media: [] };
+  const project = (o.project ?? { id: "p-fixture", name: "Fixture", aspectRatio: "16:9", stateUpdatedAt: 1, tracks, timelineItems: o.items ?? [], media: [] }) as Record<string, unknown> & { id: string };
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
   const clock = new VirtualClock();
   const store = createMemoryStore();
