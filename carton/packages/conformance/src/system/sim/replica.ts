@@ -248,14 +248,9 @@ export class Replica {
   private onStore(e: sync.QueueEvent): void {
     for (const tap of this.storeTaps) tap(e);
     if (e.branchId !== this.b) return;
-    if (e.type === "pending") {
-      const h = this.holderObj();
-      if (h?.sync) {
-        const s = h.sync;
-        h.proc.engine.post(() => s.pump());
-      }
-      return;
-    }
+    // a commit joins the queue: the holder's SyncClient pushes it by itself (it listens for "pending" and pumps on
+    // its engine thread, as the prototype's replica did for it)
+    if (e.type === "pending") return;
     if (e.type === "local-confirmed") {
       this.softCheck([e.row]);
       this.emit({ type: "confirmed", id: e.row.id, seq: e.row.seq, latency: 0, sends: 0, author: e.row.author });

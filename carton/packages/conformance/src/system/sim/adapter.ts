@@ -21,7 +21,7 @@ export const snapshot = (doc: Doc): string => engineSnapshot(doc, S);
 export const hashDoc = (doc: Doc): string => engineHashDoc(doc, S);
 export { pathKey };
 export const getIn = (doc: Doc, path: Path): unknown => engineGetIn(doc, path, S);
-export const item =(doc: Doc, id: string): Item | undefined => engineGetIn(doc, [ITEMS, id], S) as Item | undefined;
+export const item = (doc: Doc, id: string): Item | undefined => engineGetIn(doc, [ITEMS, id], S) as Item | undefined;
 export const clone = <T>(doc: T): T => JSON.parse(JSON.stringify(doc)) as T;
 export const applyOps = (doc: Doc, ops: readonly Op[]): SimDoc => apply(fork(doc), ops, S) as SimDoc;
 
