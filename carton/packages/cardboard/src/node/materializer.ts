@@ -24,6 +24,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Actor, ConflictCard, Doc } from "@carton/core";
 import type { OwnFn } from "@carton/core/plugins";
 import { BUSY_BUDGET_MS, displaceThenInstall, hardLinksWork, retryBusy, stampOf, statStamp, type BusyOptions } from "./displace.ts";
+import { withInstallLock } from "./install-lock.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
 import { findRev, renderRev, printNonce, REV_TAG, type Rev } from "../header.ts";
 import type { Project, TimelineCodec } from "../codec.ts";
@@ -308,13 +309,14 @@ export class Materializer {
   // ------------------------------------------------------------------ lifecycle
 
   /**
-   * Finishes what an earlier process left in `.carton/displaced`, imports saves made while nobody watched, then writes
-   * project.json and the shared file from head.
+   * Finishes what an earlier process left in `.carton/displaced`, imports saves made while nobody watched (per-agent
+   * views too: their agents wait on the sidecar), then writes project.json and the shared file from head.
    */
   start(): Promise<void> {
     return this.run(async () => {
       await this.recoverDisplaced();
       await this.reviewDisplaced();
+      await this.importUnseenViews();
       if (this.opts.writeProject) await this.writeProjectNow("start");
       await this.writeSharedNow("start");
     });
@@ -658,7 +660,8 @@ export class Materializer {
     fs.writeFileSync(tmp, bytes, { flag: "wx" });
     let r;
     try {
-      r = await displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null });
+      // under the bundle's install lock, shared with the app's facade: the app's readers wait while it is held
+      r = await withInstallLock(this.bundle, () => displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null }), this.busy);
     } catch (e) {
       // a rename may have moved a file aside before the failure: hold whatever is in the folder unreviewed
       await this.recoverDisplaced();
@@ -831,6 +834,30 @@ export class Materializer {
     if (!(await this.parses(rel, f.bytes))) return; // displaced by the install, then kept and reported if it never parses
     this.log.imported.push({ t: this.clock.now(), path: rel });
     await this.applySave(rel, f.bytes, f.hash, f.stamp);
+  }
+
+  /**
+   * View saves written while no materializer watched (the app crashed or closed before applying them): each printed
+   * view's file is read as at a watch event, so the save is applied, credited to its owner, and its sidecar written
+   * (B8). One view that fails doesn't stop the others.
+   */
+  private async importUnseenViews(): Promise<void> {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.abs(VIEWS_DIR)).sort();
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      const rel = this.watched(`${VIEWS_DIR}/${n}`);
+      const name = rel ? viewName(rel) : null;
+      if (!rel || !name || !(await this.engine.getMeta<ViewRow>(["view", name]))) continue;
+      try {
+        await this.importUnseen(rel);
+      } catch (e) {
+        this.log.errors.push({ t: this.clock.now(), path: rel, error: e instanceof Error ? e.message : String(e) });
+      }
+    }
   }
 
   /**

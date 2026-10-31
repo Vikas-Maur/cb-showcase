@@ -8,7 +8,15 @@
 //
 // Every displaced file is then reviewed by the caller (`DisplacedFiles`): one that isn't Carton's own last install is
 // a foreign write and is imported. Carton never replaces a name, so the only cost is a short window in which the path
-// is missing; Cardboard's readers (which we hook) and agents' file tools retry on ENOENT.
+// is missing; Cardboard's readers (which we hook) and Carton's own (`retryMissing`) retry on ENOENT, and agents' file
+// tools see a transient error. The window is tens of microseconds on ext4 (P10) and longer on NTFS (bench/race
+// measures it on each file system).
+//
+// Windows has no atomic "replace only if unchanged" (nor an exchange), so an install that never leaves the path missing
+// (check the stamp, then rename over it; MoveFileEx replaces atomically) destroys a foreign save that lands after the
+// check: a temp+rename save, or an in-place writer that opens, writes and closes in between. A busy error catches only
+// a writer that still has the file open. Displacing is the only way to keep every write, so it is used on Windows too
+// (test: "the stamp-checked replace … destroys"; bench/race's `replace` protocol measures it on NTFS).
 //
 // The protocol's own calls are synchronous on purpose: P10 measured the missing-path gap at 10–16 µs median with sync
 // calls against 61–68 µs through fs.promises (the gap spans one libuv round trip each). Only waiting is asynchronous:
@@ -29,6 +37,8 @@ export const BUSY_BUDGET_MS = 5_000;
 
 export interface BusyCounter {
   busy?: number;
+  /** ENOENT retries (`retryMissing`). */
+  missing?: number;
 }
 
 export interface BusyOptions {
@@ -85,6 +95,41 @@ function atOnce(fn: () => void, o: BusyOptions): Promise<void> | undefined {
   }
 }
 
+export const MISSING_RETRY_MS = 100;
+/** While the bundle's install lock is held (install-lock.ts), readers wait this long, as the app's facade does. */
+export const LOCKED_RETRY_MS = 6_000;
+/** The bundle's install lock folder (install-lock.ts), relative to the bundle. */
+export const INSTALL_LOCK = path.join(".carton", "install.lock");
+
+export interface MissingOptions extends BusyOptions {
+  /** How long a missing file is waited for (default `MISSING_RETRY_MS`). */
+  missingMs?: number;
+  /** The project bundle: while its install lock is held, a missing file is waited for up to `lockedMs`. */
+  bundle?: string;
+  lockedMs?: number;
+}
+
+/**
+ * For readers of a path Carton installs (project.json, timeline.tsx, a view): runs `fn`, and while it fails with ENOENT
+ * waits on a timer and runs it again (1, 2, 4 … 16 ms) for up to `missingMs` (100 ms; up to `lockedMs`, 6 s, while
+ * the bundle's install lock is held), so the moment between displace and install reads as a short delay, not as a
+ * missing file. A file that stays missing fails as before. Busy errors (Windows) are retried as `retryBusy` does.
+ */
+export async function retryMissing<T>(fn: () => T | Promise<T>, o: MissingOptions = {}): Promise<T> {
+  const start = performance.now();
+  for (let wait = 1; ; wait = Math.min(wait * 2, 16)) {
+    try {
+      return await retryBusy(fn, o);
+    } catch (e) {
+      if (errCode(e) !== "ENOENT") throw e;
+      const locked = o.bundle !== undefined && fs.existsSync(path.join(o.bundle, INSTALL_LOCK));
+      if (performance.now() - start + wait > (locked ? (o.lockedMs ?? LOCKED_RETRY_MS) : (o.missingMs ?? MISSING_RETRY_MS))) throw e;
+      if (o.counter) o.counter.missing = (o.counter.missing ?? 0) + 1;
+      await delay(wait);
+    }
+  }
+}
+
 /** `ino:size:mtimeNs`, the stamp 1.4.0 itself uses for project.json (`Qo`). */
 export function stampOf(s: fs.BigIntStats): string {
   return `${s.ino}:${s.size}:${s.mtimeNs}`;
@@ -118,6 +163,22 @@ export interface InstallOptions extends BusyOptions {
   noLinks?: boolean;
   /** The stamp Carton's last install left at the target, for the no-links fallback. */
   lastStamp?: string | null;
+  /** How many foreign files one install displaces before it gives up (`InstallGaveUp`), default 50. */
+  maxDisplaced?: number;
+}
+
+/**
+ * A writer kept re-creating the target faster than Carton could install (a runaway tool): the install stops instead of
+ * filling `.carton/displaced/`. The writer's last file stays at the target, nothing was lost, and every file this
+ * install moved aside is in `displaced`, to be reviewed as usual. The next install tries again.
+ */
+export class InstallGaveUp extends Error {
+  readonly displaced: string[];
+  constructor(target: string, displaced: string[]) {
+    super(`${target}: another process kept re-creating it; Carton's install gave up after ${displaced.length} displaced files`);
+    this.name = "InstallGaveUp";
+    this.displaced = displaced;
+  }
 }
 
 const hr = (): bigint => process.hrtime.bigint();
@@ -150,6 +211,7 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
     } catch (e) {
       if (errCode(e) !== "EEXIST") throw e;
       eexist++;
+      if (displaced.length >= (opts.maxDisplaced ?? 50)) throw new InstallGaveUp(target, displaced);
       continue;
     }
     const t2 = hr();
