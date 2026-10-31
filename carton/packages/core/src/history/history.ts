@@ -5,6 +5,7 @@
 // sequencer running the shared §6.1 rule (`../sequencer`); `Carton` persists all of it through a Store.
 
 import type { Schema, SoftWarning } from "../schema.ts";
+import type { ApplyNote } from "../types.ts";
 import type {
   Actor,
   Change,
@@ -189,9 +190,11 @@ export class History {
     return rec;
   }
   /** New cut forked from a node (default: a cut's head). Returns its id. */
-  fork(from: NodeId | StateRef, name: string, opts: { kind?: CutKind; owner?: string } = {}): string {
+  fork(from: NodeId | StateRef, name: string, opts: { kind?: CutKind; owner?: string; id?: string } = {}): string {
+    // a stable cut id makes a retried fork return the cut it already made
+    if (opts.id && this.#cuts.has(opts.id)) return opts.id;
     const node = typeof from === "string" ? (from.includes("@") ? from : this.head(from)) : refNode(from);
-    return this.addCut({ name, forkOf: this.canon(node), kind: opts.kind ?? "variant", owner: opts.owner }).id;
+    return this.addCut({ name, forkOf: this.canon(node), kind: opts.kind ?? "variant", owner: opts.owner, ...(opts.id ? { id: opts.id } : {}) }).id;
   }
   cuts(): CutRecord[] {
     return [...this.#cuts.values()].map((c) => c.rec);
@@ -509,6 +512,11 @@ export class History {
       if (!ops.length && !extra.mergeOf && !extra.reverts) return { status: "confirmed", seq: baseSeq, ref: this.#refAt(cutId, baseSeq), change: null, empty: true, rebased: rebase + 1, notices: [] };
     }
   }
+  /** A write retried with the id it already confirmed under: that confirmation, never a second change. */
+  #done(id: ChangeId | undefined): (CommitResult & { status: "confirmed" }) | null {
+    const c = id ? this.findChange(id) : null;
+    return c ? { status: "confirmed", seq: c.seq, ref: this.#refAt(c.branchId, c.seq), change: c, rebased: 0, notices: [] } : null;
+  }
   #refAt(cutId: string, seq: number): StateRef {
     const ref: StateRef = { branchId: cutId, seq, pending: [] };
     const h = this.#hash.get(nodeId(cutId, seq));
@@ -671,6 +679,8 @@ export class History {
   /** "Fold into …": a DAG merge of node `from` into cut `into`. */
   fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult; doc?: Doc } {
     const { author = { kind: "human", id: this.name } as Actor, choices, prefer = "ours", missingBase = "dialog", remapPath = "first" } = opts;
+    const done = opts.check ? null : this.#done(opts.id);
+    if (done) return done;
     const x = this.head(into),
       y = this.canon(from);
     if (this.isAncestor(y, x)) return { status: "up-to-date" };
@@ -689,7 +699,7 @@ export class History {
       const unseen = opts.unchosen === "prefer" ? [] : unseenCards(cmp.conflicts, choices);
       if (!choices || unseen.length || opts.check) return { status: "compare", dialog, cards: cmp.conflicts };
       // every difference decided: record it as a fold of `from`, so the next fold finds this merge as its base
-      const r = this.commit(into, { doc: cmp.resolve(choices), author, kind: "merge", extra: { mergeOf: parseNode(y), mergeEdges: { first: {}, second: {} }, mergeBase: [] } });
+      const r = this.commit(into, { doc: cmp.resolve(choices), author, kind: "merge", ...(opts.id ? { id: opts.id } : {}), extra: { mergeOf: parseNode(y), mergeEdges: { first: {}, second: {} }, mergeBase: [] } });
       this.#anc.clear();
       if (r.status === "confirmed" && r.change) this.#mergeAuthors(r.change, y);
       return r;
@@ -714,6 +724,7 @@ export class History {
       author,
       allowEmpty: true,
       kind: "merge",
+      ...(opts.id ? { id: opts.id } : {}),
       extra: { mergeOf: parseNode(y), mergeEdges: { first: m.edges.ours, second: m.edges.theirs }, mergeBase: base.node ? [base.node] : base.nodes! },
     });
     this.#anc.clear();
@@ -726,29 +737,42 @@ export class History {
    * removed by the fold), nothing is committed and the result says why.
    */
   foldSome(into: string, from: NodeId, opts: FoldOptions & { reject: PathKey[] | readonly (readonly string[])[] }): FoldResult & { fold?: FoldResult; inverse?: CommitResult } {
+    // retried with its id: the inverse (`<id>.inverse`) or, if only the fold landed, the fold
+    const done = this.#done(opts.id && `${opts.id}.inverse`) ?? this.#done(opts.id);
+    if (done) return done;
     const dry = this.fold(into, from, { ...opts, check: true });
     if (dry.status !== "confirmed" || !dry.doc) return dry;
     const pre = this.stateOf(this.head(into))!,
       post = dry.doc;
-    const ops = inverseOps(this.schema, pre, post, opts.reject);
+    // one entry per path, and none under another rejected path (restoring the record restores its fields)
+    const keys = [...new Set(opts.reject.map((p) => (typeof p === "string" ? p : E.pathKey(p))))];
+    const reject = keys.filter((k) => !keys.some((o) => o !== k && k.startsWith(o + "/")));
+    const ops = inverseOps(this.schema, pre, post, reject);
     const touched = new Map<string, Set<string>>();
     for (const op of ops) if (this.schema.collections[op.path[0] as string] && op.path.length >= 2) (touched.get(op.path[0] as string) ?? touched.set(op.path[0] as string, new Set()).get(op.path[0] as string)!).add(op.path[1] as string);
-    const bad = E.validateHard(this.schema, E.apply(E.fork(post, this.schema), ops, this.schema), touched);
+    // the inverse must apply in full (no op lost to a record the fold removed) and leave every record valid, or the
+    // fold isn't committed at all
+    const notes: ApplyNote[] = [];
+    const after = E.apply(E.fork(post, this.schema), ops, this.schema, notes);
+    if (notes.length) return { status: "rejected", reason: "invalid", invalid: { path: E.pathKey(notes[0]!.op.path), error: "that part was removed by the fold: leave out the whole record instead" } };
+    const bad = E.validateHard(this.schema, after, touched);
     if (bad.length) return { status: "rejected", reason: "invalid", invalid: { path: bad[0]!.path, error: `rejecting it would leave it invalid: ${bad[0]!.errors.join("; ")}` } };
     const r = this.fold(into, from, opts);
     if (r.status !== "confirmed" || !("change" in r) || !r.change) return r;
-    const inv = this.commit(into, { ops, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", extra: { rejected: opts.reject.map((p) => (typeof p === "string" ? p : E.pathKey(p))), reverts: r.change.id } });
+    const inv = this.commit(into, { ops, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", ...(opts.id ? { id: `${opts.id}.inverse` } : {}), extra: { rejected: reject, reverts: r.change.id } });
     const { merge: _m, ...invOnly } = inv as CommitResult & { merge?: unknown };
     return { ...invOnly, fold: r, inverse: inv } as FoldResult & { fold: FoldResult; inverse: CommitResult };
   }
   /** Undo one change: its inverse at the head, as a 3-way merge (git revert). Intents invert as intents. */
-  revert(cutId: string, changeId: ChangeId, { author, kind = "revert" }: { author?: Actor; kind?: ChangeKind } = {}): CommitResult {
+  revert(cutId: string, changeId: ChangeId, { author, kind = "revert", id }: { author?: Actor; kind?: ChangeKind; id?: ChangeId } = {}): CommitResult {
+    const done = this.#done(id);
+    if (done) return done;
     const br = this.#mustCut(cutId);
     const c = br.log.find((x) => x.id === changeId);
     if (!c) throw new Error(`no change ${changeId}`);
     const doc = this.#inverted(cutId, [c]);
     if ("cards" in doc) return { status: "conflicts", cards: doc.cards, ref: this.#refAt(cutId, br.log.length), merge: doc.merge };
-    return this.commit(cutId, { doc: doc.doc, author: author ?? c.author, kind, ...(isEmptyMap(doc.maps) ? {} : { intent: { kind: "inverse", maps: doc.maps } }), extra: { reverts: changeId } });
+    return this.commit(cutId, { doc: doc.doc, author: author ?? c.author, kind, ...(id ? { id } : {}), ...(isEmptyMap(doc.maps) ? {} : { intent: { kind: "inverse", maps: doc.maps } }), extra: { reverts: changeId } });
   }
   // The head with `changes` (newest last) inverted one by one, newest first, and the remap that inversion applies at
   // the head. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
@@ -761,8 +785,8 @@ export class History {
       const c = changes[i]!;
       const before = this.stateOf(nodeId(cutId, c.seq - 1))!,
         after = this.stateOf(nodeId(cutId, c.seq))!;
-      const inv = E.invertMaps(c.intent?.maps);
-      const since = E.composeMaps(...br.log.slice(c.seq).map((x) => x.intent?.maps), done);
+      const inv = E.invertMaps(firstParentMap(c));
+      const since = E.composeMaps(...br.log.slice(c.seq).map(firstParentMap), done);
       const m = E.merge3(after, cur, before, this.schema, {
         infer: false,
         remaps: { ...(isEmptyMap(since) ? {} : { ours: { maps: since } }), ...(isEmptyMap(inv) ? {} : { theirs: { maps: inv } }) },
@@ -777,10 +801,12 @@ export class History {
     return this.revert(cutId, inverseId, opts);
   }
   /** Restore: the state at `ref`, saved as a new version on the cut (nothing in between is lost: it stays in history). */
-  restore(cutId: string, ref: NodeId | StateRef | string, { author = SYSTEM }: { author?: Actor } = {}): CommitResult {
+  restore(cutId: string, ref: NodeId | StateRef | string, { author = SYSTEM, id }: { author?: Actor; id?: ChangeId } = {}): CommitResult {
+    const done = this.#done(id);
+    if (done) return done;
     const target = typeof ref === "string" && ref.includes("@") && !ref.includes("~") ? this.stateOf(ref) : this.resolve(ref as StateRef | string).doc;
     if (!target) throw new StateUnknown(ref, "restore target not held");
-    return this.commit(cutId, { doc: target, author, kind: "restore", allowEmpty: true });
+    return this.commit(cutId, { doc: target, author, kind: "restore", allowEmpty: true, ...(id ? { id } : {}) });
   }
 
   // ------------------------------------------------------------ undo by actor group (§8)
@@ -806,7 +832,9 @@ export class History {
    * `author.turn` with the newest) is undone as one. A path an outsider has since changed that would make the result
    * invalid comes back as conflicts, never silently.
    */
-  undo(cutId: string, group: string, { author, turn = true }: { author?: Actor; turn?: boolean } = {}): CommitResult & { entry?: UndoEntry } {
+  undo(cutId: string, group: string, { author, turn = true, id }: { author?: Actor; turn?: boolean; id?: ChangeId } = {}): CommitResult & { entry?: UndoEntry } {
+    const done = this.#done(id);
+    if (done) return done;
     const stack = this.undoStack(cutId, group);
     const top = stack[0];
     if (!top) return { status: "confirmed", seq: this.headSeq(cutId), ref: this.#refAt(cutId, this.headSeq(cutId)), change: null, empty: true, rebased: 0, notices: [] };
@@ -824,7 +852,7 @@ export class History {
     const inv = this.#inverted(cutId, changes);
     if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, br.log.length), merge: inv.merge };
     const ids = changes.map((c) => c.id);
-    const r = this.commit(cutId, { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids } });
+    const r = this.commit(cutId, { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(id ? { id } : {}), ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids } });
     return { ...r, entry: top };
   }
 
@@ -1023,31 +1051,49 @@ export class History {
       const known = pkg.nodes.some((n) => this.#cuts.has(n.branchId) && !this.#cuts.get(n.branchId)!.rec.shallow) || pkg.nodes.some((n) => this.#lineage.has(n.id));
       if (!known) return { status: "no-shared-lineage", newProjectId: randomHex(8) };
     }
-    // the lineage must be a DAG whose nodes are where they say they are: a cycle would make every walk loop forever
-    const byId = new Map(pkg.nodes.map((n) => [n.id, n]));
-    if (!byId.has(pkg.head)) throw new Error("shallow export: its head is not one of its nodes");
-    const state = new Map<NodeId, 1 | 2>();
-    const visit = (id: NodeId): void => {
-      const st = state.get(id);
-      if (st === 2) return;
-      if (st === 1) throw new Error(`shallow export: its lineage has a cycle through ${id}`);
-      state.set(id, 1);
-      for (const p of byId.get(id)?.parents ?? []) visit(p.id);
-      state.set(id, 2);
-    };
+    if (!pkg.nodes.some((n) => n.id === pkg.head)) throw new Error("shallow export: its head is not one of its nodes");
+    // what the lineage would be: a node already known keeps its parents (lineage is immutable; an import only adds
+    // kinds), and nodes of cuts we hold in full are ours, not the sender's
+    const incoming = new Map<NodeId, Lineage>();
     for (const n of pkg.nodes) {
       const at = parseNode(n.id);
       if (at.branchId !== n.branchId || at.seq !== n.seq) throw new Error(`shallow export: node ${n.id} says it is ${n.branchId}@${n.seq}`);
-      visit(n.id);
-    }
-    const headState = (pkg.states[pkg.headHash] as { doc?: Doc } | undefined)?.doc;
-    for (const n of pkg.nodes) {
       const br = this.#cuts.get(n.branchId);
-      if (br && !br.rec.shallow) continue; // our own cut: we hold its full log
-      if (!br) this.addCut({ id: n.branchId, name: pkg.branches[n.branchId]?.name ?? "?", owner: pkg.branches[n.branchId]?.owner ?? "?", shallow: true, tracking: true, forkOf: null });
+      if (br && !br.rec.shallow) continue;
       const prev = this.#lineage.get(n.id);
       const bn = pkg.branches[n.branchId]?.name;
-      this.#lineage.set(n.id, { ...n, kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
+      incoming.set(n.id, { ...n, ...(prev ? { parents: prev.parents } : {}), kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
+    }
+    // it must stay a DAG, through our own history too (a lineage edge into a local node that descends from it would
+    // make every walk loop forever): iterative DFS, so a long local log can't overflow the stack
+    const parentsOf = (id: NodeId): NodeId[] => {
+      const ln = incoming.get(id) ?? this.#lineage.get(id);
+      return ln ? ln.parents.map((p) => this.canon(p.id)) : this.parents(id);
+    };
+    const color = new Map<NodeId, 1 | 2>();
+    for (const start of incoming.keys()) {
+      if (color.has(start)) continue;
+      const stack: [NodeId, NodeId[]][] = [[start, parentsOf(start)]];
+      color.set(start, 1);
+      while (stack.length) {
+        const top = stack[stack.length - 1]!;
+        const next = top[1].pop();
+        if (next === undefined) {
+          color.set(top[0], 2);
+          stack.pop();
+          continue;
+        }
+        const c = color.get(next);
+        if (c === 1) throw new Error(`shallow export: its lineage has a cycle through ${next}`);
+        if (c === 2) continue;
+        color.set(next, 1);
+        stack.push([next, parentsOf(next)]);
+      }
+    }
+    const headState = (pkg.states[pkg.headHash] as { doc?: Doc } | undefined)?.doc;
+    for (const n of incoming.values()) {
+      if (!this.#cuts.has(n.branchId)) this.addCut({ id: n.branchId, name: pkg.branches[n.branchId]?.name ?? "?", owner: pkg.branches[n.branchId]?.owner ?? "?", shallow: true, tracking: true, forkOf: null });
+      this.#lineage.set(n.id, n);
     }
     for (const [hash, st] of Object.entries(pkg.states)) {
       if (this.#states.has(hash)) continue;
@@ -1094,6 +1140,9 @@ export class History {
 
 // ------------------------------------------------------------------ helpers
 
+/** The remap a change applied to its cut: its intent's maps, or for a fold the edge map it applied to its first parent. */
+const firstParentMap = (c: ConfirmedChange): RemapMaps | undefined => (c.mergeOf ? c.mergeEdges?.first : c.intent?.maps);
+
 /** "Undo Director: tighter intro": who (agents only) and what (default: the change's name, intent or kind). */
 export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {
   const who = c.author.kind === "human" ? "" : `${c.author.name ?? c.author.agentType ?? c.author.id}${c.author.kind === "external" ? " (terminal)" : ""}: `;
@@ -1121,7 +1170,8 @@ function softAfter(schema: Schema, head: Doc, prior: Doc, ops: readonly Op[]): S
     const f = op.path[2];
     if (op.path[0] === tl.collection && op.op !== "remove" && (op.path.length === 2 || f === tl.start || f === tl.end || f === tl.lane)) placed.add(op.path[1] as string);
   }
-  return schema.soft!(head, touched, [prior], placed, new Set());
+  // `fresh` = placed: each placed item is checked against its whole lane, not only against the other placed items
+  return schema.soft!(head, touched, [prior], placed, placed);
 }
 /** A path key back to its segments (`~1` is `/`, `~0` is `~`). */
 const unkey = (k: PathKey): string[] => k.split("/").map((x) => x.replaceAll("~1", "/").replaceAll("~0", "~"));

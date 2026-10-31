@@ -377,14 +377,26 @@ export class ReplicaQueue {
       for (const op of c.ops) if (op.op === "remap") recorded.push(op.maps);
       if (c.kinds) Object.assign(concKinds, c.kinds);
     }
-    const own = v.intent?.maps && !isEmptyMap(v.intent.maps) ? v.intent : undefined;
+    // the change's own remap: its recorded intent and any first-class remap op (a ripple stored as one op, P5)
+    const remapOps = v.ops.filter((op): op is Extract<Op, { op: "remap" }> => op.op === "remap");
+    const ownMaps: RemapMaps[] = [];
+    if (v.intent?.maps && !isEmptyMap(v.intent.maps)) ownMaps.push(v.intent.maps);
+    for (const op of remapOps) if (!isEmptyMap(op.maps)) ownMaps.push(op.maps);
+    const own = ownMaps.length ? { maps: ownMaps.length === 1 ? ownMaps[0]! : composeMaps(...ownMaps), lineage: v.intent?.lineage } : undefined;
     const m = merge3(v.baseDoc, head, mine, S, {
-      remaps: { ...(recorded.length ? { ours: { maps: composeMaps(...recorded) } } : {}), ...(own ? { theirs: { maps: own.maps!, ...(own.lineage ? { lineage: own.lineage } : {}) } } : {}) },
+      remaps: { ...(recorded.length ? { ours: { maps: composeMaps(...recorded) } } : {}), ...(own ? { theirs: { maps: own.maps, ...(own.lineage ? { lineage: own.lineage } : {}) } } : {}) },
       kinds: { ours: concKinds, theirs: v.kinds ?? {} },
       rekeys: "ours",
     });
-    const intent = own ? { ...v.intent!, maps: m.edges.ours } : v.intent;
-    return { ops: diff(head, m.doc, S), cards: m.conflicts, intent };
+    // its remap re-expressed in head's coordinates (its edge map)
+    const intent = v.intent?.maps && !isEmptyMap(v.intent.maps) ? { ...v.intent, maps: m.edges.ours } : v.intent;
+    if (!remapOps.length) return { ops: diff(head, m.doc, S), cards: m.conflicts, intent };
+    // keep a remap as one op through the rebase (one row per ripple at the sequencer, P5): the remap in head's
+    // coordinates first, then whatever else takes head there to the merged state
+    if (isEmptyMap(m.edges.ours)) return { ops: diff(head, m.doc, S), cards: m.conflicts, intent };
+    const remap: Op = { op: "remap", path: ["#remap"], maps: m.edges.ours, ...(remapOps[0]!.lineage ? { lineage: remapOps[0]!.lineage } : {}) };
+    const mapped = apply(fork(head, S), [remap], S);
+    return { ops: [remap, ...diff(mapped, m.doc, S)], cards: m.conflicts, intent };
   }
 
   /** Rebase the whole queue onto the current head with no new rows (after "behind", a keyframe jump, a reject). */
@@ -426,6 +438,23 @@ export class ReplicaQueue {
     }
     if (out.length) this.invalidate(b);
     return out;
+  }
+
+  /**
+   * The version a change made (L5: version ids are provisional until confirmed). Confirmed: `<branch>@<seq>`, final.
+   * Pending: `<branch>@<head>+<n>` (the n-th change of the queue on top of the confirmed head), provisional: it moves
+   * as rows arrive, and the share of a cut stays "syncing" until its sequencer has answered. null: unknown id.
+   */
+  versionId(b: string, id: string): { id: string; provisional: boolean } | null {
+    const log = this.logs.get(b)!;
+    for (let i = log.length - 1; i >= 0; i--) if (log[i]!.id === id) return { id: `${b}@${i + 1}`, provisional: false };
+    const queue = this.queues.get(b)!;
+    let n = 0;
+    for (const p of queue) {
+      if (last(p.versions).ops.length) n++;
+      if (p.id === id) return { id: `${b}@${log.length}+${n}`, provisional: true };
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------- leaving the queue

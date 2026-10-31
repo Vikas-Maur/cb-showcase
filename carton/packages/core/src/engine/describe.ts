@@ -1,13 +1,35 @@
 // describe (PLAN §9, layer 1): one short sentence per changed record (plus one per remap step), e.g.
 // "Trimmed 'Intro' end 6.0 s → 5.0 s". Never prints more than four parts per record.
 import { POS } from "../types.ts";
-import type { Schema } from "../schema.ts";
-import type { Doc, Intent, Op, Rec, RemapMaps, RemapOp } from "../types.ts";
+import type { FieldSpec, Schema } from "../schema.ts";
+import type { Doc, Intent, Op, Path, Rec, RemapMaps, RemapOp } from "../types.ts";
 import { getIn } from "./doc.ts";
 import { EMPTY } from "./json.ts";
 import { composeMaps, inferRemaps, near, remapSpan } from "./remap.ts";
 
 type PlainOp = Exclude<Op, RemapOp>;
+/** A field's words: its label (by dotted path, keyed-array element keys left out), else the path as before. */
+function fieldWords(schema: Schema, path: Path): { words: string; labelled: boolean } {
+  const cs = schema.collections[path[0] as string];
+  const from = cs ? 2 : 0;
+  const labels = cs ? cs.labels : schema.labels;
+  if (labels) {
+    let spec: FieldSpec | undefined = cs ? cs.record : schema.root;
+    const parts: string[] = [];
+    for (let i = from; i < path.length; i++) {
+      if (spec?.kind === "keyed") {
+        spec = spec.elem; // this segment is an element key: not part of the field's name
+        continue;
+      }
+      parts.push(String(path[i]));
+      spec = spec?.kind === "object" ? spec.fields[path[i] as string] : undefined;
+    }
+    const l = labels[parts.join(".")];
+    if (l) return { words: l, labelled: true };
+  }
+  return { words: path.slice(from).join("."), labelled: false };
+}
+
 const fmtS = (x: number) => `${(+x).toFixed(1)} s`;
 const fmtT = (x: number) => (x < 60 ? fmtS(x) : `${Math.floor(x / 60)}:${(x % 60).toFixed(1).padStart(4, "0")}`);
 const short = (v: unknown): string => {
@@ -53,13 +75,16 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
     if (!g.coll) {
       for (const op of g.ops) {
         const old = getIn(base, op.path, schema);
-        out.push(op.op === "unset" ? `Cleared ${op.path.join(".")}` : `Changed ${op.path.join(".")} ${short(old)} → ${short((op as { value: unknown }).value)}`);
+        const f = fieldWords(schema, op.path);
+        const what = f.labelled ? `the ${f.words}` : f.words;
+        out.push(op.op === "unset" ? `Cleared ${what}` : `Changed ${what} ${short(old)} → ${short((op as { value: unknown }).value)}`);
       }
       continue;
     }
     const before = getIn(base, [g.coll, g.id as string], schema) as Rec | undefined;
     const whole = g.ops.find((op) => op.path.length === 2);
-    const noun = g.coll === tl?.lanes ? "track" : (((before ?? (whole as { value?: Rec } | undefined)?.value) as Rec | undefined)?.type as string | undefined) ?? "item";
+    const cs = schema.collections[g.coll]!;
+    const noun = g.coll === tl?.lanes ? cs.noun ?? "track" : ((((before ?? (whole as { value?: Rec } | undefined)?.value) as Rec | undefined)?.type as string | undefined) ?? cs.noun ?? "item");
     if (whole?.op === "insert") {
       const r = whole.value as Rec;
       const where = tl && g.coll === tl.collection ? ` on ${laneName(r[tl.lane])} at ${fmtT(r[tl.start] as number)}` : "";
@@ -96,10 +121,11 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
       rest = g.ops.filter((op) => !used.has(op));
     }
     for (const op of rest) {
-      const field = op.path.slice(2).join(".");
-      if (op.op === "insert") parts.push(`added ${op.path[2]} ${short(op.path.at(-1))}`);
-      else if (op.op === "remove") parts.push(`removed ${op.path[2]} ${short(op.path.at(-1))}`);
-      else if (op.path.at(-1) === POS) parts.push(`reordered ${op.path[2]}`);
+      const field = fieldWords(schema, op.path).words;
+      const list = fieldWords(schema, op.path.slice(0, 3)).words;
+      if (op.op === "insert") parts.push(`added ${list} ${short(op.path.at(-1))}`);
+      else if (op.op === "remove") parts.push(`removed ${list} ${short(op.path.at(-1))}`);
+      else if (op.path.at(-1) === POS) parts.push(`reordered ${list}`);
       else if (op.op === "unset") parts.push(`cleared ${field}`);
       else parts.push(`${field} ${short(getIn(base, op.path, schema))} → ${short(op.value)}`);
     }

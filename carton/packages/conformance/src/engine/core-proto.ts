@@ -378,9 +378,26 @@ export function coreProtoTests(S: Schema, opts: CoreProtoOptions = {}): void {
 
   // port: `new E.Sequencer(doc, schema)` is `createLocalSequencer(doc, schema)`, and a push is a full Change (see
   // toChange). Ids are `<rid>.<n>`, which the v14 sequencer checks: the prototype's "c1" is "t.c1".
-  const push = (sq: E.sequencer.LocalSequencer, id: string, baseSeq: number, baseDoc: Doc, doc: Doc, extra: Partial<PushInput> = {}): PushResult =>
-    sq.push(toChange(S, sq, { id: `t.${id}`, base: baseSeq, ops: E.diff(baseDoc, doc, S), baseDoc, author: extra.author ?? actor(id), ...extra }));
-  const raw = (sq: E.sequencer.LocalSequencer, c: Omit<PushInput, "id"> & { id: string }): PushResult => sq.push(toChange(S, sq, { ...c, id: `t.${c.id}` }));
+  // port: the local sequencer no longer describes the clash on a reject (sync-sequencer e36b6b4: History reads only the
+  // reason); the description these tests check is the exported overlap() against the first concurrent change it meets
+  const described = (ch: Parameters<E.sequencer.LocalSequencer["push"]>[0], r: PushResult): PushResult => {
+    if (r.ok || r.overlap || r.reason !== "overlap") return r;
+    const past = new Set(ch.base.pending);
+    for (const c of r.missing) {
+      if (past.has(c.id)) continue;
+      const o = E.sequencer.overlap(ch, c);
+      if (o.path || o.read || o.span || o.order) return { ...r, overlap: o };
+    }
+    return r;
+  };
+  const push = (sq: E.sequencer.LocalSequencer, id: string, baseSeq: number, baseDoc: Doc, doc: Doc, extra: Partial<PushInput> = {}): PushResult => {
+    const ch = toChange(S, sq, { id: `t.${id}`, base: baseSeq, ops: E.diff(baseDoc, doc, S), baseDoc, author: extra.author ?? actor(id), ...extra });
+    return described(ch, sq.push(ch));
+  };
+  const raw = (sq: E.sequencer.LocalSequencer, c: Omit<PushInput, "id"> & { id: string }): PushResult => {
+    const ch = toChange(S, sq, { ...c, id: `t.${c.id}` });
+    return described(ch, sq.push(ch));
+  };
 
   test("sequencer (v5 overlap rule): fast-forward, concurrent disjoint accept, overlap reject, idempotent ids, read deps", () => {
     const { base } = F();

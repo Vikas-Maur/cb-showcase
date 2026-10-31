@@ -108,6 +108,8 @@ export interface FoldOptions {
   missingBase?: "dialog" | "all-cards";
   /** Dry run (`cb fold --check`): report cards without committing. */
   check?: boolean;
+  /** A stable id (a retried `cb fold`): a fold already confirmed under it is returned, never made twice. */
+  id?: ChangeId;
   /**
    * Cards a list or map of `choices` doesn't name (new since the caller reviewed the plan): "card" (default) returns
    * them as conflicts; "prefer" decides them by `prefer`. A function decides every card itself.
