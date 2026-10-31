@@ -34,7 +34,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
   const [choices, setChoices] = useState<Readonly<Record<string, ConflictChoice>>>({});
   const [result, setResult] = useState<FoldResult | null>(null);
   const [fold, busy] = useAction(async () => {
-    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices, allCards });
+    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices, ...(allCards ? { allCards } : {}) });
     setResult(r);
     if (r.ok) p.onDone?.(r);
     return r;

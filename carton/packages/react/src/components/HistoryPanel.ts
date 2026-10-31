@@ -47,7 +47,8 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   const words = useWords();
   const locale = useLocale();
   const v = p.v;
-  const title = v.name ?? v.turn?.label ?? v.summary;
+  // A turn without a label (the engine knows none) is titled by what it did.
+  const title = v.name || v.turn?.label || v.summary;
   const meta = [
     h(Avatar, { key: "a", actor: v.author, size: 14 }),
     h(ActorName, { key: "n", actor: v.author }),
@@ -147,7 +148,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
       const v = find(id);
       if (!v) return;
       if (props.onOpen) props.onOpen(v);
-      else ui.openPreview(v.ref, v.name ?? v.turn?.label ?? v.summary);
+      else ui.openPreview(v.ref, v.name || v.turn?.label || v.summary);
     },
     [find, props.onOpen, ui],
   );
