@@ -15,7 +15,7 @@
 //     reports only what comes after it.
 // A `cb` that wrote without the holder also nudges it over the control socket (`carton.nudge`), so the app looks at
 // once; the poll is what guarantees it.
-import type { Carton, CartonEvent } from "@carton/core";
+import type { Actor, Carton, CartonEvent } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 
 /** How often the app looks for writes by other processes (ms). */
@@ -37,8 +37,11 @@ export function externalStamp(store: Store): (() => Promise<number>) | null {
 }
 
 export interface FollowOptions {
-  /** The current cut's head moved under this handle (another process wrote it). */
-  onHead(cut: string): void | Promise<void>;
+  /**
+   * The current cut's head moved under this handle (another process wrote it). `authors`: who made those changes, one
+   * entry per change (null: a change with no author); none when it can't tell (merged with a notice that couldn't).
+   */
+  onHead(cut: string, authors?: readonly (Actor | null)[]): void | Promise<void>;
   /** This machine's current cut is another one now (another process switched it); this handle has switched too. */
   onCut(cut: string): void | Promise<void>;
   /**
@@ -115,7 +118,7 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   const tell = async (n: Notice): Promise<void> => {
     try {
       if (n.kind === "cut") await o.onCut(n.cut);
-      else if (n.kind === "head") await o.onHead(n.cut);
+      else if (n.kind === "head") await o.onHead(n.cut, n.authors);
       else await o.onMoved?.(n.cut);
     } catch (e) {
       owe(n);
@@ -126,9 +129,9 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   let timer: NodeJS.Timeout | null = null;
 
   /** Rows past the baseline on `cut` (the baseline moves past them). */
-  const newRows = async (cut: string): Promise<{ id: string }[]> => {
+  const newRows = async (cut: string): Promise<Row[]> => {
     const from = baseline.get(cut);
-    const rows = await store.range<{ id: string; seq: number }>("changes", from === undefined ? { prefix: [cut] } : { prefix: [cut], gt: [cut, from] });
+    const rows = await store.range<Row & { seq: number }>("changes", from === undefined ? { prefix: [cut] } : { prefix: [cut], gt: [cut, from] });
     if (rows.length) baseline.set(cut, Math.max(from ?? 0, ...rows.map((r) => Number(r.key[1]))));
     else if (from === undefined) baseline.set(cut, 0);
     return rows.map((r) => r.value);
@@ -170,18 +173,18 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (stopped) return null;
     // every cut's rows move its baseline; only the current cut's rows from elsewhere are news
     const cut = carton.cut;
-    let mine: string[] = [];
+    let mine: Row[] = [];
     for (const c of await carton.cuts()) {
-      const ids = (await newRows(c.id)).map((r) => r.id);
-      if (c.id === cut) mine = ids;
-      else for (const id of ids) known.delete(id);
+      const rows = await newRows(c.id);
+      if (c.id === cut) mine = rows;
+      else for (const r of rows) known.delete(r.id);
     }
-    let foreign = mine.filter((id) => !known.has(id));
+    let foreign = mine.filter((r) => !known.has(r.id));
     // a commit of this handle emits its event right after its write: one turn later it is known if it is ours
-    if (foreign.length) { await new Promise((r) => setImmediate(r)); foreign = foreign.filter((id) => !known.has(id)); }
-    for (const id of mine) known.delete(id);
+    if (foreign.length) { await new Promise((r) => setImmediate(r)); foreign = foreign.filter((r) => !known.has(r.id)); }
+    for (const r of mine) known.delete(r.id);
     if (switched) return { kind: "cut", cut: switched };
-    if (foreign.length) return { kind: "head", cut };
+    if (foreign.length) return { kind: "head", cut, authors: foreign.map((r) => r.author ?? null) };
     return !first && o.onMoved ? { kind: "moved", cut } : null;
   };
   const look = async (): Promise<void> => {
@@ -193,7 +196,11 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (carton.cut !== announced) n = { kind: "cut", cut: carton.cut };
     const left = owed;
     owed = null;
-    if (left && left.cut === carton.cut && (!n || RANK[left.kind] > RANK[n.kind])) n = left;
+    if (left && left.cut === carton.cut) {
+      if (!n || RANK[left.kind] > RANK[n.kind]) n = left;
+      // both about other processes' changes: whose they were, all of them (one that can't tell makes it unknown)
+      else if (left.kind === "head" && n.kind === "head") n = { ...n, authors: left.authors && n.authors ? [...left.authors, ...n.authors] : undefined };
+    }
     if (!n || stopped) return;
     await tell(n);
     // told; unless the handle moved on meanwhile (and that move announced itself or is told next)
@@ -239,8 +246,13 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   return { check, stop, served };
 }
 
-/** What a look tells: a cut switch (the whole cut to show), the head moved, or some other write. */
-export type Notice = { kind: "cut" | "head" | "moved"; cut: string };
+/**
+ * What a look tells: a cut switch (the whole cut to show), the head moved, or some other write. `authors` (head): who
+ * made the changes that moved it.
+ */
+export type Notice = { kind: "cut" | "head" | "moved"; cut: string; authors?: readonly (Actor | null)[] };
+/** A change row as the follower reads it (core's ConfirmedChange, the fields it needs). */
+type Row = { id: string; author?: Actor | null };
 /** A switch shows the whole cut, head included; a head move tells all a write elsewhere would. */
 const RANK: Record<Notice["kind"], number> = { moved: 0, head: 1, cut: 2 };
 

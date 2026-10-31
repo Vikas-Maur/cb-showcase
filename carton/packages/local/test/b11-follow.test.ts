@@ -19,6 +19,7 @@ import { Carton } from "@carton/core";
 import { openSqliteStore } from "@carton/store-sqlite";
 import { CartonHolderEngine } from "../src/open.ts";
 import type { ViewPrinter } from "../src/writes.ts";
+import { parseActorId } from "../src/identity.ts";
 import { scratch } from "./support/scratch.ts";
 import { adapter, bundle, doc0 } from "./support/real.ts";
 
@@ -106,6 +107,35 @@ test("B11: a cb write committed in its own process nudges the holder it passed o
   assert.equal(again.empty, true, JSON.stringify(again));
   await sleep(300);
   assert.equal(nudges.length, 1, "no nudge for an empty commit");
+});
+
+test("B11: another process's change by a hooked agent is hookRead (its Stop ends the freeze); anyone else's onCb (windows-sync H8)", async (t) => {
+  const path = join(mkdtempSync(join(scratch(), "b11-hooked-")), "carton.db");
+  const s = await openSqliteStore(path);
+  const c = await Carton.open({ adapter, store: s, actor: me, init: { doc: doc0() } });
+  const os = await openSqliteStore(path);
+  const other = await Carton.open({ adapter, store: os, actor: agent });
+  const calls: string[] = [];
+  const mz: ViewPrinter = {
+    printView: async (name) => ({ name, path: name, ref: name }),
+    hookRead: async (a) => void calls.push(`read ${a.id}`),
+    hookStop: async (a) => void calls.push(`stop ${a.id}`),
+    onCb: async () => void calls.push("cb"),
+    onExternalHeadChange: async () => { calls.push("external"); return "head"; },
+  };
+  const engine = new CartonHolderEngine(c, { materializer: mz, follow: { intervalMs: 0 } });
+  t.after(async () => { await engine.close(); await other.close(); await c.close(); await os.close(); await s.close(); });
+  await engine.nudge();
+  const hooked = parseActorId("claude-code/abcdef12/sub-editor-q")!;
+  await other.commit({ author: hooked, ops: [set("c1", "name", "hooked 1")] });
+  await other.commit({ author: hooked, ops: [set("c1", "name", "hooked 2")] });
+  await engine.nudge();
+  assert.deepEqual(calls.splice(0), [`read ${hooked.id}`, "external"], "its changes: one hookRead, no windowless freeze");
+  // a windowless agent's change among them: its freeze too
+  await other.commit({ author: hooked, ops: [set("c1", "name", "hooked 3")] });
+  await other.commit({ author: agent, ops: [set("c2", "name", "windowless")] });
+  await engine.nudge();
+  assert.deepEqual(calls.splice(0), [`read ${hooked.id}`, "cb", "external"]);
 });
 
 test("B11: the follower tells cardboard's materializer through onExternalHeadChange, on every other connection's write", async (t) => {

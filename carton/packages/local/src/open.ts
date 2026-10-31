@@ -19,7 +19,7 @@ import { spawnHelper } from "./helper.ts";
 import { Lease, fence as leaseFence, readHelperRecipe } from "./lease.ts";
 import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
-import { destCut, IDEMPOTENT, runWrite, WAIT_MS, withRaceRetry } from "./writes.ts";
+import { destCut, IDEMPOTENT, runWrite, tellBusy, WAIT_MS, withRaceRetry } from "./writes.ts";
 import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
 import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
@@ -248,12 +248,13 @@ export class CartonHolderEngine implements HolderEngine {
     const mz = this.materializer;
     if (opts.follow !== false && (mz || opts.onExternal)) {
       // what the holder's own runWrite tells the materializer, for a write some other process made: a `cb` call
-      // happened (windowless agents are active), and head moved (or the current cut changed)
+      // happened (its authors are active: a hooked agent until its Stop, anyone else for a while; tellBusy), and head
+      // moved (or the current cut changed)
       this.follower = followStore(carton, (carton as unknown as { store: Store }).store, {
         intervalMs: opts.follow ? opts.follow.intervalMs : undefined,
         exclusive: (f) => this.cutLock(f),
-        onHead: async (cut) => {
-          await mz?.onCb?.();
+        onHead: async (cut, authors) => {
+          await tellBusy(mz, authors ?? []);
           if (mz?.onExternalHeadChange) await mz.onExternalHeadChange();
           else mz?.onHeadChange?.("local");
           opts.onExternal?.({ type: "head", cut });
