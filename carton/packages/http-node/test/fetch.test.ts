@@ -175,6 +175,45 @@ test("redirects are followed as fetch follows them: methods, bodies, Authorizati
   assert.ok(cancelled, "the source was cancelled");
 });
 
+// Round 2: credentials beyond Authorization followed a redirect to another origin; a streamed POST was rewritten to
+// a GET at a 301/302 where fetch refuses it; a Location with credentials was followed; "error" let a bare 3xx through.
+test("redirects as fetch, further: what leaves the origin, streamed POSTs at 301/302, credentials in a Location, a bare 3xx", async () => {
+  const seen: { path: string; method: string; headers: IncomingMessage["headers"] }[] = [];
+  let other = "";
+  const handler = (req: IncomingMessage, res: ServerResponse) => {
+    req.resume();
+    req.on("end", () => {
+      const path = req.url!;
+      seen.push({ path, method: req.method!, headers: req.headers });
+      const to = (status: number, where?: string) => {
+        res.writeHead(status, where ? { location: where } : {});
+        res.end();
+      };
+      if (path === "/away") return to(307, `${other}/here`);
+      if (path === "/301" || path === "/302") return to(Number(path.slice(1)), "/here");
+      if (path === "/creds") return to(302, `${other.replace("://", "://user:pw@")}/here`);
+      if (path === "/bare") return to(302);
+      res.writeHead(200);
+      res.end(`at ${path}`);
+    });
+  };
+  const origin = await serve(handler);
+  other = await serve(handler);
+  const sent = { authorization: "Bearer a", "proxy-authorization": "Basic b", cookie: "c=1", host: new URL(origin).host, "x-kept": "k" };
+  await (await f(`${origin}/away`, { headers: sent })).text();
+  const [first, second] = seen.splice(0);
+  assert.deepEqual([first!.headers.authorization, first!.headers["proxy-authorization"], first!.headers.cookie], ["Bearer a", "Basic b", "c=1"]);
+  assert.deepEqual([second!.headers.authorization, second!.headers["proxy-authorization"], second!.headers.cookie, second!.headers.host, second!.headers["x-kept"]], [undefined, undefined, undefined, new URL(other).host, "k"], "another origin: none of them, and its own Host");
+  for (const status of [301, 302]) {
+    await assert.rejects(f(`${origin}/${status}`, { method: "POST", body: streamOf([new Uint8Array([1, 2])]), duplex: "half" }), /streamed body/, `${status}`);
+    assert.deepEqual(seen.splice(0).map((s) => s.path), [`/${status}`], `nothing followed the ${status}`);
+  }
+  await assert.rejects(f(`${origin}/creds`), /credentials/);
+  assert.deepEqual(seen.splice(0).map((s) => s.path), ["/creds"]);
+  await assert.rejects(f(`${origin}/bare`, { redirect: "error" }), TypeError);
+  assert.equal((await f(`${origin}/bare`)).status, 302, "when following, a 3xx with no Location is the answer");
+});
+
 // Finding 3: a request that failed left its upload waiting on the source, whose cancel never ran.
 test("a request that fails while its upload waits on the source cancels the source", async () => {
   const origin = await serve((req) => {

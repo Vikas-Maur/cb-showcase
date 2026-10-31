@@ -28,5 +28,6 @@ const vaultNs: DurableObjectNamespace = {
 const signer = createBlobUrlSigner({ secret: SECRET, baseUrl: "https://carton.test/blob/p" });
 const store = doBlobStore(vaultNs, `vault-signed-${Date.now()}`, { signer });
 blobStoreSuite("do-blob with signed URLs", async () => store, {
+  reportsCreated: true,
   fetch: (async (input: string | URL | Request, init?: RequestInit) => serveSignedBlob(new Request(input, init), store, signer)) as typeof fetch,
 });

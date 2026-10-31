@@ -8,8 +8,9 @@
 // The modules come from `process.getBuiltinModule`, so nothing here imports `node:*`: bundles for other platforms
 // stay clean, and this file typechecks without Node's types (the few shapes it uses are declared below).
 // Redirects are followed as fetch follows them (`redirect: "follow"`, at most 20; 303, and 301/302 after a POST, go
-// on as a GET without the body; Authorization is dropped when the redirect leaves the origin; a streamed body can't be
-// sent twice, so a 307/308 after one is an error); `redirect: "manual"` returns the 3xx and `"error"` rejects.
+// on as a GET without the body; Authorization, Proxy-Authorization, Cookie and Host are dropped when the redirect
+// leaves the origin; a Location with credentials is refused; a streamed body can't be sent twice, so any redirect
+// but a 303 after one is an error); `redirect: "manual"` returns the 3xx and `"error"` rejects any redirect status.
 // Differences from fetch, none of which the blob clients rely on: no Accept-Encoding sent (so bodies come as stored),
 // no cookies or cache, and a followed response's `url` and `redirected` are not set.
 
@@ -174,21 +175,27 @@ export function nodeFetch(): BlobFetch | null {
     const mode = init.redirect ?? "follow";
     for (let hops = 0; ; hops++) {
       const { response: r, stop } = await send(u, method, headers, body, init.signal ?? undefined);
+      if (!REDIRECTS.has(r.status) || mode === "manual") return r;
       const location = r.headers.get("location");
-      if (!REDIRECTS.has(r.status) || location === null || mode === "manual") return r;
+      // as fetch: when following, a redirect status with nowhere to go is the answer; "error" refuses every one
+      if (mode !== "error" && location === null) return r;
       await r.body?.cancel().catch(() => {});
       if (body instanceof ReadableStream) stop(); // its body is never sent twice: what is still going out stops
       if (mode === "error") throw new TypeError(`redirected (${r.status}) with redirect: "error"`);
       if (hops >= 20) throw new TypeError("too many redirects");
-      const next = new URL(location, u);
+      const next = new URL(location!, u);
       if (next.protocol !== "http:" && next.protocol !== "https:") throw new TypeError(`redirect to ${next.protocol} refused`);
-      // as fetch: 303 (but for HEAD), and 301/302 after a POST, go on as a GET without the body
+      if (next.username || next.password) throw new TypeError("redirect to a URL with credentials refused");
+      // as fetch: a body that can't be sent again ends the request at any redirect but a 303, which drops it
+      if (body instanceof ReadableStream && r.status !== 303) throw new TypeError(`a streamed body can't follow a ${r.status} redirect`);
+      // 303 (but for HEAD), and 301/302 after a POST, go on as a GET without the body
       if ((r.status === 303 && method !== "GET" && method !== "HEAD") || ((r.status === 301 || r.status === 302) && method === "POST")) {
         method = "GET";
         body = null;
         for (const h of ["content-type", "content-length", "content-encoding", "content-language", "content-location"]) delete headers[h];
-      } else if (body instanceof ReadableStream) throw new TypeError(`a streamed body can't follow a ${r.status} redirect`);
-      if (next.origin !== u.origin) delete headers["authorization"];
+      }
+      // as fetch: credentials and the Host named for one origin never go to another
+      if (next.origin !== u.origin) for (const h of ["authorization", "proxy-authorization", "cookie", "host"]) delete headers[h];
       u = next;
     }
   });

@@ -12,7 +12,7 @@
 // replaced mid-read fails loudly instead of mixing versions.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkRange, checkPartNumber, checkCompleteParts, randomId, BlobError, type BlobErrorCode } from "@carton/blob-memory/rules";
+import { checkKey, checkRange, checkPartNumber, checkCompleteParts, randomId, BlobError, markCreated, type BlobErrorCode } from "@carton/blob-memory/rules";
 import type { BlobUrlSigner } from "@carton/blob-memory/signed";
 import type { DurableObjectNamespace, DurableObjectState, SqlStorage } from "./cf.ts";
 
@@ -27,6 +27,8 @@ const DDL = [
 ];
 
 type Row = Record<string, unknown>;
+/** The vault's answer to a create-only put: "1" when it created the object, "0" when it kept the one there. */
+const CREATED_HEADER = "x-carton-created";
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
 const fail = (code: BlobErrorCode, message: string, status = 400) => json({ code, message }, status);
 const bytesOf = (v: unknown): Uint8Array => (v instanceof ArrayBuffer ? new Uint8Array(v) : (v as Uint8Array));
@@ -89,16 +91,21 @@ export class BlobVault {
             const got = [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((b) => b.toString(16).padStart(2, "0")).join("");
             if (got !== sha) return fail("InvalidPart", `SHA-256 mismatch: expected ${sha}, got ${got}`);
           }
+          let created = false;
           const r = this.#state.storage.transactionSync(() => {
             const old = this.#head(key);
             if (old && q.get("ifAbsent") === "1") return old;
+            created = true;
             if (old) this.#deleteObject(key);
             const row = { key, size: data.byteLength, etag: `"v${randomId().slice(0, 16)}"`, ctype: q.get("ct") || null, sha256: sha || null };
             this.#sql.exec("INSERT INTO blobs (key, size, etag, ctype, sha256) VALUES (?, ?, ?, ?, ?)", row.key, row.size, row.etag, row.ctype, row.sha256);
             this.#writeChunks(key, data);
             return row;
           });
-          return json(this.#info(r));
+          // a create-only put says whether it created (PUT_CREATED on the client's side)
+          const res = json(this.#info(r));
+          if (q.get("ifAbsent") === "1") res.headers.set(CREATED_HEADER, created ? "1" : "0");
+          return res;
         }
         case "GET /o": {
           const h = this.#head(key);
@@ -256,7 +263,10 @@ export class DoBlobStore implements BlobStore {
 
   async put(key: string, data: Uint8Array, opts: { contentType?: string; sha256?: string; ifAbsent?: boolean } = {}): Promise<BlobInfo> {
     checkKey(key);
-    return this.#json(await this.#call("PUT", "/o", { k: key, ct: opts.contentType, sha256: opts.sha256, ifAbsent: opts.ifAbsent ? 1 : undefined }, data as Uint8Array<ArrayBuffer>));
+    const r = await this.#call("PUT", "/o", { k: key, ct: opts.contentType, sha256: opts.sha256, ifAbsent: opts.ifAbsent ? 1 : undefined }, data as Uint8Array<ArrayBuffer>);
+    const info = await this.#json<BlobInfo>(r);
+    const created = r.headers.get(CREATED_HEADER);
+    return opts.ifAbsent && created !== null ? markCreated(info, created === "1") : info;
   }
 
   async get(key: string, range?: ByteRange): Promise<Uint8Array | null> {

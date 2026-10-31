@@ -12,5 +12,5 @@ blobStoreSuite(
     dirs.push(dir);
     return new FsBlobStore({ root: dir });
   },
-  { cleanup: async () => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); } },
+  { cleanup: async () => { for (const d of dirs) rmSync(d, { recursive: true, force: true }); }, reportsCreated: true },
 );

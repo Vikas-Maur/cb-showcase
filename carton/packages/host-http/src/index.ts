@@ -19,7 +19,8 @@
 //   POST /api/projects/:p/uploads/:id/complete?key=  {parts}       editor   → BlobInfo
 //   DELETE /api/projects/:p/uploads/:id?key=                       editor   → {}
 //   GET|HEAD|PUT /blob/:p/<key>?exp=…&sig=…  a signed URL (ranges)         → bytes  (a PUT may send If-None-Match: *
-//                                            for create-only, and X-Carton-Sha256 for a checked, recorded digest)
+//                                            for create-only, and X-Carton-Sha256 for a checked, recorded digest;
+//                                            it answers the stored BlobInfo, 412 when If-None-Match: * found the key)
 //   PUT  /api/projects/:p/messages/<key>     an oversized message, editor  → {}   (key messages/c/<hour>/<sha>-<nonce>)
 //   GET  /api/projects/:p/messages/<key>     the server's oversized message → bytes (key messages/s/<hour>/<sha>)
 //   GET  /api/health

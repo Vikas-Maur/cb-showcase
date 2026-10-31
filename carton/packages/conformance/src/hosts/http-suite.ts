@@ -98,6 +98,47 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       assert.equal(opened, false, "a bad token opened a socket");
     });
 
+    // web-demo's REQ-10: a create-only PUT costs no read-back. S3 and R2 answer 412 when the key is there.
+    test("a signed PUT with If-None-Match: * answers 412 when the key is there, and both answers carry the stored info", async () => {
+      const p = project();
+      const o = await owner(p);
+      const url = async (key: string) => ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method: "PUT", expiresIn: 60 } })).json()) as { url: string }).url;
+      const head = async (key: string) => (await (await call(`/api/projects/${p}/blobs/head?key=${encodeURIComponent(key)}`, { token: o.token })).json()) as Record<string, unknown>;
+      const first = enc.encode("the first writer's bytes");
+      const made = await fetch(await url("media/once"), { method: "PUT", body: first, headers: { "if-none-match": "*", "content-type": "image/png" } });
+      assert.equal(made.status, 200);
+      const info = (await made.json()) as Record<string, unknown>;
+      assert.equal(info.size, first.byteLength);
+      assert.equal(info.contentType, "image/png");
+      assert.equal(made.headers.get("etag"), (info.etag as string | undefined) ?? null);
+      const stored = await head("media/once");
+      for (const k of ["size", "etag", "contentType"] as const) assert.equal(info[k], stored[k], k);
+      const again = await fetch(await url("media/once"), { method: "PUT", body: enc.encode("another"), headers: { "if-none-match": "*", "content-type": "text/plain" } });
+      assert.equal(again.status, 412);
+      const kept = (await again.json()) as Record<string, unknown>;
+      for (const k of ["size", "etag", "contentType"] as const) assert.equal(kept[k], stored[k], `the first object's ${k}`);
+      const get = ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key: "media/once", method: "GET", expiresIn: 60 } })).json()) as { url: string }).url;
+      assert.deepEqual(new Uint8Array(await (await fetch(get)).arrayBuffer()), first, "the first writer's bytes stay");
+    });
+
+    // Round 3: two create-only PUTs racing on a key the host doesn't lock both got 200 when their bodies had one size.
+    test("create-only signed PUTs racing on one key: exactly one 200, and the stored bytes are its body", async () => {
+      const p = project();
+      const o = await owner(p);
+      const sign = async (key: string, method: string) => ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method, expiresIn: 60 } })).json()) as { url: string }).url;
+      for (let i = 0; i < 6; i++) {
+        const key = `media/race-${i}`;
+        const bodies = [enc.encode(`first-${i}`), enc.encode(`other-${i}`)]; // the same size
+        const [u1, u2] = [await sign(key, "PUT"), await sign(key, "PUT")];
+        const rs = await Promise.all([fetch(u1, { method: "PUT", body: bodies[0], headers: { "if-none-match": "*" } }), fetch(u2, { method: "PUT", body: bodies[1], headers: { "if-none-match": "*" } })]);
+        for (const r of rs) await r.body?.cancel();
+        const statuses = rs.map((r) => r.status);
+        assert.deepEqual([...statuses].sort(), [200, 412], `${key}: ${statuses}`);
+        const stored = new Uint8Array(await (await fetch(await sign(key, "GET"))).arrayBuffer());
+        assert.deepEqual(stored, bodies[statuses.indexOf(200)], `${key}: the 200's bytes are what is stored`);
+      }
+    });
+
     test("signed media URLs: PUT, then GET with ranges, bound to their key; viewers can't sign a PUT", async () => {
       const p = project();
       const o = await owner(p);

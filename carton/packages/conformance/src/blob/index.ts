@@ -9,7 +9,10 @@
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { BlobStore } from "@carton/core/plugins";
+import type { BlobInfo, BlobStore } from "@carton/core/plugins";
+
+// what a store sets on a create-only put's info (`PUT_CREATED` in @carton/blob-memory/rules)
+const PUT_CREATED = Symbol.for("carton.blob.putCreated");
 
 export interface BlobSuiteOptions {
   // Runs after the suite (and after it deleted its keys).
@@ -23,6 +26,10 @@ export interface BlobSuiteOptions {
   // false when the backend can't hold an object at `a` beside objects under `a/` (POSIX-backed S3 servers such as
   // VersityGW and MinIO refuse it). Carton's own keys never need it; the check then skips with this reason.
   objectsBesideFolders?: false | { reason: string };
+  // true: `put` with `ifAbsent` must say whether it created the object (`Symbol.for("carton.blob.putCreated")` on its
+  // info, `PUT_CREATED` in @carton/blob-memory/rules), as every store in this repository does: a host's create-only
+  // signed PUT answers by it. Otherwise it is checked only when a store sets it.
+  reportsCreated?: boolean;
 }
 
 const bytes = (n: number, seed: number): Uint8Array => {
@@ -126,6 +133,14 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
       const fresh = await store.put(k("once-new"), text("x"), { ifAbsent: true });
       assert.equal(fresh.size, 1);
       eq(await store.get(k("once-new")), text("x"));
+      // whether it created the object: kept (false), created (true); equal sizes can't tell them apart, this can
+      const created = (i: BlobInfo) => (i as unknown as Record<symbol, unknown>)[PUT_CREATED];
+      if (opts.reportsCreated || created(info) !== undefined || created(fresh) !== undefined) {
+        assert.deepEqual([created(info), created(fresh)], [false, true], "PUT_CREATED: kept, then created");
+        const same = await store.put(k("once-new"), text("y"), { ifAbsent: true });
+        assert.equal(created(same), false, "an equal-sized refused put is not a create");
+        eq(await store.get(k("once-new")), text("x"));
+      }
     });
 
     test("ranges return exactly [offset, offset + length), clipped at the end", async () => {

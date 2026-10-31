@@ -28,7 +28,7 @@
 // revoked: a project that drops a media record keeps the right to the bytes it once had.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { BlobError } from "@carton/blob-memory/rules";
+import { BlobError, markCreated } from "@carton/blob-memory/rules";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { decodeManifest, manifestKey, webCryptoHasher, type Manifest } from "@carton/media";
 
@@ -150,7 +150,7 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
       }
       await grant(hash);
       const seen = await inspect(key, hash);
-      if (seen.sound) return seen.info!;
+      if (seen.sound) return opts?.ifAbsent ? markCreated({ ...seen.info! }, false) : seen.info!; // a create-only put kept it
       if (key.startsWith("m/")) {
         const m = await manifestFor(hash);
         if (data.byteLength !== m.size) throw new BlobError("InvalidPart", `${data.byteLength} bytes; the manifest says ${m.size}`);

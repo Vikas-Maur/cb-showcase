@@ -292,6 +292,26 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       assert.ok(Date.now() - t0 <= fx.presenceTimeoutMs + 5000);
     });
 
+    // Round 2: a Durable Object took each wake for every socket's activity, so a room that hibernated between its
+    // checks never found a silent socket.
+    test("a silent connection is dropped within the timeout even when the host wakes from hibernation between its checks", async (t) => {
+      if (!fx.presenceTimeoutMs || !fx.hibernate || !fx.host.url.startsWith("ws:")) return t.skip("needs presenceTimeoutMs, hibernate and a ws: host");
+      const { p, human, left } = await showing();
+      let done = false;
+      const waking = (async () => {
+        while (!done) {
+          await fx.hibernate!();
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      })();
+      try {
+        await p.wait(left(human), "the human's leave", fx.presenceTimeoutMs + 5000);
+      } finally {
+        done = true;
+        await waking;
+      }
+    });
+
     test("replica ids are bound to the device credential and survive a reconnect; another credential can't use them", async (t) => {
       if (!fx.tokenFor) return t.skip("needs tokenFor");
       const b = newBranch();
@@ -312,6 +332,106 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       const r = (await thief.wait(ackOf(`${rid}.3`), "reject")) as sync.RejectMsg;
       assert.equal(r.type, "reject");
       assert.equal(r.reason, "foreign id");
+    });
+
+    // The people record (windows-sync R3): a device credential's person, so a generic "person" author resolves by its
+    // change's rid. Every test here is in one project, so these use accounts of their own and look entries up by id.
+    const personIn = (m: Msg, id: string) => ((m as { people?: sync.PersonRids[] }).people ?? []).find((p) => p.id === id);
+    const peopleWith = (id: string, pred: (p: sync.PersonRids) => boolean) => (m: Msg) => m.type === "people" && !!personIn(m, id) && pred(personIn(m, id)!);
+    const identify = (c: Client, branchId: string, id: string, name: string) => c.conn.send({ type: "identity", branchId, identity: { id, name } } as sync.ClientMessage);
+
+    test("people: a replica names only its own account; its rids, a hand-off's too, reach the project before their rows; a rename reaches everyone", async (t) => {
+      if (!fx.tokenFor) return t.skip("needs tokenFor");
+      const acct = `pp${ridOf().slice(0, 10)}`, cred = `${acct}/dev-${ridOf().slice(0, 6)}`;
+      const a = await connect(await fx.tokenFor({ credential: cred, account: acct }));
+      const b = await connect(await fx.token("editor"));
+      const bx = newBranch();
+      await share(a, bx);
+      // another account's name is refused, and the welcome still comes
+      a.conn.send({ type: "hello", branchId: bx, have: 0, pending: [], rids: [], schemaVersion: 1, identity: { id: "someone-else", name: "Mallory" } } as sync.ClientMessage);
+      const refused = (await a.wait((m) => m.type === "error", "the refusal")) as sync.ErrorMsg;
+      assert.equal(refused.code, "forbidden");
+      const w0 = (await a.wait((m) => m.type === "hello", "the welcome")) as sync.WelcomeMsg;
+      assert.ok(Array.isArray(w0.people), "the welcome says this host keeps people");
+      assert.equal(personIn(w0, "someone-else"), undefined);
+      identify(a, bx, acct, "Pat");
+      await a.wait(peopleWith(acct, (p) => p.name === "Pat"), "its own confirmation");
+      const wb = (await hello(b, bx)) as sync.WelcomeMsg;
+      assert.deepEqual(personIn(wb, acct), { id: acct, name: "Pat", rids: [] });
+      // a hand-off of edits two earlier processes made before the share: their rids are told once it commits
+      const r1 = ridOf(), r2 = ridOf(), b0 = newBranch();
+      const rows = [{ ...styleChange(b0, `${r1}.1`, 0, "one"), seq: 1 }, { ...styleChange(b0, `${r2}.1`, 1, "two"), seq: 2 }];
+      a.conn.send({ type: "adopt", branchId: b0, n: 2, stateHash: "", rows, rec: rec(b0), doc0: HOST_SUITE_DOC, closure: [] } as unknown as sync.ClientMessage);
+      assert.equal((await a.wait((m) => (m.type === "adopted" || m.type === "adoptError") && (m as { branchId?: string }).branchId === b0, "adopted")).type, "adopted");
+      await b.wait(peopleWith(acct, (p) => p.rids.includes(r1) && p.rids.includes(r2)), "the hand-off's rids");
+      // a new process of the same device: its rid reaches b before the row it binds
+      const a2 = await connect(await fx.tokenFor({ credential: cred, account: acct }));
+      await hello(a2, bx);
+      const r3 = ridOf();
+      push(a2, bx, 1, [styleChange(bx, `${r3}.1`, 0, "three")]);
+      await b.wait((m) => m.type === "changes" && (m as sync.ChangesMsg).rows.some((r) => r.id === `${r3}.1`), "the new process's row");
+      const told = b.got.findIndex(peopleWith(acct, (p) => p.rids.includes(r3)));
+      const row3 = b.got.findIndex((m) => m.type === "changes" && (m as sync.ChangesMsg).rows.some((r) => r.id === `${r3}.1`));
+      assert.ok(told >= 0 && told < row3, `the rid told at ${told}, its row at ${row3}`);
+      // a rename reaches every connection, the sender's own
+      identify(a, bx, acct, "Pat B.");
+      for (const c of [a, a2, b]) await c.wait(peopleWith(acct, (p) => p.name === "Pat B."), "the rename");
+      // a joiner's welcome: the person, with every rid that device used
+      const j = await connect(await fx.token("viewer"));
+      const wj = personIn(await hello(j, b0), acct)!;
+      assert.equal(wj.name, "Pat B.");
+      for (const rid of [r1, r2, r3]) assert.ok(wj.rids.includes(rid), rid);
+    });
+
+    test("people are kept by the host: a welcome after a hibernation or a restart still names them, and a rename still reaches everyone", async (t) => {
+      if (!fx.tokenFor || (!fx.hibernate && !fx.restart)) return t.skip("needs tokenFor, and hibernate or restart");
+      const acct = `pk${ridOf().slice(0, 10)}`, cred = `${acct}/dev-${ridOf().slice(0, 6)}`;
+      const token = await fx.tokenFor({ credential: cred, account: acct });
+      const a = await connect(token);
+      const bx = newBranch();
+      await share(a, bx);
+      const rid = ridOf();
+      a.conn.send({ type: "hello", branchId: bx, have: 0, pending: [], rids: [rid], schemaVersion: 1, identity: { id: acct, name: "Kim" } } as sync.ClientMessage);
+      const w = (await a.wait((m) => m.type === "hello", "the welcome")) as sync.WelcomeMsg;
+      assert.deepEqual(personIn(w, acct), { id: acct, name: "Kim", rids: [rid] }, "the sender's own welcome holds it");
+      if (fx.hibernate) {
+        const b = await connect(await fx.token("editor"));
+        await hello(b, bx);
+        await fx.hibernate();
+        const late = await connect(await fx.token("viewer"));
+        assert.deepEqual(personIn(await hello(late, bx), acct), { id: acct, name: "Kim", rids: [rid] }, "after a wake");
+        identify(a, bx, acct, "Kim L."); // from a socket that slept through it, to one that did too
+        await b.wait(peopleWith(acct, (p) => p.name === "Kim L." && p.rids.includes(rid)), "the rename after a wake");
+      }
+      if (fx.restart) {
+        await fx.restart();
+        await a.waitClose(30_000);
+        const again = await connect(await fx.token("viewer"));
+        const p = personIn(await hello(again, bx), acct);
+        assert.ok(p && p.rids.includes(rid) && p.name.startsWith("Kim"), JSON.stringify(p));
+      }
+    });
+
+    // People review round 1: the cap lived in the sequencer's memory, so each wake gave a socket a fresh burst.
+    test("changes to a person are capped per connection, and a hibernation doesn't reset the cap", async (t) => {
+      if (!fx.tokenFor || !fx.hibernate) return t.skip("needs tokenFor and hibernate");
+      const acct = `pc${ridOf().slice(0, 10)}`, cred = `${acct}/dev-${ridOf().slice(0, 6)}`;
+      const a = await connect(await fx.tokenFor({ credential: cred, account: acct }));
+      const bx = newBranch();
+      await share(a, bx);
+      await hello(a, bx);
+      for (let i = 0; i < 5; i++) {
+        identify(a, bx, acct, `Cap ${i}`);
+        await a.wait(peopleWith(acct, (p) => p.name === `Cap ${i}`), `rename ${i}`);
+      }
+      const capped = (m: Msg) => m.type === "error" && /changed too often/.test((m as sync.ErrorMsg).reason);
+      identify(a, bx, acct, "over the cap");
+      await a.wait(capped, "the cap");
+      await fx.hibernate();
+      a.got.length = 0;
+      identify(a, bx, acct, "after the wake");
+      const m = await a.wait((m) => capped(m) || peopleWith(acct, (p) => p.name === "after the wake")(m), "the cap, still");
+      assert.equal(m.type, "error", "the woken room still caps the socket");
     });
 
     test("a duplicate push is acked with the original seq", async () => {
