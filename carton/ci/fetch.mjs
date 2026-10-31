@@ -173,9 +173,14 @@ const tools = {
       const pdir = path.join(work, "prettier");
       run(npm, ["install", "--prefix", pdir, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", `prettier@${VERSIONS.prettier}`]);
       fs.mkdirSync(path.dirname(renderer), { recursive: true });
+      // Prettier's defaults, as the copy the agents sliced (_inspect/pretty) was made. It runs on a copy in an empty
+      // folder of its own: prettier 3 reads .gitignore from its working directory and prints an ignored file unchanged
+      // (carton/.gitignore's `dist/` matched app-asar/dist/…).
+      const pin = path.join(work, "pretty-in");
+      fs.mkdirSync(pin);
+      fs.copyFileSync(path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js"), path.join(pin, "renderer.js"));
       const out = fs.openSync(renderer + ".part", "w");
-      // --no-config: prettier's defaults, as the copy the agents sliced (_inspect/pretty) was made
-      run(process.execPath, [path.join(pdir, "node_modules", "prettier", "bin", "prettier.cjs"), "--no-config", "--no-editorconfig", "--parser", "babel", path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js")], { stdio: ["ignore", out, "inherit"] });
+      run(process.execPath, [path.join(pdir, "node_modules", "prettier", "bin", "prettier.cjs"), "--no-config", "--no-editorconfig", "--parser", "babel", "renderer.js"], { cwd: pin, stdio: ["ignore", out, "inherit"] });
       fs.closeSync(out);
       fs.renameSync(renderer + ".part", renderer);
       fs.rmSync(work, { recursive: true, force: true });
@@ -183,7 +188,9 @@ const tools = {
     // Fingerprints only (never the code): the dev box's copies are c30cd768… (minified) and 00c7775b… (prettified).
     const sha = (f) => createHash("sha256").update(fs.readFileSync(f)).digest("hex").slice(0, 8);
     const pretty = fs.readFileSync(renderer, "utf8");
-    console.log(`  renderer ${sha(path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js"))}…, prettified ${sha(renderer)}… (${pretty.length} chars, fm∘sv anchor ${/\bho = \(t\) => Math\.round\(t \* 10\) \/ 10/.test(pretty) ? "found" : "MISSING"})`);
+    const anchor = /\bho = \(t\) => Math\.round\(t \* 10\) \/ 10/.test(pretty);
+    console.log(`  renderer ${sha(path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js"))}…, prettified ${sha(renderer)}… (${pretty.length} chars, fm∘sv anchor ${anchor ? "found" : "MISSING"})`);
+    if (!anchor) throw new Error("the prettified renderer has no fm∘sv anchor, so the cardboard suite's B10 would skip");
     const version = fs.readFileSync(path.join(dest, "cli", "version.txt"), "utf8").trim();
     if (!version.startsWith(VERSIONS.cardboard)) throw new Error(`Cardboard CLI version ${version}, expected ${VERSIONS.cardboard}`);
     exportEnv({ CARTON_CARDBOARD_DIR: dest, CARDBOARD_PRISTINE: dest, CARTON_CARDBOARD_CLI: path.join(dest, "cli", "cardboard.mjs"), CARTON_CARDBOARD_RENDERER: renderer });
