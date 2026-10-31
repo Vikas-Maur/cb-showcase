@@ -19,10 +19,11 @@ on:
         description: "Systems: comma-separated linux, windows, macos, or all"
         default: all
 
-# A new push cancels the test run it supersedes. A re-run of failed jobs (run_attempt > 1) and a push that only asks
-# for measurements (no tests run) get a group of their own, so they neither cancel nor are cancelled by it.
+# A push of the whole matrix cancels the whole-matrix run it supersedes. A partial run (`[carton-ci groups=…` or
+# `os=…`), a re-run of failed jobs (run_attempt > 1) and a push that only asks for measurements get a group of their
+# own, so they neither cancel nor are cancelled by it.
 concurrency:
-  group: carton-ci-${{ github.ref }}-${{ inputs.groups || 'all' }}-${{ inputs.os || 'all' }}-${{ (github.run_attempt != '1' || (contains(github.event.head_commit.message, '[carton-measure') && !contains(github.event.head_commit.message, '[carton-ci'))) && github.run_id || 'latest' }}
+  group: carton-ci-${{ github.ref }}-${{ inputs.groups || 'all' }}-${{ inputs.os || 'all' }}-${{ (github.run_attempt != '1' || contains(github.event.head_commit.message, '[carton-ci groups=') || contains(github.event.head_commit.message, '[carton-ci os=') || (contains(github.event.head_commit.message, '[carton-measure') && !contains(github.event.head_commit.message, '[carton-ci'))) && github.run_id || 'latest' }}
   cancel-in-progress: true
 
 permissions:
