@@ -3,8 +3,9 @@
 //   carton [--project <dir>] [--data-dir <dir>] [--server <url> --token-file <file>] <command> [args] [--json] [--as <agent>]
 //     --server: the team's sync server for this call's helper (a shared cut, `share`); also CARTON_SYNC_URL. Its token
 //     is read from --token-file (CARTON_TOKEN_FILE), never passed on a command line.
-//   carton hook pre-tool-use [--project <dir>]   Claude Code PreToolUse hook (stdin → stdout); on Read/Write/Edit of
-//                                                the project's timeline.tsx or project.json, tells the holder (H8)
+//   carton hook pre-tool-use [--project <dir>]   Claude Code PreToolUse hook (stdin → stdout); a Read/Write/Edit of
+//                                                the project's timeline.tsx is told to the holder (H8); a
+//                                                Write/Edit of its project.json is denied (§6.4)
 //   carton hook stop [--project <dir>]           Claude Code Stop/SubagentStop hook; an allowed stop is told too
 //   carton hook-settings [--project <dir>]       prints the `--settings` JSON for host Claude Code
 //   carton mcp [--project <dir>]                 MCP server on stdio (the tools of mcp.ts)
@@ -67,15 +68,15 @@ async function main(): Promise<number> {
   if (argv[0] === "hook" && argv[1] === "pre-tool-use") {
     let out: object = {};
     try {
-      const { prefixCommand, preToolUseOutput, hookEventFor } = await import("@carton/local/hooks");
+      const { preToolUse } = await import("@carton/local/hooks");
       const input = JSON.parse((await readStdin()) || "{}") as HookInput;
       const m = /^director\/([^/]+)\/([^/]+)/.exec(process.env.CARDBOARD_ACTOR ?? "");
-      const turn = m ? { chat: m[1], turn: m[2] } : null;
-      out = preToolUseOutput(input, prefixCommand(input, turn));
-      // a Read of the shared file, a Write/Edit of it or project.json: the holder's materializer hears of it (H8)
       const dir = hookProject(input);
-      const e = dir ? hookEventFor("pre-tool-use", input, { projectDir: dir, turn }) : null;
-      if (e && dir) await (await import("@carton/local/hook-send")).sendHookEvent({ projectDir: dir, dataDir, ...e });
+      // a Write/Edit of project.json is denied (§6.4); a Read or Write/Edit of the shared file: the holder's
+      // materializer hears of it (H8)
+      const { output, event: e } = preToolUse(input, { projectDir: dir, turn: m ? { chat: m[1], turn: m[2] } : null });
+      out = output;
+      if (e && dir) await (await import("@carton/local/hook-send")).sendHookEvent({ projectDir: dir, dataDir, ...e }).catch(() => {});
     } catch { /* a hook never breaks the agent's turn */ }
     process.stdout.write(JSON.stringify(out) + "\n");
     return 0;
@@ -85,14 +86,15 @@ async function main(): Promise<number> {
     if (!event) { process.stderr.write("usage: carton hook pre-tool-use|stop\n"); return 2; }
     let out: object = {};
     try {
-      const { runHook, readProjectId } = await import("@carton/local");
-      const { openProjectStore } = await import("@carton/store-sqlite");
+      const { runHook } = await import("@carton/local");
+      const { openExistingProjectStore, sendHookEvent } = await import("@carton/local/hook-send");
       const input = JSON.parse((await readStdin()) || "{}") as HookInput;
       const dir = hookProject(input);
       out = await runHook(event, input, {
-        openStore: async () => (dir ? (await openProjectStore({ bundleDir: dir, projectId: readProjectId(dir), appDataDir: dataDir, skipLinkProbe: true })).store : null),
+        // the project's carton.db where it is (no placement probe, nothing made or moved; review H8 #2)
+        openStore: async () => (dir ? openExistingProjectStore({ projectDir: dir, dataDir }) : null),
         // an allowed stop ends the turn: the holder's materializer drops its freeze and pins (H8)
-        ...(dir ? { send: async (e: HookSend) => (await import("@carton/local/hook-send")).sendHookEvent({ projectDir: dir, dataDir, ...e }) } : {}),
+        ...(dir ? { send: (e: HookSend) => sendHookEvent({ projectDir: dir, dataDir, ...e }) } : {}),
       });
     } catch { /* a hook never breaks the agent's turn */ }
     process.stdout.write(JSON.stringify(out) + "\n");

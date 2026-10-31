@@ -57,3 +57,17 @@ test("carton hook pre-tool-use --project: an Edit of timeline.tsx is told to the
   assert.equal(stop.code, 0);
   assert.deepEqual(JSON.parse(stop.out), {});
 });
+
+test("carton hook pre-tool-use --project: a Write/Edit/MultiEdit of the project's project.json is denied (§6.4)", async () => {
+  const { dir } = bundle("hook-bin-deny");
+  for (const tool of ["Write", "Edit", "MultiEdit"]) {
+    const r = await hook(["pre-tool-use", "--project", dir], { hook_event_name: "PreToolUse", session_id: "0011223344", tool_name: tool, tool_input: { file_path: join(dir, "project.json") } });
+    assert.equal(r.code, 0);
+    const h = JSON.parse(r.out).hookSpecificOutput;
+    assert.deepEqual([h?.permissionDecision, h?.hookEventName], ["deny", "PreToolUse"], `${tool}: ${r.out}`);
+    assert.match(h.permissionDecisionReason, /cb source print --view/);
+  }
+  const read = await hook(["pre-tool-use", "--project", dir], { hook_event_name: "PreToolUse", session_id: "0011223344", tool_name: "Read", tool_input: { file_path: join(dir, "project.json") } });
+  assert.deepEqual(JSON.parse(read.out), {}, "reading it is fine");
+  assert.equal(existsSync(join(dir, ".carton")), false, "a project without Carton: nothing made");
+});

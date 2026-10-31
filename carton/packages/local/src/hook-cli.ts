@@ -1,12 +1,12 @@
 // The Claude Code hooks as commands, for host Claude Code started with `--settings` (§10, H9):
 //   carton hook pre-tool-use [--project <dir>]  stdin: hook input JSON → stdout: the rewritten Bash command (or {});
-//                                                a Read of timeline.tsx, a Write/Edit of it or project.json: told to
-//                                                the holder's materializer (H8)
+//                                                a Read or Write/Edit of timeline.tsx: told to the holder's
+//                                                materializer (H8); a Write/Edit of project.json: denied (§6.4)
 //   carton hook stop --project <dir>             stdin: Stop/SubagentStop input → stdout: {decision:"block",reason}
 //                                                once, or {}; an allowed stop is told to the holder's materializer
 // The Director runs the same logic in-process through Cardboard's hook `sA` (`prefixCommand`, `stopHook`).
 // A hook never fails the agent's turn: on any error it prints {} and exits 0.
-import { prefixCommand, preToolUseOutput, stopHook, stopOutput, actorIdForHook, hookEventFor } from "./hooks.ts";
+import { stopHook, stopOutput, actorIdForHook, hookEventFor, preToolUse } from "./hooks.ts";
 import type { DirectorTurn, HookSend } from "./hooks.ts";
 import type { HookInput } from "./identity.ts";
 import { StoreNoticeBox } from "./notices.ts";
@@ -24,7 +24,7 @@ export interface RunHookOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /** carton.db, for the Stop hook's late conflicts (closed after). */
   openStore?: () => Promise<Store | null>;
-  /** The project folder: a pre-tool-use event's file is matched inside it (`hookEventFor`). */
+  /** The project folder: a pre-tool-use call's file is matched inside it (the shared file's events, project.json's denial). */
   projectDir?: string | null;
   /**
    * Tell the lease holder's materializer (H8): `sendHookEvent`, or a `LocalCarton`'s `write(op, {actor})`. Without it,
@@ -37,9 +37,9 @@ export async function runHook(event: HookEvent, input: HookInput, opts: RunHookO
   const turn = turnFromEnv(opts.env ?? process.env);
   const tell = async (e: HookSend | null) => { if (e && opts.send) await opts.send(e).catch(() => {}); };
   if (event === "pre-tool-use") {
-    const out = preToolUseOutput(input, prefixCommand(input, turn));
-    if (opts.send) await tell(hookEventFor("pre-tool-use", input, { projectDir: opts.projectDir, turn }));
-    return out;
+    const { output, event: e } = preToolUse(input, { projectDir: opts.projectDir, turn });
+    await tell(e);
+    return output;
   }
   const store = await opts.openStore?.();
   try {

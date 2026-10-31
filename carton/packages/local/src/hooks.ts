@@ -9,9 +9,11 @@
 //   the stop **once** with the conflict text, so the agent resolves them before it ends ("Prevents the subagent from
 //   stopping"). On `stop_hook_active` it never blocks again: whatever is left becomes a card for the human (R3-09).
 // - Hook events for the holder's materializer (§6.4, H8): `hookEventFor` turns a Read of the shared timeline.tsx, a
-//   Write/Edit/MultiEdit of timeline.tsx or project.json, and an allowed Stop/SubagentStop into a `hook` write
-//   (`HookOp`), which `cb` hands to the lease holder like any write; the holder calls the materializer's
-//   hookRead / hookWrite / hookStop (the freeze of the shared file, credits for a hooked agent's save, the turn's pins).
+//   Write/Edit/MultiEdit of it, and an allowed Stop/SubagentStop into a `hook` write (`HookOp`), which `cb` hands to
+//   the lease holder like any write; the holder calls the materializer's hookRead / hookWrite / hookStop (the freeze
+//   of the shared file, credits for a hooked agent's save, the turn's pins).
+// - A Write/Edit/MultiEdit of the project's project.json is denied (§6.4): agents edit the timeline through their view.
+//   `preToolUse` is the whole PreToolUse hook: the denial, else the prefixer's output and the event to send.
 //   This file loads no engine: the PreToolUse hook runs before every tool call.
 import { isAbsolute, relative, resolve } from "node:path";
 import type { Actor } from "@carton/core";
@@ -141,9 +143,10 @@ export interface HookOp { kind: "hook"; event: HookEventKind; file?: string }
 /** A hook event to send: who, and the write. */
 export interface HookSend { actor: Actor; op: HookOp }
 
-/** The shared file (a hooked agent reading it starts the freeze) and the files whose foreign saves a hook credits. */
+/** The shared file: a hooked agent reading it starts the freeze; its write is credited to the agent that announced it. */
 export const SHARED_FILE = "timeline.tsx";
-const CREDITED = new Set([SHARED_FILE, "project.json"]);
+/** Cardboard's project file: Claude Code agents are denied writing it directly (§6.4). */
+export const PROJECT_FILE = "project.json";
 const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit"]);
 /** Case-insensitive file systems (Windows, macOS): `Timeline.tsx` is the shared file there. */
 const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
@@ -166,11 +169,37 @@ export function hookEventFor(event: "pre-tool-use" | "stop", input: HookInput, o
   if (!actor) return null;
   if (event === "stop") return { actor, op: { kind: "hook", event: "stop" } };
   const tool = String(input.tool_name ?? "");
+  if (tool !== "Read" && !WRITE_TOOLS.has(tool)) return null;
+  if (toolFile(input, o) !== SHARED_FILE) return null;
+  return { actor, op: { kind: "hook", event: tool === "Read" ? "read" : "write", file: SHARED_FILE } };
+}
+
+/** The project-relative file a file tool names (folded on case-insensitive file systems), or null. */
+function toolFile(input: HookInput, o: { projectDir?: string | null; foldCase?: boolean }): string | null {
   const file = input.tool_input?.file_path;
-  if (!o.projectDir || typeof file !== "string" || !file || (tool !== "Read" && !WRITE_TOOLS.has(tool))) return null;
+  if (!o.projectDir || typeof file !== "string" || !file) return null;
   const rel = projectRel(o.projectDir, file, typeof input.cwd === "string" ? input.cwd : undefined);
   if (!rel) return null;
-  const key = o.foldCase ?? FOLD_CASE ? rel.toLowerCase() : rel;
-  if (tool === "Read") return key === SHARED_FILE ? { actor, op: { kind: "hook", event: "read", file: SHARED_FILE } } : null;
-  return CREDITED.has(key) ? { actor, op: { kind: "hook", event: "write", file: key } } : null;
+  return o.foldCase ?? FOLD_CASE ? rel.toLowerCase() : rel;
+}
+
+/** Why a file tool call is refused, or null: a Write/Edit/MultiEdit of the project's project.json (§6.4). */
+export function deniedFileWrite(input: HookInput, o: { projectDir?: string | null; foldCase?: boolean } = {}): string | null {
+  if (!WRITE_TOOLS.has(String(input.tool_name ?? "")) || toolFile(input, o) !== PROJECT_FILE) return null;
+  return "project.json is Cardboard's project file, kept by the app and Carton: it isn't edited directly. Edit the timeline in your own view instead: `cb source print --view <name>` prints it (its path is in the answer); edit that file and save it, and its .status file says how the save went.";
+}
+
+/** Claude Code's PreToolUse output refusing a tool call, with the reason the agent is shown. */
+export function denyOutput(reason: string): object {
+  return { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason } };
+}
+
+/**
+ * The PreToolUse hook: a write of project.json is denied (and nothing is sent); otherwise the prefixer's output for a
+ * Bash call that runs `cb`, and the event for the holder's materializer, if any.
+ */
+export function preToolUse(input: HookInput, o: { projectDir?: string | null; turn?: DirectorTurn | null; foldCase?: boolean } = {}): { output: object; event: HookSend | null } {
+  const denied = deniedFileWrite(input, o);
+  if (denied) return { output: denyOutput(denied), event: null };
+  return { output: preToolUseOutput(input, prefixCommand(input, o.turn)), event: hookEventFor("pre-tool-use", input, o) };
 }

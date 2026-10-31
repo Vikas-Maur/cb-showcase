@@ -5,8 +5,10 @@
 // `hook: {event, delivered: false}`. The holder runs it as any write (`runWrite`, WriteOp `hook`): once per request id.
 import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import type { Actor } from "@carton/core";
-import { locateCartonDb, openSqliteStore } from "@carton/store-sqlite";
+import { defaultAppDataDir, locateCartonDb, openSqliteStore, projectKey } from "@carton/store-sqlite";
+import type { SqliteStore } from "@carton/store-sqlite";
 import { NO_HELPER, submit } from "./client.ts";
 import type { HookEventKind, HookOp } from "./hooks.ts";
 import { Lease } from "./lease.ts";
@@ -34,30 +36,51 @@ export interface SendHookOptions {
   callTimeoutMs?: number;
 }
 
+/**
+ * Where a project's carton.db is, of the places `openLocal` puts it, without the hard-link probe (it writes two files
+ * under `.carton/`, and a hook runs before every tool call) and without moving anything: the place placement picks
+ * first, then the bundle and app data. Only the ones that exist; none when Carton isn't on for the project. Without the
+ * probe, placement can't tell a FAT/exFAT or read-only bundle on Windows or macOS (review H8 #2), where `openLocal`
+ * keeps history in app data: that one is found here too.
+ */
+export function existingCartonDbs(o: { projectDir: string; projectId?: string; dataDir?: string }): string[] {
+  const projectId = o.projectId ?? readProjectId(o.projectDir);
+  const first = locateCartonDb({ bundleDir: o.projectDir, projectId, appDataDir: o.dataDir, skipLinkProbe: true }).dbPath;
+  const inBundle = join(resolve(o.projectDir), ".carton", "carton.db");
+  const inAppData = join(o.dataDir ?? defaultAppDataDir(), "projects", projectKey(projectId), "carton.db");
+  return [...new Set([first, inBundle, inAppData])].filter((p) => existsSync(p));
+}
+
+/** The project's existing carton.db for a hook that writes (the Stop hook's notices): never made, never moved. */
+export async function openExistingProjectStore(o: { projectDir: string; projectId?: string; dataDir?: string }): Promise<SqliteStore | null> {
+  const [path] = existingCartonDbs(o);
+  return path ? openSqliteStore(path) : null;
+}
+
 export async function sendHookEvent(o: SendHookOptions): Promise<CbResult> {
-  const where = locateCartonDb({ bundleDir: o.projectDir, projectId: o.projectId ?? readProjectId(o.projectDir), appDataDir: o.dataDir, skipLinkProbe: true });
-  // no carton.db: Carton isn't on for this project, so no holder is either
-  if (!existsSync(where.dbPath)) return hookUndelivered(o.op.event);
-  let store;
-  try {
-    store = await openSqliteStore(where.dbPath, { readOnly: true });
-  } catch {
-    return hookUndelivered(o.op.event); // nothing has it open (a WAL file can't be read without its -shm): no holder
+  const req = { id: o.id ?? `hook.${randomBytes(12).toString("hex")}`, actor: o.actor, op: o.op };
+  // no carton.db: Carton isn't on for this project, so no holder is either. More than one: the holder is on one
+  for (const path of existingCartonDbs(o)) {
+    let store;
+    try {
+      store = await openSqliteStore(path, { readOnly: true });
+    } catch {
+      continue; // nothing has it open (a WAL file can't be read without its -shm): no holder there
+    }
+    try {
+      const r = await submit("carton.commit", req, {
+        lease: new Lease(store),
+        needsHelper: async () => false,
+        noHelper: HOOK_NO_HELPER,
+        spawnHelper: () => {},
+        idempotent: true,
+        callTimeoutMs: o.callTimeoutMs ?? 5000,
+      });
+      if (r.via === "holder") return r.result as CbResult;
+      if (r.via === "error" && r.code !== NO_HELPER) return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
+    } finally {
+      await store.close();
+    }
   }
-  try {
-    const req = { id: o.id ?? `hook.${randomBytes(12).toString("hex")}`, actor: o.actor, op: o.op };
-    const r = await submit("carton.commit", req, {
-      lease: new Lease(store),
-      needsHelper: async () => false,
-      noHelper: HOOK_NO_HELPER,
-      spawnHelper: () => {},
-      idempotent: true,
-      callTimeoutMs: o.callTimeoutMs ?? 5000,
-    });
-    if (r.via === "holder") return r.result as CbResult;
-    if (r.via === "in-process" || r.code === NO_HELPER) return hookUndelivered(o.op.event);
-    return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
-  } finally {
-    await store.close();
-  }
+  return hookUndelivered(o.op.event);
 }

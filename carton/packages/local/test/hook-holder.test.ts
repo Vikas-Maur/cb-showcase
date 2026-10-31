@@ -8,14 +8,18 @@
 //   - With no holder, nobody is told, no helper starts, and a project without Carton gets no carton.db.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Rec } from "@carton/core";
 import { openLocal } from "../src/open.ts";
 import { EngineThread } from "../src/engine-thread.ts";
 import { runHook } from "../src/hook-cli.ts";
-import { sendHookEvent } from "../src/hook-send.ts";
+import { existingCartonDbs, openExistingProjectStore, sendHookEvent } from "../src/hook-send.ts";
+import { Carton } from "@carton/core";
+import { openSqliteStore, projectKey } from "@carton/store-sqlite";
+import { nodeHasher } from "../src/hasher.ts";
+import { scratch } from "./support/scratch.ts";
 import type { HookSend } from "../src/hooks.ts";
 import { parseActorId } from "../src/identity.ts";
 import type { CbResult } from "../src/writes.ts";
@@ -139,4 +143,30 @@ test("no holder: nobody is told and no helper starts; a project without Carton g
   const r = await sendHookEvent({ projectDir: bare.dir, projectId: bare.projectId, actor: parseActorId("claude-code/abcdef12")!, op: { kind: "hook", event: "read" } });
   assert.deepEqual(r.hook, { event: "read", delivered: false });
   assert.equal(existsSync(join(bare.dir, ".carton")), false, "nothing made where Carton isn't on");
+});
+
+test("history kept in app data (a FAT/exFAT, read-only or synced bundle): the hook finds the holder there (review H8 #2)", { timeout: 60_000 }, async (t) => {
+  // openLocal keeps carton.db in app data where the bundle can't take it; on Windows and macOS only the hard-link probe
+  // tells, and a hook doesn't probe (it writes files). The app's holder runs on that carton.db.
+  const { dir, projectId } = bundle("hook-appdata");
+  const dataDir = mkdtempSync(join(scratch(), "appdata-"));
+  const dbPath = join(dataDir, "projects", projectKey(projectId), "carton.db");
+  mkdirSync(join(dataDir, "projects", projectKey(projectId)), { recursive: true });
+  const store = await openSqliteStore(dbPath);
+  await (await Carton.open({ adapter, store, hasher: nodeHasher, init: { doc: doc0() }, actor: me })).close();
+  await store.close();
+  assert.equal(existsSync(join(dir, ".carton", "carton.db")), false, "nothing in the bundle");
+  assert.deepEqual(existingCartonDbs({ projectDir: dir, projectId, dataDir }), [dbPath]);
+  const th = await EngineThread.start({ dbPath, factory: here("./support/real-mz-factory.ts"), config: { projectDir: dir } });
+  t.after(async () => { await th.stop(); });
+  await until(() => named(shared(dir), "c1") === "c1", 10_000, "the app's first print");
+  const agent = parseActorId("claude-code/abcdef12")!;
+  const r = await sendHookEvent({ projectDir: dir, projectId, dataDir, actor: agent, op: { kind: "hook", event: "read", file: "timeline.tsx" } });
+  assert.deepEqual(r.hook, { event: "read", delivered: true }, JSON.stringify(r));
+  // the Stop hook's store is that carton.db too, opened where it is: nothing made in the bundle, nothing moved
+  const s2 = await openExistingProjectStore({ projectDir: dir, projectId, dataDir });
+  assert.equal(s2?.path, dbPath);
+  await s2?.close();
+  assert.equal(existsSync(join(dir, ".carton", "carton.db")), false);
+  assert.equal(await openExistingProjectStore({ projectDir: bundle("hook-appdata-bare").dir, dataDir }), null, "no carton.db: none made");
 });
