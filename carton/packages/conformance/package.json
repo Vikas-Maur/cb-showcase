@@ -32,6 +32,7 @@
   "dependencies": {
     "@carton/core": "0.1.0",
     "@carton/store-memory": "0.1.0",
-    "@carton/blob-memory": "0.1.0"
+    "@carton/blob-memory": "0.1.0",
+    "@carton/server": "0.1.0"
   }
 }

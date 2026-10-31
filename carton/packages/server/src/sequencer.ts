@@ -81,7 +81,8 @@ export interface SequencerStats {
 
 /** Controls for the conformance suite's negative tests and the P9 comparisons only. Never set them in a host. */
 export interface SequencerControls extends rules.RuleControls {
-  keying?: rules.Keying;
+  /** Another overlap test (the P9 comparison keyings, the pre-v12 classifier): `@carton/conformance` rule-variants. */
+  overlap?: rules.OverlapRule;
   /** "connection": bind rids to one connection, not the device credential (the R10-02 control). false: no binding. */
   bindRid?: "credential" | "connection" | false;
   /** "latest-only": v10's one row per record (the per-branch existence control). */
@@ -101,8 +102,8 @@ export interface SequencerOptions {
   auth: AuthProvider;
   /** Keyframes, archived change segments and bodies over 1 MB (R2 in production). Without it they stay in SQL. */
   blobs?: BlobStore;
-  /** The schema's timeline (which collection holds items, their field names). Default: Cardboard's. */
-  timeline?: TimelineConfig;
+  /** The schema's timeline (which collection holds items, their field names). Default: Cardboard's; null: none. */
+  timeline?: TimelineConfig | null;
   /** The field group a field belongs to (`"time"`). Default: the timeline's time group. */
   groupOf?: (collection: string, field: string) => string | undefined;
   /** Collections whose records' existence the sequencer tracks. Default: the timeline's lanes and items. */
@@ -138,13 +139,16 @@ export interface Sequencer {
   cancelShare(branchId: string): void;
   /** Create a branch the server sequences from seq `rootSeq` (a host's admin path, and tests). */
   createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }): Promise<void>;
-  /** Move rows older than `head - keep` into blob segments (§6.3 archive). Needs `blobs`. */
+  /**
+   * Move rows older than `head - keep` into gzip-compressed blob segments of `segmentRows` rows (§6.3, §18: keep
+   * 10,000, one segment per 10,000). Needs `blobs`. Each archived row costs one DELETE (a row written on a DO).
+   */
   archive(branchId: string, opts?: { keep?: number; segmentRows?: number }): Promise<number>;
   /**
    * Periodic work, for a DO alarm or a Node timer: archive every branch's old rows to blob segments. Resolves with
    * the rows moved and when to call again. A no-op without `blobs`.
    */
-  maintain(): Promise<{ archived: number; nextAt: number | null }>;
+  maintain(opts?: { keep?: number; segmentRows?: number }): Promise<{ archived: number; nextAt: number | null }>;
   readonly stats: SequencerStats;
   /** The tables (read access for hosts' admin tools and tests). */
   readonly tables: Tables;
@@ -160,18 +164,20 @@ const ridOf = (id: string) => {
 
 export function createSequencer(opts: SequencerOptions): Sequencer {
   const controls = opts.controls ?? {};
-  const tl = opts.timeline ?? CARDBOARD_TIMELINE;
+  // omitted: Cardboard's timeline; null: the editor's schema has none (spans and tracks are then never checked)
+  const timeline = opts.timeline === undefined ? CARDBOARD_TIMELINE : opts.timeline;
+  const tl = timeline ?? rules.NO_TIMELINE;
   const K = opts.maxBehind ?? rules.DEFAULT_MAX_BEHIND;
   const KF = opts.keyframeEvery ?? 64;
   const catchup = opts.catchupLimit ?? 1000;
   const maxInline = opts.maxInlineBytes ?? 1 << 20;
   const clock = opts.clock ?? Date.now;
-  const collections = opts.collections ?? [tl.lanes, tl.collection];
+  const collections = opts.collections ?? (timeline ? [tl.lanes, tl.collection] : []);
   const cfg: rules.RulesConfig = {
-    timeline: tl,
+    timeline,
     maxBehind: K,
-    keying: controls.keying ?? "v3-spans",
-    groupOf: opts.groupOf ?? rules.timeGroupOf(tl),
+    ...(controls.overlap ? { overlap: controls.overlap } : {}),
+    groupOf: opts.groupOf ?? rules.timeGroupOf(timeline),
     controls,
   };
   const tables = new Tables(opts.storage, { records: controls.records ?? "history" });
@@ -212,6 +218,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     head: () => tables.head(branchId),
     tail: (after) => tables.tail(branchId, after),
     record: (coll, id) => tables.record(branchId, coll, id),
+    records: (coll, ids) => tables.records(branchId, coll, ids),
   });
 
   // ---------------------------------------------------------------- the confirmed-id list (R10-01, bounded: R12-01)
@@ -264,8 +271,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (after + 1 < firstLive && opts.blobs) {
       for (const seg of tables.segmentsAfter(branchId, after)) {
         if (seg.lo >= firstLive - 1 || out.length >= limit) break;
-        const bytes = await opts.blobs.get(seg.blob);
-        if (!bytes) throw new Error(`segment ${seg.blob} is missing from the blob store`);
+        const stored = await opts.blobs.get(seg.blob);
+        if (!stored) throw new Error(`segment ${seg.blob} is missing from the blob store`);
+        const bytes = seg.blob.endsWith(".gz") ? await gunzip(stored) : stored;
         const raw = JSON.parse(dec.decode(bytes)) as Record<string, string | number | null>[];
         for (const r of raw) {
           if (Number(r.seq) <= after || out.length >= limit) continue;
@@ -287,13 +295,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     }
     return { seq: k.seq, stateHash: k.hash, doc: JSON.parse(docText ?? "null") as Doc };
   }
-  async function storeKeyframe(branchId: string, seq: number, stateHash: string, doc: Doc | null): Promise<void> {
+  // synchronous without a blob store (the DO-blob fallback keeps keyframes in SQL), so setup paths stay synchronous
+  function storeKeyframe(branchId: string, seq: number, stateHash: string, doc: Doc | null): void | Promise<void> {
     const body = JSON.stringify(doc);
-    if (opts.blobs) {
-      const key = `keyframes/${branchId}/${seq}`;
-      await opts.blobs.put(key, enc.encode(body), { contentType: "application/json" });
-      tables.putKeyframe(branchId, seq, stateHash, { blob: key });
-    } else tables.putKeyframe(branchId, seq, stateHash, { inline: body });
+    if (!opts.blobs) return tables.putKeyframe(branchId, seq, stateHash, { inline: body });
+    const key = `keyframes/${branchId}/${seq}`;
+    return opts.blobs.put(key, enc.encode(body), { contentType: "application/json" }).then(() => tables.putKeyframe(branchId, seq, stateHash, { blob: key }));
   }
 
   // ---------------------------------------------------------------- record writes for rows the server didn't judge
@@ -312,9 +319,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return [...out.values()];
   }
 
-  async function createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[] = [], adoptKey: string | null = null) {
+  function createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[] = [], adoptKey: string | null = null): void | Promise<void> {
     const root = init.rootSeq ?? 0;
-    if (init.doc0 !== null) await storeKeyframe(rec.id, root, init.stateHash ?? "", init.doc0);
+    const stored = init.doc0 !== null ? storeKeyframe(rec.id, root, init.stateHash ?? "", init.doc0) : undefined;
+    return stored ? stored.then(() => writeBranch(rec, init, rows, adoptKey)) : writeBranch(rec, init, rows, adoptKey);
+  }
+  function writeBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[], adoptKey: string | null): void {
+    const root = init.rootSeq ?? 0;
     tables.transaction(() => {
       tables.putBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey });
       const doc = init.doc0 as Record<string, unknown> | null;
@@ -417,22 +428,32 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return reject(c, m.branchId, ch.id, "behind", m.epoch, list ? { confirmed: list } : {});
       }
       const row: Row = { ...ch, branchId: m.branchId, rebase: ch.rebase ?? 0, seq: 0 };
-      const bodyText = Tables.body(row);
-      let body: { inline: string } | { blob: string } = { inline: bodyText };
-      if (bodyText.length > maxInline) {
-        if (!opts.blobs) return reject(c, m.branchId, ch.id, "too large", m.epoch);
-        const key = `changes/${m.branchId}/${ch.hash || ch.id}`;
-        await opts.blobs.put(key, enc.encode(bodyText), { contentType: "application/json", ifAbsent: true });
-        body = { blob: key };
-      }
-      const verdict = tables.transaction(() => {
-        const v = rules.evaluatePush(view(m.branchId), ch, cfg);
-        if (v.kind === "accept") {
+      // judge first: a rejected push never pays for serializing its body. A body over the inline limit goes to the
+      // blob store (async), and the push is judged again afterwards, since other pushes may have landed meanwhile.
+      let blobKey: string | null = null;
+      const judge = () =>
+        tables.transaction(() => {
+          const v = rules.evaluatePush(view(m.branchId), ch, cfg);
+          if (v.kind !== "accept") return v;
+          let body: { inline: string } | { blob: string };
+          if (blobKey) body = { blob: blobKey };
+          else {
+            const text = Tables.body(row);
+            if (text.length > maxInline) return { kind: "large" as const, text };
+            body = { inline: text };
+          }
           row.seq = tables.head(m.branchId) + 1;
           tables.append(m.branchId, row, { paths: rules.storedPaths(ch), structural: v.structural }, v.records, body);
-        }
-        return v;
-      });
+          return v;
+        });
+      let verdict = judge();
+      if (verdict.kind === "large") {
+        if (!opts.blobs) return reject(c, m.branchId, ch.id, "too large", m.epoch);
+        blobKey = `changes/${m.branchId}/${ch.hash || ch.id}`;
+        await opts.blobs.put(blobKey, enc.encode(verdict.text), { contentType: "application/json", ifAbsent: true });
+        verdict = judge();
+        if (verdict.kind === "large") throw new Error("unreachable: a blob body is never inline");
+      }
       if (verdict.kind === "duplicate") {
         stats.duplicates++;
         emit({ type: "duplicate", branchId: m.branchId, id: ch.id, seq: verdict.seq, withdrawn: verdict.withdrawn });
@@ -545,7 +566,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const parent = tables.branch(m.from);
     if (!parent) return c.send({ type: "unknownBranch", branchId: m.from });
     if (!(Number.isInteger(m.seq) && m.seq >= parent.root && m.seq <= tables.head(m.from))) return c.send({ type: "error", reason: `fork point ${m.seq} is outside ${m.from}` });
-    if (!tables.branch(m.branchId)) await createBranch(m.rec, { doc0: null, forkOf: { branchId: m.from, seq: m.seq } });
+    if (!tables.branch(m.branchId)) createBranch(m.rec, { doc0: null, forkOf: { branchId: m.from, seq: m.seq } });
     c.send({ type: "forked", branchId: m.branchId, from: m.from, seq: m.seq });
   }
 
@@ -599,12 +620,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 
   // one message at a time per project, even across awaits on the blob store
   let queue: Promise<void> = Promise.resolve();
+  let busy = 0;
   return {
     handle(conn, msg) {
       const c = conn as HostConnection;
       if (!conns.has(c.id)) attach(c);
+      busy++;
       const run = queue.then(() => process(c, msg));
-      queue = run.catch(() => {});
+      queue = run.catch(() => {}).then(() => void busy--);
       return run.catch((e: unknown) => {
         c.send({ type: "error", reason: `internal: ${e instanceof Error ? e.message : String(e)}` });
       });
@@ -617,11 +640,16 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       tables.dropBranch(branchId);
     },
     createBranch: (rec, init) => {
+      // without a blob store this is synchronous, so a host (or a simulation) can set a branch up before any message
+      if (!opts.blobs && !busy) {
+        createBranch(rec, init);
+        return Promise.resolve();
+      }
       const run = queue.then(() => createBranch(rec, init));
       queue = run.catch(() => {});
       return run;
     },
-    async archive(branchId, { keep = 4 * K, segmentRows = 1024 } = {}) {
+    async archive(branchId, { keep = ARCHIVE_KEEP, segmentRows = ARCHIVE_SEGMENT } = {}) {
       if (!opts.blobs) throw new Error("archive needs a blob store");
       const blobs = opts.blobs;
       const run = queue.then(async () => {
@@ -633,8 +661,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           const lo = first - 1, hi = lo + segmentRows;
           const raw = tables.rawRange(branchId, lo, hi);
           const json = raw.map((r) => ({ ...r, ops: r.ops instanceof Uint8Array ? dec.decode(r.ops) : r.ops }));
-          const key = `segments/${branchId}/${hi}`;
-          await blobs.put(key, enc.encode(JSON.stringify(json)), { contentType: "application/json" });
+          const key = `segments/${branchId}/${hi}.json.gz`;
+          await blobs.put(key, await gzip(enc.encode(JSON.stringify(json))), { contentType: "application/gzip" });
           const ids = raw.map((r) => [Number(r.seq), String(r.id), Number(r.flags ?? 0) & (FLAG_STRUCTURAL | FLAG_WITHDRAWN), Number(r.k ?? 0)] as [number, string, number, number]);
           tables.transaction(() => {
             tables.putSegment(branchId, lo, hi, key, ids);
@@ -646,10 +674,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       queue = run.then(() => {}, () => {});
       return run;
     },
-    async maintain() {
+    async maintain(o = {}) {
       if (!opts.blobs) return { archived: 0, nextAt: null };
       let archived = 0;
-      for (const id of tables.branchIds()) if (!tables.branch(id)?.tracking) archived += await this.archive(id);
+      for (const id of tables.branchIds()) if (!tables.branch(id)?.tracking) archived += await this.archive(id, o);
       return { archived, nextAt: clock() + MAINTAIN_EVERY_MS };
     },
     stats,
@@ -658,5 +686,18 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 }
 
 const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
+/** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
+const ARCHIVE_KEEP = 10_000;
+const ARCHIVE_SEGMENT = 10_000;
+
+// gzip with the platform's CompressionStream (Workers, browsers and Node all have it)
+async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
 
 export type { AuthContext, Change, StoredBranch };
