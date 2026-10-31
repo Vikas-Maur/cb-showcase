@@ -36,7 +36,16 @@ export class EngineThread {
       this.waiting.delete(m.id);
       if (m.error) p.reject(Object.assign(new Error(m.error.message), { code: m.error.code })); else p.resolve(m.result);
     });
-    w.on("error", (e) => { for (const p of this.waiting.values()) p.reject(e); this.waiting.clear(); });
+    w.on("error", (e) => this.fail(e));
+    // a thread that exits without an error (or after one) leaves nobody to answer: fail what waits, and what comes
+    w.on("exit", (code) => this.fail(Object.assign(new Error(`the engine thread exited (code ${code})`), { code: "ENGINE_EXIT" })));
+  }
+
+  private dead: Error | null = null;
+  private fail(e: Error): void {
+    this.dead ??= e;
+    for (const p of this.waiting.values()) p.reject(e);
+    this.waiting.clear();
   }
 
   /** Start the thread; resolves once it holds the lease (asking a live helper to hand over first). */
@@ -48,6 +57,7 @@ export class EngineThread {
   }
 
   call<T = any>(method: string, params: unknown): Promise<T> {
+    if (this.dead) return Promise.reject(this.dead);
     return new Promise((resolve, reject) => {
       const id = this.next++;
       this.waiting.set(id, { resolve, reject });

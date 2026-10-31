@@ -17,7 +17,7 @@ import { spawnHelper } from "./helper.ts";
 import { Lease } from "./lease.ts";
 import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
-import { runWrite, WAIT_MS } from "./writes.ts";
+import { destCut, IDEMPOTENT, runWrite, WAIT_MS } from "./writes.ts";
 import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
 import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
@@ -106,12 +106,14 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
       const req: WriteRequest = { id: o.id ?? nextChangeId(), actor: o.actor ?? actor, op, waitMs: o.waitMs ?? WAIT_MS };
       const r = await submit("carton.commit", req, {
         lease,
-        needsHelper: () => needsHelper((op as { cut?: string }).cut),
+        // route by the cut the write changes (a fold's is `into`): a shared one needs the pusher
+        needsHelper: () => needsHelper(destCut(op)),
+        idempotent: IDEMPOTENT.has(op.kind),
         spawnHelper: (seen) => void spawnHelper({ dbPath, seen, factory, config: { projectDir: opts.projectDir, projectId, dataDir: opts.dataDir, ...opts.helperConfig } }),
       });
       if (r.via === "holder") return r.result as CbResult;
       if (r.via === "in-process") return runWrite(carton, req);
-      return { status: "error", error: r.error, notices: [] };
+      return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
     },
     async close() {
       await carton.close();

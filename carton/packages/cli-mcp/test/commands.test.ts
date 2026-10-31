@@ -152,6 +152,7 @@ test("opsForChoice: leaf, field group, whole record", () => {
   assert.deepEqual(opsForChoice({ kind: "group", path: "timelineItems/c1/#time", base: null, ours: null, theirs: null }, { startTime: 1, endTime: 2 }), [
     { op: "set", path: ["timelineItems", "c1", "startTime"], value: 1 }, { op: "set", path: ["timelineItems", "c1", "endTime"], value: 2 }]);
   assert.deepEqual(opsForChoice({ kind: "record", path: "timelineItems/c~19", base: null, ours: null, theirs: null }, undefined), [{ op: "remove", path: ["timelineItems", "c/9"] }]);
+  assert.deepEqual(opsForChoice({ kind: "record", path: "timelineItems/c1", base: null, ours: { id: "c1" }, theirs: null }, null), [{ op: "remove", path: ["timelineItems", "c1"] }], "core's deleted side is null");
 });
 
 test("the cb result contract: confirmed@seq / pending / conflicts as JSON plus short text; exit codes", () => {

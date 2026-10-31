@@ -9,7 +9,36 @@
 import { COMMANDS } from "./commands.ts";
 import type { CbContext, CommandSpec, Output } from "./commands.ts";
 import { resolveVersion } from "./refs.ts";
-import { resultText, exitCodeOf } from "./format.ts";
+import { resultText, exitCodeOf, cardLine } from "./format.ts";
+import { apply, describe, diff, fork, merge3 } from "@carton/core";
+import type { Carton, ConflictCard, Doc, Op, StateRef } from "@carton/core";
+
+/**
+ * What saving `doc` (or `ops`) made on `base` would do now, writing nothing: the 3-way merge against head that a commit
+ * runs (base → head, base → proposal), its changes in plain words, its cards, and the records that would break a hard
+ * validator (they would block with a card).
+ */
+export async function dryRun(carton: Carton, o: { doc?: Doc; ops?: Op[]; base?: StateRef | string }): Promise<{ changes: string[]; ops: number; conflicts: ConflictCard[] }> {
+  const head = await carton.head();
+  const baseDoc = o.base ? await carton.checkout(o.base) : head.doc;
+  const proposed = o.doc ?? apply(fork(baseDoc, carton.schema), o.ops ?? [], carton.schema);
+  const m = merge3(baseDoc, head.doc, proposed, carton.schema);
+  const ops = diff(head.doc, m.doc, carton.schema);
+  const conflicts = [...m.conflicts];
+  const hard = carton.schema.hard;
+  if (hard) {
+    for (const [coll, spec] of Object.entries(carton.schema.collections)) {
+      const before = new Map(((head.doc[coll] as Record<string, unknown>[] | undefined) ?? []).map((r) => [String(r[spec.key]), JSON.stringify(r)]));
+      for (const r of (m.doc[coll] as Record<string, unknown>[] | undefined) ?? []) {
+        const id = String(r[spec.key]);
+        if (before.get(id) === JSON.stringify(r)) continue; // only what this save changes
+        const errs = hard(coll, r, m.doc);
+        if (errs.length && !conflicts.some((c) => c.path === `${coll}/${id}`)) conflicts.push({ kind: "invalid", path: `${coll}/${id}`, base: undefined, ours: undefined, theirs: r, reason: errs.join("; ") });
+      }
+    }
+  }
+  return { changes: describe(ops, head.doc, carton.schema), ops: ops.length, conflicts };
+}
 
 type Field = { type: "string" | "integer" | "boolean" | "strings" | "object" | "array"; description: string; optional?: boolean; enum?: string[] };
 export type Shape = Record<string, Field>;
@@ -40,7 +69,7 @@ export const MCP_TOOLS: readonly McpToolSpec[] = [
   },
   {
     name: "check_timeline",
-    description: "Report what saving a timeline document (or ops) would change and which conflict cards it would raise, without writing. `base` is the header rev it was printed from.",
+    description: "Report what saving a timeline document (or ops) would change and which conflict cards it would raise, without writing. `base` is the header rev it was made from (default: the current head).",
     shape: {
       doc: { type: "object", description: "the edited document", optional: true },
       ops: { type: "array", description: "or the ops", optional: true },
@@ -49,15 +78,10 @@ export const MCP_TOOLS: readonly McpToolSpec[] = [
     readOnly: true,
     async run(ctx, a) {
       const { carton } = ctx.project;
-      const base = a.base ? await resolveVersion(carton, String(a.base)) : undefined;
-      const r: any = await (carton as any).check?.({ doc: a.doc, ops: a.ops, base, author: ctx.actor }) ?? null;
-      if (!r) {
-        // no dry-run API on this Carton: compare the edit against its base instead
-        const d = await carton.diff(base ?? (await carton.head()).ref);
-        return { json: { applied: false, changes: d.describe }, text: d.describe.join("\n") || "No changes" };
-      }
-      const cards = r.cards ?? r.conflicts ?? [];
-      return { json: { applied: false, ...r }, text: [...(r.describe ?? []).map((l: string) => `- ${l}`), ...(cards.length ? [`Would raise ${cards.length} card${cards.length === 1 ? "" : "s"}`] : [])].join("\n") || "No changes" };
+      if (a.doc === undefined && a.ops === undefined) return { json: { status: "error", error: "pass doc or ops" }, text: "pass doc or ops", exitCode: 2 };
+      const r = await dryRun(carton, { doc: a.doc as Doc | undefined, ops: a.ops as Op[] | undefined, base: a.base ? await resolveVersion(carton, String(a.base)) : undefined });
+      const lines = [...r.changes.map((l) => `- ${l}`), ...(r.conflicts.length ? [`Would raise ${r.conflicts.length} card${r.conflicts.length === 1 ? "" : "s"}:`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i)}`)] : [])];
+      return { json: { applied: false, ...r }, text: lines.join("\n") || "No changes", exitCode: r.conflicts.some((c) => c.kind === "invalid") ? 1 : 0 };
     },
   },
   {
@@ -96,9 +120,10 @@ export const MCP_TOOLS: readonly McpToolSpec[] = [
       into: { type: "string", description: "fold into this cut instead of the current one", optional: true },
       check: { type: "boolean", description: "dry run", optional: true },
       reject: { type: "strings", description: "record paths to keep out, e.g. timelineItems/c3", optional: true },
+      keep: { type: "string", description: "decide every card one way: mine (this cut's value) or theirs (the folded cut's)", optional: true, enum: ["mine", "theirs"] },
     },
     readOnly: false,
-    run: (ctx, a) => spec("fold").run(ctx, { cut: a.cut, into: a.into, check: a.check, reject: a.reject }),
+    run: (ctx, a) => spec("fold").run(ctx, { cut: a.cut, into: a.into, check: a.check, reject: a.reject, keep: a.keep }),
   },
   {
     name: "timeline_credits",

@@ -48,12 +48,17 @@ export const preToolUsePrefixer = {
 } as const;
 
 /** Claude Code's PreToolUse hook output for a rewritten command. */
+/**
+ * Claude Code's PreToolUse hook output for a rewritten command. It carries the new input only: attribution must never
+ * grant a permission, so no `permissionDecision` is given and the command goes through the user's normal permission
+ * rules (a command that needs approval still asks). [Needs a check on a real Claude Code: that `updatedInput` applies
+ * without a decision. If it doesn't, the call simply runs unprefixed and the actor falls back to the environment.]
+ */
 export function preToolUseOutput(input: HookInput, r: PrefixResult | null): object {
   if (!r) return {};
   return {
     hookSpecificOutput: {
       hookEventName: "PreToolUse",
-      permissionDecision: "allow",
       updatedInput: { ...(input.tool_input ?? {}), command: r.command },
       additionalContext: r.note,
     },

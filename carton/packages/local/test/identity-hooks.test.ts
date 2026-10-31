@@ -49,6 +49,7 @@ test("PreToolUse prefixer: only commands that run cb, one export in front, the s
   assert.equal(r.command, "export CARDBOARD_ACTOR='director/chat9/t3/sub-editor-a1'; cb source apply Demo");
   const out = preToolUseOutput({ tool_input: { command: "cb x", description: "d" } }, prefixCommand({ tool_input: { command: "cb x" } }, turn)) as any;
   assert.equal(out.hookSpecificOutput.updatedInput.description, "d", "other tool input fields are kept");
+  assert.equal(out.hookSpecificOutput.permissionDecision, undefined, "attribution never grants a permission: the user's rules still apply");
   // the prefixed command really sets the variable for every cb in a compound command
   const env = execFileSync("sh", ["-c", prefixCommand({ tool_input: { command: "true && sh -c 'echo $CARDBOARD_ACTOR' # cb" } }, turn)!.command], { encoding: "utf8" });
   assert.equal(env.trim(), "director/chat9/t3");

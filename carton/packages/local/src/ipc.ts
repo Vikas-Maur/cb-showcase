@@ -15,7 +15,8 @@ import { dirname } from "node:path";
 
 /** The listen/connect address for a socket path: the path itself, or on Windows the named pipe derived from it. */
 export function pipeName(path: string, platform: string = process.platform): string {
-  if (platform !== "win32" || path.startsWith("\\\\")) return path;
+  // already a pipe (`\\.\pipe\…` or `\\?\pipe\…`); a UNC path (`\\server\share\…`) is a file path like any other
+  if (platform !== "win32" || /^\\\\[.?]\\pipe\\/i.test(path)) return path;
   return "\\\\.\\pipe\\cardboard-" + createHash("sha256").update(path.toLowerCase()).digest("hex").slice(0, 16);
 }
 export const tokenPath = (socketPath: string): string => `${socketPath}.token`;

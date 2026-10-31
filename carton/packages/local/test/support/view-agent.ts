@@ -30,7 +30,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   writeFileSync(tmp, head + JSON.stringify(body, null, 1) + "\n");
   renameSync(tmp, file);
   // read the sidecar (never the view) until it describes this save
-  const end = Date.now() + 10000;
+  const end = Date.now() + 60000; // a loaded box can take a while; the sidecar is what is checked
   let s = before;
   while ((s = existsSync(status) ? readFileSync(status, "utf8") : "") === before && Date.now() < end) await new Promise((r) => setTimeout(r, 10));
   process.stdout.write(JSON.stringify({ status: s ? JSON.parse(s) : null }) + "\n");

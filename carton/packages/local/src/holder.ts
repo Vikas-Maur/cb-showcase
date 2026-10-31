@@ -56,12 +56,23 @@ export async function ping(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise
   }
 }
 
-/** The live holder, or null. Live = the row isn't expired and its socket answers a ping with the row's nonce. */
-export async function liveHolder(lease: Lease, now = Date.now()): Promise<LeaseRow | null> {
+/**
+ * Look at the lease: the live holder, or null, and the nonce that was observed (live or not). Live = the row isn't
+ * expired and its socket answers a ping with the row's nonce. A taker must take over from exactly the nonce whose
+ * holder it saw fail, never from one it reads later (that one may be a healthy holder another caller just started).
+ */
+export async function probeHolder(lease: Lease, now = Date.now()): Promise<{ live: LeaseRow | null; seen: string | null; fresh: boolean }> {
   const row = await lease.read();
-  if (!row || now - row.heartbeat > LEASE_EXPIRY_MS) return null;
+  if (!row) return { live: null, seen: (await lease.nonce()) ?? null, fresh: false };
+  if (now - row.heartbeat > LEASE_EXPIRY_MS) return { live: null, seen: row.nonce, fresh: false };
   const r = await ping(row.socketPath);
-  return r?.nonce === row.nonce ? row : null;
+  // fresh: a holder beat within 6 s, even if it missed this ping (busy, or dead a moment ago)
+  return { live: r?.nonce === row.nonce ? row : null, seen: row.nonce, fresh: true };
+}
+
+/** The live holder, or null. */
+export async function liveHolder(lease: Lease, now = Date.now()): Promise<LeaseRow | null> {
+  return (await probeHolder(lease, now)).live;
 }
 
 export class Holder {
