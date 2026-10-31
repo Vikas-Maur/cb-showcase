@@ -110,3 +110,17 @@ test("cancel drops a queued request and stops a running one once nobody waits", 
   await assert.rejects(running, { name: "AbortError" });
   assert.equal(sched.pending, 0);
 });
+
+test("cancel right after pause still cancels a running background hash (review round 1, finding 8)", async () => {
+  const h = harness();
+  const sched = new HashScheduler({ hash: h.hash, hasher: nodeHasher });
+  const p = sched.request(T("bg"), "background");
+  await tick();
+  sched.pause();
+  sched.cancel(T("bg"));
+  await assert.rejects(p, { name: "AbortError" });
+  sched.resume();
+  await tick();
+  assert.equal(h.started.length, 1, "not started again after resume");
+  assert.equal(sched.pending, 0);
+});

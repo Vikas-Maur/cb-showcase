@@ -167,3 +167,16 @@ test("an open upload is dropped when someone else completed the same object", as
   assert.equal(mem.uploads.size, 0);
   assert.equal(await state.load(mediaKey(manifest.hash)), null);
 });
+
+test("two callers resuming the same upload both succeed (review round 1, finding 5)", async () => {
+  const { manifest, source, data } = await setup(12 * MiB, 12);
+  const mem = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  await assert.rejects(uploadMedia({ store: new FaultyStore(mem, { dropUploadAfterBytes: 5 * MiB }), hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 }));
+  // Both resume from the same saved state; whichever completes second finds the upload gone.
+  const o = { store: mem, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 };
+  const [a, b] = await Promise.all([uploadMedia(o), uploadMedia(o)]);
+  assert.ok(a.hash === manifest.hash && b.hash === manifest.hash);
+  assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+  assert.equal(await state.load(mediaKey(manifest.hash)), null);
+});

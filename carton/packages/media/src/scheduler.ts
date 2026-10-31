@@ -57,6 +57,8 @@ interface Entry {
   ac?: AbortController;
   /** Callers still interested; cancel() drops one. */
   waiters: number;
+  /** Nobody waits any more: its work stops, even if a pause asked to requeue it. */
+  cancelled?: boolean;
 }
 
 class Requeue extends Error {}
@@ -126,6 +128,8 @@ export class HashScheduler {
       this.#byId.delete(id);
       e.reject(err);
     } else {
+      // A pause may already have aborted it with "requeue"; the flag wins over that reason.
+      e.cancelled = true;
       e.ac?.abort(err);
     }
   }
@@ -167,7 +171,10 @@ export class HashScheduler {
       this.#byId.delete(e.id);
       e.resolve(m);
     } catch (err) {
-      if (ac.signal.reason instanceof Requeue) {
+      if (e.cancelled) {
+        this.#byId.delete(e.id);
+        e.reject(new DOMException("hash request cancelled", "AbortError"));
+      } else if (ac.signal.reason instanceof Requeue) {
         e.ac = undefined;
         this.#queue.unshift(e);
       } else {

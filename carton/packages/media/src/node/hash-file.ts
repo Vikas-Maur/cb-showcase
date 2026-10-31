@@ -64,7 +64,10 @@ parentPort.on("message", (job) => {
 interface Job {
   id: number;
   remaining: number;
+  /** A worker reported the file changed or couldn't be read. */
   error?: string;
+  /** The pool lost a worker or was closed under the job. */
+  stopped?: string;
   resolve: () => void;
 }
 
@@ -85,15 +88,15 @@ class HashPool {
         if (!m.ok && !job.error) job.error = m.error;
         if (--job.remaining === 0) job.resolve();
       });
-      w.on("error", (e) => {
-        // A crashed worker fails the jobs it was part of; the next job starts a fresh one.
+      // A worker that crashes or is terminated (close(), the idle timeout) fails the jobs running then; the next job
+      // starts a fresh worker. Without this, a job waiting on a dead worker would never settle.
+      const lost = (why: string) => {
         const i = this.#workers.indexOf(w);
         if (i >= 0) this.#workers.splice(i, 1);
-        for (const job of this.#jobs.values()) {
-          job.error ??= String(e);
-          job.resolve();
-        }
-      });
+        this.#stopAll(why);
+      };
+      w.on("error", (e) => lost(`a hash worker failed: ${String(e)}`));
+      w.on("exit", () => lost("the hash workers were stopped"));
       this.#workers.push(w);
     }
   }
@@ -123,17 +126,26 @@ class HashPool {
         this.#jobs.set(id, { id, remaining: n, resolve });
         for (let i = 0; i < n; i++) this.#workers[i].postMessage({ id, path, size, segment: SEGMENT, leaf: LEAF_SIZE, digests, shared });
       });
-      const err = this.#jobs.get(id)?.error;
-      if (err) throw new SourceChangedError(err);
+      const job = this.#jobs.get(id);
+      if (job?.stopped) throw new Error(`hashing ${path} stopped: ${job.stopped}`);
+      if (job?.error) throw new SourceChangedError(job.error);
     } finally {
       this.#jobs.delete(id);
       if (--this.#busy === 0) this.#idleSoon();
     }
   }
 
+  #stopAll(why: string): void {
+    for (const job of this.#jobs.values()) {
+      job.stopped ??= why;
+      job.resolve();
+    }
+  }
+
   close(): void {
     clearTimeout(this.#idle);
     for (const w of this.#workers.splice(0)) void w.terminate();
+    this.#stopAll("the hash workers were closed");
   }
 }
 

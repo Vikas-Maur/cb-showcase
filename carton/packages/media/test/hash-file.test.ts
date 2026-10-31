@@ -67,3 +67,21 @@ test("fileSource reads ranges and reports short reads at the end", async () => {
     await src.close();
   }
 });
+
+test("closing the workers fails a running hash instead of leaving it pending (review round 1, finding 7)", async () => {
+  const path = join(s.dir, "closing");
+  writeFileSync(path, xorshiftBytes(160 * MiB, 11));
+  let ticks = 0;
+  let running!: () => void;
+  const started = new Promise<void>((r) => (running = r));
+  // The first progress tick comes from the pool's timer, so the job is in a worker by then.
+  const p = hashFile(path, { workers: 1, onProgress: (b) => (ticks++, b < 160 * MiB && running()) });
+  await Promise.race([started, p]);
+  closeHashWorkers();
+  const settled = await Promise.race([p.then(() => "resolved", () => "rejected"), new Promise((r) => setTimeout(() => r("pending"), 5000))]);
+  assert.notEqual(settled, "pending");
+  const before = ticks;
+  await new Promise((r) => setTimeout(r, 250));
+  assert.equal(ticks, before, "its progress timer stopped too");
+  assert.equal((await hashFile(path)).size, 160 * MiB, "a new pool starts on the next hash");
+});

@@ -291,8 +291,16 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
     const parts = [...done.values()].sort((a, b) => a.partNumber - b.partNumber);
     await withRetries(o, () => upload.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag }))));
   } catch (e) {
-    // The store dropped the upload under us: forget it, so the next attempt starts over rather than failing again.
-    if (uploadGone(e)) await states.delete(key);
+    if (uploadGone(e)) {
+      // The upload is gone. Either another caller resuming the same saved upload completed it first (the object is
+      // there: success), or the store dropped it (forget it, so the next attempt starts over instead of failing again).
+      await states.delete(key);
+      const done = await store.head(key).catch(() => null);
+      if (done && done.size === m.size) {
+        result.deduped = true;
+        return result;
+      }
+    }
     throw e;
   }
   await states.delete(key);
