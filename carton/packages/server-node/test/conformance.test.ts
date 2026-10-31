@@ -6,7 +6,7 @@ import { nodeSqliteStorage, type NodeSqliteStorage } from "../src/index.ts";
 import { nodeFixture, inProcessFixture } from "./fixture.ts";
 import { scratch } from "./scratch.ts";
 
-sequencerHostSuite("server-node", () => nodeFixture());
+sequencerHostSuite("server-node", () => nodeFixture({ idleTimeoutMs: 2000 }));
 transportSuite("server-node (WebSocket)", () => nodeFixture());
 sequencerHostSuite("in-process (@carton/server)", inProcessFixture);
 transportSuite("in-process", inProcessFixture);

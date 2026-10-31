@@ -14,6 +14,12 @@ export interface HostFixture {
   auth: AuthProvider;
   /** A token for a fresh device credential with the given role. */
   token(role?: "owner" | "editor" | "viewer"): Promise<string>;
+  /** Within this, a connection that goes silent (no close, no keepalive, no pong) is dropped and its presence leaves
+   * its peers. The suite's silent-client test runs only when it is set; a host's default is minutes. */
+  presenceTimeoutMs?: number;
+  /** Drop the host's memory but keep its connections, as a Durable Object's hibernation does: what the host needs
+   * after it (who a connection shows, for its leaves) must come back from what it kept with each socket. */
+  hibernate?(): Promise<void>;
   /** Restart the host on the same storage (hibernation / process restart). */
   restart?(): Promise<void>;
   close(): Promise<void>;
@@ -144,4 +150,5 @@ export function sequencerStorageSuite(name: string, make: () => Promise<Sequence
 export { sequencerHostSuite, transportSuite, HOST_SUITE_DOC } from "./host-suite.ts";
 export { httpApiSuite, type HttpFixture } from "./http-suite.ts";
 export { helloAtSchema } from "./schema.ts";
+export { rawWebSocket, type RawConnection } from "./raw-ws.ts";
 export { liveSyncSuite } from "./live-suite.ts";

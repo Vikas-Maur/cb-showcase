@@ -96,7 +96,11 @@ if (process.argv[2] === "--run") {
   } finally {
     await stop();
   }
-  const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
+  // the middle run, or the mean of the middle two for an even count
+  const median = (xs: number[]) => {
+    const s = [...xs].sort((a, b) => a - b), m = s.length >> 1;
+    return s.length % 2 ? s[m]! : +((s[m - 1]! + s[m]!) / 2).toFixed(1);
+  };
   for (const mode of ["fetch", "node"]) {
     const rs = results.filter((r) => r.mode === mode);
     const ups = rs.map((r) => r.uploadMBps), downs = rs.map((r) => r.downloadMBps);

@@ -17,6 +17,7 @@ export {
   type SequencerEvent,
   type SequencerStats,
   type ConnectionState,
+  type ShownPresence,
   type HostConnection,
 } from "./sequencer.ts";
 export { DDL, Tables, type Row, type StoredBranch } from "./tables.ts";

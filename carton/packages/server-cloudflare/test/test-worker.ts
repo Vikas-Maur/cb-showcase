@@ -2,14 +2,46 @@
 //   /__test/storage-checks       runs the SequencerStorage checks on a fresh Durable Object's ctx.storage.sql
 //   /__test/vault/<name>/<path>  forwards to that project's BlobVault, so the Node-side DoBlobStore is the client
 //   /__test/stats/<project>      the room's row counters and database size
-import worker, { ProjectRoom, BlobVault } from "../src/worker.ts";
+import worker, { ProjectRoom as Room, BlobVault } from "../src/worker.ts";
 import { doSqlStorage } from "../src/storage.ts";
 import { storageChecks } from "../../conformance/src/hosts/storage-checks.ts";
 import { AUTH_HEADER, PROJECT_HEADER } from "../src/room.ts";
 import type { DurableObjectNamespace, DurableObjectState } from "../src/cf.ts";
 import type { Env } from "../src/env.ts";
 
-export { ProjectRoom, BlobVault };
+export { BlobVault };
+
+// ProjectRoom as deployed, plus `…/__wake`: a new instance over the same state, as after hibernation (its memory
+// gone, its sockets back with their attachments). Everything else goes to the current instance.
+export class ProjectRoom {
+  readonly #ctx: DurableObjectState;
+  readonly #env: Env;
+  #room: Room;
+  constructor(ctx: DurableObjectState, env: Env) {
+    this.#ctx = ctx;
+    this.#env = env;
+    this.#room = new Room(ctx, env);
+  }
+  fetch(req: Request): Promise<Response> {
+    if (new URL(req.url).pathname.endsWith("/__wake")) {
+      this.#room = new Room(this.#ctx, this.#env);
+      return Promise.resolve(new Response(null, { status: 204 }));
+    }
+    return this.#room.fetch(req);
+  }
+  webSocketMessage(...a: Parameters<Room["webSocketMessage"]>) {
+    return this.#room.webSocketMessage(...a);
+  }
+  webSocketClose(...a: Parameters<Room["webSocketClose"]>) {
+    return this.#room.webSocketClose(...a);
+  }
+  webSocketError(...a: Parameters<Room["webSocketError"]>) {
+    return this.#room.webSocketError(...a);
+  }
+  alarm() {
+    return this.#room.alarm();
+  }
+}
 
 export class StorageProbe {
   readonly #ctx: DurableObjectState;
@@ -51,6 +83,12 @@ export default {
       const p = decodeURIComponent(al[1]!);
       const auth = { account: "test", credential: "test/alarm", role: "owner", projectId: p, expires: Date.now() + 60_000 };
       return env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(p)).fetch(new Request(`https://room/${p}/alarm`, { headers: { [PROJECT_HEADER]: p, [AUTH_HEADER]: JSON.stringify(auth) } }));
+    }
+    const wk = /^\/__test\/wake\/([^/]+)$/.exec(url.pathname);
+    if (wk) {
+      const p = decodeURIComponent(wk[1]!);
+      const auth = { account: "test", credential: "test/wake", role: "owner", projectId: p, expires: Date.now() + 60_000 };
+      return env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(p)).fetch(new Request(`https://room/${p}/__wake`, { headers: { [PROJECT_HEADER]: p, [AUTH_HEADER]: JSON.stringify(auth) } }));
     }
     const st = /^\/__test\/stats\/([^/]+)$/.exec(url.pathname);
     if (st) {
