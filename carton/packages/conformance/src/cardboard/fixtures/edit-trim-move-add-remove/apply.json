@@ -1,0 +1,57 @@
+{
+  "applied": true,
+  "ops": [
+    {
+      "op": "addItem",
+      "item": {
+        "id": "f7d840ef-aab3-4c3b-928f-999fea25241e",
+        "trackId": "60abc765-a938-4a7f-8031-944fda60fff4",
+        "type": "text",
+        "startTime": 4,
+        "endTime": 5,
+        "trimStart": 0,
+        "trimEnd": 1,
+        "name": "End card",
+        "textContent": "Carton end card",
+        "fontSize": 64,
+        "color": "#ffffff",
+        "mediaItemId": "906f7ec1-1149-435d-8475-9396c00cd680"
+      }
+    },
+    {
+      "op": "updateItem",
+      "id": "e37d3bde-543a-4837-9bbc-d16aefb9d7ab",
+      "changes": {
+        "startTime": 2.75,
+        "trimStart": 0.25
+      }
+    },
+    {
+      "op": "updateItem",
+      "id": "beb8874f-a8e4-4ebc-8cba-1d5a74195d87",
+      "changes": {
+        "startTime": 0.5,
+        "endTime": 3.5
+      }
+    },
+    {
+      "op": "removeItems",
+      "ids": [
+        "80ed9370-6f15-4277-a455-ba6955d73b64"
+      ]
+    }
+  ],
+  "conflicts": [],
+  "diagnostics": [],
+  "ingested": [],
+  "wouldIngest": [],
+  "matched": [],
+  "importedLuts": [],
+  "wouldImportLuts": [],
+  "rev": 1793425011253,
+  "summary": {
+    "errors": 0,
+    "warnings": 0,
+    "ops": 4
+  }
+}
