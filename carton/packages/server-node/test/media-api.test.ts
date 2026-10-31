@@ -227,6 +227,23 @@ test("put with ifAbsent is one create-only PUT: an existing object stays, and it
   assert.equal((await client.put("m/new", fill(7, 3), { ifAbsent: true })).size, 7);
 });
 
+// web-demo's report: a signed PUT kept only the content type, so the client's sha256 never reached the store.
+test("put with sha256 carries it through the signed PUT: the host refuses bytes that don't match, and head reports it", async () => {
+  const { h, token, media } = await host();
+  const bytes = fill(5000, 4);
+  const sha256 = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex");
+  assert.equal((await media.put("px/poster", bytes, { contentType: "image/jpeg", sha256 })).sha256, sha256);
+  assert.equal((await media.head("px/poster"))?.sha256, sha256, "the store kept the digest");
+  const wrong = sha256.replace(/^./, (c) => (c === "0" ? "1" : "0"));
+  await assert.rejects(media.put("px/other", bytes, { sha256: wrong }), /400/);
+  assert.equal(await media.head("px/other"), null, "nothing was written");
+  // a raw signed PUT: the header must be a digest at all
+  const { url } = (await (await fetch(`${h.httpUrl}/api/projects/p/blobs/sign`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ key: "px/raw", method: "PUT" }) })).json()) as { url: string };
+  assert.equal((await fetch(url, { method: "PUT", body: bytes, headers: { "x-carton-sha256": "not-hex" } })).status, 400);
+  assert.equal((await fetch(url, { method: "PUT", body: bytes, headers: { "x-carton-sha256": sha256.toUpperCase() } })).status, 200, "hex in either case");
+  assert.equal((await media.head("px/raw"))?.sha256, sha256);
+});
+
 // Round 4 finding 2: the media lock is per physical scope. A host whose store pauses the repair's delete of `prefix`.
 async function pausedRepair(name: string, prefix: string, teams?: Record<string, string>) {
   const dir = scratch(name);
