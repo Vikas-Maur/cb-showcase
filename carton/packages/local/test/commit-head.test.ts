@@ -1,4 +1,4 @@
-// contract(local), windows-sync: a commit still pending can ask for the holder's head (`WriteOp` commit `head: true`).
+// contract(local), windows-sync: a write still pending can ask for the holder's head (`WriteOp` `head: true`).
 // The Windows app's cb writes project.json itself after each save, from its own handle, which holds the confirmed rows
 // only: with the holder offline, the state that includes the edit (merged onto the holder's own pending edits and what
 // it had from teammates) is the holder's, so the holder hands it back. Real processes, as R2-02: a server-node host,
@@ -74,6 +74,15 @@ test("a pending commit that asks for it gets the holder's head: its edit merged 
     const mine = (await local.carton.head()).doc as any;
     assert.notEqual(item(mine, "c2").opacity, 0.4);
     assert.notEqual(item(mine, "c1").name, "the holder's");
+
+    // not only commits (owner's addition): a restore of the shared version, still pending, asking for the head, gets
+    // the head of the cut it went to with the restore in
+    const back = await local.write({ kind: "restore", ref: `${cut}@${base.seq}`, head: true });
+    assert.equal(back.status, "pending", JSON.stringify(back));
+    const h2 = back.head as { ref: { branchId: string }; doc: any } | undefined;
+    assert.equal(h2?.ref.branchId, cut);
+    assert.equal(item(h2!.doc, "c2").opacity, 1, "the restore is in: c2 as it was");
+    assert.equal(item(h2!.doc, "c1").name, "c1");
   } finally {
     await local.close();
     for (const p of procs) if (p.exitCode === null) p.kill("SIGKILL");

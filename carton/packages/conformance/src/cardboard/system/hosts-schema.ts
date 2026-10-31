@@ -129,12 +129,62 @@ test("H-SV: server-cloudflare's room accepts Cardboard's schema version unset an
   const { schemaVersionOf } = await load<RoomModule>(pathToFileURL(path.join(PACKAGES, "server-cloudflare/src/room.ts")).href);
   assert.ok(schemaVersionOf, "server-cloudflare's schemaVersionOf (what the room gives its sequencer) moved: update hosts-schema.ts");
   assert.ok(schemaVersionOf({}) >= CARDBOARD_SCHEMA_VERSION, `with no SCHEMA_VERSION the room accepts up to ${schemaVersionOf({})}; Cardboard clients send ${CARDBOARD_SCHEMA_VERSION}`);
-  // the deployment's own setting, if its config pins one (an uncommented SCHEMA_VERSION in [vars])
+  // every SCHEMA_VERSION its config pins: [vars] (the default deployment) and each [env.<name>.vars] (round 15 #7: the
+  // first match in the file could be another environment's)
   const toml = path.join(PACKAGES, "server-cloudflare/wrangler.toml");
-  const pinned = fs.existsSync(toml) ? /^[ \t]*SCHEMA_VERSION[ \t]*=[ \t]*"?([^"\r\n]*)"?/m.exec(fs.readFileSync(toml, "utf8"))?.[1] : undefined;
-  if (pinned !== undefined) {
-    const v = schemaVersionOf({ SCHEMA_VERSION: pinned });
-    assert.ok(v >= CARDBOARD_SCHEMA_VERSION, `wrangler.toml pins SCHEMA_VERSION ${pinned}: the room accepts up to ${v}, Cardboard clients send ${CARDBOARD_SCHEMA_VERSION}. Raise it with the bump.`);
+  const pinned = fs.existsSync(toml) ? pinnedSchemaVersions(fs.readFileSync(toml, "utf8")) : [];
+  for (const { table, value } of pinned) {
+    const v = schemaVersionOf({ SCHEMA_VERSION: value });
+    assert.ok(v >= CARDBOARD_SCHEMA_VERSION, `wrangler.toml's [${table}] pins SCHEMA_VERSION ${value}: the room accepts up to ${v}, Cardboard clients send ${CARDBOARD_SCHEMA_VERSION}. Raise it with the bump.`);
   }
-  t.diagnostic(`wrangler.toml ${pinned === undefined ? "leaves SCHEMA_VERSION unset" : `pins SCHEMA_VERSION ${pinned}`}`);
+  t.diagnostic(`wrangler.toml ${pinned.length ? pinned.map((p) => `[${p.table}] pins SCHEMA_VERSION ${p.value}`).join(", ") : "leaves SCHEMA_VERSION unset"}`);
+});
+
+/**
+ * The SCHEMA_VERSION values a wrangler.toml pins for the Worker: in `[vars]` and in each `[env.<name>.vars]`, as keys or
+ * inline (`vars = { SCHEMA_VERSION = "2" }`). Enough TOML for a config: tables, comments, quoted or bare values.
+ */
+export function pinnedSchemaVersions(toml: string): { table: string; value: string }[] {
+  const out: { table: string; value: string }[] = [];
+  const VALUE = String.raw`(?:"([^"]*)"|'([^']*)'|([^\s#,}]+))`;
+  const key = new RegExp(String.raw`^\s*SCHEMA_VERSION\s*=\s*${VALUE}`);
+  const inline = new RegExp(String.raw`^\s*vars\s*=\s*\{[^}]*\bSCHEMA_VERSION\s*=\s*${VALUE}`);
+  const isVars = (table: string) => table === "vars" || /^env\.[^.]+\.vars$/.test(table);
+  let table = "";
+  for (const line of toml.split(/\r?\n/)) {
+    const header = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
+    if (header) {
+      table = header[1]!.replace(/\s*\.\s*/g, ".").replace(/"/g, "");
+      continue;
+    }
+    const k = isVars(table) ? key.exec(line) : null;
+    const i = !k && (table === "" || /^env\.[^.]+$/.test(table)) ? inline.exec(line) : null;
+    const m = k ?? i;
+    if (m) out.push({ table: i ? (table ? `${table}.vars` : "vars") : table, value: m[1] ?? m[2] ?? m[3]! });
+  }
+  return out;
+}
+
+test("H-SV: wrangler.toml's SCHEMA_VERSION is read from [vars] and each [env.<name>.vars], never another table (round 15 #7)", () => {
+  const toml = [
+    "name = \"carton\"",
+    "# SCHEMA_VERSION = \"0\" (a comment)",
+    "[env.preview.vars]",
+    "SCHEMA_VERSION = \"2\"",
+    "[vars]",
+    "SCHEMA_VERSION = \"1\" # the default deployment",
+    "[durable_objects]",
+    "SCHEMA_VERSION = \"9\"",
+    "[env.staging]",
+    "vars = { OTHER = \"x\", SCHEMA_VERSION = '3' }",
+    "[env.prod.vars]",
+    "SCHEMA_VERSION = 4",
+  ].join("\n");
+  assert.deepEqual(pinnedSchemaVersions(toml), [
+    { table: "env.preview.vars", value: "2" },
+    { table: "vars", value: "1" },
+    { table: "env.staging.vars", value: "3" },
+    { table: "env.prod.vars", value: "4" },
+  ]);
+  assert.deepEqual(pinnedSchemaVersions("[vars]\n# SCHEMA_VERSION = \"1\"\n"), [], "commented out: unset");
 });

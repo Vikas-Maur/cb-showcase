@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import { branchToken, findRev, toHost } from "@carton/cardboard";
 import { TIMELINE_FILE, statusPath } from "@carton/cardboard/node";
-import { openWorld, clip, find, type Item } from "./world.ts";
+import { openWorld, clip, find, render, type Item } from "./world.ts";
 
 const CASES: [string, string | undefined, string][] = [
   ["a dot in its first 8 characters", "b6b.alt", "Alt"],
@@ -57,8 +57,10 @@ for (const after of ["", "rename", "switch"] as const) {
   const how = after === "rename" ? ", the printed one renamed after the print" : after === "switch" ? ", the other one current when it is read" : "";
   test(`cut ids (review 14 #5): two cuts with one b: token and one name${how}: the print resolves on the cut it was made on [real engine]`, async (t) => {
     const w = await openWorld(t, { items: [clip("X", 0, 10), clip("Y", 10, 20)], tracks: ["V1"] });
-    assert.equal(branchToken("b6b.alt"), branchToken("fa91abc4-other"), "the two ids share a token");
-    const twin = await w.carton.fork("Alt", { id: "fa91abc4-other" });
+    // a twin whose id starts with b6b.alt's token (derived, never a hard-coded hash value)
+    const twinId = `${branchToken("b6b.alt")}-other`;
+    assert.equal(branchToken(twinId), branchToken("b6b.alt"), "the two ids share a token");
+    const twin = await w.carton.fork("Alt", { id: twinId });
     const cut = await w.carton.fork("Alt", { id: "b6b.alt" });
     await w.carton.switchTo(cut.id);
     await w.mz.onCutSwitch(cut.id);
@@ -86,3 +88,57 @@ for (const after of ["", "rename", "switch"] as const) {
     await agent.stop();
   });
 }
+
+/**
+ * The token the adapter printed before core's `branchToken` (`cfa541a`, FNV-1a over the id's UTF-8) for an id core
+ * didn't make: a fixture of the old format, to read an old header back. Never compared with a hard-coded value.
+ */
+const oldToken = (id: string): string => {
+  let h = 0x811c9dc5;
+  for (const b of new TextEncoder().encode(id)) h = Math.imul(h ^ b, 0x01000193) >>> 0;
+  return h.toString(16).padStart(8, "0");
+};
+
+test("cut ids (core's branchToken): a header printed before it (FNV-1a) for an id core didn't make is refused 'state unknown: re-print', never applied to another cut; a re-print fixes it [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("X", 0, 10), clip("Y", 10, 20)], tracks: ["V1"] });
+  const main = w.carton.cut;
+  const id = "b6b.alt";
+  const old = oldToken(id);
+  assert.notEqual(old, branchToken(id), "core's token differs from the old one");
+  // a decoy that the old header's b: now names (its id starts with the old token), under the same cut name, with a state
+  // of its own at the printed seq
+  const decoy = await w.carton.fork("Alt", { id: `${old}-decoy` });
+  const cut = await w.carton.fork("Alt", { id });
+  await w.carton.switchTo(decoy.id);
+  await w.gui((its) => void (find(its, "X").name = "the decoy's edit"));
+  await w.carton.switchTo(cut.id);
+  await w.mz.onCutSwitch(cut.id);
+  await w.gui((its) => void (find(its, "X").opacity = 0.5)); // the print's seq, on Alt
+  await w.tick(1000);
+  const agent = w.agent("director/c2/t2", { hooked: true, actor: { turn: "t2", chat: "c2" } });
+  const { path: rel, name: view } = await w.mz.printView("v", agent.actor, { hooked: true });
+  const r = await agent.read(rel);
+  const oldHeader = r.header.replace(` b:${branchToken(id)} `, ` b:${old} `);
+  assert.notEqual(oldHeader, r.header, "the view's header, as the adapter printed it before");
+  const rev = findRev(oldHeader)!.rev!;
+  await assert.rejects(w.engine.resolve(rev), /state unknown: re-print/);
+  const heads = async () => Promise.all([cut.id, decoy.id, main].map(async (c) => JSON.stringify(toHost((await w.carton.head(c)).doc))));
+  const before = await heads();
+  // a save from a file with the old header
+  w.writeAtomic(rel, render({ ...r, header: oldHeader }, r.items.map((i) => (i.id === "Y" ? { ...i, name: "from the old header" } : i))));
+  await w.tick(2000);
+  const status = JSON.parse(fs.readFileSync(w.abs(statusPath(view)), "utf8"));
+  assert.equal(status.status, "error", JSON.stringify(status));
+  assert.match(status.error, /state unknown: re-print/);
+  assert.deepEqual(await heads(), before, "applied to no cut: not Alt, not the decoy");
+  assert.deepEqual(w.mz.log.errors, []);
+  // a re-print gives a header core reads back, and the save lands
+  const again = await w.mz.printView("v", agent.actor, { hooked: true });
+  await agent.read(again.path);
+  await agent.editUntilDone(again.path, (its) => void (find(its, "Y").name = "after a re-print"));
+  await w.tick(2000);
+  assert.equal(JSON.parse(fs.readFileSync(w.abs(statusPath(view)), "utf8")).status, "confirmed");
+  assert.equal(find(await w.head(), "Y").name, "after a re-print");
+  assert.equal(w.carton.cut, cut.id);
+  await agent.stop();
+});

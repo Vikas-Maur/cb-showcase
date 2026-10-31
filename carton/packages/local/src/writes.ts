@@ -53,7 +53,8 @@ export interface WriteRequest {
 
 export type CbResult =
   | { status: "confirmed"; id?: ChangeId; seq: number; ref: string | null; notices: Notice[]; empty?: boolean; [k: string]: unknown }
-  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; [k: string]: unknown }
+  /** `head`: the holder's head of the cut written to, when the write asked for it (WriteOp `head`). */
+  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; head?: { ref: StateRef; doc: unknown }; [k: string]: unknown }
   | { status: "conflicts"; id?: ChangeId; conflicts: ConflictCard[]; ref: string | null; notices: Notice[]; [k: string]: unknown }
   | { status: "rejected"; id?: ChangeId; reason: string; notices: Notice[]; [k: string]: unknown }
   | { status: "error"; error: string; notices: Notice[]; [k: string]: unknown };

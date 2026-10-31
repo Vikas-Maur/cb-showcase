@@ -6,7 +6,7 @@
 //   A cut's name may contain spaces, and words like ` by ` or ` p:` ("Version by Alice@4~…"): as in core's parser,
 //   the name runs up to the last `@<seq>~<hash8> b:<8 hex>`;
 // - `b:` names the cut, because two cuts may share a name ("Bob's main"): 8 lowercase hex characters, as core reads
-//   it (`branchToken`): the id's first 8 when they are lowercase hex (every id core makes), else a hash of the id;
+//   it (core's `branchToken`): the id's first 8 when they are lowercase hex (every id core makes), else its SHA-256's;
 // - `p:` is a nonce that is new for every print, so two prints of one state are told apart (system proof, Finding 3);
 //   a per-agent view's "last applied save" base is keyed on it;
 // - `by` names who printed it; it is the rest of the line and may contain spaces.
@@ -14,6 +14,8 @@
 // Cardboard 1.4.0 prints `// cardboard:rev <stateUpdatedAt ms>` as the 4th line of its header block and reads the
 // first line matching `^\s*//\s*cardboard:rev\s+(\d+)\s*$`. A bare number still parses here, as a legacy timestamp
 // ref. Only the first rev line in a file counts, as in 1.4.0.
+
+import { branchToken } from "@carton/core";
 
 export const REV_TAG = "cardboard:rev";
 
@@ -48,18 +50,14 @@ export interface RevInput {
 }
 
 /**
- * The `b:` token for a cut id: 8 lowercase hex characters, the only form core's ref parser reads. An id whose first 8
- * characters are lowercase hex (every id core makes: a UUID, `cb cut new`'s 24 hex characters + `.n`) gives those, as
- * core's own headers print them; any other id (a caller's own, one from a `.cbproj` or another host: `b6b.alt`,
- * `ab-cdef0…`) gives 8 hex characters of a hash of the whole id, so its header still parses back. The engine finds
- * the cut whose token it is (`cartonMaterializerEngine`).
+ * The `b:` token for a cut id, core's one definition (`@carton/core`'s `branchToken`, re-exported so the header format
+ * has one owner): the id's first 8 characters when they are lowercase hex (every id core makes: a UUID, `cb cut new`'s
+ * 24 hex characters + `.n`), as core's own headers print them; any other id (a caller's own, one from a `.cbproj` or
+ * another host: `b6b.alt`, `ab-cdef0…`) gives the first 8 hex characters of its SHA-256, so its header still parses
+ * back. Headers this package printed before (`cfa541a`, an FNV-1a hash for such ids) no longer name their cut: a save
+ * from one is refused "state unknown: re-print", and a re-print gives a header that reads back.
  */
-export function branchToken(id: string): string {
-  if (/^[0-9a-f]{8}/.test(id)) return id.slice(0, 8);
-  let h = 0x811c9dc5; // FNV-1a, 32 bits, over the id's UTF-8 bytes
-  for (const b of new TextEncoder().encode(id)) h = Math.imul(h ^ b, 0x01000193) >>> 0;
-  return h.toString(16).padStart(8, "0");
-}
+export { branchToken };
 
 /** The header line, without a newline. */
 export function renderRev({ ref, branchId, nonce, by }: RevInput): string {
