@@ -6,8 +6,7 @@
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { AuthProvider, Role, SequencerHost, SequencerStorage, Transport, TransportConnection } from "@carton/core/plugins";
-import type { sync } from "@carton/core";
+import type { AuthProvider, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
 
 export interface HostFixture {
   host: SequencerHost;
