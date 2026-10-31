@@ -19,6 +19,7 @@ import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Choices, Doc, ShallowExport } from "@carton/core";
 import { ZipReader, ZipWriter, sanitizeEntryName, type ZipWriteResult } from "./zip.ts";
+import { retryMissing } from "../displace.ts";
 import { walkBundle, excludedFromExport, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
 
 export interface CbprojExportOptions {
@@ -48,9 +49,19 @@ export interface CbprojExportResult extends ZipWriteResult {
   names: string[];
 }
 
+// The shared file Carton re-installs while the app runs: a Save As during an install can find it missing for a moment.
+const SHARED_FILE = "timeline.tsx";
+
 export async function exportCbproj(o: CbprojExportOptions): Promise<CbprojExportResult> {
   const files = await walkBundle(o.bundle);
-  let manifest = o.manifest ?? (JSON.parse(await fs.promises.readFile(path.join(o.bundle, MANIFEST), "utf8")) as Record<string, unknown>);
+  // a listing made while Carton installed the shared file misses it: look once more, through the install's window
+  if (!files.some((f) => f.archivePath === SHARED_FILE)) {
+    const sourcePath = path.join(o.bundle, SHARED_FILE);
+    // lstat, as the walk: a symlink is never followed out of the bundle
+    const st = await retryMissing(() => fs.promises.lstat(sourcePath), { bundle: o.bundle }).catch(() => null);
+    if (st?.isFile()) files.push({ archivePath: SHARED_FILE, sourcePath, size: st.size });
+  }
+  let manifest = o.manifest ?? (JSON.parse(await retryMissing(() => fs.promises.readFile(path.join(o.bundle, MANIFEST), "utf8"), { bundle: o.bundle })) as Record<string, unknown>);
   if (o.head) manifest = { ...manifest, project: o.head.toProject(o.head.doc, (manifest.project as Record<string, unknown> | undefined) ?? null) };
   const zip = await ZipWriter.create(o.out);
   const entries: string[] = [];
@@ -59,7 +70,7 @@ export async function exportCbproj(o: CbprojExportOptions): Promise<CbprojExport
     await zip.addBuffer(MANIFEST, Buffer.from(JSON.stringify(manifest), "utf8"));
     entries.push(MANIFEST);
     for (const f of files) {
-      await zip.addFile(f.archivePath, f.sourcePath);
+      await retryMissing(() => zip.addFile(f.archivePath, f.sourcePath), { bundle: o.bundle }); // fails before writing anything if absent
       entries.push(f.archivePath);
     }
     for (const f of o.extraFiles ?? []) {

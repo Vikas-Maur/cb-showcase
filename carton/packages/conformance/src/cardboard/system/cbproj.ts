@@ -171,6 +171,43 @@ test(".cbproj: a member named with backslashes is judged as 1.4.0 will extract i
   assert.deepEqual(c.files, []);
 });
 
+// A Save As while Carton installs timeline.tsx (displace, then link) can list the bundle in the moment the file is
+// missing, or open it then: the export rides out that window instead of leaving the shared file out.
+test(".cbproj: an export during an install of timeline.tsx still carries it", async (t) => {
+  const project = { id: "proj-6", name: "Film", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(1) };
+  const dir = bundle(t, "window", project);
+  const out = path.join(dir, "..", `window-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  const shared = path.join(dir, "timeline.tsx");
+  const aside = path.join(dir, ".carton", "displaced", "1-install");
+  fs.renameSync(shared, aside); // displaced: the name is missing until the link
+  setTimeout(() => fs.copyFileSync(aside, shared), 15);
+  const r = await exportCbproj({ bundle: dir, out, shallow: null });
+  assert.ok(r.names.includes("timeline.tsx"), r.names.join(", "));
+  const c = await readCbproj(out);
+  assert.ok(c.files.includes("timeline.tsx"));
+});
+
+test(".cbproj: a timeline.tsx that is a symlink is never followed out of the bundle (review 6)", async (t) => {
+  const project = { id: "proj-7", name: "Film", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(1) };
+  const dir = bundle(t, "symlink", project);
+  const out = path.join(dir, "..", `symlink-${Date.now()}.cbproj`);
+  const secret = path.join(dir, "..", `outside-${Date.now()}.txt`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  t.after(() => fs.rmSync(secret, { force: true }));
+  fs.writeFileSync(secret, "not the bundle's");
+  fs.rmSync(path.join(dir, "timeline.tsx"), { force: true });
+  try {
+    fs.symlinkSync(secret, path.join(dir, "timeline.tsx"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EPERM") return t.skip("no symlink privilege (Windows without developer mode)");
+    throw e;
+  }
+  const r = await exportCbproj({ bundle: dir, out, shallow: null });
+  assert.ok(!r.names.includes("timeline.tsx"), r.names.join(", "));
+  assert.ok(!fs.readFileSync(out).includes("not the bundle's"), "the outside file's bytes aren't in the archive");
+});
+
 // "Include history so they can see every version": the store's copy without local tables (store-sqlite's exportCopy in
 // the app; a stand-in writer here) travels as its own entry and comes back out byte for byte.
 test(".cbproj: the opt-in full history is its own entry, written by the store's copy function and extracted intact", async (t) => {

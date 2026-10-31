@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { BUSY_BUDGET_MS, displaceThenInstall, hardLinksWork, retryBusy, statStamp, type BusyOptions } from "../src/node/displace.ts";
+import { BUSY_BUDGET_MS, InstallGaveUp, displaceThenInstall, hardLinksWork, retryBusy, retryMissing, statStamp, type BusyOptions } from "../src/node/displace.ts";
 import { DisplacedFiles } from "../src/node/displaced.ts";
 
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
@@ -226,7 +226,7 @@ test("retryBusy: the budget is time (5 s by default, configurable), never other 
   await assert.rejects(retryBusy(busy, { ...WIN, counter, budgetMs: 100 }), { code: "EPERM" });
   const took = performance.now() - t0;
   assert.ok(took >= 50 && took < 1_000, `gave up after ${took} ms with a 100 ms budget`);
-  assert.ok(counter.busy >= 5);
+  assert.ok(counter.busy >= 2, `retried (${counter.busy} times; fewer on a loaded box, where each wait overshoots)`);
   let calls = 0;
   const gone = () => {
     calls++;
@@ -260,4 +260,122 @@ test("a file held while a review waits on a busy file stays held; reviews run on
   assert.deepEqual(a.foreign.map((f) => f.bytes.toString()), ["first"]);
   assert.deepEqual(b.foreign.map((f) => f.bytes.toString()), ["second"], "not dropped by the first review, and not reported twice");
   assert.equal(held.size, 0);
+});
+
+// The Windows decision (PLAN §6.4; displace.ts's header). NTFS leaves the path missing longer between displace and
+// install, so an install with no missing window was proposed for Windows: check the stamp, then rename over the target
+// (MoveFileEx(REPLACE_EXISTING) replaces atomically), backing off when a writer holding the file makes it busy. On a
+// closed file that rename is the same on every OS, so the interleaving can be shown here.
+async function stampCheckedReplace(target: string, tmp: string, lastStamp: string | null, between: () => void): Promise<string[]> {
+  const imported: string[] = [];
+  if ((await statStamp(target)) !== lastStamp) imported.push(fs.readFileSync(target, "utf8"));
+  between(); // a foreign save lands here
+  fs.renameSync(tmp, target);
+  return imported;
+}
+const saves: Record<string, (target: string, text: string) => void> = {
+  "a temp+rename": (target, text) => {
+    fs.writeFileSync(`${target}.w`, text);
+    fs.renameSync(`${target}.w`, target);
+  },
+  "an in-place (open, write, close)": (target, text) => fs.writeFileSync(target, text),
+};
+
+for (const [kind, save] of Object.entries(saves)) {
+  test(`Windows decision: a stamp-checked replace destroys ${kind} save landing after the check; displace keeps it`, async (t) => {
+    const a = setup(t);
+    await displaceThenInstall(a.target, a.tmp("v1"), a.held.next);
+    const imported = await stampCheckedReplace(a.target, a.tmp("v2"), await statStamp(a.target), () => save(a.target, "the agent's save"));
+    assert.deepEqual(imported, [], "the check ran before the save");
+    assert.equal(fs.readFileSync(a.target, "utf8"), "v2");
+    const everywhere = fs.readdirSync(a.dir, { recursive: true }).map(String).filter((f) => fs.statSync(path.join(a.dir, f)).isFile());
+    assert.ok(!everywhere.some((f) => fs.readFileSync(path.join(a.dir, f), "utf8") === "the agent's save"), "the save is gone");
+
+    const b = setup(t);
+    await displaceThenInstall(b.target, b.tmp("v1"), b.held.next);
+    let once = false;
+    const r = await displaceThenInstall(b.target, b.tmp("v2"), b.held.next, {
+      between: () => {
+        if (once) return;
+        once = true;
+        save(b.target, "the agent's save");
+      },
+    });
+    assert.ok(r.displaced.some((d) => fs.readFileSync(d, "utf8") === "the agent's save"), "kept for import");
+    assert.equal(fs.readFileSync(b.target, "utf8"), "v2");
+  });
+}
+
+test("retryMissing: a reader rides out the install's missing window, and a file that stays missing still fails", async (t) => {
+  const { dir } = setup(t);
+  const file = path.join(dir, "timeline.tsx");
+  setTimeout(() => fs.writeFileSync(file, "installed"), 20);
+  const counter: { missing?: number } = {};
+  assert.equal(await retryMissing(() => fs.readFileSync(file, "utf8"), { counter }), "installed");
+  assert.ok((counter.missing ?? 0) >= 1);
+  const t0 = performance.now();
+  await assert.rejects(retryMissing(() => fs.readFileSync(path.join(dir, "never"), "utf8"), { missingMs: 40 }), { code: "ENOENT" });
+  const took = performance.now() - t0;
+  assert.ok(took >= 20 && took < 1_000, `gave up after ${took} ms with a 40 ms budget`);
+  let calls = 0;
+  await assert.rejects(
+    retryMissing(() => {
+      calls++;
+      return fs.readFileSync(dir); // EISDIR: not the window, not retried
+    }),
+    { code: "EISDIR" },
+  );
+  assert.equal(calls, 1);
+});
+
+test("a writer that keeps re-creating the target makes the install give up, with nothing lost and the path never empty", async (t) => {
+  const { target, held, tmp } = setup(t);
+  let n = 0;
+  const ours = tmp("ours");
+  const err = await displaceThenInstall(target, ours, held.next, { maxDisplaced: 5, between: () => fs.writeFileSync(target, `runaway ${n++}`) }).catch((e: unknown) => e);
+  assert.ok(err instanceof InstallGaveUp);
+  assert.equal(err.displaced.length, 5);
+  assert.deepEqual(err.displaced.map((d) => fs.readFileSync(d, "utf8")), ["runaway 0", "runaway 1", "runaway 2", "runaway 3", "runaway 4"]);
+  assert.equal(fs.readFileSync(target, "utf8"), "runaway 5", "the writer's last file stays at the path");
+  assert.ok(fs.existsSync(ours), "our temp is left for the caller to remove");
+});
+
+// Stock 1.4.0 takes a missing project.json for a removed project, on every OS: an install that fails between the
+// displace and the link must not leave the path missing.
+test("an install whose link fails puts the displaced file back: the path is never left missing", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "previous");
+  const ours = tmp("ours");
+  const real = fs.linkSync;
+  let failed = 0;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (from === ours && to === target) {
+      failed++;
+      throw Object.assign(new Error("EIO: i/o error (simulated)"), { code: "EIO" });
+    }
+    return real(from, to);
+  });
+  await assert.rejects(displaceThenInstall(target, ours, held.next), { code: "EIO" });
+  assert.equal(failed, 1);
+  assert.equal(fs.readFileSync(target, "utf8"), "previous", "the file that was there is back");
+  assert.deepEqual(fs.readdirSync(path.join(dir, ".carton", "displaced")), [], "and not also held as displaced");
+});
+
+test("a failed install's put-back never replaces a foreign save that landed meanwhile: it keeps the path, the displaced file is held", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "previous");
+  const ours = tmp("ours");
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (from === ours && to === target) {
+      fs.writeFileSync(target, "foreign save"); // lands after the displace
+      throw Object.assign(new Error("EIO: i/o error (simulated)"), { code: "EIO" });
+    }
+    return real(from, to);
+  });
+  await assert.rejects(displaceThenInstall(target, ours, held.next), { code: "EIO" });
+  assert.equal(fs.readFileSync(target, "utf8"), "foreign save");
+  const kept = fs.readdirSync(path.join(dir, ".carton", "displaced"));
+  assert.equal(kept.length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, ".carton", "displaced", kept[0]!), "utf8"), "previous", "nothing lost");
 });

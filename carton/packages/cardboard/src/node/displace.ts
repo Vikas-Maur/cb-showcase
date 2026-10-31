@@ -8,7 +8,21 @@
 //
 // Every displaced file is then reviewed by the caller (`DisplacedFiles`): one that isn't Carton's own last install is
 // a foreign write and is imported. Carton never replaces a name, so the only cost is a short window in which the path
-// is missing; Cardboard's readers (which we hook) and agents' file tools retry on ENOENT.
+// is missing, on every OS: tens of microseconds on ext4 (P10), longer on NTFS (bench/race measures it on each file
+// system). It matters beyond Windows: stock 1.4.0 takes an unreadable project.json for a removed project (dropped from
+// the index and the rescan, the watcher says `removed`). So:
+//   - the caller holds the bundle's install lock (`.carton/install.lock/`, `withInstallLock`, shared with the app's
+//     facade) around the whole install, from step 1 to step 3;
+//   - readers wait on ENOENT while the lock is held: the app's store bridge up to 6 s (50 ms without the lock), Carton's
+//     own through `retryMissing` (6 s, 100 ms without); agents' file tools see a transient error;
+//   - an install that fails between 1 and 2 (a link error other than EEXIST, or a busy file past its budget) puts the
+//     file it displaced back before returning, still under the lock, so a failure never leaves the path missing.
+//
+// Windows has no atomic "replace only if unchanged" (nor an exchange), so an install that never leaves the path missing
+// (check the stamp, then rename over it; MoveFileEx replaces atomically) destroys a foreign save that lands after the
+// check: a temp+rename save, or an in-place writer that opens, writes and closes in between. A busy error catches only
+// a writer that still has the file open. Displacing is the only way to keep every write, so it is used on Windows too
+// (test: "the stamp-checked replace … destroys"; bench/race's `replace` protocol measures it on NTFS).
 //
 // The protocol's own calls are synchronous on purpose: P10 measured the missing-path gap at 10–16 µs median with sync
 // calls against 61–68 µs through fs.promises (the gap spans one libuv round trip each). Only waiting is asynchronous:
@@ -29,6 +43,8 @@ export const BUSY_BUDGET_MS = 5_000;
 
 export interface BusyCounter {
   busy?: number;
+  /** ENOENT retries (`retryMissing`). */
+  missing?: number;
 }
 
 export interface BusyOptions {
@@ -85,6 +101,41 @@ function atOnce(fn: () => void, o: BusyOptions): Promise<void> | undefined {
   }
 }
 
+export const MISSING_RETRY_MS = 100;
+/** While the bundle's install lock is held (install-lock.ts), readers wait this long, as the app's facade does. */
+export const LOCKED_RETRY_MS = 6_000;
+/** The bundle's install lock folder (install-lock.ts), relative to the bundle. */
+export const INSTALL_LOCK = path.join(".carton", "install.lock");
+
+export interface MissingOptions extends BusyOptions {
+  /** How long a missing file is waited for (default `MISSING_RETRY_MS`). */
+  missingMs?: number;
+  /** The project bundle: while its install lock is held, a missing file is waited for up to `lockedMs`. */
+  bundle?: string;
+  lockedMs?: number;
+}
+
+/**
+ * For readers of a path Carton installs (project.json, timeline.tsx, a view): runs `fn`, and while it fails with ENOENT
+ * waits on a timer and runs it again (1, 2, 4 … 16 ms) for up to `missingMs` (100 ms; up to `lockedMs`, 6 s, while
+ * the bundle's install lock is held), so the moment between displace and install reads as a short delay, not as a
+ * missing file. A file that stays missing fails as before. Busy errors (Windows) are retried as `retryBusy` does.
+ */
+export async function retryMissing<T>(fn: () => T | Promise<T>, o: MissingOptions = {}): Promise<T> {
+  const start = performance.now();
+  for (let wait = 1; ; wait = Math.min(wait * 2, 16)) {
+    try {
+      return await retryBusy(fn, o);
+    } catch (e) {
+      if (errCode(e) !== "ENOENT") throw e;
+      const locked = o.bundle !== undefined && fs.existsSync(path.join(o.bundle, INSTALL_LOCK));
+      if (performance.now() - start + wait > (locked ? (o.lockedMs ?? LOCKED_RETRY_MS) : (o.missingMs ?? MISSING_RETRY_MS))) throw e;
+      if (o.counter) o.counter.missing = (o.counter.missing ?? 0) + 1;
+      await delay(wait);
+    }
+  }
+}
+
 /** `ino:size:mtimeNs`, the stamp 1.4.0 itself uses for project.json (`Qo`). */
 export function stampOf(s: fs.BigIntStats): string {
   return `${s.ino}:${s.size}:${s.mtimeNs}`;
@@ -118,6 +169,22 @@ export interface InstallOptions extends BusyOptions {
   noLinks?: boolean;
   /** The stamp Carton's last install left at the target, for the no-links fallback. */
   lastStamp?: string | null;
+  /** How many foreign files one install displaces before it gives up (`InstallGaveUp`), default 50. */
+  maxDisplaced?: number;
+}
+
+/**
+ * A writer kept re-creating the target faster than Carton could install (a runaway tool): the install stops instead of
+ * filling `.carton/displaced/`. The writer's last file stays at the target, nothing was lost, and every file this
+ * install moved aside is in `displaced`, to be reviewed as usual. The next install tries again.
+ */
+export class InstallGaveUp extends Error {
+  readonly displaced: string[];
+  constructor(target: string, displaced: string[]) {
+    super(`${target}: another process kept re-creating it; Carton's install gave up after ${displaced.length} displaced files`);
+    this.name = "InstallGaveUp";
+    this.displaced = displaced;
+  }
 }
 
 const hr = (): bigint => process.hrtime.bigint();
@@ -148,8 +215,12 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
       const busy = atOnce(() => fs.linkSync(tmp, target), opts);
       if (busy) await busy;
     } catch (e) {
-      if (errCode(e) !== "EEXIST") throw e;
+      if (errCode(e) !== "EEXIST") {
+        if (displaced.at(-1) === slot && (await putBack(slot, target, opts))) displaced.pop();
+        throw e;
+      }
       eexist++;
+      if (displaced.length >= (opts.maxDisplaced ?? 50)) throw new InstallGaveUp(target, displaced);
       continue;
     }
     const t2 = hr();
@@ -157,6 +228,25 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
     if (busy) await busy;
     return { displaced, eexist, gapNs: Number(t2 - t1), gapTotalNs: Number(t2 - first) };
   }
+}
+
+/**
+ * After a failed install: the file displaced last goes back to `target` if the name is still free (link: never over a
+ * foreign write that landed meanwhile; that one keeps the path, and the displaced file stays held). True if it went back.
+ */
+async function putBack(slot: string, target: string, opts: BusyOptions): Promise<boolean> {
+  try {
+    await retryBusy(() => fs.linkSync(slot, target), opts);
+  } catch {
+    return false; // EEXIST: a foreign write holds the path; or links fail too: the caller holds the file
+  }
+  try {
+    await retryBusy(() => fs.unlinkSync(slot), opts);
+  } catch {
+    // the slot stays as a second name of the file now at the target: reviewed as Carton's own or a foreign write
+    return false;
+  }
+  return true;
 }
 
 // FAT and exFAT have no hard links. There the best available is: if the target isn't what Carton last installed,
@@ -177,7 +267,14 @@ async function installWithoutLinks(target: string, tmp: string, nextSlot: () => 
   }
   const t1 = hr();
   opts.between?.();
-  await retryBusy(() => fs.renameSync(tmp, target), opts);
+  try {
+    await retryBusy(() => fs.renameSync(tmp, target), opts);
+  } catch (e) {
+    // put the displaced file back (rename: no links here; the same L13 window as the install itself)
+    const slot = displaced.at(-1);
+    if (slot && (await statStamp(target, opts).catch(() => "?")) === null) await retryBusy(() => fs.renameSync(slot, target), opts).catch(() => undefined);
+    throw e;
+  }
   const t2 = hr();
   return { displaced, eexist: 0, gapNs: Number(t2 - t1), gapTotalNs: Number(t2 - t0) };
 }

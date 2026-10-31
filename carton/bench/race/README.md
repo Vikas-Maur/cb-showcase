@@ -9,13 +9,15 @@ that the `displace` protocol now calls the shipped code: `displaceThenInstall`, 
 | protocol | steps | where a foreign write can be destroyed |
 |---|---|---|
 | naive (control) | write tmp; stat the view; import it if its stamp isn't ours; rename tmp over it | between the stat and the rename |
+| replace (evaluated for Windows) | naive, but a busy rename (a writer has the view open, Windows) backs off and checks again: no missing window | between the check and the rename |
 | hardlink (control) | link the view to `prev/k`; rename tmp over it; import `prev/k` if it isn't ours | between the link and the rename |
 | **displace** (shipped) | loop { rename the view to `displaced/n`; link tmp to the view; on EEXIST loop }; unlink tmp; review every displaced file | none: the engine never replaces a name |
 
 ## Run it
 
 Node 24 or later runs the `.ts` files directly. No build and no dependencies. `node --test race.test.ts` tests the
-turn lock against Windows' errors and runs one short turn-mode trial.
+turn lock and the writers' steps against Windows' errors and runs two short turn-mode trials (temp+rename, in place).
+`npx tsc -p bench/race` typechecks it.
 
 ```
 node race.ts                                  # the portable matrix in <tmpdir>/carton-race
@@ -30,6 +32,9 @@ node race.ts trial --protocol displace --writers 4 --mode free --rounds 5000 --o
   - `rename`, `link` and `unlink` retry on EPERM, EBUSY and EACCES, which Defender or the indexer holding the file
     cause. So does the writers' turn lock (a folder): re-creating it right after another writer removed it fails with
     EPERM while the folder is still being deleted. The retries show in the `busy retries` column.
+  - The writers retry the same errors on every step on the view, as a real Windows app does: opening it for an
+    in-place write or reading it back while the engine renames or displaces it fails with EPERM for a moment (CI #11).
+    Their share of the retries, per step, is in `of which writers' (by step)` (and summarize.ts's in-place table).
   - FAT and exFAT have no hard links. The script says so and runs `naive` only; Carton itself falls back to
     stat-then-rename there (L13).
 - **Linux:** `./run-linux.sh out.jsonl [trials] [rounds] [fs:dir ...]`.
@@ -46,6 +51,15 @@ node race.ts trial --protocol displace --writers 4 --mode free --rounds 5000 --o
   losses with plain displacement; the shipped settle-2 rule left about 1 in 12,000 rounds in one harness and 0 in
   about 26,000 in the verifier's (L19).
 - **The missing-path gap** rows (`--writers 0 --pace 2`) time how long the path is absent per install, with sync and
-  async `fs` calls. The shipped code is synchronous because the async gap is several times longer.
+  async `fs` calls. The shipped code is synchronous because the async gap is several times longer. Histograms have
+  1 µs buckets to 2 ms, then 100 µs buckets to 100 ms (NTFS reaches milliseconds); quantiles print in µs.
+- **The `retry` reader** (`--reader retry`, a paced row of the matrix) reads through the shipped `retryMissing`, as
+  Carton's own readers do: `failed after retry` must be 0, and `retry wait` is what a reader pays in the window.
+  With `--lock` (the matrix runs both) the engine installs under the bundle's install lock (`.carton/install.lock/`),
+  as the materializer does, and the reader waits up to 6 s while it is held instead of 100 ms, as the app's readers
+  do (stock 1.4.0 takes a missing project.json for a removed project, so this grace matters on every OS).
+- **`replace`** is the install proposed for Windows to remove the missing window. It is not shipped: a foreign save
+  that lands between its check and its rename is destroyed (the test "Windows decision" in
+  `packages/cardboard/test/displace.test.ts` shows the interleaving on any OS); this row measures how often on NTFS.
 
 Every number this harness prints is unverified until a separate verifier re-runs it (AGENTS.md rule 6).
