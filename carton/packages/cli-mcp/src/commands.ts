@@ -197,11 +197,15 @@ const fold: CommandSpec = {
   async run(ctx, a) {
     const { carton } = ctx.project;
     let from: string;
-    try { from = (await resolveCut(carton, a.cut)).id; } catch (e) {
+    let fromName = String(a.cut);
+    try { const c = await resolveCut(carton, a.cut); from = c.id; fromName = c.name; } catch (e) {
       const v = await resolveVersion(carton, a.cut).catch(() => { throw e; });
       from = typeof v === "string" ? v : `${v.branchId}@${v.seq}`;
     }
-    const into = a.into ? (await resolveCut(carton, a.into)).id : undefined;
+    const intoCut = await resolveCut(carton, a.into);
+    const into = a.into ? intoCut.id : undefined;
+    // a fold's cards hold the cut folded into as `ours` and the cut folded in as `theirs`: name both sides
+    const sides = { ours: intoCut.name, theirs: fromName };
     const missingBase = a["all-cards"] ? "all-cards" : "dialog";
     if (a.check) {
       // a dry run writes nothing, so it needs no lease
@@ -209,7 +213,7 @@ const fold: CommandSpec = {
       const cards: ConflictCard[] = r.cards ?? [];
       const text = r.status === "up-to-date" ? "Already folded in: nothing to do"
         : r.status === "missing-base" ? r.dialog.text
-        : cards.length ? [`Would fold in with ${cards.length} card${cards.length === 1 ? "" : "s"}:`, ...cards.map((c, i) => `  ${cardLine(c, i)}`)].join("\n")
+        : cards.length ? [`Would fold in with ${cards.length} card${cards.length === 1 ? "" : "s"}:`, ...cards.map((c, i) => `  ${cardLine(c, i, sides)}`), foldHint(a.cut, sides, cards)].join("\n")
         : "Would fold in cleanly (no cards)";
       return out({ check: true, ...r, merge: undefined }, text);
     }
@@ -217,9 +221,22 @@ const fold: CommandSpec = {
     const r = await ctx.project.write({ kind: "fold", from, into, reject: a.reject, missingBase, keep: a.keep }, { actor: ctx.actor });
     if ((r as any).upToDate) return out(r, "Already folded in: nothing to do");
     if ((r as any).dialog) return { json: r, text: (r as any).dialog.text, exitCode: 1 };
+    if (r.status === "conflicts") {
+      // a fold with cards saves nothing: the cards are decided by folding again, not by `cb resolve`
+      const n = r.conflicts.length;
+      const text = [...noticeLines(r.notices ?? []), `Not folded in: ${n} card${n === 1 ? "" : "s"}, nothing was saved.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i, sides)}`), foldHint(a.cut, sides, r.conflicts)].join("\n");
+      return { json: r, text, exitCode: exitCodeOf(r) };
+    }
     return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : (r as any).rest ? "Folded in the rest (what an earlier partial fold kept out)" : "Folded in");
   },
 };
+
+/** How to decide a fold's cards: fold again keeping one side, or keep the clips the cards are about out. */
+function foldHint(cut: string, sides: { ours: string; theirs: string }, cards: readonly ConflictCard[]): string {
+  const q = /\s/.test(cut) ? `"${cut}"` : cut;
+  const rec = cards[0]?.path.split("/").slice(0, 2).join("/");
+  return `Decide with \`cb fold ${q} --keep mine\` (keep ${sides.ours}'s) or \`--keep theirs\` (keep ${sides.theirs}'s), or keep a clip out with \`--reject ${rec ?? "<path>"}\`.`;
+}
 
 const credits: CommandSpec = {
   path: ["credits"],
