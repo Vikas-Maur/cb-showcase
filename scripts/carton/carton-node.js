@@ -192,15 +192,20 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   return { ...r, doc: out, merged: true };
 }
 
+// What Cardboard's own code gets from a Carton state: a copy. Core's records are frozen, and Cardboard edits the
+// documents its store holds in place, which on a frozen record is silently ignored in sloppy code (the edit is lost,
+// with no error). The store bridge copies a merged save's put-back itself.
+const forCardboard = (project) => structuredClone(project);
+
 // The project to write for head, with a fresh rev recorded against it: after a Carton command changed head. null when
-// project.json already shows head.
+// project.json already shows head. (Through Cardboard's store: materializeIn, cb's `after`, sync's bring-in and pull.)
 async function headProject(bundlePath, current) {
   const lc = await open(bundlePath, { projectId: current?.id });
   if (!lc) return null;
   const head = await lc.carton.head();
   const known = await revOf(lc, head.ref);
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
-  const out = { ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) };
+  const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
   await setRev(lc, out.stateUpdatedAt, head.ref);
   return out;
 }
@@ -484,7 +489,8 @@ export const cardboard14 = {
     const lc = await open(bundlePath);
     const ref = lc ? await refOf(lc, Number(rev)) : undefined;
     if (!ref) return file();
-    const p = materializeProject(await lc.carton.checkout(ref), readProject(bundlePath));
+    // (the mirror's revision readers hand it to Cardboard's restore and diff code: a copy, as for head)
+    const p = forCardboard(materializeProject(await lc.carton.checkout(ref), readProject(bundlePath)));
     return { rev: Number(rev), at: new Date(Number(rev)).toISOString(), doc: slice ? slice(p) : { tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio } };
   },
   async history({ bundlePath, rows }) {
