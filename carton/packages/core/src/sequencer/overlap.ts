@@ -64,7 +64,7 @@ function someStrictPrefix(p: string, set: ReadonlySet<string>): boolean {
 /** The incoming change, indexed for the tail scan. */
 export interface ChangeIndex {
   keying: Keying;
-  exact: Set<string>;
+  exact: ReadonlySet<string>;
   /** Strict segment-prefixes of the change's own paths. */
   prefixes: Set<string>;
   /** The change's reads and every segment-prefix of them: a path in here is at or above one of its reads. */
@@ -92,11 +92,12 @@ export function indexChange(d: Pick<Declaration, "paths" | "reads" | "spans" | "
   const prefixes = new Set<string>(), readsAtOrAbove = new Set<string>();
   // the plan's keying counts every path: reuse the caller's set of the change's paths when it has one
   const reuse = keying === "v3-spans" && pathSet !== undefined && !d.trackOrder.length;
-  const exact = reuse ? new Set<string>(pathSet) : new Set<string>();
+  const own = reuse ? null : new Set<string>();
+  const exact: ReadonlySet<string> = reuse ? pathSet! : own!;
   for (const p of reuse ? d.paths : storedPaths(d)) {
-    if (!reuse) {
+    if (own) {
       if (!counts(p, keying)) continue;
-      exact.add(p);
+      own.add(p);
     }
     for (let i = p.indexOf("/"); i > 0; i = p.indexOf("/", i + 1)) prefixes.add(p.slice(0, i));
   }

@@ -425,22 +425,32 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return reject(c, m.branchId, ch.id, "behind", m.epoch, list ? { confirmed: list } : {});
       }
       const row: Row = { ...ch, branchId: m.branchId, rebase: ch.rebase ?? 0, seq: 0 };
-      const bodyText = Tables.body(row);
-      let body: { inline: string } | { blob: string } = { inline: bodyText };
-      if (bodyText.length > maxInline) {
-        if (!opts.blobs) return reject(c, m.branchId, ch.id, "too large", m.epoch);
-        const key = `changes/${m.branchId}/${ch.hash || ch.id}`;
-        await opts.blobs.put(key, enc.encode(bodyText), { contentType: "application/json", ifAbsent: true });
-        body = { blob: key };
-      }
-      const verdict = tables.transaction(() => {
-        const v = rules.evaluatePush(view(m.branchId), ch, cfg);
-        if (v.kind === "accept") {
+      // judge first: a rejected push never pays for serializing its body. A body over the inline limit goes to the
+      // blob store (async), and the push is judged again afterwards, since other pushes may have landed meanwhile.
+      let blobKey: string | null = null;
+      const judge = () =>
+        tables.transaction(() => {
+          const v = rules.evaluatePush(view(m.branchId), ch, cfg);
+          if (v.kind !== "accept") return v;
+          let body: { inline: string } | { blob: string };
+          if (blobKey) body = { blob: blobKey };
+          else {
+            const text = Tables.body(row);
+            if (text.length > maxInline) return { kind: "large" as const, text };
+            body = { inline: text };
+          }
           row.seq = tables.head(m.branchId) + 1;
           tables.append(m.branchId, row, { paths: rules.storedPaths(ch), structural: v.structural }, v.records, body);
-        }
-        return v;
-      });
+          return v;
+        });
+      let verdict = judge();
+      if (verdict.kind === "large") {
+        if (!opts.blobs) return reject(c, m.branchId, ch.id, "too large", m.epoch);
+        blobKey = `changes/${m.branchId}/${ch.hash || ch.id}`;
+        await opts.blobs.put(blobKey, enc.encode(verdict.text), { contentType: "application/json", ifAbsent: true });
+        verdict = judge();
+        if (verdict.kind === "large") throw new Error("unreachable: a blob body is never inline");
+      }
       if (verdict.kind === "duplicate") {
         stats.duplicates++;
         emit({ type: "duplicate", branchId: m.branchId, id: ch.id, seq: verdict.seq, withdrawn: verdict.withdrawn });
