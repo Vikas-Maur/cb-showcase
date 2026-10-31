@@ -150,8 +150,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    after the hold, a foreign `project.json` is imported and a foreign `timeline.tsx` applied through the mirror, and
    anything that can't be is kept and reported.
 5. **Conflicts stay data.** A clash keeps head's value and the writer's side becomes a card, kept as a notice for its
-   author (`cb conflicts`, the Stop hook). The person's own cards also show in the History panel, which resolves exactly
-   the card it shows.
+   author (`cb conflicts`, the Stop hook). The person's own cards also show in the History panel, passed as core made
+   them (`ours` is head, `theirs` the person's edit, shown as "mine"); resolving one removes the kept cards identical to
+   it (the panel shows those once) and no other.
 6. **If a commit fails** (a Carton bug, a full disk), the write still happens, as in 1.4.0, and the failure is logged.
    The next commit imports that file as an outside change. A Carton failure never stops the person from saving.
 
