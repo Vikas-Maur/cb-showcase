@@ -107,6 +107,118 @@
       ]
     },
     {
+      "id": "stores-sqlite-ab",
+      "agent": "stores",
+      "claim": "verifier's A/B for S3c (commit p50 0.035 → 0.110 ms between two runs on different CPUs): in one job, A = store-sqlite before the fixes (f362256) with its harness, B = the same code with the new harness (yields between commits), C = the fixed code (snapshot) with the new harness; open and commit cells, 7 rounds, side order rotated",
+      "timeout": 75,
+      "steps": [
+        {
+          "label": "check out f362256 twice (A, and B with the new bench/cell.ts), npm ci in each",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd ..; git fetch --no-tags --depth=1 origin f3622561f1ba4e9f164a0350aaca49a8d694a947; git worktree add --detach {tmp}/ab-old f3622561f1ba4e9f164a0350aaca49a8d694a947; git worktree add --detach {tmp}/ab-oldharness f3622561f1ba4e9f164a0350aaca49a8d694a947; cp carton/packages/store-sqlite/bench/cell.ts {tmp}/ab-oldharness/carton/packages/store-sqlite/bench/cell.ts; (cd {tmp}/ab-old/carton && npm ci --no-audit --no-fund); (cd {tmp}/ab-oldharness/carton && npm ci --no-audit --no-fund)"
+          ]
+        },
+        {
+          "label": "ci/xcheck/ab-sqlite.mjs: bench/run.ts for A, B, C, one round each per turn, order rotated, 7 rounds",
+          "env": {
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "ci/xcheck/ab-sqlite.mjs",
+            "--rounds",
+            "7",
+            "--cells",
+            "^(open|commit)",
+            "--tmp",
+            "{tmp}",
+            "--results",
+            "{results}",
+            "A={tmp}/ab-old/carton/packages/store-sqlite",
+            "B={tmp}/ab-oldharness/carton/packages/store-sqlite",
+            "C=packages/store-sqlite"
+          ],
+          "stdoutTo": "{results}/ab-run.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "ab-A.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
+        },
+        {
+          "file": "ab-B.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
+        },
+        {
+          "file": "ab-C.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
+        }
+      ]
+    },
+    {
       "id": "stores-idb-cells",
       "agent": "stores",
       "claim": "store-idb open / commit / readlog at 10k and 100k in headless Chrome (notes 2)",
