@@ -4,7 +4,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { scratchProfile, scratchRoot } from "./env.ts";
+import { scratchProfile } from "./env.ts";
 import { createInterface } from "node:readline";
 
 export interface ProcOptions {
@@ -73,26 +73,10 @@ export class Proc {
   }
 }
 
-/**
- * A short temp folder inside the scratch root for the processes a scenario starts: a lease holder whose bundle path is
- * too deep for a Unix socket puts its control socket in the temp folder (`holderSocketPath`), and a process killed
- * with SIGKILL leaves it there; inside scratch it goes with the scenario. Only when the path stays short (a socket
- * path must fit 104 bytes on macOS); Windows uses named pipes.
- */
-function shortTmp(): string | null {
-  if (process.platform === "win32") return null;
-  const t = join(scratchRoot(), "t");
-  if (t.length > 50) return null;
-  mkdirSync(t, { recursive: true });
-  return t;
-}
-
 /** The tests' own CARDBOARD_* / Claude Code variables must never leak into the processes they start. */
 function cleanEnv(extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = {};
   for (const [k, v] of Object.entries(process.env)) if (!/^(CARDBOARD_|CARTON_AGENT|CLAUDECODE|CLAUDE_CODE|GEMINI_CLI|CODEX_|CURSOR_TRACE_ID)/.test(k)) env[k] = v;
-  const t = shortTmp();
-  if (t) env.TMPDIR = t;
   // the run's scratch profile (env.ts), also when a caller's environment was set before it
   Object.assign(env, scratchProfile());
   for (const [k, v] of Object.entries(extra)) if (v === undefined) delete env[k]; else env[k] = v;

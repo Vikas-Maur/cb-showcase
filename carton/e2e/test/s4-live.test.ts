@@ -229,8 +229,11 @@ test("S4 a machine joins a shared cut from an empty store (Invite to edit): catc
   assert.equal(inv.code, 0, inv.stderr);
   const invite = inv.lines.at(-1);
   assert.equal(invite.cut.sequencer.kind, "server");
-  const c = makeMachine("s4-join-c", a.m);
+  // C has the project's files as they were before any of A's edits (the fixture): only Carton can bring A's edits in
+  const c = makeMachine("s4-join-c");
+  assert.equal(c.projectId, a.m.projectId);
   assert.ok(!existsSync(join(c.dbDir, "carton.db")), "nothing of A's carton.db on C");
+  assert.ok(itemNamed(c, SAMPLE.logo)?.zIndex !== 3 && itemNamed(c, SAMPLE.title)?.fontSize !== 110, "C's files don't have A's edits yet");
   const linkC = await Link.open(host.port);
   t.after(() => linkC.close());
   const appC = await startApp(procs, c, host, "carol", linkC, { join: invite });

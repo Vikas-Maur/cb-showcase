@@ -65,8 +65,19 @@ export async function createHolderEngine({ dbPath, config }: HelperFactoryOption
   // (confirmed, late conflicts, refused) to the view's sidecar (R5-04). `@carton/local`'s CartonHolderEngine doesn't
   // (B10): `wireSidecars: false` runs without it, to pin that.
   if (config.wireSidecars !== false) {
+    // The server's answer can arrive before the materializer has recorded the save's change id on its view (the ack
+    // races the save's own bookkeeping). A file save writes its change id into its attempt slot (`["attempt", rel]`)
+    // before committing, so: after the materializer's current work, an id that a view claims is settled now; one still
+    // in an attempt slot is looked up again until its view claims it; any other (a cb commit, a GUI save) is no view's.
     const settleView = async (id: string, s: Parameters<Materializer["onChangeUpdate"]>[2]) => {
-      for (const r of await store.range<{ lastChange?: string | null }>("views", { prefix: ["view"] })) if (r.value?.lastChange === id) await mz.onChangeUpdate(String(r.key[1]), id, s);
+      for (const end = Date.now() + 30_000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
+        await mz.idle();
+        const rows = (await store.range<{ lastChange?: string | null }>("views", { prefix: ["view"] })).filter((r) => r.value?.lastChange === id);
+        for (const r of rows) await mz.onChangeUpdate(String(r.key[1]), id, s);
+        if (rows.length) return;
+        const attempts = await store.range<{ id?: string }>("views", { prefix: ["attempt"] });
+        if (!attempts.some((r) => r.value?.id === id)) return;
+      }
     };
     carton.on((e) => {
       if (e.type === "change" && e.local && e.change.id) void settleView(e.change.id, { status: "confirmed", seq: e.seq });
