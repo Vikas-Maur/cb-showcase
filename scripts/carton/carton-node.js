@@ -199,7 +199,16 @@ async function setRev(lc, rev, ref) {
   if (typeof rev !== "number" || !ref) return;
   await lc.store.write([{ table: REVS, key: ["rev", rev], value: ref }, { table: REVS, key: refKey(ref), value: rev }]);
 }
-const refOf = (lc, rev) => (typeof rev === "number" ? lc.store.get(REVS, ["rev", rev]) : Promise.resolve(undefined));
+// A string is a Carton header ref (what the apply reads off a file the Materializer printed: "Main cut@3~3f9a1c0e
+// b:… p:… by …"): its exact version when core can rebuild it, as the string core's commit and checkout take; else
+// undefined, never a guess (H3).
+const refOf = async (lc, rev) => {
+  if (typeof rev === "number") return lc.store.get(REVS, ["rev", rev]);
+  const ref = typeof rev === "string" ? rev.trim() : "";
+  if (!ref) return undefined;
+  try { await lc.carton.resolve(ref); } catch (e) { if (e?.code === "STATE_UNKNOWN") return undefined; throw e; }
+  return ref;
+};
 const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 
 // Who an actor id is (CARDBOARD_ACTOR's form). The person at the app shares the machine's undo group with windowless
@@ -264,6 +273,9 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   // The version the edit was made on: the GUI's (its editor's), the apply's header, else what the writer read.
   const rev = meta?.base ?? meta?.rev ?? base?.stateUpdatedAt;
   let baseRef = await refOf(lc, rev), imported = null;
+  // A Carton header names its version exactly: one that can't be rebuilt any more (the apply checked it a moment ago)
+  // is never committed as an edit of head.
+  if (typeof rev === "string" && !baseRef) throw new Error(`the version ${rev} the edit was made on is no longer available`);
   if (!baseRef && base && rev === base.stateUpdatedAt) {
     // What the writer read isn't a state Carton wrote: a foreign save. Import it first, attributed as one.
     imported = await importForeign(lc, base);
@@ -608,13 +620,15 @@ export const cardboard14 = {
     const first = revs.length ? Math.min(...revs) : Infinity;
     return [...revs, ...older.filter((r) => r < first)];
   },
-  async revision({ bundlePath, rev, slice, file }) {
+  // `ref` in place of `rev`: a Carton header ref (H3, the apply's base), {ref, doc} if Carton rebuilds it exactly.
+  async revision({ bundlePath, rev, ref: header, slice, file }) {
     const lc = await open(bundlePath);
-    const ref = lc ? await refOf(lc, Number(rev)) : undefined;
+    const ref = lc ? await refOf(lc, header ?? Number(rev)) : undefined;
     if (!ref) return file();
     // (the mirror's revision readers hand it to Cardboard's restore and diff code: a copy, as for head)
     const p = forCardboard(materializeProject(await lc.carton.checkout(ref), readProject(bundlePath)));
-    return { rev: Number(rev), at: new Date(Number(rev)).toISOString(), doc: slice ? slice(p) : { tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio } };
+    const doc = slice ? slice(p) : { tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio };
+    return header !== undefined ? { ref, doc } : { rev: Number(rev), at: new Date(Number(rev)).toISOString(), doc };
   },
   async history({ bundlePath, rows }) {
     const lc = await open(bundlePath);

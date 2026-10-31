@@ -444,7 +444,8 @@ What changes with it on:
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit.
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
-  against the current timeline and reverted newer edits.
+  against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
+  printed from, whether its header is Cardboard's number or Carton's version.
 - **History tab** in the editor's left rail: versions, compare, restore, cuts, fold in. Opening an old version shows
   it read-only until "Return to current".
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
@@ -481,7 +482,11 @@ run below.
    the version it was made on; the save into `project.json` and `timeline.tsx` displaces whatever is there and links
    the new file in, so a write by anything else is kept and imported, never overwritten (`.carton\displaced\`).
 2. History and undo read Carton's versions first, then the old `.revs`; an apply's base is the exact version its
-   header names; Carton's merge replaces Cardboard's.
+   header names; Carton's merge replaces Cardboard's. The header can be Cardboard's (`// cardboard:rev <number>`) or
+   Carton's (`// cardboard:rev Main cut@12~3f9a1c0e b:… p:… by …`, as Carton's own prints of the timeline write it);
+   only the first such line counts. For Carton's, the edit merges against that exact version and is saved as made on
+   it; a version Carton can't rebuild exactly is refused with "print it again". (Cardboard alone reads only a number
+   there, so it took Carton's header for none and merged against the current timeline, reverting newer edits.)
 3. A `.cbproj` never carries `.carton\` or Carton's view files in `.scratch\views\` (on or off: the database holds
    local paths); anything else in `.scratch\views\` goes in.
 4. `cb`: the commands, WHO in `cb history`, `undo --turn`, the MCP tools, and a `cb carton-hook` command host Claude
@@ -491,6 +496,12 @@ run below.
    for the pages.
 6. The editor: the save names the version it was made on; a change from elsewhere is adopted without an undo step
    (a pending save goes first); Ctrl+Z goes to Carton; ripple and split deletes record what they moved; the History tab.
+7. Cardboard's own `timeline.tsx` printer and parser, in both copies, for Carton's prints of the timeline (per-agent
+   views, the shared file during an agent's turn): the print is exactly what `cb source print` shows, with Carton's
+   header on its rev line; the parse is exactly what `cb source apply` would save for the file, without saving or
+   importing anything. What only the apply can do (a path to a new clip, a LUT file outside `luts\`, a color match) is
+   refused there, as is a half-written file. Each of Cardboard's functions it calls is checked at build time where
+   Cardboard's own apply calls it.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
 thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
@@ -512,7 +523,11 @@ They check that with Carton off `cb`'s output and files equal this build's witho
 Carton with the right arguments (a recording stand-in), that the real library worker runs patched (on Node, standing
 in for Electron's port), and the editor's and main's bridges on stand-ins, with the methods each answers itself, and
 that a read catching `project.json` in the middle of an install waits for it instead of reporting the project removed,
-and that the staging folder's removal is retried. 33 tests.
+and that the staging folder's removal is retried. `codec.test.js`: Cardboard's own printer and parser as Carton uses
+them, in `cb` and the worker (the print equals `cb source print` but for the rev line, the parse equals what
+`cb source apply` saves, a half-written file is refused), and an apply under Carton's header merging against that
+exact version, or refused when it's gone; with Carton off, the same file applies as in this build without Carton.
+38 tests.
 
 On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
 

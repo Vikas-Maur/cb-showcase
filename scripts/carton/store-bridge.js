@@ -3,11 +3,17 @@
 // carton/docs/INTEGRATION-1.4.0.md §4.1–4.2 says what each one does and why.
 // With Carton off (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code and nothing of Carton is
 // loaded. Only the .cbproj exclusions (H11: .carton/ and Carton's own view files) apply either way.
-// Usage: require("./carton/store-bridge")({ dir, slice, who }) → the preamble's text. `dir` is a JS expression for the
-// folder that holds carton-node.cjs. `slice` names the bundle's own function that cuts a project down to what `.revs`
-// keeps: tracks, items and aspect ratio, with code sources inlined. `who` is the actor when nothing else says:
-// "cli" for a terminal cb, "app" for the worker's own bookkeeping.
-module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
+// Usage: require("./carton/store-bridge")({ dir, slice, who, codec }) → the preamble's text. `dir` is a JS expression
+// for the folder that holds carton-node.cjs. `slice` names the bundle's own function that cuts a project down to what
+// `.revs` keeps: tracks, items and aspect ratio, with code sources inlined. `who` is the actor when nothing else says:
+// "cli" for a terminal cb, "app" for the worker's own bookkeeping. `codec.names` names the bundle's own functions the
+// timeline codec calls (patch-carton.js proves each one where Cardboard's apply calls it); without it (unit tests of
+// the bridge alone) the codec's parse throws.
+const NO_CODEC = new Proxy({}, { get: () => "__cartonNoCodec" });
+module.exports = ({ dir, slice, who, codec }) => {
+  const N = codec?.names ?? NO_CODEC;
+  return String.raw`var __carton = (() => {${codec ? "" : `
+  const __cartonNoCodec = () => { throw new Error("this bundle has no timeline parser"); };`}
   // H11: a .cbproj never carries Carton's database, which holds local paths and the device's pins, or the view files
   // Carton writes for agents in .scratch/views/. Only Carton's own: anything else there is a person's or an agent's
   // (stock Cardboard tells agents to keep their working files in .scratch/) and goes into the file as in Cardboard
@@ -63,6 +69,16 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
   const agentsMd = (text) => (process.env.CARDBOARD_CARTON === "1" ? text + VIEWS_MD : text);
   if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive, cartonView, agentsMd };
   const path = require("node:path");
+  // H3: Carton's header form on Cardboard's rev line, read with @carton/cardboard's grammar (header.ts: findRev,
+  // parseRevBody): the first "// cardboard:rev" line counts; a body of digits is 1.4.0's rev (ms), any other body is
+  // a Carton ref, "<cut name>@<seq>~<hash8> b:<cut token> p:<nonce> by <who>". Its ref is read as core reads it (up to
+  // the last "@<seq>~<hash8> b:<8 hex>"), else up to the first " b:"; core resolves the whole body.
+  const CORE_BODY = /^(.+@\d+~[0-9a-f]{8}) b:([0-9a-f]{8})(?: p:([0-9A-Za-z]+))?(?: by (.*))?$/;
+  const REV_BODY = /^(.+?)(?: b:([0-9A-Za-z_-]+))?(?: p:([0-9A-Za-z]+))?(?: by (.*))?$/;
+  const cartonRevOf = (text) => {
+    const b = REV_LINE.exec(text)?.[1].trim();
+    return b && !/^\d+$/.test(b) ? b : null;
+  };
   let api;
   // carton-node.cjs is loaded on first use, so a cb command that never touches a project pays nothing for it. If it
   // can't load, every hook runs Cardboard's own code, as with Carton off.
@@ -82,6 +98,78 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
   let scoped = null;
   // The last commit's result per project, for the apply's status.
   const last = new Map();
+
+  // Cardboard's own timeline.tsx printer and parser as Carton's TimelineCodec (carton/packages/cardboard/src/codec.ts),
+  // for the Materializer's views and the shared file: globalThis.__cartonTimelineCodec, set below at bundle load. They
+  // need the library's timeline mirror (its media table, LUTs, proxies, ids and bundle folders): attach() records each
+  // one; a project is printed by the mirror whose library holds it, else by the first.
+  const mirrors = [];
+  const mirrorFor = (project) => {
+    let first = null;
+    for (const r of mirrors) {
+      const m = r.deref();
+      if (!m) continue;
+      first ??= m;
+      if (project?.id !== undefined && m.options.bundles.bundlePathFor(project.id) !== undefined) return m;
+    }
+    if (!first) throw new Error("Cardboard's timeline codec isn't ready: no project library is open in this process");
+    return first;
+  };
+  // What Cardboard reports as an error diagnostic, as one error (the diagnostics ride along).
+  const refused = (diagnostics) => {
+    const errors = diagnostics.filter((d) => d.severity === "error");
+    const e = new SyntaxError("The timeline doesn't apply: " + errors.map((d) => d.message + (d.position?.line ? " (line " + d.position.line + ")" : "")).join("; "));
+    e.diagnostics = diagnostics;
+    return e;
+  };
+  const cardboardError = (e, before = []) => (typeof e?.toDiagnostic === "function" ? refused([...before, e.toDiagnostic()]) : e);
+  const timelineCodec = {
+    // What cb source print and the mirror write for the project (mirror.print), with rev on the rev line in place of
+    // the project's stateUpdatedAt.
+    print(project, rev) {
+      return mirrorFor(project).printTimeline(project, ${slice}(project), rev, []);
+    },
+    // Cardboard's apply of the file onto a copy of project, as it is with no earlier version to merge against (as an
+    // apply with base = current): its literal-only parse, media names resolved against project.media, a text or code
+    // item's media made as the apply makes it, a new clip reframed as the apply reframes it, then writeTimeline's
+    // document through the store's own scoped merge (code sources move into media[].data.code.source). Never writes:
+    // what the apply would ingest or import (a path to a new file, a .cube outside luts/, colorGrade.match) is an
+    // error here, as is any error diagnostic and any text that doesn't parse. project is never changed.
+    async parse(text, project) {
+      if (typeof text !== "string") throw new TypeError("parse(text, project): text must be a string");
+      const m = mirrorFor(project), cur = structuredClone(project ?? {}), newId = m.options.newId;
+      const bundle = cur.id === undefined ? undefined : m.options.bundles.bundlePathFor(cur.id);
+      let g;
+      try { g = ${N.parse}(text); } catch (e) { throw cardboardError(e); }
+      const resolve = m.mediaResolver(cur), byId = new Map((cur.media ?? []).map((x) => [x.id, x]));
+      const resolveMedia = (ref) => {
+        const id = resolve(ref);
+        if (id === null) return null;
+        const d = byId.get(id)?.data, out = { id };
+        if (d?.type !== undefined) out.type = d.type;
+        if (d?.duration !== undefined) out.duration = d.duration;
+        if (d?.frameRate !== undefined) out.frameRate = d.frameRate;
+        return out;
+      };
+      const grades = m.options.grades;
+      const luts = grades ? await ${N.luts}(grades, g, { projectId: cur.id, dryRun: true, newId, pathOf: (p) => (bundle !== undefined && ${N.isPath}(p) ? ${N.resolvePath}(p, bundle) : null), mediaIdOf: resolve, mediaNameOf: (id) => byId.get(id)?.data?.fileName ?? null }) : null;
+      const templates = bundle !== undefined ? await ${N.templates}(g, bundle) : new Map();
+      // (the apply slices the project again after reading it again; this one doesn't change)
+      const now = ${slice}(cur);
+      let q;
+      try { q = ${N.toDoc}(g, { resolveMedia, readTemplate: (p) => templates.get(p) ?? null, storedItem: ${N.stored}(now), newId }); }
+      catch (e) { throw cardboardError(e, luts?.diagnostics); }
+      const diagnostics = [...(luts?.diagnostics ?? []), ...q.diagnostics];
+      for (const f of luts?.wouldImportLuts ?? []) diagnostics.push({ severity: "error", code: "lut-import", message: "colorGrade.lut.file " + f + " isn't in the project yet: cb source apply imports it" });
+      if (luts?.requests.length) diagnostics.push({ severity: "error", code: "color-match", message: "colorGrade.match is measured by cb source apply, not by a parse" });
+      if (diagnostics.some((d) => d.severity === "error")) throw refused(diagnostics);
+      const framed = await ${N.reframe}(now, now, q.doc, (id) => { const x = byId.get(id); return (x && ${N.mediaInfo}(x)) ?? undefined; });
+      const made = ${N.synth}(${N.keepIds}(framed, now), cur, newId);
+      const doc = { ...${N.withSlice}(cur, ${N.merge}(now, now, made.doc, {}).doc), media: [...(cur.media ?? []), ...made.added] };
+      return ${N.codeToMedia}(${N.keepDone}(cur, ${N.scoped}(cur, ${N.dropOrphans}(doc), { ownedFields: [...${N.owned}], ownedMediaIds: made.added.map((x) => x.id), removedMediaIds: ${N.orphans}(doc).map((x) => x.id) })));
+    },
+  };
+
   const self = {
     on: true,
     skipInArchive,
@@ -112,6 +200,8 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
       }
     },
     attach(store, mirror, root) {
+      // (weakly: Open Project's staging library goes when Cardboard is done with it)
+      mirrors.push(new WeakRef(mirror));
       carton()?.attach({ root, store, mirror, slice: (d) => ${slice}(d) });
     },
     scope(scope) {
@@ -178,7 +268,23 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     // does a project without history (Carton then answers as 1.4.0 does).
     async missingRev(rev, current, bundlePath) {
       if (rev === undefined || !carton() || !(await carton().hasHistory(bundlePath))) return current;
-      throw new Error("This timeline was printed from version " + rev + ", which is no longer available. Print it again (cb source print) and redo the edit.");
+      const version = typeof rev === "string" ? (CORE_BODY.exec(rev) ?? REV_BODY.exec(rev))?.[1] ?? rev : rev;
+      throw new Error("This timeline was printed from version " + version + ", which is no longer available. Print it again (cb source print) and redo the edit.");
+    },
+    // H3: the apply's parse of a file whose first rev line is Carton's (a view's, or the shared file the Materializer
+    // printed) carries that ref as its rev, in place of 1.4.0's number (which only reads a line of digits, so it found
+    // none, or a later one): the apply then takes its base from Carton (cartonBase), and its write's scope names that
+    // version as the commit's base. Any other file keeps 1.4.0's rev.
+    headerRev(parsed, text) {
+      const rev = cartonRevOf(text);
+      if (rev !== null) parsed.rev = rev;
+      return parsed;
+    },
+    // H3: the exact version a Carton header names, as the bundle's slice (the .revs form the apply merges with); null
+    // when Carton can't rebuild it exactly (missingRev then says so).
+    async cartonBase(rev, bundlePath) {
+      if (!carton()) return null;
+      return (await carton().revision({ bundlePath, ref: rev, slice: (d) => ${slice}(d), file: () => null }))?.doc ?? null;
     },
     // H3: Carton's merge3 in place of Cardboard's item-level 3-way merge; same result shape.
     merge3: (base, current, file, opts, rn) => (carton() ? carton().merge3({ base, current, file, prefer: opts?.prefer, rn }) : rn(base, current, file, opts)),
@@ -202,6 +308,9 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
       return carton()?.worker({ library, emit }) ?? {};
     },
   };
+  // The contract with the Materializer's wiring (carton-node.cjs, loaded later): this process's TimelineCodec.
+  globalThis.__cartonTimelineCodec = timelineCodec;
   return self;
 })();
 `;
+};
