@@ -82,7 +82,7 @@ const WRAP = `echo "LOCKED $(date +%s.%N) $(cut -d' ' -f1-3 /proc/loadavg)" >&2;
 function runLocked(cmd: string[], cwd: string, env: Record<string, string>, txt: string) {
   const t0 = Date.now() / 1000;
   const fd = openSync(txt, "w");
-  const p = spawnSync("flock", [LOCK, "sh", "-c", WRAP, "sh", ...cmd], { cwd, env: { ...process.env, ...env }, stdio: ["ignore", fd, "pipe"], encoding: "utf8", maxBuffer: 1 << 26 });
+  const p = spawnSync("flock", [LOCK, "sh", "-c", WRAP, "sh", ...cmd], { cwd, env: { ...process.env, ...env, GFV_LOCKED: "1" }, stdio: ["ignore", fd, "pipe"], encoding: "utf8", maxBuffer: 1 << 26 });
   closeSync(fd);
   const err = p.stderr ?? "";
   writeFileSync(txt.replace(/\.txt$/, ".err"), err);

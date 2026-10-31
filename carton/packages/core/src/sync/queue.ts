@@ -16,6 +16,7 @@
 import type { Schema } from "../schema.ts";
 import type {
   Actor,
+  Change,
   ChangeBase,
   ConfirmedChange,
   ConflictCard,
@@ -28,7 +29,7 @@ import type {
   RemapMaps,
   SequencerState,
 } from "../types.ts";
-import { apply, canonical, composeMaps, declare, diff, fork, inferRemaps, isEmptyMap, merge3, sha256Hex } from "../engine/index.ts";
+import { apply, canonical, composeMaps, declare, diff, fork, hashDoc, inferRemaps, isEmptyMap, merge3, sha256Hex } from "../engine/index.ts";
 import type { ConfirmedId, KeyframeData } from "./messages.ts";
 
 /** A confirmed row as a replica holds it. Rows learned only through a keyframe are placeholders (`id: null`). */
@@ -50,6 +51,15 @@ export interface QueueVersion {
   cards: ConflictCard[];
 }
 
+/**
+ * History a change carries besides its ops (fold-ins, undo, partial accept, names): kept through rebases and sent with
+ * every push, so the merge DAG and undo survive on shared cuts (review finding 13).
+ */
+export type HistoryFields = Partial<Pick<Change, "kind" | "mergeOf" | "mergeEdges" | "mergeBase" | "reverts" | "rejected" | "lastAuthors" | "name">>;
+const HISTORY_KEYS = ["kind", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name"] as const;
+/** An empty change that must still be recorded: a fold-in (a DAG node) or an undo (it marks its change undone). */
+export const keepsWhenEmpty = (h: HistoryFields | undefined): boolean => !!h && (h.mergeOf !== undefined || h.reverts !== undefined);
+
 export interface QueuedChange {
   id: string;
   author: Actor;
@@ -68,6 +78,7 @@ export interface QueuedChange {
   /** A withdraw was sent for it on this connection and epoch (H1). */
   withdrawSent: { conn: number; epoch: number } | null;
   meta: Record<string, unknown>;
+  history?: HistoryFields;
 }
 
 export interface QueueBranch {
@@ -102,6 +113,8 @@ export interface CommitInput {
   meta?: Record<string, unknown>;
   /** Infer and record a remap from an unrecorded edit that is unambiguously a ripple (§6.1). Default true. */
   inferIntent?: boolean;
+  /** Fold-in, undo and naming fields the change records (kept through rebases, sent with the push). */
+  history?: HistoryFields;
 }
 
 export const last = <T>(a: readonly T[]): T => a[a.length - 1]!;
@@ -131,6 +144,10 @@ export class ReplicaQueue {
   readonly versions = new Map<string, QueueVersion[]>();
   /** Optimistic version → doc, for GUI bases held in engine memory (bounded). */
   readonly statesByVersion = new Map<number, Doc>();
+  /** Ids confirmed through a server list inside a stretch held only as placeholders: branch → id → seq (finding 18). */
+  private readonly listed = new Map<string, Map<string, number>>();
+  /** The highest placeholder seq per branch: rows above it are all held, so the client can check them itself. */
+  private readonly placeholderTop = new Map<string, number>();
   /** Every replica id (process) that committed here; claimed in `hello` (R10-02). */
   readonly rids = new Set<string>();
   private readonly listeners: ((e: QueueEvent) => void)[] = [];
@@ -227,7 +244,7 @@ export class ReplicaQueue {
   /** A local change. On a branch this replica sequences it is confirmed at once; otherwise it joins the queue. */
   commit(b: string, ch: CommitInput): { id: string; status: "confirmed" | "pending"; seq?: number; empty?: boolean } {
     const br = this.branch(b);
-    if (!ch.ops.length) return { id: ch.id, status: "confirmed", empty: true };
+    if (!ch.ops.length && !keepsWhenEmpty(ch.history)) return { id: ch.id, status: "confirmed", empty: true };
     this.rids.add(ridOf(ch.id));
     const o = this.optimistic(b);
     const queue = this.queues.get(b)!;
@@ -267,6 +284,7 @@ export class ReplicaQueue {
         rebase: 0,
         supersedes: [],
         ...decl,
+        ...pickHistory(ch.history),
         seq: this.headSeq(b) + 1,
       };
       this.appendRow(b, row);
@@ -287,6 +305,7 @@ export class ReplicaQueue {
       sentBases: [],
       withdrawSent: null,
       meta: ch.meta ?? {},
+      ...(ch.history ? { history: pickHistory(ch.history) } : {}),
     };
     queue.push(p);
     this.invalidate(b);
@@ -377,14 +396,26 @@ export class ReplicaQueue {
       for (const op of c.ops) if (op.op === "remap") recorded.push(op.maps);
       if (c.kinds) Object.assign(concKinds, c.kinds);
     }
-    const own = v.intent?.maps && !isEmptyMap(v.intent.maps) ? v.intent : undefined;
+    // the change's own remap: its recorded intent and any first-class remap op (a ripple stored as one op, P5)
+    const remapOps = v.ops.filter((op): op is Extract<Op, { op: "remap" }> => op.op === "remap");
+    const ownMaps: RemapMaps[] = [];
+    if (v.intent?.maps && !isEmptyMap(v.intent.maps)) ownMaps.push(v.intent.maps);
+    for (const op of remapOps) if (!isEmptyMap(op.maps)) ownMaps.push(op.maps);
+    const own = ownMaps.length ? { maps: ownMaps.length === 1 ? ownMaps[0]! : composeMaps(...ownMaps), lineage: v.intent?.lineage } : undefined;
     const m = merge3(v.baseDoc, head, mine, S, {
-      remaps: { ...(recorded.length ? { ours: { maps: composeMaps(...recorded) } } : {}), ...(own ? { theirs: { maps: own.maps!, ...(own.lineage ? { lineage: own.lineage } : {}) } } : {}) },
+      remaps: { ...(recorded.length ? { ours: { maps: composeMaps(...recorded) } } : {}), ...(own ? { theirs: { maps: own.maps, ...(own.lineage ? { lineage: own.lineage } : {}) } } : {}) },
       kinds: { ours: concKinds, theirs: v.kinds ?? {} },
       rekeys: "ours",
     });
-    const intent = own ? { ...v.intent!, maps: m.edges.ours } : v.intent;
-    return { ops: diff(head, m.doc, S), cards: m.conflicts, intent };
+    // its remap re-expressed in head's coordinates (its edge map)
+    const intent = v.intent?.maps && !isEmptyMap(v.intent.maps) ? { ...v.intent, maps: m.edges.ours } : v.intent;
+    if (!remapOps.length) return { ops: diff(head, m.doc, S), cards: m.conflicts, intent };
+    // keep a remap as one op through the rebase (one row per ripple at the sequencer, P5): the remap in head's
+    // coordinates first, then whatever else takes head there to the merged state
+    if (isEmptyMap(m.edges.ours)) return { ops: diff(head, m.doc, S), cards: m.conflicts, intent };
+    const remap: Op = { op: "remap", path: ["#remap"], maps: m.edges.ours, ...(remapOps[0]!.lineage ? { lineage: remapOps[0]!.lineage } : {}) };
+    const mapped = apply(fork(head, S), [remap], S);
+    return { ops: [remap, ...diff(mapped, m.doc, S)], cards: m.conflicts, intent };
   }
 
   /** Rebase the whole queue onto the current head with no new rows (after "behind", a keyframe jump, a reject). */
@@ -401,6 +432,9 @@ export class ReplicaQueue {
   jumpTo(b: string, kf: KeyframeData): boolean {
     const log = this.logs.get(b)!;
     if (kf.seq <= log.length) return false;
+    // a keyframe becomes confirmed state: it must hash to what it claims (review finding 14)
+    if (kf.stateHash && hashDoc(kf.doc, this.schema) !== kf.stateHash) throw new KeyframeMismatch(b, kf.seq);
+    this.placeholderTop.set(b, kf.seq);
     for (let s = log.length + 1; s <= kf.seq; s++) log.push({ seq: s, id: null, ops: [], placeholder: true });
     this.kf.get(b)!.set(kf.seq, kf.doc);
     this.invalidate(b);
@@ -422,16 +456,45 @@ export class ReplicaQueue {
       this.queues.set(b, queue.filter((x) => x !== p));
       out.push(p);
       if (c.withdrawn) this.finishAbsorb(b, p, true);
-      else this.confirmed(b, p, { id: c.id, seq: c.seq, rebase: c.rebase ?? 0 }, true);
+      else {
+        (this.listed.get(b) ?? this.listed.set(b, new Map()).get(b)!).set(c.id, c.seq);
+        this.confirmed(b, p, { id: c.id, seq: c.seq, rebase: c.rebase ?? 0 }, true);
+      }
     }
     if (out.length) this.invalidate(b);
     return out;
+  }
+  /**
+   * Whether this replica holds every row of `(lo, hi]` itself (no placeholder, not past head): then it can tell on
+   * its own whether a change pushed on base `lo` was confirmed, and needn't claim that base in hello.
+   */
+  holdsRows(b: string, lo: number, hi: number): boolean {
+    return hi <= this.headSeq(b) && lo >= (this.placeholderTop.get(b) ?? 0);
+  }
+
+  /**
+   * The version a change made (L5: version ids are provisional until confirmed). Confirmed: `<branch>@<seq>`, final.
+   * Pending: `<branch>@<head>+<n>` (the n-th change of the queue on top of the confirmed head), provisional: it moves
+   * as rows arrive, and the share of a cut stays "syncing" until its sequencer has answered. null: unknown id.
+   */
+  versionId(b: string, id: string): { id: string; provisional: boolean } | null {
+    const log = this.logs.get(b)!;
+    for (let i = log.length - 1; i >= 0; i--) if (log[i]!.id === id) return { id: `${b}@${i + 1}`, provisional: false };
+    const listed = this.listed.get(b)?.get(id);
+    if (listed !== undefined) return { id: `${b}@${listed}`, provisional: false };
+    const queue = this.queues.get(b)!;
+    let n = 0;
+    for (const p of queue) {
+      if (last(p.versions).ops.length) n++;
+      if (p.id === id) return { id: `${b}@${log.length}+${n}`, provisional: true };
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------- leaving the queue
   /** The change's latest version is empty: it changes nothing now. */
   isEmpty(p: QueuedChange): boolean {
-    return last(p.versions).ops.length === 0;
+    return last(p.versions).ops.length === 0 && !keepsWhenEmpty(p.history);
   }
   /**
    * Absorb a change that was never sent: no copy can exist anywhere, so it just leaves the queue. A change any copy
@@ -470,5 +533,22 @@ export class ReplicaQueue {
     if (!p) return false;
     for (const v of p.versions) v.policy = "merge";
     return true;
+  }
+}
+
+function pickHistory(h: HistoryFields | undefined): HistoryFields {
+  const out: Record<string, unknown> = {};
+  if (h) for (const k of HISTORY_KEYS) if (h[k] !== undefined) out[k] = h[k];
+  return out as HistoryFields;
+}
+
+/** A keyframe whose document doesn't hash to its stateHash: never installed. */
+export class KeyframeMismatch extends Error {
+  readonly branchId: string;
+  readonly seq: number;
+  constructor(branchId: string, seq: number) {
+    super(`keyframe ${branchId}@${seq} doesn't match its state hash`);
+    this.branchId = branchId;
+    this.seq = seq;
   }
 }

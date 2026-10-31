@@ -833,8 +833,12 @@ export function resolve(merged: MergeResult, choices: Choices = {}): Doc {
   return apply(fork(m.base, m.schema), replayOps(m, pick), m.schema);
 }
 
-/** Two-way compare when no merge base exists: every difference is a card (nothing decided silently). */
-export function compare2(ours: Doc, theirs: Doc, schema: Schema): { doc: Doc; conflicts: ConflictCard[]; resolve(choices?: Choices): Doc } {
+/**
+ * Two-way compare when no merge base exists: every difference is a card (nothing decided silently). Each card is one
+ * record (or root field); resolving takes "theirs" (its ops), keeps "ours" ("base" too: there is none), or sets a
+ * `{value}` (undefined removes it). A card the choices don't name takes `prefer` (default "ours").
+ */
+export function compare2(ours: Doc, theirs: Doc, schema: Schema): { doc: Doc; conflicts: ConflictCard[]; resolve(choices?: Choices, prefer?: "ours" | "theirs"): Doc } {
   const ops = diff(ours, theirs, schema);
   const byRec = new Map<PathKey, Op[]>();
   const recPath = (op: Op): Path => (schema.collections[op.path[0] as string] ? op.path.slice(0, 2) : op.path.slice(0, 1));
@@ -847,11 +851,23 @@ export function compare2(ours: Doc, theirs: Doc, schema: Schema): { doc: Doc; co
     const p = recPath(list[0]!);
     return { kind: "compare", path: k, base: null, ours: nul(getIn(ours, p, schema)), theirs: nul(getIn(theirs, p, schema)), ops: list };
   });
-  const take = (c: ConflictCard, i: number, choices: Choices): boolean =>
-    (typeof choices === "function" ? choices(c, i) : Array.isArray(choices) ? choices[i] : (choices as Record<PathKey, Choice>)[c.path]) === "theirs";
+  const pick = (c: ConflictCard, i: number, choices: Choices): Choice | undefined =>
+    typeof choices === "function" ? choices(c, i) : Array.isArray(choices) ? choices[i] : (choices as Record<PathKey, Choice>)[c.path];
   return {
     doc: ours,
     conflicts,
-    resolve: (choices: Choices = {}) => apply(fork(ours, schema), conflicts.filter((c, i) => take(c, i, choices)).flatMap((c) => c.ops!), schema),
+    resolve: (choices: Choices = {}, prefer: "ours" | "theirs" = "ours") => {
+      const out: Op[] = [];
+      conflicts.forEach((c, i) => {
+        const ch = pick(c, i, choices) ?? prefer;
+        if (ch === "theirs") out.push(...c.ops!);
+        else if (typeof ch === "object") {
+          const path = recPath(c.ops![0]!);
+          const record = path.length === 2;
+          out.push(ch.value === undefined ? (record ? { op: "remove", path } : { op: "unset", path }) : { op: "set", path, value: ch.value });
+        }
+      });
+      return apply(fork(ours, schema), out, schema);
+    },
   };
 }

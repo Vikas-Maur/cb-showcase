@@ -3,6 +3,7 @@
 // end, so nothing needs a custom codec. Owner: sync-sequencer.
 
 import type { Actor, ChangeId, ConfirmedChange, Change, CutRecord, Doc, DagNode } from "../types.ts";
+import type { EnvelopeMsg } from "./envelope.ts";
 
 /** The protocol version both sides speak; `hello` carries the document schema version too. */
 export const PROTOCOL = 1;
@@ -62,7 +63,13 @@ export const VALIDATION_REASONS: ReadonlySet<RejectReason> = new Set<RejectReaso
   "bad change",
 ]);
 
-/** Live presence (§12): 10–20 Hz while dragging, 1 Hz while active, stops after 30 s idle. Never stored. */
+/** The most JSON one presence message may carry: the server drops bigger ones (never relayed, never stored). */
+export const PRESENCE_BYTES = 64 * 1024;
+
+/**
+ * Live presence (§12): 10–20 Hz while dragging, 1 Hz while active, stops after 30 s idle. Never stored. At most
+ * `PRESENCE_BYTES` of JSON with its actor; the server drops bigger ones.
+ */
 export interface PresenceState {
   /** Playhead or cursor, seconds. */
   at?: number;
@@ -96,6 +103,10 @@ export interface HelloMsg {
   rids: string[];
   schemaVersion: number;
   protocol?: number;
+  /** Rows only, no keyframe (the client found a keyframe's hash wrong). */
+  noKeyframe?: boolean;
+  /** The client reads envelopes (it has the blob store): the server may send it messages over 1 MiB as references. */
+  envelopes?: boolean;
 }
 /** Pipelined push of pending changes in queue order. A reject kills the rest of that `epoch`. */
 export interface PushMsg {
@@ -143,6 +154,8 @@ export interface ForkMsg {
   from: string;
   seq: number;
   rec: CutRecord;
+  /** The state at the fork point: the fork's root, so a joiner that doesn't hold the parent can start from it. */
+  root?: { stateHash: string; doc: Doc };
 }
 /** The keyframe the server asked for (`AckMsg.keyframeWanted`), for far-behind catch-up (§6.3). */
 export interface KeyframeMsg {
@@ -156,7 +169,8 @@ export interface PresenceMsg {
   actor: Actor;
   state: PresenceState | null;
 }
-export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg;
+/** Any message over 1 MiB, either way, travels as an envelope (`envelope.ts`). */
+export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | EnvelopeMsg;
 
 // ------------------------------------------------------------------ server -> client
 
@@ -170,6 +184,11 @@ export interface WelcomeMsg {
   confirmed: ConfirmedId[];
   /** More rows follow: send `hello` again with the new `have`. */
   more?: boolean;
+  /**
+   * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
+   * acting on the list. Unchecked ids are never to be taken as unconfirmed.
+   */
+  uncheckedFrom?: number;
 }
 /** New confirmed rows, fanned out to every subscriber (the pusher too, before its ack). */
 export interface ChangesMsg {
@@ -202,6 +221,8 @@ export interface RejectMsg {
   concurrent: { seq: number; id: ChangeId }[];
   epoch: number;
   confirmed?: ConfirmedId[];
+  /** As `WelcomeMsg.uncheckedFrom`: the list is incomplete; catch up with `hello` before rebasing. */
+  uncheckedFrom?: number;
   detail?: string;
 }
 export interface StatusMsg {
@@ -250,6 +271,8 @@ export interface PresenceFanoutMsg {
 export interface ErrorMsg {
   type: "error";
   reason: string;
+  /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */
+  reconnect?: boolean;
 }
 export type ServerMessage =
   | WelcomeMsg
@@ -263,4 +286,5 @@ export type ServerMessage =
   | UnknownBranchMsg
   | OverwrittenMsg
   | PresenceFanoutMsg
-  | ErrorMsg;
+  | ErrorMsg
+  | EnvelopeMsg;

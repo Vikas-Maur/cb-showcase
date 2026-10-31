@@ -57,15 +57,18 @@ test("overlap() describes a clash by path, read, span and order", () => {
   assert.ok(overlap(trim1, { ...place, spans: [{ track: "V1", lo: 4, hi: 6 }], structural: true }).span, "a structural span meets");
 });
 
-test("local sequencer: accept, duplicate, overlap reject with the clash, lww overwrite notice", { skip }, () => {
+test("local sequencer: accept, duplicate, overlap reject (the clash described on demand), lww overwrite notice", { skip }, () => {
   const s = createLocalSequencer(d0 as unknown as Doc, schema);
   const a = s.push(mk([set("c1", "opacity", 0.9)], { policy: "lww", author: { kind: "human", id: "bob" } }));
   assert.ok(a.ok && a.seq === 1);
   assert.ok(s.push({ ...mk([set("c1", "name", "x")]), id: a.ok ? a.change.id : "" }).ok, "a duplicate id is acked");
   const lww = s.push(mk([set("c1", "opacity", 0.3)], { policy: "lww" }));
   assert.ok(lww.ok && lww.notices.some((x) => x.kind === "overwritten" && x.to === "human/bob"));
-  const merge = s.push(mk([set("c1", "opacity", 0.5)]));
-  assert.ok(!merge.ok && merge.reason === "overlap" && merge.overlap?.path === "timelineItems/c1/opacity");
+  const mergeCh = mk([set("c1", "opacity", 0.5)]);
+  const merge = s.push(mergeCh);
+  assert.ok(!merge.ok && merge.reason === "overlap");
+  // the clash is described on demand (not computed on every reject)
+  assert.equal(overlap(mergeCh, s.log[0]!).path, "timelineItems/c1/opacity");
   assert.equal(s.pull(0).length, 2);
 });
 
@@ -77,4 +80,18 @@ test("local sequencer: a hard-validator failure is rejected 'invalid'; a set on 
   assert.ok(s.push(mk([{ op: "remove", path: ["timelineItems", "c0"] }])).ok);
   const late = s.push(mk([set("c0", "name", "late")], { base: { seq: 1, pending: [] } }));
   assert.ok(late.ok && late.notices.some((x) => x.kind === "lost-to-delete"));
+});
+
+test("a schema with no timeline: the local sequencer still orders changes by paths and reads (foundation review finding 15)", { skip }, () => {
+  const plain = defineSchema({ collections: { notes: { key: "id" } } });
+  const s = createLocalSequencer({ notes: [{ id: "n1", text: "a" }] } as unknown as Doc, plain);
+  const ch = (id: string, value: string, base = 0): Change => ({
+    id, hash: "h", author: { kind: "human", id: "a" }, branchId: "b", base: { seq: base, pending: [] },
+    ops: [{ op: "set", path: ["notes", "n1", "text"], value }], intent: null, kinds: null, policy: "merge", at: 0,
+    paths: ["notes/n1/text"], reads: ["notes/n1"], spans: [], trackOrder: [],
+  });
+  assert.ok(s.push(ch("x.1", "b")).ok);
+  const clash = s.push(ch("y.1", "c"));
+  assert.ok(!clash.ok && clash.reason === "overlap", "a concurrent edit of the same field still overlaps");
+  assert.ok(s.push(ch("y.1", "c", 1)).ok, "rebased onto head, it is accepted");
 });

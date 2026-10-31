@@ -11,7 +11,8 @@ import { cpus, totalmem, loadavg } from "node:os";
 import { gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { existsSync, cpSync, appendFileSync, readFileSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
 
 export const RUNS = Number(process.env.RUNS ?? 7);
@@ -126,3 +127,16 @@ export async function loadCardboard(): Promise<{ rn: Rn; fr: unknown; source: st
 }
 // the slice rn works on (code.md §2: Ke -> {tracks, timelineItems, aspectRatio})
 export const slice = (d: Record<string, any>): HostSlice => ({ tracks: d.tracks, timelineItems: d.timelineItems, aspectRatio: d.aspectRatio });
+
+/**
+ * Hold the box's shared CPU lock (GFV_LOCK) for this whole process: a direct run re-executes itself under `flock`;
+ * a child of ab.ts is already locked (GFV_LOCKED=1). On Windows there is no flock and nothing to share the lock with.
+ */
+export function holdCpuLock(): void {
+  if (process.env.GFV_LOCKED === "1" || process.platform === "win32") return;
+  const lock = process.env.GFV_LOCK || "/tmp/gfv-race/cpu.lock";
+  mkdirSync(dirname(lock), { recursive: true });
+  const r = spawnSync("flock", [lock, process.execPath, ...process.execArgv, ...process.argv.slice(1)], { stdio: "inherit", env: { ...process.env, GFV_LOCKED: "1" } });
+  if (r.error) throw new Error(`can't take the CPU lock ${lock} with flock: ${r.error.message}`);
+  process.exit(r.status ?? 1);
+}

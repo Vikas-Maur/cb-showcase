@@ -21,8 +21,10 @@ import { cardboard as S, toHost, withKeys } from "../../packages/conformance/src
 import type { HostDoc } from "../../packages/conformance/src/engine/fixtures/cardboard-schema.ts";
 import { genDoc, rng, pick, rippleCut } from "../../packages/conformance/src/engine/gen.ts";
 import type { Rng } from "../../packages/conformance/src/engine/gen.ts";
-import { measure, callsOf, gz, bytes, fmtMs, fmtB, machine, loadCardboard, slice, RUNS, loadGate, SCRATCH } from "./util.ts";
+import { measure, callsOf, gz, bytes, fmtMs, fmtB, machine, loadCardboard, slice, RUNS, loadGate, SCRATCH, holdCpuLock } from "./util.ts";
 import type { Load, MeasureOpts, Measured } from "./util.ts";
+
+holdCpuLock(); // the whole run holds the shared CPU lock (re-executes under flock when run directly)
 
 type Item = Record<string, any>;
 const SIZES = process.argv.slice(2).map(Number).filter(Boolean);
