@@ -352,53 +352,50 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   /**
    * A catch-up page: the rows after `after`, at most `limit` of them and `budget` bytes of reply JSON. It stops before
    * the row that would pass the budget, except that it always holds one row when `atLeastOne` (the client must make
-   * progress; a big single row then goes as an envelope). Live rows are sized from their stored lengths before any is
-   * loaded, so a page never loads much more than it sends; the client asks again while `more` (§6.3).
+   * progress; a big single row then goes as an envelope); the client asks again while `more` (§6.3). What the page
+   * loads stays within the budget plus one row: live rows are sized from their stored lengths before any is loaded,
+   * archived segments are read as a stream one row at a time, and a body in the blob store is fetched only while the
+   * page still has room (round 3 findings 3 and 4).
    */
   async function readRows(branchId: string, after: number, limit: number, budget: number, atLeastOne: boolean): Promise<Row[]> {
     const out: Row[] = [];
-    let used = 0, count = 0, full = false;
-    /** Count a row of `size` bytes in if it fits; false (the page is full) when it doesn't. */
-    const fits = (size: number): boolean => {
-      if (count >= limit || ((count || !atLeastOne) && used + size > budget)) return !(full = true);
-      used += size;
-      count++;
+    let used = 0;
+    let full = false;
+    const bounded = () => out.length > 0 || !atLeastOne;
+    /** Take a row of `meta` bytes (without a body in the blob store) if the page has room for it, body included. */
+    const take = async (r: { row: Row; blob: string | null }, meta: number): Promise<boolean> => {
+      if (out.length >= limit || (bounded() && used + meta > budget)) return !(full = true);
+      const { row, bytes } = await fillBody(r);
+      // its body wasn't in the size: if it doesn't fit after all, it opens the next page
+      if (bounded() && used + meta + bytes > budget) return !(full = true);
+      used += meta + bytes;
+      out.push(row);
       return true;
     };
     const firstLive = tables.firstLive(branchId) ?? tables.head(branchId) + 1;
     if (after + 1 < firstLive && opts.blobs) {
       for (const seg of tables.segmentsAfter(branchId, after)) {
         if (seg.lo >= firstLive - 1 || full) break;
-        const stored = await opts.blobs.get(seg.blob);
-        if (!stored) throw new Error(`segment ${seg.blob} is missing from the blob store`);
-        const bytes = seg.blob.endsWith(".gz") ? await gunzip(stored) : stored;
-        const raw = JSON.parse(dec.decode(bytes)) as Record<string, string | number | null>[];
-        for (const r of raw) {
+        for await (const r of segmentRows(opts.blobs, seg.blob)) {
           if (Number(r.seq) <= after) continue;
-          const ops = r.ops === null ? null : enc.encode(String(r.ops));
+          const ops = r.ops === null || r.ops === undefined ? null : enc.encode(String(r.ops));
           const rr = { ...r, ops } as Record<string, string | number | null | Uint8Array>;
-          const { row, bytes: body } = await fillBody(Tables.toRow(rr, branchId));
-          if (!fits(segmentRowBytes(r, ops, branchId) + body)) break;
-          out.push(row);
+          if (!(await take(Tables.toRow(rr, branchId), segmentRowBytes(r, ops, branchId)))) break;
         }
       }
     }
     if (full) return out;
     // live rows: sized from their stored lengths first (no body read), then only those that fit are loaded
     const from = out.length ? out[out.length - 1]!.seq : after;
-    const sizes = tables.rowSizes(branchId, from, limit - count);
-    let loaded = used;
-    let take = 0;
-    while (take < sizes.length && fits(sizes[take]!)) take++;
-    if (!take) return out;
-    for (const [i, r] of tables.rows(branchId, from, take).entries()) {
-      const { row, bytes } = await fillBody(r);
-      // a body in the blob store wasn't in the sizes: once one takes the page past the budget, the rest of the rows
-      // (that one too, unless it is the page's first) open the next page
-      loaded += sizes[i]! + bytes;
-      if ((out.length || !atLeastOne) && loaded > budget) break;
-      out.push(row);
+    const sizes = tables.rowSizes(branchId, from, limit - out.length);
+    let n = 0;
+    for (let est = used; n < sizes.length; n++) {
+      if ((out.length + n > 0 || !atLeastOne) && est + sizes[n]! > budget) break;
+      est += sizes[n]!;
     }
+    if (!n) return out;
+    const rows = tables.rows(branchId, from, n);
+    for (let i = 0; i < rows.length; i++) if (!(await take(rows[i]!, sizes[i]!))) break;
     return out;
   }
   /** A stored keyframe, with its document's size in reply bytes (at most). */
@@ -760,7 +757,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
     const b = tables.branch(m.branchId);
-    send(c, { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 });
+    const msg: sync.StatusMsg = { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 };
+    // a hand-off uploads right after this answer: it must know the largest message read before it (round 3 finding 6)
+    if (opts.blobs) msg.maxMessageBytes = maxEnvelope;
+    send(c, msg);
   }
 
   async function onFork(c: HostConnection, m: sync.ForkMsg) {
@@ -942,9 +942,59 @@ const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBas
 
 /** As `Tables.rowSizes`, for a row of an archived segment (its columns are strings, `body` its inline body's bytes). */
 function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8Array | null, branchId: string): number {
-  let n = 256 + 3 * branchId.length + (body?.byteLength ?? 0);
-  for (const k of ["id", "hash", "author", "base", "paths", "reads", "spans", "policy"]) n += 3 * String(r[k] ?? "").length;
-  return n;
+  const bytes = (k: string) => (r[k] === null || r[k] === undefined ? 0 : enc.encode(String(r[k])).byteLength);
+  return ROW_FIXED + 6 * enc.encode(branchId).byteLength + (body?.byteLength ?? 0) + bytes("author") + bytes("base") + bytes("paths") + bytes("reads") + 3 * bytes("spans") + 6 * (bytes("id") + bytes("hash") + bytes("policy"));
+}
+/** A reply row's keys, numbers and the defaults `Tables.toRow` adds (the rest is sized from its columns). */
+const ROW_FIXED = 256;
+
+/**
+ * The rows of an archived segment (a gzip-compressed JSON array of row objects), one at a time, read as a stream: only
+ * one row's text is held at once, so a page that stops early never decompresses or parses the rest (round 3 finding
+ * 3). Uses the store's `getStream` when it has one.
+ */
+async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Record<string, string | number | null>> {
+  let stream: ReadableStream<Uint8Array> | null = blobs.getStream ? await blobs.getStream(key) : null;
+  if (!stream) {
+    const stored = await blobs.get(key);
+    if (!stored) throw new Error(`segment ${key} is missing from the blob store`);
+    stream = new Blob([stored as Uint8Array<ArrayBuffer>]).stream();
+  }
+  // (the lib types give these transforms a BufferSource writable side: a Uint8Array stream is one)
+  if (key.endsWith(".gz")) stream = stream.pipeThrough(new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>);
+  const reader = stream.pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>).getReader();
+  // a scan of the array's text: depth 1 inside the array, 2 inside a row; strings (and their escapes) skipped
+  let depth = 0, inString = false, escaped = false;
+  let parts: string[] = [];
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      let start = depth >= 2 ? 0 : -1;
+      for (let i = 0; i < value.length; i++) {
+        const ch = value.charCodeAt(i);
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === 92) escaped = true;
+          else if (ch === 34) inString = false;
+        } else if (ch === 34) inString = true;
+        else if (ch === 123 || ch === 91) {
+          if (++depth === 2) start = i;
+        } else if (ch === 125 || ch === 93) {
+          if (--depth === 1) {
+            parts.push(value.slice(start, i + 1));
+            const text = parts.join("");
+            parts = [];
+            start = -1;
+            yield JSON.parse(text) as Record<string, string | number | null>;
+          }
+        }
+      }
+      if (depth >= 2 && start >= 0) parts.push(value.slice(start));
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
 }
 /** UTF-8 byte length over `limit`, without encoding short strings (each UTF-16 unit is at most 3 bytes). */
 function utf8Over(text: string, limit: number): boolean {
@@ -962,10 +1012,6 @@ const ARCHIVE_SEGMENT = 10_000;
 // gzip with the platform's CompressionStream (Workers, browsers and Node all have it)
 async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream("gzip"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 

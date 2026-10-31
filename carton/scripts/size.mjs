@@ -12,7 +12,9 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const KB = 1000;
 const ENTRIES = [
-  { name: "history bundle (P4 method)", code: `export * from "./packages/core/src/history/index.ts";`, budget: 22 * KB },
+  // 30 KB (orchestrator, 2026-10-31): the prototype's 19.3 KB plus the v11 sequencer rule and the behaviour the plan and
+  // the reviews require; the per-feature breakdown is in CONTRACTS.md ("Size")
+  { name: "history bundle (P4 method)", code: `export * from "./packages/core/src/history/index.ts";`, budget: 30 * KB },
   { name: "engine + history (all)", code: `export * from "./packages/core/src/engine/index.ts"; export * from "./packages/core/src/history/index.ts";`, budget: null },
   { name: "engine only", code: `export * from "./packages/core/src/engine/index.ts";`, budget: null },
   { name: "core (all)", code: `export * from "./packages/core/src/index.ts";`, budget: null },
