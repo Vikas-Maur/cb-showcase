@@ -61,8 +61,11 @@ export interface Follower {
   /** Look now (a nudge): resolves once the store has been compared and any listener called. */
   check(): Promise<void>;
   /**
-   * The holder switched the handle itself and told the materializer (a served switch that went through). A switch
-   * that failed to tell it isn't reported: the handle is then on a cut never announced, which the next look tells.
+   * The handle was switched in this process and its listeners know (CartonHolderEngine calls it for a switch it served
+   * and printed). Whoever switches a followed handle in-process says so here: a cut never announced is told at the
+   * next look as a cut switch, however the handle got there (a switch made here that nobody announced, one whose
+   * printing failed, or core moving the handle while it reloads), so a missing call costs a repeated notice, never a
+   * lost one.
    */
   served(cut: string): void;
   /** Stop: nothing is switched or told after this; resolves once a look in progress has finished. */
