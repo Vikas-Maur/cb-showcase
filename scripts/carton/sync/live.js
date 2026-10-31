@@ -45,6 +45,7 @@ export class Live {
     // the server answers, and offline that is never).
     const serve = engine.serve.bind(engine);
     engine.serve = async (req, ctx) => {
+      await caughtUp(lc.carton);
       try { return await serve(req, ctx); } finally { this.#materializeSoon(); }
     };
     this.lease = keepLease(() => ({
@@ -78,6 +79,14 @@ export class Live {
             this.changeTimer.unref?.();
           }
         }
+        break;
+      case "absorbed":
+      case "notice":
+        // A pending edit the server refused, or one a rebase emptied: head no longer has it, and project.json (and the
+        // editor) must stop showing it. When the file already shows head, the facade writes nothing.
+        if (e.type === "notice" || e.branchId === this.lc.carton.cut) this.#materializeSoon();
+        this.status = this.lc.carton.sync?.state() ?? this.status;
+        this.#publish();
         break;
       case "sync":
         this.status = this.lc.carton.sync?.state() ?? this.status;
@@ -135,3 +144,17 @@ export class Live {
 }
 
 export const actorKey = (a) => [a?.kind, a?.id, a?.agentId].filter(Boolean).join("/");
+
+/**
+ * "Before any print, the lease holder pulls" (§6.2): while the connection is (re)connecting or catching up, a holder
+ * waits for it, up to `ms`, before it serves a call, so an agent never prints or edits a state older than the host's.
+ * Up to date, offline or stopped: at once (offline it answers `pending`, as it should).
+ */
+export async function caughtUp(carton, ms = 3000) {
+  const end = Date.now() + ms;
+  for (;;) {
+    const s = carton.sync?.state().status;
+    if (!s || s === "up-to-date" || s === "offline" || s === "stopped" || Date.now() >= end) return s;
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}

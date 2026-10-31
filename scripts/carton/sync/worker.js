@@ -23,7 +23,7 @@ import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 import { webSocketTransport } from "@carton/server-node";
 import * as host from "./host.js";
 import * as store from "./store.js";
-import { Live } from "./live.js";
+import { Live, caughtUp } from "./live.js";
 import * as media from "./media.js";
 import { headScope } from "./scope.js";
 import "./cbproj.js";
@@ -34,6 +34,7 @@ const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); consol
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 let inWorker = false;
+let workerApi = null; // the facade's api, in the library worker
 const lives = new Map(); // bundlePath → Promise<Live | null>
 const holding = new WeakMap(); // LocalCarton → its Live, once started
 const lastError = new Map(); // bundlePath → why live sync last failed to start (said once in the log, and to the caller)
@@ -84,6 +85,11 @@ async function startLive(api, bundlePath, lc) {
     const live = new Live({ api, bundlePath, projectId, lc, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : undefined) });
     await live.start();
     holding.set(lc, live);
+    // A share whose hand-off outlasted liveShare's wait publishes its descriptor once the host has the cut.
+    const off = lc.carton.on((e) => { if (e.type === "sync" && e.status === "up-to-date") void publishDescriptor(api, bundlePath, projectId, lc); });
+    const stop = live.stop.bind(live);
+    live.stop = async () => { off(); return stop(); };
+    void publishDescriptor(api, bundlePath, projectId, lc);
     return live;
   })().catch((e) => {
     lives.delete(bundlePath);
@@ -99,11 +105,9 @@ async function startLive(api, bundlePath, lc) {
 // One media job at a time per project (hashing and proxies are heavy; two shares of one clip would upload it twice).
 // A clip already shared is skipped while its original's size and mtime are unchanged (media-shared.json in the
 // project's app-data folder), so nothing is hashed again for no reason.
-// The clip's content id is NOT committed into the project (e2e-qa S5-G2): Cardboard 1.4.0's project store drops
-// `contentHash` (and `data.content`) from media records, so it never reaches project.json, and every save made from
-// the file would then "remove" it again in Carton, credited to whoever saved. Teammates find a clip's shared record
-// by its media id (`carton/media/<id>.json` on the host). Asked of cardboard-adapter: carry such host-dropped fields
-// over from the base in fromHost; then the commit can come back.
+// When a clip's share finishes, its content id and shared record are committed into its media entry (S5-G2,
+// recordShare); the host also keeps the record as `carton/media/<id>.json`, published as soon as a proxy's stream is
+// claimed, so a clip plays while it uploads (before the commit exists).
 const mediaJobs = new Map(); // bundlePath → Promise
 const sharedFile = (bundlePath, projectId) => path.join(store.projectDir(bundlePath, projectId), "media-shared.json");
 const readShared = (bundlePath, projectId) => { try { return JSON.parse(fs.readFileSync(sharedFile(bundlePath, projectId), "utf8")); } catch { return {}; } };
@@ -161,7 +165,7 @@ function shareMediaOf(api, bundlePath, projectId, { only, force = false } = {}) 
 // One automatic share run waiting per bundle at most: changes that come while one waits add nothing to do.
 const autoQueued = new Set();
 function autoShare(api, bundlePath, projectId) {
-  if (autoQueued.has(bundlePath)) return;
+  if (autoQueued.has(bundlePath) || store.readConfig(bundlePath, projectId)?.withMedia === false) return;
   autoQueued.add(bundlePath);
   const p = (mediaJobs.get(bundlePath) ?? Promise.resolve()).then(() => autoQueued.delete(bundlePath));
   mediaJobs.set(bundlePath, p);
@@ -169,20 +173,22 @@ function autoShare(api, bundlePath, projectId) {
 }
 
 // R6: a teammate's clip has no file here. Its record in project.json gets where it plays from
-// (cardboard-media://media/<id>, which main answers from the host) and what the host's shared record says about it
-// (size, duration, picture), as join does for the clips there at share time. A record whose shared record isn't up yet
-// gets the rest on a later materialize.
+// (cardboard-media://media/<id>, which main answers from the host) and what is known about it (size, duration,
+// picture), as join does for the clips there at share time. Nothing here waits on the network: head is written as it
+// was read, so a save that lands meanwhile is never overwritten by an older head. What's known is the project's own
+// record (S5-G2: the sharer commits it when the share finishes, which is a change, so this runs again then), else the
+// host's record if this process has already read it (it is fetched in the background for next time).
 const hostSrc = (id) => `cardboard-media://media/${id}`;
 async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
   if (!bundlePath || !projectId || !store.readConfig(bundlePath, projectId) || !next?.media?.length) return next;
   const had = new Map((current?.media ?? []).map((m) => [m.id, m]));
   const now = new Date().toISOString();
-  const list = await Promise.all(next.media.map(async (m) => {
+  const list = next.media.map((m) => {
     const src = m.data?.src;
     if (src && src !== hostSrc(m.id)) return m; // a file on this computer
     if (src && m.data?.size !== undefined) return m; // filled already
-    // The project's own record (S5-G2) when the clip's share is in it, else the host's.
-    const rec = m.shared ? { ...m.shared, fileName: m.data?.fileName } : await Promise.race([media.sharedRecord(bundlePath, projectId, m.id).catch(() => null), sleep(2000).then(() => null)]);
+    let rec = m.shared ? { ...m.shared, fileName: m.data?.fileName } : media.cachedRecord(projectId, m.id);
+    if (!rec) media.sharedRecord(bundlePath, projectId, m.id).catch(() => null);
     const data = { ...m.data, src: hostSrc(m.id) };
     if (rec) {
       const from = { fileName: rec.fileName, size: rec.size, duration: rec.durationSec, width: rec.width, height: rec.height, frameRate: rec.fps, hasAudio: rec.hasAudio, codec: rec.codec };
@@ -190,7 +196,7 @@ async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
     }
     const prev = had.get(m.id);
     return { ...m, createdAt: m.createdAt ?? prev?.createdAt ?? now, addedAt: m.addedAt ?? prev?.addedAt ?? now, data };
-  }));
+  });
   return { ...next, media: list };
 }
 
@@ -210,8 +216,16 @@ async function commitShared(lc, { doc, base, author, intent }) {
   const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}) }, { actor: author });
   if (w.status === "error") throw new Error(w.error);
   if (w.status === "rejected") return { status: "rejected", reason: w.reason };
-  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: (await lc.carton.head()).ref };
-  return { status: w.status === "pending" ? "pending" : "confirmed", seq: w.seq, ref: (await lc.carton.head()).ref, rebased: 0, empty: !!w.empty, notices: [] };
+  const head = await lc.carton.head();
+  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: head.ref };
+  // The holder may have merged other edits in (a base older than its head): then this caller's document isn't head, and
+  // the facade must write head (`rebased`), never the document it sent. This handle reads the confirmed rows the holder
+  // wrote, so a confirmed result's head is exact. A pending one (the holder offline) isn't in this handle's head yet: the
+  // document as sent is the closest, and the holder writes its optimistic head into project.json right after (Live).
+  let same = false;
+  try { same = hashDoc(head.doc, lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch {}
+  const rebased = w.status !== "pending" && !same ? 1 : 0;
+  return { status: w.status === "pending" ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased, empty: !!w.empty, notices: [] };
 }
 
 /**
@@ -236,11 +250,53 @@ async function recordShare(lc, bundlePath, projectId, mediaId, record) {
  * complete, else the one on the host (published as soon as the proxy's stream is claimed, so it plays while it
  * uploads).
  */
-async function recordOf(api, bundlePath, projectId, mediaId) {
-  const lc = await api.open(bundlePath).catch(() => null);
+async function recordIn(lc, bundlePath, projectId, mediaId) {
   const e = lc && (await lc.carton.head()).doc?.media?.find?.((m) => m.id === mediaId);
   if (e?.shared?.proxy && (e.shared.proxy.hash || e.shared.proxy.size !== undefined)) return { id: mediaId, ...e.shared, hash: e.contentHash };
   return media.sharedRecord(bundlePath, projectId, mediaId);
+}
+const recordOf = async (api, bundlePath, projectId, mediaId) => recordIn(await api.open(bundlePath).catch(() => null), bundlePath, projectId, mediaId);
+
+/**
+ * patches/tools.js: where an agent's ffmpeg-based tool reads a clip that has no file here, in a shared project: a
+ * loopback URL (verified bytes; a live playlist while its proxy uploads), or null (not shared, or not shared yet). In
+ * the worker through its own handle; in cb through one opened for the call.
+ */
+async function toolUrlFor(bundlePath, mediaId) {
+  let projectId = null;
+  try { projectId = JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project?.id ?? null; } catch {}
+  if (!projectId || !store.readConfig(bundlePath, projectId)) return null;
+  let rec;
+  if (workerApi) rec = await recordOf(workerApi, bundlePath, projectId, mediaId);
+  else {
+    const lc = await openLocal({ projectDir: bundlePath, projectId }).catch(() => null);
+    try { rec = await recordIn(lc, bundlePath, projectId, mediaId); } finally { await lc?.close().catch(() => {}); }
+  }
+  const p = media.playable(rec);
+  return p ? media.toolUrl(bundlePath, projectId, p) : null;
+}
+
+/**
+ * The share descriptor (what a joiner needs: the cut, its root, the clips) goes up once the host has the cut. liveShare
+ * does it when the hand-off finishes within its wait; otherwise the config keeps `descriptor: "pending"`, and this runs
+ * again whenever sync is up to date (and when the project opens) until it is done.
+ */
+const publishing = new Set();
+async function publishDescriptor(api, bundlePath, projectId, lc) {
+  const cfg = store.readConfig(bundlePath, projectId);
+  if (cfg?.descriptor !== "pending" || publishing.has(bundlePath)) return;
+  publishing.add(bundlePath);
+  try {
+    const rec = (await lc.carton.cuts()).find((c) => c.id === cfg.cut);
+    if (rec?.sequencer.kind !== "server") return;
+    await uploadDescriptor(bundlePath, projectId, lc, rec, await api.library.projects.read(projectId));
+    store.writeConfig(bundlePath, { ...store.readConfig(bundlePath, projectId), descriptor: "done" });
+    if (cfg.withMedia !== false) void shareMediaOf(api, bundlePath, projectId).catch(() => {});
+  } catch (e) {
+    warnOnce("descriptor:" + bundlePath, `${path.basename(bundlePath)} is shared, but joining it isn't possible yet: ${errText(e)}`);
+  } finally {
+    publishing.delete(bundlePath);
+  }
 }
 
 /** Wait for a cut's hand-off to finish (local → handing off → server), up to `ms`. */
@@ -276,12 +332,12 @@ async function uploadDescriptor(bundlePath, projectId, lc, rec, project) {
 }
 
 // A folder moved into the library in one step. Windows refuses while something (an indexer, an antivirus scan) has a
-// file in it open: try again for a few seconds.
-function renameDir(from, to) {
+// file in it open: try again for a few seconds, on timers (the worker keeps answering the editor and the lease's pings).
+async function renameDir(from, to) {
   for (let i = 0; ; i++) {
     try { return fs.renameSync(from, to); } catch (e) {
       if (i >= 100 || !["EPERM", "EBUSY", "EACCES"].includes(e.code)) throw e;
-      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+      await sleep(50);
     }
   }
 }
@@ -316,6 +372,7 @@ extend({
   commitShared: (lc, o) => commitShared(lc, o),
   worker(api) {
     inWorker = true;
+    workerApi = api;
     // Every shared project the worker opens goes live: its holder takes the lease and connects.
     api.onOpen((bundlePath, lc) => startLive(api, bundlePath, lc));
     const liveOf = async (projectId) => {
@@ -345,7 +402,7 @@ extend({
         if (!inv) throw new Error("An owner invite or the host's admin token is needed to share a project");
         const account = host.accountId(name);
         const s = await host.join({ host: h, projectId, invite: inv, account, installKey: store.installKey() });
-        store.writeConfig(bundlePath, { host: h, projectId, account, name: name || account, role: s.context.role, cut: lc.carton.cut });
+        store.writeConfig(bundlePath, { host: h, projectId, account, name: name || account, role: s.context.role, cut: lc.carton.cut, descriptor: "pending", withMedia });
         store.saveSession(bundlePath, projectId, s);
         const live = await startLive(api, bundlePath, lc);
         if (!live) throw new Error("Live sync didn't start for this project: " + (lastError.get(bundlePath) ?? "unknown"));
@@ -354,6 +411,7 @@ extend({
         const rec = await handedOff(lc.carton, cut, 30_000);
         if (!rec) return { status: "sharing", note: "The host hasn't confirmed yet; the project finishes sharing when it is back" };
         await uploadDescriptor(bundlePath, projectId, lc, rec, await api.library.projects.read(projectId));
+        store.writeConfig(bundlePath, { ...store.readConfig(bundlePath, projectId), descriptor: "done" });
         // The clips follow in the background (hashing and proxies take a while; editing never waits for them).
         if (withMedia) void shareMediaOf(api, bundlePath, projectId).catch(() => {});
         return { status: "shared", host: h, cut: rec.id };
@@ -405,7 +463,7 @@ extend({
           await st.close();
           store.writeConfig(final, { host: l.host, projectId: d.projectId, account, name: name || account, role: s.context.role, cut: d.cut.id });
           store.saveSession(final, d.projectId, s);
-          renameDir(staging, final);
+          await renameDir(staging, final);
         } catch (e) {
           fs.rmSync(staging, { recursive: true, force: true });
           throw e;
@@ -478,7 +536,10 @@ const cli = {
     const lc = await openLocal({ projectDir: bundlePath, projectId, helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } });
     try {
       // Any write reaches the holder; a short pin is one that changes nothing (the holder catches up before it answers).
-      await lc.write({ kind: "pin", owner: "cloud-pull", ttlMs: 1000 });
+      const w = await lc.write({ kind: "pin", owner: "cloud-pull", ttlMs: 1000 });
+      // No holder answered (a helper that couldn't start, a holder that failed): the tool must not go on as if this
+      // computer had caught up. Offline is not an error: the holder answers, with what it has.
+      if (w?.status === "error") throw new Error(`This project's live sync isn't running, so its newest state couldn't be fetched: ${w.error}`);
     } finally {
       await lc.close();
     }
@@ -495,4 +556,4 @@ const cli = {
 // For the headless helper's factory (sync/factory.js loads this bundle) and cb's patches: what they need from the
 // packages, from this bundle's one copy of them.
 // `holds(lc)`: this handle is the live lease holder now (cbproj.js folds on a shared cut only then).
-globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync, media, cli, holds: (lc) => !!holding.get(lc)?.holds() };
+globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync, media, cli, toolUrlFor, caughtUp, holds: (lc) => !!holding.get(lc)?.holds() };

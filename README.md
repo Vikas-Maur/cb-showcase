@@ -527,7 +527,8 @@ with Carton off none of it runs at all.
 - **Share** (the editor's left rail, "Share"): enter the host and the invite you were given (the host's owner gets
   one with its admin token). The project goes up with its whole history and authors. Its clips go up too: each clip's
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
-  segments that upload as they are made. Originals stay on your computer.
+  segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
+  proxy) go up as they are, up to 200 MB and 50 MB.
 - **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch") that expires. **Join** in another
   library from the link: the project arrives with its history, and its clips play from the host.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
@@ -535,8 +536,9 @@ with Carton off none of it runs at all.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
   what they are doing. Offline you keep working; your changes go out when the host is back.
 - **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
-  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. Agent tools that run ffmpeg
-  read it from a loopback URL.
+  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
+  (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
+  into the project itself, as a version by whoever shared it.
 - **Agents**: `cb` on a shared project hands its edit to the app's library worker, which holds the project's sync
   connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
   cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper
@@ -547,17 +549,18 @@ with Carton off none of it runs at all.
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
 `scripts\carton\sync\patches\*.js`: the Share tab and presence in the editor (`ui.js`), `cardboard-media://` for clips
-that live on the host (`media.js`), `cb`'s cloud mode (`cloud.js`) and `.cbproj` (`cbproj.js`). Sessions and tokens are
-in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
+that live on the host (`media.js`), the agent's media tools (`tools.js`), `cb`'s cloud mode (`cloud.js`) and `.cbproj`
+(`cbproj.js`). Sessions and tokens are in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
 
 Tests (Linux, Cardboard's own bundles; two libraries, each with its own app data and its own real library worker,
 syncing through a real host on 127.0.0.1): share with history, invite and join, concurrent edits, presence, media by
-range and by URL, media while it uploads, offline and rejoin, `cb` with the app open, and with it closed in cloud
-mode.
+range, by URL and through the agent's `grab_frame`, media while it uploads, offline and rejoin, `cb` with the app open
+(from a print one version behind), and with it closed in cloud mode; and `.cbproj` Save As, Open and "Bring in their
+changes" in both copies.
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js
 ```
 
 Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview

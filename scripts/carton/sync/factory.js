@@ -15,7 +15,7 @@ createRequire(import.meta.url)(path.join(process.env.CARTON_DIR || path.join(her
 const CATCH_UP_MS = 3000;
 
 export async function createHolderEngine({ dbPath, config, log }) {
-  const { Carton, cardboardAdapter, nodeHasher, lazySync, openSqliteStore, CartonHolderEngine, store: syncStore } = globalThis.__cartonSync;
+  const { Carton, cardboardAdapter, nodeHasher, lazySync, openSqliteStore, CartonHolderEngine, caughtUp, store: syncStore } = globalThis.__cartonSync;
   const { bundlePath, projectId } = config.sync ?? {};
   const cfg = bundlePath && projectId ? syncStore.readConfig(bundlePath, projectId) : null;
   if (!cfg) throw new Error("this project isn't shared from this computer");
@@ -35,9 +35,9 @@ export async function createHolderEngine({ dbPath, config, log }) {
   const engine = new CartonHolderEngine(carton);
   // The spawner sends its call as soon as the lease row names this helper's socket, which is before the holder has
   // started sync: so the wait starts now, and ends when the connection has caught up (or after CATCH_UP_MS).
-  let caughtUp;
+  let started;
   const ready = new Promise((r) => {
-    caughtUp = r;
+    started = r;
     setTimeout(r, CATCH_UP_MS).unref?.();
   });
   // Status changes go to helper.log (beside carton.db), for a post-mortem of a session nobody watched.
@@ -54,7 +54,7 @@ export async function createHolderEngine({ dbPath, config, log }) {
       await start(...a);
     } catch (e) {
       log?.({ type: "sync-failed", error: String(e?.message ?? e) });
-      caughtUp();
+      started();
       throw e;
     }
     const end = t0 + CATCH_UP_MS;
@@ -65,12 +65,14 @@ export async function createHolderEngine({ dbPath, config, log }) {
         await new Promise((r) => setTimeout(r, 25));
       }
       log?.({ type: "caught-up", status: carton.sync?.state().status, ms: Date.now() - t0 });
-      caughtUp();
+      started();
     })();
   };
   const serve = engine.serve.bind(engine);
   engine.serve = async (req, ctx) => {
     await ready;
+    // And before every later call: after a reconnect, the connection catches up first (as the worker's holder does).
+    await caughtUp(carton);
     return serve(req, ctx);
   };
   log?.({ type: "engine", project: projectId });

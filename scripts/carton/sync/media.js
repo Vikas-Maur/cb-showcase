@@ -51,6 +51,10 @@ function cardboardProxy(bundlePath, mediaId) {
   try { const f = fs.readdirSync(dir).find((n) => n.startsWith(mediaId) && n.endsWith(".mp4")); return f ? path.join(dir, f) : null; } catch { return null; }
 }
 const KINDS = { video: "video", audio: "audio", image: "image" };
+// Audio and still images have no collab proxy (the encoders make 720p video): they go up as they are, when no bigger
+// than this, so a teammate can hear or see them at all. Video never does (its proxy plays; originals stay opt-in, §11).
+const SMALL_ORIGINAL = { audio: 200e6, image: 50e6 };
+const MIME = { ".mp3": "audio/mpeg", ".wav": "audio/wav", ".m4a": "audio/mp4", ".aac": "audio/aac", ".flac": "audio/flac", ".ogg": "audio/ogg", ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif" };
 
 /**
  * Share one clip. Returns its shared record (T0) or null when its original isn't on this computer (a joined project's
@@ -65,7 +69,8 @@ export async function shareClip({ bundlePath, projectId, mediaId, envelope = rea
   const kind = KINDS[d.type] ?? "other";
   // What the host already has for this clip: shareMedia keeps its proxy when the footage is unchanged.
   const prev = await blobs.get(recordKey(mediaId)).then((b) => (b ? JSON.parse(new TextDecoder().decode(b)).record : null), () => null);
-  const record = { ...(prev ?? {}), ...toMediaRecord({ id: mediaId, kind, fileName: d.fileName ?? path.basename(original), size: fs.statSync(original).size, durationSec: d.duration, width: d.width, height: d.height, fps: d.frameRate, hasAudio: d.hasAudio }) };
+  const size = fs.statSync(original).size, mime = MIME[path.extname(original).toLowerCase()];
+  const record = { ...(prev ?? {}), ...toMediaRecord({ id: mediaId, kind, fileName: d.fileName ?? path.basename(original), size, ...(mime ? { mime } : {}), durationSec: d.duration, width: d.width, height: d.height, fps: d.frameRate, hasAudio: d.hasAudio }) };
   const work = path.join(cacheRoot(), "proxies");
   fs.mkdirSync(work, { recursive: true });
   const encoders = kind === "video"
@@ -83,7 +88,7 @@ export async function shareClip({ bundlePath, projectId, mediaId, envelope = rea
     store: blobs,
     record,
     local: { original },
-    policy: { originals: false, proxies: kind === "video" },
+    policy: { originals: size <= (SMALL_ORIGINAL[kind] ?? 0), proxies: kind === "video" },
     encoders,
     workDir: work,
     uploadState: new FsUploadStateStore(path.join(store.projectDir(bundlePath, projectId), "uploads")),
@@ -106,7 +111,7 @@ function readerFor(bundlePath, projectId) {
   let r = readers.get(key);
   if (!r) {
     leafCache ??= new FsLeafCache(path.join(cacheRoot(), "leaves"));
-    r = new MediaReader({ store: storeFor(bundlePath, projectId), hasher: nodeHasher, cache: leafCache, contentType: () => "video/mp4" });
+    r = new MediaReader({ store: storeFor(bundlePath, projectId), hasher: nodeHasher, cache: leafCache });
     readers.set(key, r);
   }
   return r;
@@ -126,6 +131,9 @@ export async function sharedRecord(bundlePath, projectId, mediaId) {
   records.set(k, { at: Date.now(), value });
   return value;
 }
+
+/** A clip's shared record if this process has read it already (no request). */
+export const cachedRecord = (projectId, mediaId) => records.get(`${projectId}|${mediaId}`)?.value ?? null;
 
 /**
  * What to stream for a clip: its proxy when shared (a segmented stream, `size` once it has ended; or an older
@@ -158,7 +166,7 @@ const sourceOf = (bundlePath, projectId, stream, media) => streamRangeSource({ s
  * fragmented MP4 a media element plays progressively; Range is answered with the whole body until it has ended).
  */
 export async function serve(request, src) {
-  if (!src.stream) return serveMedia(readerFor(src.bundlePath, src.projectId), src.hash, request);
+  if (!src.stream) return serveMedia(readerFor(src.bundlePath, src.projectId), src.hash, request, { contentType: src.mime ?? "video/mp4" });
   const reader = streamOf(src.bundlePath, src.projectId, src.stream);
   if (await reader.end()) return serveMedia(sourceOf(src.bundlePath, src.projectId, src.stream, readerFor(src.bundlePath, src.projectId)), src.stream, request);
   if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405, headers: { allow: "GET, HEAD" } });
