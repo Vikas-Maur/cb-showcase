@@ -18,7 +18,7 @@
 // All work runs one task at a time (the engine thread's order), so two saves never interleave.
 import fs from "node:fs";
 import path from "node:path";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import type { Actor, ConflictCard, Doc } from "@carton/core";
 import { displaceThenInstall, hardLinksWork, retryBusy, stampOf, statStamp, type BusyCounter } from "./displace.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
@@ -142,6 +142,8 @@ export interface StatusBody {
 type Record_ = { t: number; path: string; [k: string]: unknown };
 
 const sha = (b: Uint8Array | string): string => createHash("sha256").update(b).digest("hex");
+// Windows and macOS file systems are case-insensitive: an agent's `Timeline.tsx` is our `timeline.tsx`.
+const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
 const SEEN_KEEP = 32;
 
 export class Materializer {
@@ -157,6 +159,8 @@ export class Materializer {
   private readonly busy: BusyCounter = {};
   private queue: Promise<unknown> = Promise.resolve();
   private tmpSeq = 0;
+  private readonly tmpTag = randomBytes(4).toString("hex");
+  private envelopeCache: { stamp: string; env: Record<string, unknown> | null } | null = null;
   /** Content hashes Carton wrote or applied, per path: anything else at a watched path is an unseen foreign save. */
   private readonly seen = new Map<string, string[]>();
   private readonly lastInstall = new Map<string, OwnInstall & { hash: string }>();
@@ -399,14 +403,21 @@ export class Materializer {
 
   /** The project.json envelope of the file on disk (null if absent or unreadable). */
   private readEnvelope(): Record<string, unknown> | null {
+    // project.json can be large (thumbnail id lists grow with footage): parse it again only when its stamp changed
+    const stamp = statStamp(this.abs(PROJECT_FILE));
+    if (stamp === null) return null;
+    if (this.envelopeCache?.stamp === stamp) return this.envelopeCache.env;
     const f = this.readFile(PROJECT_FILE);
     if (!f) return null;
+    let env: Record<string, unknown> | null = null;
     try {
-      const env = JSON.parse(f.bytes.toString("utf8")) as Record<string, unknown>;
-      return env && typeof env === "object" ? env : null;
+      const v = JSON.parse(f.bytes.toString("utf8")) as Record<string, unknown>;
+      env = v && typeof v === "object" ? v : null;
     } catch {
-      return null;
+      env = null;
     }
+    this.envelopeCache = { stamp: f.stamp, env };
+    return env;
   }
   private async currentProject(): Promise<Project | null> {
     return (this.readEnvelope()?.project as Project | undefined) ?? null;
@@ -437,7 +448,7 @@ export class Materializer {
   private async install(rel: string, content: string): Promise<void> {
     const target = this.abs(rel);
     const bytes = Buffer.from(content, "utf8");
-    const tmp = path.join(this.tmpDir, `${path.basename(rel)}.${process.pid}.${this.tmpSeq++}`);
+    const tmp = path.join(this.tmpDir, `${path.basename(rel)}.${this.tmpTag}.${this.tmpSeq++}`);
     fs.writeFileSync(tmp, bytes, { flag: "wx" });
     const r = displaceThenInstall(target, tmp, this.held.next, { counter: this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null });
     const stamp = statStamp(target);
@@ -461,14 +472,19 @@ export class Materializer {
   // ------------------------------------------------------------------ foreign saves
 
   /** A watch event for `rel` (relative, `/`-separated). Reads whatever is at the path now. */
-  onFsEvent(rel: string): void {
-    if (this.closed || !this.watched(rel)) return;
+  onFsEvent(name: string): void {
+    const rel = this.watched(name);
+    if (this.closed || !rel) return;
     void this.run(() => this.readEvent(rel));
   }
 
-  private watched(rel: string): boolean {
-    if (rel === TIMELINE_FILE || rel === PROJECT_FILE) return true;
-    return rel.startsWith(`${VIEWS_DIR}/`) && rel.endsWith(".tsx") && !rel.slice(VIEWS_DIR.length + 1).includes("/");
+  /** The canonical relative path of a watched file, or null. */
+  private watched(name: string): string | null {
+    const n = FOLD_CASE ? name.toLowerCase() : name;
+    if (n === TIMELINE_FILE || n === PROJECT_FILE) return n;
+    if (!n.startsWith(`${VIEWS_DIR}/`) || !n.endsWith(".tsx")) return null;
+    const view = name.slice(VIEWS_DIR.length + 1, -4);
+    return view && !view.includes("/") ? viewPath(view) : null;
   }
 
   private readFile(rel: string): { bytes: Buffer; hash: string; stamp: string } | null {
@@ -718,7 +734,7 @@ export class Materializer {
     const body: StatusBody = { status: s.status, ref: s.ref ?? null, seq: s.seq ?? null, conflicts: s.conflicts ?? [], diagnostics: s.diagnostics ?? prev?.diagnostics ?? [], change: changeId, at: this.clock.now() };
     if (s.error) body.error = s.error;
     // the sidecar is Carton's alone (agents only read it): temp + rename is enough
-    const tmp = path.join(this.tmpDir, `${name}.status.${process.pid}.${this.tmpSeq++}`);
+    const tmp = path.join(this.tmpDir, `${name}.status.${this.tmpTag}.${this.tmpSeq++}`);
     fs.writeFileSync(tmp, JSON.stringify(body));
     retryBusy(() => fs.renameSync(tmp, file), this.busy);
   }

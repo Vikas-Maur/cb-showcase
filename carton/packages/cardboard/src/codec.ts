@@ -17,7 +17,7 @@ export interface TimelineCodec {
    * Parses a saved timeline file into `project` with the file's timeline applied: tracks, timelineItems, aspectRatio,
    * and anything the file carries for media (1.4.0 moves code sources from `codeComposition.source` into
    * `media[].data.code.source`). Throws when the text doesn't parse; a half-written file must throw, never yield a
-   * partial timeline.
+   * partial timeline. Must not mutate `project` (the materializer caches it).
    */
   parse(text: string, project: Project): Project | Promise<Project>;
 }
