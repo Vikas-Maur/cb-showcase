@@ -15,7 +15,8 @@ import { hookDelivered, isFallbackActor } from "./identity.ts";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
 export type WriteOp =
-  | { kind: "commit"; cut?: string; base?: string; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string }
+  /** `base`: the version the edit was made on, as Carton gave it: a StateRef, or a printed header (default: head). */
+  | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string }
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs" }
   | { kind: "restore"; ref: string; cut?: string }
   | { kind: "revert"; changeId: ChangeId; cut?: string }
@@ -244,7 +245,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // `cb resolve` in the same atomic batch as the append, so no crash or concurrent writer can separate them.
       // The base is fixed once per request (default: head now): a retry after core lost its append race must merge
       // from the same base, never re-apply the proposal on a newer head.
-      if (op.base === undefined) op.base = (await carton.head(op.cut)).ref as unknown as string;
+      if (op.base === undefined) op.base = (await carton.head(op.cut)).ref;
       const store = storeOf(carton);
       const receipt = store ? await store.get<Receipt>("notices", receiptKey(req.id)) : undefined;
       if (receipt) {
