@@ -55,16 +55,10 @@ export const isTeamMediaStore = (s: BlobStore): s is TeamMediaStore => typeof (s
 const TEAM_ID = /^[A-Za-z0-9._~-]{1,128}$/;
 
 // The physical scope a project's media store writes to, for the host's media lock: the team's for a team store, so
-// writes from any of its projects and a repair in another serialize; the project's otherwise. Keyed by the bucket too,
-// so two hosts in one process never share a lock.
+// writes from any of its projects and a repair in another serialize; the project's otherwise. The path alone, not the
+// bucket adapter: a host may build a new adapter per request (server-cloudflare's R2), and two adapters over one
+// bucket must share the lock. (Two buckets in one process with the same project ids only serialize more.)
 const lockScopes = new WeakMap<BlobStore, string>();
-const rootIds = new WeakMap<BlobStore, number>();
-let roots = 0;
-const rootId = (root: BlobStore): number => {
-  let id = rootIds.get(root);
-  if (id === undefined) rootIds.set(root, (id = ++roots));
-  return id;
-};
 /** The scope the host's media lock uses for `store` (from `projectMediaStore`; any other store: its project). */
 export const mediaLockScope = (store: BlobStore, projectId: string): string => lockScopes.get(store) ?? `project:${projectId}`;
 
@@ -75,12 +69,12 @@ export const mediaLockScope = (store: BlobStore, projectId: string): string => l
 export function projectMediaStore(root: BlobStore, projectId: string, team?: string | null): BlobStore {
   const project = scopedBlobStore(root, `projects/${projectId}/media/`);
   if (!team) {
-    lockScopes.set(project, `${rootId(root)}:projects/${projectId}/media/`);
+    lockScopes.set(project, `projects/${projectId}/media/`);
     return project;
   }
   if (!TEAM_ID.test(team)) throw new Error(`bad team id for project ${projectId}: ${JSON.stringify(team)}`);
   const store = teamMediaStore({ project, team: scopedBlobStore(root, `teams/${team}/media/`), grants: scopedBlobStore(root, `projects/${projectId}/grants/`) });
-  lockScopes.set(store, `${rootId(root)}:teams/${team}/media/`);
+  lockScopes.set(store, `teams/${team}/media/`);
   return store;
 }
 

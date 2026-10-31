@@ -129,6 +129,32 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       assert.equal((await sign("media/clip.mp4", "GET", viewer)).status, 200);
     });
 
+    // @carton/media records damage append-only (damage.ts): a reader's report `bad/<id>`, and the repair that answers
+    // it `repaired/<id>`, naming the report it saw. Nothing is deleted, so a host needs only PUT and GET for them.
+    test("media's damage reports and repairs (bad/<id>, repaired/<hash>): editors write and read them, viewers read, a watch link reaches neither", async () => {
+      const p = project();
+      const o = await owner(p);
+      const id = "ab".repeat(32);
+      const sign = (key: string, method: string, token: string) => call(`/api/projects/${p}/blobs/sign`, { method: "POST", token, json: { key, method, expiresIn: 60 } });
+      const editor = await joinAs(p, o.token, "editor");
+      const report = enc.encode(JSON.stringify({ leaf: 3, nonce: "r1" }));
+      const answer = enc.encode(JSON.stringify({ report: "7b", at: 1 }));
+      for (const [key, body] of [[`bad/${id}`, report], [`repaired/${id}`, answer]] as const) {
+        const put = (await (await sign(key, "PUT", editor)).json()) as { url: string };
+        assert.ok((await fetch(put.url, { method: "PUT", body, headers: { "content-type": "application/json" } })).ok, `PUT ${key}`);
+        const get = (await (await sign(key, "GET", editor)).json()) as { url: string };
+        assert.deepEqual(new Uint8Array(await (await fetch(get.url)).arrayBuffer()), body, `GET ${key}`);
+        assert.equal(((await (await call(`/api/projects/${p}/blobs/head?key=${encodeURIComponent(key)}`, { token: editor })).json()) as { size: number }).size, body.byteLength);
+      }
+      const viewer = await joinAs(p, o.token, "viewer");
+      assert.equal((await sign(`repaired/${id}`, "GET", viewer)).status, 200, "a viewer reads a repair");
+      assert.equal((await sign(`repaired/${id}`, "PUT", viewer)).status, 403, "a viewer can't record one");
+      // a Published cut's watch link: neither, as with every non-content key (its scope is its cut)
+      const inv = (await (await call(`/api/projects/${p}/invites`, { method: "POST", token: o.token, json: { role: "viewer", branches: ["pub-1"] } })).json()) as { invite: string };
+      const watcher = ((await (await call(`/api/projects/${p}/join`, { method: "POST", json: { invite: inv.invite, account: "watcher", installKey: installKey() } })).json()) as { token: string }).token;
+      for (const key of [`bad/${id}`, `repaired/${id}`]) assert.equal((await sign(key, "GET", watcher)).status, 403, key);
+    });
+
     test("multipart upload over HTTP: parts out of order, listed to resume, completed, then streamed", async () => {
       const p = project();
       const o = await owner(p);
