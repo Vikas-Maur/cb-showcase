@@ -254,7 +254,10 @@ test("an ffmpeg that stops advancing is killed and counts as failed", { skip }, 
   const enc = ffmpegEncoder("h264_nvenc", { ffmpeg: fakeFfmpeg("--fake-mode=stall", `--fake-log=${log}`), stallMs: 400 });
   await assert.rejects(enc.encode({ path: hd }, { path: out }, COLLAB_PROXY_720P), /no progress for 0.4 s/);
   const run = logLines(log).find((l) => !l.probe);
-  assert.ok(run && !alive(run.pid));
+  // On a loaded machine the fake (a node script) may take longer than stallMs to start, and be killed before it logs
+  // its pid: then no process with its log path may be left.
+  if (run) assert.equal(alive(run.pid), false, "the process is gone");
+  else assert.notEqual(spawnSync("pgrep", ["-f", log]).status, 0, "no fake ffmpeg left running");
   assert.deepEqual(leftovers(OUT_DIR), []);
 });
 

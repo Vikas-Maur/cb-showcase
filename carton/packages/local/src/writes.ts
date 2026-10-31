@@ -335,15 +335,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
         : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
       // nothing new to fold in, but a partial fold of this cut kept some of it out: folding again folds in the rest
       // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4).
-      // A retry finds the first try's answer recorded as a no-op (confirmed, empty): it carries on from there, so a
-      // first try interrupted before its revert still folds the rest in
+      // A retry finds the first try's answer recorded as a no-op (confirmed, empty) and carries on from there
       const nothingNew = r?.status === "up-to-date" || (r?.status === "confirmed" && r.empty);
       if (nothingNew && !op.check && !op.reject?.length) {
-        // its own id (the fold above may have recorded the request's id as a no-op); a retry finds that change again
-        const restId = `${req.id}.rest`;
-        const inverse = (await revertedBy(carton, restId)) ?? (await keptOut(carton, op.from, op.into));
+        const inverse = await restOf(carton, req.id, op.from, op.into);
         if (inverse) {
-          r = await carton.revert(inverse, { author, cut: op.into, id: restId });
+          // its own id (the fold above recorded the request's id as a no-op); a retry gets this revert's answer again
+          r = await carton.revert(inverse, { author, cut: op.into, id: `${req.id}.rest` });
           extra = { rest: true, inverse };
         }
       }
@@ -480,6 +478,24 @@ async function keptOut(carton: Carton, from: string, into?: string): Promise<Cha
     if (merge && !reverted.has(merge.id) && merge.mergeOf?.branchId === fromCut && (fromSeq === null || merge.mergeOf.seq === fromSeq)) return c.id;
   }
   return null;
+}
+
+/**
+ * What a fold request folds in as "the rest": decided once per request and recorded before acting (local `notices`
+ * table, `["@fold-rest", id]`, which no actor reads), so a retry, or a second copy of the request, replays that
+ * decision: the same inverse, or nothing, never a partial fold made after the request was answered.
+ */
+async function restOf(carton: Carton, requestId: ChangeId, from: string, into?: string): Promise<ChangeId | null> {
+  const store = storeOf(carton);
+  const key = ["@fold-rest", requestId];
+  type Decision = { inverse: ChangeId | null };
+  const done = await revertedBy(carton, `${requestId}.rest`);
+  if (done || !store) return done ?? (await keptOut(carton, from, into));
+  const prior = await store.get<Decision>("notices", key);
+  if (prior) return prior.inverse;
+  const inverse = await keptOut(carton, from, into);
+  if (await store.write([{ table: "notices", key, value: { inverse } satisfies Decision }], [{ table: "notices", key, expect: "absent" }])) return inverse;
+  return (await store.get<Decision>("notices", key))?.inverse ?? null; // another copy decided first
 }
 
 /** The change a confirmed revert with this id reverted (a retried "fold in the rest"), or null. */

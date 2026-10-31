@@ -32,5 +32,5 @@ export async function createHolderEngine({ dbPath, config }: HelperFactoryOption
   mz.watch();
   // config.followMs: how often the app looks for other processes' writes (B11); 0: only when nudged
   const engine = new CartonHolderEngine(carton, { materializer: mz, ...(config.followMs !== undefined ? { follow: { intervalMs: Number(config.followMs) } } : {}) });
-  return { store, engine, close: async () => { engine.close(); await mz.close(); await carton.close(); } };
+  return { store, engine, close: async () => { await engine.close(); await mz.close(); await carton.close(); } };
 }

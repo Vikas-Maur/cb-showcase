@@ -11,6 +11,7 @@
 //   ps/<stream>/end           m/<hash>, so the list only grows and readers never see an entry without its bytes.
 //   bad/<hash or stream>      a reader found bytes that never verify there (e2e S5-5): the next upload of that media
 //                             replaces the object instead of deduping on it.
+//   repaired/<hash>           that upload's answer to the report (damage.ts): nothing is ever deleted.
 //
 // Originals and T1 files are one object each (multipart). Collab proxies are segmented, so a teammate can play the
 // first segments while the rest are still being encoded and uploaded: a multipart object is invisible until complete.

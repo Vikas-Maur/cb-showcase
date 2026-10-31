@@ -189,7 +189,14 @@ export class CartonHolderEngine implements HolderEngine {
   readonly materializer: ViewPrinter | null;
   private off: (() => void) | null = null;
   private follower: Follower | null = null;
-  private unforward: (() => void) | null = null;
+  private unforward: (() => Promise<void>) | null = null;
+  private cutQueue: Promise<unknown> = Promise.resolve();
+  /** Cut switches one at a time: the ones this holder serves and the follower's adoption of another process's. */
+  private cutLock<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.cutQueue.then(f, f);
+    this.cutQueue = run.catch(() => {});
+    return run;
+  }
   constructor(carton: Carton, opts: HolderEngineOptions = {}) {
     this.carton = carton;
     this.materializer = opts.materializer ?? null;
@@ -199,6 +206,7 @@ export class CartonHolderEngine implements HolderEngine {
       // happened (windowless agents are active), and head moved (or the current cut changed)
       this.follower = followStore(carton, (carton as unknown as { store: Store }).store, {
         intervalMs: opts.follow ? opts.follow.intervalMs : undefined,
+        exclusive: (f) => this.cutLock(f),
         onHead: async (cut) => {
           await mz?.onCb?.();
           mz?.onHeadChange?.("local");
@@ -220,7 +228,8 @@ export class CartonHolderEngine implements HolderEngine {
     if (!r?.id || !r.actor || !r.op) return Promise.reject(Object.assign(new Error("bad carton.commit request"), { code: -32602 }));
     // the written cut connected (catching up or up to date): wait up to 5 s for the ack; not: pending at once (L14)
     const online = (cut?: string) => { const st = this.carton.sync?.state(cut).status; return st === "up-to-date" || st === "syncing"; };
-    return withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
+    const run = () => withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
+    return r.op.kind === "switch" ? this.cutLock(run) : run();
   }
 
   /** Hooked agents' views are named after their actor id; others get a fresh `agent-xxxx` (or the name they asked for). */
@@ -254,11 +263,12 @@ export class CartonHolderEngine implements HolderEngine {
 
   /** Stop following carton.db and forwarding answers (the engine is closing; the lease's stop() leaves both running: a
    * fenced app still shows the files). */
-  close(): void {
-    this.follower?.stop();
+  async close(): Promise<void> {
+    const f = this.follower, u = this.unforward;
     this.follower = null;
-    this.unforward?.();
     this.unforward = null;
+    // what is in progress finishes (bounded): nothing is switched, told or forwarded after close
+    await Promise.race([Promise.all([f?.stop(), u?.()]), new Promise((r) => setTimeout(r, 5000).unref())]);
   }
 
   async stop(): Promise<void> {

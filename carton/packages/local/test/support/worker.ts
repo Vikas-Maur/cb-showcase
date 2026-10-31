@@ -1,10 +1,11 @@
 // The app's library worker for the process tests: a lease holder of kind "worker" (it asks a live helper to hand
 // over, and takes the lease back after being fenced). Reads commands on stdin:
 //   commit <id> <json ops>   commit as the GUI would, on the engine
-//   stall <ms>               block the main loop
+//   stall <ms> [marker]      block the main loop (the marker file is written first: the stall is on once it exists)
 //   exit
 // With `engineThread: true` in the config the holder runs on a worker_thread, as in the library worker, so a
 // main-loop stall doesn't stop pings; without it the holder shares the main loop (the R5-06 control).
+import { writeFileSync } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,6 +44,8 @@ for await (const line of createInterface({ input: process.stdin })) {
     process.stdout.write(JSON.stringify({ committed: a, r, t: Date.now() }) + "\n");
   } else if (cmd === "stall") {
     const s = Date.now();
+    // a file, not a stdout line: on Windows a pipe write would only go out after the stall
+    if (b) writeFileSync(b, String(s));
     block(Number(a));
     process.stdout.write(JSON.stringify({ stalled: Number(a), from: s, to: Date.now() }) + "\n");
   } else if (cmd === "nonce") process.stdout.write(JSON.stringify({ nonce: nonce() }) + "\n");

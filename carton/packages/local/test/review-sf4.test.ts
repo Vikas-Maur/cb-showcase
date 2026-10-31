@@ -120,7 +120,7 @@ test("a server answer that arrives before the save is the view's last change sti
     await sleep(50);
     assert.equal(updates.length, 1, "told once");
   } finally {
-    engine.close();
+    await engine.close();
     await c.close();
     w.db.close();
   }
@@ -156,7 +156,7 @@ test("a late conflict's sidecar update isn't overwritten by its confirmation", a
     await sleep(100);
     assert.equal(updates.at(-1)!.status, "conflicts", `the sidecar keeps its cards: ${JSON.stringify(updates)}`);
   } finally {
-    engine.close();
+    await engine.close();
     await b?.close();
     await a.close();
     w.db.close();
@@ -237,7 +237,7 @@ test("a real view save whose answer comes before its save returns: the sidecar e
     await until(() => status().status === "confirmed", 2000, `the sidecar to say confirmed (it says ${status().status})`);
     assert.ok(await store.get("ids", [status().change]), "and the change is confirmed in the store");
   } finally {
-    holder.close();
+    await holder.close();
     await mz.close();
     await c.close();
     w.db.close();

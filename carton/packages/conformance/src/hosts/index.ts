@@ -143,4 +143,5 @@ export function sequencerStorageSuite(name: string, make: () => Promise<Sequence
 
 export { sequencerHostSuite, transportSuite, HOST_SUITE_DOC } from "./host-suite.ts";
 export { httpApiSuite, type HttpFixture } from "./http-suite.ts";
+export { helloAtSchema } from "./schema.ts";
 export { liveSyncSuite } from "./live-suite.ts";

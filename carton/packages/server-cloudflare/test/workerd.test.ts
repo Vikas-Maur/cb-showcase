@@ -4,7 +4,7 @@
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, hostSuite, type HostFixture } from "@carton/conformance";
+import { helloAtSchema, blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, hostSuite, type HostFixture } from "@carton/conformance";
 import { createHmacAuth } from "@carton/server";
 import { webSocketTransport } from "@carton/server-node";
 import { hostMessageBlobs, hostMediaBlobs } from "@carton/host-http/client";
@@ -14,6 +14,7 @@ import { doBlobStore } from "../src/blob-do.ts";
 import { R2_MIN_PART_SIZE } from "../src/blob-r2.ts";
 import type { DurableObjectNamespace } from "../src/cf.ts";
 import { startDev, type DevServer } from "./dev-server.ts";
+import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 import { stateDir } from "./state.ts";
 
 const SECRET = Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
@@ -129,4 +130,15 @@ test("media dedup within a team (TEAMS, R2): one copy, found by a teammate's upl
   assert.equal(second.bytesSent, 0);
   assert.deepEqual(await (await client("team-b", "viewer")).get(key, { offset: LEAF_SIZE - 2, length: 4 }), bytes.subarray(LEAF_SIZE - 2, LEAF_SIZE + 2));
   assert.equal(await (await client("team-x")).head(key), null, "another team's editor finds nothing");
+});
+
+test("H-SV: the Worker as shipped takes the current Cardboard client's hello, and tells a newer one to update the server", async () => {
+  const auth = createHmacAuth({ secret: SECRET });
+  const project = `sv-${Date.now().toString(36)}`;
+  const token = await auth.issue({ account: "o", credential: "o/dev", role: "owner", projectId: project, ttlMs: 60_000 });
+  const url = `ws://127.0.0.1:${dev.port}/api/projects/${project}/ws`;
+  assert.equal((await helloAtSchema(webSocketTransport({ keepaliveMs: 0 }), url, token, CARDBOARD_SCHEMA_VERSION)).type, "hello");
+  const newer = await helloAtSchema(webSocketTransport({ keepaliveMs: 0 }), url, token, CARDBOARD_SCHEMA_VERSION + 1);
+  assert.equal(newer.type, "error");
+  assert.match((newer as { reason: string }).reason, /update the server/);
 });

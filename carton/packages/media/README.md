@@ -24,7 +24,13 @@ leaves, never CDC; if CDC is ever added it must be stitched segments (P6), as a 
 | Proxies | `encodeProxy`, `ffmpegEncoder`, `hostProxyEncoder` | Reuse Cardboard's proxy when it is H.264, ≤ 4 Mb/s, moov-first; else NVENC → QSV → AMF → libx264, each probed once with a 1-frame test encode; a failed hardware encode falls back |
 | Share | `shareMedia` (Node) | Runs a share for one clip: T1 files, the T2 proxy (a teammate's proxy for the same source and profile is reused through `px/<source>/<profile>`), T3 only when opted in |
 
-Store keys: `m/<hash>` bytes, `mf/<hash>` manifest, `px/<sourceHash>/<profileId>` proxy pointer.
+| Stream proxies | `ProxyStreamWriter`, `ProxyStreamReader`, `encodeSegments` (Node) | The collab proxy as ~2 s CMAF segments (each its own `m/<hash>`), so a teammate plays the first ones while the rest upload; a live HLS playlist on the range server (`/s/<stream>.m3u8`) for tools. Entries are written once and kept in the range cache once read, so a played stream replays offline. The reuse check needs no listing (HEADs and known keys only): it works through any store, a Carton host's HTTP API included. A part that fails verification is reported against its stream (`bad/<stream>`) by the player, the playlist's segment URLs and whole-stream reads; the next share makes a new stream |
+
+The record of a stream proxy: `{ stream, profile, encoder, size }` (`size` once the stream has ended; a teammate who
+reused a stream still uploading gets it without). A whole-object proxy: `{ hash, size, profile, encoder }`.
+
+Store keys: `m/<hash>` bytes, `mf/<hash>` manifest, `px/<sourceHash>/<profileId>` proxy pointer, `ps/<stream>/init`,
+`ps/<stream>/s/<000000>`, `ps/<stream>/end` a stream's entries, `bad/<hash or stream>` damage reports.
 
 ## Cross-platform notes
 
