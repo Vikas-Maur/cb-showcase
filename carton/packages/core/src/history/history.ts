@@ -437,9 +437,10 @@ export class History {
     const m = REF_RE.exec(ref.trim());
     if (!m) throw new StateUnknown(ref, "unparseable ref");
     // the cut whose token `b:` is (branchToken). Two with one token (a renamed copy and its original; foreign ids whose
-    // hashes meet) are told apart by the header's cut name, then by which has the header's state at its seq
+    // hashes meet) are told apart by which has the header's state at its seq (confirmed or pinned), then by the
+    // header's cut name: a cut renamed since the print keeps its headers when another takes its old name (0760ef2)
     const seq = Number(m[2]);
-    const rank = (b: Cut) => (b.rec.name === m[1] ? 2 : 0) + (seq <= b.log.length && this.hashOf(nodeId(b.rec.id, seq))?.startsWith(m[3]!) ? 1 : 0);
+    const rank = (b: Cut) => (seq <= b.log.length && (this.hashOf(nodeId(b.rec.id, seq))!.startsWith(m[3]!) || this.#pins.has(`${b.rec.id}|${seq}|${m[3]}`)) ? 2 : 0) + (b.rec.name === m[1] ? 1 : 0);
     const br = [...this.#cuts.values()].filter((b) => branchToken(b.rec.id) === m[4]).sort((x, y) => rank(y) - rank(x))[0];
     const out: StateRef & { printNonce?: string; by?: string } = { branchId: br?.rec.id ?? m[4]!, seq, hash8: m[3]! };
     if (m[5]) out.printNonce = m[5];
