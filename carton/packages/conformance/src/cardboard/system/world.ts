@@ -69,7 +69,17 @@ export interface WorldOptions {
 export async function openWorld(t: TestContext, o: WorldOptions) {
   fs.mkdirSync(SCRATCH, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(SCRATCH, "world-"));
-  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
+  // One hook, in order (node runs `t.after` hooks in the order they're added, and stops at the first that fails): the
+  // materializer, then its folder. A folder removed before what writes into it is closed only goes where open files can
+  // be deleted (Linux), not on Windows (route 36).
+  const open: { mz?: Materializer } = {};
+  t.after(async () => {
+    try {
+      await open.mz?.close();
+    } finally {
+      fs.rmSync(bundle, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  });
   const tracks = (o.tracks ?? ["V1", "T2"]).map((id, i) => ({ id, name: id, order: i, locked: false, visible: true, muted: false }));
   const project = (o.project ?? { id: "p-fixture", name: "Fixture", aspectRatio: "16:9", stateUpdatedAt: 1, tracks, timelineItems: o.items ?? [], media: [] }) as Record<string, unknown> & { id: string };
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
@@ -78,8 +88,7 @@ export async function openWorld(t: TestContext, o: WorldOptions) {
   const carton = await Carton.open({ adapter: cardboardAdapter, store, init: { doc: fromHost(project, null), projectId: project.id }, actor: HUMAN, clock: () => clock.now() });
   let shared = false;
   const engine = cartonMaterializerEngine(carton, { shared: () => shared, clock: () => clock.now() });
-  const mz = new Materializer({ bundle, engine, host: cardboardFilesHost, codec: o.codec ?? jsonTimelineCodec, clock });
-  t.after(() => mz.close());
+  const mz = (open.mz = new Materializer({ bundle, engine, host: cardboardFilesHost, codec: o.codec ?? jsonTimelineCodec, clock }));
   await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 7 * 86_400_000 })).ref);
   await mz.adoptCurrentFiles();
   await mz.start();
