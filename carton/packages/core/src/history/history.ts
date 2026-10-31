@@ -65,6 +65,8 @@ export const actorKey = (a: Actor | string | null | undefined): string => (a == 
 export const groupOf = (a: Actor | null | undefined): string => a?.group ?? actorKey(a);
 
 const SYSTEM: Actor = { kind: "system", id: "carton" };
+/** Changes inverted at a cut's head: the state and the remap the inversion applies there, or the cards that stop it. */
+export type Inverted = { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult };
 const REF_RE = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
 
 interface Cut {
@@ -813,7 +815,7 @@ export class History {
   // The head with `changes` (newest last) inverted one by one, newest first, and the remap that inversion applies at
   // the head. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
   // moves back with it; the changes made since it are the other side's recorded remaps. A card in any step stops it.
-  #inverted(cutId: string, changes: readonly ConfirmedChange[]): { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult } {
+  #inverted(cutId: string, changes: readonly ConfirmedChange[]): Inverted {
     const br = this.#mustCut(cutId);
     let cur: Doc = br.sq!.head;
     let done: RemapMaps = {};
@@ -864,16 +866,14 @@ export class History {
     return out;
   }
   /**
-   * ⌘Z for an actor group: invert the newest entry of its stack at the head. An agent turn (entries sharing
-   * `author.turn` with the newest) is undone as one. A path an outsider has since changed that would make the result
-   * invalid comes back as conflicts, never silently.
+   * What ⌘Z for an actor group would do at the head, without doing it: the newest entry of its stack, the changes it
+   * undoes (an agent turn as one, oldest first) and their inverse at the head, or the cards that stop it. Null when the
+   * stack is empty. `undo` commits the plan; a shared cut's undo queues it for its server instead (Carton).
    */
-  undo(cutId: string, group: string, { author, turn = true, id }: { author?: Actor; turn?: boolean; id?: ChangeId } = {}): CommitResult & { entry?: UndoEntry } {
-    const done = this.#done(id);
-    if (done) return done;
+  undoPlan(cutId: string, group: string, { turn = true }: { turn?: boolean } = {}): { top: UndoEntry; changes: ConfirmedChange[]; inverse: Inverted } | null {
     const stack = this.undoStack(cutId, group);
     const top = stack[0];
-    if (!top) return this.#empty(id, cutId, this.headSeq(cutId));
+    if (!top) return null;
     const br = this.#mustCut(cutId);
     let entries = [top];
     const t = top.author.turn;
@@ -885,8 +885,20 @@ export class History {
       }
     }
     const changes = entries.map((e) => br.log[e.seq - 1]!).reverse();
-    const inv = this.#inverted(cutId, changes);
-    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, br.log.length), merge: inv.merge };
+    return { top, changes, inverse: this.#inverted(cutId, changes) };
+  }
+  /**
+   * ⌘Z for an actor group: invert the newest entry of its stack at the head. An agent turn (entries sharing
+   * `author.turn` with the newest) is undone as one. A path an outsider has since changed that would make the result
+   * invalid comes back as conflicts, never silently.
+   */
+  undo(cutId: string, group: string, { author, turn = true, id }: { author?: Actor; turn?: boolean; id?: ChangeId } = {}): CommitResult & { entry?: UndoEntry } {
+    const done = this.#done(id);
+    if (done) return done;
+    const plan = this.undoPlan(cutId, group, { turn });
+    if (!plan) return this.#empty(id, cutId, this.headSeq(cutId));
+    const { top, changes, inverse: inv } = plan;
+    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
     const ids = changes.map((c) => c.id);
     const r = this.commit(cutId, { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(id ? { id } : {}), ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids } });
     return { ...r, entry: top };

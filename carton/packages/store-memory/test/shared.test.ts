@@ -115,7 +115,8 @@ test("fold a local variant into a shared cut: one fold change, with its merge ed
   assert.equal(head.kind, "merge");
   assert.equal(item((await c.head(main)).doc, "d")!.name, "variant edit");
   assert.equal((await c.fold(v.id, { into: main })).status, "up-to-date", "the merge edge is recorded");
-  await assert.rejects(c.undo(undefined, { cut: main }), /not available on a shared cut yet/);
+  // undo works on a shared cut (join-undo.test.ts); revert still doesn't
+  await assert.rejects(c.revert(head.change!, { cut: main }), /not available on a shared cut yet/);
   await c.close();
   w.host.close();
 });

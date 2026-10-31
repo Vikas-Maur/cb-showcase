@@ -63,8 +63,9 @@ export interface OpenOptions {
    * of a project this machine doesn't have: their cuts become tracking cuts and a writable cut forks from their head.
    * `asChange`: §16 migration of an existing project: the cut starts empty and `doc` is `main@1`, one insert-all
    * change by `{kind: "system", id: "import"}` (otherwise `doc` is the root state at seq 0).
+   * `join`: a cut a host already sequences, opened from an invite on a machine that holds nothing of the project.
    */
-  init?: { doc: Doc; projectId?: string; cutName?: string; asChange?: boolean } | { import: ShallowExport };
+  init?: { doc: Doc; projectId?: string; cutName?: string; asChange?: boolean } | { import: ShallowExport } | { join: JoinInit };
   /** `autoConnect: false`: the sync-lease holder connects itself, under its nonce (§6.2). */
   sync?: { transport: Transport; url: string; token: string | (() => Promise<string>); autoConnect?: boolean };
   media?: { blobStore: BlobStore; encoders?: ProxyEncoder[] };
@@ -72,6 +73,18 @@ export interface OpenOptions {
   keyframeEvery?: number;
   /** A display name for this replica in lineage and dialogs ("Bob"). */
   name?: string;
+}
+
+/**
+ * Joining a shared cut from nothing (an invite link opened in a browser): the cut's record as the host knows it
+ * (`sequencer.kind` "server", not a fork) and its state at seq 0. The confirmed rows come from the host when sync
+ * connects. `rootHash`, when given, is checked against `doc0` (`hashDoc`) before anything is stored.
+ */
+export interface JoinInit {
+  projectId: string;
+  cut: CutRecord;
+  doc0: Doc;
+  rootHash?: string;
 }
 
 /** A commit: the new state (`doc`) or ops, made on `base` (a header ref, an MCP rev, a pin, a held state, or the head). */
@@ -363,6 +376,7 @@ class CartonImpl implements Carton {
       const init = this.#opts.init;
       if (!init) throw new Error("Carton.open: the store holds no project (pass `init`)");
       if ("import" in init) return this.#createFromImport(init.import);
+      if ("join" in init) return this.#createFromJoin(init.join);
       const h = History.create(this.schema, init.asChange ? emptyDoc(this.schema) : init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
       const cut = h.cut(h.current)!;
       meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion };
@@ -394,6 +408,27 @@ class CartonImpl implements Carton {
     const w: StoreWrite[] = [{ table: T.meta, key: PROJECT, value: meta }, { table: T.meta, key: CURRENT, value: h.current }, ...this.#knowledgeWrites(h)];
     for (const c of h.cuts()) w.push({ table: T.cuts, key: [c.id], value: c });
     if (!(await this.store.write(w, [{ table: T.meta, key: PROJECT, expect: "absent" }]))) return this.load();
+    this.#meta = meta;
+    await this.#rebuild();
+  }
+  // A shared cut joined from nothing: the project, the cut's record and its root are stored exactly as a hand-off left
+  // them on the sharer's machine, so from here on it opens like any shared cut (its rows arrive on connect).
+  async #createFromJoin(j: JoinInit): Promise<void> {
+    if (j.cut.sequencer.kind !== "server") throw new Error("Carton.open: `join` needs a cut a host sequences (sequencer kind \"server\")");
+    if (j.cut.forkOf) throw new Error("Carton.open: `join` takes a cut that isn't a fork (its state at seq 0 is its root)");
+    if (!this.#opts.sync) throw new Error("Carton.open: `join` needs `sync` (the rows come from the host)");
+    if (j.rootHash !== undefined && E.hashDoc(j.doc0, this.schema) !== j.rootHash) throw new Error("Carton.open: the joined cut's root doesn't match its hash");
+    const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion };
+    const ok = await this.store.write(
+      [
+        { table: T.meta, key: PROJECT, value: meta },
+        { table: T.meta, key: CURRENT, value: j.cut.id },
+        { table: T.cuts, key: [j.cut.id], value: j.cut },
+        { table: T.keyframes, key: [j.cut.id, 0], value: j.doc0 },
+      ],
+      [{ table: T.meta, key: PROJECT, expect: "absent" }],
+    );
+    if (!ok) return this.load(); // another process (tab) joined first: open theirs
     this.#meta = meta;
     await this.#rebuild();
   }
@@ -874,8 +909,8 @@ class CartonImpl implements Carton {
   }
   async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    this.#localOnly(cut, "undo");
     const actor = this.#actor(opts.author);
+    if (this.#isShared(cut)) return this.#undoShared(cut, group ?? groupOf(actor), actor, opts.id);
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
@@ -1114,6 +1149,33 @@ class CartonImpl implements Carton {
       mergeBase: base?.node ? [base.node] : base?.nodes ?? [],
     };
     return this.#commitShared(into, { ops }, author, opts.id ?? `${this.#rid}.${++this.#n}`, history);
+  }
+  /**
+   * ⌘Z on a shared cut (§8, "undo the agent's turn" in the §17 script): History plans the inverse of the group's
+   * newest entry (an agent turn as one) on the confirmed head, and the SharedCut queues it as an undo change whose
+   * `reverts` lists what it undid, so every replica's undo stack drops those entries once it is confirmed. The plan is
+   * made on the confirmed head, so this replica's own edits still waiting to sync are given a moment to land first.
+   */
+  async #undoShared(cut: string, group: string, author: Actor, id?: ChangeId): Promise<CommitResult & { entry?: UndoEntry }> {
+    const sc = await this.#ensureShared(cut);
+    const waiting = sc.queue.pending(cut).map((p) => p.id);
+    if (waiting.length && sc.state().status !== "offline") await Promise.all(waiting.map((w) => sc.waitFor(w, 3000)));
+    await this.#queue;
+    await this.#refresh(cut);
+    if (this.#h.headSeq(cut) < sc.queue.headSeq(cut)) await this.#settleShared(cut, { type: "remote", rows: [] });
+    const left = sc.queue.pending(cut).length;
+    if (left) throw new Error(`Carton.undo: ${left} edit${left === 1 ? "" : "s"} waiting to sync on this cut; undo once it is up to date`);
+    const done = this.#h.confirmedById(id);
+    if (done) return done;
+    const plan = this.#h.undoPlan(cut, group);
+    if (!plan) return { status: "confirmed", seq: this.#h.headSeq(cut), ref: this.#sharedRef(cut), change: null, empty: true, rebased: 0, notices: [] };
+    const inv = plan.inverse;
+    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#sharedRef(cut), merge: inv.merge };
+    const ops = E.diff(this.#h.stateOf(this.#h.head(cut))!, inv.doc, this.schema);
+    const ids = plan.changes.map((c) => c.id);
+    const intent: Intent | undefined = E.isEmptyMap(inv.maps) ? undefined : { kind: "inverse", maps: inv.maps };
+    const r = await this.#commitShared(cut, { ops, ...(intent ? { intent } : {}) }, author, id ?? `${this.#rid}.${++this.#n}`, { kind: "undo", reverts: ids.length === 1 ? ids[0]! : ids });
+    return { ...r, entry: plan.top };
   }
   /** Writes History can't make on a shared cut yet: they say so instead of confirming locally. */
   #localOnly(cut: string, what: string): void {
