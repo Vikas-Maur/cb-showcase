@@ -236,7 +236,12 @@ test("a slow client doesn't make the server pull the whole body: the source is r
       }
     },
   };
-  const srv = await startRangeServer({ source });
+  // The server's own "this response is over" signal. The client's `end` is not one: with a Content-Length it fires as
+  // soon as the last byte arrives, while the server may still be waiting for 'drain' before it leaves its loop and the
+  // source's `finally` runs (CI on Windows caught exactly that).
+  let served!: (info: RangeRequestInfo) => void;
+  const responseClosed = new Promise<RangeRequestInfo>((r) => (served = r));
+  const srv = await startRangeServer({ source, onRequest: (info) => served(info) });
   try {
     const got = await new Promise<{ received: number; plateau: number[] }>((resolve, reject) => {
       const req = request({ host: "127.0.0.1", port: srv.port, path: pathOf(srv, HASH_A), agent: false }, (res) => {
@@ -262,8 +267,11 @@ test("a slow client doesn't make the server pull the whole body: the source is r
     assert.ok(a < 16 * MiB, `pulled ${a} bytes of ${total} while the client was paused`);
     assert.equal(c, a, "nothing more is pulled while the client stays paused");
     assert.equal(got.received, total);
+    const info = await responseClosed;
+    assert.equal(info.bytes, total);
+    assert.equal(info.aborted, false);
     assert.equal(pulled, total);
-    assert.ok(readDone);
+    assert.ok(readDone, "the source's read finished once the server closed the response");
   } finally {
     await srv.close();
   }
