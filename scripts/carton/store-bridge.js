@@ -138,14 +138,15 @@ module.exports = ({ dir, slice, who, codec }) => {
       const grades = m.options.grades;
       const luts = grades ? await ${N.luts}(grades, g, { projectId: cur.id, dryRun: true, newId, pathOf: (p) => (bundle !== undefined && ${N.isPath}(p) ? ${N.resolvePath}(p, bundle) : null), mediaIdOf: resolve, mediaNameOf: (id) => byId.get(id)?.data?.fileName ?? null }) : null;
       const templates = bundle !== undefined ? await ${N.templates}(g, bundle) : new Map();
+      // (the apply slices the project again after reading it again; this one doesn't change)
+      const now = ${slice}(cur);
       let q;
-      try { q = ${N.toDoc}(g, { resolveMedia, readTemplate: (p) => templates.get(p) ?? null, storedItem: ${N.stored}(${slice}(cur)), newId }); }
+      try { q = ${N.toDoc}(g, { resolveMedia, readTemplate: (p) => templates.get(p) ?? null, storedItem: ${N.stored}(now), newId }); }
       catch (e) { throw cardboardError(e, luts?.diagnostics); }
       const diagnostics = [...(luts?.diagnostics ?? []), ...q.diagnostics];
       for (const f of luts?.wouldImportLuts ?? []) diagnostics.push({ severity: "error", code: "lut-import", message: "colorGrade.lut.file " + f + " isn't in the project yet: cb source apply imports it" });
       if (luts?.requests.length) diagnostics.push({ severity: "error", code: "color-match", message: "colorGrade.match is measured by cb source apply, not by a parse" });
       if (diagnostics.some((d) => d.severity === "error")) throw refused(diagnostics);
-      const now = ${slice}(cur);
       const framed = await ${N.reframe}(now, now, q.doc, (id) => { const x = byId.get(id); return (x && ${N.mediaInfo}(x)) ?? undefined; });
       const made = ${N.synth}(${N.keepIds}(framed, now), cur, newId);
       const doc = { ...${N.withSlice}(cur, ${N.merge}(now, now, made.doc, {}).doc), media: [...(cur.media ?? []), ...made.added] };
