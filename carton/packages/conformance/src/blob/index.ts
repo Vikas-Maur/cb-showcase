@@ -150,12 +150,13 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
       await assert.rejects(store.get(k("rng2"), { offset: -1, length: 2 }));
       await assert.rejects(store.get(k("rng2"), { offset: 1.5 }));
       await assert.rejects(store.put("", text("x")));
+      // segments that a URL or a file system would resolve to another key
+      for (const bad of ["a/../b", "a/./b", "..", ".", "a//b", "/a", "a/", "a\0b"]) await assert.rejects(store.put(k(bad), text("x")), JSON.stringify(bad));
       await assert.rejects(store.put(k("x".repeat(1100)), text("x")));
     });
 
     test("keys are opaque: case, unicode, spaces, reserved characters", async () => {
-      const keys = ["Clip.MP4", "clip.mp4", "dir/Ünïcødé 名前.mov", "a b+c%20d?e#f&g=h", "CON", "nul.txt", "x/", "trailing.", "~tilde~b", ".hidden", "...", "deep/b/c"];
-      const valid = keys.filter((x) => !x.endsWith("/"));
+      const valid = ["Clip.MP4", "clip.mp4", "dir/Ünïcødé 名前.mov", "a b+c%20d?e#f&g=h", "CON", "nul.txt", "trailing.", "~tilde~b", ".hidden", "...", "deep/b/c"];
       for (const [i, key] of valid.entries()) await store.put(k(key), text(`v${i}:${key}`));
       for (const [i, key] of valid.entries()) eq(await store.get(k(key)), text(`v${i}:${key}`), key);
       const listed = new Set<string>();
