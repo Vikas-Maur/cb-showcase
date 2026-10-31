@@ -6,6 +6,7 @@
 //   small objects and ranged reads through short-lived signed URLs, and the §11 repair report.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
+import { SHA256_HEADER } from "@carton/blob-memory/signed";
 import { platformFetch } from "@carton/http-node";
 
 export interface HostBlobsOptions {
@@ -86,6 +87,8 @@ const rangeHeader = (r: ByteRange) => (r.length === undefined ? `bytes=${r.offse
 /**
  * A project's media through the host's HTTP API. It has no list or delete (the API offers neither to clients).
  * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically, then reads back what is stored.
+ * `put` with `sha256` sends it in `X-Carton-Sha256`: the host refuses a body that doesn't hash to it (400) and the
+ * store keeps it, for `head`.
  */
 export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
   const f = opts.fetch ?? platformFetch();
@@ -142,6 +145,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
       const headers: Record<string, string> = {};
       if (o.contentType) headers["content-type"] = o.contentType;
       if (o.ifAbsent) headers["if-none-match"] = "*";
+      if (o.sha256) headers[SHA256_HEADER] = o.sha256;
       const r = await f(await sign(key, "PUT"), { method: "PUT", body: data as Uint8Array<ArrayBuffer>, headers });
       if (!r.ok) await failed(r);
       await r.body?.cancel();
@@ -152,6 +156,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
       }
       const info: BlobInfo = { key, size: data.byteLength };
       if (o.contentType) info.contentType = o.contentType;
+      if (o.sha256) info.sha256 = o.sha256.toLowerCase();
       const etag = r.headers.get("etag");
       if (etag) info.etag = etag;
       return info;
