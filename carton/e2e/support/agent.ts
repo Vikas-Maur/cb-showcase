@@ -6,7 +6,8 @@
 //      read the `.status` sidecar until it reports this save. The next edit starts from the agent's own file, so the
 //      three edits depend on each other (R2-03), and each save's base is the previous save of the same print.
 // Identity comes from CARDBOARD_ACTOR, as Cardboard's Director hook (or our PreToolUse prefixer) sets it.
-//   agent <bundle> <projectId> <json: {steps, view?, statusMs?}>
+//   agent <bundle> <projectId> <json: {steps, view?, statusMs?, noRetry?, waitGo?}>  (waitGo: after printing, wait for a
+//   line on stdin before editing)
 // A step: {op: "insert", like: <item name>, id, name, set: {...}} | {op: "set", name, set: {...}} | {op: "remove", name}
 // Prints {actor, view, results: [status sidecar per step]}.
 import { readFileSync, renameSync, writeFileSync } from "node:fs";
@@ -16,7 +17,7 @@ import { cardboardAdapter } from "@carton/cardboard";
 import type { HostAdapter } from "@carton/core";
 
 const [bundle, projectId, json] = process.argv.slice(2);
-const cfg = JSON.parse(json!) as { steps: any[]; view?: string; statusMs?: number; noRetry?: boolean };
+const cfg = JSON.parse(json!) as { steps: any[]; view?: string; statusMs?: number; noRetry?: boolean; waitGo?: boolean };
 const actor = identify();
 const local = await openLocal({ projectDir: bundle!, projectId, adapter: cardboardAdapter as HostAdapter, actor });
 const results: any[] = [];
@@ -39,6 +40,11 @@ try {
   await local.close();
 }
 const file = join(bundle!, ...view.path.split("/"));
+if (cfg.waitGo) {
+  // printed; the test changes things before this agent saves (a stale save), then says go
+  process.stdout.write(JSON.stringify({ printed: view }) + "\n");
+  await new Promise<void>((r) => process.stdin.once("data", () => r()));
+}
 const statusFile = file.replace(/\.tsx$/, ".status");
 const readStatus = () => { try { return JSON.parse(readFileSync(statusFile, "utf8")); } catch { return null; } };
 
