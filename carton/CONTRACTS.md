@@ -61,6 +61,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   `"<cutId>@<seq>"`, or a cut id (its head). A ref that can't be rebuilt exactly throws `StateUnknown`.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have.
+- **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
+  file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
+  in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
+  already holds by the rows that extend it. The importer's own cuts are never touched. Returns `{ cuts }` taken.
 - **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
 - **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already

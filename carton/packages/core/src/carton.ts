@@ -12,7 +12,7 @@
 // each commit the cut's tail is re-read, so changes another process appended are seen; if another process still wins
 // the race, the in-memory model is rebuilt from the store and the commit is retried (its id makes the retry safe).
 
-import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreWrite, Transport } from "./plugins.ts";
+import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreKey, StoreWrite, Transport } from "./plugins.ts";
 import type { FieldSpec, Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
@@ -34,6 +34,7 @@ import type {
   DagNode,
   DiffResult,
   Doc,
+  FullExport,
   EditKinds,
   Intent,
   MergeResult,
@@ -290,6 +291,11 @@ export interface Carton {
   exportShallow(opts?: { cut?: string; to?: string }): Promise<ShallowExport>;
   /** §13: `forked` (`cut`, `head`), `imported` (`head`), `other-project`, or `no-shared-lineage` with `newProjectId`. */
   importShallow(pkg: ShallowExport): Promise<ShallowImport>;
+  /**
+   * "Include history" (§13, L17): a teammate's full-history copy of this project (another Store, e.g. a `.cbproj`'s
+   * `history.db` opened read-only) brought in as read-only tracking cuts with every version. Returns the cuts taken.
+   */
+  importHistory(from: Store): Promise<{ cuts: string[] }>;
 
   on(listener: (event: CartonEvent) => void): () => void;
   /** Present when opened with `sync`. */
@@ -1271,6 +1277,78 @@ class CartonImpl implements Carton {
     );
     // all of it: the new project id a same-id file without shared lineage gets, and the head it brought (S3-3)
     return res;
+  }
+
+  /**
+   * "Include history": the teammate's cuts this replica doesn't hold in full become read-only tracking cuts with their
+   * logs, roots and version names (one it holds as shallow lineage, from the same file's shallow export, is filled in;
+   * a tracking cut it already holds grows by the rows a newer file adds). Its own cuts are never touched. Only this
+   * project's history, made with this document schema, is taken.
+   */
+  async importHistory(from: Store): Promise<{ cuts: string[] }> {
+    const meta = await from.get<ProjectMeta>(T.meta, PROJECT);
+    if (!meta) throw new Error("Carton.importHistory: that store holds no project");
+    if (meta.projectId !== this.#meta.projectId) throw new Error("Carton.importHistory: that is another project's history");
+    if (meta.schema && meta.schemaVersion === this.#opts.adapter.schemaVersion && meta.schema !== schemaFingerprint(this.schema)) throw new Error("Carton.importHistory: that history was made with another document schema");
+    const branches: FullExport["branches"] = [];
+    const names: { key: StoreKey; value: { name: string; at: number; by?: Actor } }[] = [];
+    for (const c of (await from.range<CutRecord>(T.cuts)).map((e) => e.value)) {
+      if (c.shallow) continue;
+      const log = (await from.range<ConfirmedChange>(T.changes, { prefix: [c.id] })).map((e) => e.value);
+      const root = c.forkOf ? null : ((await from.get<Doc>(T.keyframes, [c.id, 0])) ?? null);
+      if (!c.forkOf && !root) continue; // a root cut without its root state can't be rebuilt here
+      branches.push({ id: c.id, name: c.name, forkOf: c.forkOf, owner: c.owner, root, log });
+      for (const e of await from.range<{ name: string; at: number; by?: Actor }>(T.names, { prefix: [c.id] })) names.push({ key: e.key, value: e.value });
+    }
+    let took: { id: string; from: number }[] = [];
+    await this.#mutate(
+      undefined,
+      () => {
+        took = [];
+        const held = new Map(this.#h.cuts().map((c) => [c.id, c]));
+        for (const b of branches) {
+          const mine = held.get(b.id);
+          if (!mine || mine.shallow) continue;
+          // a tracking cut held in full grows by the rows past its own, when the rows it has are the same changes
+          const have = this.#h.changes(b.id), n = have.length; // (History's own array: load grows it)
+          if (!mine.tracking || b.log.length <= n || have.some((c, i) => c.id !== b.log[i]!.id)) continue;
+          this.#h.load(b.id, b.log);
+          took.push({ id: b.id, from: n });
+        }
+        // new cuts whose fork parent is held in full here or comes with them (one forked from a cut that is only
+        // shallow lineage on both sides can't be rebuilt: left out)
+        const full = new Set([...held.values()].filter((c) => !c.shallow).map((c) => c.id));
+        const fresh = branches.filter((b) => !full.has(b.id));
+        const taken: typeof branches = [];
+        for (let more = true; more; ) {
+          more = false;
+          for (const b of fresh) if (!taken.includes(b) && (!b.forkOf || full.has(parseNode(b.forkOf).branchId))) (taken.push(b), full.add(b.id), (more = true));
+        }
+        this.#h.importFull({ format: "carton-full/1", projectId: meta.projectId, branches: taken });
+        for (const b of taken) took.push({ id: b.id, from: 0 });
+        for (const n of names) if (took.some((t) => t.id === n.key[0])) this.#h.nameVersion(nodeId(n.key[0] as string, n.key[1] as number), n.value.name, n.value.by);
+      },
+      {
+        extra: () => {
+          const w: StoreWrite[] = [];
+          for (const t of took) {
+            const b = branches.find((x) => x.id === t.id)!;
+            if (!t.from) w.push({ table: T.cuts, key: [t.id], value: this.#h.cut(t.id)! }, ...(b.root ? [{ table: T.keyframes, key: [t.id, 0], value: b.root }] : []));
+            for (const c of b.log.slice(t.from)) w.push({ table: T.changes, key: [t.id, c.seq], value: c });
+          }
+          for (const n of names) if (took.some((t) => t.id === n.key[0])) w.push({ table: T.names, key: n.key, value: n.value });
+          return { writes: w };
+        },
+        idempotent: true,
+      },
+    );
+    // the cuts changed shape (shallow lineage to full logs): History is rebuilt from the store, behind every other write
+    if (took.length) {
+      const p = this.#queue.then(() => this.#rebuild());
+      this.#queue = p.catch(() => {});
+      await p;
+    }
+    return { cuts: took.map((t) => t.id) };
   }
 
   // ------------------------------------------------------------ shared cuts (§5.3, §6.2, §12): through SharedCut
