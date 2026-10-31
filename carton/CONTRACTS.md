@@ -47,8 +47,12 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 ## Formats to keep exactly
 
 - **Change ids** are `<rid>.<n>` with a 96-bit random `rid` per process (hex). Dedup is by id; ids survive rebases.
-- **Refs** print as `main@57~3f9a1c0e b:<branchId8> p:<printNonce> by <actor>`; a bare 13-digit number is a 1.4.0
-  timestamp rev. Node ids are `<branchId>@<seq>`.
+- **Refs** print as `main@57~3f9a1c0e b:<token> p:<printNonce> by <actor>`; a bare 13-digit number is a 1.4.0
+  timestamp rev. Node ids are `<branchId>@<seq>`. `<token>` is `branchToken(cutId)` (exported from `@carton/core`, the
+  one definition; the adapter's header prints it): the id's first 8 characters when they are lowercase hex (every id
+  core makes, so those headers never changed), else the first 8 hex characters of the id's SHA-256, so any cut id (one
+  from a `.cbproj` or another host: `b6b.alt`, non-ASCII) reads back. A header names the cut whose token it carries;
+  two cuts with one token are told apart by the header's cut name, then by which has the header's state at its seq.
 - **Path keys** join segments with `/`, escaping `~` → `~0` and `/` → `~1`. Field-group paths end in `#<group>`
   (`timelineItems/X/#time`). Sequences order by the `#pos` field.
 - **Spans** are half-open `[lo, hi)`; `hi: null` is open-ended (a remap's `[t0, ∞)`).
