@@ -60,6 +60,12 @@ export interface FollowOptions {
 export interface Follower {
   /** Look now (a nudge): resolves once the store has been compared and any listener called. */
   check(): Promise<void>;
+  /**
+   * Tell this at the next look, as if a look had found it: the holder moved the handle itself (a served switch) but
+   * telling the materializer failed. Its own writes never move the store's stamp for this connection, so no look would
+   * find it otherwise.
+   */
+  owe(n: Notice): void;
   /** Stop: nothing is switched or told after this; resolves once a look in progress has finished. */
   stop(): Promise<void>;
 }
@@ -89,7 +95,8 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
    * and told again at the next look (poll or nudge), after that look has read the store (a listener that keeps failing
    * never holds up adopting a newer cut). It is what to tell, not a call to repeat: it is told for the cut the handle
    * is on then, merged with what that look found (the larger of the two), and dropped once the handle has left its cut
-   * (whatever moved it told the materializer: a switch served here, or an adoption, told as such).
+   * (whatever moved it told the materializer: an adoption, told as such, or a switch served here, which owes a notice of
+   * its own through `owe` when telling failed).
    */
   let owed: Notice | null = null;
   const tell = async (n: Notice): Promise<void> => {
@@ -202,11 +209,15 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   };
   // the first look records where the store is; moves are what changes after it
   tick();
-  return { check, stop };
+  const owe = (n: Notice): void => {
+    if (stopped) return;
+    if (!owed || owed.cut !== n.cut || RANK[n.kind] > RANK[owed.kind]) owed = n;
+  };
+  return { check, stop, owe };
 }
 
 /** What a look tells: a cut switch (the whole cut to show), the head moved, or some other write. */
-type Notice = { kind: "cut" | "head" | "moved"; cut: string };
+export type Notice = { kind: "cut" | "head" | "moved"; cut: string };
 /** A switch shows the whole cut, head included; a head move tells all a write elsewhere would. */
 const RANK: Record<Notice["kind"], number> = { moved: 0, head: 1, cut: 2 };
 

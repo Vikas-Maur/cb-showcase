@@ -136,19 +136,26 @@ async function finishImport(carton: Carton, doc: Doc): Promise<void> {
  * Checked on every open, with or without `init` (a `cb` opens without it): a stop between the import and the mark is
  * repaired by the next process to open the project, before it writes. If something was written meanwhile (a writer
  * that doesn't open through here), the head is marked instead: a copy taken from then on shares that version, the
- * newest both sides hold. Any export of a version on the import's cut is such a point already (a `.cbproj` sent), so
- * then nothing is added. A copy taken in between still folds from the empty root: only core can make the import
- * itself a lineage point (asked of foundation-core, request 8; this goes then). Best effort: an open never fails on
- * it, and the next open tries again.
+ * newest both sides hold. An export of a version from the import on (a `.cbproj` sent) is such a point already, so
+ * then nothing is added; one of the empty root before it isn't. A copy taken in between still folds from the empty
+ * root: only core can make the import itself a lineage point (asked of foundation-core, request 8; this goes then).
+ *
+ * `exported` is what the store held before this handle loaded it: a handle knows the exports it loaded or made, never
+ * one another process wrote later (core's refresh doesn't reload them, request 9), and an export it doesn't know is
+ * missing from its own `.cbproj`s. A mark another process wrote meanwhile is made again here (one more row for a
+ * version, harmless). Best effort: an open never fails on it, and the next open tries again.
  */
-async function markStartingState(carton: Carton, store: Store): Promise<void> {
+async function markStartingState(carton: Carton, store: Store, exported: readonly string[]): Promise<void> {
   const at = await store.get<[string, number]>("ids", [`import.${carton.projectId}`]);
   if (!at || at[1] !== 1) return;
-  const [cut] = at;
-  // the export rows' keys are ["export", node, at, nonce]: one per `.cbproj` sent, a handful
-  if ((await store.range("meta", { prefix: ["export"] })).some((r) => String(r.key[1]).startsWith(`${cut}@`))) return;
+  const [cut, seq] = at;
+  if (exported.some((node) => node.startsWith(`${cut}@`) && Number(node.slice(cut.length + 1)) >= seq)) return;
   if (!(await carton.cuts()).some((c) => c.id === cut && c.sequencer.kind === "local")) return;
   await carton.exportShallow({ cut, to: STARTING_STATE });
+}
+/** The versions exported so far (lineage points): the export rows' keys are ["export", node, at, nonce], a handful. */
+async function exportedNodes(store: Store): Promise<string[]> {
+  return (await store.range("meta", { prefix: ["export"] })).map((r) => String(r.key[1]));
 }
 /** The recipient of the starting version's export (no one: it only makes that version a lineage point). */
 const STARTING_STATE = "carton:starting-state";
@@ -168,7 +175,9 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   const adapter = opts.adapter ?? (await defaultAdapter());
   const name = replicaName(opts.name, actor);
   let carton: Carton;
+  let exported: string[] = [];
   try {
+    exported = await exportedNodes(store);
     carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, name, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName, asChange: opts.init.asChange ?? true } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
   } catch (e) {
     await store.close();
@@ -183,7 +192,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
       throw e;
     }
   }
-  await markStartingState(carton, store).catch(() => {});
+  await markStartingState(carton, store, exported).catch(() => {});
   const lease = new Lease(store);
   const dbPath = location.dbPath;
   const factory = opts.helperFactory ?? defaultFactory();
@@ -296,7 +305,17 @@ export class CartonHolderEngine implements HolderEngine {
     // the written cut connected (catching up or up to date): wait up to 5 s for the ack; not: pending at once (L14)
     const online = (cut?: string) => { const st = this.carton.sync?.state(cut).status; return st === "up-to-date" || st === "syncing"; };
     const run = () => withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
-    return r.op.kind === "switch" ? this.cutLock(run) : run();
+    if (r.op.kind !== "switch") return run();
+    return this.cutLock(async () => {
+      const was = this.carton.cut;
+      try {
+        return await run();
+      } catch (e) {
+        // switched, but the files didn't follow (the materializer failed): the follower tells it at its next look
+        if (this.carton.cut !== was) this.follower?.owe({ kind: "cut", cut: this.carton.cut });
+        throw e;
+      }
+    });
   }
 
   /** Hooked agents' views are named after their actor id; others get a fresh `agent-xxxx` (or the name they asked for). */
