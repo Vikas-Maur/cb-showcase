@@ -25,6 +25,7 @@ import * as host from "./host.js";
 import * as store from "./store.js";
 import { Live } from "./live.js";
 import * as media from "./media.js";
+import { headScope } from "./scope.js";
 import "./cbproj.js";
 
 const errText = (e) => (e && e.message) || String(e);
@@ -427,7 +428,6 @@ extend({
 //         into project.json, so the tool reads the newest state;
 //   push: nothing to PUT (each edit went through the holder as it was made). Cardboard's own path stays for every
 //         project Carton doesn't share.
-const OWNED = ["tracks", "timelineItems", "aspectRatio", "name", "description"];
 const shared = (lib, projectId) => {
   const bundlePath = lib?.projects?.bundlePathFor?.(projectId);
   return bundlePath && store.readConfig(bundlePath, projectId) ? bundlePath : null;
@@ -447,12 +447,7 @@ const cli = {
     let next = await cardboard14.headProject(bundlePath, current);
     if (!next) return true;
     next = await fillTeammateMedia(next, { bundlePath, projectId, current });
-    // Media through 1.4.0's own media scope (its updateScoped never takes media from ownedFields), as R4 asks.
-    const had = new Map((current?.media ?? []).map((m) => [m.id, JSON.stringify(m)]));
-    const keep = new Set((next.media ?? []).map((m) => m.id));
-    const ownedMediaIds = (next.media ?? []).filter((m) => had.get(m.id) !== JSON.stringify(m)).map((m) => m.id);
-    const removedMediaIds = [...had.keys()].filter((id) => !keep.has(id));
-    await lib.projects.updateScoped(next, { ownedFields: OWNED, ownedMediaIds, removedMediaIds, carton: { materialize: true } });
+    await lib.projects.updateScoped(next, headScope(current, next));
     return true;
   },
   push: async (lib, projectId) => !!shared(lib, projectId),
@@ -460,4 +455,5 @@ const cli = {
 
 // For the headless helper's factory (sync/factory.js loads this bundle) and cb's patches: what they need from the
 // packages, from this bundle's one copy of them.
-globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync, media, cli };
+// `holds(lc)`: this handle is the live lease holder now (cbproj.js folds on a shared cut only then).
+globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync, media, cli, holds: (lc) => !!holding.get(lc)?.holds() };
