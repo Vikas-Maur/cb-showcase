@@ -4,9 +4,9 @@
 // project-wide viewer invite let the watch page read Main's unpublished edits.
 import test from "node:test";
 import assert from "node:assert/strict";
-import type { sync } from "@carton/core";
+import { sync } from "@carton/core";
 import { createHmacAuth } from "../src/index.ts";
-import { BRANCH, clip, doc, fakeConn, push, set, world } from "./helpers.ts";
+import { BRANCH, clip, doc, fakeConn, memoryBlobs, push, set, world } from "./helpers.ts";
 
 const PUB = "pub-0000-0000";
 const hello = (branchId: string, have = -1): sync.HelloMsg => ({ type: "hello", branchId, have, pending: [], rids: [], schemaVersion: 1 });
@@ -79,4 +79,34 @@ test("a scoped reader's push, withdraw and history for another cut are refused a
       assert.deepEqual(viewer.inbox, [{ type: "error", reason: `this token can't read ${cut}` }], `${msg.type} on ${cut}`);
     }
   }
+});
+
+test("a cut named by anything but a string is refused before any lookup, directly or in an envelope (stage review round 2)", async () => {
+  const blobs = memoryBlobs();
+  const d0 = doc([clip("c0", 0, 5)]);
+  const { seq } = await world(d0, { blobs, envelopeBytes: 4 * 1024 });
+  // a private cut whose id reads as a number: SQLite would match 1.5 to "1.5"
+  await seq.createBranch({ id: "1.5", name: "private", forkOf: `${BRANCH}@0`, owner: "alice", kind: "variant", sequencer: { kind: "server", since: 0 } } as never, { doc0: d0 as never, stateHash: "h0" });
+  const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
+  const refused = { type: "error", reason: "a message must name its cut by a string id" };
+  for (const msg of [
+    { type: "hello", branchId: 1.5, have: -1, pending: [], rids: [], schemaVersion: 1 },
+    { type: "branchStatus", branchId: 1.5 },
+    { type: "history", branchId: 1.5, req: 1, after: 0, upTo: 1, lineage: true },
+    { type: "hello", branchId: ["1.5"], have: -1, pending: [], rids: [], schemaVersion: 1 },
+  ]) {
+    viewer.inbox.length = 0;
+    await seq.handle(viewer, msg as never);
+    assert.deepEqual(viewer.inbox, [refused], JSON.stringify(msg));
+  }
+  // the same hello inside an envelope
+  const big = sync.oversized({ type: "hello", branchId: 1.5, have: -1, pending: [], rids: ["x".repeat(5000)], schemaVersion: 1 } as never, 4 * 1024)!;
+  viewer.inbox.length = 0;
+  await seq.handle(viewer, await sync.seal(big, blobs, (sha) => sync.clientEnvelopeKey(sha, Date.now())));
+  assert.deepEqual(viewer.inbox, [refused], "enveloped");
+  // a writer's fork must name its parent by a string too
+  const editor = fakeConn("e/k");
+  editor.inbox.length = 0;
+  await seq.handle(editor, { type: "fork", branchId: "f1", from: 1.5, seq: 0, rec: { id: "f1", name: "f", forkOf: null, owner: "e", kind: "variant", sequencer: { kind: "server", since: 0 } } } as never);
+  assert.deepEqual(editor.inbox, [refused]);
 });

@@ -982,8 +982,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // A reader scoped to some cuts (a Published cut's watch link) learns nothing of any other: every message naming
     // one is refused alike, before any lookup, so not its rows, head, adoption key, or even whether it exists. A
     // scoped writer's scope limits its writes (mayWrite).
+    // Every message names its cut as a string (and a fork its parent): anything else is refused before it can reach a
+    // lookup, where SQLite would match the number 1.5 to the cut id "1.5" past the guard (stage review round 2).
     const named = (msg as { branchId?: unknown } | null)?.branchId;
-    if (typeof named === "string" && !WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(named)) return send(c, { type: "error", reason: `this token can't read ${named}` });
+    const from = (msg as { type?: unknown; from?: unknown } | null)?.type === "fork" ? (msg as { from?: unknown }).from : "";
+    if (typeof named !== "string" || typeof from !== "string") return send(c, { type: "error", reason: "a message must name its cut by a string id" });
+    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(named)) return send(c, { type: "error", reason: `this token can't read ${named}` });
     switch (msg?.type) {
       case "hello":
         return onHello(c, msg);
