@@ -84,15 +84,18 @@ async function workerStall(name: string, engineThread: boolean) {
   const nonce0 = worker.ready.nonce;
   worker.send(`commit gui.1 ${JSON.stringify(ops("c0", "gui"))}`);
   await worker.next((x) => x.committed === "gui.1");
-  // the library worker's main loop chews on a multi-MB project.json for 500 ms; an agent's cb lands meanwhile
+  // the library worker's main loop chews on a multi-MB project.json; an agent's cb lands meanwhile. 500 ms for the
+  // engine thread. The control's stall outlasts the patience a `cb` has with the app (B3: 100 ms, then 300 and 1000 ms
+  // more), or it would simply wait the stall out
+  const stall = engineThread ? 500 : 2000;
   const agent = w.cbArmed({ ops: ops("c1", "D") });
   await agent.ready;
-  worker.send("stall 500");
+  worker.send(`stall ${stall}`);
   await sleep(50);
   agent.go();
   const r = await agent.result;
   const stalled = await worker.next((x) => x.stalled);
-  await sleep(engineThread ? 500 : 3500); // the control's worker takes the lease back after 2 s
+  await sleep(engineThread ? 500 : 3500); // the control's worker takes the lease back 2 s after its stall
   worker.send("nonce");
   const now = await worker.next((x) => "nonce" in x && !("ready" in x) && x !== worker.ready);
   return { w, worker, nonce0, r, stalled, now };

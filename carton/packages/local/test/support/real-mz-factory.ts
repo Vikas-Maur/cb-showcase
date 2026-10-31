@@ -1,6 +1,6 @@
 // The engine factory for R5-04: Carton (test adapter) + the cardboard materializer (JSON timeline codec, a plain host
 // for the test schema) on the lease holder, watching the bundle; CartonHolderEngine serves `cb` calls, including
-// `cb source print --view`. config: { projectDir }.
+// `cb source print --view`. config: { projectDir, followMs? }.
 import { Carton, merge3 } from "@carton/core";
 import type { Doc, Rec } from "@carton/core";
 import { openSqliteStore } from "@carton/store-sqlite";
@@ -30,5 +30,7 @@ export async function createHolderEngine({ dbPath, config }: HelperFactoryOption
   const mz = new Materializer({ bundle: String(config.projectDir), engine: new CartonMaterializerEngine(carton), host, codec: jsonTimelineCodec });
   await mz.start();
   mz.watch();
-  return { store, engine: new CartonHolderEngine(carton, { materializer: mz }), close: async () => { await mz.close(); await carton.close(); } };
+  // config.followMs: how often the app looks for other processes' writes (B11); 0: only when nudged
+  const engine = new CartonHolderEngine(carton, { materializer: mz, ...(config.followMs !== undefined ? { follow: { intervalMs: Number(config.followMs) } } : {}) });
+  return { store, engine, close: async () => { engine.close(); await mz.close(); await carton.close(); } };
 }

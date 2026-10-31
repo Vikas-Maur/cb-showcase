@@ -4,6 +4,7 @@
 //   carton.commit    -> a cb result           the change goes into carton.db; on a shared cut, wait up to 5 s for the ack
 //   carton.handover  -> {ok}                  finish the in-flight push, release the lease, stop (the app is starting)
 //   carton.status    -> {kind, pid, nonce, …} for `cb status` and tests
+//   carton.nudge     -> {ok}                  another process wrote carton.db: the engine looks now (B11); no auth
 //
 // Acquiring: a free or expired lease, or one whose holder doesn't answer a 100 ms ping, is taken at once (CAS on the
 // nonce we saw). A live helper is asked to hand over; a worker never waits for a helper's 60 s idle timeout.
@@ -29,6 +30,8 @@ export interface HolderEngine {
   quiesce?(): Promise<void>;
   /** Stop everything (after quiesce, or when fenced). */
   stop?(why: string): void | Promise<void>;
+  /** Another process wrote carton.db without this holder (a `cb` that committed in its own process): look now (B11). */
+  nudge?(): void | Promise<void>;
 }
 
 export interface HolderOptions {
@@ -80,15 +83,15 @@ export const PATIENT_PINGS_MS = [300, 1000];
  * expired and its socket answers a ping with the row's nonce. A taker must take over from exactly the nonce whose
  * holder it saw fail, never from one it reads later (that one may be a healthy holder another caller just started).
  */
-export async function probeHolder(lease: Lease, now = Date.now(), opts: { patient?: (row: LeaseRow) => boolean } = {}): Promise<{ live: LeaseRow | null; seen: string | null; fresh: boolean }> {
+export async function probeHolder(lease: Lease, now = Date.now(), opts: { patient?: (row: LeaseRow) => boolean } = {}): Promise<{ live: LeaseRow | null; seen: string | null; fresh: boolean; row: LeaseRow | null }> {
   // one observation: the nonce a taker may take over from is the one this probe saw, never one read afterwards
   const { nonce, row } = await lease.snapshot();
-  if (!row) return { live: null, seen: nonce, fresh: false };
-  if (now - row.heartbeat > LEASE_EXPIRY_MS) return { live: null, seen: row.nonce, fresh: false };
+  if (!row) return { live: null, seen: nonce, fresh: false, row: null };
+  if (now - row.heartbeat > LEASE_EXPIRY_MS) return { live: null, seen: row.nonce, fresh: false, row };
   let r = await pingWhy(row.socketPath);
   if ("slow" in r && opts.patient?.(row)) for (const ms of PATIENT_PINGS_MS) if (!("slow" in (r = await pingWhy(row.socketPath, ms)))) break;
   // fresh: a holder beat within 6 s, even if it missed this ping (busy, or dead a moment ago)
-  return { live: "answer" in r && r.answer.nonce === row.nonce ? row : null, seen: row.nonce, fresh: true };
+  return { live: "answer" in r && r.answer.nonce === row.nonce ? row : null, seen: row.nonce, fresh: true, row };
 }
 
 /** The live holder, or null. */
@@ -126,9 +129,11 @@ export class Holder {
     // listen first, so the lease row never names a socket nobody answers
     this.server = await ControlServer.listen({
       path: this.socketPath,
-      open: ["carton.ping"],
+      // a nudge only makes the engine look at carton.db again (B11): nothing to protect, and no auth round trip
+      open: ["carton.ping", "carton.nudge"],
       methods: {
         "carton.ping": () => ({ pid: process.pid, nonce: this.nonce }),
+        "carton.nudge": () => { void Promise.resolve(this.opts.engine.nudge?.()).catch(() => {}); return { ok: true }; },
         "carton.commit": (p) => this.commit(p),
         "carton.handover": () => this.handover(),
         "carton.status": () => ({ kind: this.kind, pid: process.pid, nonce: this.nonce, stopped: this.stopped, busy: this.busy }),
