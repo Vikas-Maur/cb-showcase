@@ -3,6 +3,9 @@
 import type { Role } from "@carton/core/plugins";
 import type { HostFixture } from "@carton/conformance";
 import { createHmacAuth } from "@carton/server";
+import { createFsBlobStore } from "@carton/blob-fs";
+import { hostMessageBlobs } from "@carton/host-http/client";
+import { join } from "node:path";
 import { startNodeHost, createInProcessHost, webSocketTransport, type NodeHost, type NodeHostOptions } from "../src/index.ts";
 import { scratch } from "./scratch.ts";
 
@@ -24,7 +27,7 @@ export function issuer(auth: ReturnType<typeof createHmacAuth>, projectId = PROJ
 export async function nodeFixture(extra: Partial<NodeHostOptions> = {}): Promise<HostFixture & { node(): NodeHost }> {
   const auth = createHmacAuth({ secret: SECRET });
   const dataDir = scratch("host");
-  const opts: NodeHostOptions = { dataDir, auth, secret: SECRET, durability: "normal", ...extra };
+  const opts: NodeHostOptions = { dataDir, auth, secret: SECRET, durability: "normal", blobs: createFsBlobStore({ root: join(dataDir, "blobs"), durable: false }), ...extra };
   let node = await startNodeHost(opts);
   const port = node.port;
   const host = { kind: "node", get url() { return node.urlFor(PROJECT); }, close: () => node.close() };
@@ -41,6 +44,7 @@ export async function nodeFixture(extra: Partial<NodeHostOptions> = {}): Promise
     async rows() {
       return node.room(PROJECT)?.storage.stats() ?? { rowsRead: 0, rowsWritten: 0 };
     },
+    clientBlobs: (token) => hostMessageBlobs({ origin: node.httpUrl, projectId: PROJECT, token }),
     close: () => node.close(),
   };
 }
