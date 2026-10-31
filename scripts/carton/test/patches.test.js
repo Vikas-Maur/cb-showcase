@@ -288,7 +288,7 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       const d = path.join(bundle, ".carton", "displaced"); fs.mkdirSync(d, { recursive: true });
       const f = path.join(d, "fresh-0"); fs.writeFileSync(f, "x"); fs.utimesSync(f, old, old);
       const j = I.readJournal(bundle); j["fresh-0"] = { at: Date.now(), stamp: "?" };
-      I.sweep(path.join(bundle, "project.json"), { mine: new Set() }, j);
+      await I.sweep(path.join(bundle, "project.json"), { mine: new Set() }, j);
       out.fresh = fs.existsSync(f);
       fs.rmSync(f);
       // An install of a state that is no longer head is skipped, and says so.
@@ -328,11 +328,25 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       const [r1, on1] = await takeover(false), [r2, on2] = await takeover(true);
       out.putBack = r1 === false && on1 === theirsRev && r2 === false && on2 === thirdRev;
       fs.rmSync(dir, { recursive: true, force: true });
+      // A rename of seen.json or displaced.json that fails (a file kept busy past the retry budget on Windows; here a
+      // folder in its place) fails the install: every busy-file call is awaited, so none fails unnoticed.
+      out.surfaced = {};
+      for (const [k, name] of ["seen.json", "displaced.json"].entries()) {
+        const at = path.join(bundle, ".carton", name), saved = fs.existsSync(at) ? fs.readFileSync(at) : null;
+        fs.rmSync(at, { force: true });
+        fs.mkdirSync(at);
+        const t = path.join(bundle, ".fail.tmp");
+        fs.writeFileSync(t, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: 1700000000300 + k } }));
+        out.surfaced[name] = await I.install(t, pj).then(() => "resolved", (e) => (e?.code ? "rejected" : "rejected: " + e));
+        fs.rmSync(at, { recursive: true, force: true });
+        if (saved) fs.writeFileSync(at, saved);
+        fs.rmSync(t, { force: true });
+      }
       fs.writeFileSync(pj, JSON.stringify(cur));
       console.log(JSON.stringify(out));
     })().catch((e) => { console.error(e); process.exit(1); });
   `], { env: env(), encoding: "utf8", timeout: 60_000 });
-  assert.deepEqual(JSON.parse(locks.stdout.trim().split("\n").pop()), { dead: true, waited: true, reused: true, fresh: true, skipped: true, putBack: true }, locks.stderr);
+  assert.deepEqual(JSON.parse(locks.stdout.trim().split("\n").pop()), { dead: true, waited: true, reused: true, fresh: true, skipped: true, putBack: true, surfaced: { "seen.json": "rejected", "displaced.json": "rejected" } }, locks.stderr);
   // Four agents at once on different titles: none loses its last edit (B1).
   const wroot = path.join(TMP, "lib-real-writers");
   fs.rmSync(wroot, { recursive: true, force: true });

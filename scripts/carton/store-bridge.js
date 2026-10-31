@@ -35,6 +35,23 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
   const self = {
     on: true,
     skipInArchive,
+    // A read of project.json or timeline.tsx can find the name missing for a moment while Carton installs the file
+    // (displace, then link; in CI's NTFS race about a quarter of a tight loop's reads did). 1.4.0's saves never left a
+    // gap, and its readers take a missing project.json for a removed project: the watcher tells the pages so, and the
+    // store drops it from the library. In a bundle Carton tracks, a read that finds the file missing waits for it:
+    // while an install holds the bundle's lock (a busy file on Windows can stretch one to seconds), else a moment,
+    // for an installer without the lock. A file that stays missing fails as before.
+    async readFile(file) {
+      const fs = require("node:fs"), fsp = require("node:fs/promises");
+      const dir = path.join(path.dirname(file), ".carton"), t0 = Date.now();
+      for (let i = 0; ; i++) {
+        try { return await fsp.readFile(file, "utf8"); } catch (e) {
+          if (e?.code !== "ENOENT" || !fs.existsSync(dir)) throw e;
+          if (Date.now() - t0 > (fs.existsSync(path.join(dir, "install.lock")) ? 6000 : 50)) throw e;
+          await new Promise((r) => setTimeout(r, Math.min(1 + i, 10)));
+        }
+      }
+    },
     attach(store, mirror, root) {
       carton()?.attach({ root, store, mirror, slice: (d) => ${slice}(d) });
     },

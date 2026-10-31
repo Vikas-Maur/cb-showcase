@@ -207,19 +207,22 @@ async function headProject(bundlePath, current) {
 // ---------------------------------------------------------------- files: displace, then install
 const installs = new Map(); // target path → { files: DisplacedFiles, own, noLinks, timer }
 const SEEN_KEEP = 256;
+// Busy files (Windows: another process holds one open) are waited out on timers by @carton/cardboard/node, never by
+// blocking this thread; every call is awaited, so a failure reaches the install's caller as before. Counted here.
+const busy = { busy: 0 }, BUSY = { counter: busy };
 const seenFile = (file) => path.join(path.dirname(file), ".carton", "seen.json");
 const sha = (b) => createHash("sha256").update(b).digest("hex");
 const readSeen = (file) => { try { return JSON.parse(fs.readFileSync(seenFile(file), "utf8")); } catch { return {}; } };
 // What Carton wrote at each path, shared by every process on the machine: a displaced file with one of these hashes is
 // Carton's own and goes; anything else is held as a foreign save. Losing an entry to a race only keeps a file.
-const markSeen = (file, hash) => {
+const markSeen = async (file, hash) => {
   const all = readSeen(file), name = path.basename(file);
   all[name] = [hash, ...(all[name] ?? []).filter((h) => h !== hash)].slice(0, SEEN_KEEP);
   fs.mkdirSync(path.dirname(seenFile(file)), { recursive: true });
   const tmp = seenFile(file) + "." + process.pid + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(all));
   // On Windows a reader (another process, an indexer) holding the old file makes the rename fail busy for a moment.
-  retryBusy(() => fs.renameSync(tmp, seenFile(file)));
+  await retryBusy(() => fs.renameSync(tmp, seenFile(file)), BUSY);
 };
 
 // One install at a time per bundle, across processes (mkdir is atomic on NTFS too): the check that a file is still
@@ -287,36 +290,36 @@ async function install(tmp, file, seenStamp) {
     }
     let s = installs.get(file);
     if (!s) {
-      s = { files: new DisplacedFiles(path.join(bundle, ".carton", "displaced")), own: null, noLinks: !hardLinksWork(bundle), timer: null, mine: new Set() };
+      s = { files: new DisplacedFiles(path.join(bundle, ".carton", "displaced"), BUSY), own: null, noLinks: !hardLinksWork(bundle), timer: null, mine: new Set() };
       installs.set(file, s);
     }
     const journal = readJournal(bundle);
-    sweep(file, s, journal);
+    await sweep(file, s, journal);
     // Taken over while waiting (this process was stalled): the new holder installs.
     if (!mine()) return fs.rmSync(tmp, { force: true }), false;
-    let r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null, ...(testHooks.between ? { between: testHooks.between } : {}) });
+    const r = await displaceThenInstall(file, tmp, s.files.next, { ...BUSY, noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null, ...(testHooks.between ? { between: testHooks.between } : {}) });
     // Taken over while installing (stalled for a minute): the last file displaced may be the successor's, newer than
     // ours. It is put back below, under the lock taken again, only if it is still newer than what is on disk then.
     if (!mine()) recover = r.displaced.at(-1) ?? null, installed = false;
-    markSeen(file, sha(bytes));
+    await markSeen(file, sha(bytes));
     // What was at the path is held, never deleted at once: the file the writer read (its stamp unchanged) or one
     // Carton wrote goes only if its bytes and stamp are still the same after the hold. An in-place writer that opened
     // it just before and writes after is caught then (P10 settle-2); anything else is a foreign save. Each is
     // journaled with when it was moved and its stamp then, for the sweep.
     const seen = new Set(readSeen(file)[path.basename(file)] ?? []);
     let foreign = false;
-    r.displaced.forEach((p, i) => {
+    for (const [i, p] of r.displaced.entries()) {
       s.mine.add(p);
-      const b = fs.readFileSync(p), st = statStamp(p);
+      const b = fs.readFileSync(p), st = await statStamp(p, BUSY);
       journal[path.basename(p)] = { at: Date.now(), stamp: st };
       const h = sha(b), mine = (i === 0 && seenStamp && st === seenStamp) || seen.has(h);
       if (!mine) foreign = true;
       // The file the writer read is known from now on, so a later process can sweep it if this one exits first.
-      else if (!seen.has(h)) markSeen(file, h);
+      else if (!seen.has(h)) await markSeen(file, h);
       s.files.hold([p], mine ? { bytes: b, stamp: st } : i === 0 ? s.own : null);
-    });
-    writeJournal(bundle, journal);
-    s.own = { bytes: fs.readFileSync(file), stamp: statStamp(file) };
+    }
+    await writeJournal(bundle, journal);
+    s.own = { bytes: fs.readFileSync(file), stamp: await statStamp(file, BUSY) };
     s.files.endRound();
     if (!s.files.size) return installed;
     // Review after the hold (never inside this write: applying a foreign timeline.tsx writes the project again). A
@@ -345,14 +348,15 @@ async function putBack(lc, file, from) {
     if (!back || back.branchId !== head.branchId || (now && now.branchId === head.branchId && now.seq >= back.seq) || !mine()) return;
     const tmp = from + ".back";
     fs.copyFileSync(from, tmp);
-    const s = installs.get(file), r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks });
+    const s = installs.get(file), r = await displaceThenInstall(file, tmp, s.files.next, { ...BUSY, noLinks: s.noLinks });
     const journal = readJournal(bundle);
     for (const p of r.displaced) {
       s.mine.add(p);
-      journal[path.basename(p)] = { at: Date.now(), stamp: statStamp(p) };
-      s.files.hold([p], { bytes: fs.readFileSync(p), stamp: statStamp(p) });
+      const stamp = await statStamp(p, BUSY);
+      journal[path.basename(p)] = { at: Date.now(), stamp };
+      s.files.hold([p], { bytes: fs.readFileSync(p), stamp });
     }
-    writeJournal(bundle, journal);
+    await writeJournal(bundle, journal);
   });
 }
 
@@ -360,16 +364,16 @@ async function putBack(lc, file, from) {
 // lock. A file's own mtime says nothing: a rename keeps it.
 const journalFile = (bundle) => path.join(bundle, ".carton", "displaced.json");
 const readJournal = (bundle) => { try { return JSON.parse(fs.readFileSync(journalFile(bundle), "utf8")); } catch { return {}; } };
-const writeJournal = (bundle, j) => {
+const writeJournal = async (bundle, j) => {
   const tmp = journalFile(bundle) + "." + process.pid + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(j));
-  retryBusy(() => fs.renameSync(tmp, journalFile(bundle)));
+  await retryBusy(() => fs.renameSync(tmp, journalFile(bundle)), BUSY);
 };
 
 // Files an earlier process displaced and exited before its hold ended: one moved aside over 10 s ago, untouched since
 // (its stamp is the one journaled then) and holding a state Carton wrote, goes; anything else stays for a person to
 // look at (importing an old file now would revert newer changes). Runs under the install lock.
-function sweep(file, s, journal) {
+async function sweep(file, s, journal) {
   const dir = path.join(path.dirname(file), ".carton", "displaced");
   let names;
   try { names = fs.readdirSync(dir); } catch { return; }
@@ -379,7 +383,7 @@ function sweep(file, s, journal) {
     const p = path.join(dir, n), j = journal[n];
     if (s.mine.has(p) || !j || now - j.at < 10_000) continue;
     try {
-      if (statStamp(p) === j.stamp && seen.has(sha(fs.readFileSync(p)))) fs.rmSync(p, { force: true }), delete journal[n];
+      if ((await statStamp(p, BUSY)) === j.stamp && seen.has(sha(fs.readFileSync(p)))) fs.rmSync(p, { force: true }), delete journal[n];
     } catch {}
   }
 }
@@ -390,7 +394,7 @@ function sweep(file, s, journal) {
 async function review(file, s) {
   const bundle = path.dirname(file), isProject = path.basename(file) === "project.json";
   const parse = (b) => { try { return JSON.parse(b.toString("utf8")); } catch { return null; } };
-  const out = s.files.review((b) => (isProject ? parse(b)?.project != null : b.length > 0));
+  const out = await s.files.review((b) => (isProject ? parse(b)?.project != null : b.length > 0));
   for (const f of out.foreign) {
     try {
       if (isProject) {
@@ -403,7 +407,7 @@ async function review(file, s) {
         const r = await h.mirror.apply(id, f.bytes.toString("utf8"), { cartonActor: "external:timeline.tsx" });
         if (!r?.applied) throw new Error("it doesn't apply: " + (r?.diagnostics?.[0]?.message ?? "unknown"));
       }
-      s.files.release(f.path);
+      await s.files.release(f.path);
     } catch (e) {
       console.warn(`[carton] a save of ${path.basename(file)} by another program was moved aside and kept at ${f.path}: ${errText(e)}`);
     }
@@ -572,7 +576,7 @@ export const internals = {
     const lc = await open(bundlePath), to = keyOf(actorOf(actorId));
     await lc.store.write([{ table: "notices", key: [to, Date.now(), 0, "old"], value: { to, kind: "late-conflict", text: "kept", cards, at: Date.now() } }]);
   },
-  withInstallLock, sweep, readJournal, writeJournal, install, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
+  withInstallLock, sweep, readJournal, writeJournal, install, busy, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {
