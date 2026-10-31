@@ -261,8 +261,11 @@ test('a stream found whole is not checked again in this process: no HEADs, but a
   assert.equal(await usableProxy(other, src, 'p1'), null);
 });
 
-test('where the store can list, a long stream is checked in a few pages, not a HEAD per part; HEADs where it cannot', async () => {
-  const store = new CountingMemoryStore();
+/** A store that pages its listing on the server, as S3 and R2 do. */
+const asS3 = <T extends CountingMemoryStore>(store: T): T => Object.defineProperty(store, 'kind', { value: 's3' });
+
+test('where the store pages its listing (S3, R2), a long stream is checked in a few pages, not a HEAD per part; HEADs elsewhere', async () => {
+  const store = asS3(new CountingMemoryStore());
   const claim = await claimProxyStream(store, src, 'p1', 'libx264');
   const id = (claim.pointer as { stream: string }).stream;
   const hashes = Array.from({ length: 2000 }, (_, i) => i.toString(16).padStart(64, '0'));
@@ -289,8 +292,16 @@ test('where the store can list, a long stream is checked in a few pages, not a H
   assert.equal(await usableProxy(store, src, 'p1', { now: later }), null);
   assert.ok(store.counters.heads - heads <= 3);
 
-  // A store that can't list (a Carton host): HEADs, and it isn't asked to list again.
-  const host = new CountingMemoryStore();
+  // A store whose listing is a local walk of the whole prefix (blob-fs, blob-memory): HEADs, no listing.
+  const local = new CountingMemoryStore();
+  await finishedStream(local);
+  let walked = 0;
+  local.list = async () => (walked++, { blobs: [] });
+  assert.ok(await usableProxy(local, src, 'p1', { now: later }));
+  assert.equal(walked, 0);
+
+  // An S3-like store whose list fails (no permission): HEADs, and it isn't asked to list again.
+  const host = asS3(new CountingMemoryStore());
   const two = await finishedStream(host);
   let tries = 0;
   host.list = async () => {
@@ -302,4 +313,21 @@ test('where the store can list, a long stream is checked in a few pages, not a H
   assert.equal(tries, 1);
   host.objects.delete(mediaKey(two.segs[1]!.hash));
   assert.equal(await usableProxy(host, src, 'p1', { now: () => later() + 22 * 60_000 }), null);
+});
+
+test('what one store holds vouches for nothing in another, and an end that changed is checked anew (review 3)', async () => {
+  const a = new CountingMemoryStore();
+  const { id, segs } = await finishedStream(a); // found whole in a
+  const b = new CountingMemoryStore();
+  for (const [key, value] of a.objects) b.objects.set(key, value);
+  b.objects.delete(mediaKey(segs[1]!.hash));
+  assert.equal(await usableProxy(b, src, 'p1'), null, 'b is missing a part');
+  assert.ok((await claimProxyStream(b, src, 'p1', 'libx264')).claimed);
+  assert.ok(await usableProxy(a, src, 'p1'), 'a is still whole');
+
+  // The same stream id and end numbers, but the end now names a part that isn't there (rot in the entry).
+  const end = JSON.parse(new TextDecoder().decode(a.objects.get(streamEndKey(id))!));
+  end.parts[2] = 'ef'.repeat(32);
+  a.objects.set(streamEndKey(id), new TextEncoder().encode(JSON.stringify(end)));
+  assert.equal(await usableProxy(a, src, 'p1'), null);
 });

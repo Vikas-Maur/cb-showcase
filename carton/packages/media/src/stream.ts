@@ -608,31 +608,39 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
 }
 
 /**
- * Finished streams found whole in this process, so the next check of the same stream skips the HEADs: by stream id
- * and its end entry (written once, so the same id with another end is another stream's), with when it was checked. A
- * share asks up to 3 times (the clip's record, the proxy, the claim), and a long stream has thousands of
- * parts. A damage report still counts at once (it is read before this); a part removed without one is found again
- * after VERIFIED_MS. Bounded: the oldest entries go first.
+ * Finished streams found whole in this process, so the next check of the same stream skips the part checks: per store
+ * object (what one store holds says nothing about another), by stream id and a digest of its end entry's bytes (an end
+ * that changed, rot included, is checked anew), with when it was checked. A share asks up to 3 times (the clip's
+ * record, the proxy, the claim), and a long stream has thousands of parts. A damage report still counts at once (it is
+ * read before this); a part removed without one is found again after VERIFIED_MS. Bounded: the oldest entries go first.
  */
-const verified = new Map<string, number>();
+const verified = new WeakMap<BlobStore, Map<string, number>>();
 const VERIFIED_MS = 10 * 60_000;
 const VERIFIED_MAX = 1000;
 
-/** Stores whose `list` failed on its first page (a Carton host's HTTP API has none): HEADs only from then on. */
+/**
+ * Stores whose `list` pages on the server (S3, R2): a page is one request, so a few pages beat thousands of HEADs. Not
+ * blob-fs or blob-memory: they gather and sort the whole prefix for every page, while their HEADs are cheap and local.
+ */
+const LISTS_BY_PAGE = new Set(["s3", "r2"]);
+
+/** Stores whose `list` failed on its first page: HEADs only from then on. */
 const cannotList = new WeakSet<BlobStore>();
 
 /** Why a finished stream can't be reused (its end unreadable, an entry or a part gone, sizes that don't add up), or null. */
 async function finishedWrong(store: BlobStore, stream: string, endBytes: Uint8Array, now: number): Promise<Record<string, unknown> | null> {
   const end = asEnd(parseJson(endBytes));
   if (end === null) return { end: "unreadable" };
-  const memo = `${stream} ${end.segments} ${end.size} ${end.at}`;
-  const seen = verified.get(memo);
+  const memo = `${stream} ${toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", endBytes as Uint8Array<ArrayBuffer>)))}`;
+  let mine = verified.get(store);
+  const seen = mine?.get(memo);
   if (seen !== undefined && now - seen >= 0 && now - seen < VERIFIED_MS) return null;
   const wrong = await partsWrong(store, stream, end);
   if (wrong === null) {
-    verified.delete(memo);
-    verified.set(memo, now);
-    if (verified.size > VERIFIED_MAX) verified.delete(verified.keys().next().value!);
+    if (!mine) verified.set(store, (mine = new Map()));
+    mine.delete(memo);
+    mine.set(memo, now);
+    if (mine.size > VERIFIED_MAX) mine.delete(mine.keys().next().value!);
   }
   return wrong;
 }
@@ -658,14 +666,14 @@ async function partsWrong(store: BlobStore, stream: string, end: StreamEnd): Pro
 /**
  * The sizes of the parts that are in the store (a part that isn't has no entry). Parts are content-addressed objects
  * (m/<hash>) shared by every stream and clip, not kept under the stream's prefix, so a listing covers all of the
- * project's media: where the store can list, a few pages (at most one per 250 parts asked about, 1000 keys a page)
- * settle the parts they show, and HEADs ask about the rest. A store that can't list (a Carton host's HTTP API) gets
- * HEADs only.
+ * project's media: where the store pages its listing on the server (LISTS_BY_PAGE), a few pages (at most one per 250
+ * parts asked about, 1000 keys a page) settle the parts they show, and HEADs ask about the rest. Any other store (a
+ * Carton host's HTTP API has no list; blob-fs's is a local walk) gets HEADs only.
  */
 async function partSizes(store: BlobStore, hashes: readonly string[]): Promise<Map<string, number>> {
   const sizes = new Map<string, number>();
   let rest: readonly string[] = hashes;
-  if (typeof store.list === "function" && !cannotList.has(store)) {
+  if (LISTS_BY_PAGE.has(store.kind) && typeof store.list === "function" && !cannotList.has(store)) {
     const wanted = new Set(hashes);
     let cursor: string | undefined;
     let pages = 0;

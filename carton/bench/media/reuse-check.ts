@@ -1,8 +1,10 @@
 // What the reuse check costs for a long finished stream proxy: `usableProxy` on a stream of N parts (default 2,000:
 // about 67 minutes of 2 s segments) whose parts are all there, so it is reused. Against a real host (server-node over
-// blob-fs, through hosts-plugins' `hostMediaBlobs` client, which has no list), and against blob-fs directly (a store that
-// can list, as S3 can), each also with a simulated round trip per request (20 ms: a remote host or bucket). The stream is seeded straight into blob-fs, so
-// only the check is timed. Each run is a fresh process; `src` picks the @carton/media source to measure (a checkout
+// blob-fs, through hosts-plugins' `hostMediaBlobs` client, which has no list: what a teammate's app uses), and against
+// blob-fs directly. Each also with a simulated round trip (20 ms: a remote host): on the host, every HTTP request the
+// client makes is counted and delayed (through its `fetch` option, wrapping the transport it uses by default); on
+// blob-fs, every store call. The S3/R2 listing path isn't measured here (no bucket on this box). The stream is seeded
+// straight into blob-fs, so only the check is timed. Each run is a fresh process; `src` picks the @carton/media source to measure (a checkout
 // of an older commit for "before").
 //
 //   node carton/bench/media/reuse-check.ts run <rounds> <out.jsonl> <beforeSrc> [parts=2000]
@@ -31,6 +33,7 @@ async function one(src: string, kind: "host" | "fs", parts: number, rttMs: numbe
   mkdirSync(dir, { recursive: true });
   const blobs = createFsBlobStore({ root: join(dir, "blobs"), durable: false });
   let close = async () => {};
+  const counts: Record<string, number> = {};
   let store: any = blobs;
   let at = (k: string) => k;
   if (kind === "host") {
@@ -42,7 +45,16 @@ async function one(src: string, kind: "host" | "fs", parts: number, rttMs: numbe
     const h = await startNodeHost({ dataDir: join(dir, "data"), auth, secret, blobs, durability: "normal" });
     close = () => h.close();
     const token = await auth.issue({ account: "o", credential: "o/dev", role: "editor", projectId: "p", ttlMs: 3600_000 });
-    store = hostMediaBlobs({ origin: h.httpUrl, projectId: "p", token });
+    const { platformFetch } = await import("@carton/http-node");
+    const transport = platformFetch();
+    // Every HTTP request the client makes: counted by method, and delayed by the round trip.
+    const viaLink = (async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+      const method = (init?.method ?? (input instanceof Request ? input.method : "GET")).toLowerCase();
+      counts[`http ${method}`] = (counts[`http ${method}`] ?? 0) + 1;
+      if (rttMs > 0) await sleep(rttMs);
+      return transport(input, init);
+    }) as typeof fetch;
+    store = hostMediaBlobs({ origin: h.httpUrl, projectId: "p", token, fetch: viaLink });
     at = (k) => `projects/p/media/${k}`;
   }
   // Seed: N parts of 100-199 bytes, the end listing them, the pointer.
@@ -61,9 +73,8 @@ async function one(src: string, kind: "host" | "fs", parts: number, rttMs: numbe
   await blobs.put(at(keys.streamEndKey(id)), json({ segments: parts - 1, durationSec: 2 * (parts - 1), size, at: Date.now(), parts: hashes }));
   await blobs.put(at(keys.proxyPointerKey(source, "p1")), json({ stream: id, encoder: "libx264", at: Date.now() }));
 
-  // Count requests by kind, and pay a round trip on each.
-  const counts: Record<string, number> = {};
-  const counted = new Proxy(store, {
+  // blob-fs directly: count its calls by kind, and pay a round trip on each. (The host's are counted as HTTP, above.)
+  const counted = kind === "host" ? store : new Proxy(store, {
     get(t, p, r) {
       const v = Reflect.get(t, p, r);
       if (typeof v !== "function" || !["get", "head", "list", "put"].includes(String(p))) return typeof v === "function" ? v.bind(t) : v;
