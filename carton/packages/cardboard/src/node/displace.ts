@@ -10,49 +10,90 @@
 // a foreign write and is imported. Carton never replaces a name, so the only cost is a short window in which the path
 // is missing; Cardboard's readers (which we hook) and agents' file tools retry on ENOENT.
 //
-// All calls are synchronous on purpose: the engine runs on its own thread, and P10 measured the missing-path gap at
-// 10–16 µs median with sync calls against 61–68 µs through fs.promises (the gap spans one libuv round trip each).
+// The protocol's own calls are synchronous on purpose: P10 measured the missing-path gap at 10–16 µs median with sync
+// calls against 61–68 µs through fs.promises (the gap spans one libuv round trip each). Only waiting is asynchronous:
+// a busy file (below) is retried on timers, so the engine's thread keeps serving everything else meanwhile.
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
+import { setTimeout as delay } from "node:timers/promises";
 
 // Windows reports a file that another process holds open as busy: rename, link and unlink fail with EPERM, EBUSY or
-// EACCES until the holder closes it. The app's rename-retry helper retries those; so do we. These never fire on Linux
-// or macOS for the calls below.
+// EACCES until the holder closes it. A name that was just deleted while something (Defender, the indexer) still had it
+// open is "delete pending" for a moment, and every call on it, stat and mkdir too, fails with EPERM or EACCES until
+// then. The app's rename-retry helper retries those; so do we, on Windows only: on Linux and macOS these codes are real
+// permission errors and fail at once. The budget is time, not tries (as blob-fs's): 5 s by default.
 const BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
-const sleeper = new Int32Array(new SharedArrayBuffer(4));
-const sleepMs = (ms: number): void => {
-  Atomics.wait(sleeper, 0, 0, ms);
-};
+const WINDOWS = process.platform === "win32";
+export const BUSY_BUDGET_MS = 5_000;
 
 export interface BusyCounter {
   busy?: number;
 }
 
-/** Runs `fn`, retrying while the OS reports the file busy (Windows), with a short growing backoff (≈ 5 s in all). */
-export function retryBusy<T>(fn: () => T, counter?: BusyCounter, attempts = 400): T {
-  for (let i = 0; ; i++) {
+export interface BusyOptions {
+  /** Counts the retries. */
+  counter?: BusyCounter;
+  /** How long a busy file is retried in all, in ms (default `BUSY_BUDGET_MS`). */
+  budgetMs?: number;
+  /** Whether busy errors are retried (default: on Windows). Tests set it to act out Windows on another OS. */
+  windows?: boolean;
+}
+
+const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException)?.code;
+
+/** Whether `e` is a busy file that `retryBusy` would wait out. */
+export function isBusy(e: unknown, o: BusyOptions = {}): boolean {
+  return (o.windows ?? WINDOWS) && BUSY.has(errCode(e) ?? "");
+}
+
+/**
+ * Runs `fn`; while the OS reports the file busy (Windows), waits on a timer and runs it again, with a growing backoff
+ * (1, 2, … 25 ms), until it succeeds, fails another way, or the budget would be passed (then the last error). The
+ * thread is never blocked: the event loop keeps running while it waits.
+ */
+export function retryBusy<T>(fn: () => T | Promise<T>, o: BusyOptions = {}): Promise<T> {
+  return retrying(fn, o, performance.now(), 0);
+}
+
+async function retrying<T>(fn: () => T | Promise<T>, o: BusyOptions, start: number, i: number): Promise<T> {
+  for (; ; i++) {
     try {
-      return fn();
+      return await fn();
     } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (!code || !BUSY.has(code) || i >= attempts) throw e;
-      if (counter) counter.busy = (counter.busy ?? 0) + 1;
-      sleepMs(Math.min(1 + i, 25));
+      const wait = Math.min(1 + i, 25);
+      if (!isBusy(e, o) || performance.now() - start + wait > (o.budgetMs ?? BUSY_BUDGET_MS)) throw e;
+      if (o.counter) o.counter.busy = (o.counter.busy ?? 0) + 1;
+      await delay(wait);
     }
   }
 }
 
-const errCode = (e: unknown): string | undefined => (e as NodeJS.ErrnoException)?.code;
+/**
+ * The install's steps: `fn` runs at once, synchronously, and only a busy file turns it into a promise that `retryBusy`
+ * finishes. The fast path never yields, so the path stays missing for microseconds, not a trip around the event loop.
+ */
+function atOnce(fn: () => void, o: BusyOptions): Promise<void> | undefined {
+  const start = performance.now();
+  try {
+    fn();
+    return undefined;
+  } catch (e) {
+    if (!isBusy(e, o)) throw e;
+    if (o.counter) o.counter.busy = (o.counter.busy ?? 0) + 1;
+    return retrying(fn, o, start, 0);
+  }
+}
 
 /** `ino:size:mtimeNs`, the stamp 1.4.0 itself uses for project.json (`Qo`). */
 export function stampOf(s: fs.BigIntStats): string {
   return `${s.ino}:${s.size}:${s.mtimeNs}`;
 }
 
-export function statStamp(file: string): string | null {
+/** The file's stamp, or null if it is absent. */
+export async function statStamp(file: string, o: BusyOptions = {}): Promise<string | null> {
   try {
-    return stampOf(fs.statSync(file, { bigint: true }));
+    return stampOf(await retryBusy(() => fs.statSync(file, { bigint: true }), o));
   } catch (e) {
     if (errCode(e) === "ENOENT") return null;
     throw e;
@@ -70,8 +111,7 @@ export interface InstallResult {
   gapTotalNs: number;
 }
 
-export interface InstallOptions {
-  counter?: BusyCounter;
+export interface InstallOptions extends BusyOptions {
   /** Test hook, called between the displace and the install: P10 widens this step to make rare races common. */
   between?: () => void;
   /** No hard links on this volume (FAT, exFAT): fall back to stat-then-rename (L13). */
@@ -80,38 +120,41 @@ export interface InstallOptions {
   lastStamp?: string | null;
 }
 
-const now = (): bigint => process.hrtime.bigint();
+const hr = (): bigint => process.hrtime.bigint();
 
 /**
  * Installs the file at `tmp` as `target`, displacing whatever is there to paths from `nextSlot()`. `tmp` must be on
- * the same volume as `target` and is removed on success.
+ * the same volume as `target` and is removed on success. Runs synchronously unless a file is busy (Windows).
  */
-export function displaceThenInstall(target: string, tmp: string, nextSlot: () => string, opts: InstallOptions = {}): InstallResult {
+export async function displaceThenInstall(target: string, tmp: string, nextSlot: () => string, opts: InstallOptions = {}): Promise<InstallResult> {
   if (opts.noLinks) return installWithoutLinks(target, tmp, nextSlot, opts);
   const displaced: string[] = [];
   let eexist = 0;
   let first: bigint | null = null;
   for (;;) {
     const slot = nextSlot();
-    const t0 = now();
+    const t0 = hr();
     first ??= t0;
     try {
-      retryBusy(() => fs.renameSync(target, slot), opts.counter);
+      const busy = atOnce(() => fs.renameSync(target, slot), opts);
+      if (busy) await busy;
       displaced.push(slot);
     } catch (e) {
       if (errCode(e) !== "ENOENT") throw e;
     }
-    const t1 = now();
+    const t1 = hr();
     opts.between?.();
     try {
-      retryBusy(() => fs.linkSync(tmp, target), opts.counter);
+      const busy = atOnce(() => fs.linkSync(tmp, target), opts);
+      if (busy) await busy;
     } catch (e) {
       if (errCode(e) !== "EEXIST") throw e;
       eexist++;
       continue;
     }
-    const t2 = now();
-    retryBusy(() => fs.unlinkSync(tmp), opts.counter);
+    const t2 = hr();
+    const busy = atOnce(() => fs.unlinkSync(tmp), opts);
+    if (busy) await busy;
     return { displaced, eexist, gapNs: Number(t2 - t1), gapTotalNs: Number(t2 - first) };
   }
 }
@@ -119,23 +162,23 @@ export function displaceThenInstall(target: string, tmp: string, nextSlot: () =>
 // FAT and exFAT have no hard links. There the best available is: if the target isn't what Carton last installed,
 // displace it first; then rename the temp over the target. A foreign write that lands between the check and the
 // rename is overwritten: a window of microseconds, stated as L13.
-function installWithoutLinks(target: string, tmp: string, nextSlot: () => string, opts: InstallOptions): InstallResult {
+async function installWithoutLinks(target: string, tmp: string, nextSlot: () => string, opts: InstallOptions): Promise<InstallResult> {
   const displaced: string[] = [];
-  const t0 = now();
-  const stamp = statStamp(target);
+  const t0 = hr();
+  const stamp = await statStamp(target, opts);
   if (stamp !== null && stamp !== opts.lastStamp) {
     const slot = nextSlot();
     try {
-      retryBusy(() => fs.renameSync(target, slot), opts.counter);
+      await retryBusy(() => fs.renameSync(target, slot), opts);
       displaced.push(slot);
     } catch (e) {
       if (errCode(e) !== "ENOENT") throw e;
     }
   }
-  const t1 = now();
+  const t1 = hr();
   opts.between?.();
-  retryBusy(() => fs.renameSync(tmp, target), opts.counter);
-  const t2 = now();
+  await retryBusy(() => fs.renameSync(tmp, target), opts);
+  const t2 = hr();
   return { displaced, eexist: 0, gapNs: Number(t2 - t1), gapTotalNs: Number(t2 - t0) };
 }
 

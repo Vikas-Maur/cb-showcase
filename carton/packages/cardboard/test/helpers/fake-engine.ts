@@ -116,14 +116,15 @@ export class FakeEngine implements MaterializerEngine {
     fn(d);
     this.log.push({ doc: d, id, causal: [] });
   }
-  async pin({ owner, doc }: { owner: string; doc?: Doc; ttlMs: number }) {
+  async pin({ owner, doc, seq, causal }: { owner: string; doc?: Doc; seq?: number; causal?: string[]; ttlMs: number }) {
     const d = doc ? clone(doc) : await this.head();
     const h8 = hash8(JSON.stringify(d));
-    const ref = `main@${this.headSeq}~${h8}`;
-    const p = this.pins.get(ref) ?? { doc: d, seq: this.headSeq, owners: new Set<string>(), causal: this.log.slice(1).map((x) => x.id) };
+    const at = seq ?? this.headSeq;
+    const ref = `main@${at}~${h8}`;
+    const p = this.pins.get(ref) ?? { doc: d, seq: at, owners: new Set<string>(), causal: [...this.log.slice(1, at + 1).map((x) => x.id), ...(causal ?? [])] };
     p.owners.add(owner);
     this.pins.set(ref, p);
-    return { ref, branchId: "b7e1c2d3-0000-4000-8000-000000000000", doc: clone(d) };
+    return { ref, branchId: "b7e1c2d3-0000-4000-8000-000000000000", seq: at, doc: clone(d) };
   }
   async release(owner: string): Promise<void> {
     for (const [ref, p] of this.pins) {
@@ -136,10 +137,15 @@ export class FakeEngine implements MaterializerEngine {
     if (!p) throw new Error("state unknown: re-print");
     return { baseDoc: clone(p.doc), baseSeq: p.seq, causal: [...p.causal] };
   }
-  async commit({ doc, base, author, meta }: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string } }): Promise<SaveResult> {
+  newChangeId(): string {
+    return `fakeid.${++this.n}`;
+  }
+  async commit({ doc, base, author, meta, id: given }: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string }; id?: string }): Promise<SaveResult> {
+    const prior = given ? this.commits.find((c) => c.id === given) : undefined;
+    if (prior) return { status: "confirmed", id: prior.id, seq: prior.seq }; // dedup by id, as the engine does
     const held = "baseDoc" in base ? base : await this.resolve(base);
     const m = merge3(held.baseDoc, await this.head(), doc);
-    const id = `fake.${++this.n}`;
+    const id = given ?? `fake.${++this.n}`;
     this.log.push({ doc: m.doc, id, causal: [] });
     this.commits.push({ id, seq: this.headSeq, author, file: meta.file, view: meta.view, base: "baseDoc" in base ? "held" : base.kind === "carton" ? base.ref : String(base.rev), cards: m.cards.length });
     return { status: m.cards.length ? "conflicts" : "confirmed", id, seq: this.headSeq, cards: m.cards.map((c) => ({ kind: "field", path: c.path }) as never) };
@@ -152,7 +158,8 @@ export class FakeEngine implements MaterializerEngine {
     return v === undefined ? undefined : (clone(v) as T);
   }
   async putMeta(key: readonly string[], value: unknown): Promise<void> {
-    this.meta.set(JSON.stringify(key), clone(value));
+    if (value === undefined) this.meta.delete(JSON.stringify(key)); // as the Store: undefined deletes the key
+    else this.meta.set(JSON.stringify(key), clone(value));
   }
   shared(): boolean {
     return this.isShared;
