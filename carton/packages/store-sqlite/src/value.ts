@@ -1,8 +1,8 @@
 // How values are stored. Small values (every change row) are their JSON text, read with one JSON.parse. Large ones
-// (keyframes: whole documents, §5.4) are compressed: a BLOB of one codec byte then the raw-deflate of the JSON (JSON
-// of this size always shrinks: even random base64 deflates to about 3/4). On a 1,000-item document deflate shrank the JSON about 12x and inflating cost a fraction of the
-// JSON.parse a read pays anyway, so carton.db holds keyframes every K changes for little disk. Chromium already
-// compresses IndexedDB values, so store-idb needs none of this.
+// (keyframes: whole documents, §5.4) are compressed: a BLOB of one codec byte then the raw-deflate of the JSON. JSON
+// of this size always shrinks (even random base64 deflates to about 3/4). One unverified run of bench/compress.ts on
+// a 1,000-item document showed a large size saving for less time than the JSON.parse every read pays anyway; the
+// numbers wait for the verification phase. Chromium already compresses IndexedDB values, so store-idb needs none.
 
 import * as zlib from "node:zlib";
 import { promisify } from "node:util";
