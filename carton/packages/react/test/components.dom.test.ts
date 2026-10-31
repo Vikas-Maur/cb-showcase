@@ -396,3 +396,37 @@ test(name("R3-1: a card that comes back after a fold has no pick: it must be pic
   assert.equal($$(dialog, ".carton-conflict [aria-pressed=true]").length, 0);
   await m.unmount();
 });
+
+// ---------------------------------------------------------------- review round 4
+
+test(name("R4-1: a card that changed while the plan reloaded loses its pick too, not only the cards the fold returned"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const card = (id: string, title: string, theirs: string) => ({ id, title, mine: { author: people.alice, summary: "“Mine”", where: "Main cut" }, theirs: { author: people.bob, summary: theirs, where: "30s Instagram cut" }, canKeepBoth: false, provisional: "mine" as const });
+  const planFold = ui.planFold.bind(ui);
+  let round = 0;
+  ui.planFold = async (f, i, o) => {
+    const p = await planFold(f, i, o);
+    // First plan: A and B. After the fold raced: both changed (A returned by the fold, B changed during the reload).
+    return round === 0 ? { ...p, conflicts: [card("A", "Card A", "“A1”"), card("B", "Card B", "“B1”")] } : { ...p, conflicts: [card("A", "Card A", "“A2”"), card("B", "Card B", "“B2”")] };
+  };
+  ui.fold = async () => {
+    round = 1;
+    return { ok: false, conflicts: [card("A", "Card A", "“A2”")] };
+  };
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
+  await flush();
+  const dialog = $(m.container, "[role=dialog]")!;
+  const cardEl = (title: string) => $$(dialog, ".carton-conflict").find((e) => e.textContent?.includes(title))!;
+  await click(byText(cardEl("Card A"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  const go = () => $$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement;
+  assert.equal(go().disabled, false);
+  await click(go());
+  await flush();
+  assert.match(cardEl("Card B").textContent ?? "", /B2/);
+  await click(byText(cardEl("Card A"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  assert.equal(go().disabled, true, "B changed during the reload: its old pick doesn't count");
+  await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  assert.equal(go().disabled, false);
+  await m.unmount();
+});

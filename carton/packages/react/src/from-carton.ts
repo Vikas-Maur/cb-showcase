@@ -245,8 +245,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   // the ones folded in since.
   const restLeft = new Set<string>();
   const restDone = new Set<string>();
-  // Checked and found folded in (or changed since): never checked again, so refreshes don't redo historical diffs.
-  const restNo = new Set<string>();
+  // What each partial fold set back (immutable, read once from history): the paths its inverse wrote, and the values.
+  const restInfo = new Map<string, { ops: Op[]; values: unknown[]; keys: string[] }>();
+  // Found not left out, with the cut's head seq at the time. Valid until a change touches those records (R4-2);
+  // a failed check is never cached.
+  const restNo = new Map<string, number>();
   // Only the current cut's own partial folds offer the rest: an inherited one (History shows the cut a fork came
   // from) would fold into that other cut (R3-2).
   const offersRest = (c: CoreVersion) => c.kind === "partial-revert" && !!c.change && c.ref.branchId === cutId && restLeft.has(c.change) && !restDone.has(c.change);
@@ -642,6 +645,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           canKeepBoth: !!opts.keepBoth?.(card),
           ...(w.reason ? { reason: w.reason } : {}),
           provisional: "theirs",
+          sig: cardSig(card),
         },
       });
     }
@@ -668,6 +672,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         // Folding in the rest of a partial fold reverts its inverse: that version no longer offers it.
         const rev = Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : [];
         for (const id of rev) markRestDone(id);
+        touchRest(c.paths ?? [], !!c.intent?.maps || c.ops.some((op) => op.op === "remap"), e.seq);
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
@@ -740,34 +745,68 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
    */
   const leftOut = async (c: CoreVersion): Promise<boolean> => {
     const cut = c.ref.branchId, seq = c.ref.seq;
-    const [inv, head, d] = await Promise.all([carton.checkout(`${cut}@${seq}`), carton.head(cut), carton.diff(`${cut}@${seq - 1}`, `${cut}@${seq}`)]);
-    return d.ops.some((op) => op.op !== "remap" && deepEqual(getIn(head.doc, op.path, schema), getIn(inv, op.path, schema)));
+    let info = restInfo.get(c.change!);
+    if (!info) {
+      const [inv, d] = await Promise.all([carton.checkout(`${cut}@${seq}`), carton.diff(`${cut}@${seq - 1}`, `${cut}@${seq}`)]);
+      const ops = d.ops.filter((op) => op.op !== "remap");
+      info = { ops, values: ops.map((op) => getIn(inv, op.path, schema)), keys: ops.map((op) => pathKey(op.path.slice(0, schema.collections[String(op.path[0])] ? 2 : 1))) };
+      restInfo.set(c.change!, info);
+    }
+    const head = (await carton.head(cut)).doc;
+    return info.ops.some((op, k) => deepEqual(getIn(head, op.path, schema), info.values[k]));
+  };
+  const setRest = (change: string, on: boolean) => {
+    const was = restLeft.has(change);
+    if (on) restLeft.add(change);
+    else restLeft.delete(change);
+    const i = pos.get(change);
+    if (i === undefined || was === on) return;
+    const r = rows[i]!;
+    const show = !!r.core && offersRest(r.core);
+    if (!!r.v.foldRest === show) return;
+    if (show) r.v = { ...r.v, foldRest: true };
+    else {
+      const { foldRest: _f, ...rest } = r.v;
+      r.v = rest;
+    }
+    changed(i);
+    hub.notify("history");
   };
   const checkRest = async () => {
-    // Only this cut's partial folds not decided yet: usually none, so a refresh costs nothing here (R3-5).
+    // Only this cut's partial folds not decided yet, or whose records changed since: usually none (R3-5, R4-2).
+    const head = heads.get(cutId);
     const todo: CoreVersion[] = [];
     for (const r of rows) {
       const c = r.core;
-      if (c?.change && c.kind === "partial-revert" && c.ref.branchId === cutId && !restDone.has(c.change) && !restLeft.has(c.change) && !restNo.has(c.change)) todo.push(c);
+      if (!c?.change || c.kind !== "partial-revert" || c.ref.branchId !== cutId || restDone.has(c.change) || restLeft.has(c.change)) continue;
+      if (head !== undefined && restNo.get(c.change) === head) continue;
+      todo.push(c);
     }
     for (const c of todo) {
-      let left = false;
+      let left: boolean;
       try {
         left = await leftOut(c);
       } catch {
-        left = false;
+        continue; // retry on the next refresh
       }
       if (disposed) return;
-      if (!left) {
-        restNo.add(c.change!);
-        continue;
-      }
-      restLeft.add(c.change!);
-      const i = pos.get(c.change!);
-      if (i === undefined || !offersRest(rows[i]!.core!)) continue;
-      rows[i]!.v = { ...rows[i]!.v, foldRest: true };
-      changed(i);
-      hub.notify("history");
+      if (left) {
+        restNo.delete(c.change!);
+        setRest(c.change!, true);
+      } else if (head !== undefined) restNo.set(c.change!, head);
+    }
+  };
+  /** A confirmed change: a decision about a partial fold holds unless the change touched the records it set back. */
+  const touchRest = (paths: readonly string[], remap: boolean, seq: number) => {
+    const hit = (keys: string[]) => remap || paths.some((p) => keys.some((k) => p === k || p.startsWith(k + "/") || k.startsWith(p + "/")));
+    for (const [id, at] of restNo) {
+      const info = restInfo.get(id);
+      if (!info || hit(info.keys)) restNo.delete(id);
+      else if (at === seq - 1) restNo.set(id, seq);
+    }
+    for (const id of [...restLeft]) {
+      const info = restInfo.get(id);
+      if (!info || hit(info.keys)) setRest(id, false); // checked again on the next refresh
     }
   };
 
@@ -850,6 +889,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       canKeepBoth: card.kind !== "compare" && !!opts.keepBoth?.(card),
       ...(w.reason ? { reason: w.reason } : {}),
       provisional: "mine",
+      sig: cardSig(card),
     };
   };
 
@@ -1035,6 +1075,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const i = pos.get(versionId);
       const r = i === undefined ? undefined : rows[i];
       if (!r?.core?.change || !r.v.foldRest) return { ok: false, error: "Nothing left to fold in" };
+      // Check again right before acting: the records may have changed since the flag was set.
+      if (!(await leftOut(r.core))) {
+        setRest(r.core.change, false);
+        return { ok: false, error: "Nothing left to fold in" };
+      }
       const res = await carton.revert(r.core.change, { author: opts.me, cut: r.core.ref.branchId });
       if (res.status === "confirmed" || res.status === "pending") {
         markRestDone(r.core.change);
@@ -1131,6 +1176,8 @@ class NewCards extends Error {
     super("new conflict cards");
   }
 }
+
+const cardSig = (c: ConflictCard) => `${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
 
 const canonicalish = (v: unknown): string => {
   try {

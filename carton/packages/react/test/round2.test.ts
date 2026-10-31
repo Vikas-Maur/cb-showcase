@@ -258,3 +258,59 @@ test("R3-5: a decided partial fold is not diffed again on later refreshes", asyn
   again.dispose();
   ui.dispose();
 });
+
+// ---------------------------------------------------------------- review round 4
+
+test("R4-2: a failed check is retried, not cached", async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const v = await carton.fork("alt");
+  await carton.commit({ cut: v.id, ops: [set("b", "color", "blue"), set("d", "color", "blue")], author: bob });
+  await ui.refresh();
+  await ui.planFold(v.id, main);
+  // The first check fails (a read error); the next refresh must check again.
+  const realCheckout = carton.checkout.bind(carton);
+  let fail = true;
+  (carton as { checkout: typeof carton.checkout }).checkout = async (ref) => {
+    if (fail) throw new Error("read failed");
+    return realCheckout(ref);
+  };
+  await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} });
+  await settle();
+  await ui.refresh();
+  const inv = ui.history().at("all", 0)!;
+  assert.equal(inv.foldRest, undefined, "while reads fail, nothing is offered");
+  fail = false; // the store recovers
+  await ui.refresh();
+  await settle();
+  assert.equal(ui.history().at("all", 0)!.foldRest, true, "offered after the retry");
+  ui.dispose();
+});
+
+test("R4-2: when the left-out records change, the decision is checked again (both ways)", async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const v = await carton.fork("alt");
+  await carton.commit({ cut: v.id, ops: [set("b", "color", "blue"), set("d", "color", "blue")], author: bob });
+  await ui.refresh();
+  await ui.planFold(v.id, main);
+  await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} });
+  await settle();
+  const invId = ui.history().at("all", 0)!.id;
+  const flag = () => ui.history().at("all", ui.history().indexOf("all", invId))!.foldRest;
+  assert.equal(flag(), true);
+  await carton.commit({ ops: [set("d", "color", "green")] }); // someone edits the left-out clip
+  await settle();
+  await ui.refresh();
+  await settle();
+  assert.equal(flag(), undefined, "no longer left out");
+  await carton.commit({ ops: [set("d", "color", "red")] }); // and back to what the partial fold left
+  await settle();
+  await ui.refresh();
+  await settle();
+  assert.equal(flag(), true, "left out again: offered again");
+  await carton.commit({ ops: [set("a", "color", "x")] }); // an unrelated edit keeps the decision without a recheck
+  await settle();
+  assert.equal(flag(), true);
+  ui.dispose();
+});

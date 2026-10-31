@@ -2,13 +2,16 @@
 // out ("fold in some of it", partial accept, §5.3 / R2-14), and asks you to pick on any conflict card before folding.
 // Leaving changes out is recorded, so "you can fold in the rest later".
 
-import { createElement as h, useMemo, useState } from "react";
+import { createElement as h, useMemo, useRef, useState } from "react";
 import { when } from "../format.ts";
 import { useAction, useAsync, useCartonUi, useLocale, useNow, useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { ConflictChoice, FoldPlan, FoldResult } from "../model.ts";
+import type { Conflict, ConflictChoice, FoldPlan, FoldResult } from "../model.ts";
 import { ConflictCard } from "./ConflictCard.ts";
 import { ActorName, Avatar, Button, Dialog } from "./ui.ts";
+
+/** A card's fingerprint: the view model's, else what the card says (who, what, which cut). */
+const sigOf = (c: Conflict) => c.sig ?? `${c.title}|${c.mine.summary}|${c.mine.where ?? ""}|${c.theirs.summary}|${c.theirs.where ?? ""}`;
 
 export interface FoldInDialogProps {
   fromCutId: string;
@@ -32,10 +35,12 @@ export function FoldInDialog(p: FoldInDialogProps) {
     [ui, p.fromCutId, p.intoCutId, p.plan, allCards],
   );
   const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
-  const [choices, setChoices] = useState<Readonly<Record<string, ConflictChoice>>>({});
+  // Each pick remembers the card it was made on (its fingerprint). A card whose values changed since (a racing edit,
+  // seen when the plan reloads) is a different card: its old pick no longer counts (R3-1, R4-1).
+  const [picks, setPicks] = useState<Readonly<Record<string, { choice: ConflictChoice; sig: string }>>>({});
   const [result, setResult] = useState<FoldResult | null>(null);
   const [fold, busy] = useAction(async () => {
-    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices, ...(allCards ? { allCards } : {}) });
+    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices: choicesFor(planRef.current), ...(allCards ? { allCards } : {}) });
     setResult(r);
     // Done: hand the result to the host, or just close.
     if (r.ok) (p.onDone ?? p.onClose)(r);
@@ -43,7 +48,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
     // that came back was not the one picked on (new, or its values changed), so its old pick goes too (R3-1).
     else if (r.conflicts?.length) {
       const back = new Set(r.conflicts.map((c) => c.id));
-      setChoices((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !back.has(id))));
+      setPicks((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !back.has(id))));
       loaded.reload();
     }
     return r;
@@ -52,6 +57,18 @@ export function FoldInDialog(p: FoldInDialogProps) {
   const plan = loaded.status === "ready" ? loaded.value : null;
   const total = plan?.changes.length ?? 0;
   const taking = total - left.size;
+  const planRef = useRef(plan);
+  planRef.current = plan;
+  // The picks that still match the cards on screen; only these are sent.
+  const choicesFor = (pl: FoldPlan | null): Record<string, ConflictChoice> => {
+    const out: Record<string, ConflictChoice> = {};
+    for (const c of pl?.conflicts ?? []) {
+      const pk = picks[c.id];
+      if (pk && pk.sig === sigOf(c)) out[c.id] = pk.choice;
+    }
+    return out;
+  };
+  const choices = choicesFor(plan);
   const unpicked = plan ? plan.conflicts.filter((c) => !choices[c.id]).length : 0;
   const title = plan ? words.foldTitle(plan.from.label, plan.into.label) : words.foldSomeOfIt;
 
@@ -130,7 +147,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
               { key: "cards", className: "carton-fold-cards" },
               h("p", { className: "carton-fold-cards-head" }, words.foldConflicts(plan.conflicts.length)),
               ...plan.conflicts.map((c) =>
-                h(ConflictCard, { key: c.id, conflict: c, picked: choices[c.id], onPick: (ch: ConflictChoice) => setChoices((s) => ({ ...s, [c.id]: ch })) }),
+                h(ConflictCard, { key: c.id, conflict: c, picked: choices[c.id], onPick: (ch: ConflictChoice) => setPicks((s) => ({ ...s, [c.id]: { choice: ch, sig: sigOf(c) } })) }),
               ),
             )
           : null,

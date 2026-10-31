@@ -159,6 +159,8 @@ export interface Conflict {
   readonly reason?: string;
   /** The choice already shown in the edit while undecided (§7: provisional = your side). */
   readonly provisional?: ConflictChoice;
+  /** A fingerprint of both sides' values: a pick made on the card holds only while it still matches. */
+  readonly sig?: string;
 }
 
 /** One side of a Compare card (§9, generalizing the recovery picker). */
