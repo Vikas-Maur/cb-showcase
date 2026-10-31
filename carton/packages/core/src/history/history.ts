@@ -70,6 +70,15 @@ const SYSTEM: Actor = { kind: "system", id: "carton" };
 /** Changes inverted at a cut's head: the state and the remap the inversion applies there, or the cards that stop it. */
 export type Inverted = { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult };
 const REF_RE = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
+/**
+ * A cut's `b:` token in a printed header: 8 lowercase hex characters, the only form the header's parser reads. The id's
+ * first 8 characters when they are lowercase hex (every id core makes: a UUID, `cb cut new`'s 24 hex + `.n`, a renamed
+ * copy's `<id>.<hash8>`), so those headers are as they always were; otherwise the first 8 of the SHA-256 of the id (an
+ * id from a `.cbproj` or another host: `b6b.alt`, `ab-cdef0…`, non-ASCII), so its header still reads back. Tokens can
+ * collide (a renamed copy shares its original's): `parseRef` tells the cuts apart. The one definition: the adapter's
+ * header prints this.
+ */
+export const branchToken = (id: string): string => (/^[0-9a-f]{8}/.test(id) ? id : E.sha256Hex(id)).slice(0, 8);
 
 interface Cut {
   rec: CutRecord;
@@ -352,7 +361,7 @@ export class History {
   // ------------------------------------------------------------ refs and pins (§5.2)
   refString(cutId: string, seq: number, hash: string, extra: { printNonce?: string; by?: string } = {}): string {
     const br = this.#mustCut(cutId);
-    let s = `${br.rec.name}@${seq}~${hash.slice(0, 8)} b:${cutId.slice(0, 8)}`;
+    let s = `${br.rec.name}@${seq}~${hash.slice(0, 8)} b:${branchToken(cutId)}`;
     if (extra.printNonce) s += ` p:${extra.printNonce}`;
     if (extra.by) s += ` by ${extra.by}`;
     return s;
@@ -427,8 +436,12 @@ export class History {
     if (node && this.#cuts.has(node[1]!)) return { branchId: node[1]!, seq: Number(node[2]) };
     const m = REF_RE.exec(ref.trim());
     if (!m) throw new StateUnknown(ref, "unparseable ref");
-    const br = [...this.#cuts.values()].find((b) => b.rec.id.startsWith(m[4]!));
-    const out: StateRef & { printNonce?: string; by?: string } = { branchId: br?.rec.id ?? m[4]!, seq: Number(m[2]), hash8: m[3]! };
+    // the cut whose token `b:` is (branchToken). Two with one token (a renamed copy and its original; foreign ids whose
+    // hashes meet) are told apart by the header's cut name, then by which has the header's state at its seq
+    const seq = Number(m[2]);
+    const rank = (b: Cut) => (b.rec.name === m[1] ? 2 : 0) + (seq <= b.log.length && this.hashOf(nodeId(b.rec.id, seq))?.startsWith(m[3]!) ? 1 : 0);
+    const br = [...this.#cuts.values()].filter((b) => branchToken(b.rec.id) === m[4]).sort((x, y) => rank(y) - rank(x))[0];
+    const out: StateRef & { printNonce?: string; by?: string } = { branchId: br?.rec.id ?? m[4]!, seq, hash8: m[3]! };
     if (m[5]) out.printNonce = m[5];
     if (m[6]) out.by = m[6];
     return out;
