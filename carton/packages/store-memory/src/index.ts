@@ -117,7 +117,8 @@ export function createMemoryStore(opts: MemoryStoreOptions = {}): Store & { read
       if (r.lt) hi = Math.min(hi, bound(keys, r.lt, false));
       if (r.lte) hi = Math.min(hi, bound(keys, r.lte, true));
       const out: { key: StoreKey; value: T }[] = [];
-      const limit = r.limit ?? Infinity;
+      // A limit counts whole rows: 2.7 reads 2, anything below 1 reads none (the same in every store).
+      const limit = r.limit === undefined ? Infinity : Math.floor(r.limit);
       if (!r.reverse) for (let i = lo; i < hi && out.length < limit; i++) out.push({ key: keys[i]!, value: t.byKey.get(enc(keys[i]!))!.value as T });
       else for (let i = hi - 1; i >= lo && out.length < limit; i--) out.push({ key: keys[i]!, value: t.byKey.get(enc(keys[i]!))!.value as T });
       return out;

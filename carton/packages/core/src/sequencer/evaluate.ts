@@ -10,18 +10,20 @@
 // 3. the base must be reconstructable: every pending id it builds on is in that tail.
 // 4. lww is only for leaf edits: a span or a group path makes it structure, so the change must go through merge3
 //    (R11-01). Clients send such changes as `merge` (H2); this guards against bad clients.
-// 5. every op is covered by a declared path (otherwise a writer could hide a write from the overlap test).
-// 6. the overlap test against every concurrent row (§6.1).
+// 5. the overlap test against every concurrent row (§6.1).
+// 6. every op is covered by a declared path (otherwise a writer could hide a write from the overlap test). It runs
+//    after the overlap test so a push rejected anyway doesn't pay a pass over its ops; an accepted change passes both.
 // 7. the span check, after the overlap test (H4): a concurrent move or remove of the clip is an overlap, so the
 //    change is rejected and rebased, never dropped as "span missing". Once no concurrent row touched the clip, its
 //    track at head is its track at the change's base.
 // 8. existence: no insert of a live id; an item's track must exist.
 
-import { indexChange, LEAF, NONE, overlapKind, hasGroupSegment, STRUCTURE, escapeSegment } from "./overlap.ts";
+import { indexChange, NONE, overlapKind, hasGroupSegment, STRUCTURE, escapeSegment } from "./overlap.ts";
 import type { TimelineConfig } from "../schema.ts";
 import type { Op, Span } from "../types.ts";
 import type { RejectReason } from "../sync/messages.ts";
-import type { Keying, Pushed, RecordState, TailRow } from "./types.ts";
+import type { Pushed, RecordState, TailRow } from "./types.ts";
+import type { OverlapKind } from "./overlap.ts";
 
 /** The read side of a branch, as the rule needs it. */
 export interface SequencerView {
@@ -30,20 +32,33 @@ export interface SequencerView {
   tail(after: number): Iterable<TailRow>;
   /** A record's newest state at head on this branch, following the fork chain (§6.3). */
   record(coll: string, id: string): RecordState | undefined;
+  /** Optional batch form of `record` (one query for a 200-item remap instead of 200). */
+  records?(coll: string, ids: readonly string[]): Map<string, RecordState | undefined>;
 }
 
 export interface RulesConfig {
-  timeline: TimelineConfig;
+  /** null: the schema has no timeline, so there are no spans, tracks or timing fields to check (paths and reads are). */
+  timeline: TimelineConfig | null;
   /** K: how far behind head a base may be (§6.3). */
   maxBehind?: number;
-  keying?: Keying;
   /**
    * The field group a field belongs to, if any (`"time"` for the time group). A change that sets a grouped field
    * must declare the group path `coll/id/#group`. Defaults to the timeline's time group.
    */
   groupOf?: (coll: string, field: string) => string | undefined;
+  /**
+   * Another overlap test in place of the plan's (§6.1). Only the P9 comparisons and the conformance controls inject one
+   * (`@carton/conformance` rule-variants), so the shipped bundle carries the plan's rule alone.
+   */
+  overlap?: OverlapRule;
   /** Controls for the conformance suite's negative tests only. Never set them in a host. */
   controls?: RuleControls;
+}
+
+/** An overlap test: index the incoming change once, then classify each concurrent row. */
+export interface OverlapRule {
+  index(d: Pick<Pushed, "paths" | "reads" | "spans" | "trackOrder">, structural: boolean): unknown;
+  kind(index: unknown, row: Pick<TailRow, "paths" | "reads" | "spans" | "structural">): OverlapKind;
 }
 
 export interface RuleControls {
@@ -51,8 +66,8 @@ export interface RuleControls {
   spanCheck?: boolean;
   /** false: skip the "lww on structure" guard (R11-01 control). */
   lwwCheck?: boolean;
-  /** true: the pre-v12 classifier, where `#time` counts as a leaf and spans don't block lww (a control). */
-  groupIsLeaf?: boolean;
+  /** true: spans don't stop an lww accept, as before v12 (the R11-01 control, with its overlap rule). */
+  lwwWithSpans?: boolean;
 }
 
 /** A row to append to `records` when the change is confirmed: an insert, a remove, or a timeline item's new track. */
@@ -69,6 +84,12 @@ export type Verdict =
   | { kind: "reject"; reason: RejectReason; detail?: string };
 
 export const DEFAULT_MAX_BEHIND = 100;
+
+/**
+ * Stands in for a missing timeline: collection names no schema can have (a NUL byte), so every span, track and
+ * timing check finds nothing to check and the rest of the rule runs unchanged (foundation review finding 15).
+ */
+export const NO_TIMELINE: TimelineConfig = { collection: "\u0000items", lanes: "\u0000lanes", lane: "\u0000lane", start: "\u0000s", end: "\u0000e", source: "\u0000ts", sourceEnd: "\u0000te", speed: "\u0000v" };
 const EPS = 1e-9;
 
 export const pathKeyOf = (path: readonly (string | number)[]): string => path.map((s) => escapeSegment(String(s))).join("/");
@@ -79,7 +100,8 @@ export function timingFields(tl: TimelineConfig): Set<string> {
 }
 
 /** The time group of the timeline collection (§4.1): `{start, end, source, sourceEnd, speed}`. */
-export function timeGroupOf(tl: TimelineConfig): (coll: string, field: string) => string | undefined {
+export function timeGroupOf(tl: TimelineConfig | null): (coll: string, field: string) => string | undefined {
+  if (!tl) return () => undefined;
   const fields = new Set([tl.start, tl.end, tl.source, tl.sourceEnd, tl.speed]);
   return (coll, field) => (coll === tl.collection && fields.has(field) ? "time" : undefined);
 }
@@ -93,7 +115,8 @@ const hasMaps = (intent: unknown): boolean => {
  * Structural, computed by the sequencer from the change itself, never trusted from the client: an item insert or
  * remove, a track change, or a remap (an intent with maps, or a first-class `remap` op).
  */
-export function isStructural(ops: readonly Op[], intent: unknown, tl: TimelineConfig): boolean {
+export function isStructural(ops: readonly Op[], intent: unknown, timeline: TimelineConfig | null): boolean {
+  const tl = timeline ?? NO_TIMELINE;
   if (hasMaps(intent)) return true;
   for (const op of ops) {
     if (op.op === "remap") return true;
@@ -124,10 +147,58 @@ function shapeError(ch: Pushed): string | null {
   return null;
 }
 
-/** Every op is covered by a declared path, a grouped field declares its group path, a reorder its track. */
-function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, field: string) => string | undefined): string | null {
-  const declared = new Set(ch.paths);
+/**
+ * What the sequencer can check of a change without holding the document (§6.3; review findings 8 and 9):
+ * - a timeline record is replaced only by remove + insert, never by a record-level set or unset (the engine never
+ *   emits one; it would bypass the span check and the records history);
+ * - an inserted item is a valid clip: all four times finite, start ≥ 0, end > start, trim start ≥ 0, trim end > trim
+ *   start (the hard validator's rules; round 2 finding 4);
+ * - a time a change sets is finite, and a start or trim start it sets is ≥ 0;
+ * - a change that sets both edges of an item (or both trims) keeps them in order.
+ * Invariants that need the record's other fields (an end moved alone below the start) are the clients' merge and the
+ * local sequencer's to enforce, as the plan has it: the server keeps no document state.
+ */
+function invalidValues(ch: Pushed, tl: TimelineConfig): string | null {
+  const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
+  const edges = new Map<string, Record<string, unknown>>();
+  for (const op of ch.ops) {
+    const coll = op.path[0];
+    if ((coll === tl.collection || coll === tl.lanes) && op.path.length === 2 && (op.op === "set" || op.op === "unset")) return `${coll}/${String(op.path[1])}: replace a record by remove and insert`;
+    if (coll !== tl.collection) continue;
+    if (op.path.length === 2 && op.op === "insert") {
+      const v = op.value as Record<string, unknown> | undefined;
+      if (!v || typeof v !== "object") return `${coll}/${String(op.path[1])}: not a record`;
+      const s0 = v[tl.start], e0 = v[tl.end];
+      if (!num(s0) || !num(e0) || (s0 as number) < 0 || !((e0 as number) > (s0 as number))) return `${coll}/${String(op.path[1])}: bad times`;
+      const ts = v[tl.source], te = v[tl.sourceEnd];
+      if (!num(ts) || !num(te) || (ts as number) < 0 || !((te as number) > (ts as number))) return `${coll}/${String(op.path[1])}: bad trims`;
+      if (typeof v[tl.lane] !== "string") return `${coll}/${String(op.path[1])}: no track`;
+    } else if (op.path.length === 3 && op.op === "set") {
+      const f = String(op.path[2]);
+      if (f === tl.start || f === tl.end || f === tl.source || f === tl.sourceEnd) {
+        if (!num(op.value)) return `${coll}/${String(op.path[1])}/${f}: not a number`;
+        if ((f === tl.start || f === tl.source) && (op.value as number) < 0) return `${coll}/${String(op.path[1])}/${f}: negative`;
+        const id = String(op.path[1]);
+        (edges.get(id) ?? edges.set(id, {}).get(id)!)[f] = op.value;
+      }
+    }
+  }
+  for (const [id, e] of edges) {
+    if (e[tl.start] !== undefined && e[tl.end] !== undefined && !((e[tl.end] as number) > (e[tl.start] as number))) return `${tl.collection}/${id}: end before start`;
+    if (e[tl.source] !== undefined && e[tl.sourceEnd] !== undefined && !((e[tl.sourceEnd] as number) > (e[tl.source] as number))) return `${tl.collection}/${id}: trim end before trim start`;
+  }
+  return null;
+}
+
+/**
+ * Every op is covered by a declared path, a grouped field declares its group path, a reorder its track, and the
+ * existence reads the overlap test relies on are declared: the record a field write is under, and the track an item is
+ * placed on or moved to (review finding 7: otherwise omitting a read hides a concurrent delete).
+ */
+function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, field: string) => string | undefined, declared: ReadonlySet<string>): string | null {
   const order = new Set(ch.trackOrder);
+  const reads = new Set(ch.reads);
+  const lanePath = (lane: unknown) => `${escapeSegment(tl.lanes)}/${escapeSegment(String(lane))}`;
   for (const op of ch.ops) {
     if (op.op === "remap") continue; // a remap's surface is its span, checked below
     const p = pathKeyOf(op.path);
@@ -135,10 +206,22 @@ function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, fiel
     for (let i = p.lastIndexOf("/"); !covered && i > 0; i = p.lastIndexOf("/", i - 1)) covered = declared.has(p.slice(0, i));
     if (!covered) return p;
     if (op.path.length >= 3) {
-      const coll = String(op.path[0]), id = String(op.path[1]), field = String(op.path[2]);
+      const coll = String(op.path[0]), field = String(op.path[2]);
       const g = groupOf(coll, field);
-      if (g !== undefined && !declared.has(`${escapeSegment(coll)}/${escapeSegment(id)}/#${g}`)) return `${p} (group #${g})`;
-      if (coll === tl.lanes && field === "#pos" && !order.has(id)) return `${p} (track order)`;
+      if (g !== undefined) {
+        // the record's own key is the op's key up to its second separator: no re-escaping per op
+        const rec = p.slice(0, p.indexOf("/", p.indexOf("/") + 1));
+        if (!declared.has(`${rec}/#${g}`)) return `${p} (group #${g})`;
+      }
+      if (coll === tl.lanes && field === "#pos" && !order.has(String(op.path[1]))) return `${p} (track order)`;
+      if (coll === tl.collection || coll === tl.lanes) {
+        const rec = p.slice(0, p.indexOf("/", p.indexOf("/") + 1));
+        if (!reads.has(rec)) return `${p} (read of ${rec})`;
+        if (coll === tl.collection && field === tl.lane && op.op === "set" && !reads.has(lanePath(op.value))) return `${p} (read of its track)`;
+      }
+    } else if (op.path.length === 2 && op.op === "insert" && op.path[0] === tl.collection) {
+      const lane = (op.value as Record<string, unknown> | undefined)?.[tl.lane];
+      if (!reads.has(lanePath(lane))) return `${p} (read of its track)`;
     }
   }
   return null;
@@ -149,7 +232,8 @@ function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, fiel
  * the change's base; the overlap test has already rejected any concurrent change to it (H4), so the newest records
  * row at head is that track.
  */
-export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig): boolean {
+export function spansCover(view: SequencerView, ch: Pushed, timeline: TimelineConfig | null): boolean {
+  const tl = timeline ?? NO_TIMELINE;
   const spans: readonly Span[] = ch.spans;
   const hiOf = (s: Span) => s.hi ?? Infinity;
   const on = (track: string | undefined, x?: number) =>
@@ -162,8 +246,20 @@ export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig):
     if (op.path.length === 3 && op.path[2] === tl.lane && op.op === "set") moved.set(String(op.path[1]), String(op.value));
     if (op.path.length === 2 && op.op === "insert") inserted.set(String(op.path[1]), String((op.value as Record<string, unknown>)?.[tl.lane]));
   }
+  // one records lookup per item, however many of its fields the change sets (a 200-item remap sets 400), and one
+  // query for all of them when the view can batch
+  let seen = new Map<string, ReturnType<SequencerView["record"]>>();
+  if (view.records) {
+    const ids = new Set<string>();
+    for (const op of ch.ops) if (op.path[0] === tl.collection && op.path.length >= 2 && !inserted.has(String(op.path[1]))) ids.add(String(op.path[1]));
+    if (ids.size > 1) seen = view.records(tl.collection, [...ids]);
+  }
+  const recordOf = (id: string) => {
+    if (!seen.has(id)) seen.set(id, view.record(tl.collection, id));
+    return seen.get(id);
+  };
   const trackOf = (id: string): string | undefined => {
-    const r = view.record(tl.collection, id);
+    const r = recordOf(id);
     return r?.alive ? r.lane : inserted.get(id);
   };
   for (const op of ch.ops) {
@@ -180,7 +276,7 @@ export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig):
         const lane = String(v[tl.lane]), s0 = Number(v[tl.start]), e0 = Number(v[tl.end]);
         if (!spans.some((s) => s.track === lane && s.lo <= s0 + EPS && e0 <= hiOf(s) + EPS)) return false;
       } else if (op.op === "remove") {
-        const r = view.record(tl.collection, id);
+        const r = recordOf(id);
         if (r?.alive && !on(r.lane)) return false; // removing an absent record is a no-op (§4.4)
       }
       continue;
@@ -199,9 +295,8 @@ export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig):
 
 /** Judge one push against a branch. Pure: the caller appends the row and the record writes on "accept". */
 export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig): Verdict {
-  const tl = cfg.timeline;
+  const tl = cfg.timeline ?? NO_TIMELINE;
   const K = cfg.maxBehind ?? DEFAULT_MAX_BEHIND;
-  const keying = cfg.keying ?? "v3-spans";
   const controls = cfg.controls ?? {};
   const bad = shapeError(ch);
   if (bad) return { kind: "reject", reason: "bad change", detail: bad };
@@ -227,19 +322,17 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   if (!ch.ops.length && !ch.mergeOf && !ch.reverts) return { kind: "reject", reason: "no ops" };
   if (ch.policy === "lww" && controls.lwwCheck !== false && (ch.spans.length > 0 || ch.trackOrder.length > 0 || ch.paths.some(hasGroupSegment)))
     return { kind: "reject", reason: "lww on structure" };
-  const missing = undeclared(ch, tl, cfg.groupOf ?? timeGroupOf(tl));
-  if (missing) return { kind: "reject", reason: "undeclared path", detail: missing };
+  const declared = new Set(ch.paths); // built once: the overlap index and the declaration check share it
 
   const structural = isStructural(ch.ops, ch.intent, tl);
   const overwrote: TailRow[] = [];
   let any = false, blocking = false;
   if (tail.length) {
-    const me = indexChange(ch, structural, keying);
+    const rule = cfg.overlap;
+    const me = rule ? rule.index(ch, structural) : indexChange(ch, structural, declared);
     for (const row of tail) {
       if (row.withdrawn || past.has(row.id)) continue;
-      let k = overlapKind(me, row);
-      // the pre-v12 control: a `#time` clash counted as a leaf (and spans were ignored for lww)
-      if (k === STRUCTURE && controls.groupIsLeaf && ch.policy === "lww" && onlyGroupClash(me, row)) k = LEAF;
+      const k = rule ? rule.kind(me, row) : overlapKind(me as ReturnType<typeof indexChange>, row);
       if (k === NONE) continue;
       any = true;
       if (k === STRUCTURE) blocking = true;
@@ -248,10 +341,16 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   }
   let lww = false;
   if (any) {
-    if (ch.policy === "lww" && !blocking && (controls.groupIsLeaf || ch.spans.length === 0)) lww = true;
+    if (ch.policy === "lww" && !blocking && (controls.lwwWithSpans || ch.spans.length === 0)) lww = true;
     else return { kind: "reject", reason: "overlap" };
   }
 
+  // after the overlap test, so a push that will be rejected anyway doesn't pay a pass over every op; an accepted
+  // change has passed both (an undeclared write can't hide from the overlap test and still be confirmed)
+  const missing = undeclared(ch, tl, cfg.groupOf ?? timeGroupOf(tl), declared);
+  if (missing) return { kind: "reject", reason: "undeclared path", detail: missing };
+  const invalid = invalidValues(ch, tl);
+  if (invalid) return { kind: "reject", reason: "invalid", detail: invalid };
   if (controls.spanCheck !== false && !spansCover(view, ch, tl)) return { kind: "reject", reason: "span missing" };
 
   // existence: no insert of a live id; the track an item is placed on must exist (or be inserted by this change)
@@ -285,11 +384,3 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
 }
 
 const unescape = (s: string): string => (s.includes("~") ? s.replaceAll("~1", "/").replaceAll("~0", "~") : s);
-
-// The groupIsLeaf control: true when every structural clash with this row comes from identical group paths.
-function onlyGroupClash(me: ReturnType<typeof indexChange>, row: TailRow): boolean {
-  const stripped = { ...row, paths: row.paths.filter((p) => !(me.exact.has(p) && hasGroupSegment(p))), spans: [] as Span[] };
-  const meNoSpans = { ...me, spans: new Map<string, number[]>() };
-  const k = overlapKind(meNoSpans, stripped);
-  return k !== STRUCTURE;
-}

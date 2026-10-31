@@ -11,7 +11,6 @@ import {
   LEAF,
   NONE,
   STRUCTURE,
-  type Keying,
   type Pushed,
   type RulesConfig,
   type SequencerView,
@@ -20,8 +19,8 @@ import { TL, clip, doc, set, change, MemView, type Doc } from "./fixtures.ts";
 
 const cfg: RulesConfig = { timeline: TL };
 const d0: Doc = doc([clip("c0", 0, 5), clip("c1", 5, 10), clip("c2", 10, 15), clip("c3", 15, 20)]);
-const kind = (a: Pushed, b: Pushed, keying: Keying = "v3-spans") =>
-  overlapKind(indexChange(a, isStructural(a.ops, a.intent, TL), keying), {
+const kind = (a: Pushed, b: Pushed) =>
+  overlapKind(indexChange(a, isStructural(a.ops, a.intent, TL)), {
     paths: storedPaths(b),
     reads: b.reads,
     spans: b.spans,
@@ -72,19 +71,6 @@ test("overlap: reads meet writes at or above the read record, and reorders of on
   assert.equal(kind(posA, posB), STRUCTURE, "two moves of one track");
   const posV1 = change(d0, [{ op: "set", path: ["tracks", "V1", "#pos"], value: "c" }]);
   assert.equal(kind(posA, posV1), NONE, "moves of different tracks");
-});
-
-test("overlap: the P9 comparison keyings", () => {
-  const trimC0 = change(d0, [set("c0", "endTime", 5.5), set("c0", "trimEnd", 5.5)]);
-  const trimC1 = change(d0, [set("c1", "startTime", 4.5), set("c1", "trimStart", 0)]);
-  const moveC3 = change(d0, [set("c3", "startTime", 16), set("c3", "endTime", 21)]);
-  assert.equal(kind(trimC0, trimC1, "v3-spans-v10"), STRUCTURE, "v10: any intersecting spans");
-  assert.equal(kind(trimC0, moveC3, "v3-spans-v10"), NONE);
-  assert.equal(kind(trimC0, moveC3, "v2-layout"), STRUCTURE, "v2: any two span-bearing changes on one track");
-  const trimIn = change(d0, [set("c1", "startTime", 5.5), set("c1", "trimStart", 0.5)]);
-  const speed = change(d0, [set("c1", "playbackSpeed", 2)]);
-  assert.equal(kind(trimIn, speed, "per-item"), NONE, "per-item has no group path");
-  assert.equal(kind(trimIn, speed, "v3-spans-v10"), STRUCTURE, "v10 has no group path, but the two spans intersect");
 });
 
 test("evaluatePush: base unknown, the K cap boundary (100 evaluated, 101 rejected without a scan)", () => {
@@ -181,16 +167,4 @@ test("evaluatePush: existence (no live duplicate insert, the item's track must e
     { coll: "timelineItems", id: "c1", alive: true, lane: "T2" },
   ]);
   assert.ok(moveRemove.kind === "accept" && moveRemove.structural);
-});
-
-test("evaluatePush controls: the pre-v12 classifier accepts crossing lww trims (the R11-01 control)", () => {
-  const v = new MemView(d0);
-  const trimIn = change(d0, [set("c1", "startTime", 7), set("c1", "trimStart", 2)], { policy: "lww" });
-  const trimOut = change(d0, [set("c1", "endTime", 6), set("c1", "trimEnd", 1)], { policy: "lww" });
-  const control: RulesConfig = { timeline: TL, controls: { lwwCheck: false, groupIsLeaf: true } };
-  const a = evaluatePush(v, trimIn, control);
-  assert.equal(a.kind, "accept");
-  v.confirm(trimIn);
-  assert.equal(verdict(v, trimOut, control), "lww", "both accepted: an invalid clip would be confirmed");
-  assert.equal(verdict(v, trimOut, { timeline: TL, controls: { lwwCheck: false } }), "overlap", "the rule alone sends it to merge3");
 });

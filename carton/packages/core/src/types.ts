@@ -332,6 +332,8 @@ export interface CutRecord {
   sequencer: SequencerState;
   /** ms epoch of creation. */
   at?: number;
+  /** A Published cut: the cut it was published from (its fork node alone can't say: a fork node is canonical). */
+  source?: string;
 }
 
 /** A version: a confirmed state, optionally named. `ref` prints as `main@57`. */
@@ -498,8 +500,8 @@ export interface UndoEntry {
  * `conflicts` (cards that need a choice). `rejected` is a validation failure that resubmitting can't fix.
  */
 export type CommitResult =
-  | { status: "confirmed"; seq: number; ref: StateRef; change: ConfirmedChange | null; rebased: number; notices: Notice[]; empty?: boolean; warnings?: SoftWarning[] }
-  | { status: "pending"; id: ChangeId; ref: StateRef; notices: Notice[] }
+  | { status: "confirmed"; seq: number; ref: StateRef; change: ConfirmedChange | null; rebased: number; notices: Notice[]; empty?: boolean; warnings?: SoftWarning[]; /** cards `choices` decided (the proposals that didn't land) */ resolved?: ConflictCard[] }
+  | { status: "pending"; id: ChangeId; ref: StateRef; notices: Notice[]; /** cards `choices` decided merging a stale base */ resolved?: ConflictCard[] }
   | { status: "conflicts"; cards: ConflictCard[]; ref: StateRef; merge?: MergeResult; unseen?: PathKey[] }
   | { status: "rejected"; reason: string; invalid?: { path?: PathKey; error: string } };
 

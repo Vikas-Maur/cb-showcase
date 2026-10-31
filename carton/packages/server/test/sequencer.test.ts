@@ -352,6 +352,7 @@ test("R3-03 adoption is idempotent by (branchId, n, stateHash@n); another log un
   assert.equal(verdict(await push(seq, c, d0, [set("c0", "name", "n2")], { branch: "B2", id: "local.1", base: { seq: 0, pending: [] } })), "duplicate", "adopted rows dedup like any other");
 });
 
+const KF112 = "112".padEnd(64, "a");
 test("keyframes: an ack asks for one every K changes; a hello more than K behind gets it plus the tail; a fresh joiner gets the root state", async () => {
   const { seq, d0 } = await world(doc(clips(10)), { keyframeEvery: 8 });
   const a = fakeConn("alice/k");
@@ -360,14 +361,14 @@ test("keyframes: an ack asks for one every K changes; a hello more than K behind
     const r = await push(seq, a, d0, [set(`c${i % 10}`, "name", `n${i}`)]);
     if (r.type === "ack" && r.keyframeWanted) {
       wanted++;
-      if (r.keyframeWanted === 112) await seq.handle(a, { type: "keyframe", branchId: BRANCH, keyframe: { seq: 112, stateHash: "kf112", doc: { tracks: [], timelineItems: [] } } });
+      if (r.keyframeWanted === 112) await seq.handle(a, { type: "keyframe", branchId: BRANCH, keyframe: { seq: 112, stateHash: KF112, doc: { tracks: [], timelineItems: [] } } });
     }
   }
   assert.equal(wanted, 15, "seqs 8, 16, …, 120");
   const late = fakeConn("bob/k");
   await seq.handle(late, hello(3));
   const w = late.last("hello")!;
-  assert.deepEqual([w.keyframe?.seq, w.keyframe?.stateHash, w.rows[0]?.seq, w.rows.length, w.head], [112, "kf112", 113, 8, 120]);
+  assert.deepEqual([w.keyframe?.seq, w.keyframe?.stateHash, w.rows[0]?.seq, w.rows.length, w.head], [112, KF112, 113, 8, 120]);
   const near = fakeConn("carol/k");
   await seq.handle(near, hello(30));
   assert.equal(near.last("hello")?.keyframe, undefined, "the keyframe is behind `have`: rows only");
@@ -422,7 +423,8 @@ test("catch-up pages through archived segments and the live table in order", asy
   const a = fakeConn("alice/k1");
   for (let i = 0; i < 700; i++) await push(seq, a, d0, [set(`c${i % 4}`, "name", `n${i}`)]);
   assert.equal(await seq.archive(BRANCH, { keep: 200, segmentRows: 128 }), 384);
-  assert.deepEqual((await seq.maintain()).archived, 0, "maintain: nothing more to move with the default keep");
+  assert.deepEqual((await seq.maintain()).archived, 0, "maintain: nothing more to move with §18's default keep (10,000)");
+  assert.ok([...blobs.map.keys()].every((k) => !k.startsWith("segments/") || k.endsWith(".json.gz")), "segments are gzip-compressed");
   const b = fakeConn("bob/k2");
   const seqs: number[] = [];
   let have = 0;

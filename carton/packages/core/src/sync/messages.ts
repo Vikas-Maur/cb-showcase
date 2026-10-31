@@ -2,7 +2,8 @@
 // (H1 withdraw, H2 lww retry, bounded confirmed-id lists). JSON over any Transport: spans carry `hi: null` for an open
 // end, so nothing needs a custom codec. Owner: sync-sequencer.
 
-import type { Actor, ChangeId, ConfirmedChange, Change, CutRecord, Doc, DagNode } from "../types.ts";
+import type { Actor, ChangeId, ConfirmedChange, Change, CutRecord, Doc, DagNode, NodeId, PathKey } from "../types.ts";
+import type { EnvelopeMsg } from "./envelope.ts";
 
 /** The protocol version both sides speak; `hello` carries the document schema version too. */
 export const PROTOCOL = 1;
@@ -62,7 +63,13 @@ export const VALIDATION_REASONS: ReadonlySet<RejectReason> = new Set<RejectReaso
   "bad change",
 ]);
 
-/** Live presence (§12): 10–20 Hz while dragging, 1 Hz while active, stops after 30 s idle. Never stored. */
+/** The most JSON one presence message may carry: the server drops bigger ones (never relayed, never stored). */
+export const PRESENCE_BYTES = 64 * 1024;
+
+/**
+ * Live presence (§12): 10–20 Hz while dragging, 1 Hz while active, stops after 30 s idle. Never stored. At most
+ * `PRESENCE_BYTES` of JSON with its actor; the server drops bigger ones.
+ */
 export interface PresenceState {
   /** Playhead or cursor, seconds. */
   at?: number;
@@ -96,6 +103,10 @@ export interface HelloMsg {
   rids: string[];
   schemaVersion: number;
   protocol?: number;
+  /** Rows only, no keyframe (the client found a keyframe's hash wrong). */
+  noKeyframe?: boolean;
+  /** The client reads envelopes (it has the blob store): the server may send it messages over 1 MiB as references. */
+  envelopes?: boolean;
 }
 /** Pipelined push of pending changes in queue order. A reject kills the rest of that `epoch`. */
 export interface PushMsg {
@@ -134,7 +145,34 @@ export interface AdoptMsg {
   rec: CutRecord;
   doc0: Doc | null;
   rootSeq?: number;
-  closure: { branchId: string; rec: CutRecord; nodes: DagNode[] }[];
+  /** `hashDoc(doc0)`, so a joiner from nothing can check the root keyframe (the client fills it in). */
+  rootHash?: string;
+  closure: ClosureEntry[];
+}
+/**
+ * One branch of a hand-off's ancestry closure (§5.3, R4-07), kept by the server as a read-only tracking branch: its
+ * lineage nodes, the states of its fork, merge and export nodes (the states a merge base can need), and the last author
+ * per record at the nodes the shared cut's credits stop at. No micro-changes.
+ */
+export interface ClosureEntry {
+  branchId: string;
+  rec: CutRecord;
+  nodes: DagNode[];
+  states?: { seq: number; hash: string; doc: Doc }[];
+  authors?: [NodeId, Record<PathKey, Actor>][];
+}
+/**
+ * A replica's request for history it doesn't hold (Stage F): the rows `(after, upTo]`, paged like catch-up, and with
+ * `lineage` the branch's ancestry closure. A joiner loads them into History (log, credits, diff), as does a keyframe
+ * catch-up for the stretch it jumped. `req` names the answer.
+ */
+export interface HistoryMsg {
+  type: "history";
+  branchId: string;
+  req: number;
+  after: number;
+  upTo: number;
+  lineage?: boolean;
 }
 /** A shared variant made on the server: O(1), no rows copied; it reads the parent at `seq` (§6.3). */
 export interface ForkMsg {
@@ -143,6 +181,8 @@ export interface ForkMsg {
   from: string;
   seq: number;
   rec: CutRecord;
+  /** The state at the fork point: the fork's root, so a joiner that doesn't hold the parent can start from it. */
+  root?: { stateHash: string; doc: Doc };
 }
 /** The keyframe the server asked for (`AckMsg.keyframeWanted`), for far-behind catch-up (§6.3). */
 export interface KeyframeMsg {
@@ -156,7 +196,8 @@ export interface PresenceMsg {
   actor: Actor;
   state: PresenceState | null;
 }
-export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg;
+/** Any message over 1 MiB, either way, travels as an envelope (`envelope.ts`). */
+export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | HistoryMsg | EnvelopeMsg;
 
 // ------------------------------------------------------------------ server -> client
 
@@ -170,6 +211,13 @@ export interface WelcomeMsg {
   confirmed: ConfirmedId[];
   /** More rows follow: send `hello` again with the new `have`. */
   more?: boolean;
+  /** The largest client message the server reads (its envelope limit, for a client that sends envelopes). */
+  maxMessageBytes?: number;
+  /**
+   * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
+   * acting on the list. Unchecked ids are never to be taken as unconfirmed.
+   */
+  uncheckedFrom?: number;
 }
 /** New confirmed rows, fanned out to every subscriber (the pusher too, before its ack). */
 export interface ChangesMsg {
@@ -202,6 +250,8 @@ export interface RejectMsg {
   concurrent: { seq: number; id: ChangeId }[];
   epoch: number;
   confirmed?: ConfirmedId[];
+  /** As `WelcomeMsg.uncheckedFrom`: the list is incomplete; catch up with `hello` before rebasing. */
+  uncheckedFrom?: number;
   detail?: string;
 }
 export interface StatusMsg {
@@ -211,6 +261,8 @@ export interface StatusMsg {
   adoptKey: string | null;
   since: number | null;
   head: number;
+  /** As `WelcomeMsg.maxMessageBytes`, for the upload a hand-off makes right after this answer (a server with blobs). */
+  maxMessageBytes?: number;
 }
 export interface AdoptedMsg {
   type: "adopted";
@@ -250,9 +302,23 @@ export interface PresenceFanoutMsg {
 export interface ErrorMsg {
   type: "error";
   reason: string;
+  /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */
+  reconnect?: boolean;
 }
+/** Answer to `history`: a page of rows (`more`: ask again after the last), the closure when asked, or why not. */
+export interface HistoryReplyMsg {
+  type: "history";
+  branchId: string;
+  req: number;
+  rows: ConfirmedChange[];
+  more?: boolean;
+  lineage?: ClosureEntry[];
+  error?: string;
+}
+
 export type ServerMessage =
   | WelcomeMsg
+  | HistoryReplyMsg
   | ChangesMsg
   | AckMsg
   | RejectMsg
@@ -263,4 +329,5 @@ export type ServerMessage =
   | UnknownBranchMsg
   | OverwrittenMsg
   | PresenceFanoutMsg
-  | ErrorMsg;
+  | ErrorMsg
+  | EnvelopeMsg;

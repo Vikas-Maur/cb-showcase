@@ -5,19 +5,20 @@ import type { SequencerStorage, SqlValue } from "@carton/core/plugins";
 
 export function sqliteStorage(path = ":memory:"): SequencerStorage & { db: DatabaseSync; close(): void } {
   const db = new DatabaseSync(path);
-  const stmts = new Map<string, ReturnType<DatabaseSync["prepare"]>>();
+  // each statement is prepared once, and whether it writes is decided once
+  const stmts = new Map<string, { st: ReturnType<DatabaseSync["prepare"]>; writes: boolean }>();
   let read = 0, written = 0, depth = 0;
   return {
     db,
     exec<R>(sql: string, ...params: SqlValue[]): R[] {
-      let st = stmts.get(sql);
-      if (!st) stmts.set(sql, (st = db.prepare(sql)));
-      if (/^\s*(INSERT|UPDATE|DELETE|CREATE)/i.test(sql)) {
-        const r = st.run(...(params as SQLInputValue[]));
+      let s = stmts.get(sql);
+      if (!s) stmts.set(sql, (s = { st: db.prepare(sql), writes: /^\s*(INSERT|UPDATE|DELETE|CREATE)/i.test(sql) }));
+      if (s.writes) {
+        const r = s.st.run(...(params as SQLInputValue[]));
         written += Number(r.changes);
         return [];
       }
-      const rows = st.all(...(params as SQLInputValue[])) as R[];
+      const rows = s.st.all(...(params as SQLInputValue[])) as R[];
       read += rows.length;
       return rows;
     },

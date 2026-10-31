@@ -3,9 +3,10 @@
 // facade with what the prototype's tests read off its in-memory server: rows, stats, rid bindings, hooks.
 
 import type { SequencerStorage, SqlValue } from "@carton/core/plugins";
-import type { CutRecord, Doc, sequencer as rules } from "@carton/core";
+import type { CutRecord, Doc } from "@carton/core";
 import { createSequencer, type Row, type Sequencer, type SequencerControls, type SequencerEvent } from "@carton/server";
 import * as A from "./adapter.ts";
+import { groupIsLeafRule, keyingRule, type Keying } from "../rule-variants.ts";
 import { Ipc, Sim } from "./kernel.ts";
 import { Net, type ServerSide, type SimConn } from "./net.ts";
 import { Replica } from "./replica.ts";
@@ -13,10 +14,12 @@ import { Replica } from "./replica.ts";
 export interface ServerOptions extends SequencerControls {
   maxBehind?: number;
   keyframeEvery?: number;
+  /** The pre-v12 lww classifier (the R11-01 control): `#time` clashes count as leaves and spans don't stop lww. */
+  groupIsLeaf?: boolean;
 }
 export interface WorldOptions {
   seed?: number;
-  keying?: rules.Keying;
+  keying?: Keying;
   server?: ServerOptions;
   /** The sequencer's storage (node:sqlite in Node; a host's own storage in its conformance run). */
   storage: () => SequencerStorage;
@@ -34,16 +37,18 @@ export class SimServer implements ServerSide {
   private rowCache = new Map<string, { head: number; rows: Row[] }>();
   readonly opts: ServerOptions;
 
-  constructor(storage: SequencerStorage, opts: ServerOptions & { keying?: rules.Keying }, clock: () => number) {
+  constructor(storage: SequencerStorage, opts: ServerOptions & { keying?: Keying }, clock: () => number) {
     this.opts = opts;
-    const { maxBehind, keyframeEvery, keying, ...controls } = opts;
+    const { maxBehind, keyframeEvery, keying, groupIsLeaf, ...controls } = opts;
+    // the comparison keyings and the pre-v12 classifier are injected rules (the shipped core has only the plan's)
+    const overlap = groupIsLeaf ? groupIsLeafRule : keying ? keyingRule(keying) : undefined;
     this.seq = createSequencer({
       storage,
       auth: { kind: "sim", async verify() { return null; } },
       ...(maxBehind !== undefined ? { maxBehind } : {}),
       ...(keyframeEvery !== undefined ? { keyframeEvery } : {}),
       clock,
-      controls: { ...controls, ...(keying ? { keying } : {}) },
+      controls: { ...controls, ...(overlap ? { overlap } : {}), ...(groupIsLeaf ? { lwwWithSpans: true } : {}) },
       onEvent: (e: SequencerEvent) => {
         if (e.type === "reject" && e.id) this.rejectsById.set(e.id, (this.rejectsById.get(e.id) ?? 0) + 1);
       },
