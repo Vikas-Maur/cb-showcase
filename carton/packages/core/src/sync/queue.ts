@@ -428,6 +428,23 @@ export class ReplicaQueue {
     return out;
   }
 
+  /**
+   * The version a change made (L5: version ids are provisional until confirmed). Confirmed: `<branch>@<seq>`, final.
+   * Pending: `<branch>@<head>+<n>` (the n-th change of the queue on top of the confirmed head), provisional: it moves
+   * as rows arrive, and the share of a cut stays "syncing" until its sequencer has answered. null: unknown id.
+   */
+  versionId(b: string, id: string): { id: string; provisional: boolean } | null {
+    const log = this.logs.get(b)!;
+    for (let i = log.length - 1; i >= 0; i--) if (log[i]!.id === id) return { id: `${b}@${i + 1}`, provisional: false };
+    const queue = this.queues.get(b)!;
+    let n = 0;
+    for (const p of queue) {
+      if (last(p.versions).ops.length) n++;
+      if (p.id === id) return { id: `${b}@${log.length}+${n}`, provisional: true };
+    }
+    return null;
+  }
+
   // ---------------------------------------------------------------- leaving the queue
   /** The change's latest version is empty: it changes nothing now. */
   isEmpty(p: QueuedChange): boolean {
