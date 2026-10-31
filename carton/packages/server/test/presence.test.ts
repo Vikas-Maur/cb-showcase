@@ -145,3 +145,18 @@ test("what a connection keeps for its leaves stays small: 4 actors at most, ids 
   seq.disconnect(a);
   seq.disconnect(b);
 });
+
+test("no leave while another connection shows the same actor there: a reconnect whose old socket times out later, or a second tab", async () => {
+  const { seq } = await world(doc([clip("c0", 0, 5)]));
+  const old = fakeConn("alice/1"), fresh = fakeConn("alice/1"), b = fakeConn("bob/1");
+  for (const x of [old, fresh, b]) await seq.handle(x, hello());
+  const actor = { kind: "human" as const, id: "alice" };
+  await seq.handle(old, { type: "presence", branchId: BRANCH, actor, state: { at: 1 } });
+  await seq.handle(fresh, { type: "presence", branchId: BRANCH, actor, state: { at: 2 } }); // back on a new socket
+  b.inbox.length = 0;
+  seq.disconnect(old); // the old socket's timeout, after the new one began
+  assert.equal(leaves(b).length, 0, "the cursor alice still shows stays");
+  seq.disconnect(fresh);
+  assert.deepEqual(leaves(b).map((m) => m.actor), [{ kind: "human", id: "alice" }], "the last one out leaves");
+  seq.disconnect(b);
+});

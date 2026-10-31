@@ -1111,10 +1111,16 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       presenceBuckets.delete(conn.id);
       // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
       // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
-      for (const [, t] of presenceTrailing.get(conn.id) ?? []) if (t.msg.state === null) fanout(t.msg.branchId, t.msg, conn.id);
+      // Not while another connection shows the same actor there: the same person reconnected (the old socket timed out
+      // after the new one began) or has a second tab, and the leave would wipe the cursor it still shows.
+      const shownElsewhere = (branchId: string, actor: ShownPresence["actor"] | sync.PresenceFanoutMsg["actor"]) => {
+        for (const o of conns.values()) if (stateOf(o).shown?.some((s) => s.branchId === branchId && sameActor(s.actor, actor as sync.PresenceFanoutMsg["actor"]))) return true;
+        return false;
+      };
+      for (const [, t] of presenceTrailing.get(conn.id) ?? []) if (t.msg.state === null && !shownElsewhere(t.msg.branchId, t.msg.actor)) fanout(t.msg.branchId, t.msg, conn.id);
       clearTrailing(conn.id);
       const st = stateOf(conn);
-      for (const s of st.shown ?? []) fanout(s.branchId, { type: "presence", branchId: s.branchId, actor: s.actor, state: null }, conn.id);
+      for (const s of st.shown ?? []) if (!shownElsewhere(s.branchId, s.actor)) fanout(s.branchId, { type: "presence", branchId: s.branchId, actor: s.actor, state: null }, conn.id);
       delete st.shown;
     },
     cancelShare(branchId) {
