@@ -83,19 +83,22 @@ export class MediaReader implements RangeSource {
     this.#o = opts;
   }
 
-  /** The verified manifest: from the cache, else from the store. Concurrent callers share one fetch. */
+  /**
+   * The verified manifest: from the cache, else from the store. Concurrent callers share one fetch, so an abort stops
+   * this caller's wait, not the fetch.
+   */
   manifest(hash: string, signal?: AbortSignal): Promise<Manifest> {
     let p = this.#manifests.get(hash);
     if (!p) {
-      p = this.#loadManifest(hash, signal);
+      p = this.#loadManifest(hash);
       p.catch(() => this.#manifests.delete(hash));
       if (this.#manifests.size >= MAX_MANIFESTS) this.#manifests.delete(this.#manifests.keys().next().value!);
       this.#manifests.set(hash, p);
     }
-    return p;
+    return signal ? untilAborted(p, signal) : p;
   }
 
-  async #loadManifest(hash: string, signal?: AbortSignal): Promise<Manifest> {
+  async #loadManifest(hash: string): Promise<Manifest> {
     const { cache, hasher, store } = this.#o;
     const cached = await cache?.getManifest(hash);
     if (cached) {
@@ -105,7 +108,7 @@ export class MediaReader implements RangeSource {
         // A damaged cache entry: fetch it again below.
       }
     }
-    const bytes = await this.#retry(() => store.get(manifestKey(hash)), signal);
+    const bytes = await this.#retry(() => store.get(manifestKey(hash)));
     if (!bytes) throw new MediaMissingError(`no manifest for ${hash}`);
     const m = await decodeManifest(bytes, hasher, hash);
     await cache?.putManifest(hash, m.bytes);
@@ -122,11 +125,13 @@ export class MediaReader implements RangeSource {
     }
     if (!this.#present.has(hash)) {
       try {
-        const h = await this.#o.store.head(mediaKey(hash));
+        // The store may never answer (a stalled link): the caller's abort ends the wait.
+        const h = await (signal ? untilAborted(this.#o.store.head(mediaKey(hash)), signal) : this.#o.store.head(mediaKey(hash)));
         if (!h) return null; // only the manifest is up so far
         if (h.size !== m.size) throw new Error(`store object for ${hash} is ${h.size} bytes, manifest says ${m.size}`);
         this.#present.add(hash);
       } catch (e) {
+        if (signal?.aborted) throw signal.reason;
         // Offline: the manifest and whatever leaves are cached can still be served.
         if (!(await this.#o.cache?.getManifest(hash))) throw e;
       }

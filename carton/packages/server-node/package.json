@@ -37,6 +37,7 @@
     "@carton/blob-fs": "0.1.0"
   },
   "devDependencies": {
-    "@carton/conformance": "0.1.0"
+    "@carton/conformance": "0.1.0",
+    "@carton/media": "0.1.0"
   }
 }

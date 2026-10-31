@@ -11,6 +11,10 @@
 //   collide.
 // - a key can be both an object and a "folder" of others (`a` and `a/b`), as in S3: an object's file name ends in
 //   `~b`, which no directory name can end in (directory names hold no `~`, or `~` plus 64 hex digits).
+// - no path is too long anywhere: escaping can triple a key (`%4c` per capital), and macOS limits a whole path to
+//   1024 bytes. A key whose readable form would pass READABLE_MAX bytes, or that has a segment too long for a file
+//   name, is stored flat instead, as `~h/<2 hex>/<sha256 of the key>~b` (a `~h` name is never a readable one: `~` is
+//   always escaped there), with the key itself in the object's sidecar so listing still finds it.
 // Content-hash keys (`media/<lowercase hex>`) keep their readable names (`media/<hex>~b`).
 
 import { createHash } from "node:crypto";
@@ -19,6 +23,10 @@ const MAX_KEY_BYTES = 1024; // S3's limit; R2's too
 const MAX_NAME = 255 - 2; // room for the `~b` suffix of object files
 export const OBJECT_SUFFIX = "~b";
 const HASHED_PREFIX = 180;
+// bytes of a key's readable relative path at most; past it, the flat hashed form (about 80 bytes) keeps the full
+// path under macOS's 1024 for any store root shorter than about 600 bytes
+export const READABLE_MAX = 400;
+export const HASHED_DIR = "~h";
 const RESERVED = /^(con|prn|aux|nul|com[0-9¹²³]|lpt[0-9¹²³]|conin\$|conout\$)(\.|$)/;
 const HEX = Array.from({ length: 256 }, (_, i) => "%" + i.toString(16).padStart(2, "0"));
 const enc = new TextEncoder();
@@ -58,6 +66,12 @@ export function keyToSegments(key: string): string[] {
     if (s === "." || s === "..") throw new BadKeyError(key, "`.` or `..` segment");
   }
   const out = segs.map(encodeSegment);
+  let bytes = OBJECT_SUFFIX.length;
+  for (const o of out) bytes += o.length + 1;
+  if (bytes > READABLE_MAX || out.some((o) => o.includes("~"))) {
+    const h = createHash("sha256").update(key).digest("hex");
+    return [HASHED_DIR, h.slice(0, 2), h + OBJECT_SUFFIX];
+  }
   out[out.length - 1] += OBJECT_SUFFIX;
   return out;
 }

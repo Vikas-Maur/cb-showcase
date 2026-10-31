@@ -391,8 +391,8 @@ export function describeEncoder(name: string): EncoderDescription {
       return { hardware: true, note: "AMD GPU encoder (AMF), peak-constrained VBR. Decoding and scaling run on the CPU." };
     case "libx264":
       // The cost is stated, not hidden (PLAN §11). On the 4-core ARM dev box it took about 1 to 2 CPU-core-seconds per
-      // second of 1080p30 footage (UNVERIFIED: an oversubscribed box, so CPU time rather than wall clock; raw output in
-      // gfv-scratch/carton/media/raw/libx264-SUMMARY.txt). Put a laptop measurement here before users see a number.
+      // second of 1080p30 footage (UNVERIFIED: an oversubscribed box, so CPU time rather than wall clock). The
+      // measurement is carton/bench/media/x264-cost.ts; put a laptop figure here before users see a number.
       return {
         hardware: false,
         note: "Software encoder, used when no GPU encoder works. It is CPU-heavy: roughly a CPU core or two for as long as the clip runs, so proxies are made one at a time in the background.",
