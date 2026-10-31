@@ -19,6 +19,10 @@ holds; they don't say how fast the built code is.
   cut is still read into memory on each open, and every `cb` call opens the project. Compaction is optional.
 - **Fonts aren't synced (L4), and no validator warns about them yet.** The Cardboard schema's soft checks cover overlaps
   only.
+- **A split's lineage is used on some paths only** (new). When a local cut's commit is rebased over a split, and when a
+  shared cut's queued change is rebased over the host's, an edit made on the old clip also reaches the other pieces. A
+  fold, and a shared cut's commit made on an older version, don't use the other side's lineage: there the edit lands
+  only on the piece that kept the clip's id. Edits to a clip's time fields or its track never follow lineage.
 - **Ripple inference is a heuristic (L9).** Carton infers a ripple from an agent's file edit only when it is
   unambiguous. Recorded intents (H7) are the reliable path.
 - **FAT and exFAT have no hard links (L13).** There, a save from another program that lands in a very short window can
@@ -40,8 +44,8 @@ holds; they don't say how fast the built code is.
   writer can make it spin and fill `.carton/displaced/`. Busy-file waits are bounded.
 - **A shallow `.cbproj` (L17)** carries who last changed each clip and the net ripple, not every change. "Undo this
   agent turn" for the sender's agents needs the opt-in full-history export. `Carton.importHistory(store)` reads that
-  export back (the sender's cuts arrive read-only, with their versions), but `readCbproj` and "Bring in their
-  changes" don't call it yet.
+  export back (the sender's cuts arrive read-only, with their versions). `readCbproj` only says whether a file has
+  it; `bringInTheirChanges` imports it when given its `history` option (not with `check`).
 - **The first version.** `importProject` makes the current document `main@1`, as §16 says. `openLocal({ init })`
   instead records it as the root state at seq 0. Use `importProject` for migration.
 
@@ -78,7 +82,8 @@ anything.
 - **Large changes need a blob store on the client.** Messages over 1 MiB can travel as blob "envelopes" when
   `Carton.open`'s `sync` is given the host's blob store (`sync.blobs`). Without one, a change or a share over the
   message limit (32 MiB) is refused as too large. `openLocal({ sync })` passes the `sync` you give it (blobs
-  included) to the process's own handle, but the headless helper it starts passes no blob store yet.
+  included) to the process's own handle. The headless helper passes the host's blob client
+  (`@carton/host-http/client`) when it can load it, unless its sync settings say `blobs: false`.
 - **Version ids are provisional until confirmed (L5).** A share started offline stays "Syncing" until the device
   reaches the server; cancelling a share is a server-side operation only.
 - **A process that doesn't hold the sync lease** keeps its own commits on a shared cut queued until it connects. `cb`

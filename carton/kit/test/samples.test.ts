@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Carton, LOCAL_TABLES, StateUnknown, type Actor, type Doc, type Rec } from "@carton/core";
 import type { AuthContext, AuthProvider } from "@carton/core/plugins";
 import { cardboardAdapter, createCardboardAdapter, fromHost, materializeProject, projectGuiSave, standInProjection } from "@carton/cardboard";
-import { excludedFromExport, exportCbproj, extractFullHistory, readCbproj } from "@carton/cardboard/node";
+import { bringInTheirChanges, excludedFromExport, exportCbproj, extractFullHistory, readCbproj } from "@carton/cardboard/node";
 import { register } from "@carton/cli-mcp";
 import { authProviderSuite } from "@carton/conformance";
 import { hookSettings, identify, nodeHasher, openLocal, readProjectId, runWrite } from "@carton/local";
@@ -265,6 +265,16 @@ test("H11: a .cbproj with \"Include history\" is read back with importHistory: t
     await theirs.close();
     await received.close();
     await mine.close();
+  }
+  // or "Bring in their changes" with its `history` option, which imports the same history
+  const mine2 = await openSqliteStore(join(scratch("h11-history-bring-in"), "carton.db"));
+  const received2 = await Carton.open({ adapter: cardboardAdapter, store: mine2, hasher: nodeHasher, init: { import: contents.shallow! } });
+  try {
+    const r = await bringInTheirChanges(received2, contents, { history: { file: out, openStore: (p) => openSqliteStore(p, { readOnly: true }) } });
+    assert.equal(r.history?.status, "imported", JSON.stringify(r));
+  } finally {
+    await received2.close();
+    await mine2.close();
   }
 });
 
