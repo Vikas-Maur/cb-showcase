@@ -332,6 +332,15 @@ to about 1.3 s (10, 20, 40 … 320 ms), as graceful-fs does. It goes into the li
 which only follows the change once `syncBuiltinESMExports()` runs. Main is left as it is, since the retry
 would multiply its own.
 
+Open Project (a folder or a `.cbproj`) can fail the same way. Cardboard copies the project into a staging folder
+(`.opening-…` in the library), moves it into place, then removes the staging folder. On Windows a file that
+anything holds open can't be moved or removed, and a removal that fails fails the whole Open Project. In CI's
+Windows run with Carton on, Carton itself held the staged project's history open (`EBUSY` on its `carton.db`); it
+now closes everything it opened there before Cardboard moves it (see "Carton: live sync and sharing"). Defender or
+the search indexer scanning a file the import has just written can hold one briefly too. The move is a rename, so
+it was already retried; the removal now retries the same way (adding `ENOTEMPTY`), in the worker
+(`patch-worker.js` 6) and the CLI (`patch-cli-media.js` 6).
+
 `scripts\patch-cli-media.js` (applied to `resources\cli\chunks\chunk-LL26E55H.mjs`) makes the same
 media changes in the CLI's own copy of Cardboard's media code. `cb media add`, `cb media proxy` and
 the Director's imports run that copy in the CLI process, not in the app. Unpatched, it encoded
@@ -545,16 +554,18 @@ with Carton off none of it runs at all.
   connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
   cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper
   catches up and the newest state goes into `project.json`) and is never PUT as a whole file afterwards.
-- **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their
-  versions in instead of 1.4.0's "This project ID already exists". Where you both changed the same thing, theirs goes
-  in and yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History
-  panel). Clips they added come with their files. Opening one of a project you don't have starts its history from
-  theirs. A `.carton\` or `.scratch\views\` folder inside a `.cbproj` is never kept: Open Project removes them, even with
-  Carton off. **Include history**: Cardboard's Save As dialog has no switch for it, so set `CARTON_CBPROJ_HISTORY=1`
-  in the environment of the app or of `cb` before saving. The file then also carries every version, with its author
-  and name, and whoever opens it sees them on a read-only cut. History never includes your local data (pins, notices,
-  sync settings). Saved while edits to a shared project are still waiting to sync (offline), the file has no Carton
-  history at all, only what you see (as in 1.4.0), and the log says so. Save again once synced.
+- **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their versions
+  in instead of 1.4.0's "This project ID already exists". Where you both changed the same thing, theirs goes in and
+  yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History panel).
+  Clips they added come with their files. Opening one of a project you don't have starts its history from theirs;
+  whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
+  move or remove an open file). A `.carton\` or `.scratch\views\` folder inside a `.cbproj` is never kept: Open
+  Project removes them, even with Carton off. **Include history**: Cardboard's Save As dialog has no switch for it, so
+  set `CARTON_CBPROJ_HISTORY=1` in the environment of the app or of `cb` before saving. The file then also carries
+  every version, with its author and name, and whoever opens it sees them on a read-only cut. History never includes
+  your local data (pins, notices, sync settings). Saved while edits to a shared project are still waiting to sync
+  (offline), the file has no Carton history at all, only what you see (as in 1.4.0), and the log says so. Save again
+  once synced.
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies

@@ -63,6 +63,30 @@ function open(bundlePath, { projectId, doc } = {}) {
 }
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
 
+// A folder Cardboard is done with: Open Project's staging folder (`.opening-<id>`), which it removes once the staged
+// project is copied into the library. Everything Carton holds under it is let go first: each Carton opened there is
+// closed (its carton.db and files), a pending review of a displaced file there is dropped, and the staging library's
+// store is forgotten. On Windows an open file can't be removed, so Cardboard's own clean-up failed with EBUSY (CI route
+// 35). Called whether the staged import worked or not.
+const under = (dir, p) => {
+  const rel = path.relative(path.resolve(dir), path.resolve(p));
+  return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+};
+async function release(dir) {
+  const inside = (p) => under(dir, p) || (process.platform === "win32" && under(dir.toLowerCase(), p.toLowerCase()));
+  for (const [file, s] of installs) if (inside(file)) { clearTimeout(s.timer); installs.delete(file); }
+  for (let i = hosts.length - 1; i >= 0; i--) if (inside(hosts[i].root)) hosts.splice(i, 1);
+  const closing = [];
+  for (const [bundlePath, p] of opened) {
+    if (!inside(bundlePath)) continue;
+    opened.delete(bundlePath);
+    ready.delete(bundlePath);
+    panels.delete(bundlePath);
+    closing.push(p.then((lc) => lc?.close()).catch((e) => warnOnce("close:" + bundlePath, `couldn't close the history of ${path.basename(bundlePath)}: ${errText(e)}`)));
+  }
+  await Promise.all(closing);
+}
+
 // ---------------------------------------------------------------- extensions
 // The live-sync and sharing half (scripts/carton/sync, windows-sync) is bundled into this file by build.js and
 // registers here with `extend({worker(api)})`. In the library worker, worker(api) returns services that join the
@@ -505,6 +529,7 @@ const hostOf = (bundlePath) => hosts.find((h) => path.resolve(bundlePath).toLowe
 
 export const cardboard14 = {
   headScope,
+  release,
   attach({ root, store, mirror }) {
     hosts.push({ root, store, mirror });
   },
@@ -670,7 +695,9 @@ export const internals = {
     if (!lc) return null;
     const head = await lc.carton.head();
     return { dbPath: lc.dbPath, schema: sha(canon(lc.carton.schema)), ref: canon(head.ref), doc: sha(canon(head.doc)) };
-  }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
+  }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev),
+  // The bundles this process has a Carton open for (a staging folder's must be gone once Open Project returns).
+  openBundles: () => [...opened.keys()] };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {

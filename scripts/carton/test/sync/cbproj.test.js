@@ -17,12 +17,34 @@ const { pathToFileURL } = require("url");
 const S = require("./support.js");
 
 const t = { skip: S.noBuild };
-let b, alice, bob, carol, dave, id, bobClip;
+let b, alice, bob, carol, dave, erin, id, bobClip;
 const SHALLOW = ".carton-export/shallow.json", FULL = ".carton-export/history.db";
 const HISTORY = { CARTON_CBPROJ_HISTORY: "1" };
 const PLANTED = "/planted/factory.mjs";
 
 const zip = S.zipOf;
+
+/**
+ * What a computer's worker still holds from where Cardboard staged the file or Carton imported its history: there must
+ * be nothing once Open Project returns. On Windows an open file can't be moved or removed, so Cardboard's move of the
+ * staged project and its clean-up of the staging folder failed with EBUSY (CI route 35). Linux lets both go, so the
+ * checks don't count on that: no Carton open for a bundle in a staging folder (the facade's own list; a Carton opened
+ * there and kept would have been moved along with the project, its files then looking like the library's), and no
+ * file open (/proc/<pid>/fd, where there is one) in a staging folder, an export, a history copy, or already removed.
+ */
+function leaks(pc) {
+  const d = `/proc/${pc.worker().p.pid}/fd`;
+  if (!fs.existsSync(d)) return null;
+  return fs.readdirSync(d)
+    .map((f) => { try { return fs.readlinkSync(path.join(d, f)); } catch { return ""; } })
+    .filter((l) => l.startsWith(pc.home) && (/[\\/]\.opening-|\.carton-export|[\\/]history[^\\/]*\.db/.test(l) || l.endsWith(" (deleted)")));
+}
+async function closedAfter(pc, what) {
+  const staged = (await pc.call("test.cartonOpen")).filter((p) => /[\\/]\.opening-/.test(p));
+  assert.deepEqual(staged, [], `${what}: no Carton is left open in Cardboard's staging folder`);
+  const l = leaks(pc);
+  if (l) assert.deepEqual(l, [], `${what}: nothing staged or imported is left open`);
+}
 
 /** A stored zip of `members` ([name, bytes]), as a crafted .cbproj would be made. */
 function writeZip(file, members) {
@@ -97,7 +119,7 @@ test.before(async () => {
 });
 test.after(async () => {
   for (const pc of [alice, bob, carol]) if (pc?.worker()) fs.writeFileSync(path.join(S.TMP, pc.name + "-worker.log"), pc.worker().stderr());
-  for (const pc of [alice, bob, carol, dave]) pc?.kill();
+  for (const pc of [alice, bob, carol, dave, erin]) pc?.kill();
 });
 
 test("Save As (cb) with history: the file carries the shallow export and the history copy as their own entries, never Carton's database or view files", t, async () => {
@@ -123,9 +145,23 @@ test("Save As (cb) with history: the file carries the shallow export and the his
   assert.ok(zip(plain).names.includes(SHALLOW) && !zip(plain).names.includes(FULL), JSON.stringify(zip(plain).names));
 });
 
+test("An Open Project that fails in Cardboard's prepare (a timeline that doesn't apply) leaves nothing staged open either", t, async () => {
+  // The staged bundle is seeded and read through Cardboard's staging library (Carton opens it), then its timeline fails:
+  // what Carton opened there is still closed (else Cardboard's clean-up of its staging folder fails on Windows).
+  const broken = path.join(alice.home, "broken.cbproj");
+  remix(path.join(alice.home, "a1.cbproj"), broken, { "timeline.tsx": "export default (<timeline aspect=\"16:9\"><track name=\"V1\"><clip src=\"nope.mp4\" start={0} end={-1} /></track></timeline>);\n" });
+  erin = await S.computer("cbproj-erin", b);
+  await erin.startWorker(HISTORY);
+  await assert.rejects(erin.call("projects.openArchive", broken), /timeline/i);
+  await closedAfter(erin, "Erin's failed Open Project");
+  assert.deepEqual(fs.readdirSync(erin.root).filter((n) => n.startsWith(".opening-")), [], "Cardboard removed its staging folder");
+  await erin.stopWorker();
+});
+
 test("Open Project (app) of a project Bob doesn't have: imported as 1.4.0 does, forked from Alice's, with her versions and authors on a read-only cut", t, async () => {
   await bob.startWorker(HISTORY);
   const p = await bob.call("projects.openArchive", path.join(alice.home, "a1.cbproj"));
+  await closedAfter(bob, "Bob's Open Project");
   assert.equal(p.id, id);
   assert.ok(fs.existsSync(path.join(bundleOf(bob), ".carton", "carton.db")), "Bob's copy has history");
   assert.ok(!fs.existsSync(path.join(bundleOf(bob), ".carton-export")), "the export entry isn't kept in the bundle");
@@ -159,6 +195,7 @@ test("A crafted .cbproj's .carton/ and view files never survive Open Project: th
 
   await carol.startWorker();
   const p = await carol.call("projects.openArchive", file);
+  await closedAfter(carol, "Carol's Open Project");
   assert.equal(p.id, id);
   const db = path.join(bundleOf(carol), ".carton", "carton.db");
   assert.ok(fs.existsSync(db), "Carol's copy has history");
@@ -205,6 +242,7 @@ test("Alice, who edited meanwhile, opens Bob's file (app): Bring in their change
   applyAt(alice, "fontSize={140}", "fontSize={150}");
   await alice.startWorker();
   const p = await alice.call("projects.openArchive", path.join(bob.home, "b1.cbproj"));
+  await closedAfter(alice, "Alice's bring-in");
   assert.equal(p.id, id, "the import answers with Alice's own project");
   const x = await text(alice);
   assert.equal(x.textContent, "Hello from Bob", "Bob's edit came in");
@@ -265,6 +303,7 @@ test("A file whose history is another project's: refused (said once), their chan
   remix(b3, mixed, { [FULL]: zip(other).read(FULL) });
   const before = cbOk(alice, ["cut", "list", "Demo"]).json().cuts.filter((c) => c.tracking && !c.shallow).length;
   const p = await alice.call("projects.openArchive", mixed);
+  await closedAfter(alice, "Alice's bring-in of the mixed file");
   assert.equal(p.id, id);
   assert.equal((await text(alice)).endTime, 2.75, "Bob's change came in");
   assert.equal((await text(alice)).textContent, "Alice's words");

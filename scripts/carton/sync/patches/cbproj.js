@@ -11,7 +11,8 @@
 //   Open        a staged project from a .cbproj loses any `.carton/` and `.scratch/views/` the file put in it (Carton on
 //               or off: Cardboard's extractor takes every member, and a crafted carton.db could carry a shared cut and a
 //               helper recipe naming a module a later cb run would load); with Carton on its history then starts from
-//               the sender's (prepare runs first on it).
+//               the sender's (prepare runs first on it); whatever Carton opened in the staged bundle is closed when
+//               Cardboard's prepare ends, before Cardboard removes its staging folder.
 //   Open        a .cbproj of a project the library has, with history: "Bring in their changes" instead of the error.
 
 // The preamble: `dir` is the folder that holds carton-node.cjs, as the store bridge names it in that bundle.
@@ -55,6 +56,15 @@ var __cartonCbprojSeed = async (bundle, on) => {
   await __cartonCbprojScrub(bundle);
   if (on) await __cartonCbprojApi()?.seed(bundle);
 };
+// Open Project's prepare (Cardboard reads and writes the staged bundle through a staging library), between the seed and
+// Cardboard's removal of its staging folder: whatever Carton opened there is closed when prepare ends, worked or not
+// (Windows can't remove an open file: Cardboard's clean-up failed with EBUSY on the staged carton.db, CI route 35).
+var __cartonCbprojStage = (prepare) => async (bundle) => {
+  const on = __carton.on;
+  await __cartonCbprojSeed(bundle, on);
+  try { return await prepare(bundle); }
+  finally { if (on) await globalThis.__cartonCbproj?.release(bundle).catch(() => {}); }
+};
 // Open Project: the existing project after bringing their changes in, or null for 1.4.0's import.
 var __cartonCbprojBringIn = async (file, store) => {
   const c = __cartonCbprojApi();
@@ -74,7 +84,8 @@ module.exports = {
     // The history copy goes once the zip is written or failed (`l` is the entry list; the zip's write is the try).
     chunk.replace("catch(v){throw await eS(w,{force:!0}),v}return{path:r,size:f,missing:c}}", "catch(v){throw await eS(w,{force:!0}),v}finally{__carton.on&&__cartonCbprojSaved(l)}return{path:r,size:f,missing:c}}");
     // Open Project: the staged bundle, extracted and checked, before its staging library first reads it.
-    chunk.replace("prepare:async y=>{let x=await Nn({root:QM(y),", "prepare:async y=>{await __cartonCbprojSeed(y,__carton.on);let x=await Nn({root:QM(y),");
+    chunk.replace("prepare:async y=>{let x=await Nn({root:QM(y),", "prepare:__cartonCbprojStage(async y=>{let x=await Nn({root:QM(y),");
+    chunk.replace('throw new Error("Project timeline did not apply")}}),b=(h,y)=>', 'throw new Error("Project timeline did not apply")})}),b=(h,y)=>');
     // Open Project for a .cbproj (openArchive; `cb project open <file.cbproj>`): a project already here is brought up to
     // date in place. `n` is the library's project store.
     chunk.replace("S=async(h,y)=>{let x=await sb(h);return b(x,T=>Zf(", "S=async(h,y)=>{let x=await sb(h);if(__carton.on){let __r=await __cartonCbprojBringIn(x,n);if(__r)return __r}return b(x,T=>Zf(");
@@ -84,7 +95,8 @@ module.exports = {
     // The same three in the worker's copy (the app's File > Save As… and Open Project…).
     worker.replace("c=[...await iH(t),...o];await sH(t,c);", "c=[...await iH(t),...o];__carton.on&&(c=await __cartonCbprojExport(t,c));await sH(t,c);");
     worker.replace("catch(g){throw await(0,Kr.rm)(b,{force:!0}),g}return{path:r,size:m,missing:s}}", "catch(g){throw await(0,Kr.rm)(b,{force:!0}),g}finally{__carton.on&&__cartonCbprojSaved(c)}return{path:r,size:m,missing:s}}");
-    worker.replace("prepare:async x=>{let _=await Op({root:(0,tc.dirname)(x),", "prepare:async x=>{await __cartonCbprojSeed(x,__carton.on);let _=await Op({root:(0,tc.dirname)(x),");
+    worker.replace("prepare:async x=>{let _=await Op({root:(0,tc.dirname)(x),", "prepare:__cartonCbprojStage(async x=>{let _=await Op({root:(0,tc.dirname)(x),");
+    worker.replace('throw new Error("Project timeline did not apply")}}),T=(y,x)=>', 'throw new Error("Project timeline did not apply")})}),T=(y,x)=>');
     worker.replace("I=async(y,x)=>{let _=await(0,Ar.realpath)(y);return T(_,N=>qP(", "I=async(y,x)=>{let _=await(0,Ar.realpath)(y);if(__carton.on){let __r=await __cartonCbprojBringIn(_,n);if(__r)return __r}return T(_,N=>qP(");
   },
 };

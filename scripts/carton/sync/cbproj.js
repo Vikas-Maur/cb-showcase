@@ -404,4 +404,5 @@ async function bringIn(file, store) {
   return store.read(id);
 }
 
-globalThis.__cartonCbproj = { exportEntries, saved, seed, bringIn, readCbproj };
+// release(staged): Open Project's staging folder is done with (the facade lets go of everything it opened there).
+globalThis.__cartonCbproj = { exportEntries, saved, seed, bringIn, readCbproj, release: (staged) => cardboard14.release(path.dirname(staged)) };
