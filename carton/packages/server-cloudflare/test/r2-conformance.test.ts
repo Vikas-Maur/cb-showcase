@@ -80,25 +80,35 @@ function holdable(real: R2Bucket) {
   return { bucket, hold };
 }
 
-test("two overlapping uploads of one part never leave a record naming bytes R2 doesn't hold", async () => {
+test("overlapping uploads of one part: one at a time, so its record names the bytes R2 kept (A, B, C)", async () => {
   const { bucket, hold } = holdable(proxy.env.BLOBS);
   const store = r2BlobStore(bucket);
   const up = await store.createMultipart("fault/overlap");
-  const releaseA = hold((k) => /\/p00001$/.test(k)); // A's record write waits after A's part is in R2
+  const releaseA = hold((k) => /\/p00001$/.test(k)); // A's record write waits, A's part already in R2
   const a = up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(1));
   await new Promise((r) => setTimeout(r, 300));
-  const b = await up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(2)); // B replaces it, record and all
+  await assert.rejects(up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(2)), /being uploaded/, "B overlapped A");
+  await assert.rejects(up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(3)), /being uploaded/, "C overlapped A");
   releaseA();
-  await assert.rejects(a, /uploaded twice at once/);
-  const listed = await up.listParts();
-  // either unlisted (sent again on resume) or listed with the etag R2 really holds (B's)
-  assert.ok(listed.length === 0 || listed[0]!.etag === b.etag, `stale record: ${JSON.stringify(listed)}`);
-  const again = listed.length ? b : await up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(2));
+  const pa = await a;
+  assert.deepEqual((await up.listParts()).map((p) => p.etag), [pa.etag]);
+  // after A, a replacement goes through and its record follows it
+  const pb = await up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(2));
+  assert.deepEqual((await up.listParts()).map((p) => p.etag), [pb.etag]);
   const last = await up.uploadPart(2, new Uint8Array(10));
-  await up.complete([again, last]);
-  const got = (await store.get("fault/overlap", { offset: 0, length: 4 }))!;
-  assert.deepEqual([...got], [2, 2, 2, 2]);
+  await up.complete([pb, last]);
+  assert.deepEqual([...(await store.get("fault/overlap", { offset: 0, length: 4 }))!], [2, 2, 2, 2]);
+  assert.deepEqual((await proxy.env.BLOBS.list({ prefix: `.carton-uploads/${up.uploadId}/` })).objects, [], "records left after complete");
   await store.delete("fault/overlap");
+});
+
+test("a lock left by a request that died is taken over after its TTL", async () => {
+  const store = r2BlobStore(proxy.env.BLOBS);
+  const up = await store.createMultipart("fault/stale-lock");
+  await proxy.env.BLOBS.put(`.carton-uploads/${up.uploadId}/l00001`, null, { customMetadata: { at: String(Date.now() - 2 * 3600_000) } });
+  const p1 = await up.uploadPart(1, new Uint8Array(10));
+  await up.complete([p1]);
+  await store.delete("fault/stale-lock");
 });
 
 test("uploadPart through another key touches nothing of the upload", async () => {
