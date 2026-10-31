@@ -7,11 +7,14 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { createHmacAuth } from "@carton/server";
 import { startNodeHost } from "@carton/server-node";
+import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 
 const [dir, projectId, port] = process.argv.slice(2);
 const SECRET = "test-only-secret-test-only-secret-0123";
 const auth = createHmacAuth({ secret: SECRET });
-const node = await startNodeHost({ dataDir: join(dir, "host-data"), auth, secret: SECRET, port: Number(port ?? 0), host: "127.0.0.1", durability: "normal" });
+// configured for Cardboard's documents, as a deployment reads the adapter's constant (H-SV): a Cardboard client of that
+// version is accepted whatever server-node's own default is; the test adapter's (1) is older, so accepted too
+const node = await startNodeHost({ dataDir: join(dir, "host-data"), auth, secret: SECRET, port: Number(port ?? 0), host: "127.0.0.1", durability: "normal", schemaVersion: CARDBOARD_SCHEMA_VERSION });
 for (const name of ["alice", "bob"]) writeFileSync(join(dir, `token-${name}`), await auth.issue({ account: name, credential: `${name}/install`, role: "editor", projectId, ttlMs: 3600_000 }));
 writeFileSync(join(dir, "host.json"), JSON.stringify({ port: node.port, url: node.urlFor(projectId) }));
 process.stdout.write(JSON.stringify({ ready: true, port: node.port }) + "\n");
