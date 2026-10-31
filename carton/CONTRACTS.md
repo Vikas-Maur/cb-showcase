@@ -61,10 +61,55 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   `"<cutId>@<seq>"`, or a cut id (its head). A ref that can't be rebuilt exactly throws `StateUnknown`.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have.
+- **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
+  file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
+  in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
+  already holds by the rows that extend it. The importer's own cuts are never touched. Returns `{ cuts }` taken.
 - **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
-- **Shared cuts** (`sequencer.kind !== "local"`) and `carton.sync` are wired by the sync client (sync-sequencer);
-  until then they throw. `carton.media` is null: `@carton/media` calls Carton, not the reverse.
+- **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
+  sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
+  cut's ancestry closure (`history` request) and loads it as read-only lineage.
+- **Shared cuts** (`sequencer.kind !== "local"`) go through `SharedCut` (sync-sequencer's queue and client): `commit`,
+  `fold`, `foldSome`, `undo`, `revert` and `restore` all queue an ordinary change with its intent, kind and `reverts`
+  under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the
+  author. Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
+  shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
+  the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
+  client's message limit is refused before it is sent (`rejected` / "too large", its author told; the edits after it
+  go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
+  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. `carton.media` is null:
+  `@carton/media` calls Carton, not the reverse.
+- **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
+  them), local or shared, even one that would change nothing: they change only by publishing again. A shared
+  Published cut's welcome carries `source: { branchId, at, head }` (`sync.WelcomeMsg`): the cut it came from, the
+  version published and that cut's head now, so a watch page can say "newer edits exist" (head > at) without reading
+  them. A watch link's invite is scoped to the Published cut (`createInvite(project, "viewer", ttl, [cut])`): a scoped
+  reader's hello for any other cut is refused before a row is sent.
+- **Processes and the sync lease (§6.2):** many processes open one `carton.db`; only the lease holder (Cardboard's
+  library worker, or `@carton/local`'s headless helper) connects and pushes. A write to a shared cut must reach the
+  holder: `@carton/local` routes every `cb` and MCP write by the cut it changes (a fold's `into`), and one that
+  changes a shared or handing-off cut, or shares one, goes to the live holder over the control socket, or to a
+  helper it starts that takes the lease; only a write to a local cut with no holder commits in its own process
+  (`local/src/client.ts` `submit`, `local/src/open.ts`; tests R3-03, R4-04, R5-06). A process that commits to a shared
+  cut itself, without the lease, gets `pending`: the edit is kept in `carton.db` and pushed by the next holder to
+  start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"). The holder passes
+  its fence as `sync.connect({ nonce, fence, conditions })`: once replaced, it records nothing more and stops.
+- **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
+  whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
+  pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.
+- **Concurrent writers** on one store never fail a write for being busy: a writer that keeps losing the append race
+  takes the append turn (`lease` table, `["append-turn"]`), and the others wait for it (`#mutate`).
+- **Keyframes (§5.4):** a cut's state is stored every K confirmed changes (`keyframeEvery`, default 64) or after
+  1 MiB of ops, in the same batch as the row, and at every named, fold, export and Published version. A new periodic
+  keyframe replaces the previous periodic one; milestone ones stay. Opening reads each cut's newest keyframe and
+  replays only the rows after it. A replica that caught up through a server keyframe fetches the rows it jumped and
+  checks that they rebuild it before History takes them.
+- **Retention (§5.4):** changes are kept forever. `compact({ cut?, olderThanDays = 90 })` is optional: on local cuts it
+  squashes each old auto-version's micro-changes (a run of one actor group and turn) into its last change. Named,
+  fold, export, Published, undo, revert and restore versions, what they undid, fork points, folded-in and pinned
+  versions, and the last K changes are never squashed. Seqs and ids stay; a squashed version leaves the log and its
+  state is no longer held (`StateUnknown`).
 
 ## Using it
 

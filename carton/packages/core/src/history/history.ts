@@ -41,7 +41,7 @@ import * as E from "../engine/index.ts";
 import { isEmptyMap } from "../engine/remap.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
-import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type Tail } from "./common.ts";
+import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
 
 // ------------------------------------------------------------------ ids and keys
 
@@ -258,6 +258,7 @@ export class History {
       return ln ? this.#states.get(ln.hash) ?? null : null;
     }
     if (s > br.log.length || s < 0) return null;
+    if (s > 0 && br.log[s - 1]!.squashedInto) return null; // compacted away (§5.4)
     if (br.sq && s === br.log.length) return E.fork(br.sq.head, this.schema); // never hand out the live head
     let k = s;
     while (!br.kf.has(k)) k--;
@@ -296,12 +297,20 @@ export class History {
     if (!c) throw new Error(`no cut ${cutId}`);
     return c;
   }
-  /** Confirmed rows from elsewhere (another process on the same carton.db, or an import), appended in order. */
-  load(cutId: string, rows: readonly ConfirmedChange[]): void {
+  /**
+   * Confirmed rows from elsewhere (another process on the same carton.db, or an import), appended in order.
+   * `keyframes`: persisted states after some of these rows (§5.4); the newest the batch reaches is where the sequencer
+   * starts, instead of replaying every row before it, and each is a keyframe for `stateOf`.
+   */
+  load(cutId: string, rows: readonly ConfirmedChange[], keyframes: readonly (readonly [number, Doc])[] = []): void {
     const c = this.#mustCut(cutId);
     const fresh = rows.filter((r) => r.seq > c.log.length);
     if (!fresh.length) return;
-    if (c.sq) c.sq.load(fresh);
+    const top = fresh[fresh.length - 1]!.seq;
+    let kf: readonly [number, Doc] | undefined;
+    for (const k of keyframes) if (k[0] > c.log.length && k[0] <= top && (!kf || k[0] > kf[0])) kf = k;
+    for (const [s, d] of keyframes) if (s > c.log.length && s <= top) c.kf.set(s, d);
+    if (c.sq) c.sq.load(fresh, kf && { seq: kf[0], doc: kf[1] });
     else (c.log as ConfirmedChange[]).push(...fresh);
     // keyframes of a batch are rebuilt lazily by stateOf: the sequencer's head is already past them
     for (const r of fresh) this.#confirmed(c, r, false);
@@ -535,6 +544,11 @@ export class History {
       if (!ops.length && !extra.mergeOf && !extra.reverts) return { ...this.#empty(o.id, cutId, baseSeq), rebased: rebase + 1, ...(resolved.length ? { resolved } : {}) };
     }
   }
+  /** A version a keyframe is kept for (§5.4): named, a fold, exported, or on a Published cut. */
+  milestone(id: NodeId): boolean {
+    const { branchId: b } = parseNode(id);
+    return this.#names.has(id) || !!this.changeAt(id)?.mergeOf || this.#exportsMade.has(id) || this.#cuts.get(b)?.rec.kind === "published";
+  }
   /** A write retried with the id it already confirmed under: that confirmation, never a second change. */
   #done(id: ChangeId | undefined): (CommitResult & { status: "confirmed" }) | null {
     if (!id) return null;
@@ -572,6 +586,7 @@ export class History {
     const out: Version[] = [];
     for (let s = Math.min(before === undefined ? br.log.length : before - 1, br.log.length); s >= 0 && out.length < limit; s--) {
       const c = s > 0 ? br.log[s - 1]! : null;
+      if (c?.squashedInto) continue;
       const id = nodeId(cutId, s);
       const named = this.#names.get(id);
       const v: Version = {
@@ -843,7 +858,7 @@ export class History {
     let done: RemapMaps = {};
     for (let i = changes.length - 1; i >= 0; i--) {
       const c = changes[i]!;
-      const before = this.#stateIn(cutId, c.seq - 1, tail),
+      const before = this.#stateIn(cutId, (c.squashedFrom ?? c.seq) - 1, tail),
         after = this.#stateIn(cutId, c.seq, tail);
       const inv = E.invertMaps(firstParentMap(c));
       const since = E.composeMaps(...log.slice(c.seq).map(firstParentMap), done);
@@ -886,7 +901,7 @@ export class History {
     const out: UndoEntry[] = [];
     for (let i = log.length - 1; i >= 0; i--) {
       const c = log[i]!;
-      if (c.kind === "undo" || undone.has(c.id) || groupOf(c.author) !== group) continue;
+      if (c.kind === "undo" || c.squashedInto || undone.has(c.id) || groupOf(c.author) !== group) continue;
       out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: undoLabel(c), author: c.author, at: c.at });
     }
     return out;
@@ -1221,7 +1236,7 @@ export class History {
    * Import: lineage nodes become read-only tracking knowledge; carried states are checked against their hash. A
    * project you don't have forks a writable cut from the sender's head (§5.3).
    */
-  importShallow(pkg: ShallowExport): { status: "forked"; cut: string; head: NodeId } | { status: "imported"; head: NodeId } | { status: "other-project" } | { status: "no-shared-lineage"; newProjectId: string } {
+  importShallow(pkg: ShallowExport): ShallowImport {
     if (pkg.format !== "carton-shallow/1") throw new Error("not a shallow export");
     let fresh = false;
     if (!this.#projectId || this.#cuts.size === 0) {
