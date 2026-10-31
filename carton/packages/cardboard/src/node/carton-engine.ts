@@ -59,8 +59,23 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     const m = STATE_TOKEN.exec(rev.ref);
     if (!m || !rev.branch8) return revBody(rev);
     const same = (await carton.cuts()).filter((c) => branchToken(c.id) === rev.branch8);
-    const named = same.length > 1 ? same.filter((c) => c.name === m[1]) : same;
-    return named.length === 1 ? { branchId: named[0]!.id, seq: Number(m[2]), hash8: m[3]! } : revBody(rev);
+    const on = (id: string): StateRef => ({ branchId: id, seq: Number(m[2]), hash8: m[3]! });
+    if (same.length <= 1) return same.length ? on(same[0]!.id) : revBody(rev);
+    // two cuts with one token (a hash collision, or ids sharing their first 8 characters): the one that has this state
+    // (review 14 #5: a name can be shared or renamed since the print); of several (the same state), the current cut's,
+    // then the one with the printed name
+    const holding: typeof same = [];
+    for (const c of same) {
+      try {
+        await carton.resolve(on(c.id));
+        holding.push(c);
+      } catch {
+        // not this cut's state
+      }
+    }
+    const pool = holding.length ? holding : same;
+    const pick = pool.find((c) => c.id === cut()) ?? pool.find((c) => c.name === m[1]) ?? pool[0]!;
+    return on(pick.id);
   };
   const pinKey = (r: StateRef) => `${r.branchId}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`;
   const pinsByOwner = new Map<string, number>();
@@ -163,6 +178,20 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       return JSON.stringify([c, h.ref.branchId, h.ref.seq, h.ref.pending ?? []]);
     },
     newChangeId: () => carton.newChangeId(),
+    async changesSince(seq: number) {
+      // the newest 64 versions, walked back to `seq`: each change with the states on either side of it
+      const c = cut();
+      const versions = await carton.log({ cut: c, limit: 65 });
+      const out: { id: string; seq: number; before: Doc; after: Doc }[] = [];
+      let after: Doc | null = null;
+      for (let i = 0; i + 1 < versions.length && versions[i]!.ref.seq > seq; i++) {
+        const v = versions[i]!;
+        const before = await carton.checkout({ branchId: c, seq: versions[i + 1]!.ref.seq });
+        if (v.change) out.push({ id: v.change, seq: v.ref.seq, before, after: after ?? (await carton.checkout({ branchId: c, seq: v.ref.seq })) });
+        after = before;
+      }
+      return out.reverse();
+    },
     getMeta,
     putMeta,
     shared: () => opts.shared?.() ?? false,
