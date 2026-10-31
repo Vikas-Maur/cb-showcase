@@ -314,3 +314,80 @@ test("R4-2: when the left-out records change, the decision is checked again (bot
   assert.equal(flag(), true);
   ui.dispose();
 });
+
+// ---------------------------------------------------------------- review round 5
+
+async function partialFold(carton: Carton, ui: ReturnType<typeof fromCarton>) {
+  const main = carton.cut;
+  const v = await carton.fork("alt");
+  await carton.commit({ cut: v.id, ops: [set("b", "color", "blue"), set("d", "color", "blue")], author: bob });
+  await ui.refresh();
+  await ui.planFold(v.id, main);
+  await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} });
+  await settle();
+  const invId = ui.history().at("all", 0)!.id;
+  return { main, invId, flag: () => ui.history().at("all", ui.history().indexOf("all", invId))?.foldRest };
+}
+
+test("R5-1: an edit on another cut never stands in for an edit on this one", async () => {
+  const { carton, ui } = await open();
+  const { main, flag } = await partialFold(carton, ui);
+  await carton.commit({ ops: [set("d", "color", "green")] });
+  await settle();
+  await ui.refresh();
+  await settle();
+  assert.equal(flag(), undefined, "decided: not left out");
+  const other = await carton.fork("other");
+  await ui.switchCut(other.id);
+  await carton.commit({ cut: other.id, ops: [set("a", "color", "x")] }); // unrelated, on the other cut
+  await carton.commit({ cut: main, ops: [set("d", "color", "red")] }); // relevant, on Main, while away
+  await settle();
+  await ui.switchCut(main);
+  await settle();
+  assert.equal(flag(), true, "back on Main, the change made there while away is taken into account");
+  ui.dispose();
+});
+
+test("R5-2: a read that started before a change can't put back a decision the change made obsolete", async () => {
+  const store = createMemoryStore();
+  const { carton, ui } = await open({}, store);
+  const { flag } = await partialFold(carton, ui);
+  assert.equal(flag(), true);
+  // Another handle writes (no event here): the next refresh must check again; pause that check's head read.
+  const otherHandle = await Carton.open({ adapter, store, actor: bob });
+  await otherHandle.commit({ ops: [set("a", "color", "x")] });
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const realHead = carton.head.bind(carton);
+  let armed = true;
+  (carton as { head: typeof carton.head }).head = async (cut) => {
+    const h = await realHead(cut);
+    if (armed) {
+      armed = false;
+      await gate; // the read saw d red; meanwhile d turns green
+    }
+    return h;
+  };
+  const p = ui.refresh();
+  await settle();
+  await carton.commit({ ops: [set("d", "color", "green")] }); // through this handle: an event invalidates
+  release();
+  await p;
+  await settle();
+  await settle();
+  assert.equal(flag(), undefined, "the stale 'still left out' was discarded; the fresh read says it isn't");
+  ui.dispose();
+});
+
+test("R5-2: writes from another handle (no events) invalidate a 'still left out' decision on refresh", async () => {
+  const store = createMemoryStore();
+  const { carton, ui } = await open({}, store);
+  const { flag } = await partialFold(carton, ui);
+  assert.equal(flag(), true);
+  const otherHandle = await Carton.open({ adapter, store, actor: bob });
+  await otherHandle.commit({ ops: [set("d", "color", "green")] });
+  await ui.refresh();
+  await settle();
+  assert.equal(flag(), undefined);
+  ui.dispose();
+});
