@@ -76,8 +76,10 @@ export const words = {
   // Conflict cards
   conflictCard: "Conflict card",
   conflictLead: "Both edits kept; you pick.",
-  keepMine: "Keep mine",
-  keepTheirs: "Keep theirs",
+  // Each choice says whose edit and, in a fold, which cut, so "mine" never has to be guessed: the cut I'm in, or the
+  // clip's author? (PLAN §2.6 "Keep mine/theirs/both", made explicit.)
+  keepYours: (where?: string) => (where ? `Keep yours (${where})` : "Keep yours"),
+  keepOf: (name: string, where?: string) => `Keep ${name}'s${where ? ` (${where})` : ""}`,
   keepBoth: "Keep both",
   showingNow: "Showing now",
   conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,

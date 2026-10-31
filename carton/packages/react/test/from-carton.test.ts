@@ -128,6 +128,8 @@ test("fold in with a conflict card: the pick decides, nothing is lost", async ()
   assert.equal(card.id, "items/a/name");
   assert.equal(card.mine.summary, "“Mine”");
   assert.equal(card.theirs.summary, "“Theirs”");
+  assert.equal(card.mine.where, "Main cut", "your side names the cut you fold into");
+  assert.equal(card.theirs.where, "alt", "their side names the cut you fold in");
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: { [card.id]: "theirs" } });
   assert.equal(r.ok, true);
   assert.equal(((await carton.head(main)).doc.items as Rec[]).find((i) => i.id === "a")!.name, "Theirs");

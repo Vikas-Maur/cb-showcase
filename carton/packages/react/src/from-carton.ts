@@ -777,9 +777,20 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const planKey = (from: string, into: string) => `${from}>${into}`;
   let planFor = "";
 
-  const toFoldConflict = (card: ConflictCard, theirs: Actor): Conflict => {
+  // A fold card: yours is the cut you fold into, theirs the cut you fold in; each side says which.
+  const toFoldConflict = (card: ConflictCard, theirs: Actor, intoCut?: string, fromCut?: string): Conflict => {
     const w = describeCard(card, schema);
-    return { id: card.path, title: w.title, mine: { author: me, summary: w.mine }, theirs: { author: theirs, summary: w.theirs }, canKeepBoth: !!opts.keepBoth?.(card), ...(w.reason ? { reason: w.reason } : {}), provisional: "mine" };
+    const where = (id?: string) => (id ? cuts.find((c) => c.id === id)?.label : undefined);
+    const mineWhere = where(intoCut), theirWhere = where(fromCut);
+    return {
+      id: card.path,
+      title: w.title,
+      mine: { author: me, summary: w.mine, ...(mineWhere ? { where: mineWhere } : {}) },
+      theirs: { author: theirs, summary: w.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
+      canKeepBoth: !!opts.keepBoth?.(card),
+      ...(w.reason ? { reason: w.reason } : {}),
+      provisional: "mine",
+    };
   };
 
   const handle: CartonUiHandle = {
@@ -836,7 +847,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const cardList: ConflictCard[] = r.status === "conflicts" || r.status === "compare" ? r.cards : [];
       for (const c of cardList) planCards.set(c.path, c);
       const fromHead = (await carton.log({ cut: fromId, limit: 1 }))[0];
-      const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author)));
+      const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author), intoId, fromId));
       // §13 "every difference shown as a card": the cards are the whole plan, there is nothing else to leave out.
       if (r.status === "compare") return { ...base, conflicts: cardsOut, partial: false };
       const preview = r.preview;
@@ -905,7 +916,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         if (!ops.length) return { ok: true };
         const r = await carton.commit({ cut: intoId, ops, author: opts.me });
         await refresh();
-        return r.status === "rejected" ? { ok: false, error: r.reason } : r.status === "conflicts" ? { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone)) } : { ok: true };
+        return r.status === "rejected" ? { ok: false, error: r.reason } : r.status === "conflicts" ? { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone, intoId, fromId)) } : { ok: true };
       }
       // Never let core pick a side: a card the person didn't see (someone edited since the plan) aborts the fold,
       // and its cards come back to pick on.
@@ -926,14 +937,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       } catch (e) {
         if (!(e instanceof NewCards) && !fresh.length) throw e;
         await handle.planFold(fromId, intoId);
-        return { ok: false, conflicts: [...planCards.values()].filter((c) => !o.choices[c.path]).map((c) => toFoldConflict(c, someone)) };
+        return { ok: false, conflicts: [...planCards.values()].filter((c) => !o.choices[c.path]).map((c) => toFoldConflict(c, someone, intoId, fromId)) };
       }
       planFor = "";
       await refresh();
       if (r.status === "confirmed" || r.status === "pending" || r.status === "up-to-date") return { ok: true };
       if (r.status === "rejected") return { ok: false, error: r.reason };
       if (r.status === "missing-base") return { ok: false, error: r.dialog.text };
-      return { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone)) };
+      return { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone, intoId, fromId)) };
     },
     async resolve(id, choice) {
       const entry = cardEntries.get(id);

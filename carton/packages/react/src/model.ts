@@ -140,6 +140,8 @@ export interface ConflictSide {
   /** Plain words: "Trimmed the end to 0:05.0". */
   readonly summary: string;
   readonly at?: number;
+  /** The cut this side's edit is on, when the two sides are on different cuts (a fold): "30s Instagram cut". */
+  readonly where?: string;
 }
 
 /** A conflict card (§7): both edits are kept, and the person picks. */

@@ -31,15 +31,22 @@ export function initials(name: string): string {
   return (first(parts[0]!) + first(parts[parts.length - 1]!)).toUpperCase();
 }
 
-/** "Director › Explore" for a subagent, the name otherwise. `you` replaces the local person's name. */
+/**
+ * "Director › Explore" for a subagent, the name otherwise. `you` replaces the local person's name. Someone else's
+ * agent is named by its owner ("Bob Okafor's Director"), so two Directors in one project are told apart.
+ */
 export function actorLabel(a: Actor, byKey?: (key: string) => Actor | undefined, you?: string): string {
-  const own = a.isYou && a.kind === "human" && you ? you : a.name;
+  if (a.kind === "human") return a.isYou && you ? you : a.name;
+  const owned = (agent: Actor): string => {
+    const owner = !agent.isYou && agent.parent && byKey ? byKey(agent.parent) : undefined;
+    return owner && owner.kind === "human" ? `${owner.name}'s ${agent.name}` : agent.name;
+  };
   if (a.kind === "subagent") {
     const parent = a.parent && byKey ? byKey(a.parent) : undefined;
     const sub = a.subagentType ? `${a.subagentType}` : a.name;
-    return parent ? `${parent.name} › ${sub}` : sub;
+    return parent ? `${owned(parent)} › ${sub}` : sub;
   }
-  return own;
+  return owned(a);
 }
 
 /** The chain from the person down to this actor: [Alice, Director, Explore]. */

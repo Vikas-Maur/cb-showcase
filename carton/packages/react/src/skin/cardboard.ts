@@ -241,6 +241,8 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-conflict-side[data-showing])::before{background:var(--cb-fg-2)}
 :where(${S}) :where(.carton-conflict-who){display:flex;align-items:center;gap:6px;font-size:12px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-conflict-who time){color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-conflict-where){height:18px;padding:0 6px;border-radius:4px;background:#ffffff0d;color:var(--cb-fg-2);font-size:10.5px;font-weight:500;line-height:18px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}
 :where(${S}) :where(.carton-conflict-who .carton-badge){margin-left:auto}
 :where(${S}) :where(.carton-conflict-what){margin-top:4px;font-size:13px;line-height:18px;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-conflicts){display:flex;flex-direction:column;gap:8px}

@@ -137,7 +137,9 @@ test(name("conflict cards: both edits shown, Keep theirs resolves and the card g
   assert.match(card.textContent ?? "", /Summer sale/);
   assert.match(card.textContent ?? "", /Summer launch/);
   assert.ok(byText(card, "button", "Keep both"), "Keep both offered when both can be kept");
-  await click(byText(card, "button", "Keep theirs"));
+  // Each choice says whose edit it keeps; on one cut there is no "where".
+  assert.ok(byText(card, "button", "Keep yours"));
+  await click(byText(card, "button", "Keep Bob Okafor's"));
   assert.equal($$(m.container, ".carton-conflict").length, 1);
   assert.match(m.container.textContent ?? "", /1 conflict card waiting/);
   assert.equal(byText(m.container, "button", "Keep both"), null, "the timing card can't keep both");
@@ -183,7 +185,10 @@ test(name("fold in: leave a change out, pick on the card, then fold in N of M"),
   await click(boxes[1]);
   assert.equal(go().textContent, "Fold in 5 of 6");
   assert.match(dialog.textContent ?? "", /You can fold in the rest later/);
-  await click(byText(dialog, "button", "Keep mine"));
+  // In a fold each choice names whose edit and which cut, so "mine" is never ambiguous.
+  assert.ok(byText(dialog, "button", "Keep Director's (30s Instagram cut)"));
+  assert.ok($$(dialog, ".carton-conflict-where").some((e) => e.textContent === "30s Instagram cut"));
+  await click(byText(dialog, "button", "Keep yours (Main cut)"));
   assert.equal((go() as HTMLButtonElement).disabled, false);
   await click(go());
   assert.deepEqual(call, { leaveOut: ["items/interview-a"], choices: { "items/intro/#time": "mine" } });
