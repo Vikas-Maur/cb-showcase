@@ -164,6 +164,8 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"); a running holder's
   settles leave that row alone until its id is confirmed. The holder passes
   its fence as `sync.connect({ nonce, fence, conditions })`: once replaced, it records nothing more and stops.
+  `carton.pendingCount(cut?)` counts the edits waiting for a shared cut's server from the store, so any process on
+  the project (one without sync too, like `cb` deciding whether a Save As may carry history) sees the holder's.
 - **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
   whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
   pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.

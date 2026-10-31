@@ -231,6 +231,11 @@ export interface Carton {
 
   /** Head of a cut (default: current): its ref and an owned copy of its state. */
   head(cut?: string): Promise<{ ref: StateRef; doc: Doc }>;
+  /**
+   * How many edits wait for a shared cut's server (default: the current cut), whichever process made them: read from
+   * the store, so a handle without sync (`cb`) sees the app's waiting edits too. 0 for a cut no server sequences.
+   */
+  pendingCount(cut?: string): Promise<number>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
   checkout(ref: StateRef | string): Promise<Doc>;
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
@@ -1052,6 +1057,10 @@ class CartonImpl implements Carton {
   }
 
   // ------------------------------------------------------------ reading
+  async pendingCount(cut = this.#h.current): Promise<number> {
+    await this.#queue;
+    return (await this.store.range(T.pending, { prefix: [cut] })).length;
+  }
   async head(cut = this.#h.current) {
     await this.#queue;
     await this.#refresh(cut);
