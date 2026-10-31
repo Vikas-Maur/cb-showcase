@@ -300,8 +300,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
    * hostile hello can't ask for more); bases past that are reported in `uncheckedFrom`, never treated as unconfirmed:
    * the client asks again for those before acting on the list (review finding 10).
    */
-  function confirmedOf(branchId: string, claims: readonly PendingClaim[] | undefined): { list: ConfirmedId[]; uncheckedFrom: number | null } {
-    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null };
+  function confirmedOf(
+    branchId: string,
+    claims: readonly PendingClaim[] | undefined,
+    { after = -1, budget = Infinity }: { after?: number; budget?: number } = {},
+  ): { list: ConfirmedId[]; uncheckedFrom: number | null; checkedThrough: number | null } {
+    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null, checkedThrough: null };
     const head = tables.head(branchId);
     const want = new Set<string>();
     const bases = new Set<number>();
@@ -313,32 +317,51 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (bs.length) bases.add(Math.max(...bs));
       } else for (const b of bs) bases.add(b);
     }
-    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null };
+    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null, checkedThrough: null };
     // merge the windows so overlapping claims never read a row twice; every base's window counts against the cap,
     // merged or not, so a message reads at most cap × (K + 1) seqs (round 2 finding 6: adjacent windows merged into one
     // range used to bypass it)
+    //
+    // The list is in seq order and stops at `budget` bytes (at least one id): it then says where to go on, the base its
+    // range began at and the seq checked through, and a continuation (`after`) reads only past it. One window can list
+    // up to K + 1 ids, so a page can end inside one (round 5 finding 2).
     const sorted = [...bases].sort((a, b) => a - b);
     const cap = controls.claimWindows ?? MAX_CLAIM_WINDOWS;
     const out: ConfirmedId[] = [];
-    let lo = -1, hi = -1, windows = 0;
-    const flush = () => {
-      if (hi > lo) for (const e of tables.idsIn(branchId, lo, hi)) if (want.has(e.id)) out.push(e);
+    let lo = -1, hi = -1, windows = 0, used = 0;
+    let cut: number | null = null;
+    /** Read the current range past `after`; false (and `cut`) when the budget runs out inside it. */
+    const flush = (): boolean => {
+      const from = Math.max(lo, after);
+      if (hi > from)
+        for (const e of tables.idsIn(branchId, from, hi)) {
+          if (!want.has(e.id)) continue;
+          const n = sync.jsonBytesBound(e, Infinity) + 1;
+          if (out.length && used + n > budget) {
+            cut = lo;
+            return false;
+          }
+          used += n;
+          out.push(e);
+        }
+      return true;
     };
+    const stopped = (): { list: ConfirmedId[]; uncheckedFrom: number; checkedThrough: number } => ({ list: out, uncheckedFrom: cut!, checkedThrough: out[out.length - 1]!.seq });
     for (const b of sorted) {
       if (++windows > cap) {
-        flush();
-        return { list: out, uncheckedFrom: b };
+        if (!flush()) return stopped();
+        return { list: out, uncheckedFrom: b, checkedThrough: null };
       }
       const top = Math.min(b + K + 1, head);
       if (b <= hi) hi = Math.max(hi, top);
       else {
-        flush();
+        if (!flush()) return stopped();
         lo = b;
         hi = top;
       }
     }
-    flush();
-    return { list: out, uncheckedFrom: null };
+    if (!flush()) return stopped();
+    return { list: out, uncheckedFrom: null, checkedThrough: null };
   }
 
   // ---------------------------------------------------------------- rows for catch-up (live and archived)
@@ -596,7 +619,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       }
     }
     const head = tables.head(m.branchId);
-    const { list: confirmed, uncheckedFrom } = confirmedOf(m.branchId, m.pending);
+    const claimsAfter = Number.isInteger(m.claimsAfter) ? (m.claimsAfter as number) : -1;
+    const { list: confirmed, uncheckedFrom, checkedThrough } = confirmedOf(m.branchId, m.pending, { after: claimsAfter, budget: catchupBytes });
+    // the list isn't complete: the client acts on nothing until it is, so this page is the list alone (no rows, no
+    // keyframe, no subscription yet), within the page's budget
+    if (uncheckedFrom !== null) {
+      const partial: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows: [], confirmed, uncheckedFrom };
+      if (checkedThrough !== null) partial.checkedThrough = checkedThrough;
+      return send(c, partial);
+    }
     let from = Math.max(-1, Math.min(m.have, head));
     let keyframe: sync.KeyframeData | undefined;
     let budget = catchupBytes;
@@ -613,13 +644,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         from = k.seq;
       } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
+    budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
     const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
-    if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
     // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
     const src = publishedSource(b.rec);
     if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId) };
@@ -644,7 +675,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const head0 = tables.head(m.branchId);
       if (Number.isInteger(ch.base?.seq) && head0 - ch.base.seq > K) {
         // the K cap (§6.3): no scan of the log, only the bounded id list for this push's changes
-        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })));
+        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })), { budget: catchupBytes });
         return reject(c, m.branchId, ch.id, "behind", m.epoch, r ? { confirmed: r.list, ...(r.uncheckedFrom !== null ? { uncheckedFrom: r.uncheckedFrom } : {}) } : {});
       }
       if (declarationTooLarge(ch)) return reject(c, m.branchId, ch.id, "too large", m.epoch);
@@ -1007,21 +1038,31 @@ function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8A
   const bytes = (k: string) => (r[k] === null || r[k] === undefined ? 0 : enc.encode(String(r[k])).byteLength);
   return ROW_FIXED + 6 * enc.encode(branchId).byteLength + (body?.byteLength ?? 0) + bytes("author") + bytes("base") + bytes("paths") + bytes("reads") + 3 * bytes("spans") + 6 * (bytes("id") + bytes("hash") + bytes("policy"));
 }
+/** A blob read as a stream of ranged gets, `chunk` bytes at a time, fetched only as the reader pulls. */
+function rangedStream(blobs: BlobStore, key: string, chunk: number): ReadableStream<Uint8Array> {
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(ctl) {
+      const part = await blobs.get(key, { offset, length: chunk });
+      if (!part) return ctl.error(new Error(`segment ${key} is missing from the blob store`));
+      if (part.byteLength) ctl.enqueue(part);
+      offset += part.byteLength;
+      if (part.byteLength < chunk) ctl.close();
+    },
+  });
+}
 /** A reply row's keys, numbers and the defaults `Tables.toRow` adds (the rest is sized from its columns). */
 const ROW_FIXED = 256;
 
 /**
  * The rows of an archived segment (a gzip-compressed JSON array of row objects), one at a time, read as a stream: only
  * one row's text is held at once, so a page that stops early never decompresses or parses the rest (round 3 finding
- * 3). Uses the store's `getStream` when it has one.
+ * 3). Uses the store's `getStream` when it has one, else ranged gets of 64 KiB (round 4 finding 3: a whole-object get
+ * loads the segment before the page can stop it).
  */
 async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Record<string, string | number | null>> {
   let stream: ReadableStream<Uint8Array> | null = blobs.getStream ? await blobs.getStream(key) : null;
-  if (!stream) {
-    const stored = await blobs.get(key);
-    if (!stored) throw new Error(`segment ${key} is missing from the blob store`);
-    stream = new Blob([stored as Uint8Array<ArrayBuffer>]).stream();
-  }
+  if (!stream) stream = rangedStream(blobs, key, 64 * 1024);
   // (the lib types give these transforms a BufferSource writable side: a Uint8Array stream is one)
   if (key.endsWith(".gz")) stream = stream.pipeThrough(new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>);
   const reader = stream.pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>).getReader();
