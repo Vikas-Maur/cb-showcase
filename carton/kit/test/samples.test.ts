@@ -8,10 +8,10 @@ import { cpSync, mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Carton, StateUnknown, type Actor, type Doc, type Rec } from "@carton/core";
+import { Carton, LOCAL_TABLES, StateUnknown, type Actor, type Doc, type Rec } from "@carton/core";
 import type { AuthContext, AuthProvider } from "@carton/core/plugins";
 import { cardboardAdapter, createCardboardAdapter, fromHost, materializeProject, projectGuiSave, standInProjection } from "@carton/cardboard";
-import { excludedFromExport } from "@carton/cardboard/node";
+import { excludedFromExport, exportCbproj, extractFullHistory, readCbproj } from "@carton/cardboard/node";
 import { register } from "@carton/cli-mcp";
 import { authProviderSuite } from "@carton/conformance";
 import { hookSettings, identify, nodeHasher, openLocal, readProjectId, runWrite } from "@carton/local";
@@ -19,7 +19,7 @@ import { prefixCommand, preToolUseOutput } from "@carton/local/hooks";
 import { createFsBlobStore } from "@carton/blob-fs";
 import { createHmacAuth, newSecret } from "@carton/server";
 import { startNodeHost } from "@carton/server-node";
-import { importProject } from "@carton/store-sqlite";
+import { importProject, openSqliteStore } from "@carton/store-sqlite";
 
 const kit = join(dirname(fileURLToPath(import.meta.url)), "..");
 function scratch(name: string): string {
@@ -232,6 +232,39 @@ test("H11: .carton/ and .scratch/views/ never go into a .cbproj", () => {
   assert.equal(excludedFromExport(".scratch/views/director.tsx"), true);
   assert.equal(excludedFromExport("timeline.tsx"), false);
   assert.equal(excludedFromExport("media/clip.mp4"), false);
+});
+
+test("H11: a .cbproj with \"Include history\" is read back with importHistory: the sender's versions and authors", async () => {
+  const bundleDir = bundle("h11-history");
+  const { carton, store } = await importProject({ bundleDir, projectId: readProjectId(bundleDir), adapter: cardboardAdapter, hasher: nodeHasher, host: () => readProjectJson(bundleDir).project });
+  const out = join(scratch("h11-history"), "Demo.cbproj");
+  try {
+    await carton.commit({ doc: withClip((await carton.head()).doc, "intro", { textContent: "agent's" }), author: agent("director/c/t1") });
+    const head = await carton.head();
+    await exportCbproj({ bundle: bundleDir, out, shallow: await carton.exportShallow(), head: { doc: head.doc, toProject: materializeProject }, fullHistory: (to) => store.exportCopy(to, [...LOCAL_TABLES]) });
+  } finally {
+    await carton.close();
+    await store.close();
+  }
+  // the receiver: a project it doesn't have, opened from the file's shallow export, then the full history
+  const contents = await readCbproj(out);
+  assert.equal(contents.hasFullHistory, true);
+  const dir = scratch("h11-history-receiver");
+  const mine = await openSqliteStore(join(dir, "carton.db"));
+  const received = await Carton.open({ adapter: cardboardAdapter, store: mine, hasher: nodeHasher, init: { import: contents.shallow! } });
+  const historyFile = join(dir, "received-history.db");
+  assert.equal(await extractFullHistory(out, historyFile), true);
+  const theirs = await openSqliteStore(historyFile);
+  try {
+    const { cuts } = await received.importHistory(theirs);
+    assert.ok(cuts.length >= 1, "the sender's cut came in");
+    const log = await received.log({ cut: cuts[0], limit: 10 });
+    assert.ok(log.some((v) => v.author?.id === "director/c/t1"), "with the agent's version");
+  } finally {
+    await theirs.close();
+    await received.close();
+    await mine.close();
+  }
 });
 
 test("a host: the Node host with blobs on disk answers health and serves a project's socket URL", async () => {

@@ -481,13 +481,16 @@ project ID already exists in your library", C9).
   walk (`excludedFromExport(path)`). These apply even with Carton off: `.carton/` holds local paths and device pins.
   Write the shallow export as its own entry: `exportCbproj({ bundle, out, shallow: await carton.exportShallow(), head:
   { doc, toProject: materializeProject } })`. The opt-in "Include history" adds `history.db` (`fullHistory:
-  (to) => store.exportCopy(to, [...LOCAL_TABLES])`).
+  (to) => store.exportCopy(to, [...LOCAL_TABLES])`, with `LOCAL_TABLES` from `@carton/core`).
 - **Open a project you don't have:** `Carton.open({ …, init: { import: contents.shallow } })`. Their cuts arrive
   read-only, and a cut of your own starts from their head.
 - **Open a project you have:** instead of the error, offer "Bring in their changes":
   `bringInTheirChanges(carton, await readCbproj(file), { check })`. It folds their head into your cut, with cards.
   No shared lineage forks a new project id; a missing common state shows the explicit dialog (§13), never an older
   base.
+- **A file with "Include history"** (`readCbproj(file).hasFullHistory`): `extractFullHistory(file, toPath)` writes
+  its history to a file of your own. Open that with `openSqliteStore(toPath)` and call `carton.importHistory(store)`. The sender's cuts arrive as read-only cuts with their versions, authors and names.
+  A file from another project, or made with another schema, is refused.
 - View files and Carton's database in a received file are never applied or unpacked (`readCbproj` lists them as
   `ignored`).
 

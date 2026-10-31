@@ -44,7 +44,9 @@ holds; they don't say how fast the built code is.
 - **Displace-then-install retries without a limit** (new) when another writer keeps re-creating the file. A broken
   writer can make it spin and fill `.carton/displaced/`. Busy-file waits are bounded.
 - **A shallow `.cbproj` (L17)** carries who last changed each clip and the net ripple, not every change. "Undo this
-  agent turn" for the sender's agents needs the opt-in full-history export.
+  agent turn" for the sender's agents needs the opt-in full-history export. `Carton.importHistory(store)` reads that
+  export back (the sender's cuts arrive read-only, with their versions), but `readCbproj` and "Bring in their
+  changes" don't call it yet.
 - **The first version.** `importProject` makes the current document `main@1`, as §16 says. `openLocal({ init })`
   instead records it as the root state at seq 0. Use `importProject` for migration.
 
@@ -80,7 +82,8 @@ anything.
   from whoever invited them (the quickstart's `live.ts` passes them along); the host's API doesn't hand them out yet.
 - **Large changes need a blob store on the client.** Messages over 1 MiB can travel as blob "envelopes" when
   `Carton.open`'s `sync` is given the host's blob store (`sync.blobs`). Without one, a change or a share over the
-  message limit (32 MiB) is refused as too large. `@carton/local`'s engine and helper don't pass one yet.
+  message limit (32 MiB) is refused as too large. `openLocal({ sync })` passes the `sync` you give it (blobs
+  included) to the process's own handle, but the headless helper it starts passes no blob store yet.
 - **Version ids are provisional until confirmed (L5).** A share started offline stays "Syncing" until the device
   reaches the server; cancelling a share is a server-side operation only.
 - **A process that doesn't hold the sync lease** keeps its own commits on a shared cut queued until it connects. `cb`

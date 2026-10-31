@@ -113,7 +113,7 @@ like a save's (step 5 of the loop).
 - **Compare:** `cb compare <project> main@12 [main@15]` says what changed, in plain words ("Trimmed 'Intro' end 5.0 s
   → 2.5 s"). `cb activity <project>` groups recent versions by who made them.
 - **Publish** only when the user asks: `cb publish <project> [version] --name "Sent to client"` makes the Published cut
-  the share link shows.
+  the share link shows. A Published cut can't be edited: to change it, publish again.
 
 ## Over MCP
 
