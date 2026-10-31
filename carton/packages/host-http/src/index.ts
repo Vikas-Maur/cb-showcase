@@ -12,6 +12,9 @@
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
 //   GET  /api/projects/:p/blobs/head?key=                                  → BlobInfo | 404  (an editor's head of a
 //                                            team object claims it for the project: team.ts)
+//   POST /api/projects/:p/blobs/heads        {keys: string[≤1000]}         → {blobs: ({size} | null)[]}  (HEAD's rules,
+//                                            for a prefix of the keys: at most the host's maxBlobHeads; ask again
+//                                            for the rest)
 //   POST /api/projects/:p/blobs/damaged      {key: "m/<hash>", leaf}       → {damaged, removed?}  (§11 repair path)
 //   POST /api/projects/:p/uploads            {key, contentType?}  editor   → {uploadId}
 //   PUT  /api/projects/:p/uploads/:id/:n?key=  part bytes          editor   → {partNumber, etag}
@@ -35,7 +38,7 @@
 import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins";
 import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "@carton/server";
 import { createBlobUrlSigner, serveSignedBlob, readBody, BodyTooLarge, type BlobUrlSigner } from "@carton/blob-memory/signed";
-import { BlobError, MAX_PARTS } from "@carton/blob-memory/rules";
+import { BlobError, MAX_PARTS, checkKey } from "@carton/blob-memory/rules";
 import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
 import { isTeamMediaStore, mediaLockScope } from "./team.ts";
 
@@ -58,6 +61,9 @@ export interface HttpDeps {
   // the largest envelope upload accepted: the sequencer's maxEnvelopeBytes (default 64 MiB; a Durable Object host
   // sets it lower, for its 128 MB of memory)
   maxEnvelopeBytes?: number;
+  // the most keys one POST /blobs/heads checks (default and most MAX_BLOB_HEADS); it answers for that many and the
+  // client asks again for the rest. A host whose requests have a budget of storage calls (a Worker's) sets fewer.
+  maxBlobHeads?: number;
   // after an envelope upload: a host whose sequencer sweeps on a schedule makes sure the sweep will run
   onEnvelope?(projectId: string): Promise<void> | void;
 }
@@ -73,6 +79,13 @@ const err = (status: number, message: string) => json({ error: message }, status
 
 // A complete request lists up to 10,000 parts: {"partNumber":10000,"etag":"…"} is under 100 bytes each.
 const MAX_COMPLETE_JSON = MAX_PARTS * 128 + 1024;
+
+/** The most keys a POST /blobs/heads may name (REQ-11: media's reuse check, one request per 1,000 parts). */
+export const MAX_BLOB_HEADS = 1000;
+/** Its largest body: 1,000 keys of the longest (1,024 bytes) fit, unescaped. */
+export const MAX_BLOB_HEADS_JSON = 1024 * 1024;
+// heads of one batch in flight at once (a Worker opens at most six connections at a time anyway)
+const HEADS_AT_ONCE = 8;
 
 async function body<T>(req: Request, max = MAX_JSON): Promise<T> {
   let bytes: Uint8Array;
@@ -299,6 +312,44 @@ export function mayRead(ctx: AuthContext, key: string): boolean {
   return ctx.branches.some((b) => key.startsWith(`cuts/${b}/`));
 }
 
+/** A head through the media API: an editor's claims a team object (team.ts), as an upload's head must. */
+async function headFor(ctx: AuthContext, store: BlobStore, key: string) {
+  // an editor could reference this hash in the document anyway; claiming it here lets an upload find a teammate's copy
+  if (canPush(ctx) && isTeamMediaStore(store)) await store.claim(key);
+  return store.head(key);
+}
+
+/**
+ * POST /blobs/heads (REQ-11): HEAD for many keys, by HEAD's rules: every key valid and within the session's scope, or
+ * the whole request is refused (400, 403); an editor's claims team objects. It answers `{blobs}`, one entry per key in
+ * order, `{size}` or null, for the first `maxBlobHeads` keys (all of them, unless the host has a smaller budget); the
+ * client asks again for the rest.
+ */
+async function headsFor(req: Request, ctx: AuthContext, store: BlobStore, deps: HttpDeps): Promise<Response> {
+  const b = await body<{ keys?: unknown } | null>(req, MAX_BLOB_HEADS_JSON);
+  const keys = b?.keys;
+  if (!Array.isArray(keys) || !keys.every((k): k is string => typeof k === "string")) return err(400, "keys must be an array of strings");
+  if (keys.length > MAX_BLOB_HEADS) return err(400, `at most ${MAX_BLOB_HEADS} keys a request`);
+  for (const k of keys) checkKey(k);
+  if (!keys.every((k) => mayRead(ctx, k))) return err(403, "outside this link's scope");
+  const budget = Math.max(1, Math.min(MAX_BLOB_HEADS, Math.floor(deps.maxBlobHeads ?? MAX_BLOB_HEADS)));
+  const todo = keys.slice(0, budget);
+  // a key named twice is looked up once
+  const unique = [...new Set(todo)];
+  const found = new Map<string, { size: number } | null>();
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(HEADS_AT_ONCE, unique.length) }, async () => {
+      while (next < unique.length) {
+        const k = unique[next++]!;
+        const info = await headFor(ctx, store, k);
+        found.set(k, info ? { size: info.size } : null);
+      }
+    }),
+  );
+  return json({ blobs: todo.map((k) => found.get(k) ?? null) });
+}
+
 async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext, store: BlobStore, deps: HttpDeps, projectId: string): Promise<Response> {
   const key = url.searchParams.get("key") ?? "";
   if (req.method === "POST" && rest === "/blobs/sign") {
@@ -315,11 +366,10 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
   }
   if (req.method === "GET" && rest === "/blobs/head") {
     if (!mayRead(ctx, key)) return err(403, "outside this link's scope");
-    // an editor could reference this hash in the document anyway; claiming it here lets an upload find a teammate's copy
-    if (canPush(ctx) && isTeamMediaStore(store)) await store.claim(key);
-    const info = await store.head(key);
+    const info = await headFor(ctx, store, key);
     return info ? json(info) : err(404, "no such blob");
   }
+  if (req.method === "POST" && rest === "/blobs/heads") return headsFor(req, ctx, store, deps);
   if (!canPush(ctx)) return err(403, "read-only role");
   const up = /^\/uploads(?:\/([^/]+)(?:\/(\d+|complete))?)?$/.exec(rest);
   if (!up) return err(404, "no such route");

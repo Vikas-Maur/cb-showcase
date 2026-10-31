@@ -43,3 +43,6 @@ PRESENCE_TIMEOUT_MS = "120000"
 # media dedup within a team (§11, R2 only): a JSON object from project id to team id; unlisted projects keep their own
 # media scope
 # TEAMS = '{"film-a":"studio","film-b":"studio"}'
+# the most keys one POST /blobs/heads checks (default 200, at most 1000): each is one to four R2 calls, and a Worker
+# request's subrequests are limited per plan; the client asks again for the rest
+# BLOB_HEADS_PER_REQUEST = "200"

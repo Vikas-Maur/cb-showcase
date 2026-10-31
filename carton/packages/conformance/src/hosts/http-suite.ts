@@ -139,6 +139,50 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       }
     });
 
+    // REQ-11: media's reuse check of a long stream heads every part. One request answers up to 1,000 keys, for a prefix
+    // of them when the host's budget is smaller (the client asks again for the rest).
+    test("POST /blobs/heads: HEAD's answer for each key, in order, by HEAD's rules; at most 1,000 keys and 1 MiB", async () => {
+      const p = project();
+      const o = await owner(p);
+      const hexOf = (i: number) => i.toString(16).padStart(64, "0");
+      const a = `m/${hexOf(0xa)}`, b = `m/${hexOf(0xb)}`;
+      for (const [key, body] of [[a, "abc"], [b, "hello"]] as const) {
+        const url = ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method: "PUT", expiresIn: 60 } })).json()) as { url: string }).url;
+        assert.ok((await fetch(url, { method: "PUT", body: enc.encode(body) })).ok);
+      }
+      const heads = (keys: unknown, token = o.token) => call(`/api/projects/${p}/blobs/heads`, { method: "POST", token, json: { keys } });
+      const all = async (keys: string[], token = o.token) => {
+        const out: unknown[] = [];
+        while (out.length < keys.length) {
+          const r = await heads(keys.slice(out.length, out.length + 1000), token);
+          assert.equal(r.status, 200);
+          const { blobs } = (await r.json()) as { blobs: unknown[] };
+          assert.ok(blobs.length >= 1 && blobs.length <= Math.min(1000, keys.length - out.length), `${blobs.length} answers`);
+          out.push(...blobs);
+        }
+        return out;
+      };
+      const keys = Array.from({ length: 1300 }, (_, i) => (i % 5 === 0 ? a : i % 5 === 1 ? b : `m/${hexOf(i)}`));
+      assert.deepEqual(await all(keys), keys.map((k) => (k === a ? { size: 3 } : k === b ? { size: 5 } : null)));
+      assert.deepEqual(await (await heads([])).json(), { blobs: [] });
+      // caps, and keys a store refuses: the whole request is refused
+      assert.equal((await heads(Array(1001).fill(a))).status, 400);
+      for (const bad of [a, [a, 7], [a, "m/../x"]]) assert.equal((await heads(bad)).status, 400, JSON.stringify(bad));
+      assert.equal((await call(`/api/projects/${p}/blobs/heads`, { method: "POST", token: o.token, json: { keys: [a], pad: "x".repeat(1024 * 1024) } })).status, 413);
+      // 1,000 long keys fit (a project's scope leaves about 1,000 bytes a key; short segments, for POSIX-backed stores)
+      const long = Array.from({ length: 1000 }, (_, i) => `m/${String(i).padStart(4, "0")}/${`${"x".repeat(99)}/`.repeat(9)}end`);
+      assert.equal((await heads(long)).status, 200, "1,000 keys of 910 bytes fit");
+      // HEAD's scope: a viewer heads anything; a watch link, media named by content only
+      const viewer = await joinAs(p, o.token, "viewer");
+      assert.deepEqual(await all([a, b], viewer), [{ size: 3 }, { size: 5 }]);
+      const inv = (await (await call(`/api/projects/${p}/invites`, { method: "POST", token: o.token, json: { role: "viewer", branches: ["pub-1"] } })).json()) as { invite: string };
+      const watcher = ((await (await call(`/api/projects/${p}/join`, { method: "POST", json: { invite: inv.invite, account: "watcher", installKey: installKey() } })).json()) as { token: string }).token;
+      assert.deepEqual(await all([a, b], watcher), [{ size: 3 }, { size: 5 }]);
+      assert.equal((await heads([a, "project.json"], watcher)).status, 403);
+      assert.equal((await heads([a])).status, 200);
+      assert.equal((await call(`/api/projects/${p}/blobs/heads`, { method: "POST", json: { keys: [a] } })).status, 401, "a session is needed");
+    });
+
     test("signed media URLs: PUT, then GET with ranges, bound to their key; viewers can't sign a PUT", async () => {
       const p = project();
       const o = await owner(p);

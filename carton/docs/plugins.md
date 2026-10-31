@@ -268,7 +268,24 @@ every host runs the same function. The host:
    `PUT /api/projects/<p>/messages/messages/c/…` (a writer's upload) and `GET …/messages/messages/s/…` (the
    server's). A client passes `hostMessageBlobs({ origin, projectId, token })` from `@carton/host-http/client` as
    its sync client's `blobs`, and `hostMediaBlobs({ origin, projectId, token })` as `@carton/media`'s store: signed
-   ranged reads and PUTs, resumable multipart through the session's routes, and `reportDamaged(key, leaf)`.
+   ranged reads and PUTs, resumable multipart through the session's routes, `reportDamaged(key, leaf)`, and
+   `heads(keys)`.
+   `handleHttp` stops reading a body at its budget and answers 413 with the rest of the body unread: a host on
+   `node:http` must then close the connection (server-node answers `connection: close`), or a client that keeps it
+   in its pool sends its next request on it and gets ECONNRESET.
+
+   **Many heads at once (REQ-11).** Media parts live in one flat namespace (`m/<hash>`), so checking that a long
+   stream's parts are all there took one HEAD each, about 2,000 requests for a 2,000-part stream.
+   `POST …/blobs/heads {keys}` takes up to 1,000 keys and 1 MiB of JSON (1,000 keys of the longest a store takes
+   fit), and answers `{blobs}`: one entry per key, in order, `{size}` or null. HEAD's rules hold for the whole
+   batch: one key that is invalid or outside the session's scope (a watch link reads only media named by content and
+   its cut's files) refuses all of it (400, 403), and an editor's batch claims team objects as its HEAD does. A host
+   answers for at most `maxBlobHeads` keys (default 1,000), a prefix of them, and the client asks again for the rest.
+   The Worker checks 200 a request (`BLOB_HEADS_PER_REQUEST`), since each key costs one to four R2 calls and
+   Cloudflare limits a request's subrequests. `hostMediaBlobs.heads(keys)` does the splitting, follows a smaller
+   budget, and on a host from before the route makes one HEAD per key. It isn't part of BlobStore, so code that takes
+   any store looks for it (`hasHeads(store)` from `@carton/host-http/client`). Through server-node, a 2,000-part
+   check is then 2 requests; through the Worker, 10.
 
    **The repair path (§11).** A reader whose leaf never verifies reports it with `POST …/blobs/damaged {key, leaf}`.
    The host loads the manifest, which the hash itself verifies, re-reads that leaf, and removes the object only if
@@ -375,6 +392,10 @@ live changes. `ARCHIVE_KEEP` and `ARCHIVE_SEGMENT` override it. The WebSocket ke
 answered by the runtime without waking the room, so idle sockets cost nothing. While a socket shows presence, the
 alarm wakes the room every `PRESENCE_TIMEOUT_MS / 2` (60 s) to check for silent sockets. Each check reads one row,
 the maintenance due time, and sets the alarm; it writes no table rows.
+
+Each `POST …/blobs/heads` key is one R2 call (a team project's editor: up to four, for the claim and the grant
+check). The Worker checks at most 200 keys a request, under Cloudflare's per-request subrequest limit; raise
+`BLOB_HEADS_PER_REQUEST` (to 1,000 at most) if your plan's limit allows more.
 
 ## Windows
 
