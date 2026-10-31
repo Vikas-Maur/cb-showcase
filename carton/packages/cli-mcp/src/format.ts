@@ -75,5 +75,8 @@ export function resultText(r: CbResult, what = "Saved"): string {
   return lines.join("\n");
 }
 
+/** One shell word (POSIX sh, and Git Bash on Windows): plain names as they are, anything else in single quotes. */
+export const shellWord = (s: string): string => (/^[A-Za-z0-9_./:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
 /** Exit code for a write: 0 when it is saved or queued, 1 when nothing was written. */
 export const exitCodeOf = (r: CbResult): number => (r.status === "confirmed" || r.status === "pending" ? 0 : 1);

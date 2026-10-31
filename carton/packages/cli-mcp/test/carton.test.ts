@@ -191,7 +191,7 @@ test("real Carton: a fold with cards names both cuts, saves nothing, and is deci
     const before = (await local.carton.head()).ref.seq;
     const chk = await cb(local, ["fold", "Short", "--check"]);
     assert.match(chk.out, /^Would fold in with 1 card:\n  #1 timelineItems\/c1\/#time \(group[^)]*\) — Main cut: \{[^}]*"endTime":9[^}]*\} · Short: \{[^}]*"endTime":8[^}]*\}\n/);
-    assert.match(chk.out, /`cb fold Short --keep mine` \(keep Main cut's\) or `--keep theirs` \(keep Short's\), or keep a clip out with `--reject timelineItems\/c1`/);
+    assert.match(chk.out, /`cb fold <project> Short --keep mine` \(keep Main cut's\) or `--keep theirs` \(keep Short's\), or keep a clip out with `--reject timelineItems\/c1`/);
     const f = await cb(local, ["fold", "Short"]);
     assert.equal(f.code, 1);
     assert.match(f.out, /^Not folded in: 1 card, nothing was saved\.\n  #1 timelineItems\/c1\/#time .* — Main cut: .* · Short: /);
