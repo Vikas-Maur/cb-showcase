@@ -19,10 +19,10 @@ on:
         description: "Systems: comma-separated linux, windows, macos, or all"
         default: all
 
-# A new push cancels the run it supersedes. A re-run of failed jobs (run_attempt > 1) gets a group of its own, so it
-# neither cancels nor is cancelled by the latest push.
+# A new push cancels the test run it supersedes. A re-run of failed jobs (run_attempt > 1) and a push that only asks
+# for measurements (no tests run) get a group of their own, so they neither cancel nor are cancelled by it.
 concurrency:
-  group: carton-ci-${{ github.ref }}-${{ inputs.groups || 'all' }}-${{ inputs.os || 'all' }}-${{ github.run_attempt == '1' && 'latest' || github.run_id }}
+  group: carton-ci-${{ github.ref }}-${{ inputs.groups || 'all' }}-${{ inputs.os || 'all' }}-${{ (github.run_attempt != '1' || (contains(github.event.head_commit.message, '[carton-measure') && !contains(github.event.head_commit.message, '[carton-ci'))) && github.run_id || 'latest' }}
   cancel-in-progress: true
 
 permissions:
@@ -30,6 +30,8 @@ permissions:
 
 jobs:
   plan:
+    # a push that only asks for measurements (carton-measure.yml) runs no tests
+    if: "!contains(github.event.head_commit.message, '[carton-measure') || contains(github.event.head_commit.message, '[carton-ci')"
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
