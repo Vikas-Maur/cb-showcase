@@ -34,7 +34,16 @@ const STYLES: Record<Style, Intl.DateTimeFormatOptions> = {
   exact: { dateStyle: "medium", timeStyle: "short" },
 };
 const formatters = new Map<string, Intl.DateTimeFormat>();
+// A formatter fixes the system time zone when it is built. If the zone changes while the app runs (a laptop that
+// travels), the offset of "now" changes with it: then the cache is dropped and formatters are built again. (A
+// daylight-saving switch also drops it once; that is harmless.)
+let zoneOffset = new Date().getTimezoneOffset();
 function format(style: Style, at: number | Date, locale?: string): string {
+  const offset = new Date().getTimezoneOffset();
+  if (offset !== zoneOffset) {
+    zoneOffset = offset;
+    formatters.clear();
+  }
   const key = `${locale ?? ""}|${style}`;
   let f = formatters.get(key);
   if (!f) formatters.set(key, (f = new Intl.DateTimeFormat(locale, STYLES[style])));
