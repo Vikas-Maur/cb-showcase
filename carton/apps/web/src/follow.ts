@@ -84,7 +84,9 @@ export class Follower {
         this.#seq = m.keyframe.seq;
       }
       this.#head = Math.max(this.#head, m.head);
-      if (m.source) this.#source = m.source;
+      // a Published cut's source count (server extension until core's WelcomeMsg declares it)
+      const source = (m as sync.WelcomeMsg & { source?: { branchId: string; at: number; head: number } }).source;
+      if (source) this.#source = source;
       this.#take(m.rows);
       if (m.more) return this.#hello();
     } else {

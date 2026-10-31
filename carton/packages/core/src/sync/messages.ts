@@ -2,7 +2,7 @@
 // (H1 withdraw, H2 lww retry, bounded confirmed-id lists). JSON over any Transport: spans carry `hi: null` for an open
 // end, so nothing needs a custom codec. Owner: sync-sequencer.
 
-import type { Actor, ChangeId, ConfirmedChange, Change, CutRecord, Doc, DagNode } from "../types.ts";
+import type { Actor, ChangeId, ConfirmedChange, Change, CutRecord, Doc, DagNode, NodeId, PathKey } from "../types.ts";
 import type { EnvelopeMsg } from "./envelope.ts";
 
 /** The protocol version both sides speak; `hello` carries the document schema version too. */
@@ -147,7 +147,32 @@ export interface AdoptMsg {
   rootSeq?: number;
   /** `hashDoc(doc0)`, so a joiner from nothing can check the root keyframe (the client fills it in). */
   rootHash?: string;
-  closure: { branchId: string; rec: CutRecord; nodes: DagNode[] }[];
+  closure: ClosureEntry[];
+}
+/**
+ * One branch of a hand-off's ancestry closure (§5.3, R4-07), kept by the server as a read-only tracking branch: its
+ * lineage nodes, the states of its fork, merge and export nodes (the states a merge base can need), and the last author
+ * per record at the nodes the shared cut's credits stop at. No micro-changes.
+ */
+export interface ClosureEntry {
+  branchId: string;
+  rec: CutRecord;
+  nodes: DagNode[];
+  states?: { seq: number; hash: string; doc: Doc }[];
+  authors?: [NodeId, Record<PathKey, Actor>][];
+}
+/**
+ * A replica's request for history it doesn't hold (Stage F): the rows `(after, upTo]`, paged like catch-up, and with
+ * `lineage` the branch's ancestry closure. A joiner loads them into History (log, credits, diff), as does a keyframe
+ * catch-up for the stretch it jumped. `req` names the answer.
+ */
+export interface HistoryMsg {
+  type: "history";
+  branchId: string;
+  req: number;
+  after: number;
+  upTo: number;
+  lineage?: boolean;
 }
 /** A shared variant made on the server: O(1), no rows copied; it reads the parent at `seq` (§6.3). */
 export interface ForkMsg {
@@ -172,7 +197,7 @@ export interface PresenceMsg {
   state: PresenceState | null;
 }
 /** Any message over 1 MiB, either way, travels as an envelope (`envelope.ts`). */
-export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | EnvelopeMsg;
+export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | HistoryMsg | EnvelopeMsg;
 
 // ------------------------------------------------------------------ server -> client
 
@@ -188,11 +213,6 @@ export interface WelcomeMsg {
   more?: boolean;
   /** The largest client message the server reads (its envelope limit, for a client that sends envelopes). */
   maxMessageBytes?: number;
-  /**
-   * A Published cut's source: the cut it came from, the version published (`at`) and that cut's head now. A watcher
-   * learns that newer edits exist (head > at) without being able to read them.
-   */
-  source?: { branchId: string; at: number; head: number };
   /**
    * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
    * acting on the list. Unchecked ids are never to be taken as unconfirmed.
@@ -241,6 +261,8 @@ export interface StatusMsg {
   adoptKey: string | null;
   since: number | null;
   head: number;
+  /** As `WelcomeMsg.maxMessageBytes`, for the upload a hand-off makes right after this answer (a server with blobs). */
+  maxMessageBytes?: number;
 }
 export interface AdoptedMsg {
   type: "adopted";
@@ -283,8 +305,20 @@ export interface ErrorMsg {
   /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */
   reconnect?: boolean;
 }
+/** Answer to `history`: a page of rows (`more`: ask again after the last), the closure when asked, or why not. */
+export interface HistoryReplyMsg {
+  type: "history";
+  branchId: string;
+  req: number;
+  rows: ConfirmedChange[];
+  more?: boolean;
+  lineage?: ClosureEntry[];
+  error?: string;
+}
+
 export type ServerMessage =
   | WelcomeMsg
+  | HistoryReplyMsg
   | ChangesMsg
   | AckMsg
   | RejectMsg

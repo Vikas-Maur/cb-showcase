@@ -352,53 +352,50 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   /**
    * A catch-up page: the rows after `after`, at most `limit` of them and `budget` bytes of reply JSON. It stops before
    * the row that would pass the budget, except that it always holds one row when `atLeastOne` (the client must make
-   * progress; a big single row then goes as an envelope). Live rows are sized from their stored lengths before any is
-   * loaded, so a page never loads much more than it sends; the client asks again while `more` (§6.3).
+   * progress; a big single row then goes as an envelope); the client asks again while `more` (§6.3). What the page
+   * loads stays within the budget plus one row: live rows are sized from their stored lengths before any is loaded,
+   * archived segments are read as a stream one row at a time, and a body in the blob store is fetched only while the
+   * page still has room (round 3 findings 3 and 4).
    */
   async function readRows(branchId: string, after: number, limit: number, budget: number, atLeastOne: boolean): Promise<Row[]> {
     const out: Row[] = [];
-    let used = 0, count = 0, full = false;
-    /** Count a row of `size` bytes in if it fits; false (the page is full) when it doesn't. */
-    const fits = (size: number): boolean => {
-      if (count >= limit || ((count || !atLeastOne) && used + size > budget)) return !(full = true);
-      used += size;
-      count++;
+    let used = 0;
+    let full = false;
+    const bounded = () => out.length > 0 || !atLeastOne;
+    /** Take a row of `meta` bytes (without a body in the blob store) if the page has room for it, body included. */
+    const take = async (r: { row: Row; blob: string | null }, meta: number): Promise<boolean> => {
+      if (out.length >= limit || (bounded() && used + meta > budget)) return !(full = true);
+      const { row, bytes } = await fillBody(r);
+      // its body wasn't in the size: if it doesn't fit after all, it opens the next page
+      if (bounded() && used + meta + bytes > budget) return !(full = true);
+      used += meta + bytes;
+      out.push(row);
       return true;
     };
     const firstLive = tables.firstLive(branchId) ?? tables.head(branchId) + 1;
     if (after + 1 < firstLive && opts.blobs) {
       for (const seg of tables.segmentsAfter(branchId, after)) {
         if (seg.lo >= firstLive - 1 || full) break;
-        const stored = await opts.blobs.get(seg.blob);
-        if (!stored) throw new Error(`segment ${seg.blob} is missing from the blob store`);
-        const bytes = seg.blob.endsWith(".gz") ? await gunzip(stored) : stored;
-        const raw = JSON.parse(dec.decode(bytes)) as Record<string, string | number | null>[];
-        for (const r of raw) {
+        for await (const r of segmentRows(opts.blobs, seg.blob)) {
           if (Number(r.seq) <= after) continue;
-          const ops = r.ops === null ? null : enc.encode(String(r.ops));
+          const ops = r.ops === null || r.ops === undefined ? null : enc.encode(String(r.ops));
           const rr = { ...r, ops } as Record<string, string | number | null | Uint8Array>;
-          const { row, bytes: body } = await fillBody(Tables.toRow(rr, branchId));
-          if (!fits(segmentRowBytes(r, ops, branchId) + body)) break;
-          out.push(row);
+          if (!(await take(Tables.toRow(rr, branchId), segmentRowBytes(r, ops, branchId)))) break;
         }
       }
     }
     if (full) return out;
     // live rows: sized from their stored lengths first (no body read), then only those that fit are loaded
     const from = out.length ? out[out.length - 1]!.seq : after;
-    const sizes = tables.rowSizes(branchId, from, limit - count);
-    let loaded = used;
-    let take = 0;
-    while (take < sizes.length && fits(sizes[take]!)) take++;
-    if (!take) return out;
-    for (const [i, r] of tables.rows(branchId, from, take).entries()) {
-      const { row, bytes } = await fillBody(r);
-      // a body in the blob store wasn't in the sizes: once one takes the page past the budget, the rest of the rows
-      // (that one too, unless it is the page's first) open the next page
-      loaded += sizes[i]! + bytes;
-      if ((out.length || !atLeastOne) && loaded > budget) break;
-      out.push(row);
+    const sizes = tables.rowSizes(branchId, from, limit - out.length);
+    let n = 0;
+    for (let est = used; n < sizes.length; n++) {
+      if ((out.length + n > 0 || !atLeastOne) && est + sizes[n]! > budget) break;
+      est += sizes[n]!;
     }
+    if (!n) return out;
+    const rows = tables.rows(branchId, from, n);
+    for (let i = 0; i < rows.length; i++) if (!(await take(rows[i]!, sizes[i]!))) break;
     return out;
   }
   /** A stored keyframe, with its document's size in reply bytes (at most). */
@@ -448,8 +445,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     rootSeq?: number;
     stateHash?: string;
     forkOf?: { branchId: string; seq: number };
-    /** An adoption's ancestry closure: shallow read-only tracking branches (§5.3, R4-07); existing ones are kept. */
-    closure?: readonly { branchId: string; rec: CutRecord; nodes: sync.AdoptMsg["closure"][number]["nodes"] }[];
+    /**
+     * An adoption's ancestry closure: shallow read-only tracking branches (§5.3, R4-07). A tracking branch another
+     * adoption made gains the new nodes and authors (lineage is immutable, so a union is safe); a real branch is kept.
+     */
+    closure?: readonly sync.ClosureEntry[];
   }
   /**
    * Create a branch atomically: the branch row, its root keyframe, its records, its rows and an adoption's ancestry
@@ -463,14 +463,18 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     let seq = root;
     for (const row of rows) if (row?.seq !== ++seq) throw new Error(`rows must be ${root + 1}..${root + rows.length} in order (got ${row?.seq} for ${seq})`);
     const where = init.doc0 !== null ? placeKeyframe(rec.id, root, init.doc0) : null;
-    if (where instanceof Promise) return where.then((w) => writeBranch(rec, init, rows, adoptKey, w, rids));
-    writeBranch(rec, init, rows, adoptKey, where, rids);
+    // the closure's carried states are keyframes of their tracking branches, placed (uploaded) before the transaction
+    const placed = (init.closure ?? []).flatMap((t) => (t.states ?? []).map((st) => ({ branch: t.branchId, seq: st.seq, hash: st.hash, where: placeKeyframe(t.branchId, st.seq, st.doc) })));
+    if (where instanceof Promise || placed.some((p) => p.where instanceof Promise))
+      return Promise.all([where, ...placed.map((p) => p.where)]).then(([w, ...ws]) => writeBranch(rec, init, rows, adoptKey, w ?? null, rids, placed.map((p, i) => ({ ...p, where: ws[i]! }))));
+    writeBranch(rec, init, rows, adoptKey, where, rids, placed as ClosureKeyframe[]);
   }
-  function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string): void {
+  type ClosureKeyframe = { branch: string; seq: number; hash: string; where: { blob: string } | { inline: string } };
+  function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string, closureKfs: readonly ClosureKeyframe[] = []): void {
     const root = init.rootSeq ?? 0;
     try {
       tables.transaction(() => {
-        tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey });
+        tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey, ...(init.closure?.length ? { closure: init.closure.map((t) => t.branchId) } : {}) });
         if (kf) tables.putKeyframe(rec.id, root, init.stateHash ?? "", kf);
         const doc = init.doc0 as Record<string, unknown> | null;
         if (doc) for (const coll of collections) for (const r of (doc[coll] as Rec[] | undefined) ?? []) {
@@ -484,9 +488,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) tables.bindRid(ridOf(row.id), rids);
         }
         for (const t of init.closure ?? []) {
-          if (tables.branch(t.branchId)) continue;
-          tables.insertBranch({ id: t.branchId, rec: t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: t.nodes });
+          const had = tables.branch(t.branchId);
+          if (had && !had.tracking) continue;
+          const nodes = new Map((had?.nodes ?? []).map((n) => [n.id, n]));
+          for (const n of t.nodes) if (!nodes.has(n.id)) nodes.set(n.id, n);
+          const authors = new Map(had?.authors ?? []);
+          for (const [n, a] of t.authors ?? []) if (!authors.has(n)) authors.set(n, a);
+          const b: StoredBranch = { id: t.branchId, rec: had?.rec ?? t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: [...nodes.values()], ...(authors.size ? { authors: [...authors] } : {}) };
+          if (had) tables.putBranch(b);
+          else tables.insertBranch(b);
         }
+        for (const k of closureKfs) tables.putKeyframe(k.branch, k.seq, k.hash, k.where);
       });
     } catch (e) {
       tables.forget(rec.id);
@@ -605,7 +617,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
     const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
-    const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
+    // `source` (a Published cut's source and its head) is asked of foundation-core for WelcomeMsg (web-demo notes);
+    // until it is in core's types it rides as this extension
+    const msg: sync.WelcomeMsg & { source?: { branchId: string; at: number; head: number } } = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
     if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
     // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
@@ -745,6 +759,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const closure = Array.isArray(m.closure) ? m.closure : [];
     if (!mayWrite(c, m.branchId) || closure.some((t) => !mayWrite(c, t?.branchId))) return fail("forbidden"); // finding 4
     if (closure.some((t) => !t?.rec || t.rec.id !== t.branchId)) return fail("closure rec.id must be its branchId");
+    if (closure.some((t) => !Array.isArray(t.nodes) || (t.states !== undefined && (!Array.isArray(t.states) || t.states.some((st) => !Number.isInteger(st?.seq) || st.seq < 0 || typeof st.hash !== "string" || !SHA256.test(st.hash)))) || (t.authors !== undefined && !Array.isArray(t.authors))))
+      return fail("closure: bad nodes, states or authors");
     const key = `${m.branchId}|${m.n}|${m.stateHash}`;
     const b = tables.branch(m.branchId);
     if (b) {
@@ -771,9 +787,42 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     send(c, { type: "adopted", branchId: m.branchId, since: m.n });
   }
 
+  /**
+   * History a replica doesn't hold (Stage F): rows `(after, upTo]` paged like catch-up, and with `lineage` the
+   * branch's ancestry closure (its tracking branches with their carried states), for a joiner's log and credits.
+   */
+  async function onHistory(c: HostConnection, m: sync.HistoryMsg) {
+    const reply = (r: Pick<sync.HistoryReplyMsg, "rows" | "more" | "lineage" | "error">) => send(c, { type: "history", branchId: m.branchId, req: m.req, ...r });
+    const b = typeof m.branchId === "string" ? tables.branch(m.branchId) : null;
+    if (!b) return reply({ rows: [], error: "unknown branch" });
+    if (c.auth.branches && !c.auth.branches.includes(m.branchId)) return reply({ rows: [], error: "forbidden" });
+    const after = Math.max(b.root, Number.isInteger(m.after) ? m.after : 0);
+    const upTo = Math.min(tables.head(m.branchId), Number.isInteger(m.upTo) ? m.upTo : 0);
+    const rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+    const last = rows.length ? rows[rows.length - 1]!.seq : after;
+    const lineage: sync.ClosureEntry[] = [];
+    if (m.lineage)
+      for (const id of b.closure ?? []) {
+        const t = tables.branch(id);
+        if (!t?.tracking) continue;
+        const states: NonNullable<sync.ClosureEntry["states"]> = [];
+        for (const n of t.nodes ?? []) {
+          const k = tables.keyframeAt(id, n.seq);
+          if (!k) continue;
+          const { keyframe } = await loadKeyframe(id, k);
+          states.push({ seq: n.seq, hash: keyframe.stateHash, doc: keyframe.doc });
+        }
+        lineage.push({ branchId: id, rec: t.rec, nodes: t.nodes ?? [], states, ...(t.authors?.length ? { authors: t.authors } : {}) });
+      }
+    reply({ rows, ...(last < upTo && rows.length ? { more: true } : {}), ...(m.lineage ? { lineage } : {}) });
+  }
+
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
     const b = tables.branch(m.branchId);
-    send(c, { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 });
+    const msg: sync.StatusMsg = { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 };
+    // a hand-off uploads right after this answer: it must know the largest message read before it (round 3 finding 6)
+    if (opts.blobs) msg.maxMessageBytes = maxEnvelope;
+    send(c, msg);
   }
 
   async function onFork(c: HostConnection, m: sync.ForkMsg) {
@@ -850,6 +899,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return onKeyframe(c, msg);
       case "presence":
         return onPresence(c, msg);
+      case "history":
+        return onHistory(c, msg);
       default:
         return send(c, { type: "error", reason: `unknown message type ${(msg as { type?: unknown })?.type}` });
     }
@@ -955,9 +1006,59 @@ const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBas
 
 /** As `Tables.rowSizes`, for a row of an archived segment (its columns are strings, `body` its inline body's bytes). */
 function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8Array | null, branchId: string): number {
-  let n = 256 + 3 * branchId.length + (body?.byteLength ?? 0);
-  for (const k of ["id", "hash", "author", "base", "paths", "reads", "spans", "policy"]) n += 3 * String(r[k] ?? "").length;
-  return n;
+  const bytes = (k: string) => (r[k] === null || r[k] === undefined ? 0 : enc.encode(String(r[k])).byteLength);
+  return ROW_FIXED + 6 * enc.encode(branchId).byteLength + (body?.byteLength ?? 0) + bytes("author") + bytes("base") + bytes("paths") + bytes("reads") + 3 * bytes("spans") + 6 * (bytes("id") + bytes("hash") + bytes("policy"));
+}
+/** A reply row's keys, numbers and the defaults `Tables.toRow` adds (the rest is sized from its columns). */
+const ROW_FIXED = 256;
+
+/**
+ * The rows of an archived segment (a gzip-compressed JSON array of row objects), one at a time, read as a stream: only
+ * one row's text is held at once, so a page that stops early never decompresses or parses the rest (round 3 finding
+ * 3). Uses the store's `getStream` when it has one.
+ */
+async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Record<string, string | number | null>> {
+  let stream: ReadableStream<Uint8Array> | null = blobs.getStream ? await blobs.getStream(key) : null;
+  if (!stream) {
+    const stored = await blobs.get(key);
+    if (!stored) throw new Error(`segment ${key} is missing from the blob store`);
+    stream = new Blob([stored as Uint8Array<ArrayBuffer>]).stream();
+  }
+  // (the lib types give these transforms a BufferSource writable side: a Uint8Array stream is one)
+  if (key.endsWith(".gz")) stream = stream.pipeThrough(new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>);
+  const reader = stream.pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>).getReader();
+  // a scan of the array's text: depth 1 inside the array, 2 inside a row; strings (and their escapes) skipped
+  let depth = 0, inString = false, escaped = false;
+  let parts: string[] = [];
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      let start = depth >= 2 ? 0 : -1;
+      for (let i = 0; i < value.length; i++) {
+        const ch = value.charCodeAt(i);
+        if (inString) {
+          if (escaped) escaped = false;
+          else if (ch === 92) escaped = true;
+          else if (ch === 34) inString = false;
+        } else if (ch === 34) inString = true;
+        else if (ch === 123 || ch === 91) {
+          if (++depth === 2) start = i;
+        } else if (ch === 125 || ch === 93) {
+          if (--depth === 1) {
+            parts.push(value.slice(start, i + 1));
+            const text = parts.join("");
+            parts = [];
+            start = -1;
+            yield JSON.parse(text) as Record<string, string | number | null>;
+          }
+        }
+      }
+      if (depth >= 2 && start >= 0) parts.push(value.slice(start));
+    }
+  } finally {
+    await reader.cancel().catch(() => {});
+  }
 }
 /** UTF-8 byte length over `limit`, without encoding short strings (each UTF-16 unit is at most 3 bytes). */
 function utf8Over(text: string, limit: number): boolean {
@@ -975,10 +1076,6 @@ const ARCHIVE_SEGMENT = 10_000;
 // gzip with the platform's CompressionStream (Workers, browsers and Node all have it)
 async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
   const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream("gzip"));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
-}
-async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
-  const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("gzip"));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
