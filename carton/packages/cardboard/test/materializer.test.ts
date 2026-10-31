@@ -324,3 +324,27 @@ test("a foreign project.json write is imported as external:project.json against 
   assert.equal(s.find(h, "a").name, "gui");
   assert.equal(s.engine.commits.at(-1)!.author.id, "external:project.json");
 });
+
+test("a displaced save that can't be applied (its base is unknown) is kept in .carton/displaced, never deleted", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  // a save from a header whose pin is gone: written, then a print displaces it before its event
+  s.writeAtomic(TIMELINE_FILE, "// cardboard:rev main@0~deadbeef p:00000000 by someone\n" + JSON.stringify({ timelineItems: [clip("a", 0, 5, { name: "lost?" })] }));
+  await s.mz.printShared();
+  await s.tick(500);
+  assert.equal(s.find(await s.head(), "a").name, "a", "not applied: no exact base");
+  assert.ok(s.engine.notices.some((n) => /state unknown: re-print/.test(n.text)), "its writer is told");
+  const kept = fs.readdirSync(path.join(s.bundle, ".carton", "displaced")).map((f) => fs.readFileSync(path.join(s.bundle, ".carton", "displaced", f), "utf8"));
+  assert.ok(kept.some((c) => c.includes("lost?")), "its bytes are still on disk");
+});
+
+test("an engine failure during a watch event is logged, not an unhandled rejection", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const r0 = s.read();
+  s.engine.commit = async () => {
+    throw new Error("database is locked");
+  };
+  s.writeAtomic(TIMELINE_FILE, s.edited(r0, (its) => (its[0]!.name = "x")));
+  await s.event();
+  assert.equal(s.mz.log.errors.length, 1);
+  assert.match(String(s.mz.log.errors[0]!.error), /database is locked/);
+});
