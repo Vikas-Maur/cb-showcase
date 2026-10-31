@@ -45,3 +45,28 @@ test("a burst over the cap never loses its last state: the latest dropped update
   assert.equal(last.state, null, "the drag's end was lost");
   seq.disconnect(a);
 });
+
+test("trailing presence is kept per branch: a burst on one branch never replaces another branch's last state", async () => {
+  let now = 3_000_000;
+  const { seq } = await world(doc([clip("c0", 0, 5)]), { clock: () => now });
+  const a = fakeConn("alice/1"), b = fakeConn("bob/1");
+  // a second branch, forked server-side, for the same connections
+  const helloOn = (branchId: string): sync.HelloMsg => ({ type: "hello", branchId, have: 0, pending: [], rids: [], schemaVersion: 1 });
+  await seq.createBranch({ id: "other", name: "other", forkOf: null, owner: "alice", kind: "variant", sequencer: { kind: "server", since: 0 } } as never, { doc0: doc([clip("c0", 0, 5)]) as never });
+  for (const x of [a, b]) {
+    await seq.handle(x, hello());
+    await seq.handle(x, helloOn("other"));
+  }
+  b.inbox.length = 0;
+  const actor = { kind: "human" as const, id: "alice" };
+  for (let i = 0; i < 20; i++) await seq.handle(a, { type: "presence", branchId: BRANCH, actor, state: { at: i, dragging: true } }); // the burst
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor, state: null }); // dropped: waits on BRANCH
+  await seq.handle(a, { type: "presence", branchId: "other", actor, state: { at: 1 } }); // dropped: waits on "other"
+  now += 1000;
+  await new Promise((r) => setTimeout(r, 300));
+  const onMain = b.inbox.filter((m) => m.type === "presence" && (m as sync.PresenceFanoutMsg).branchId === BRANCH) as sync.PresenceFanoutMsg[];
+  const onOther = b.inbox.filter((m) => m.type === "presence" && (m as sync.PresenceFanoutMsg).branchId === "other") as sync.PresenceFanoutMsg[];
+  assert.equal(onMain.at(-1)?.state, null, "the main branch's drag end was replaced by the other branch's update");
+  assert.equal(onOther.at(-1)?.state?.at, 1);
+  seq.disconnect(a);
+});
