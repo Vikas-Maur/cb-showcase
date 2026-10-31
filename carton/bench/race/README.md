@@ -16,7 +16,8 @@ that the `displace` protocol now calls the shipped code: `displaceThenInstall`, 
 ## Run it
 
 Node 24 or later runs the `.ts` files directly. No build and no dependencies. `node --test race.test.ts` tests the
-turn lock against Windows' errors and runs one short turn-mode trial.
+turn lock and the writers' steps against Windows' errors and runs two short turn-mode trials (temp+rename, in place).
+`npx tsc -p bench/race` typechecks it.
 
 ```
 node race.ts                                  # the portable matrix in <tmpdir>/carton-race
@@ -31,6 +32,9 @@ node race.ts trial --protocol displace --writers 4 --mode free --rounds 5000 --o
   - `rename`, `link` and `unlink` retry on EPERM, EBUSY and EACCES, which Defender or the indexer holding the file
     cause. So does the writers' turn lock (a folder): re-creating it right after another writer removed it fails with
     EPERM while the folder is still being deleted. The retries show in the `busy retries` column.
+  - The writers retry the same errors on every step on the view, as a real Windows app does: opening it for an
+    in-place write or reading it back while the engine renames or displaces it fails with EPERM for a moment (CI #11).
+    Their share of the retries, per step, is in `of which writers' (by step)` (and summarize.ts's in-place table).
   - FAT and exFAT have no hard links. The script says so and runs `naive` only; Carton itself falls back to
     stat-then-rename there (L13).
 - **Linux:** `./run-linux.sh out.jsonl [trials] [rounds] [fs:dir ...]`.

@@ -40,10 +40,10 @@ for (const [k, l] of group(race, (r) => [r.fs, r.mode, r.widen, r.protocol].join
 
 // B: in-place writers (turn mode, 1 writer).
 const ip = rs.filter((r) => r.style === "inplace");
-const B: unknown[][] = [["fs", "protocol", "trials", "engine rounds", "foreign writes", "**lost by the engine**", "engine read a half-written file", "lost write left in a kept file", "reader torn reads / reads"]];
+const B: unknown[][] = [["fs", "protocol", "trials", "engine rounds", "foreign writes", "**lost by the engine**", "engine read a half-written file", "lost write left in a kept file", "reader torn reads / reads", "writer busy retries (Windows: the view open or being displaced; retried as an app would)"]];
 for (const [k, l] of group(ip, (r) => [r.fs, r.protocol + (lvl(r.settle) ? " + settle " + lvl(r.settle) + (lvl(r.settle) === 2 ? " (shipped)" : "") : "")].join("|"))) {
   const [fsl, p] = k.split("|");
-  B.push([fsl, p, l.length, n(sum(l, "rounds")), n(sum(l, "landed")), `**${n(sum(l, "lostByEngine"))}**`, n(sum(l, "tornImports")), n(sum(l, "keptNotRecorded")), `${n(sum(l, "torn"))} / ${n(sum(l, "reads"))}`]);
+  B.push([fsl, p, l.length, n(sum(l, "rounds")), n(sum(l, "landed")), `**${n(sum(l, "lostByEngine"))}**`, n(sum(l, "tornImports")), n(sum(l, "keptNotRecorded")), `${n(sum(l, "torn"))} / ${n(sum(l, "reads"))}`, n(sum(l, "writerBusy"))]);
 }
 
 // C: the missing-path gap, paced engine (one materialization per 2 ms), no writers.
