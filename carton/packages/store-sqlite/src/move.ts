@@ -24,6 +24,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
+import { pathToFileURL } from "node:url";
 import { setTimeout as sleep } from "node:timers/promises";
 import { APPLICATION_ID, FORMAT_VERSION, META, DB_ID, MACHINE, MOVED_TO, COPY_OF, USER_TABLES, isThisMachine, machineMark, readMeta, writeMeta, newDbId, type MachineMark } from "./format.ts";
 
@@ -99,16 +100,20 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
   // Nothing can fence a history Carton can't write (another process may still have it open and writing), so it is
   // never copied as if it were frozen.
   const unwritable = (e: unknown) => new UnwritableHistoryError(other, e);
-  // Asked of the file system first, before SQLite opens anything: a read-only file (mode, or the read-only attribute
-  // on Windows) is refused without being opened, so SQLite never makes read-only -wal/-shm files beside it (it gives
-  // them the database's own permissions) and nothing beside it is ever deleted. An unwritable file is refused even
-  // if it turns out not to be this project's history: it can't be told apart without opening it. A write-denying ACL
-  // (which access() doesn't see on Windows) is caught by the write probe before any copy.
+  // Asked of the file system first, before SQLite opens it for writing: a read-only file (mode, or the read-only
+  // attribute on Windows) is never opened that way, so SQLite never makes read-only -wal/-shm files beside it (it
+  // gives them the database's own permissions) and nothing beside it is ever deleted. Such a file is then looked at
+  // without changing anything (an immutable read: no lock, no -shm, no -wal), and left alone if it plainly isn't this
+  // machine's history to move (another program's file, an empty one, another machine's synced in: L15), or if it
+  // already moved here. Anything else (this machine's history, or a -wal that might hold what the immutable read
+  // can't see) needs fencing it can't have, so it is refused. A write-denying ACL (which access() doesn't see on
+  // Windows) is caught by the write probe before any copy.
   for (const f of [other, `${other}-wal`, `${other}-shm`]) {
     if (f !== other && !fs.existsSync(f)) continue;
     try {
       fs.accessSync(f, fs.constants.W_OK);
     } catch (e) {
+      if (notOursToMove(other, target)) return;
       throw unwritable(e);
     }
   }
@@ -179,6 +184,36 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
         // still open somewhere (that process's writes fail with MovedError); a later open deletes it
       }
     }
+  }
+}
+
+// Whether a file Carton can't write is safe to leave where it is: read without changing anything beside it.
+function notOursToMove(file: string, target: string): boolean {
+  let walBytes = 0;
+  try {
+    walBytes = fs.statSync(`${file}-wal`).size;
+  } catch {
+    // no -wal
+  }
+  if (walBytes > 0) return false; // committed pages the immutable read wouldn't see: can't tell
+  const url = pathToFileURL(path.resolve(file));
+  url.searchParams.set("immutable", "1");
+  let raw: DatabaseSync;
+  try {
+    raw = new DatabaseSync(url, { readOnly: true });
+  } catch {
+    return false;
+  }
+  try {
+    const id = raw.prepare("SELECT (SELECT application_id FROM pragma_application_id) AS a, (SELECT count(*) FROM sqlite_schema) AS n").get() as { a: number; n: number };
+    if (id.a !== APPLICATION_ID) return true; // empty, or another program's file: not a history
+    if (!isThisMachine(readMeta(raw, MACHINE))) return true; // another machine's, synced here
+    const moved = readMeta<Mark>(raw, MOVED_TO);
+    return !!moved && same(moved.path, target) && fs.existsSync(target); // its history already lives at the target
+  } catch {
+    return false;
+  } finally {
+    raw.close();
   }
 }
 
