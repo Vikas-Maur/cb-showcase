@@ -274,18 +274,21 @@ onto the packages' APIs, so a package API change touches only the facade.
 
 ## 6. State on 2026-10-31
 
-- **Patched, tested on Linux with the real bundles** (`scripts/carton/test/`, 11 tests): every hook above except H10,
-  H12, H13, the `.cbproj` import check and the view watcher. With Carton off, `cb` writes exactly what our Windows
-  build writes and prints the same results. With Carton on, a recording stand-in shows each hook's arguments: one
-  change per mutation with its base and actor, the GUI save's base, the apply's header `rev`, the watcher's
-  `external:timeline.tsx`. The real library worker runs patched under Node, on and off. The pages' bridge is tested
-  on a stand-in store.
-- **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js` and `carton-ui.js`. With the real facade and
-  no history yet (`@carton/local`'s `openLocal` isn't implemented yet), `cb` writes exactly what 1.4.0 writes.
-- **Waiting on packages:** history itself (`openLocal`), the Carton commands and MCP tools (`runCb`, `mcpTools`), the
-  History panel's view model (`fromCarton`), the Materializer's per-agent views.
+- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 17 tests):
+  - Carton off: `cb`'s output and files equal our Windows build's; the real library worker runs patched.
+  - Carton on, for real (`@carton/local` and `carton.db`): history with authors down to the subagent, credits, a cut
+    with `project.json` following the switch, fold, `undo --turn` raising a card, and 4 concurrent `cb` writers losing
+    no edit (B1).
+  - The rev map: 1.4.0's numeric header and `cb undo <rev>` name Carton versions.
+  - The pages' bridge and main's bridge, on stand-ins.
+- **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
+  save projection, cut out at build time) and `carton-ui.js`.
+- **Not wired yet:** the Materializer's per-agent views and the shared `timeline.tsx` freeze (H8; the worker still
+  regenerates `timeline.tsx` as 1.4.0 does, through displace-then-install), Carton's merge3 in `rn`'s shape in the
+  apply's preview (the commit that follows merges with Carton), H1b, H10, H11's "Bring in their changes", H12, H13,
+  the engine thread in the worker (the worker commits on its own thread for now), the prompt's per-agent view flow.
 - **Windows only:** the editor's pages (H4–H7, the History tab), gates G1 and G2, the NTFS displace/install race. See
-  the README, "Carton" → "Testing Carton on Windows".
+  the README, "Carton" → "Testing Carton".
 
 ## Appendix A: every anchor, checked
 
@@ -293,7 +296,7 @@ Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and a
 patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
 file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
 
-### A.1 The anchors patch-carton.js replaces (72)
+### A.1 The anchors patch-carton.js replaces (73)
 
 ```
 ok  Worker 1 @1263890   27B  "async applyMutation(t,r,n){"
@@ -365,9 +368,10 @@ ok  CLI    1 @304809    39B  "await Uh(this.mirrorPath(t),r,\"utf8\"))}"
 ok  CLI    1 @162151    37B  "if(a&&(nS.has(i.name)||i.name===re)||"
 ok  cb     1 @84        50B  "const require = __createRequire(import.meta.url);\n"
 ok  cb     1 @752048    14B  "var FN=ak(Ie);"
-ok  cb     1 @740243   148B  "me([[\"REV\",\"SAVED\",\"TRACKS\",\"ITEMS\",\"DURATION\"],...i.map(c=>[String(c.rev),hs(c.at),String(c.tracks),String(c.items),`${c.duration.toFixed(1)}s`])])"
-ok  cb     1 @740630   177B  ".action(async(a,s)=>{let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);e().result({id:i.id,restored:c},()=>c===null?\"Nothing to undo\":`Restored revision ${c}`)})"
-ok  cb     1 @604910   218B  "{project:fe,rev:f.number().int().optional()},!1,async({project:_,rev:y})=>{let w=await I(s,_),v=await s.timeline.undo(w.id,y);return Y({restored:v},v===null?\"Nothing to undo\":`Restored revision ${v}`)}),p(\"list_media\","
+ok  cb     1 @740630    87B  ".action(async(a,s)=>{let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);"
+ok  cb     1 @604506    21B  "p(\"timeline_history\","
+ok  cb     1 @604809    18B  "p(\"undo_timeline\","
+ok  cb     1 @605113    15B  "p(\"list_media\","
 ```
 
 ### A.2 Mapped for the hooks still to come (H1b, H10, H11 import, H12, H13, the rest of H4–H7 and the UI)

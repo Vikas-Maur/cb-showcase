@@ -438,9 +438,10 @@ The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases
 | Publish | tag |
 | Undo turn | revert by author |
 
-**Where it's still incomplete (2026-10-31).** The hooks are in, and are tested on Linux with Cardboard's real
-bundles. History itself (`@carton/local`'s `openLocal`), the new `cb` commands and the History tab's data are still
-being written. Until then, Carton on behaves exactly as Carton off: the tests check that `cb` writes the same files.
+**Where it's still incomplete (2026-10-31).** History, cuts, fold, credits and `undo --turn` work in `cb` on real
+Carton (tested on Linux with Cardboard's own bundles). Not wired yet: per-agent view files, the shared
+`timeline.tsx` freeze during an agent's turn, and "Bring in their changes" for a `.cbproj`. The editor's side and the
+History tab have only been tested on stand-ins: they need the Windows run below.
 
 `scripts\patch-carton.js` (after the Windows patches; `scripts\carton\` holds what it injects):
 1. The project store, both copies (the app's library worker and the CLI's own): one Carton change per edit, against
