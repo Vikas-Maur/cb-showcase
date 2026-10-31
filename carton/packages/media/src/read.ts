@@ -80,7 +80,7 @@ export class MediaReader implements RangeSource {
         // A damaged cache entry: fetch it again below.
       }
     }
-    const bytes = await this.#retry(() => store.get(manifestKey(hash), undefined, { signal }), signal);
+    const bytes = await this.#retry(() => store.get(manifestKey(hash)), signal);
     if (!bytes) throw new MediaMissingError(`no manifest for ${hash}`);
     const m = await decodeManifest(bytes, hasher, hash);
     await cache?.putManifest(hash, m.bytes);
@@ -237,11 +237,18 @@ export class MediaReader implements RangeSource {
     const range = { offset, length: last.offset + last.length - offset };
     const key = mediaKey(m.hash);
     const { store } = this.#o;
-    const body = store.getStream
-      ? store.getStream(key, range, { signal: ctl.signal })
-      : store.get(key, range, { signal: ctl.signal });
+    const body = store.getStream ? store.getStream(key, range) : store.get(key, range);
     body.catch(() => {}); // a prefetch that is never consumed must not become an unhandled rejection
-    ctl.signal.addEventListener("abort", () => signal?.removeEventListener("abort", onAbort), { once: true });
+    ctl.signal.addEventListener(
+      "abort",
+      () => {
+        signal?.removeEventListener("abort", onAbort);
+        // The contract's reads take no signal: cancelling the body is how a request is abandoned. A stream being read
+        // is locked and cancelled by its reader instead.
+        body.then((b) => (b instanceof ReadableStream && !b.locked ? b.cancel() : undefined)).catch(() => {});
+      },
+      { once: true },
+    );
     return { first, end, ctl, body };
   }
 
@@ -317,7 +324,7 @@ export class MediaReader implements RangeSource {
     let handedOut = false; // some of this leaf's bytes went to the player unverified
     try {
       while (leaf < run.end) {
-        let chunk: ReadableStreamReadResult<Uint8Array>;
+        let chunk: Awaited<ReturnType<typeof reader.read>>;
         try {
           chunk = await reader.read();
         } catch (e) {

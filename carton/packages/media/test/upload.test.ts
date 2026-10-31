@@ -5,7 +5,7 @@ import { bytesSource, hashSource } from "../src/hash.ts";
 import { manifestKey, mediaKey } from "../src/keys.ts";
 import { decodeManifest, LEAF_SIZE } from "../src/manifest.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
-import { CountingMemoryStore, FaultyStore, LinkDroppedError, withoutListParts } from "../src/testing.ts";
+import { CountingMemoryStore, FaultyStore, LinkDroppedError } from "../src/testing.ts";
 import { cancelUpload, choosePartSize, MAX_PARTS, MemoryUploadStateStore, SourceChangedError, uploadMedia } from "../src/upload.ts";
 import { xorshiftBytes } from "./helpers.ts";
 
@@ -57,9 +57,8 @@ for (const listParts of [true, false]) {
   test(`resume after a cut link re-sends only the lost part (${listParts ? "with" : "without"} listParts)`, async () => {
     const { manifest, source, data } = await setup(12 * MiB, 3);
     const mem = new CountingMemoryStore();
-    const inner = listParts ? mem : withoutListParts(mem);
     // The link dies inside the 3rd part (parts of 2 MiB, one at a time).
-    const store = new FaultyStore(inner, { dropUploadAfterBytes: 5 * MiB });
+    const store = new FaultyStore(mem, { dropUploadAfterBytes: 5 * MiB, noListParts: !listParts });
     const state = new MemoryUploadStateStore();
     const opts = { store, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 };
     await assert.rejects(uploadMedia(opts), LinkDroppedError);
@@ -126,5 +125,20 @@ test("abort stops the upload and keeps it resumable", async () => {
   await assert.rejects(p, { name: "AbortError" });
   const r = await uploadMedia({ store: mem, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1 });
   assert.ok(r.resumedParts >= 1);
+  assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+});
+
+test("an upload the store forgot (expired) is started again instead of failing forever", async () => {
+  const { manifest, source, data } = await setup(8 * MiB, 9);
+  const mem = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  const store = new FaultyStore(mem, { dropUploadAfterBytes: 3 * MiB, noListParts: true });
+  const opts = { store, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 };
+  await assert.rejects(uploadMedia(opts));
+  mem.uploads.clear(); // the store expired it
+  await assert.rejects(uploadMedia(opts), /NoSuchUpload/);
+  assert.equal(await state.load(mediaKey(manifest.hash)), null, "the dead upload is forgotten");
+  const r = await uploadMedia(opts);
+  assert.equal(r.resumedParts, 0);
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
 });

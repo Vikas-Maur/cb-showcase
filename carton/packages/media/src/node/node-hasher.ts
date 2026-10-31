@@ -8,7 +8,11 @@ export function sha256Sync(data: Uint8Array): Uint8Array {
 }
 
 export const nodeHasher: Hasher = {
+  name: "node:crypto",
   async sha256(data) {
     return sha256Sync(data);
+  },
+  sha256HexSync(text) {
+    return createHash("sha256").update(text, "utf8").digest("hex");
   },
 };

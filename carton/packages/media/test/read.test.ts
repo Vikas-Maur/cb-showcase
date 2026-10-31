@@ -59,19 +59,23 @@ for (const streamChunk of [undefined, 64 * 1024]) {
     const store = new FaultyStore(mem, { streamChunk, dropReadAfterBytes: MiB + 5000 });
     // Without streaming, the cut shows up as a failed get: make that happen once.
     let failOnce = !streamChunk;
-    const flaky: BlobStore = Object.assign(Object.create(null), store, {
-      head: store.head.bind(store), put: store.put.bind(store), delete: store.delete.bind(store),
-      createMultipart: store.createMultipart.bind(store), uploadPart: store.uploadPart.bind(store),
-      completeMultipart: store.completeMultipart.bind(store), abortMultipart: store.abortMultipart.bind(store),
-      getStream: store.getStream?.bind(store),
-      get: async (...a: Parameters<BlobStore["get"]>) => {
-        if (failOnce && a[1] && a[1].length > MiB) {
+    const flaky: BlobStore = {
+      kind: "flaky",
+      head: (k) => store.head(k),
+      put: (k, d, o) => store.put(k, d, o),
+      delete: (k) => store.delete(k),
+      list: (p, o) => store.list(p, o),
+      createMultipart: (k, o) => store.createMultipart(k, o),
+      resumeMultipart: (k, u) => store.resumeMultipart(k, u),
+      getStream: store.getStream,
+      get: async (k, r) => {
+        if (failOnce && r?.length !== undefined && r.length > MiB) {
           failOnce = false;
           throw new Error("ECONNRESET");
         }
-        return store.get(...a);
+        return store.get(k, r);
       },
-    });
+    };
     const reader = new MediaReader({ store: flaky, hasher: nodeHasher, cache: new MemoryLeafCache(), retryDelayMs: 1 });
     assert.ok(equalBytes(await collect(reader.read(hash, 0, data.length)), data));
   });

@@ -29,8 +29,9 @@ export function blobSource(blob: Blob): ByteSource {
 }
 
 /** WebCrypto SHA-256: browsers, Workers, Deno, and Node's globalThis.crypto. */
-export function webCryptoHasher(subtle: SubtleCrypto = globalThis.crypto.subtle): Hasher {
+export function webCryptoHasher(subtle: typeof globalThis.crypto.subtle = globalThis.crypto.subtle): Hasher {
   return {
+    name: "webcrypto",
     async sha256(data) {
       return new Uint8Array(await subtle.digest("SHA-256", data as Uint8Array<ArrayBuffer>));
     },
