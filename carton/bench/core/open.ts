@@ -42,19 +42,23 @@ async function build(n: number): Promise<Store> {
   const r = rng(11);
   const ids = (doc.timelineItems as { id: string; startTime: number; endTime: number }[]).map((x) => x.id);
   for (let i = 1; i <= n; i++) {
-    const head = (await c.head()).doc as { timelineItems: { id: string; startTime: number; endTime: number; trimStart?: number }[] };
+    const head = (await c.head()).doc as { timelineItems: { id: string; startTime: number; endTime: number; trimStart?: number; trimEnd?: number }[] };
     const target = pick(r, ids);
     const it = head.timelineItems.find((x) => x.id === target)!;
     const k = i % 4;
-    // a trim-in and its way back, so a clip never runs out of source
-    const tin = (it.trimStart ?? 0) < 0.05 ? 0.1 : -0.1;
+    // a trim-in and its way back, kept valid for the hard validator (start and trim start >= 0, end after start, trim
+    // end after trim start): back when there is room, in when the clip and its source stay longer than 0.1 s
+    const ts = it.trimStart ?? 0,
+      te = it.trimEnd ?? it.endTime - it.startTime;
+    const tin = ts >= 0.1 && it.startTime >= 0.1 ? -0.1 : it.endTime - it.startTime > 0.2 && te - ts > 0.2 ? 0.1 : 0;
     const ops: Op[] =
       k === 0 ? [{ op: "set", path: ["timelineItems", it.id, "name"], value: `take ${i}` }]
       : k === 1 ? [{ op: "set", path: ["timelineItems", it.id, "startTime"], value: it.startTime + 0.5 }, { op: "set", path: ["timelineItems", it.id, "endTime"], value: it.endTime + 0.5 }]
-      : k === 2 ? [{ op: "set", path: ["timelineItems", it.id, "trimStart"], value: (it.trimStart ?? 0) + tin }, { op: "set", path: ["timelineItems", it.id, "startTime"], value: it.startTime + tin }]
+      : k === 2 && tin ? [{ op: "set", path: ["timelineItems", it.id, "trimStart"], value: ts + tin }, { op: "set", path: ["timelineItems", it.id, "startTime"], value: it.startTime + tin }]
+      : k === 2 ? [{ op: "set", path: ["timelineItems", it.id, "name"], value: `take ${i}` }]
       : [{ op: "set", path: ["timelineItems", it.id, "opacity"], value: (i % 10) / 10 }];
     const res = await c.commit({ ops });
-    if (res.status !== "confirmed") throw new Error(`change ${i}: ${res.status}`);
+    if (res.status !== "confirmed") throw new Error(`change ${i}: ${res.status} ${JSON.stringify(res).slice(0, 300)}`);
   }
   await c.close();
   return store;
