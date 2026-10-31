@@ -922,8 +922,7 @@ class CartonImpl implements Carton {
   // ------------------------------------------------------------ writing
   async commit(input: CommitInput): Promise<CommitResult> {
     const cut = input.cut ?? this.#h.current;
-    const rec = this.#h.cut(cut);
-    if (rec?.kind === "published") throw new Error("Carton: a Published cut is read-only; publish again to update it");
+    this.#writable(cut);
     const author = this.#actor(input.author);
     const id = input.id ?? `${this.#rid}.${++this.#n}`;
     if (this.#isShared(cut)) return this.#commitShared(cut, input, author, id);
@@ -1086,6 +1085,14 @@ class CartonImpl implements Carton {
     }
     return out;
   }
+  /**
+   * A Published cut is read-only to every write (commit, undo, revert, restore, fold, fold-some), local or shared, even
+   * one that would change nothing: it changes only by publishing again (web-demo REQ-1; History also refuses a local
+   * one's writes, but a shared cut's are planned here and queued through SharedCut).
+   */
+  #writable(cut: string): void {
+    if (this.#h.cut(cut)?.kind === "published") throw new Error("Carton: a Published cut is read-only; publish again to update it");
+  }
   #foldable(from: string | StateRef): NodeId {
     const h = this.#held(from);
     if (h.doc) throw new Error("Carton.fold: that ref is a pinned state, not a version; commit it to a cut first");
@@ -1093,6 +1100,7 @@ class CartonImpl implements Carton {
   }
   async fold(from: string | StateRef, opts: FoldOptions & { into?: string } = {}): Promise<FoldResult & { preview?: FoldPreview }> {
     const into = opts.into ?? this.#h.current;
+    this.#writable(into);
     if (this.#isShared(into)) return this.#foldShared(into, from, opts);
     const author = this.#actor(opts.author);
     // refresh every cut: the one folded in may have grown in another process
@@ -1110,6 +1118,7 @@ class CartonImpl implements Carton {
   }
   async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult> {
     const into = opts.into ?? this.#h.current;
+    this.#writable(into);
     if (this.#isShared(into)) return this.#foldShared(into, from, opts);
     const author = this.#actor(opts.author);
     const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#foldable(from), { ...opts, author }), { idempotent: true, ...(opts.id ? { id: opts.id } : {}) });
@@ -1131,6 +1140,7 @@ class CartonImpl implements Carton {
   async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
     const target = () => (typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref);
+    this.#writable(cut);
     if (this.#isShared(cut)) return this.#planShared(cut, opts.id, () => ({ doc: this.#h.restoreTarget(target()), author: this.#actor(opts.author), kind: "restore" }));
     // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
     // its head as of now (inside the mutation, after the refresh), never a cached one
@@ -1138,12 +1148,14 @@ class CartonImpl implements Carton {
   }
   async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
+    this.#writable(cut);
     if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planRevert(cut, changeId, { author: this.#actor(opts.author), tail }));
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
     const actor = this.#actor(opts.author);
+    this.#writable(cut);
     if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail }));
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
