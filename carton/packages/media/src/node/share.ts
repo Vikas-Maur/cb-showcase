@@ -11,6 +11,7 @@ import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { BlobStore, Hasher, ProxyEncoder } from "../contracts.ts";
 import { proxyPointerKey, mediaKey, type ProxyPointer } from "../keys.ts";
+import { findProxy } from "../stream.ts";
 import type { Manifest } from "../manifest.ts";
 import { COLLAB_PROXY_720P, encodeProxy, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
 import type { HashScheduler } from "../scheduler.ts";
@@ -174,19 +175,15 @@ async function shareProxy(
   upload: (what: string, path: string, m: Manifest, contentType?: string) => Promise<UploadResult>,
 ): Promise<NonNullable<MediaRecord["proxy"]>> {
   const pointerKey = proxyPointerKey(original.hash, profile.id);
-  const existing = await o.store.get(pointerKey);
-  if (existing) {
-    try {
-      const p = JSON.parse(new TextDecoder().decode(existing)) as ProxyPointer;
-      const head = await o.store.head(mediaKey(p.hash));
-      if (head && head.size === p.size) {
-        o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
-        return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
-      }
-    } catch {
-      // A broken pointer: make the proxy again and overwrite it.
+  const p = await findProxy(o.store, original.hash, profile.id);
+  if (p && "hash" in p) {
+    const head = await o.store.head(mediaKey(p.hash));
+    if (head && head.size === p.size) {
+      o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
+      return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
     }
   }
+  // No pointer, a broken one, or one to an object that's gone: make the proxy again and overwrite it.
   const input = { path: o.local.original! };
   let path: string | null = null;
   let encoder = "cardboard-proxy";
