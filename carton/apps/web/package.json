@@ -1,0 +1,35 @@
+{
+  "name": "@carton/web-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The free web demo of PLAN §17: the client a share link opens (Preact + @carton/react, store-idb, live sync over WebSocket, media through a Service Worker), the seed script, the Director bot, and the watch page.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "serve": "node scripts/serve-node.ts",
+    "seed": "node scripts/seed.ts",
+    "director": "node scripts/director.ts"
+  },
+  "dependencies": {
+    "@carton/blob-memory": "0.1.0",
+    "@carton/blob-fs": "0.1.0",
+    "@carton/cardboard": "0.1.0",
+    "@carton/core": "0.1.0",
+    "@carton/host-http": "0.1.0",
+    "@carton/media": "0.1.0",
+    "@carton/react": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/server-node": "0.1.0",
+    "@carton/store-idb": "0.1.0",
+    "@carton/store-memory": "0.1.0",
+    "preact": "^10.29.8"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.3.0",
+    "happy-dom": "^21.0.4"
+  }
+}
