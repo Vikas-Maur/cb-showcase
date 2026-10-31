@@ -12,7 +12,7 @@
 // each commit the cut's tail is re-read, so changes another process appended are seen; if another process still wins
 // the race, the in-memory model is rebuilt from the store and the commit is retried (its id makes the retry safe).
 
-import type { BlobStore, Hasher, HostAdapter, IdentitySource, ProxyEncoder, Store, StoreCondition, StoreWrite, Transport } from "./plugins.ts";
+import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreWrite, Transport } from "./plugins.ts";
 import type { Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
@@ -169,8 +169,14 @@ export interface Carton {
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
   resolve(ref: StateRef | string): Promise<{ doc: Doc; seq: number; causal: ChangeId[] }>;
   commit(input: CommitInput): Promise<CommitResult>;
-  /** Pin a cut's head, or a held state (`doc`, e.g. a freeze view), for `owner` (a turn, view or MCP ref). */
-  pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string }): Promise<Pin>;
+  /**
+   * Pin a cut's head, or a held state (`doc`, e.g. a freeze view), for `owner` (a turn, view or MCP ref). `seq`: the
+   * confirmed seq the held state was derived from (default: head), so a commit on it is checked against every change
+   * confirmed after that seq rather than treated as having seen them.
+   */
+  pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number }): Promise<Pin>;
+  /** M4: did `author` create element `id` of the sequence at `seqKey`? For host conversions (`HostAdapter.fromHost`'s `own`). */
+  own(author: Actor): OwnFn;
   release(ref: StateRef, owner: string): Promise<void>;
 
   cuts(): Promise<CutRecord[]>;
@@ -709,7 +715,10 @@ class CartonImpl implements Carton {
     await this.#saveNotices(out);
     return out;
   }
-  async pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string }): Promise<Pin> {
+  own(author: Actor): OwnFn {
+    return this.#h.own(author);
+  }
+  async pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number }): Promise<Pin> {
     const cut = opts.cut ?? this.#h.current;
     const now = this.#opts.clock?.() ?? Date.now();
     let ref!: StateRef;
@@ -720,8 +729,9 @@ class CartonImpl implements Carton {
       if (this.#h.headSeq(cut) < sc.queue.headSeq(cut)) await this.#settleShared(cut, { type: "remote", rows: [] });
     }
     await this.#mutate(cut, () => {
-      const pending = sc && this.#h.headSeq(cut) === sc.queue.headSeq(cut) ? sc.queue.pending(cut).map((p) => ({ id: p.id, ops: p.versions[p.versions.length - 1]!.ops })) : [];
-      ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(pending.length ? { pending } : {}), ...(opts.doc ? { doc: opts.doc } : {}) });
+      // a state derived from an older seq (a freeze view) builds on that seq alone
+      const pending = sc && opts.seq === undefined && this.#h.headSeq(cut) === sc.queue.headSeq(cut) ? sc.queue.pending(cut).map((p) => ({ id: p.id, ops: p.versions[p.versions.length - 1]!.ops })) : [];
+      ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(pending.length ? { pending } : {}), ...(opts.doc ? { doc: opts.doc } : {}), ...(opts.seq !== undefined ? { seq: opts.seq } : {}) });
     }, {
       extra: () => {
         const pw = this.#pinWrite(ref);
