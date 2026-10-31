@@ -2,6 +2,7 @@
 // (exact ranges, streaming, head, put, multipart that resumes) and how it uses the API (one signature per key, a
 // fresh token per request). The full BlobStore conformance suite runs in http-blobs-conformance.test.ts.
 
+import { createHash } from "node:crypto";
 import assert from "node:assert/strict";
 import { after, before, test } from "node:test";
 import { LEAF_SIZE, mediaHash, mediaKey, MemoryUploadStateStore, uploadMedia, bytesSource } from "@carton/media";
@@ -87,7 +88,7 @@ test("the token is asked for on every request; a 401 is retried once with a newe
 });
 
 test("keys are opaque over HTTP: case, unicode, spaces, reserved characters", async () => {
-  // the conformance suite's list, minus its 1024-byte key (see the todo test below)
+  // the conformance suite's list, minus its 1024-byte key (a media scope leaves 1006 bytes: see the test below)
   const keys = ["Clip.MP4", "clip.mp4", "dir/Ünïcødé 名前.mov", "a b+c%20d?e#f&g=h", "CON", "nul.txt", "trailing.", "~tilde~b", ".hidden", "...", "deep/b/c"];
   const s = store();
   for (const [i, key] of keys.entries()) await s.put(`opaque/${key}`, new TextEncoder().encode(`v${i}`));
@@ -97,12 +98,16 @@ test("keys are opaque over HTTP: case, unicode, spaces, reserved characters", as
   }
 });
 
-// scopedBlobStore checks the caller's key against the 1024-byte limit and then hands `projects/<p>/media/<key>` to
-// the inner store, which checks it again with the prefix included: keys between 1024 minus the prefix and 1024 bytes
-// pass the first check and fail the second. Not an HTTP problem: the host's own scoped store refuses them too.
-test("a 1024-byte key fits in a project's media scope", { todo: "blob-memory scoped.ts: the prefix counts against the limit" }, async () => {
-  const key = "k/" + "L".repeat(1022);
-  await th.mediaScope("p1").put(key, new Uint8Array([1]));
+// S3 and R2 cap the whole key, prefix included, at 1024 bytes, so a project's media scope (`projects/p1/media/`, 18
+// bytes) takes keys up to 1006 bytes and refuses longer ones with InvalidKey, over HTTP too.
+test("a project's media scope takes keys up to 1024 bytes less its prefix, and says so past it", async () => {
+  const room = 1024 - "projects/p1/media/".length;
+  const fits = "k/" + "L".repeat(room - 2);
+  await th.mediaScope("p1").put(fits, new Uint8Array([1]));
+  await assert.rejects(th.mediaScope("p1").put(fits + "L", new Uint8Array([1])), (e: Error & { code?: string }) => e.code === "InvalidKey");
+  await store().put(fits, new Uint8Array([2]));
+  assert.equal((await store().head(fits))?.size, 1);
+  await assert.rejects(store().put(fits + "L", new Uint8Array([2])), (e: HttpBlobError) => e.code === "InvalidKey" && e.status >= 400 && e.status < 500);
 });
 
 test("put with ifAbsent keeps the first bytes", async () => {
@@ -111,6 +116,26 @@ test("put with ifAbsent keeps the first bytes", async () => {
   const info = await s.put("once", seededBytes(20, 5), { ifAbsent: true });
   assert.equal(info.size, 8);
   assert.ok(sameBytes((await s.get("once"))!, seededBytes(8, 4)));
+});
+
+test("ifAbsent is atomic: of writers racing for a new key, one writes and all of them report its bytes", async () => {
+  const s = store();
+  const tries = [1, 2, 3, 4, 5, 6].map((i) => seededBytes(10 * i, 20 + i));
+  const infos = await Promise.all(tries.map((b) => s.put("race", b, { ifAbsent: true })));
+  const stored = (await s.get("race"))!;
+  assert.ok(tries.some((b) => sameBytes(b, stored)), "the stored bytes are one writer's, whole");
+  for (const info of infos) assert.equal(info.size, stored.byteLength);
+});
+
+test("put sends its sha256: the host refuses a body that doesn't match and keeps one that does", async () => {
+  const s = store();
+  const data = seededBytes(64, 30);
+  const hex = createHash("sha256").update(data).digest("hex");
+  const info = await s.put("checked", data, { sha256: hex });
+  assert.equal(info.sha256, hex);
+  assert.equal((await s.head("checked"))?.sha256, hex);
+  await assert.rejects(s.put("tampered", seededBytes(64, 31), { sha256: hex }), (e: HttpBlobError) => e.status === 400);
+  assert.equal(await s.head("tampered"), null, "nothing written");
 });
 
 test("uploadMedia over HTTP in 1 MiB parts: a cut link resumes from the parts the host lists", async () => {
@@ -180,11 +205,9 @@ test("signed URLs point at the base URL the client uses, whatever address the ho
   assert.ok(sameBytes((await s.get("where"))!, seededBytes(10, 13)));
 });
 
-// server-node builds its origin from the listen address (host.ts: `http://${hostPart}:${port}`), and host-http signs
-// blob URLs with that origin, so a browser that reached the host as `localhost`, a LAN name or through a tunnel gets
-// URLs for 127.0.0.1 or 0.0.0.0: another origin, which it can't fetch (no CORS) or can't reach. httpBlobStore works
-// around it (above); a page using /blobs/sign directly (an <img> for a poster) would not.
-test("server-node signs blob URLs for the Host the client used", { todo: "server-node uses its listen address as the origin" }, async () => {
+// host-http signs blob URLs with the origin the client reached (its Host header; behind a proxy, `trustProxy` or
+// `publicOrigin`), so a page using /blobs/sign directly (an <img> for a poster) gets a URL it can fetch.
+test("server-node signs blob URLs for the Host the client used", async () => {
   const viaName = th.url.replace("127.0.0.1", "localhost");
   const r = await fetch(`${viaName}/api/projects/p1/blobs/sign`, {
     method: "POST",

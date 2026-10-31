@@ -2,7 +2,7 @@
 // the Worker under `wrangler dev`: local only, never deployed), the seed, Chromium through Playwright (required by
 // path: no runner, node:test drives it), and a person joining from an invite link.
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdirSync, rmSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
@@ -81,12 +81,21 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
   const inspector = await freePort();
   const adminToken = randomBytes(24).toString("base64url");
   const secret = randomBytes(32).toString("base64url");
-  const wrangler = join(carton, "node_modules", ".bin", "wrangler");
   const proc = spawn(
-    wrangler,
-    ["dev", "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--log-level", process.env.CARTON_E2E_HOSTLOG ? "debug" : "warn", "--show-interactive-dev-session=false"],
-    { cwd: join(carton, "packages", "server-cloudflare"), stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", XDG_CONFIG_HOME: join(dir, "xdg") } },
+    process.execPath,
+    [wranglerEntry(), "dev", "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--log-level", process.env.CARTON_E2E_HOSTLOG ? "debug" : "warn", "--show-interactive-dev-session=false"],
+    {
+      cwd: join(carton, "packages", "server-cloudflare"),
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", XDG_CONFIG_HOME: join(dir, "xdg") },
+      // POSIX: its own process group, so the whole tree can be signalled (killTree); Windows needs no group (taskkill /T)
+      detached: process.platform !== "win32",
+      windowsHide: true,
+    },
   );
+  // a run that ends without close() (a crash, Ctrl-C) still takes the tree down
+  const onExit = () => killTreeNow(proc);
+  process.once("exit", onExit);
   let log = "";
   proc.stdout!.on("data", (b: Buffer) => (log += b.toString()));
   proc.stderr!.on("data", (b: Buffer) => (log += b.toString()));
@@ -94,7 +103,8 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
   try {
     await waitHealthy(url, 120_000, proc);
   } catch (e) {
-    proc.kill("SIGKILL");
+    await killTree(proc, 0);
+    process.off("exit", onExit);
     throw new Error(`${(e as Error).message}\n${log.slice(-3000)}`);
   }
   return {
@@ -104,11 +114,65 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
     close: async () => {
       // the host's own log, for a failed run (CARTON_E2E_HOSTLOG=<file>)
       if (process.env.CARTON_E2E_HOSTLOG) (await import("node:fs")).writeFileSync(process.env.CARTON_E2E_HOSTLOG, log);
-      proc.kill("SIGTERM");
-      await new Promise((r) => setTimeout(r, 500));
-      if (proc.exitCode === null) proc.kill("SIGKILL");
+      await killTree(proc, 500);
+      process.off("exit", onExit);
     },
   };
+}
+
+/**
+ * wrangler's own JS entry point (its package's `bin`), to run with this Node: the same command on every OS. On Windows
+ * `node_modules/.bin/wrangler` is a `.cmd`, which spawn can't run without a shell (ENOENT), and a shell brings quoting.
+ */
+function wranglerEntry(): string {
+  const req = createRequire(join(carton, "packages", "server-cloudflare", "package.json"));
+  const pkg = req.resolve("wrangler/package.json");
+  const { bin } = req(pkg) as { bin?: string | Record<string, string> };
+  const rel = typeof bin === "string" ? bin : bin?.wrangler;
+  if (!rel) throw new Error(`${pkg} names no wrangler bin`);
+  return join(dirname(pkg), rel);
+}
+
+const gone = (p: ChildProcess) => p.exitCode !== null || p.signalCode !== null || p.pid === undefined;
+
+/** Kill `proc` and everything it started at once, synchronously (for process exit). */
+function killTreeNow(proc: ChildProcess): void {
+  if (gone(proc)) return;
+  if (process.platform === "win32") spawnSync("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+  else signalGroup(proc, "SIGKILL");
+}
+
+function signalGroup(proc: ChildProcess, sig: NodeJS.Signals): void {
+  try {
+    process.kill(-proc.pid!, sig); // the group spawn's `detached` made, led by proc
+  } catch {
+    // the group is gone
+  }
+}
+
+/**
+ * Stop `proc` and the processes it started: wrangler's launcher runs its CLI in a second Node, which runs workerd, and
+ * killing only the first leaves the others holding the port and the state folder. POSIX: SIGTERM to the process
+ * group, then SIGKILL to whatever is left after `graceMs`. Windows has no signals: `taskkill /T /F` ends the tree.
+ */
+async function killTree(proc: ChildProcess, graceMs: number): Promise<void> {
+  const exited = gone(proc) ? Promise.resolve() : new Promise<void>((r) => proc.once("exit", () => r()));
+  const wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+  if (process.platform === "win32") {
+    if (!gone(proc))
+      await new Promise<void>((r) => {
+        const k = spawn("taskkill", ["/pid", String(proc.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+        k.on("exit", () => r());
+        k.on("error", () => r());
+      });
+  } else {
+    // even when proc has exited, its children may not have: the group outlives its leader
+    signalGroup(proc, "SIGTERM");
+    if (graceMs > 0) await Promise.race([exited, wait(graceMs)]);
+    await wait(graceMs > 0 ? 200 : 0); // a moment for workerd to follow wrangler down
+    signalGroup(proc, "SIGKILL");
+  }
+  await Promise.race([exited, wait(5000)]);
 }
 
 export async function launchChromium(): Promise<Browser> {
