@@ -1,0 +1,6 @@
+{
+  // Type-checks the kit's runnable samples (the quickstart scripts and their test): `npx tsc -p kit`.
+  "extends": "../tsconfig.node.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["quickstart", "test"]
+}
