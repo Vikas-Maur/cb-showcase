@@ -1,18 +1,24 @@
 // Phase B: runs one measurement of measure.json on this runner and reports it.
-//   node ci/measure.mjs --id <id>
-// Writes into <results>: the raw outputs the steps produce, measure-<id>.json (the machine, every step's exit code
-// and time, and each report's per-cell medians with every run), and a job summary. A hosted runner is a shared VM:
-// only comparisons made inside one job mean anything; absolute numbers describe this runner, not a user's machine.
-import { execFileSync, spawn } from "node:child_process";
+//   node ci/measure.mjs --id <id> [--timeout-min <the job's timeout>]
+// Writes into <results>: the raw outputs the steps produce, each step's stderr (<id>-step<N>.stderr.log),
+// measure-<id>.json (the machine, every run's exit code, signal and time, and each report's per-cell medians with
+// every run), and a job summary. measure-<id>.json is written at the start and after every run, and the steps stop at
+// an internal deadline 4 minutes before the job's timeout, so a measurement that runs long still leaves its record.
+// A hosted runner is a shared VM: only comparisons made inside one job mean anything; absolute numbers describe this
+// runner, not a user's machine.
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { CARTON, dirs, machine, summary, testEnv } from "./env.mjs";
+import { CARTON, OS, dirs, machine, summary, testEnv } from "./env.mjs";
 
 const args = process.argv.slice(2);
-const id = args[args.indexOf("--id") + 1];
+const opt = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : undefined);
+const id = opt("--id");
 const config = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "measure.json"), "utf8"));
 const m = config.measurements.find((x) => x.id === id);
 if (!m) throw new Error(`no measurement "${id}" in measure.json`);
+const t0 = Date.now();
+const deadline = t0 + Math.max(1, Number(opt("--timeout-min") ?? m.timeout ?? 60) - 4) * 60_000;
 
 const tmp = path.join(dirs.root, "carton-measure-tmp");
 fs.mkdirSync(tmp, { recursive: true });
@@ -34,24 +40,58 @@ const sh = (cmd, a) => {
   }
 };
 
-function runOnce(step, stdoutFile) {
+function killTree(child) {
+  if (OS === "windows") spawnSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+  else {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {}
+  }
+}
+
+// One run of a step: stdout to the console and `stdoutFile` (appended), stderr to the console and `stderrFile`.
+// Resolves once the process is gone and both files are flushed. Killed at the internal deadline.
+function runOnce(step, stdoutFile, stderrFile, label) {
   const [cmd, ...a] = step.run.map(fill);
   const cwd = path.resolve(CARTON, step.cwd ?? ".");
   const env = { ...process.env, ...testEnv(), ...Object.fromEntries(Object.entries(step.env ?? {}).map(([k, v]) => [k, fill(v)])) };
-  for (const k of ["TMPDIR"]) if (env[k]) fs.mkdirSync(env[k], { recursive: true });
+  if (env.TMPDIR) fs.mkdirSync(env.TMPDIR, { recursive: true });
+  const t = Date.now();
+  const out = stdoutFile ? fs.createWriteStream(stdoutFile, { flags: "a" }) : null;
+  const err = fs.createWriteStream(stderrFile, { flags: "a" });
+  err.write(`\n=== ${label} (${new Date().toISOString()})\n`);
+  const done = (s) => (s ? new Promise((r) => s.end(r)) : Promise.resolve());
   return new Promise((resolve) => {
-    const t0 = Date.now();
-    const out = stdoutFile ? fs.createWriteStream(stdoutFile, { flags: "a" }) : null;
-    const child = spawn(cmd, a, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    let text = "";
+    const keep = (d) => {
+      if (text.length < 4 << 20) text += d;
+    };
+    let error = null;
+    let killed = false;
+    const child = spawn(cmd, a, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: OS !== "windows" });
+    const timer = setTimeout(() => {
+      killed = true;
+      err.write(`\n[measure] killed at the internal deadline\n`);
+      killTree(child);
+    }, Math.max(0, deadline - Date.now()));
     child.stdout.on("data", (d) => {
       process.stdout.write(d);
       out?.write(d);
+      keep(d);
     });
-    child.stderr.on("data", (d) => process.stderr.write(d));
-    child.on("error", (e) => console.error(`[measure] could not start ${cmd}: ${e.message}`));
-    child.on("close", (code, signal) => {
-      out?.end();
-      resolve({ code, signal, ms: Date.now() - t0 });
+    child.stderr.on("data", (d) => {
+      process.stderr.write(d);
+      err.write(d);
+      keep(d);
+    });
+    child.on("error", (e) => {
+      error = e.message;
+      err.write(`[measure] could not start ${cmd}: ${e.message}\n`);
+    });
+    child.on("close", async (code, signal) => {
+      clearTimeout(timer);
+      await Promise.all([done(out), done(err)]);
+      resolve({ code, signal, ms: Date.now() - t, ...(killed ? { deadline: true } : {}), ...(error ? { error } : {}), text });
     });
   });
 }
@@ -71,14 +111,21 @@ function flatten(o, prefix = "", out = {}) {
   return out;
 }
 const readLines = (f) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8").split(/\r?\n/).filter((l) => l.trim()) : []);
-const parseJsonLines = (f) => readLines(f).flatMap((l) => {
-  try {
-    const v = JSON.parse(l);
-    return v && typeof v === "object" ? [v] : [];
-  } catch {
-    return [];
+// JSON lines; a line that doesn't parse is counted, so a report can fail on it
+function parseJsonLines(f) {
+  const rows = [];
+  let bad = 0;
+  for (const l of readLines(f)) {
+    try {
+      const v = JSON.parse(l);
+      if (v && typeof v === "object") rows.push(v);
+      else bad++;
+    } catch {
+      if (l.trim().startsWith("{")) bad++;
+    }
   }
-});
+  return { rows, bad };
+}
 
 // `groupBy` keys may be dotted paths into a row (`link.name`); `where` keeps only rows whose fields equal its values.
 const at = (o, k) => k.split(".").reduce((x, p) => (x == null ? undefined : x[p]), o);
@@ -97,31 +144,67 @@ function cellsReport(rep, allRows) {
     for (const r of rs) for (const [k, v] of Object.entries(flatten(r))) if (!ignored(k) && !(rep.groupBy ?? []).includes(k) && !Object.hasOwn(rep.where ?? {}, k)) (metrics[k] ??= []).push(v);
     cells.push({ cell: g, runs: rs.length, metrics: Object.fromEntries(Object.entries(metrics).map(([k, xs]) => [k, { median: median(xs), runs: xs }])) });
   }
-  return { file: rep.file, kind: "cells", rows: rows.length, cells };
+  return { rows: rows.length, cells };
 }
 
+// A report is checked, not just read: `expect` gives the rows, cells and runs per cell the measurement must produce
+// (a runner that skips a failed cell would otherwise leave valid-looking medians over fewer runs, or one side of an
+// A/B), and `noErrors` names an array field that must be empty in every row (page errors).
 function report(rep) {
   const f = path.join(dirs.results, rep.file);
-  if (!fs.existsSync(f)) return { file: rep.file, missing: true };
-  if (rep.kind === "json") {
-    const rows = parseJsonLines(f);
-    let whole = null;
-    try {
-      whole = JSON.parse(fs.readFileSync(f, "utf8"));
-    } catch {}
-    return { file: rep.file, kind: "json", value: whole ?? (rows.length > 1 ? rows : (rows[0] ?? null)) };
+  const problems = [];
+  const e = rep.expect ?? {};
+  if (rep.kind === "repeat") {
+    // judged from the runs' own records (exit codes and their diagnostics), not from what they printed
+    const r = repeats[rep.file];
+    if (!r) return { file: rep.file, kind: "repeat", problems: ["no repeat record"] };
+    if (r.unexplained) problems.push(`${r.unexplained} run(s) failed without the expected diagnostic`);
+    return { file: rep.file, kind: "repeat", ...r, problems };
   }
-  if (rep.kind === "repeat") return { file: rep.file, kind: "repeat", ...repeats[rep.file] };
-  if (rep.kind === "tap-json") return { file: rep.file, kind: "tap-json", value: readLines(f).flatMap((l) => {
-    const x = /^\s*# (\{.*\})\s*$/.exec(l);
-    if (!x) return [];
+  if (!fs.existsSync(f) || fs.statSync(f).size === 0) return { file: rep.file, problems: ["missing or empty"] };
+  if (rep.kind === "json") {
+    let value = null;
     try {
-      return [JSON.parse(x[1])];
+      value = JSON.parse(fs.readFileSync(f, "utf8"));
     } catch {
-      return [];
+      const { rows, bad } = parseJsonLines(f);
+      if (bad) problems.push(`${bad} line(s) are not JSON`);
+      value = rows.length > 1 ? rows : (rows[0] ?? null);
     }
-  }), passed: readLines(f).some((l) => /^# fail 0$/.test(l)) };
-  return cellsReport(rep, parseJsonLines(f));
+    if (value === null) problems.push("no JSON value");
+    if (e.rows !== undefined && (Array.isArray(value) ? value.length : value === null ? 0 : 1) !== e.rows) problems.push(`expected ${e.rows} JSON value(s)`);
+    return { file: rep.file, kind: "json", value, problems };
+  }
+  if (rep.kind === "tap-json") {
+    const lines = readLines(f);
+    const value = lines.flatMap((l) => {
+      const x = /^\s*# (\{.*\})\s*$/.exec(l);
+      if (!x) return [];
+      try {
+        return [JSON.parse(x[1])];
+      } catch {
+        return [];
+      }
+    });
+    const passed = lines.some((l) => /^# fail 0$/.test(l)) && lines.some((l) => /^# pass [1-9]/.test(l));
+    if (!passed) problems.push("the tests did not all pass");
+    if (!value.length) problems.push("no JSON diagnostics");
+    if (e.rows !== undefined && value.length !== e.rows) problems.push(`expected ${e.rows} JSON diagnostic(s), got ${value.length}`);
+    return { file: rep.file, kind: "tap-json", value, passed, problems };
+  }
+  const { rows, bad } = parseJsonLines(f);
+  if (bad) problems.push(`${bad} line(s) are not JSON`);
+  const c = cellsReport(rep, rows);
+  if (!c.rows) problems.push("no rows");
+  if (e.rows !== undefined && c.rows !== e.rows) problems.push(`expected ${e.rows} rows, got ${c.rows}`);
+  if (e.cells !== undefined && c.cells.length !== e.cells) problems.push(`expected ${e.cells} cells, got ${c.cells.length}`);
+  if (e.runsPerCell !== undefined) for (const x of c.cells) if (x.runs !== e.runsPerCell) problems.push(`cell "${x.cell}" has ${x.runs} runs, expected ${e.runsPerCell}`);
+  for (const k of rep.groupBy ?? []) if (rows.some((r) => at(r, k) === undefined) && !(rep.optionalKeys ?? []).includes(k)) problems.push(`some rows lack the grouping key ${k}`);
+  if (rep.noErrors) {
+    const n = rows.filter((r) => Array.isArray(at(r, rep.noErrors)) && at(r, rep.noErrors).length).length;
+    if (n) problems.push(`${n} row(s) with ${rep.noErrors}`);
+  }
+  return { file: rep.file, kind: "cells", ...c, problems };
 }
 
 // ---- main ----
@@ -129,38 +212,57 @@ const info = { ...machine(), lscpu: sh("lscpu", [])?.split("\n").filter((l) => /
 console.log(`measurement ${id} (${m.agent}): ${info.cpu}, ${info.cores} cores, ${info.memGiB} GiB, node ${info.node}`);
 const steps = [];
 const repeats = {};
-for (const step of m.steps) {
-  console.log(`::group::${step.label}`);
+const recordFile = path.join(dirs.results, `measure-${id}.json`);
+const record = (status, reports = null) =>
+  fs.writeFileSync(recordFile, JSON.stringify({ id, agent: m.agent, claim: m.claim, status, sha: process.env.GITHUB_SHA ?? null, run: process.env.GITHUB_RUN_ID ?? null, at: new Date().toISOString(), machine: info, steps, reports }, null, 1));
+record("running");
+
+for (const [n, step] of m.steps.entries()) {
   const stdoutFile = step.stdoutTo ? fill(step.stdoutTo) : null;
+  const stderrFile = path.join(dirs.results, `${id}-step${n + 1}.stderr.log`);
+  const s = { label: step.label, command: step.run.join(" "), runs: [], ok: false, stderr: path.basename(stderrFile) };
+  steps.push(s);
+  if (Date.now() >= deadline) {
+    s.skipped = "the internal deadline had passed";
+    record("running");
+    continue;
+  }
   if (stdoutFile) fs.rmSync(stdoutFile, { force: true });
-  const runs = [];
-  for (let i = 0; i < (step.repeat ?? 1); i++) runs.push(await runOnce(step, stdoutFile));
+  console.log(`::group::${step.label}`);
+  for (let i = 0; i < (step.repeat ?? 1) && Date.now() < deadline; i++) {
+    const { text, ...r } = await runOnce(step, stdoutFile, stderrFile, `run ${i + 1}`);
+    // `failPattern`: a failed run counts as an observation only when it shows the expected diagnostic
+    if (r.code !== 0 && step.failPattern) r.explained = new RegExp(step.failPattern).test(text);
+    s.runs.push(r);
+    record("running");
+  }
   console.log("::endgroup::");
-  const failed = runs.filter((r) => r.code !== 0).length;
-  steps.push({ label: step.label, command: step.run.join(" "), runs: runs.length, failed, ms: runs.reduce((a, r) => a + r.ms, 0), ok: step.allowFail || failed === 0 });
-  if (step.repeat && stdoutFile) repeats[path.basename(stdoutFile)] = { runs: runs.length, failedRuns: failed, codes: runs.map((r) => r.code) };
-  console.log(`${step.allowFail || failed === 0 ? "DONE" : "FAIL"} ${step.label}: ${runs.length} run(s), ${failed} failed`);
+  const failed = s.runs.filter((r) => r.code !== 0);
+  const unexplained = failed.filter((r) => !r.explained).length;
+  s.ok = s.runs.length === (step.repeat ?? 1) && !s.runs.some((r) => r.deadline) && (step.failPattern ? unexplained === 0 : failed.length === 0);
+  if (step.failPattern && stdoutFile) repeats[path.basename(stdoutFile)] = { runs: s.runs.length, failedRuns: failed.length, observed: failed.length - unexplained, unexplained, codes: s.runs.map((r) => r.code) };
+  console.log(`${s.ok ? "DONE" : "FAIL"} ${step.label}: ${s.runs.length} run(s), ${failed.length} failed${step.failPattern ? ` (${failed.length - unexplained} with the expected diagnostic)` : ""}`);
+  record("running");
 }
 info.uptimeAfter = sh("uptime", []);
 const reports = (m.reports ?? []).map(report);
-const result = { id, agent: m.agent, claim: m.claim, sha: process.env.GITHUB_SHA ?? null, run: process.env.GITHUB_RUN_ID ?? null, at: new Date().toISOString(), machine: info, steps, reports };
-fs.writeFileSync(path.join(dirs.results, `measure-${id}.json`), JSON.stringify(result, null, 1));
+const ok = steps.every((s) => s.ok) && reports.every((r) => !r.problems.length);
+record(ok ? "complete" : "failed", reports);
 
 // the job summary: every cell's medians with every run
 const fmt = (x) => (typeof x !== "number" ? String(x) : Math.abs(x) >= 100 ? x.toFixed(0) : Math.abs(x) >= 1 ? x.toFixed(2) : x.toFixed(3));
-let md = `### ${id} (${m.agent})\n\n${m.claim}\n\n${info.cpu}, ${info.cores} cores, ${info.memGiB} GiB, Node ${info.node}${info.image ? ", " + info.image : ""}. ${info.uptimeBefore ?? ""}\n\n`;
-md += steps.map((s) => `- ${s.ok ? "✅" : "❌"} ${s.label}: ${s.runs} run(s), ${s.failed} failed, ${(s.ms / 1000).toFixed(0)} s`).join("\n") + "\n";
+let md = `### ${id} (${m.agent}) ${ok ? "✅" : "❌"}\n\n${m.claim}\n\n${info.cpu}, ${info.cores} cores, ${info.memGiB} GiB, Node ${info.node}${info.image ? ", " + info.image : ""}. ${info.uptimeBefore ?? ""}\n\n`;
+md += steps.map((s) => `- ${s.ok ? "✅" : "❌"} ${s.label}: ${s.skipped ?? `${s.runs.length} run(s), exit ${s.runs.map((r) => r.code ?? r.signal).join(" ")}, ${(s.runs.reduce((a, r) => a + r.ms, 0) / 1000).toFixed(0)} s`}`).join("\n") + "\n";
 for (const r of reports) {
-  md += `\n#### ${r.file}\n\n`;
-  if (r.missing) md += "missing\n";
-  else if (r.kind === "cells")
+  md += `\n#### ${r.file}${r.problems.length ? " ❌ " + r.problems.join("; ") : ""}\n\n`;
+  if (r.kind === "cells")
     for (const c of r.cells) {
       md += `<details><summary>${c.cell || "all"} (${c.runs} runs)</summary>\n\n| metric | median | every run |\n|---|---|---|\n`;
       for (const [k, v] of Object.entries(c.metrics)) md += `| ${k} | ${fmt(v.median)} | ${v.runs.map(fmt).join(", ")} |\n`;
       md += "\n</details>\n";
     }
-  else md += "```json\n" + JSON.stringify(r.value ?? r, null, 1).slice(0, 20000) + "\n```\n";
+  else if (r.kind) md += "```json\n" + JSON.stringify(r.value ?? r, null, 1).slice(0, 20000) + "\n```\n";
 }
 summary(md);
-console.log(`results: ${path.join(dirs.results, `measure-${id}.json`)}`);
-process.exitCode = steps.every((s) => s.ok) && reports.every((r) => !r.missing) ? 0 : 1;
+console.log(`results: ${recordFile} (${ok ? "complete" : "failed"})`);
+process.exitCode = ok ? 0 : 1;

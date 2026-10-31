@@ -1,5 +1,5 @@
 {
-  "$comment": "Phase B: the agents' 'Measurements to run', re-run on CI runners (AGENTS.md rule 6), one job per id (carton-measure.yml, measure.mjs). A step is {label, cwd (relative to carton/), run, env, stdoutTo?, repeat?, allowFail?}; {node}, {electron}, {tmp}, {results}, {pwModules} are filled in. A report reads a results file: jsonl rows grouped by `groupBy`, every numeric field (nested ones as dotted paths) given as median and every run, minus `ignore` (exact keys or prefixes).",
+  "$comment": "Phase B: the agents' 'Measurements to run', re-run on CI runners (AGENTS.md rule 6), one job per id (carton-measure.yml, measure.mjs). A step is {label, cwd (relative to carton/), run, env, stdoutTo?, repeat?, failPattern?}; {node}, {electron}, {tmp}, {results}, {pwModules} are filled in. A report reads a results file: jsonl rows grouped by `groupBy`, every numeric field (nested ones as dotted paths) given as median and every run, minus `ignore` (exact keys or prefixes). A report's `expect` ({rows, cells, runsPerCell}) and `noErrors` (an array field that must be empty) make an incomplete run fail; `failPattern`: a failed run of a repeated step counts as an observation only if its output matches it, any other failure fails the measurement.",
   "measurements": [
     {
       "id": "stores-sqlite-cells",
@@ -45,7 +45,11 @@
             "node",
             "head",
             "keyframeSeq"
-          ]
+          ],
+          "expect": {
+            "cells": 8,
+            "runsPerCell": 7
+          }
         }
       ]
     },
@@ -97,7 +101,11 @@
             "node",
             "head",
             "keyframeSeq"
-          ]
+          ],
+          "expect": {
+            "cells": 8,
+            "runsPerCell": 7
+          }
         }
       ]
     },
@@ -134,20 +142,20 @@
           "stdoutTo": "{results}/compress.jsonl"
         },
         {
-          "label": "Carton on carton.db, three processes committing back to back, TIGHT=1, 20 runs (counts runs that fail)",
+          "label": "Carton on carton.db, three processes committing back to back, TIGHT=1, 20 runs (counts runs that fail with core's 'store changed under this write'; any other failure fails the measurement)",
           "cwd": "packages/store-sqlite",
           "env": {
             "TIGHT": "1"
           },
           "repeat": 20,
-          "allowFail": true,
           "run": [
             "{node}",
             "--test",
             "--test-name-pattern=three processes committing",
             "test/import.test.ts"
           ],
-          "stdoutTo": "{results}/tight.log"
+          "stdoutTo": "{results}/tight.log",
+          "failPattern": "Carton: the store changed under this write"
         },
         {
           "label": "P3/P3b under Node (test/xproc.test.ts)",
@@ -178,7 +186,10 @@
       "reports": [
         {
           "file": "idb-values.json",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 1
+          }
         },
         {
           "file": "compress.jsonl",
@@ -188,7 +199,11 @@
           "ignore": [
             "node",
             "items"
-          ]
+          ],
+          "expect": {
+            "cells": 3,
+            "runsPerCell": 1
+          }
         },
         {
           "file": "tight.log",
@@ -196,11 +211,17 @@
         },
         {
           "file": "xproc-node.tap",
-          "kind": "tap-json"
+          "kind": "tap-json",
+          "expect": {
+            "rows": 2
+          }
         },
         {
           "file": "xproc-electron.tap",
-          "kind": "tap-json"
+          "kind": "tap-json",
+          "expect": {
+            "rows": 2
+          }
         }
       ]
     },
@@ -251,7 +272,10 @@
       "reports": [
         {
           "file": "ui-size.json",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 6
+          }
         },
         {
           "file": "ui-bench.jsonl",
@@ -270,6 +294,16 @@
             "vps",
             "burst",
             "errors"
+          ],
+          "expect": {
+            "cells": 14,
+            "runsPerCell": 3
+          },
+          "noErrors": "errors",
+          "optionalKeys": [
+            "n",
+            "full",
+            "shots"
           ]
         }
       ]
@@ -311,7 +345,10 @@
       "reports": [
         {
           "file": "idb-values-x3.jsonl",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 3
+          }
         },
         {
           "file": "compress-x5.jsonl",
@@ -321,7 +358,39 @@
           "ignore": [
             "node",
             "items"
-          ]
+          ],
+          "expect": {
+            "cells": 3,
+            "runsPerCell": 5
+          }
+        }
+      ]
+    },
+    {
+      "id": "stores-compress-samples",
+      "agent": "stores",
+      "claim": "verifier's cross-check of S7 (inflate vs JSON.parse of a level-3 keyframe): every sample kept, the two operations alternated, wall and CPU time (ci/xcheck/compress-samples.ts), in 5 fresh processes",
+      "timeout": 20,
+      "steps": [
+        {
+          "label": "ci/xcheck/compress-samples.ts 200 iterations after 20 warm-up, 5 processes",
+          "repeat": 5,
+          "run": [
+            "{node}",
+            "ci/xcheck/compress-samples.ts",
+            "200",
+            "20"
+          ],
+          "stdoutTo": "{results}/compress-samples.jsonl"
+        }
+      ],
+      "reports": [
+        {
+          "file": "compress-samples.jsonl",
+          "kind": "json",
+          "expect": {
+            "rows": 5
+          }
         }
       ]
     },
@@ -372,7 +441,10 @@
       "reports": [
         {
           "file": "media-size.json",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 1
+          }
         },
         {
           "file": "hash-throughput.jsonl",
@@ -519,7 +591,8 @@
             "link",
             "load",
             "requests"
-          ]
+          ],
+          "optionalKeys": []
         },
         {
           "file": "ffr-play.jsonl",
@@ -537,7 +610,8 @@
             "link",
             "load",
             "requests"
-          ]
+          ],
+          "optionalKeys": []
         },
         {
           "file": "ffr-verified.jsonl",
@@ -555,7 +629,8 @@
             "link",
             "load",
             "requests"
-          ]
+          ],
+          "optionalKeys": []
         }
       ]
     },
@@ -605,6 +680,16 @@
             "size",
             "jitter",
             "pace"
+          ],
+          "optionalKeys": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
           ]
         }
       ]
@@ -672,6 +757,16 @@
             "size",
             "jitter",
             "pace"
+          ],
+          "optionalKeys": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
           ]
         }
       ]

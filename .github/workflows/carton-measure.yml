@@ -78,7 +78,7 @@ jobs:
           key: carton-measure-tools-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/measure.json') }}
 
       - name: Measure ${{ matrix.id }}
-        run: node ci/measure.mjs --id ${{ matrix.id }}
+        run: node ci/measure.mjs --id ${{ matrix.id }} --timeout-min ${{ matrix.timeout }}
 
       - name: Upload results
         if: always()
