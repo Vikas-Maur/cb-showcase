@@ -174,9 +174,14 @@ export class R2BlobStore implements BlobStore {
       uploadId,
       async uploadPart(partNumber, data) {
         checkPartNumber(partNumber);
-        // R2 refuses parts of an aborted, completed or unknown upload itself (10024), so no marker check first
+        // The marker goes before the part and comes back after it: if anything fails in between, the part is simply
+        // not listed and a resuming client sends it again. Replacing a part the other way round could leave the old
+        // marker naming an etag R2 no longer has. (R2 deletes are free; R2 refuses parts of an aborted, completed or
+        // unknown upload itself, 10024.)
+        const marker = `${UPLOADS}${uploadId}/p${String(partNumber).padStart(5, "0")}`;
+        await b.delete(marker);
         const part = await b.resumeMultipartUpload(key, uploadId).uploadPart(partNumber, data).catch(translate);
-        await b.put(`${UPLOADS}${uploadId}/p${String(partNumber).padStart(5, "0")}`, null, {
+        await b.put(marker, null, {
           customMetadata: { partNumber: String(partNumber), etag: part.etag, size: String(data.byteLength) },
         });
         return { partNumber, etag: part.etag };
@@ -197,7 +202,13 @@ export class R2BlobStore implements BlobStore {
         await store.#cleanup(uploadId);
         return infoOf(o);
       },
+      // Idempotent for a gone upload, but bound to the key: an id alone must not reach another project's upload or
+      // its part records.
       async abort() {
+        if (!uploadId || uploadId.includes("/")) throw new BlobError("NoSuchUpload", `no multipart upload ${JSON.stringify(uploadId)}`);
+        const meta = await b.head(`${UPLOADS}${uploadId}/meta`);
+        if (meta && meta.customMetadata?.key !== key) throw new BlobError("NoSuchUpload", `no multipart upload ${uploadId} for ${key}`);
+        if (!meta) return;
         await b.resumeMultipartUpload(key, uploadId).abort().catch((e) => (r2Code(e) === 10024 ? undefined : translate(e)));
         await store.#cleanup(uploadId);
       },

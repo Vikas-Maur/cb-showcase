@@ -80,7 +80,7 @@ export class BlobVault {
     const q = url.searchParams;
     const key = q.get("k") ?? "";
     try {
-      if (url.pathname !== "/list" && url.pathname !== "/mp/abort") checkKey(key);
+      if (url.pathname !== "/list") checkKey(key);
       switch (`${req.method} ${url.pathname}`) {
         case "PUT /o": {
           const data = new Uint8Array(await req.arrayBuffer());
@@ -186,8 +186,11 @@ export class BlobVault {
           return res ? json(this.#info(res)) : fail("NoSuchUpload", `no multipart upload ${id} for ${key}`, 404);
         }
         case "POST /mp/abort": {
+          // idempotent for a gone upload, but bound to the key: an id alone must not reach another project's upload
           const id = q.get("id") ?? "";
-          this.#state.storage.transactionSync(() => this.#dropUpload(id));
+          const up = this.#all("SELECT key FROM uploads WHERE id = ?", id)[0];
+          if (up && up.key !== key) return fail("NoSuchUpload", `no multipart upload ${id} for ${key}`, 404);
+          if (up) this.#state.storage.transactionSync(() => this.#dropUpload(id));
           return json({});
         }
       }
