@@ -440,7 +440,9 @@ test("Windows: a carton.db whose ACL denies writing is refused the same way", { 
   const a = await openProjectStore(p);
   await a.store.write(put(1));
   await a.store.close();
-  const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  // Windows' own tools by full path: the first `whoami` on PATH can be Git for Windows' GNU one (`extra operand '/user'`).
+  const system32 = (exe: string) => path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", `${exe}.exe`);
+  const run = (cmd: string, args: string[]) => execFileSync(system32(cmd), args, { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
   // The deny names this process's own SID (from its token), not a composed DOMAIN\user that may not match it
   // (verify-ci #17). Only write data and append data are denied: icacls' "(W)" is FILE_GENERIC_WRITE, which also
   // holds SYNCHRONIZE and READ_CONTROL, and denying those makes every open fail, reads included.
@@ -466,10 +468,12 @@ test("Windows: a carton.db whose ACL denies writing is refused the same way", { 
     if (sqliteWrites) {
       const groups = run("whoami", ["/groups", "/fo", "csv", "/nh"]);
       const diag = `whoami /user: ${sid}\nicacls:\n${run("icacls", [p.inBundle])}\nwhoami /groups:\n${groups}`;
-      if (/S-1-5-32-544[^\n]*Enabled group/i.test(groups)) {
+      // Elevated: the token carries the High (or System) mandatory level, whose SIDs aren't localized as the
+      // attribute names in this output are.
+      if (/S-1-16-(12288|16384)\b/.test(groups)) {
         // An elevated administrator's writes aren't stopped by the deny here; the refusal path is covered on
         // Windows by the read-only-attribute tests above.
-        t.skip(`running elevated (Administrators enabled): the deny ACE doesn't stop this process's writes\n${diag}`);
+        t.skip(`running elevated (high integrity level): the deny ACE doesn't stop this process's writes\n${diag}`);
         return;
       }
       assert.fail(`the ACL didn't stop SQLite writing the file\n${diag}`);
@@ -703,4 +707,38 @@ test("a crash while recopying a moved history whose copy vanished: the next open
   assert.deepEqual(await seqs(b.store), [1]);
   await b.store.close();
   assert.ok(!fs.existsSync(p.inBundle), "and the old file went away");
+});
+
+test("an old copy that moved on is never deleted because a backup of the file it came from was put back", async () => {
+  const p = project();
+  p.startSyncing();
+  const first = await openProjectStore(p); // made in app data (the folder syncs)
+  assert.equal(first.store.path, p.inAppData);
+  await first.store.write(put(1));
+  await first.store.close();
+  const backup = path.join(path.dirname(p.appDataDir), "backup.db");
+  fs.copyFileSync(p.inAppData, backup); // closed: no -wal, the file is the whole history
+  p.stopSyncing();
+  const bundle = await openProjectStore(p); // moved into the bundle; this copy names the app-data file's id
+  assert.equal(bundle.store.path, p.inBundle);
+  await bundle.store.write(put(2));
+  p.startSyncing();
+  const back = await openProjectStore(p); // and moved to app data again, the bundle file kept (it is open)
+  await back.store.close();
+  await bundle.store.close();
+  assert.ok(fs.existsSync(p.inBundle));
+  for (const f of [p.inAppData, `${p.inAppData}-wal`, `${p.inAppData}-shm`]) fs.rmSync(f, { force: true });
+  fs.copyFileSync(backup, p.inAppData); // the backup, from before both moves, is put back
+  p.stopSyncing();
+  await assert.rejects(openProjectStore(p), PlacementConflictError);
+  const changes = (file: string) => {
+    const raw = new DatabaseSync(file, { readOnly: true });
+    try {
+      return (raw.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n;
+    } finally {
+      raw.close();
+    }
+  };
+  assert.equal(changes(p.inBundle), 2, "the bundle file, with the later change, is kept");
+  assert.equal(changes(p.inAppData), 1, "and the backup is left as it was");
 });
