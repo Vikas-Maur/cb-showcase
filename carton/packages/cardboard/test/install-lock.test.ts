@@ -120,3 +120,27 @@ test("readers: a missing file is waited for while the install lock is held, and 
   await assert.rejects(retryMissing(() => fs.readFileSync(file, "utf8"), { bundle: b, missingMs: 20 }), { code: "ENOENT" });
   assert.ok(performance.now() - t0 < 1_000, "not held: only missingMs");
 });
+
+test("install lock: a taker that stalled between its look and its rename puts back a lock taken afresh meanwhile", async (t) => {
+  const b = bundle(t);
+  const dir = foreignLock(b, 999_999, 11_000); // abandoned: dead pid, silent 11 s
+  const owner = path.join(dir, "owner");
+  const real = fs.renameSync;
+  let stalled = false;
+  t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (!stalled && from === dir) {
+      // while this taker stalls, another takes the abandoned lock over and holds it afresh
+      stalled = true;
+      const other = `${dir}.other`;
+      real(dir, other);
+      fs.rmSync(other, { recursive: true, force: true });
+      fs.mkdirSync(dir);
+      fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, me: "successor" }));
+    }
+    return real(from, to);
+  });
+  await assert.rejects(withInstallLock(b, async () => true, { alive: () => false, waitMs: 60 }), InstallLockBusy, "the successor's lock is live: wait");
+  assert.ok(stalled);
+  assert.equal(JSON.parse(fs.readFileSync(owner, "utf8")).me, "successor", "the successor still holds its lock");
+  assert.deepEqual(fs.readdirSync(path.join(b, ".carton")).filter((n) => n.includes("abandoned")), [], "nothing left aside");
+});

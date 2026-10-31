@@ -28,6 +28,8 @@
 // --style inplace makes writers write the view in place (open, truncate, write) instead of temp+rename.
 // --widen <µs> busy-waits inside each protocol's vulnerable step, to make rare interleavings common.
 // --settle 1|2 (displace only) re-reads displaced files that in-place writers may still be writing; see settle().
+// --lock (displace only) installs under the bundle's install lock, as the materializer does, and the `retry` reader
+// passes the bundle to `retryMissing`, so it waits up to 6 s while an install holds the lock (as the app's readers do).
 // Windows: rename/link/unlink, and the turn lock's mkdir/rmdir, retry with backoff on EPERM/EBUSY/EACCES (another
 // process has the file open, or the name is still being deleted).
 // fs.link is CreateHardLinkW there; FAT/exFAT have no hard links, so only `naive` can run on them.
@@ -39,6 +41,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { BUSY_BUDGET_MS, displaceThenInstall, isBusy, retryMissing, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/node/displace.ts";
 import { DisplacedFiles } from "../../packages/cardboard/src/node/displaced.ts";
+import { withInstallLock } from "../../packages/cardboard/src/node/install-lock.ts";
 import { hadd, hist, hmax, hmerge, hq, type Hist } from "./hist.ts";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -64,7 +67,9 @@ interface BusyWait {
   /** Whether busy errors are retried (default: on Windows); tests act out Windows. */
   windows?: boolean;
 }
-function retrySync<T>(fn: () => T, counter: BusyCounter, o: BusyWait = {}): T {
+/** A busy counter that also counts retries per step (`what`), so a run reports where Windows made each one wait. */
+type Busy = BusyCounter & { by?: Record<string, number> };
+function retrySync<T>(fn: () => T, counter: Busy, o: BusyWait = {}, what?: string): T {
   const start = performance.now();
   for (let i = 0; ; i++) {
     try {
@@ -73,6 +78,7 @@ function retrySync<T>(fn: () => T, counter: BusyCounter, o: BusyWait = {}): T {
       const wait = Math.min(1 + i, 25);
       if (!isBusy(e, o) || performance.now() - start + wait > (o.budgetMs ?? BUSY_BUDGET_MS)) throw e;
       counter.busy = (counter.busy ?? 0) + 1;
+      if (what) (counter.by ??= {})[what] = (counter.by[what] ?? 0) + 1;
       sleep(wait);
     }
   }
@@ -116,6 +122,8 @@ interface Opts {
   oracle: string | null;
   keep: boolean;
   settle?: number | boolean;
+  /** Install under the bundle's install lock (displace), and let the `retry` reader wait on it. */
+  lock?: boolean;
   trials?: number;
 }
 interface Trial {
@@ -125,6 +133,7 @@ interface Trial {
   widen: number;
   drop: boolean;
   settle: number;
+  lock: boolean;
   tmpDir: string;
   dispDir: string;
   prevDir: string;
@@ -192,7 +201,7 @@ type Proto = (T: Trial, E: Engine) => void | Promise<void>;
 const PROTO: Record<string, Proto> = {
   naive(T, E) {
     const t = writeTmp(T, E);
-    const s = noent(() => fs.statSync(T.view, { bigint: true }));
+    const s = noent(() => retrySync(() => fs.statSync(T.view, { bigint: true }), E));
     if (s && stampOf(s) !== E.lastStamp) {
       const b = noent(() => retrySync(() => fs.readFileSync(T.view), E));
       if (b) importFrom(E, b);
@@ -207,7 +216,7 @@ const PROTO: Record<string, Proto> = {
   replace(T, E) {
     const t = writeTmp(T, E);
     for (let i = 0; ; i++) {
-      const s = noent(() => fs.statSync(T.view, { bigint: true }));
+      const s = noent(() => retrySync(() => fs.statSync(T.view, { bigint: true }), E));
       if (s && stampOf(s) !== E.lastStamp) {
         const b = noent(() => retrySync(() => fs.readFileSync(T.view), E));
         if (b) importFrom(E, b);
@@ -249,7 +258,8 @@ const PROTO: Record<string, Proto> = {
   async displace(T, E) {
     const t = writeTmp(T, E);
     const next = E.held ? E.held.next : () => path.join(T.dispDir, String(E.n++));
-    const r = await displaceThenInstall(T.view, t.p, next, { counter: E, between: T.widen ? () => spin(T.widen) : undefined });
+    const install = () => displaceThenInstall(T.view, t.p, next, { counter: E, between: T.widen ? () => spin(T.widen) : undefined });
+    const r = T.lock ? await withInstallLock(T.dir, install, { counter: E }) : await install();
     E.eexist += r.eexist;
     hadd(E.gap, r.gapNs);
     hadd(E.gapTotal, r.gapTotalNs);
@@ -351,7 +361,19 @@ interface ChildCfg {
   jitter: number;
   w?: number;
   kind?: string;
+  lock?: boolean;
 }
+/**
+ * A writer's own steps on the view, each waiting out a busy file as a real Windows app does (the engine has the view
+ * open, or is renaming or displacing it: EPERM/EBUSY/EACCES on open or stat; CI #11), and counted in `out` per step.
+ */
+export const writerSteps = (view: string, out: Busy, o: BusyWait = {}) => ({
+  writeInPlace: (content: string): void => retrySync(() => fs.writeFileSync(view, content), out, o, "write in place"),
+  renameOver: (tmp: string): void => retrySync(() => fs.renameSync(tmp, view), out, o, "rename"),
+  readBack: (): Buffer | undefined => noent(() => retrySync(() => fs.readFileSync(view), out, o, "read back")),
+  statBack: (): fs.BigIntStats | undefined => noent(() => retrySync(() => fs.statSync(view, { bigint: true }), out, o, "stat back")),
+});
+
 function writer(cfg: ChildCfg): void {
   const { dir, mode, style, size, jitter, ctl } = cfg;
   const w = cfg.w!;
@@ -359,22 +381,25 @@ function writer(cfg: ChildCfg): void {
   const stop = path.join(ctl, "stop");
   const go = path.join(ctl, "go");
   const lock = path.join(ctl, "lock");
-  const out = { w, n: 0, abandoned: [] as string[], busy: 0 };
+  // busy: every retry of a busy file (Windows: the view open, renamed or displaced by the engine right then; a real
+  // Windows app retries those too), and `by` per step
+  const out = { w, n: 0, abandoned: [] as string[], busy: 0, by: {} as Record<string, number> };
+  const step = writerSteps(view, out);
   process.stdout.write("ready\n");
   while (!exists(go)) sleep(1);
   const write = (tag: string): string | null => {
     if (style === "inplace") {
-      retrySync(() => fs.writeFileSync(view, body(tag, size)), out);
+      step.writeInPlace(body(tag, size));
       return null;
     }
     const tmp = path.join(dir, `${VIEW}.${tag}.tmp`);
     fs.writeFileSync(tmp, body(tag, size));
     const st = mode === "turn" ? statStamp(tmp) : null;
     try {
-      retrySync(() => fs.renameSync(tmp, view), out);
+      step.renameOver(tmp);
     } catch (e) {
       out.abandoned.push(tag);
-      noent(() => fs.unlinkSync(tmp));
+      noent(() => retrySync(() => fs.unlinkSync(tmp), out, {}, "unlink"));
       throw e;
     }
     return st;
@@ -396,10 +421,10 @@ function writer(cfg: ChildCfg): void {
         // wait until our write left the path
         if (exists(stop)) break outer; // keep the turn: our write may still be at the view
         if (style === "inplace") {
-          const b = noent(() => fs.readFileSync(view));
+          const b = step.readBack();
           if (!b || tagOf(b) !== tag) break;
         } else {
-          const s = noent(() => fs.statSync(view, { bigint: true }));
+          const s = step.statBack();
           if (!s || stampOf(s) !== mine) break;
         }
         pause(0.02);
@@ -429,7 +454,7 @@ async function retryReader(cfg: ChildCfg): Promise<void> {
     out.reads++;
     const c: BusyCounter = {};
     try {
-      if (!whole(await retryMissing(() => fs.readFileSync(view), { counter: c }), size)) out.torn++;
+      if (!whole(await retryMissing(() => fs.readFileSync(view), { counter: c, ...(cfg.lock ? { bundle: dir } : {}) }), size)) out.torn++;
       if (c.missing) {
         out.retried++;
         hadd(out.wait, Number(now() - t));
@@ -517,6 +542,7 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
     widen: o.widen,
     drop: o.mode === "free",
     settle: lvl(o.settle),
+    lock: !!o.lock && o.protocol === "displace" && o.engine !== "async",
     tmpDir: path.join(dir, ".carton", "tmp"),
     dispDir: path.join(dir, ".carton", "displaced"),
     prevDir: path.join(dir, ".carton", "prev"),
@@ -555,7 +581,7 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
     oracle = { log, done: new Promise((res) => p.once("exit", res)) };
   }
   await proto(T, E); // round 0: the first view
-  const cfg: ChildCfg = { dir, size: o.size, ctl, mode: o.mode, style: o.style, jitter: o.jitter };
+  const cfg: ChildCfg = { dir, size: o.size, ctl, mode: o.mode, style: o.style, jitter: o.jitter, lock: T.lock };
   const kids: Kid[] = [];
   for (let w = 1; w <= o.writers; w++) kids.push(child("writer", { ...cfg, w }));
   const kinds = o.reader === "both" ? ["read", "stat"] : o.reader === "retry" ? ["retry"] : o.reader ? [o.reader === "stat" ? "stat" : "read"] : [];
@@ -582,18 +608,19 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
   // Accounting. A foreign write is safe if it is the final view or the engine imported it: every foreign
   // file the engine moved aside was read and recorded at that moment.
   const landed: string[] = [];
-  const ws: { busy: number }[] = [];
+  const ws: { busy: number; by?: Record<string, number> }[] = [];
+  const acct: Busy = {};
   for (let w = 1; w <= o.writers; w++) {
     const r = JSON.parse(fs.readFileSync(path.join(ctl, `w${w}.json`), "utf8"));
     ws.push(r);
     const ab = new Set<string>(r.abandoned);
     for (let s = 0; s < r.n; s++) if (!ab.has(`F${w}-${s}`)) landed.push(`F${w}-${s}`);
   }
-  const final = tagOf(fs.readFileSync(T.view));
+  const final = tagOf(retrySync(() => fs.readFileSync(T.view), acct));
   const kept = new Set<string>();
   for (const d of [T.dispDir, T.prevDir])
     for (const f of fs.readdirSync(d)) {
-      const t = tagOf(fs.readFileSync(path.join(d, f)));
+      const t = tagOf(retrySync(() => fs.readFileSync(path.join(d, f)), acct));
       if (t?.[0] === "F") kept.add(t);
     }
   const unaccounted = landed.filter((t) => t !== final && !E.recorded.has(t));
@@ -611,6 +638,11 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
     selfImports: E.selfImports,
     tornImports: E.tornImports,
     busy: (E.busy ?? 0) + ws.reduce((a, r) => a + r.busy, 0),
+    writerBusy: ws.reduce((a, r) => a + r.busy, 0),
+    writerBusyBy: ws.reduce((m: Record<string, number>, r) => {
+      for (const [k, v] of Object.entries(r.by ?? {})) m[k] = (m[k] ?? 0) + v;
+      return m;
+    }, {}),
     gap: o.protocol === "displace" ? E.gap : null,
     gapTotal: o.protocol === "displace" ? E.gapTotal : null,
   };
@@ -731,8 +763,8 @@ function args(argv: string[]): Record<string, any> {
 export function table(results: Record<string, any>[]): string {
   const g = new Map<string, Record<string, any>>();
   for (const r of results) {
-    const key = [r.fs, r.mode, r.style, (r.engine === "async" ? "displace(async)" : r.protocol) + (r.settle ? "+settle" + lvl(r.settle) : ""), r.writers, r.widen, r.pace, r.reader || "none"].join("|");
-    const a = g.get(key) ?? { key, trials: 0, rounds: 0, landed: 0, unaccounted: 0, superseded: 0, lostByEngine: null, eexist: 0, engineAfterImport: 0, oracleBad: 0, reads: 0, enoent: 0, torn: 0, probes: 0, absent: 0, busy: 0, rreads: 0, rfailed: 0, rretried: 0, gap: hist(), streak: hist(), pstreak: hist(), rwait: hist() };
+    const key = [r.fs, r.mode, r.style, (r.engine === "async" ? "displace(async)" : r.protocol) + (r.settle ? "+settle" + lvl(r.settle) : "") + (r.lock ? "+lock" : ""), r.writers, r.widen, r.pace, r.reader || "none"].join("|");
+    const a = g.get(key) ?? { key, trials: 0, rounds: 0, landed: 0, unaccounted: 0, superseded: 0, lostByEngine: null, eexist: 0, engineAfterImport: 0, oracleBad: 0, reads: 0, enoent: 0, torn: 0, probes: 0, absent: 0, busy: 0, wbusy: 0, wby: {} as Record<string, number>, rreads: 0, rfailed: 0, rretried: 0, gap: hist(), streak: hist(), pstreak: hist(), rwait: hist() };
     a.trials++;
     a.rounds += r.rounds;
     a.landed += r.landed;
@@ -748,17 +780,19 @@ export function table(results: Record<string, any>[]): string {
     a.probes += r.probes ?? 0;
     a.absent += r.absent ?? 0;
     a.busy += r.busy ?? 0;
+    a.wbusy += r.writerBusy ?? 0;
+    for (const [k, v] of Object.entries((r.writerBusyBy ?? {}) as Record<string, number>)) a.wby[k] = (a.wby[k] ?? 0) + v;
     a.rreads += r.rreads ?? 0;
     a.rfailed += r.rfailed ?? 0;
     a.rretried += r.rretried ?? 0;
     for (const k of ["gap", "streak", "pstreak", "rwait"]) if (r[k]) hmerge(a[k], r[k] as Hist);
     g.set(key, a);
   }
-  const rows: unknown[][] = [["fs", "mode", "style", "protocol", "W", "widen µs", "pace ms", "readers", "trials", "rounds", "foreign writes", "unaccounted", "superseded by foreign", "LOST BY ENGINE", "imported then replaced", "EEXIST retries", "reads", "ENOENT", "torn", "engine gap µs p50/p99/max", "readFile ENOENT streak µs", "stat probes", "absent", "stat absent streak µs", "retrying reads", "failed after retry", "retried", "retry wait µs", "busy retries", "oracle bad"]];
+  const rows: unknown[][] = [["fs", "mode", "style", "protocol", "W", "widen µs", "pace ms", "readers", "trials", "rounds", "foreign writes", "unaccounted", "superseded by foreign", "LOST BY ENGINE", "imported then replaced", "EEXIST retries", "reads", "ENOENT", "torn", "engine gap µs p50/p99/max", "readFile ENOENT streak µs", "stat probes", "absent", "stat absent streak µs", "retrying reads", "failed after retry", "retried", "retry wait µs", "busy retries", "of which writers' (by step)", "oracle bad"]];
   for (const a of g.values()) {
     const [fsl, mode, style, proto, w, widen, pace, rd] = (a.key as string).split("|");
     const q = (h: Hist) => (hq(h, 0.5) === null ? "" : `${hq(h, 0.5)}/${hq(h, 0.99)}/${hmax(h)}`);
-    rows.push([fsl, mode, style, proto, w, widen, pace, rd, a.trials, a.rounds, a.landed, a.unaccounted, a.superseded, a.lostByEngine ?? "n/a (no oracle)", a.engineAfterImport, a.eexist, a.reads, a.enoent, a.torn, q(a.gap), q(a.streak), a.probes, a.absent, q(a.pstreak), a.rreads, a.rfailed, a.rretried, q(a.rwait), a.busy, a.oracleBad]);
+    rows.push([fsl, mode, style, proto, w, widen, pace, rd, a.trials, a.rounds, a.landed, a.unaccounted, a.superseded, a.lostByEngine ?? "n/a (no oracle)", a.engineAfterImport, a.eexist, a.reads, a.enoent, a.torn, q(a.gap), q(a.streak), a.probes, a.absent, q(a.pstreak), a.rreads, a.rfailed, a.rretried, q(a.rwait), a.busy, a.wbusy ? `${a.wbusy} (${Object.entries(a.wby).map(([k, v]) => `${k} ${v}`).join(", ")})` : 0, a.oracleBad]);
   }
   return rows
     .map((r) => "| " + r.join(" | ") + " |")
@@ -828,6 +862,8 @@ async function main(): Promise<void> {
   if (links) for (const engine of ["sync", "async"] as const) plan.push({ protocol: "displace", engine, writers: 0, pace: 2, rounds: 1000, reader: "both" });
   // Carton's own readers through the window: no read may fail
   if (links) plan.push({ protocol: "displace", writers: 0, pace: 2, rounds: 1000, reader: "retry" });
+  // the same under the install lock, as the materializer installs: readers get the lock's grace
+  if (links) plan.push({ protocol: "displace", writers: 0, pace: 2, rounds: 1000, reader: "retry", lock: true });
   const results: Record<string, any>[] = [];
   console.log(`${process.platform} ${os.release()}, node ${process.version}, dir ${base}; ${plan.length} configs x ${trials} trials`);
   for (const p of plan)
@@ -835,7 +871,7 @@ async function main(): Promise<void> {
       const r = await trial({ ...defaults, rounds, ...p });
       results.push(r);
       emit(r);
-      process.stdout.write(`${p.protocol}${p.engine === "async" ? "(async)" : ""}${p.settle ? "+settle" + p.settle : ""} ${p.style ?? "rename"} W=${p.writers} widen=${p.widen ?? 0}: writes ${r.landed} unaccounted ${r.unaccounted} eexist ${r.eexist} enoent ${r.enoent}/${r.reads}${r.rreads ? ` retry-reader failed ${r.rfailed}/${r.rreads}` : ""}${r.busy ? " busy-retries " + r.busy : ""}\n`);
+      process.stdout.write(`${p.protocol}${p.engine === "async" ? "(async)" : ""}${p.settle ? "+settle" + p.settle : ""} ${p.style ?? "rename"} W=${p.writers} widen=${p.widen ?? 0}: writes ${r.landed} unaccounted ${r.unaccounted} eexist ${r.eexist} enoent ${r.enoent}/${r.reads}${r.rreads ? ` retry-reader failed ${r.rfailed}/${r.rreads}` : ""}${r.busy ? " busy-retries " + r.busy + (r.writerBusy ? ` (writers ${r.writerBusy}: ${JSON.stringify(r.writerBusyBy)})` : "") : ""}\n`);
     }
   console.log("\n" + table(results));
   console.log("\nIn turn mode every unaccounted foreign write was destroyed by the engine (writers never replace each other).");
