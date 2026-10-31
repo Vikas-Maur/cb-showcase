@@ -589,9 +589,11 @@ cuts (`branches`), for remote agents.
   are not imported as versions.
 - **Cloud projects.** Import the current document as `main@1` on the first client that opens it with Carton, then
   `carton.share()` hands the cut to the host: the log is uploaded and the host orders it from then on (§5.3). A second
-  client must not import the same project on its own, or the project has two unrelated histories. Until "Invite to
-  edit" exists as one call (see [LIMITS.md](LIMITS.md)), give other clients the history itself (a `.cbproj` with
-  history, or a copy of the store without its local tables).
+  client must not import the same project on its own, or the project has two unrelated histories. Other clients join
+  the shared cut: `Carton.open({ init: { join: { projectId, cut, doc0, rootHash } }, sync })` opens it on a device that
+  holds nothing, and the rows come from the host. That call is landing in core and isn't in the merged snapshot yet
+  ([LIMITS.md](LIMITS.md)); meanwhile give them the history itself (a `.cbproj` with history, or a copy of the store
+  without its local tables, as the quickstart's `live.ts` does).
 - **Opening a 1.4.0 `.cbproj`** without Carton's entry imports its document as `main@1` like any project.
 - **Numeric revs.** 1.4.0's `// cardboard:rev <13 digits>` and `cb undo <rev>` keep working if you keep a map from
   each rev to the version it was written with (our facade keeps it in `carton.db`'s local `views` table).
