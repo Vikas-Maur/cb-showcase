@@ -236,11 +236,13 @@ async function commitShared(lc, { doc, base, author, intent }) {
   // holder's head (contract(local) `head`): this handle reads the confirmed rows only, which hold neither this edit nor
   // the holder's other pending ones, so the state to write is the holder's (round 2 #2: the caller's document could
   // land in project.json after the holder's, dropping what it had merged in, with no confirmation to repair it).
-  const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}), head: true }, { actor: author });
+  // To this handle's cut, named: the holder's current cut could change before it answers (and `head` is that cut's).
+  const w = await lc.write({ kind: "commit", cut: lc.carton.cut, doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}), head: true }, { actor: author });
   if (w.status === "error") throw new Error(w.error);
   if (w.status === "rejected") return { status: "rejected", reason: w.reason };
   const head = w.head?.doc ? w.head : await lc.carton.head();
-  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: head.ref, ...(w.head?.doc ? { head } : {}) };
+  // the holder's write kept the cards as a notice for the author already (local's cardsWrite, or core's late conflict)
+  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, kept: true, ref: head.ref, ...(w.head?.doc ? { head } : {}) };
   // Confirmed: the holder wrote the confirmed rows before answering, so this handle's head is exact.
   const pending = w.status === "pending";
   return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...(w.head?.doc ? { head } : {}) };

@@ -63,6 +63,17 @@ replace(`t.thumbnailIds&&!e.thumbnailIds?.length&&(r.thumbnailIds=t.thumbnailIds
 replace(`n.background&&o.push(CS(e,m,oJ(e,t,Q,n)))`, `n.background&&o.push(CS(e,m,__cbSettled(oJ(e,t,Q,n),Q,n)))`);
 replace(`return m.then(()=>n(c.id,{phase:"done"})),{items:u,failures:p}`, `return m.finally(()=>n(c.id,{phase:"done"})).catch(()=>{}),{items:u,failures:p}`);
 
+// 6. Open Project (a folder or a .cbproj) stages the project in `.opening-<id>` inside the library, moves it into place,
+// and removes the staging folder. On Windows a file anything holds open can't be removed, and a failed removal fails
+// the whole Open Project (CI: EBUSY on the staged carton.db, which Carton held; Carton now closes it when prepare
+// ends). Defender or the search indexer scanning a file the import just wrote can hold one briefly too. The removal
+// retries as the rename does (rename-retry.js; the move is a rename, already covered), adding ENOTEMPTY, what a
+// folder whose last file is still going gives.
+replace(
+  `await(0,Rt.lstat)((0,St.join)(a,LP)).catch(()=>null)&&await(0,Rt.rm)(a,{recursive:!0,force:!0})`,
+  `await(0,Rt.lstat)((0,St.join)(a,LP)).catch(()=>null)&&await(__cbWin&&globalThis.__cbRetryBusy||(f=>f()))(()=>(0,Rt.rm)(a,{recursive:!0,force:!0}),["EPERM","EBUSY","EACCES","ENOTEMPTY"])`,
+);
+
 // After the replacements, since the preamble itself names the VideoToolbox encoders.
 src = preamble + src;
 fs.writeFileSync(file, src);

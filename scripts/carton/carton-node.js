@@ -63,6 +63,30 @@ function open(bundlePath, { projectId, doc } = {}) {
 }
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
 
+// A folder Cardboard is done with: Open Project's staging folder (`.opening-<id>`), which it removes once the staged
+// project is copied into the library. Everything Carton holds under it is let go first: each Carton opened there is
+// closed (its carton.db and files), a pending review of a displaced file there is dropped, and the staging library's
+// store is forgotten. On Windows an open file can't be removed, so Cardboard's own clean-up failed with EBUSY (CI route
+// 35). Called whether the staged import worked or not.
+const under = (dir, p) => {
+  const rel = path.relative(path.resolve(dir), path.resolve(p));
+  return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
+};
+async function release(dir) {
+  const inside = (p) => under(dir, p) || (process.platform === "win32" && under(dir.toLowerCase(), p.toLowerCase()));
+  for (const [file, s] of installs) if (inside(file)) { clearTimeout(s.timer); installs.delete(file); }
+  for (let i = hosts.length - 1; i >= 0; i--) if (inside(hosts[i].root)) hosts.splice(i, 1);
+  const closing = [];
+  for (const [bundlePath, p] of opened) {
+    if (!inside(bundlePath)) continue;
+    opened.delete(bundlePath);
+    ready.delete(bundlePath);
+    panels.delete(bundlePath);
+    closing.push(p.then((lc) => lc?.close()).catch((e) => warnOnce("close:" + bundlePath, `couldn't close the history of ${path.basename(bundlePath)}: ${errText(e)}`)));
+  }
+  await Promise.all(closing);
+}
+
 // ---------------------------------------------------------------- extensions
 // The live-sync and sharing half (scripts/carton/sync, windows-sync) is bundled into this file by build.js and
 // registers here with `extend({worker(api)})`. In the library worker, worker(api) returns services that join the
@@ -82,7 +106,9 @@ const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(pa
 //   commitShared(lc, {doc, base, author, intent, gui})
 //                                               a commit on a shared cut, in place of Carton.commit (R2): a CommitResult,
 //                                               `pending` counting as a confirmation (`rebased` too), and `head`
-//                                               ({ref, doc}) the state to write when the handle can't read it itself
+//                                               ({ref, doc}) the state to write when the handle can't read it itself;
+//                                               `conflicts` with `cards` (the rest landed), `kept` when they are
+//                                               already a notice for the author. Foreign-save imports go through it too.
 //   materializeDoc(next, {bundlePath, projectId, current})
 //                                               fills in a record before head goes into project.json (R6)
 // An extension that throws is left out (logged once); Carton and the save path go on without it.
@@ -162,6 +188,26 @@ const turnLabel = (prompt) => {
 };
 
 // ---------------------------------------------------------------- H1: one change per mutation
+// A commit into the project's current cut. R2: a shared cut's goes through the extension that syncs it (the lease
+// holder commits; anyone else hands it to the holder), never straight into this handle: a non-holder's pending row is
+// lost at the holder's next settle, and a handle without sync can't commit there at all. A clash keeps head's value
+// and the rest of the edit lands (choices "ours", as cb's own writes do); the writer's side comes back as cards
+// (`conflicts`, with `landed`). `kept`: the cards are already kept as a notice for the author (the holder's write did).
+async function commitIn(lc, { doc, base, author, intent, gui }) {
+  const c = lc.carton, ext = extensions.find((e) => typeof e.commitShared === "function");
+  if (ext && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind !== "local") return ext.commitShared(lc, { doc, base, author, intent, gui });
+  const r = await c.commit({ doc, ...(base ? { base } : {}), author, ...(intent ? { intent } : {}), choices: () => "ours" });
+  return (r.status === "confirmed" || r.status === "pending") && r.resolved?.length ? { ...r, status: "conflicts", cards: r.resolved, landed: r.status } : r;
+}
+
+// A save Carton didn't write (an old cb, an editor, another program), committed as one and attributed to it. Returns
+// the state it made, {ref, doc}: on a shared cut the holder's, which this handle may not be able to read.
+async function importForeign(lc, project) {
+  const r = await commitIn(lc, { doc: fromHost(project, (await lc.carton.head()).doc), author: actorOf("external:project.json") });
+  if (r.status === "rejected") throw new Error("Carton rejected the outside save: " + r.reason);
+  return r.head?.doc ? r.head : lc.carton.head();
+}
+
 async function commit({ bundlePath, base, doc, actor, meta }) {
   if (meta?.materialize) return { doc, status: "materialized" };
   const lc = await open(bundlePath, { projectId: doc.id, doc: base ?? doc });
@@ -169,26 +215,22 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   const c = lc.carton;
   // The version the edit was made on: the GUI's (its editor's), the apply's header, else what the writer read.
   const rev = meta?.base ?? meta?.rev ?? base?.stateUpdatedAt;
-  let baseRef = await refOf(lc, rev);
+  let baseRef = await refOf(lc, rev), imported = null;
   if (!baseRef && base && rev === base.stateUpdatedAt) {
     // What the writer read isn't a state Carton wrote: a foreign save. Import it first, attributed as one.
-    await c.commit({ doc: fromHost(base, (await c.head()).doc), author: actorOf("external:project.json") });
-    baseRef = (await c.head()).ref;
+    imported = await importForeign(lc, base);
+    baseRef = imported.ref;
     await setRev(lc, base.stateUpdatedAt, baseRef);
   }
-  const baseDoc = baseRef ? await c.checkout(baseRef) : (await c.head()).doc;
+  const baseDoc = imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
   const mine = meta?.base !== undefined && baseRef ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
   const intent = meta?.intents?.length ? { gui: meta.intents } : undefined;
-  // R2: a shared cut's commit goes through the extension that syncs it (the lease holder commits; anyone else hands it to
-  // the holder), never straight into this handle (a non-holder's pending row is lost at the holder's next settle).
-  const ext = extensions.find((e) => typeof e.commitShared === "function");
-  const shared = ext && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind !== "local";
-  const r = shared
-    ? await ext.commitShared(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef })
-    : await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });
+  const r = await commitIn(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef });
   if (r.status === "rejected") throw new Error("Carton rejected the change: " + r.reason);
   const gui = meta?.base !== undefined && baseRef;
-  if (r.status === "confirmed" && r.empty && !gui) return { ...r, doc, merged: false };
+  // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased: the writer's
+  // document is older than head in other fields, so the file gets head, below.)
+  if (r.status === "confirmed" && r.empty && !gui && !r.rebased) return { ...r, doc, merged: false };
   // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's
   // `head` is the holder's state when this handle can't read it (cb's handle has the confirmed rows only).
   const head = r.head?.doc ? r.head : await c.head();
@@ -208,7 +250,7 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   // resolved (`cb conflicts`, the History panel), never dropped.
   if (r.status === "conflicts" && r.cards?.length) {
     const author = actorOf(meta?.actor ?? actor);
-    await keepCards(lc, author, r.cards);
+    if (!r.kept) await keepCards(lc, author, r.cards);
     // Only the person's own cards go to the person's panel: an agent's are its own (the Stop hook, cb conflicts).
     if (author.id === "person") for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(r.cards);
   }
@@ -225,11 +267,13 @@ const forCardboard = (project) => structuredClone(project);
 
 // The project to write for head, with a fresh rev recorded against it: after a Carton command changed head. null when
 // project.json already shows head. (Through Cardboard's store: materializeIn, cb's `after`, sync's bring-in and pull.)
-async function headProject(bundlePath, current) {
+// `given`: the state a write just made when this handle can't read it (a write still pending on a shared cut, which the
+// holder answered with its head: WriteOp `head`); the file never shows it yet.
+async function headProject(bundlePath, current, given) {
   const lc = await open(bundlePath, { projectId: current?.id });
   if (!lc) return null;
-  const head = await lc.carton.head();
-  const known = await revOf(lc, head.ref);
+  const head = given?.doc ? given : await lc.carton.head();
+  const known = given?.doc ? undefined : await revOf(lc, head.ref);
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
   const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
   await setRev(lc, out.stateUpdatedAt, head.ref);
@@ -463,7 +507,7 @@ async function review(file, s) {
       if (isProject) {
         const lc = await open(bundle);
         if (!lc) throw new Error("no history for the project");
-        await lc.carton.commit({ doc: fromHost(parse(f.bytes).project, (await lc.carton.head()).doc), author: actorOf("external:project.json") });
+        await importForeign(lc, parse(f.bytes).project);
       } else {
         const h = hostOf(bundle), id = h?.store.idForBundlePath?.(path.resolve(bundle));
         if (!id) throw new Error("no mirror for the project in this process");
@@ -485,6 +529,7 @@ const hostOf = (bundlePath) => hosts.find((h) => path.resolve(bundlePath).toLowe
 
 export const cardboard14 = {
   headScope,
+  release,
   attach({ root, store, mirror }) {
     hosts.push({ root, store, mirror });
   },
@@ -496,8 +541,7 @@ export const cardboard14 = {
     const lc = await open(bundlePath, { projectId: doc.id, doc });
     if (!lc || (await refOf(lc, doc.stateUpdatedAt))) return;
     // A save Carton didn't write (an old cb, an editor): imported now, so it is attributed when it lands.
-    await lc.carton.commit({ doc: fromHost(doc, (await lc.carton.head()).doc), author: actorOf("external:project.json") });
-    await setRev(lc, doc.stateUpdatedAt, (await lc.carton.head()).ref);
+    await setRev(lc, doc.stateUpdatedAt, (await importForeign(lc, doc)).ref);
   },
   // H2/H3: Carton's versions that reached project.json, newest first, then the older .revs.
   async revisions({ bundlePath, files }) {
@@ -651,7 +695,9 @@ export const internals = {
     if (!lc) return null;
     const head = await lc.carton.head();
     return { dbPath: lc.dbPath, schema: sha(canon(lc.carton.schema)), ref: canon(head.ref), doc: sha(canon(head.doc)) };
-  }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
+  }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev),
+  // The bundles this process has a Carton open for (a staging folder's must be gone once Open Project returns).
+  openBundles: () => [...opened.keys()] };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {
@@ -679,8 +725,10 @@ async function context(target, as, after) {
     carton,
     async write(op, o) {
       for (const k of ["ref", "from"]) if (op && op[k] !== undefined) op = { ...op, [k]: await ref(op[k]) };
-      const r = await lc.write(op, o);
-      if (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts") await after(target);
+      // A write left pending (a shared cut: offline, or the server slow) changed the holder's head, which this handle
+      // can't read (confirmed rows only): the holder hands it back (WriteOp `head`) for project.json, never printed.
+      const { head, ...r } = await lc.write(op && typeof op === "object" ? { ...op, head: true } : op, o);
+      if (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts") await after(target, head);
       return r;
     },
   };

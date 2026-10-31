@@ -91,7 +91,11 @@ at four points:
   author, intent, gui})` takes a commit on a shared cut: the lease holder commits on its own handle (a stale save's
   clashes keep head's value, the rest lands), anyone else hands it to the holder, never committing in-process (its
   pending row would be lost at the holder's next settle). A `pending` result counts as a confirmation, `rebased` included,
-  and its `head` is what the file gets when the caller's handle can't read the holder's pending state.
+  and its `head` is what the file gets when the caller's handle can't read the holder's pending state; `conflicts` carries
+  the cards (the rest landed), `kept` when the holder already kept them for the author. A save Carton didn't write
+  (another program's `project.json`) is imported the same way. On a local cut a stale save's clashes keep head's value
+  and the rest lands too, the clash a card for its author. cb's other writes (restore, revert, undo, fold) ask the holder
+  for its head as well (WriteOp `head`), so a write left pending reaches `project.json` with the app closed.
   `materializeDoc(next, {bundlePath, projectId, current})` fills in a record before head goes into `project.json` (a
   teammate's new clip: where it plays from, its size and duration). Head goes into `project.json` with `description` and
   with media through the store's own media scope (`ownedMediaIds` / `removedMediaIds`: 1.4.0's `updateScoped` never

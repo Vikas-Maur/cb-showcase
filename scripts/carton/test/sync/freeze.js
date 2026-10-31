@@ -3,6 +3,7 @@
 // then runs Cardboard's real store over them: a place that hands Cardboard Carton's records without a copy loses
 // Cardboard's in-place edits (sloppy code) or throws (strict code). Frozen copies, so core's own states are untouched.
 import { Carton } from "@carton/core";
+import { extend } from "../../carton-node.js";
 
 const deepFreeze = (o) => {
   if (o && typeof o === "object" && !Object.isFrozen(o)) {
@@ -37,3 +38,6 @@ Carton.open = async function (...a) {
   return c;
 };
 globalThis.__cartonTestFrozen = true;
+// So the mode can't quietly stop testing anything: live.test.js asks the worker whether a doc its facade's handle
+// returns is frozen (carton.testFrozen), and fails if not, or if this module isn't in the build.
+extend({ name: "test-freeze", worker: (api) => ({ testFrozen: async ({ projectId }) => Object.isFrozen((await (await api.carton(projectId)).carton.head()).doc) }) });
