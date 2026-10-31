@@ -247,3 +247,32 @@ test("a completion with ETags another process replaced is recovered by listing t
   assert.equal(r.deduped, false);
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
 });
+
+test("an upload the store dropped mid-way costs at most the parts in flight: NoSuchUpload is never retried (S5-4)", async () => {
+  const { manifest, source } = await setup(24 * MiB, 16);
+  const mem = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  let partsSeen = 0;
+  let sent = 0; // every attempt's bytes: over a network they go out before the store answers NoSuchUpload
+  const store = new FaultyStore(mem, {});
+  const create = store.createMultipart.bind(store);
+  // The store drops the upload once its second part has landed (expired, or completed by another process).
+  store.createMultipart = async (k, o) => {
+    const u = await create(k, o);
+    return {
+      ...u,
+      key: u.key,
+      uploadId: u.uploadId,
+      uploadPart: async (n: number, d: Uint8Array) => {
+        sent += d.length;
+        const r = await u.uploadPart(n, d);
+        if (++partsSeen === 2) mem.uploads.clear();
+        return r;
+      },
+    };
+  };
+  await assert.rejects(uploadMedia({ store, hasher: nodeHasher, source, manifest, state, partSize: 4 * MiB, concurrency: 2, retries: 5, retryDelayMs: 1 }), /NoSuchUpload/);
+  // 2 parts landed before the drop, at most 2 more were in flight: anything above that is retries into a dead upload.
+  assert.ok(sent <= 4 * 4 * MiB + 64 * 1024, `${sent} bytes went up for an upload that died after 2 parts`);
+  assert.equal(await state.load(mediaKey(manifest.hash)), null, "the dead upload is forgotten");
+});

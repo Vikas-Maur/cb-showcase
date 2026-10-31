@@ -158,7 +158,9 @@ async function withRetries<T>(o: UploadOptions, what: () => Promise<T>): Promise
     try {
       return await what();
     } catch (e) {
-      if (isAbort(e) || e instanceof SourceChangedError || attempt >= retries) throw e;
+      // An upload the store no longer knows (expired, aborted, completed by another process) can never take this part:
+      // retrying would send it again for nothing (e2e S5-4). The caller restarts or finds the finished object.
+      if (isAbort(e) || e instanceof SourceChangedError || uploadGone(e) || attempt >= retries) throw e;
       const base = (o.retryDelayMs ?? 250) * 2 ** attempt;
       await sleep(base / 2 + Math.random() * base, o.signal);
     }
