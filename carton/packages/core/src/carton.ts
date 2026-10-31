@@ -67,7 +67,23 @@ export interface OpenOptions {
    */
   init?: { doc: Doc; projectId?: string; cutName?: string; asChange?: boolean } | { import: ShallowExport } | { join: JoinInit };
   /** `autoConnect: false`: the sync-lease holder connects itself, under its nonce (§6.2). */
-  sync?: { transport: Transport; url: string; token: string | (() => Promise<string>); autoConnect?: boolean };
+  sync?: {
+    transport: Transport;
+    url: string;
+    token: string | (() => Promise<string>);
+    autoConnect?: boolean;
+    /**
+     * The host's blob store (or a client for it): messages over 1 MiB travel as envelopes both ways, and the largest
+     * message the server reads (declared in its welcome) becomes this client's limit. Without it every message goes
+     * inline, up to `maxMessageBytes`.
+     */
+    blobs?: BlobStore;
+    /**
+     * The largest message this client sends (default 32 MiB inline, 64 MiB with `blobs`, until the server declares
+     * its own): a change over it is refused before it is sent, `rejected` / "too large", and the edits after it go on.
+     */
+    maxMessageBytes?: number;
+  };
   media?: { blobStore: BlobStore; encoders?: ProxyEncoder[] };
   clock?: () => number;
   keyframeEvery?: number;
@@ -302,6 +318,12 @@ const pendingRow = (p: QueuedChange, order: number): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
   return { id: p.id, author: p.author, ops: v.ops, at: p.created, order, intent: v.intent, kinds: v.kinds, policy: v.policy, ...(p.history ? { history: p.history } : {}) };
 };
+/** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
+const TURN = ["append-turn"] as const;
+/** A turn its holder never gave back is free after this long (a crashed writer; one append takes far less). */
+const TURN_MS = 5000;
+/** Only a write that keeps failing for a reason other than contention gives up, after this long. */
+const MUTATE_BACKSTOP_MS = 60_000;
 /** A keyframe also after this many bytes of ops since the last one (a big import), so opening never replays more. */
 const KF_BYTES = 1 << 20;
 const PROJECT = ["project"] as const;
@@ -643,32 +665,67 @@ class CartonImpl implements Carton {
   async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
-      for (let attempt = 0; ; attempt++) {
-        await this.#refresh(cut);
-        await this.#noopOf(opts.id);
-        this.#confirmed.length = 0;
-        this.#noops.length = 0;
-        let ok: boolean, r: R;
-        try {
-          r = fn();
-          const x = opts.extra?.() ?? {};
-          ok = await this.#flush(x.writes ?? [], [...(opts.conditions ?? []), ...(x.conds ?? [])]);
-        } catch (e) {
-          // the model may hold changes the store never got (a write that threw): drop them before anything else runs
+      // Starvation-free appends (VERIFIED S8): a writer that lost the race twice takes the append turn, and while it
+      // holds it every other writer's append waits (each carries "no one else holds the turn"); its own append gives
+      // the turn back in the same batch. A turn left by a crashed writer expires. Uncontended, a write costs one extra
+      // condition and nothing else. Only a write that keeps failing for another reason runs out of time.
+      const deadline = Date.now() + MUTATE_BACKSTOP_MS;
+      let turn: { owner: string; until: number } | null = null;
+      try {
+        for (let lost = 0; ; ) {
+          await this.#refresh(cut);
+          await this.#noopOf(opts.id);
           this.#confirmed.length = 0;
           this.#noops.length = 0;
+          let ok: boolean, r: R;
+          try {
+            r = fn();
+            const x = opts.extra?.() ?? {};
+            ok = await this.#flush([...(x.writes ?? []), ...(turn ? [{ table: T.lease, key: TURN, value: undefined }] : [])], [...(opts.conditions ?? []), ...(x.conds ?? []), { table: T.lease, key: TURN, expect: turn ? { equals: turn } : "absent" }]);
+          } catch (e) {
+            // the model may hold changes the store never got (a write that threw): drop them before anything else runs
+            this.#confirmed.length = 0;
+            this.#noops.length = 0;
+            await this.#rebuild();
+            throw e;
+          }
+          if (ok) {
+            turn = null; // given back with the append
+            return r;
+          }
+          // another process appended first, someone holds the turn, or a caller's condition (a lease fence) failed:
+          // rebuild, then retry; a caller's condition that no longer holds is never retried (it would fail again)
           await this.#rebuild();
-          throw e;
+          if (!opts.idempotent || (opts.conditions?.length && !(await this.store.write([], opts.conditions)))) throw new Error("Carton: the store changed under this write (lost the append race or a condition failed)");
+          if (Date.now() > deadline) throw new Error("Carton: this write kept failing for a minute (a store condition that never holds)");
+          // a turn of ours that lapsed may have been taken over: take it again rather than wait on our own stale row
+          if (turn && turn.until <= Date.now()) turn = null;
+          // lost twice, or someone holds the turn: wait for the turn instead of recomputing against a moving head
+          if (!turn && (++lost >= 2 || (await this.store.get(T.lease, TURN)) !== undefined)) turn = await this.#takeTurn(deadline);
         }
-        if (ok) return r;
-        // another process appended first, or a caller's condition (a lease fence) failed: rebuild and retry
-        await this.#rebuild();
-        if (attempt >= 4 || !opts.idempotent) throw new Error("Carton: the store changed under this write (lost the append race or a condition failed)");
+      } finally {
+        // a write that failed for another reason gives back a turn it still holds
+        if (turn) await this.store.write([{ table: T.lease, key: TURN, value: undefined }], [{ table: T.lease, key: TURN, expect: { equals: turn } }]).catch(() => {});
       }
     };
     const p = this.#queue.then(run, run);
     this.#queue = p.catch(() => {});
     return p;
+  }
+  /**
+   * Take the append turn, waiting while another writer holds it (it is given back with that writer's append, or
+   * expires if the writer died). Never computes while waiting: the turn's holder lands first.
+   */
+  async #takeTurn(deadline: number): Promise<{ owner: string; until: number }> {
+    for (let wait = 1; ; wait = Math.min(wait * 2, 20)) {
+      const mine = { owner: `${this.#rid}.${randomHex(4)}`, until: Date.now() + TURN_MS };
+      if (await this.store.write([{ table: T.lease, key: TURN, value: mine }], [{ table: T.lease, key: TURN, expect: "absent" }])) return mine;
+      const held = await this.store.get<{ owner: string; until: number }>(T.lease, TURN);
+      // a turn its holder can't give back any more (it crashed, or took longer than TURN_MS): cleared for everyone
+      if (held && held.until <= Date.now()) await this.store.write([{ table: T.lease, key: TURN, value: undefined }], [{ table: T.lease, key: TURN, expect: { equals: held } }]);
+      else if (held) await new Promise((r) => setTimeout(r, wait * (0.5 + Math.random())));
+      if (Date.now() > deadline) throw new Error("Carton: couldn't take the append turn for a minute");
+    }
   }
   #emit(e: CartonEvent): void {
     for (const l of this.#listeners) l(e);
@@ -852,7 +909,8 @@ class CartonImpl implements Carton {
       },
       {
         conditions: input.conditions ?? [],
-        idempotent: !input.conditions?.length,
+        // retried while the caller's conditions still hold (#mutate checks): it is idempotent under its id
+        idempotent: true,
         id,
         ...(input.cardsWrite
           ? { extra: () => { const x = last as (CommitResult & { resolved?: ConflictCard[] }) | null; return { writes: x?.status === "confirmed" && x.resolved?.length ? input.cardsWrite!(x.resolved, x.change) : [] }; } }
@@ -1198,7 +1256,7 @@ class CartonImpl implements Carton {
       url: sync.url,
       token: sync.token,
       schemaVersion: this.#opts.adapter.schemaVersion,
-      client: { adoptPayload: () => this.#adoptPayload(cut) },
+      client: { adoptPayload: () => this.#adoptPayload(cut), ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
     });
     this.#shared.set(cut, sc);
     // edits an earlier session queued and the server never answered: back in the queue in their queue order. Each row
