@@ -20,8 +20,8 @@
 
 import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins";
 import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "@carton/server";
-import { createBlobUrlSigner, serveSignedBlob, type BlobUrlSigner } from "@carton/blob-memory/signed";
-import { BlobError } from "@carton/blob-memory/rules";
+import { createBlobUrlSigner, serveSignedBlob, readBody, BodyTooLarge, type BlobUrlSigner } from "@carton/blob-memory/signed";
+import { BlobError, MAX_PARTS } from "@carton/blob-memory/rules";
 
 // Any AuthProvider serves sessions; the invite routes need the demo's invite flow (HmacAuth). With another provider
 // (Cardboard's accounts) those routes answer 501 and sessions come from that provider.
@@ -46,13 +46,19 @@ const ROLES = new Set(["owner", "editor", "commenter", "viewer"]);
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const err = (status: number, message: string) => json({ error: message }, status);
 
-async function body<T>(req: Request): Promise<T> {
-  const len = Number(req.headers.get("content-length") ?? 0);
-  if (len > MAX_JSON) throw new AuthError("request body too large", 413);
-  const text = await req.text();
-  if (text.length > MAX_JSON) throw new AuthError("request body too large", 413);
+// A complete request lists up to 10,000 parts: {"partNumber":10000,"etag":"…"} is under 100 bytes each.
+const MAX_COMPLETE_JSON = MAX_PARTS * 128 + 1024;
+
+async function body<T>(req: Request, max = MAX_JSON): Promise<T> {
+  let bytes: Uint8Array;
   try {
-    return JSON.parse(text) as T;
+    bytes = await readBody(req, max);
+  } catch (e) {
+    if (e instanceof BodyTooLarge) throw new AuthError("request body too large", 413);
+    throw e;
+  }
+  try {
+    return JSON.parse(new TextDecoder().decode(bytes)) as T;
   } catch {
     throw new AuthError("body must be JSON", 400);
   }
@@ -171,13 +177,23 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
   const handle = await store.resumeMultipart(key, decodeURIComponent(id));
   if (req.method === "PUT" && sub && sub !== "complete") {
     const max = deps.maxBodyBytes ?? 100 * 1024 * 1024;
-    if (Number(req.headers.get("content-length") ?? 0) > max) return err(413, "part too large");
-    const data = new Uint8Array(await req.arrayBuffer());
-    if (data.byteLength > max) return err(413, "part too large");
+    let data: Uint8Array;
+    try {
+      data = await readBody(req, max);
+    } catch (e) {
+      if (e instanceof BodyTooLarge) return err(413, "part too large");
+      throw e;
+    }
     return json(await handle.uploadPart(Number(sub), data));
   }
   if (req.method === "GET" && !sub) return json({ parts: await handle.listParts() });
-  if (req.method === "POST" && sub === "complete") return json(await handle.complete((await body<{ parts: { partNumber: number; etag: string }[] }>(req)).parts));
+  if (req.method === "POST" && sub === "complete") {
+    const b = await body<{ parts?: unknown }>(req, MAX_COMPLETE_JSON);
+    const parts = b.parts;
+    if (!Array.isArray(parts) || parts.length === 0 || parts.length > MAX_PARTS || parts.some((p) => !p || typeof p.etag !== "string" || p.etag.length > 256 || !Number.isInteger(p.partNumber)))
+      return err(400, `parts must be 1..${MAX_PARTS} {partNumber, etag} entries`);
+    return json(await handle.complete(parts as { partNumber: number; etag: string }[]));
+  }
   if (req.method === "DELETE" && !sub) {
     await handle.abort();
     return json({});
