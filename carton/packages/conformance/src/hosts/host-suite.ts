@@ -1,0 +1,364 @@
+// SequencerHost and Transport conformance (PLAN §3.1, §6.3, §12): what every host must do around the sequencer
+// core, checked from outside through its Transport, exactly as a client sees it. The ordering rules themselves are
+// the system suite's (sync-sequencer); these check the host's part: authentication before the sequencer, ordered
+// delivery, fan-out, presence relay, replica ids bound to the device credential across reconnects, restart safety,
+// and that the host adds no storage rows of its own (P5: one row per change).
+
+import { describe, test, before, after } from "node:test";
+import assert from "node:assert/strict";
+import type { TransportConnection } from "@carton/core/plugins";
+import type { sync } from "@carton/core";
+import type { HostFixture } from "./index.ts";
+
+type Msg = sync.ServerMessage;
+
+// A Cardboard-shaped branch: two tracks, one clip.
+export const HOST_SUITE_DOC = {
+  tracks: [{ id: "V1" }, { id: "T2" }],
+  timelineItems: [{ id: "c0", trackId: "V1", startTime: 0, endTime: 5, trimStart: 0, trimEnd: 5, opacity: 1 }],
+};
+
+let branchN = 0;
+const newBranch = () => `hs-${Date.now().toString(36)}-${(++branchN).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+const ridOf = () => crypto.getRandomValues(new Uint8Array(12)).reduce((s, b) => s + b.toString(16).padStart(2, "0"), "");
+
+// A client that records every message and can wait for one.
+interface Client {
+  conn: TransportConnection;
+  got: Msg[];
+  closed: string | null;
+  wait(pred: (m: Msg) => boolean, what: string, ms?: number): Promise<Msg>;
+  waitClose(ms?: number): Promise<string>;
+}
+
+async function client(fx: HostFixture, token: string): Promise<Client> {
+  const conn = await fx.transport.connect(fx.host.url, { token });
+  const waiters: { pred: (m: Msg) => boolean; res: (m: Msg) => void }[] = [];
+  const closeWaiters: ((why: string) => void)[] = [];
+  const c: Client = {
+    conn,
+    got: [],
+    closed: null,
+    wait(pred, what, ms = 10_000) {
+      const hit = c.got.find(pred);
+      if (hit) return Promise.resolve(hit);
+      return new Promise((res, rej) => {
+        const t = setTimeout(() => rej(new Error(`timed out waiting for ${what}; got ${c.got.map((m) => m.type).join(",")}`)), ms);
+        waiters.push({ pred, res: (m) => { clearTimeout(t); res(m); } });
+      });
+    },
+    waitClose(ms = 10_000) {
+      if (c.closed !== null) return Promise.resolve(c.closed);
+      return new Promise((res, rej) => {
+        const t = setTimeout(() => rej(new Error("timed out waiting for close")), ms);
+        closeWaiters.push((w) => { clearTimeout(t); res(w); });
+      });
+    },
+  };
+  conn.onMessage((m) => {
+    c.got.push(m);
+    for (let i = waiters.length - 1; i >= 0; i--) if (waiters[i]!.pred(m)) waiters.splice(i, 1)[0]!.res(m);
+  });
+  conn.onClose((why) => {
+    c.closed = why;
+    for (const f of closeWaiters.splice(0)) f(why);
+  });
+  return c;
+}
+
+const rec = (id: string) => ({ id, name: "main", forkOf: null, owner: "alice", kind: "main", sequencer: { kind: "server", since: 0 } });
+
+// Shares a fresh branch through the protocol's own hand-off (`adopt`), as a client does.
+async function share(c: Client, branchId: string): Promise<void> {
+  c.conn.send({ type: "adopt", branchId, n: 0, stateHash: "", rows: [], rec: rec(branchId), doc0: HOST_SUITE_DOC, closure: [] } as unknown as sync.ClientMessage);
+  const m = await c.wait((m) => (m.type === "adopted" || m.type === "adoptError") && (m as { branchId?: string }).branchId === branchId, "adopted");
+  assert.equal(m.type, "adopted", JSON.stringify(m));
+}
+
+function hello(c: Client, branchId: string, have = 0, rids: string[] = []): Promise<Msg> {
+  c.conn.send({ type: "hello", branchId, have, pending: [], rids, schemaVersion: 1 } as sync.ClientMessage);
+  return c.wait((m) => m.type === "hello" && (m as sync.WelcomeMsg).branchId === branchId, "hello answer");
+}
+
+// A style edit on c0 (no span: the lww-able kind), declared as the engine declares it.
+function styleChange(branchId: string, id: string, base: number, value: unknown, pending: string[] = []) {
+  return {
+    id, hash: "0".repeat(64), author: { kind: "human", id: "suite" }, branchId, base: { seq: base, pending },
+    ops: [{ op: "set", path: ["timelineItems", "c0", "name"], value }], intent: null, kinds: null, policy: "merge", at: Date.now(),
+    paths: ["timelineItems/c0/name"], reads: ["timelineItems/c0"], spans: [], trackOrder: [],
+  };
+}
+
+// An inserted clip: a record row besides the change row (P5: 2 rows).
+function insertChange(branchId: string, id: string, base: number, clipId: string, start: number) {
+  const clip = { id: clipId, trackId: "V1", startTime: start, endTime: start + 1, trimStart: 0, trimEnd: 1, opacity: 1 };
+  return {
+    id, hash: "0".repeat(64), author: { kind: "human", id: "suite" }, branchId, base: { seq: base, pending: [] },
+    ops: [{ op: "insert", path: ["timelineItems", clipId], value: clip }], intent: null, kinds: null, policy: "merge", at: Date.now(),
+    paths: [`timelineItems/${clipId}`], reads: ["tracks/V1"], spans: [{ track: "V1", lo: start, hi: start + 1 }], trackOrder: [],
+  };
+}
+
+const push = (c: Client, branchId: string, epoch: number, changes: unknown[]) =>
+  c.conn.send({ type: "push", branchId, epoch, changes } as unknown as sync.ClientMessage);
+const ackOf = (id: string) => (m: Msg) => (m.type === "ack" || m.type === "reject") && (m as sync.AckMsg).id === id;
+
+export function sequencerHostSuite(name: string, make: () => Promise<HostFixture>): void {
+  describe(`SequencerHost conformance: ${name}`, () => {
+    let fx: HostFixture;
+    const open: Client[] = [];
+    const connect = async (token: string) => {
+      const c = await client(fx, token);
+      open.push(c);
+      return c;
+    };
+    before(async () => {
+      fx = await make();
+    });
+    after(async () => {
+      for (const c of open) c.conn.close();
+      await fx.close();
+    });
+
+    test("a token the host didn't issue never reaches the sequencer", async () => {
+      await assert.rejects(fx.transport.connect(fx.host.url, { token: "not-a-token" }));
+      await assert.rejects(fx.transport.connect(fx.host.url, { token: "" }));
+      if (fx.tokenFor) {
+        const other = await fx.tokenFor({ credential: "x/other-project", projectId: "another-project" });
+        const refused = await fx.transport.connect(fx.host.url, { token: other }).then(
+          async (c) => {
+            // a host may accept the socket and refuse every message instead; either way nothing is sequenced
+            const cl = { got: [] as Msg[] };
+            c.onMessage((m) => cl.got.push(m));
+            c.send({ type: "hello", branchId: "x", have: 0, pending: [], rids: [], schemaVersion: 1 } as sync.ClientMessage);
+            await new Promise((r) => setTimeout(r, 300));
+            c.close();
+            return cl.got.every((m) => m.type === "error");
+          },
+          () => true,
+        );
+        assert.ok(refused, "a token for another project was served");
+      }
+    });
+
+    test("an accepted change reaches every subscriber, the pusher before its ack", async () => {
+      const b = newBranch();
+      const alice = await connect(await fx.token("editor"));
+      const bob = await connect(await fx.token("editor"));
+      await share(alice, b);
+      await hello(alice, b);
+      await hello(bob, b);
+      const id = `${ridOf()}.1`;
+      push(alice, b, 1, [styleChange(b, id, 0, "first")]);
+      const ack = (await alice.wait(ackOf(id), "ack")) as sync.AckMsg;
+      assert.equal(ack.type, "ack", JSON.stringify(ack));
+      assert.equal(ack.seq, 1);
+      const rowAt = alice.got.findIndex((m) => m.type === "changes" && (m as sync.ChangesMsg).rows.some((r) => r.id === id));
+      assert.ok(rowAt >= 0 && rowAt < alice.got.indexOf(ack), "the pusher gets the row before its ack");
+      const seen = (await bob.wait((m) => m.type === "changes", "fan-out")) as sync.ChangesMsg;
+      assert.equal(seen.rows[0]!.id, id);
+      assert.equal(seen.rows[0]!.seq, 1);
+    });
+
+    test("one connection's messages are handled in order: 20 pipelined changes are acked 1..20", async () => {
+      const b = newBranch();
+      const c = await connect(await fx.token("editor"));
+      await share(c, b);
+      await hello(c, b);
+      const rid = ridOf(), ids: string[] = [];
+      for (let i = 1; i <= 20; i++) {
+        ids.push(`${rid}.${i}`);
+        push(c, b, 1, [styleChange(b, `${rid}.${i}`, i - 1, `v${i}`, [])]);
+      }
+      const acks = await Promise.all(ids.map((id) => c.wait(ackOf(id), `ack ${id}`)));
+      assert.deepEqual(acks.map((a) => [a.type, (a as sync.AckMsg).seq]), ids.map((_, i) => ["ack", i + 1]));
+      const order = c.got.filter((m) => m.type === "ack").map((m) => (m as sync.AckMsg).id);
+      assert.deepEqual(order, ids, "acks in push order");
+    });
+
+    test("a viewer's push is refused and changes nothing", async () => {
+      const b = newBranch();
+      const owner = await connect(await fx.token("owner"));
+      await share(owner, b);
+      const viewer = await connect(await fx.token("viewer"));
+      const w = (await hello(viewer, b)) as sync.WelcomeMsg;
+      assert.equal(w.head, 0);
+      const id = `${ridOf()}.1`;
+      push(viewer, b, 1, [styleChange(b, id, 0, "nope")]);
+      const answer = await viewer.wait((m) => m.type === "error" || ackOf(id)(m), "refusal");
+      assert.notEqual(answer.type, "ack");
+      const again = (await hello(await connect(await fx.token("editor")), b)) as sync.WelcomeMsg;
+      assert.equal(again.head, 0, "nothing was confirmed");
+    });
+
+    test("presence goes to the branch's other subscribers, not the sender, and is never stored", async () => {
+      const b = newBranch();
+      const a = await connect(await fx.token("editor"));
+      const p = await connect(await fx.token("editor"));
+      const outsider = await connect(await fx.token("editor"));
+      await share(a, b);
+      await hello(a, b);
+      await hello(p, b);
+      const before = fx.rows ? await fx.rows() : null;
+      a.conn.send({ type: "presence", branchId: b, actor: { kind: "human", id: "a" }, state: { at: 1.5, dragging: true } } as sync.ClientMessage);
+      const got = (await p.wait((m) => m.type === "presence", "presence")) as sync.PresenceFanoutMsg;
+      assert.equal(got.state?.at, 1.5);
+      await new Promise((r) => setTimeout(r, 200));
+      assert.ok(!a.got.some((m) => m.type === "presence"), "echoed to the sender");
+      assert.ok(!outsider.got.some((m) => m.type === "presence"), "sent to a connection not on the branch");
+      if (before) assert.equal((await fx.rows!()).rowsWritten - before.rowsWritten, 0, "presence wrote rows");
+    });
+
+    test("replica ids are bound to the device credential and survive a reconnect; another credential can't use them", async (t) => {
+      if (!fx.tokenFor) return t.skip("needs tokenFor");
+      const b = newBranch();
+      const cred = `dev-${ridOf().slice(0, 8)}`, rid = ridOf();
+      const first = await connect(await fx.tokenFor({ credential: `alice/${cred}`, account: "alice" }));
+      await share(first, b);
+      await hello(first, b, 0, [rid]);
+      push(first, b, 1, [styleChange(b, `${rid}.1`, 0, "one")]);
+      assert.equal((await first.wait(ackOf(`${rid}.1`), "ack 1")).type, "ack");
+      first.conn.close();
+      const again = await connect(await fx.tokenFor({ credential: `alice/${cred}`, account: "alice" }));
+      await hello(again, b, 1, [rid]);
+      push(again, b, 1, [styleChange(b, `${rid}.2`, 1, "two")]);
+      assert.equal((await again.wait(ackOf(`${rid}.2`), "ack 2")).type, "ack", "the same device reclaims its rid");
+      const thief = await connect(await fx.tokenFor({ credential: `mallory/${cred}x`, account: "mallory" }));
+      await hello(thief, b, 2);
+      push(thief, b, 1, [styleChange(b, `${rid}.3`, 2, "stolen")]);
+      const r = (await thief.wait(ackOf(`${rid}.3`), "reject")) as sync.RejectMsg;
+      assert.equal(r.type, "reject");
+      assert.equal(r.reason, "foreign id");
+    });
+
+    test("a duplicate push is acked with the original seq", async () => {
+      const b = newBranch();
+      const c = await connect(await fx.token("editor"));
+      await share(c, b);
+      await hello(c, b);
+      const id = `${ridOf()}.1`;
+      push(c, b, 1, [styleChange(b, id, 0, "x")]);
+      await c.wait(ackOf(id), "ack");
+      c.got.length = 0;
+      push(c, b, 2, [styleChange(b, id, 0, "x")]);
+      const dup = (await c.wait(ackOf(id), "duplicate ack")) as sync.AckMsg;
+      assert.equal(dup.type, "ack");
+      assert.equal(dup.seq, 1);
+      assert.equal(dup.duplicate, true);
+    });
+
+    test("the host adds no rows of its own: 1 row per style change, 2 per insert, 0 per hello again (P5, §17)", async (t) => {
+      if (!fx.rows) return t.skip("the host can't count rows");
+      const b = newBranch();
+      const c = await connect(await fx.token("editor"));
+      await share(c, b);
+      const rid = ridOf();
+      await hello(c, b, 0, [rid]);
+      let before = await fx.rows();
+      push(c, b, 1, [styleChange(b, `${rid}.1`, 0, "a")]);
+      await c.wait(ackOf(`${rid}.1`), "ack");
+      let after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 1, "a style change");
+      before = after;
+      push(c, b, 1, [insertChange(b, `${rid}.2`, 1, "c9", 10)]);
+      assert.equal((await c.wait(ackOf(`${rid}.2`), "ack")).type, "ack");
+      after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 2, "an insert");
+      before = after;
+      await hello(c, b, 2, [rid]);
+      after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 0, "a second hello with the same rids");
+    });
+
+    test("restart-safe: after a restart the head, the rows and duplicate detection are the same", async (t) => {
+      if (!fx.restart) return t.skip("no restart()");
+      const b = newBranch();
+      // one device throughout: its token still verifies after the restart, and its rid stays bound to it
+      const token = await fx.token("editor");
+      const c = await connect(token);
+      await share(c, b);
+      await hello(c, b);
+      const rid = ridOf();
+      for (let i = 1; i <= 3; i++) push(c, b, 1, [styleChange(b, `${rid}.${i}`, i - 1, i)]);
+      await c.wait(ackOf(`${rid}.3`), "ack 3");
+      await fx.restart();
+      const why = await c.waitClose(30_000);
+      assert.equal(typeof why, "string", "the old connection closed");
+      const d = await connect(token);
+      const w = (await hello(d, b)) as sync.WelcomeMsg;
+      assert.equal(w.head, 3);
+      assert.deepEqual(w.rows.map((r) => r.id), [1, 2, 3].map((i) => `${rid}.${i}`));
+      push(d, b, 1, [styleChange(b, `${rid}.2`, 1, 2)]);
+      const dup = (await d.wait(ackOf(`${rid}.2`), "duplicate")) as sync.AckMsg;
+      assert.equal(dup.seq, 2);
+      assert.equal(dup.duplicate, true);
+    });
+  });
+}
+
+export function transportSuite(name: string, make: () => Promise<HostFixture>): void {
+  describe(`Transport conformance: ${name}`, () => {
+    let fx: HostFixture;
+    before(async () => {
+      fx = await make();
+    });
+    after(async () => {
+      await fx.close();
+    });
+
+    test("messages arrive whole and in order: 500 presence updates relayed in sequence", async () => {
+      const b = newBranch();
+      const a = await client(fx, await fx.token("editor"));
+      const p = await client(fx, await fx.token("editor"));
+      await share(a, b);
+      await hello(a, b);
+      await hello(p, b);
+      for (let i = 0; i < 500; i++) a.conn.send({ type: "presence", branchId: b, actor: { kind: "human", id: "a" }, state: { at: i } } as sync.ClientMessage);
+      await p.wait((m) => m.type === "presence" && (m as sync.PresenceFanoutMsg).state?.at === 499, "the 500th presence", 30_000);
+      const ats = p.got.filter((m) => m.type === "presence").map((m) => (m as sync.PresenceFanoutMsg).state?.at);
+      assert.deepEqual(ats, Array.from({ length: 500 }, (_, i) => i));
+      a.conn.close();
+      p.conn.close();
+    });
+
+    test("a large message (a 300 KB change) arrives whole", async () => {
+      const b = newBranch();
+      const a = await client(fx, await fx.token("editor"));
+      const p = await client(fx, await fx.token("editor"));
+      await share(a, b);
+      await hello(a, b);
+      await hello(p, b);
+      const big = "ü".repeat(150_000);
+      const id = `${ridOf()}.1`;
+      push(a, b, 1, [styleChange(b, id, 0, big)]);
+      assert.equal((await a.wait(ackOf(id), "ack")).type, "ack");
+      const row = ((await p.wait((m) => m.type === "changes", "row")) as sync.ChangesMsg).rows[0]!;
+      assert.equal((row.ops[0] as { value: string }).value, big);
+      a.conn.close();
+      p.conn.close();
+    });
+
+    test("close: onClose fires exactly once, nothing is delivered after it, send is a no-op", async () => {
+      const b = newBranch();
+      const a = await client(fx, await fx.token("editor"));
+      await share(a, b);
+      let closes = 0;
+      a.conn.onClose(() => closes++);
+      a.conn.close();
+      a.conn.close();
+      await new Promise((r) => setTimeout(r, 100));
+      assert.equal(closes, 1);
+      assert.equal(a.conn.open, false);
+      const n = a.got.length;
+      a.conn.send({ type: "hello", branchId: b, have: 0, pending: [], rids: [], schemaVersion: 1 } as sync.ClientMessage);
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(a.got.length, n);
+    });
+
+    test("connect honours an aborted signal", async () => {
+      const ac = new AbortController();
+      ac.abort();
+      await assert.rejects(fx.transport.connect(fx.host.url, { token: await fx.token("editor"), signal: ac.signal }));
+    });
+  });
+}
