@@ -215,7 +215,7 @@ export async function casUpdate<T>(store: Store, table: string, key: readonly (s
 const cardsKey = (actor: Actor, requestId: ChangeId) => [actorKey(actor), 0, 0, `req:${requestId}`];
 
 /** The notice row holding a save's cards, written in the same batch as the save's append (`cardsWrite`). */
-function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | null, cards: readonly ConflictCard[]) {
+export function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | null, cards: readonly ConflictCard[]) {
   const to = actorKey(actor), at = Date.now();
   const text = `${cards.length} conflict card${cards.length === 1 ? "" : "s"} on your change ${change ?? requestId}: the other side's value was kept; pick with \`cb resolve\``;
   return { table: "notices", key: cardsKey(actor, requestId), value: { to, kind: "late-conflict", text, change: change ?? requestId, cards: [...cards], at, deliveredAt: at } };
@@ -235,6 +235,14 @@ export interface ViewPrinter {
   printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string }>;
   onCb?(): Promise<void>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
+  /**
+   * The current cut changed (`cb cut switch`): the files must show the new cut now, and a freeze started on the old
+   * cut (its view, its base seq) doesn't apply to the new one. Without it, `onHeadChange("local")` (project.json
+   * follows; a frozen timeline.tsx doesn't).
+   */
+  onCutSwitch?(cut: string): void | Promise<void>;
+  /** A view's change settled after its save returned (a shared cut): its `.status` sidecar says so (R5-04). */
+  onChangeUpdate?(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; reason?: string }): Promise<void>;
 }
 
 /** Run one write on a Carton handle and answer with the cb result contract. */
@@ -264,6 +272,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   async function run(): Promise<CbResult> {
   let r: any;
   let kept: ConflictCard[] = [];
+  let extra: Record<string, unknown> = {};
   switch (op.kind) {
     case "printView": {
       if (!opts.materializer) return { status: "error", error: "views need the app open (or a helper that materializes)", notices };
@@ -319,6 +328,17 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       r = op.reject?.length
         ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices, id: req.id })
         : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
+      // nothing new to fold in, but a partial fold of this cut kept some of it out: folding again folds in the rest
+      // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4)
+      if (r?.status === "up-to-date" && !op.check && !op.reject?.length) {
+        // its own id (the fold above may have recorded the request's id as a no-op); a retry finds that change again
+        const restId = `${req.id}.rest`;
+        const inverse = (await revertedBy(carton, restId)) ?? (await keptOut(carton, op.from, op.into));
+        if (inverse) {
+          r = await carton.revert(inverse, { author, cut: op.into, id: restId });
+          extra = { rest: true, inverse };
+        }
+      }
       break;
     }
     // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
@@ -327,7 +347,14 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author, id: req.id }); break;
     case "undoTurn": r = await undoTurn(carton, req.id, op.turn, author, op.cut); break;
     case "fork": { const cut = await carton.fork(op.name, { from: op.from, kind: op.cutKind as any, author, id: req.id }); return { status: "confirmed", seq: 0, ref: null, notices, cut }; }
-    case "switch": await carton.switchTo(op.cut); return { status: "confirmed", seq: 0, ref: null, notices, cut: op.cut };
+    case "switch": {
+      await carton.switchTo(op.cut);
+      // the files follow the current cut (B6): project.json and the shared timeline.tsx show the new one
+      const mz = opts.materializer;
+      if (mz?.onCutSwitch) await mz.onCutSwitch(op.cut);
+      else mz?.onHeadChange?.("local");
+      return { status: "confirmed", seq: 0, ref: null, notices, cut: op.cut };
+    }
     case "name": await carton.name(op.ref, op.name); return { status: "confirmed", seq: 0, ref: op.ref, notices };
     case "pin": { const pin = await carton.pin({ owner: op.owner, cut: op.cut, ttlMs: op.ttlMs }); return { status: "confirmed", seq: pin.ref.seq, ref: pin.header, notices, header: pin.header }; }
     case "closeCard": return { status: "confirmed", seq: 0, ref: null, notices, closed: await closeCard(carton, author, op.change, op.path) };
@@ -343,7 +370,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   if (r?.status === "up-to-date") return { status: "confirmed", seq: 0, ref: null, notices, upToDate: true };
   if (r?.status === "missing-base" || r?.status === "compare") return { status: "conflicts", conflicts: r.cards ?? [], ref: null, notices, dialog: r.dialog };
   const asConflicts = (x: CbResult): CbResult => (kept.length && (x.status === "confirmed" || x.status === "pending") ? { ...x, status: "conflicts", conflicts: kept, ref: x.ref ?? null, landed: x.status } as CbResult : x);
-  if (r?.status !== "pending") return asConflicts(toCbResult(r, notices, r?.entry ? { undid: r.entry } : {}));
+  if (r?.status !== "pending") return asConflicts(toCbResult(r, notices, { ...extra, ...(r?.entry ? { undid: r.entry } : {}) }));
   // a shared cut: wait for the server (L14); offline answers pending at once, and conflicts arrive later as notices
   // the cut written to, not the current one: a write to another cut waits on that cut's connection
   const st = () => carton.sync?.state(destCut(op)).status;
@@ -407,6 +434,35 @@ async function answeredBefore(carton: Carton, id: ChangeId, cut?: string): Promi
   const store = storeOf(carton);
   if (!store) return false;
   return (await store.get("ids", [id])) !== undefined || (await store.get("meta", ["noop", id])) !== undefined || (await store.get("pending", [cut ?? carton.cut, id])) !== undefined;
+}
+
+/**
+ * The newest partial fold of `from` into the cut whose kept-out part isn't folded in yet: its inverse change (a
+ * `partial-revert` whose `reverts` is a merge of `from`, and that no later change reverts). From the Store's confirmed
+ * log; only read when a fold finds nothing new.
+ */
+async function keptOut(carton: Carton, from: string, into?: string): Promise<ChangeId | null> {
+  const store = storeOf(carton);
+  if (!store) return null;
+  type Row = { id: ChangeId; kind?: string; reverts?: ChangeId | ChangeId[]; mergeOf?: { branchId: string } };
+  const rows = (await store.range<Row>("changes", { prefix: [into ?? carton.cut] })).map((r) => r.value);
+  const reverted = new Set<ChangeId>();
+  for (const c of rows) if (c.kind !== "partial-revert") for (const x of [c.reverts ?? []].flat()) reverted.add(x);
+  const byId = new Map(rows.map((c) => [c.id, c]));
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const c = rows[i]!;
+    if (c.kind !== "partial-revert" || reverted.has(c.id)) continue;
+    const merge = byId.get([c.reverts ?? []].flat()[0] ?? "");
+    // a partial fold whose merge was undone since has nothing left to complete
+    if (merge && !reverted.has(merge.id) && merge.mergeOf && (from === merge.mergeOf.branchId || from.startsWith(`${merge.mergeOf.branchId}@`))) return c.id;
+  }
+  return null;
+}
+
+/** The change a confirmed revert with this id reverted (a retried "fold in the rest"), or null. */
+async function revertedBy(carton: Carton, id: ChangeId): Promise<ChangeId | null> {
+  const [first] = await revertsOf(carton, id);
+  return first ?? null;
 }
 
 /** The change ids an undo change reverts (from the confirmed log in the Store; [] when unknown). */

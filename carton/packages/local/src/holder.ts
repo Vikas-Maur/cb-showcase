@@ -45,39 +45,59 @@ export interface HolderOptions {
   log?: (event: Record<string, unknown>) => void;
 }
 
-/** Ping a holder: its nonce if it answered within `timeoutMs`, else null. */
-export async function ping(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise<{ nonce: string; pid: number } | null> {
+/** A ping's outcome: the holder's answer, or why there is none: nothing listens (`gone`: it died) or no answer in time
+ * (`slow`: busy, preempted, or hung). */
+export type PingResult = { answer: { nonce: string; pid: number } } | { gone: true } | { slow: true };
+
+export async function pingWhy(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise<PingResult> {
   const deadline = Date.now() + timeoutMs;
   let c: ControlClient | null = null;
   try {
     c = await ControlClient.connect(socket, { timeoutMs, auth: false });
-    return await c.call("carton.ping", {}, Math.max(1, deadline - Date.now()));
-  } catch {
-    return null;
+    return { answer: await c.call("carton.ping", {}, Math.max(1, deadline - Date.now())) };
+  } catch (e) {
+    return (e as { code?: string })?.code === "ETIMEDOUT" ? { slow: true } : { gone: true };
   } finally {
     c?.close();
   }
 }
+
+/** Ping a holder: its nonce if it answered within `timeoutMs`, else null. */
+export async function ping(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise<{ nonce: string; pid: number } | null> {
+  const r = await pingWhy(socket, timeoutMs);
+  return "answer" in r ? r.answer : null;
+}
+
+/**
+ * Further pings for a holder worth waiting for when it was merely slow (B3): the app's engine thread, whose takeover
+ * by a helper loses the app's materializer and fences the app, or a helper the starting app would rather have hand
+ * over. A dead holder refuses at once (`gone`), so a takeover after a crash waits for none of these.
+ */
+export const PATIENT_PINGS_MS = [300, 1000];
 
 /**
  * Look at the lease: the live holder, or null, and the nonce that was observed (live or not). Live = the row isn't
  * expired and its socket answers a ping with the row's nonce. A taker must take over from exactly the nonce whose
  * holder it saw fail, never from one it reads later (that one may be a healthy holder another caller just started).
  */
-export async function probeHolder(lease: Lease, now = Date.now()): Promise<{ live: LeaseRow | null; seen: string | null; fresh: boolean }> {
+export async function probeHolder(lease: Lease, now = Date.now(), opts: { patient?: (row: LeaseRow) => boolean } = {}): Promise<{ live: LeaseRow | null; seen: string | null; fresh: boolean }> {
   // one observation: the nonce a taker may take over from is the one this probe saw, never one read afterwards
   const { nonce, row } = await lease.snapshot();
   if (!row) return { live: null, seen: nonce, fresh: false };
   if (now - row.heartbeat > LEASE_EXPIRY_MS) return { live: null, seen: row.nonce, fresh: false };
-  const r = await ping(row.socketPath);
+  let r = await pingWhy(row.socketPath);
+  if ("slow" in r && opts.patient?.(row)) for (const ms of PATIENT_PINGS_MS) if (!("slow" in (r = await pingWhy(row.socketPath, ms)))) break;
   // fresh: a holder beat within 6 s, even if it missed this ping (busy, or dead a moment ago)
-  return { live: r?.nonce === row.nonce ? row : null, seen: row.nonce, fresh: true };
+  return { live: "answer" in r && r.answer.nonce === row.nonce ? row : null, seen: row.nonce, fresh: true };
 }
 
 /** The live holder, or null. */
-export async function liveHolder(lease: Lease, now = Date.now()): Promise<LeaseRow | null> {
-  return (await probeHolder(lease, now)).live;
+export async function liveHolder(lease: Lease, now = Date.now(), opts: { patient?: (row: LeaseRow) => boolean } = {}): Promise<LeaseRow | null> {
+  return (await probeHolder(lease, now, opts)).live;
 }
+
+/** A `cb` call waits for a slow app (its engine thread), never for a slow helper (R4-04: takeover in under 1 s). */
+export const patientWithApp = (row: LeaseRow): boolean => row.kind === "worker";
 
 export class Holder {
   readonly kind: HolderKind;
@@ -143,7 +163,8 @@ export class Holder {
         return lease.take(seen, who);
       }
       if (!cur) { const r = await lease.take(null, who); if (r) return r; continue; }
-      if (!(await liveHolder(lease))) { const r = await lease.take(cur.nonce, who); if (r) return r; continue; }
+      // a slow holder is asked to hand over rather than fenced: only one that is gone (or never answers) is taken over
+      if (!(await liveHolder(lease, Date.now(), { patient: () => true }))) { const r = await lease.take(cur.nonce, who); if (r) return r; continue; }
       // a live helper: ask it to finish its in-flight push and leave
       this.log({ type: "handover-request", to: cur.nonce });
       try {
