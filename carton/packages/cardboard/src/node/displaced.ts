@@ -145,7 +145,7 @@ export class DisplacedFiles {
       let stamp: string;
       try {
         bytes = retryBusy(() => fs.readFileSync(h.path), this.counter);
-        stamp = stampOf(fs.statSync(h.path, { bigint: true }));
+        stamp = stampOf(retryBusy(() => fs.statSync(h.path, { bigint: true }), this.counter));
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code === "ENOENT") continue; // released by another review
         throw e;
