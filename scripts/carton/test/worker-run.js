@@ -68,8 +68,8 @@ const [workerFile, root] = process.argv.slice(2);
       };
       const first = shown("after")[0];
       out.sides = first && { mine: first.mine.summary, theirs: first.theirs.summary };
-      // A second stale save on the same size (180): two kept cards for one field, one shown. Resolving the shown one
-      // (keep the change that was kept) removes only it; the other is shown next.
+      // A second stale save on the same size (180): two kept cards for one field, both shown. Resolving the first (keep
+      // the change that was kept) removes only it; the other stays.
       const stale2 = doc.timelineItems.map((it) => (it.type === "text" ? { ...it, fontSize: 180 } : it));
       await call("projects.updateScoped", { ...doc, timelineItems: stale2, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
       const kept = async () => (await call("carton.notices", { bundlePath, actor: "person" })).flatMap((n) => n.cards ?? []);
@@ -79,12 +79,13 @@ const [workerFile, root] = process.argv.slice(2);
       await new Promise((r) => setTimeout(r, 200));
       out.keptAfter = (await kept()).map((c) => c.theirs);
       out.shownNext = shown("after").map((c) => c.mine.summary);
-      // A third clash on the field (175) after the first panel resolved: the other panel, still showing the first card,
-      // doesn't track the new one. When it resolves the first (already gone), nothing goes.
+      // A third clash on the field (175) after the first panel resolved. The other panel still shows the first card;
+      // when it resolves it there (already gone), nothing else goes.
       const stale3 = doc.timelineItems.map((it) => (it.type === "text" ? { ...it, fontSize: 175 } : it));
       await call("projects.updateScoped", { ...doc, timelineItems: stale3, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
       await new Promise((r) => setTimeout(r, 200));
-      await call("carton.ui", { projectId: p.id, client: "other", message: { t: "call", id: 98, method: "resolve", args: [first.id, "theirs"] } });
+      const otherFirst = shown("other").find((c) => c.mine.summary === "170");
+      await call("carton.ui", { projectId: p.id, client: "other", message: { t: "call", id: 98, method: "resolve", args: [otherFirst?.id, "theirs"] } });
       for (let i = 0; i < 100 && !events.some((e) => e.change?.client === "other" && e.change.message?.t === "ret" && e.change.message.id === 98); i++) await new Promise((r) => setTimeout(r, 25));
       await new Promise((r) => setTimeout(r, 200));
       out.keptAfterOther = (await kept()).map((c) => c.theirs);
@@ -94,14 +95,15 @@ const [workerFile, root] = process.argv.slice(2);
       await new Promise((r) => setTimeout(r, 300));
       out.agentCards = (await call("carton.notices", { bundlePath, actor: "codex/c7" })).flatMap((n) => n.cards ?? []).length;
       out.panelHasAgent = [...shown("after"), ...shown("other")].some((c) => c.mine.summary === "190" || c.theirs.summary === "190");
-      // A card kept by an earlier build (no id) can be resolved, and goes.
+      // A card kept by another process (straight into carton.db) shows when a panel opens, and resolving it removes it.
       const facade = require(require("path").join(process.env.CARTON_DIR, "carton-node.cjs"));
       const vid = doc.timelineItems.find((i) => i.type === "video").id, cardPath = "timelineItems/" + vid + "/opacity";
       await facade.internals.writeNotice(bundlePath, "person", [{ kind: "field", path: cardPath, base: 1, ours: 1, theirs: 0.5 }]);
       await panel("legacy");
       await new Promise((r) => setTimeout(r, 300));
-      out.legacyShown = shown("legacy").some((c) => c.id === cardPath);
-      await call("carton.ui", { projectId: p.id, client: "legacy", message: { t: "call", id: 97, method: "resolve", args: [cardPath, "theirs"] } });
+      const legacyId = shown("legacy").find((c) => c.path === cardPath)?.id;
+      out.legacyShown = !!legacyId;
+      await call("carton.ui", { projectId: p.id, client: "legacy", message: { t: "call", id: 97, method: "resolve", args: [legacyId, "theirs"] } });
       for (let i = 0; i < 100 && !events.some((e) => e.change?.client === "legacy" && e.change.message?.t === "ret" && e.change.message.id === 97); i++) await new Promise((r) => setTimeout(r, 25));
       await new Promise((r) => setTimeout(r, 200));
       out.legacyGone = !(await call("carton.notices", { bundlePath, actor: "person" })).some((n) => (n.cards ?? []).some((c) => c.path === cardPath));
