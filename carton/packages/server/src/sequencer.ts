@@ -802,14 +802,19 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return true;
   }
 
-  // The latest presence a connection had dropped by its cap, relayed when its bucket refills: a burst (updates that
-  // queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position or its
-  // `state: null` always reaches the others.
-  const presenceTrailing = new Map<string, { branchId: string; msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>();
-  function clearTrailing(id: string): void {
-    const t = presenceTrailing.get(id);
-    if (t) clearTimeout(t.timer);
-    presenceTrailing.delete(id);
+  // The latest presence a connection had dropped by its cap, per branch, relayed when its bucket refills: a burst
+  // (updates that queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position
+  // or its `state: null` always reaches each branch's others. The rate itself stays per connection.
+  const presenceTrailing = new Map<string, Map<string, { msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>>();
+  function clearTrailing(id: string, branchId?: string): void {
+    const byBranch = presenceTrailing.get(id);
+    if (!byBranch) return;
+    for (const [b, t] of byBranch) {
+      if (branchId !== undefined && b !== branchId) continue;
+      clearTimeout(t.timer);
+      byBranch.delete(b);
+    }
+    if (byBranch.size === 0) presenceTrailing.delete(id);
   }
 
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
@@ -821,28 +826,36 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
     if (!presenceAllowed(c)) {
       stats.presenceDropped++;
-      const waiting = presenceTrailing.get(c.id);
+      const byBranch = presenceTrailing.get(c.id) ?? new Map();
+      presenceTrailing.set(c.id, byBranch);
+      const waiting = byBranch.get(m.branchId);
       if (waiting) {
-        waiting.branchId = m.branchId;
         waiting.msg = msg;
         return;
       }
       const b = presenceBuckets.get(c.id)!;
       const ms = Math.max(1, Math.ceil(((1 - b.tokens) / PRESENCE_PER_SEC) * 1000));
+      const branchId = m.branchId;
       const entry = {
-        branchId: m.branchId,
         msg,
-        timer: setTimeout(() => {
-          presenceTrailing.delete(c.id);
-          if (!conns.has(c.id) || !stateOf(c).subs.includes(entry.branchId)) return;
-          if (presenceAllowed(c)) fanout(entry.branchId, entry.msg, c.id);
+        timer: setTimeout(function relay() {
+          if (!conns.has(c.id) || !stateOf(c).subs.includes(branchId)) return clearTrailing(c.id, branchId);
+          // one token per relay, as any update; a connection with several branches waiting takes its turns
+          if (!presenceAllowed(c)) {
+            entry.timer = setTimeout(relay, Math.max(1, Math.ceil(1000 / PRESENCE_PER_SEC)));
+            (entry.timer as { unref?: () => void }).unref?.();
+            return;
+          }
+          byBranch.delete(branchId);
+          if (byBranch.size === 0) presenceTrailing.delete(c.id);
+          fanout(branchId, entry.msg, c.id);
         }, ms),
       };
       (entry.timer as { unref?: () => void }).unref?.();
-      presenceTrailing.set(c.id, entry);
+      byBranch.set(branchId, entry);
       return;
     }
-    clearTrailing(c.id); // this newer state supersedes the waiting one
+    clearTrailing(c.id, m.branchId); // this newer state supersedes the one waiting on its branch
     fanout(m.branchId, msg, c.id);
   }
 
