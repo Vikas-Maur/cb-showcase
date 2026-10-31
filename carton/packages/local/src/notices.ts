@@ -7,7 +7,7 @@
 import type { Actor, Notice } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import type { ConflictNotice, NoticeBox } from "./hooks.ts";
-import { actorKey } from "./writes.ts";
+import { actorKey, casUpdate, SKIP } from "./writes.ts";
 import { parseActorId } from "./identity.ts";
 
 const TABLE = "notices";
@@ -47,21 +47,24 @@ export class StoreNoticeBox implements NoticeBox {
   async blockedAsync(actorId: string): Promise<ConflictNotice[]> {
     return (await this.rows(actorId)).filter((r) => r.value.blockedAt && !r.value.handedToHuman).map(this.toNotice);
   }
+  // Each update is conditional on the row as read (casUpdate): a card resolved meanwhile, or a delivery mark, is
+  // never written back over.
   async markBlockedAsync(actorId: string, ids: string[]): Promise<void> {
     const at = this.now();
-    const writes = (await this.rows(actorId)).filter((r) => ids.includes(idOf(r.key))).map((r) => ({ table: TABLE, key: r.key, value: { ...r.value, blockedAt: at } }));
-    if (writes.length) await this.store.write(writes);
+    for (const r of await this.rows(actorId)) {
+      if (ids.includes(idOf(r.key))) await casUpdate<Row>(this.store, TABLE, r.key, (cur) => (cur.blockedAt ? SKIP : { ...cur, blockedAt: at }), r.value);
+    }
   }
   async handToHumanAsync(actorId: string, ids: string[]): Promise<void> {
     const at = this.now();
-    const writes = [];
     let n = 0;
     for (const r of await this.rows(actorId)) {
       if (!ids.includes(idOf(r.key))) continue;
-      writes.push({ table: TABLE, key: r.key, value: { ...r.value, handedToHuman: at } });
-      writes.push({ table: TABLE, key: [HUMAN_CARDS, at, n++], value: { ...r.value, to: HUMAN_CARDS, handedToHuman: at, from: actorId } });
+      let card: Row | null = null;
+      const ok = await casUpdate<Row>(this.store, TABLE, r.key, (cur) => (cur.handedToHuman || !cur.cards?.length ? SKIP : ((card = cur), { ...cur, handedToHuman: at })), r.value);
+      // the person's copy holds the cards as they were when handed over (after any the agent resolved)
+      if (ok && card) await this.store.write([{ table: TABLE, key: [HUMAN_CARDS, at, n++, Math.random().toString(16).slice(2, 10)], value: { ...(card as Row), to: HUMAN_CARDS, handedToHuman: at, from: actorId } }]);
     }
-    if (writes.length) await this.store.write(writes);
   }
 
   /** Load one actor's notices, run a synchronous hook decision against them, then write what it changed. */

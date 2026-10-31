@@ -62,8 +62,9 @@ export async function ping(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise
  * holder it saw fail, never from one it reads later (that one may be a healthy holder another caller just started).
  */
 export async function probeHolder(lease: Lease, now = Date.now()): Promise<{ live: LeaseRow | null; seen: string | null; fresh: boolean }> {
-  const row = await lease.read();
-  if (!row) return { live: null, seen: (await lease.nonce()) ?? null, fresh: false };
+  // one observation: the nonce a taker may take over from is the one this probe saw, never one read afterwards
+  const { nonce, row } = await lease.snapshot();
+  if (!row) return { live: null, seen: nonce, fresh: false };
   if (now - row.heartbeat > LEASE_EXPIRY_MS) return { live: null, seen: row.nonce, fresh: false };
   const r = await ping(row.socketPath);
   // fresh: a holder beat within 6 s, even if it missed this ping (busy, or dead a moment ago)

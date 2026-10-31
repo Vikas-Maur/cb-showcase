@@ -49,9 +49,19 @@ export class Lease {
   constructor(store: Store) { this.store = store; }
 
   async read(): Promise<LeaseRow | null> {
-    const [nonce, row] = await Promise.all([this.store.get<string>(LEASE_TABLE, NONCE_KEY), this.store.get<LeaseRow>(LEASE_TABLE, ROW_KEY)]);
-    // the nonce key is the truth; a row from an older holder (written in another batch) never names the holder
-    return nonce && row?.nonce === nonce ? row : null;
+    return (await this.snapshot()).row;
+  }
+  /**
+   * The nonce and the row, as one observation. The two keys are written in one batch but read with two gets, so a
+   * take or release landing between them shows as a mismatch; the pair is then read again. `row` is null when the lease
+   * is free (`nonce` null too).
+   */
+  async snapshot(): Promise<{ nonce: string | null; row: LeaseRow | null }> {
+    for (let i = 0; ; i++) {
+      const nonce = (await this.store.get<string>(LEASE_TABLE, NONCE_KEY)) ?? null;
+      const row = (await this.store.get<LeaseRow>(LEASE_TABLE, ROW_KEY)) ?? null;
+      if ((row?.nonce ?? null) === nonce || i >= 8) return { nonce, row: nonce && row?.nonce === nonce ? row : null };
+    }
   }
   async nonce(): Promise<string | null> {
     return (await this.store.get<string>(LEASE_TABLE, NONCE_KEY)) ?? null;

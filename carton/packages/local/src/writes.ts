@@ -129,19 +129,68 @@ export async function deliverNotices(carton: Carton, actor: Actor): Promise<Noti
   const store = storeOf(carton);
   if (!store) return carton.notices(actor, { take: false });
   const rows = (await store.range<NoticeRow>("notices", { prefix: [actorKey(actor)] })).filter((r) => !r.value.deliveredAt && !r.value.handedToHuman);
-  if (!rows.length) return [];
   const at = Date.now();
-  await store.write(rows.map((r) => ({ table: "notices", key: r.key, value: { ...r.value, deliveredAt: at } })));
-  return rows.map((r) => r.value);
+  const out: Notice[] = [];
+  for (const r of rows) {
+    // conditional on the row as read: a card resolved (or a hook's mark written) meanwhile is never undone
+    let delivered: NoticeRow | null = null;
+    const ok = await casUpdate(store, "notices", r.key, (cur: NoticeRow) => (cur.deliveredAt || cur.handedToHuman ? SKIP : (delivered = { ...cur, deliveredAt: at })), r.value);
+    if (ok && delivered) out.push(delivered);
+  }
+  return out;
 }
 
-/** Keep the cards of a save that landed with head's values, for `cb conflicts` / `cb resolve` (already delivered). */
-async function keepCards(carton: Carton, actor: Actor, change: ChangeId | null, cards: ConflictCard[]): Promise<void> {
+export const SKIP = Symbol("skip");
+/**
+ * Read-modify-write of one Store row, conditional on the value it was computed from; refetches and recomputes when
+ * another writer got there first. `mutate` returns the new value, `undefined` to delete, or `SKIP` to leave it.
+ */
+export async function casUpdate<T>(store: Store, table: string, key: readonly (string | number)[], mutate: (cur: T) => T | undefined | typeof SKIP, first?: T): Promise<boolean> {
+  let cur = first !== undefined ? first : await store.get<T>(table, key);
+  for (let i = 0; i < 16; i++) {
+    if (cur === undefined) return false;
+    const next = mutate(cur);
+    if (next === SKIP) return false;
+    if (await store.write([{ table, key, value: next }], [{ table, key, expect: { equals: cur } }])) return true;
+    cur = await store.get<T>(table, key);
+  }
+  return false;
+}
+
+/** The notice row a commit's cards live in: keyed by the request id, so a retried request finds the same row. */
+const cardsKey = (actor: Actor, requestId: ChangeId) => [actorKey(actor), 0, 0, `req:${requestId}`];
+
+/** Keep (or replace) the cards of a save that landed with head's values, for `cb conflicts` / `cb resolve`. */
+async function putCards(carton: Carton, actor: Actor, requestId: ChangeId, change: ChangeId | null, cards: ConflictCard[]): Promise<void> {
   const store = storeOf(carton);
-  if (!store || !cards.length) return;
-  const at = Date.now(), key = actorKey(actor);
-  const text = `${cards.length} conflict card${cards.length === 1 ? "" : "s"} on your change ${change ?? ""}: ${cards.map((c) => c.path).join(", ")} kept the other side's value`;
-  await store.write([{ table: "notices", key: [key, at, 0, Math.random().toString(16).slice(2, 10)], value: { to: key, kind: "late-conflict", text, ...(change ? { change } : {}), cards, at, deliveredAt: at } }]);
+  if (!store) return;
+  const key = actorKey(actor), at = Date.now();
+  const text = `${cards.length} conflict card${cards.length === 1 ? "" : "s"} on your change ${change ?? requestId}: ${cards.map((c) => c.path).join(", ")} kept the other side's value`;
+  await store.write([{ table: "notices", key: cardsKey(actor, requestId), value: cards.length ? { to: key, kind: "late-conflict", text, change: change ?? requestId, cards, at, deliveredAt: at } : undefined }]);
+}
+
+/**
+ * The cards whose proposed value (`theirs`) isn't in the committed state: what "kept head's value" really covered.
+ * A card is kept exactly when the actor's value didn't land, whichever merge pass decided it.
+ */
+function unlanded(cards: Iterable<ConflictCard>, doc: Doc, carton: Carton): ConflictCard[] {
+  const out: ConflictCard[] = [];
+  for (const c of cards) {
+    const segs = c.path.split("/").map((x) => x.replace(/~1/g, "/").replace(/~0/g, "~"));
+    const spec = carton.schema.collections[segs[0]];
+    const rec = ((doc[segs[0]] as Record<string, unknown>[] | undefined) ?? []).find((r) => String(r[spec?.key ?? "id"]) === segs[1]);
+    const same = (a: unknown, b: unknown) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+    let landed: boolean;
+    if (segs.length === 2) landed = c.theirs == null ? !rec : !!rec && same(rec, c.theirs);
+    else if (segs.at(-1)!.startsWith("#") && c.theirs && typeof c.theirs === "object") landed = !!rec && Object.entries(c.theirs as Record<string, unknown>).every(([f, v]) => same(rec[f], v));
+    else {
+      let v: unknown = rec;
+      for (const k of segs.slice(2)) v = v && typeof v === "object" ? (v as Record<string, unknown>)[k] : undefined;
+      landed = same(v, c.theirs);
+    }
+    if (!landed) out.push(c);
+  }
+  return out;
 }
 
 /** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
@@ -182,10 +231,20 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       const input = { id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name };
       r = await carton.commit(input);
       if (r.status === "conflicts") {
-        // the rest of the save lands; each card keeps head's value until someone picks (nothing is lost)
-        kept = r.cards;
-        r = await carton.commit({ ...input, choices: kept.map(() => "ours" as const) });
-        if (r.status === "confirmed" || r.status === "pending") await keepCards(carton, author, r.status === "pending" ? r.id : r.change?.id ?? req.id, kept);
+        // The rest of the save lands; each card keeps head's value until someone picks (nothing is lost). The cards
+        // are written first, keyed by the request id, so a holder that dies after the append leaves them in place for
+        // the retry (which is then deduplicated by the change id).
+        await putCards(carton, author, req.id, null, r.cards);
+        const seen = new Map<string, ConflictCard>(r.cards.map((c: ConflictCard) => [c.path, c]));
+        // every card any merge pass meets is decided "ours" and remembered (a writer can add one between passes)
+        r = await carton.commit({ ...input, choices: (c: ConflictCard) => { seen.set(c.path, c); return "ours"; } });
+        if (r.status === "confirmed" || r.status === "pending") {
+          const landedIn = r.status === "confirmed" ? await carton.checkout({ branchId: r.ref.branchId, seq: r.seq }) : (await carton.head(op.cut)).doc;
+          kept = unlanded(seen.values(), landedIn, carton);
+          await putCards(carton, author, req.id, r.status === "pending" ? r.id : r.change?.id ?? req.id, kept);
+        } else {
+          await putCards(carton, author, req.id, null, []);
+        }
       }
       break;
     }
@@ -219,9 +278,10 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   const out = await outcomes.wait(r.id, req.waitMs ?? WAIT_MS);
   if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
   if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
-  // the change came back with a late conflict while we waited: it is this call's answer (and is marked delivered)
-  await deliverNotices(carton, req.actor);
+  // the change came back with a late conflict while we waited: it is this call's answer; other notices that arrived
+  // meanwhile go out with it rather than being marked delivered and dropped
   const n = out.notice;
+  for (const x of await deliverNotices(carton, req.actor)) if (!(x.change === n.change && x.kind === n.kind)) notices.push(x);
   return n.kind === "rejected" ? { status: "rejected", id: r.id, reason: n.text, notices } : { status: "conflicts", id: r.id, conflicts: [...kept, ...(n.cards ?? [])], ref: null, notices };
   }
 }
@@ -271,14 +331,16 @@ export const actorKey = (a: Actor): string => [a.kind, a.id, a.agentId].filter(B
  * local `notices` table, `[actorKey, at, n]`; a notice whose last card is closed goes away.
  */
 async function closeCard(carton: Carton, actor: Actor, change: ChangeId | null, path: PathKey): Promise<boolean> {
-  const store = (carton as unknown as { store?: Store }).store;
+  const store = storeOf(carton);
   if (!store) return false;
   const rows = await store.range<Notice>("notices", { prefix: [actorKey(actor)] });
   for (const { key, value } of rows) {
     if ((change && value.change !== change) || !value.cards?.some((c) => c.path === path)) continue;
-    const cards = value.cards.filter((c) => c.path !== path);
-    await store.write([{ table: "notices", key, value: cards.length ? { ...value, cards } : undefined }]);
-    return true;
+    return casUpdate<Notice>(store, "notices", key, (cur) => {
+      if (!cur.cards?.some((c) => c.path === path)) return SKIP;
+      const cards = cur.cards.filter((c) => c.path !== path);
+      return cards.length ? { ...cur, cards } : undefined;
+    }, value);
   }
   return false;
 }
