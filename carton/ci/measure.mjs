@@ -106,7 +106,7 @@ function report(rep) {
     try {
       whole = JSON.parse(fs.readFileSync(f, "utf8"));
     } catch {}
-    return { file: rep.file, kind: "json", value: whole ?? rows.at(-1) ?? null };
+    return { file: rep.file, kind: "json", value: whole ?? (rows.length > 1 ? rows : (rows[0] ?? null)) };
   }
   if (rep.kind === "repeat") return { file: rep.file, kind: "repeat", ...repeats[rep.file] };
   if (rep.kind === "tap-json") return { file: rep.file, kind: "tap-json", value: readLines(f).flatMap((l) => {

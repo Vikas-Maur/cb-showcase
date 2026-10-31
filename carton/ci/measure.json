@@ -10,79 +10,198 @@
         {
           "label": "bench/run.ts: build 10k and 100k carton.db, then 7 rounds of every cell, one fresh process each, rotated order",
           "cwd": "packages/store-sqlite",
-          "env": { "KF_ITEMS": "1000", "GFV_LOCK": "{tmp}/cpu.lock", "LOAD_MAX": "1.5", "OTHER_MAX": "0.5" },
-          "run": ["{node}", "bench/run.ts", "{tmp}/sqlite", "7", "{results}/raw-sqlite.jsonl", "10000,100000"],
+          "env": {
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "bench/run.ts",
+            "{tmp}/sqlite",
+            "7",
+            "{results}/raw-sqlite.jsonl",
+            "10000,100000"
+          ],
           "stdoutTo": "{results}/sqlite-run.log"
         }
       ],
-      "reports": [{ "file": "raw-sqlite.jsonl", "groupBy": ["id"], "ignore": ["round", "loadBefore", "loadAfter", "otherCoresBefore", "uptime", "gateWaitS", "waitedS", "at", "node", "head", "keyframeSeq"] }]
+      "reports": [
+        {
+          "file": "raw-sqlite.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ]
+        }
+      ]
     },
     {
       "id": "stores-idb-cells",
       "agent": "stores",
       "claim": "store-idb open / commit / readlog at 10k and 100k in headless Chrome (notes 2)",
       "timeout": 60,
-      "needs": ["chromium"],
+      "needs": [
+        "chromium"
+      ],
       "steps": [
         {
           "label": "bench/run.ts: build the data in a persistent profile, then 7 rounds of every cell",
           "cwd": "packages/store-idb",
-          "env": { "TMPDIR": "{tmp}/idbtmp", "KF_ITEMS": "1000", "GFV_LOCK": "{tmp}/cpu.lock", "LOAD_MAX": "1.5", "OTHER_MAX": "0.5" },
-          "run": ["{node}", "bench/run.ts", "{tmp}/idb-profile", "7", "{results}/raw-idb.jsonl", "10000,100000"],
+          "env": {
+            "TMPDIR": "{tmp}/idbtmp",
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "bench/run.ts",
+            "{tmp}/idb-profile",
+            "7",
+            "{results}/raw-idb.jsonl",
+            "10000,100000"
+          ],
           "stdoutTo": "{results}/idb-run.log"
         }
       ],
-      "reports": [{ "file": "raw-idb.jsonl", "groupBy": ["id"], "ignore": ["round", "loadBefore", "loadAfter", "otherCoresBefore", "uptime", "gateWaitS", "waitedS", "at", "node", "head", "keyframeSeq"] }]
+      "reports": [
+        {
+          "file": "raw-idb.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ]
+        }
+      ]
     },
     {
       "id": "stores-misc",
       "agent": "stores",
       "claim": "idb value format A/B (notes 3), sqlite value compression (4), the 3-process starvation count (5), the P3/P3b numbers under Node and Electron 43.7.0 (6)",
       "timeout": 45,
-      "needs": ["chromium", "electron"],
+      "needs": [
+        "chromium",
+        "electron"
+      ],
       "steps": [
         {
           "label": "store-idb value format A/B: 10k changes, 7 alternating rounds (bench/exp-values-run.ts)",
           "cwd": "packages/store-idb",
-          "env": { "TMPDIR": "{tmp}/idbtmp" },
-          "run": ["{node}", "bench/exp-values-run.ts", "{tmp}/idb-exp"],
+          "env": {
+            "TMPDIR": "{tmp}/idbtmp"
+          },
+          "run": [
+            "{node}",
+            "bench/exp-values-run.ts",
+            "{tmp}/idb-exp"
+          ],
           "stdoutTo": "{results}/idb-values.json"
         },
         {
           "label": "store-sqlite value compression per deflate level (bench/compress.ts)",
           "cwd": "packages/store-sqlite",
-          "run": ["{node}", "bench/compress.ts"],
+          "run": [
+            "{node}",
+            "bench/compress.ts"
+          ],
           "stdoutTo": "{results}/compress.jsonl"
         },
         {
           "label": "Carton on carton.db, three processes committing back to back, TIGHT=1, 20 runs (counts runs that fail)",
           "cwd": "packages/store-sqlite",
-          "env": { "TIGHT": "1" },
+          "env": {
+            "TIGHT": "1"
+          },
           "repeat": 20,
           "allowFail": true,
-          "run": ["{node}", "--test", "--test-name-pattern=three processes committing", "test/import.test.ts"],
+          "run": [
+            "{node}",
+            "--test",
+            "--test-name-pattern=three processes committing",
+            "test/import.test.ts"
+          ],
           "stdoutTo": "{results}/tight.log"
         },
         {
           "label": "P3/P3b under Node (test/xproc.test.ts)",
           "cwd": "packages/store-sqlite",
-          "run": ["{node}", "--test", "--test-reporter=tap", "test/xproc.test.ts"],
+          "run": [
+            "{node}",
+            "--test",
+            "--test-reporter=tap",
+            "test/xproc.test.ts"
+          ],
           "stdoutTo": "{results}/xproc-node.tap"
         },
         {
           "label": "P3/P3b under Electron 43.7.0's Node (test/xproc.test.ts)",
           "cwd": "packages/store-sqlite",
-          "env": { "ELECTRON_RUN_AS_NODE": "1" },
-          "run": ["{electron}", "--test", "--test-reporter=tap", "test/xproc.test.ts"],
+          "env": {
+            "ELECTRON_RUN_AS_NODE": "1"
+          },
+          "run": [
+            "{electron}",
+            "--test",
+            "--test-reporter=tap",
+            "test/xproc.test.ts"
+          ],
           "stdoutTo": "{results}/xproc-electron.tap"
         }
       ],
       "reports": [
-        { "file": "idb-values.json", "kind": "json" },
-        { "file": "compress.jsonl", "groupBy": ["level"], "ignore": ["node", "items"] },
-        { "file": "tight.log", "kind": "repeat" },
-        { "file": "xproc-node.tap", "kind": "tap-json" },
-        { "file": "xproc-electron.tap", "kind": "tap-json" }
+        {
+          "file": "idb-values.json",
+          "kind": "json"
+        },
+        {
+          "file": "compress.jsonl",
+          "groupBy": [
+            "level"
+          ],
+          "ignore": [
+            "node",
+            "items"
+          ]
+        },
+        {
+          "file": "tight.log",
+          "kind": "repeat"
+        },
+        {
+          "file": "xproc-node.tap",
+          "kind": "tap-json"
+        },
+        {
+          "file": "xproc-electron.tap",
+          "kind": "tap-json"
+        }
       ]
     },
     {
@@ -90,21 +209,120 @@
       "agent": "ui",
       "claim": "@carton/react: bundle sizes (notes 3) and the timing suite on React and preact/compat, 3 alternating runs (notes 1-2)",
       "timeout": 60,
-      "needs": ["chromium"],
+      "needs": [
+        "chromium"
+      ],
       "steps": [
-        { "label": "bundle sizes (bench/size.mjs --json)", "cwd": "packages/react", "run": ["{node}", "bench/size.mjs", "--json"], "stdoutTo": "{results}/ui-size.json" },
-        { "label": "build the bench page (bench/build.mjs)", "cwd": "packages/react", "run": ["{node}", "bench/build.mjs"] },
+        {
+          "label": "bundle sizes (bench/size.mjs --json)",
+          "cwd": "packages/react",
+          "run": [
+            "{node}",
+            "bench/size.mjs",
+            "--json"
+          ],
+          "stdoutTo": "{results}/ui-size.json"
+        },
+        {
+          "label": "build the bench page (bench/build.mjs)",
+          "cwd": "packages/react",
+          "run": [
+            "{node}",
+            "bench/build.mjs"
+          ]
+        },
         {
           "label": "timing suite: every cell on React and preact/compat, alternating, 3 runs (bench/run.mjs)",
           "cwd": "packages/react",
-          "env": { "CARTON_BENCH_OUT": "{results}/ui-bench.jsonl", "CARTON_PLAYWRIGHT": "{pwModules}", "GFV_LOCK": "{tmp}/cpu.lock" },
-          "run": ["{node}", "bench/run.mjs", "--runs", "3"],
+          "env": {
+            "CARTON_BENCH_OUT": "{results}/ui-bench.jsonl",
+            "CARTON_PLAYWRIGHT": "{pwModules}",
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/run.mjs",
+            "--runs",
+            "3"
+          ],
           "stdoutTo": "{results}/ui-bench.log"
         }
       ],
       "reports": [
-        { "file": "ui-size.json", "kind": "json" },
-        { "file": "ui-bench.jsonl", "groupBy": ["kind", "n", "full", "shots", "runtime"], "ignore": ["run", "load1", "uptime", "seconds", "vps", "burst", "errors"] }
+        {
+          "file": "ui-size.json",
+          "kind": "json"
+        },
+        {
+          "file": "ui-bench.jsonl",
+          "groupBy": [
+            "kind",
+            "n",
+            "full",
+            "shots",
+            "runtime"
+          ],
+          "ignore": [
+            "run",
+            "load1",
+            "uptime",
+            "seconds",
+            "vps",
+            "burst",
+            "errors"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "stores-repeat",
+      "agent": "stores",
+      "claim": "more runs of two stores claims: the idb value format A/B (3 more full runs of 7 alternating rounds) and the compression timings (5 more processes, each a median of 15)",
+      "timeout": 40,
+      "needs": [
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "store-idb value format A/B, 3 more runs",
+          "cwd": "packages/store-idb",
+          "env": {
+            "TMPDIR": "{tmp}/idbtmp"
+          },
+          "repeat": 3,
+          "run": [
+            "{node}",
+            "bench/exp-values-run.ts",
+            "{tmp}/idb-exp"
+          ],
+          "stdoutTo": "{results}/idb-values-x3.jsonl"
+        },
+        {
+          "label": "store-sqlite value compression, 5 more processes",
+          "cwd": "packages/store-sqlite",
+          "repeat": 5,
+          "run": [
+            "{node}",
+            "bench/compress.ts"
+          ],
+          "stdoutTo": "{results}/compress-x5.jsonl"
+        }
+      ],
+      "reports": [
+        {
+          "file": "idb-values-x3.jsonl",
+          "kind": "json"
+        },
+        {
+          "file": "compress-x5.jsonl",
+          "groupBy": [
+            "level"
+          ],
+          "ignore": [
+            "node",
+            "items"
+          ]
+        }
       ]
     }
   ]
