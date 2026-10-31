@@ -1,7 +1,7 @@
 // The timeline.tsx header contract (§5.2): Carton refs, the print nonce, legacy 1.4.0 timestamps.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderRev, findRev, setRev, parseRevBody, printNonce, revBody } from "../src/header.ts";
+import { renderRev, findRev, setRev, parseRevBody, printNonce, revBody, branchToken } from "../src/header.ts";
 
 // The shape of Cardboard's printed header block (our own sample text, not Cardboard's printer).
 const printed = (rev: string) =>
@@ -49,4 +49,35 @@ test("only the first rev line counts; a file without one gets it on top", () => 
   assert.equal((findRev(two)?.rev as { ref: string }).ref, "main@1");
   assert.equal(findRev("export default (<timeline aspect=\"16:9\" />);"), null);
   assert.equal(setRev("x\n", "// cardboard:rev main@9"), "// cardboard:rev main@9\nx\n");
+});
+
+// core's ref parser (core/src/history/history.ts REF_RE): b: is exactly 8 lowercase hex characters
+const CORE_REF = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
+
+test("b: names any cut id in the 8 lowercase hex characters core reads; ids core makes keep their first 8 (local-cli)", () => {
+  assert.equal(branchToken("b7e1c2d3-0000-4000-8000-000000000000"), "b7e1c2d3", "a UUID (core's ids): as core prints it");
+  assert.equal(branchToken("0123456789abcdef01234567.2"), "01234567", "`cb cut new`'s ids: as core prints it");
+  const odd = ["b6b.alt", "ab-cdef01234", "\u00c9CLAT-cut", "main", "B7E1C2D3-0000", "abc"];
+  for (const id of odd) assert.match(branchToken(id), /^[0-9a-f]{8}$/, id);
+  assert.equal(new Set(odd.map(branchToken)).size, odd.length, "distinct ids, distinct tokens");
+  assert.equal(branchToken("b6b.alt"), branchToken("b6b.alt"));
+});
+
+test("any cut id and any cut name round-trip through the header, in the form core's parser reads (local-cli)", () => {
+  const cases: [string, string][] = [
+    ["Alt@3~abcdef01", "b6b.alt"],
+    ["Alt@3~abcdef01", "ab-cdef01234"],
+    ["Alt@3~abcdef01", "\u00c9CLAT-cut"],
+    ["Version by Alice@3~abcdef01", "0123abcd-0000"],
+    ["x p:1 b:12345678 cut@2~abcdef01", "0123abcd.1"],
+    ["main@57~3f9a1c0e", "1a2b3c4d-5e6f-7081-92a3-b4c5d6e7f809"],
+  ];
+  for (const [ref, id] of cases) {
+    const line = renderRev({ ref, branchId: id, nonce: "1234abcd", by: "Claude Code (by the terminal)" });
+    const rev = findRev(printed(line.slice("// cardboard:rev ".length)))?.rev;
+    assert.deepEqual(rev, { kind: "carton", ref, branch8: branchToken(id), nonce: "1234abcd", by: "Claude Code (by the terminal)" }, line);
+    const m = CORE_REF.exec(revBody(rev as never));
+    assert.ok(m, `core parses ${line}`);
+    assert.deepEqual([m[1], m[4], m[5]], [ref.slice(0, ref.lastIndexOf("@")), branchToken(id), "1234abcd"]);
+  }
 });
