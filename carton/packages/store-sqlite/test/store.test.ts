@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { openSqliteStore, openProjectStore, BusyError, FORMAT_VERSION } from "../src/index.ts";
-import { Db, OPEN_RETRY_MS } from "../src/db.ts";
+import { Db } from "../src/db.ts";
 import { scratch } from "./scratch.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -381,48 +381,17 @@ test("a caller that never yields still gets checkpoints: the WAL stays bounded t
   await s.close();
 });
 
-// verify-ci #22: on Windows a first read right after the file was closed elsewhere failed with "disk I/O error" (a
-// handle still held by a scanner or a dying process). Such errors are injected here through Db.open's verify step.
+// verify-ci #22: on Windows an open failed with SQLite's generic "disk I/O error". Its extended code says which I/O
+// step failed; the error is injected here through Db.open's verify step.
 const sqliteError = (errcode: number, message: string) => Object.assign(new Error(message), { code: "ERR_SQLITE_ERROR", errcode });
 
-test("a passing I/O error on a file's first reads is retried on a fresh connection, without blocking the loop", async () => {
+test("an I/O error at open names SQLite's extended code; other failures are reported unchanged", async () => {
   const file = fresh();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  const seen = new Set<unknown>();
-  let calls = 0;
-  let beats = 0;
-  const beat = setInterval(() => beats++, 1);
-  const db = await Db.open(file, {}, (raw) => {
-    seen.add(raw);
-    if (++calls <= 3) throw sqliteError(10 | (2 << 8), "disk I/O error"); // SQLITE_IOERR_SHORT_READ
-  });
-  clearInterval(beat);
-  try {
-    assert.equal(calls, 4);
-    assert.equal(seen.size, 4, "each attempt on its own connection");
-    assert.ok(beats > 0, "the waits between attempts are asynchronous");
-    assert.equal((db.raw.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode, "wal", "and the open then finishes");
-  } finally {
-    db.close();
-  }
-});
-
-test("an I/O error that lasts fails the open after the retry window, with SQLite's extended code", async () => {
-  const file = fresh();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const t0 = Date.now();
   await assert.rejects(Db.open(file, {}, () => { throw sqliteError(10 | (13 << 8), "disk I/O error"); }), (e: Error) => {
-    assert.match(e.message, /^disk I\/O error \(SQLite errcode 3338, after retrying for \d+ ms\)$/);
+    assert.equal(e.message, "disk I/O error (SQLite errcode 3338)");
     return true;
   });
-  assert.ok(Date.now() - t0 >= OPEN_RETRY_MS);
-});
-
-test("other open failures are reported at once, not retried", { skip: process.platform === "win32" ? "can't-open is retried on Windows" : false }, async () => {
-  const file = fresh();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  let calls = 0;
-  await assert.rejects(Db.open(file, {}, () => { calls++; throw sqliteError(14, "unable to open database file"); }), /unable to open database file$/);
-  await assert.rejects(Db.open(file, {}, () => { calls++; throw new Error("not a carton.db"); }), /not a carton.db/);
-  assert.equal(calls, 2);
+  await assert.rejects(Db.open(file, {}, () => { throw sqliteError(14, "unable to open database file"); }), /^Error: unable to open database file$/);
+  await assert.rejects(Db.open(file, {}, () => { throw new Error("not a carton.db"); }), /^Error: not a carton.db$/);
 });
