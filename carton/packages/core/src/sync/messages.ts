@@ -216,6 +216,11 @@ export interface WelcomeMsg {
   /** The largest client message the server reads (its envelope limit, for a client that sends envelopes). */
   maxMessageBytes?: number;
   /**
+   * A Published cut's source: the cut it came from, the version published (`at`) and that cut's head now. A watcher
+   * learns that newer edits exist (head > at) without being able to read them.
+   */
+  source?: { branchId: string; at: number; head: number };
+  /**
    * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
    * acting on the list. Unchecked ids are never to be taken as unconfirmed.
    */
