@@ -258,3 +258,37 @@ test("a replacement attached before the old connection closes gets its own sends
   await new Promise((r) => setTimeout(r, 100));
   assert.deepEqual(b.inbox.filter((m) => m.type === "presence").map((m) => (m as sync.PresenceFanoutMsg).state), [{ at: 99 }]);
 });
+
+// Round 5: a message of the old connection still queued when it was replaced and closed got its reply, which made an
+// outbox for it again that nothing would ever remove.
+test("a replaced connection's queued message gets no reply on the old socket", async () => {
+  const blobs = memoryBlobs();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let stall = true;
+  const get = blobs.get.bind(blobs);
+  blobs.get = async (key, range) => {
+    if (stall) {
+      stall = false;
+      await gate;
+    }
+    return get(key, range);
+  };
+  const { seq } = await world(doc([clip("c0", 0, 5)]), { blobs });
+  const a = fakeConn("alice/1"), c = fakeConn("carol/1");
+  await seq.handle(c, hello());
+  await seq.handle(a, hello());
+  const key = (sha: string) => sync.clientEnvelopeKey(sha, Date.now());
+  const stalled = seq.handle(c, { type: "blob", ref: (await sync.seal(sync.oversized(hello(), 1)!, blobs, key)).ref });
+  const queued = seq.handle(a, { type: "branchStatus", branchId: BRANCH } as sync.ClientMessage);
+  const a2 = { ...fakeConn("alice/1"), id: a.id, state: structuredClone(a.state) };
+  seq.attach(a2);
+  seq.disconnect(a);
+  a.inbox.length = 0;
+  release();
+  await Promise.all([stalled, queued]);
+  assert.deepEqual(a.inbox, [], "nothing on the old socket");
+  // the replacement is served as usual
+  await seq.handle(a2, { type: "branchStatus", branchId: BRANCH } as sync.ClientMessage);
+  assert.ok(a2.inbox.length > 0);
+});

@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import type { AuthContext, BlobStore } from "@carton/core/plugins";
 import { createHmacAuth } from "@carton/server";
 import { createMemoryBlobStore } from "@carton/blob-memory";
+import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { mediaHash, manifestKey, mediaKey, webCryptoHasher, LEAF_SIZE } from "@carton/media";
 import { handleHttp, projectMediaStore, MAX_BLOB_HEADS, type HttpDeps } from "../src/index.ts";
 import { hasHeads, hostMediaBlobs, HostApiError } from "../src/client.ts";
@@ -208,4 +209,22 @@ test("the client's fallback to one head per key stops the same way", async () =>
   assert.ok((await done) instanceof HostApiError);
   await new Promise((r) => setTimeout(r, 20));
   assert.equal(started, atFailure, "no head started after the failure");
+});
+
+// REQ-11 review round 2: a scoped store's check counted only its own prefix, so in a scope inside another's a key the
+// outer prefix leaves no room for passed, and failed at its turn after earlier keys were claimed.
+test("scopes inside scopes: a key the outer prefix leaves no room for refuses the batch before any claim", async () => {
+  const root = createMemoryBlobStore();
+  const tenant = scopedBlobStore(root, "tenant-0001/"); // a host serving many tenants from one bucket
+  const bytes = new Uint8Array(LEAF_SIZE + 5).map((_, i) => i & 0xff);
+  const m = await mediaHash(bytes, webCryptoHasher());
+  const teammate = projectMediaStore(tenant, "q", "t1");
+  await teammate.put(manifestKey(m.hash), m.bytes);
+  await teammate.put(mediaKey(m.hash), bytes);
+  const { raw } = host(projectMediaStore(tenant, "p", "t1"), { maxBlobHeads: 1 });
+  // fits projects/p/media/ (1,007 bytes of room), not with tenant-0001/ ahead of it too (995)
+  const tooLong = "x".repeat(1000);
+  assert.equal((await raw(JSON.stringify({ keys: [mediaKey(m.hash), tooLong] }), "editor")).status, 400);
+  assert.deepEqual(await (await raw(JSON.stringify({ keys: [mediaKey(m.hash)] }), "viewer")).json(), { blobs: [null] }, "not claimed");
+  await assert.rejects(projectMediaStore(tenant, "p", "t1").head(tooLong), /longer than/, "as its head refuses it");
 });

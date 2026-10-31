@@ -8,7 +8,7 @@
 // never saw.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { BlobError, checkKey, MAX_KEY_BYTES, withCreated, type ChecksKeys } from "./rules.ts";
+import { BlobError, checkKey, checksKeys, MAX_KEY_BYTES, withCreated, type ChecksKeys } from "./rules.ts";
 
 const enc = new TextEncoder();
 
@@ -34,7 +34,11 @@ export function scopedBlobStore(inner: BlobStore, prefix: string): BlobStore {
   });
   const store: BlobStore & ChecksKeys = {
     kind: `${inner.kind}+scope`,
-    checkKey: (key) => void full(key),
+    // this scope's room, then the inner store's own rules (a scope inside another's)
+    checkKey: (key) => {
+      const f = full(key);
+      if (checksKeys(inner)) inner.checkKey(f);
+    },
     put: async (key, data, opts) => strip(await inner.put(full(key), data, opts)),
     // async throughout, so a refused key is a rejected promise like any other store's, never a throw from the call
     get: async (key: string, range?: ByteRange) => inner.get(full(key), range),

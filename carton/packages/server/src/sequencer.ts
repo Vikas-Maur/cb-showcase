@@ -278,10 +278,16 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const now = clock();
     return sync.seal(big, opts.blobs, (sha) => sync.serverEnvelopeKey(sha, now));
   }
-  /** Send on `c` after what was sent before; `env`: the envelope already made for this message (a fan-out's). */
+  const attached = (c: HostConnection) => conns.get(c.id) === c;
+  /**
+   * Send on `c` after what was sent before; `env`: the envelope already made for this message (a fan-out's). Only to
+   * an attached connection: one gone or replaced (a message of its still queued, an envelope still uploading) gets
+   * nothing more, and no outbox is made for it again.
+   */
   function send(c: HostConnection, msg: ServerMessage, env?: Promise<sync.EnvelopeMsg> | null): void {
+    if (!attached(c)) return;
     let out = outboxes.get(c);
-    if (!out) outboxes.set(c, (out = new sync.Outbox((m) => c.send(m))));
+    if (!out) outboxes.set(c, (out = new sync.Outbox((m) => void (attached(c) && c.send(m)))));
     const e = stateOf(c).envelopes ? (env === undefined ? sealed(msg) : env) : null;
     out.push(msg, e ?? undefined);
   }
