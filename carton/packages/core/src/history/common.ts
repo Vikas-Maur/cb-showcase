@@ -1,6 +1,7 @@
 // Shared names of the history layer: the Store table layout, the "state unknown" error, and History's option types.
 
 import type { Actor, ChangeId, Choices, CommitResult, ConflictCard, Doc, EditKinds, Intent, NodeId, Op, Policy, StateRef } from "../types.ts";
+import type { SoftWarning } from "../schema.ts";
 
 /**
  * Tables core keeps in a Store, and their keys. Stores treat them as opaque; this is the layout `store-*` packages
@@ -104,4 +105,15 @@ export interface FoldOptions {
   missingBase?: "dialog" | "all-cards";
   /** Dry run (`cb fold --check`): report cards without committing. */
   check?: boolean;
+}
+
+/**
+ * What a dry-run fold would bring in (`check: true`), for the Fold in dialog's list and partial accept: the ops that
+ * turn the target cut's head into the folded state (cards on their provisional side), described, plus the soft
+ * warnings on the result. Added for @carton/react (contract(core) by agent ui).
+ */
+export interface FoldPreview {
+  ops: Op[];
+  describe: string[];
+  warnings: SoftWarning[];
 }
