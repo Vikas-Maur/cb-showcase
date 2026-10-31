@@ -331,9 +331,9 @@ test(".cbproj S3-2: Bring in their changes takes a file's history too, then fold
 
 // S3-4: a teammate whose project is a copy of yours (the bundle folder copied with its `.carton`: the same "Main cut"
 // id, the same log up to the copy) edits and sends a .cbproj. Core read past this replica's log for the sender's node on
-// that cut id and crashed (`TypeError … 'mergeOf'`), or took their states for ours ("up-to-date"). foundation-core is
-// making core take such a cut in as a cut of its own and fold it; until that lands, the adapter's fallback answers
-// with a reason. (Once it lands, these become "folds in as a separate cut" tests.)
+// that cut id and crashed (`TypeError … 'mergeOf'`), or took their states for ours ("up-to-date"). Core (foundation
+// 6e47903) now takes such a cut in as a cut of its own, "<name> (<sender>)", whose lineage reaches the versions both
+// share, and the fold brings the edit in; the adapter's diverged-copy answer stays a fallback (tested below).
 async function copyAll(from: Store): Promise<Store> {
   const to = createMemoryStore();
   for (const table of Object.values(STORE_TABLES)) {
@@ -344,7 +344,7 @@ async function copyAll(from: Store): Promise<Store> {
 }
 
 for (const bothEdited of [false, true])
-  test(`.cbproj S3-4: a file from a copy of this project that ${bothEdited ? "both sides" : "only the sender"} edited: core can't bring it in yet, so the fallback says why, never a crash [real engine]`, async (t) => {
+  test(`.cbproj S3-4: a file from a copy of this project that ${bothEdited ? "both sides" : "only the sender"} edited folds in, their cut a cut of its own [real engine]`, async (t) => {
     const project = { id: "proj-11", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
     const sa = createMemoryStore();
     const alice = await Carton.open({ adapter: cardboardAdapter, store: sa, init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
@@ -356,13 +356,17 @@ for (const bothEdited of [false, true])
     assert.equal(bob.cut, alice.cut, "the copy holds the same cut id");
     await edit(bob, BOB, (its) => void (find(its, "c1").name = "Bob's edit"));
     if (bothEdited) await edit(alice, ALICE, (its) => void (find(its, "c2").name = "Alice's edit"));
-    const before = await alice.head();
-    const lineage = (await alice.cuts()).length;
+    const mine = alice.cut;
     const r = await bringInTheirChanges(alice, { shallow: await bob.exportShallow({ to: "alice" }) });
-    assert.equal(r.status, "diverged-copy", JSON.stringify(r));
-    assert.match(r.status === "diverged-copy" ? r.reason : "", /copy of this project/);
-    assert.deepEqual((await alice.head()).ref, before.ref, "nothing folded");
-    assert.equal((await alice.cuts()).length, lineage, "no cut added");
+    assert.equal(r.status, "folded", JSON.stringify(r));
+    assert.equal(r.status === "folded" ? r.fold.status : "", "confirmed");
+    const items = toHost((await alice.head()).doc).timelineItems as Item[];
+    assert.equal(find(items, "c1").name, "Bob's edit", "Bob's edit came in");
+    if (bothEdited) assert.equal(find(items, "c2").name, "Alice's edit", "and Alice's stays");
+    assert.equal(alice.cut, mine, "on Alice's own cut");
+    const theirs = (await alice.cuts()).filter((c) => c.id !== mine && c.id.startsWith(mine));
+    assert.equal(theirs.length, 1, "their same-id cut came in as a cut of its own");
+    assert.ok(theirs[0]!.tracking || theirs[0]!.shallow, "read-only: theirs");
   });
 
 // The fallback is only a fallback: with a file that clashes with one of this replica's own cuts, it answers only when
