@@ -69,6 +69,11 @@ test("B7: a plain cb write on a shared cut, the app closed, starts a helper that
       const r = await plain.write({ kind: "commit", ops: [set("c1", "name", "from a plain cb")] });
       assert.ok(r.status === "confirmed" || r.status === "pending", JSON.stringify(r));
       helperPid = (await plain.lease.read())?.pid ?? null;
+      // and it reaches the server (a recipe without a reachable server or a usable token would leave it pending): the
+      // helper records the server's confirmation in carton.db
+      const id = String(r.id);
+      await until(async () => (await plain.store.get("ids", [id])) !== undefined, 30_000, "the server's confirmation");
+      assert.equal(await plain.store.get("pending", [cut, id]), undefined, "not pending any more");
     } finally {
       await plain.close();
     }

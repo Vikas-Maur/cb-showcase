@@ -43,3 +43,19 @@ test("openLocal without sync keeps the handle local-only (sync is null)", async 
     await lc.close();
   }
 });
+
+test("openLocal takes `name` and `sync` together: the synced handle carries the given display name", async () => {
+  const tokens = new Map<string, AuthContext>([["tok", { account: "alice", credential: "alice/install", role: "owner", projectId: "p", expires: Date.now() + 3600_000 }]]);
+  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
+  const { dir, projectId } = bundle("open-sync-name");
+  const lc = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: { kind: "agent", id: "worker" }, name: "Alice's laptop", sync: { transport: host.transport, url: host.url, token: "tok", autoConnect: false } });
+  try {
+    assert.ok(lc.carton.sync, "the handle has sync");
+    assert.equal((await lc.carton.exportShallow({ to: "bob" })).sender, "Alice's laptop", "and the name given");
+  } finally {
+    await lc.close();
+    host.close();
+  }
+});
+

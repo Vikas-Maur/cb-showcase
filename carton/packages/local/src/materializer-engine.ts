@@ -44,6 +44,8 @@ export class CartonMaterializerEngine implements MaterializerEngine {
   getMeta<T>(key: readonly string[]) { return this.inner.getMeta<T>(key); }
   putMeta(key: readonly string[], value: unknown) { return this.inner.putMeta(key, value); }
   shared(): boolean { return this.isShared; }
+  /** The id a save records before committing: its retry commits (and keeps its cards) under the same one. */
+  newChangeId(): string { return this.inner.newChangeId?.() ?? this.carton.newChangeId(); }
 
   async commit(input: Parameters<MaterializerEngine["commit"]>[0]): Promise<SaveResult> {
     const out = await this.commitOnce(input);

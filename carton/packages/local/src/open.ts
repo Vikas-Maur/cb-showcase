@@ -24,6 +24,7 @@ import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
 import { followStore } from "./follow.ts";
+import { forwardSettles } from "./sidecars.ts";
 import type { Follower } from "./follow.ts";
 import { nudgeHolder } from "./client.ts";
 
@@ -188,6 +189,7 @@ export class CartonHolderEngine implements HolderEngine {
   readonly materializer: ViewPrinter | null;
   private off: (() => void) | null = null;
   private follower: Follower | null = null;
+  private unforward: (() => void) | null = null;
   constructor(carton: Carton, opts: HolderEngineOptions = {}) {
     this.carton = carton;
     this.materializer = opts.materializer ?? null;
@@ -209,25 +211,8 @@ export class CartonHolderEngine implements HolderEngine {
         },
       });
     }
-    if (mz?.onChangeUpdate) {
-      // A view save on a shared cut is `pending` in its sidecar until the server answers: the answer (confirmed, late
-      // cards, refused) goes to the view whose last save it is (R5-04, B10). On a local cut the save itself answered.
-      const store = (carton as unknown as { store: Store }).store;
-      const settle = (cut: string | null, id: string, s: Parameters<NonNullable<ViewPrinter["onChangeUpdate"]>>[2]) =>
-        void (async () => {
-          if (cut && (await carton.cuts()).find((c) => c.id === cut)?.sequencer.kind === "local") return;
-          for (const r of await store.range<{ lastChange?: string | null }>("views", { prefix: ["view"] })) {
-            if (r.value?.lastChange === id) await mz.onChangeUpdate!(String(r.key[1]), id, s);
-          }
-        })().catch(() => {});
-      carton.on((e: CartonEvent) => {
-        // by id, whoever made it (a view save's id isn't this handle's): only a view's last change has a sidecar to settle
-        if (e.type === "change" && e.change.id) settle(e.branchId, e.change.id, { status: "confirmed", seq: e.seq });
-        else if (e.type === "absorbed") settle(e.branchId, e.id, e.cards.length ? { status: "conflicts", conflicts: e.cards } : { status: "confirmed" });
-        else if (e.type === "notice" && e.notice.change && e.notice.kind === "late-conflict") settle(null, e.notice.change, { status: "conflicts", conflicts: e.notice.cards ?? [] });
-        else if (e.type === "notice" && e.notice.change && e.notice.kind === "rejected") settle(null, e.notice.change, { status: "rejected", reason: e.notice.text });
-      });
-    }
+    // the server's answers to the views' `.status` sidecars on shared cuts (R5-04, B10; sidecars.ts)
+    if (mz?.onChangeUpdate) this.unforward = forwardSettles(carton, (carton as unknown as { store: Store }).store, (v, id, u) => mz.onChangeUpdate!(v, id, u));
   }
 
   serve(req: unknown): Promise<unknown> {
@@ -267,10 +252,13 @@ export class CartonHolderEngine implements HolderEngine {
     await this.follower?.check();
   }
 
-  /** Stop following carton.db (the engine is closing; the lease's stop() leaves it running: a fenced app still follows). */
+  /** Stop following carton.db and forwarding answers (the engine is closing; the lease's stop() leaves both running: a
+   * fenced app still shows the files). */
   close(): void {
     this.follower?.stop();
     this.follower = null;
+    this.unforward?.();
+    this.unforward = null;
   }
 
   async stop(): Promise<void> {

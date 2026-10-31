@@ -7,13 +7,14 @@
 //   - under Electron (the app's library worker, a utility process) the helper is started as Node, not a second app.
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { openLocal } from "../src/open.ts";
 import { EngineThread } from "../src/engine-thread.ts";
 import { NO_HELPER } from "../src/client.ts";
-import { helperEnv } from "../src/helper.ts";
+import { helperEntry, helperEnv } from "../src/helper.ts";
 import { adapter, bundle, doc0 } from "./support/real.ts";
 
 const here = (f: string) => fileURLToPath(new URL(f, import.meta.url));
@@ -99,3 +100,33 @@ test("under Electron a helper is started as Node (ELECTRON_RUN_AS_NODE=1), not a
   assert.equal(helperEnv({ ELECTRON_RUN_AS_NODE: "1" }, "43.7.0").ELECTRON_RUN_AS_NODE, "1");
   assert.deepEqual(helperEnv(worker, undefined), worker, "plain Node: nothing added");
 });
+
+test("spawnHelper in an Electron utility process (the app's library worker): the spawn runs the app's binary as Node", () => {
+  // as windows' built-bundle test does it (scripts/carton/test/patches.test.js): a process where Electron is detected
+  // at run time and ELECTRON_RUN_AS_NODE isn't set, the spawn intercepted. With no env passed, and with one passed
+  const probe = `
+    const cp = require("node:child_process"), { syncBuiltinESMExports } = require("node:module");
+    process.versions.electron = "39.0.0";
+    delete process.env.ELECTRON_RUN_AS_NODE;
+    const seen = [];
+    cp.spawn = (cmd, args, o) => (seen.push({ cmd, args, asNode: o.env.ELECTRON_RUN_AS_NODE === "1", path: o.env.PATH === process.env.PATH, own: o.env.OWN ?? null }), { unref() {}, pid: 0 });
+    syncBuiltinESMExports();
+    import(${JSON.stringify(here("../src/helper.ts"))}).then((h) => {
+      h.spawnHelper({ dbPath: "/x/carton.db", seen: null, factory: "/x/factory.js" });
+      h.spawnHelper({ dbPath: "/x/carton.db", seen: null, factory: "/x/factory.js", env: { PATH: process.env.PATH, OWN: "1" } });
+      console.log(JSON.stringify({ seen, envAfter: process.env.ELECTRON_RUN_AS_NODE ?? null }));
+    });`;
+  const r = spawnSync(process.execPath, ["-e", probe], { encoding: "utf8", timeout: 30_000, env: { ...process.env, ELECTRON_RUN_AS_NODE: "" } });
+  const out = JSON.parse(r.stdout.trim().split("\n").pop() || "{}");
+  assert.equal(out.seen?.length, 2, r.stderr);
+  for (const s of out.seen) {
+    assert.equal(s.cmd, process.execPath, "the app's own binary");
+    assert.equal(s.args[0], helperEntry(), "running helper-main");
+    assert.equal(s.args[s.args.indexOf("--factory") + 1], "/x/factory.js");
+    assert.equal(s.asNode, true, "as Node, not a second copy of the app");
+    assert.equal(s.path, true, "with the rest of the environment");
+  }
+  assert.equal(out.seen[1].own, "1", "a caller's own env is kept (plus the variable)");
+  assert.equal(out.envAfter, null, "the worker's own environment is left alone");
+});
+
