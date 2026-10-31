@@ -1,7 +1,9 @@
 # Carton's tests on Linux, Windows and macOS, in groups of packages (carton/ci/groups.json), plus what the dev box
 # can't run: named pipes, NTFS/APFS renames and the P10 race, store-sqlite under Electron 43.7.0, wrangler dev, and
 # the checks against Cardboard 1.4.0's own code (downloaded at run time inside the job, never cached or uploaded).
-# Runs on a push to ci/carton, or by hand for some groups or systems only (re-run after one agent's change).
+# Runs on a push to ci/carton or by hand. Either can run some groups or systems only (re-run after one agent's
+# change): by hand through the inputs, on a push with `[carton-ci groups=core,stores os=windows]` in the head commit's
+# message (see carton/ci/plan.mjs).
 # Nothing here builds, releases or deploys: each job uploads only its test results (carton-results).
 name: Carton CI
 
@@ -36,8 +38,9 @@ jobs:
           sparse-checkout: carton/ci
       - id: plan
         env:
-          CARTON_CI_GROUPS: ${{ inputs.groups || 'all' }}
-          CARTON_CI_OS: ${{ inputs.os || 'all' }}
+          CARTON_CI_GROUPS: ${{ inputs.groups }}
+          CARTON_CI_OS: ${{ inputs.os }}
+          CARTON_CI_MESSAGE: ${{ github.event.head_commit.message }}
         run: node carton/ci/plan.mjs
 
   test:

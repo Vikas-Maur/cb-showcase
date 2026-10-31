@@ -1,13 +1,17 @@
-// The workflow's test matrix: every (group, OS) of groups.json, filtered by the dispatch inputs, so one agent's change
-// re-runs only the groups it touches.
-//   CARTON_CI_GROUPS=all|core,stores  CARTON_CI_OS=all|linux,windows,macos  node ci/plan.mjs
+// The workflow's test matrix: every (group, OS) of groups.json, filtered so one agent's change re-runs only the
+// groups it touches. The filter comes from the dispatch inputs, or on a push from a tag in the head commit's message,
+// `[carton-ci groups=core,stores os=windows]` (a workflow that isn't on the default branch can't be dispatched).
+//   CARTON_CI_GROUPS=all|core,stores  CARTON_CI_OS=all|linux,windows,macos  CARTON_CI_MESSAGE=<commit message>
+//   node ci/plan.mjs
 import fs from "node:fs";
 import path from "node:path";
 
 const config = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "groups.json"), "utf8"));
 const list = (v) => (!v || v.trim() === "all" ? null : new Set(v.split(/[\s,]+/).filter(Boolean)));
-const groups = list(process.env.CARTON_CI_GROUPS);
-const oses = list(process.env.CARTON_CI_OS);
+const tag = /\[carton-ci\b([^\]]*)\]/.exec(process.env.CARTON_CI_MESSAGE ?? "")?.[1] ?? "";
+const fromTag = (k) => new RegExp(`\\b${k}=([\\w,-]+)`).exec(tag)?.[1];
+const groups = list(process.env.CARTON_CI_GROUPS || fromTag("groups"));
+const oses = list(process.env.CARTON_CI_OS || fromTag("os"));
 for (const g of groups ?? []) if (!config.groups.some((x) => x.name === g)) throw new Error(`no group "${g}" in groups.json`);
 
 const include = [];
