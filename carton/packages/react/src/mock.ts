@@ -53,8 +53,9 @@ export const people = {
 };
 
 const CLIPS = ["Intro", "Interview A", "B-roll city", "Product close-up", "Interview B", "Drone shot", "Team at work", "Logo sting", "CTA", "Outro", "Street crowd", "Hands typing"];
+// Prompts a Director turn is labelled with. "tighter intro" is the newest turn's (and the undo button's), so the
+// generated ones never reuse it; they are dealt in order, so neighbouring checkpoints never share a label.
 const TURNS = [
-  "tighter intro",
   "add captions to the interview",
   "punch up the music at the drop",
   "remove the silences",
@@ -62,6 +63,15 @@ const TURNS = [
   "color match the b-roll",
   "swap the logo sting for the new one",
   "shorten the outro to 3 seconds",
+  "cut the ums from Priya's answer",
+  "open on the drone shot",
+  "add a lower third for Bob",
+  "duck the music under the voiceover",
+  "try a faster pace in the middle",
+  "fix the jump cut at 0:42",
+  "make the CTA land on the beat",
+  "balance the interview levels",
+  "add the product close-up before the CTA",
 ];
 const NAMES = ["Rough cut", "Sent to client, Monday", "Before the color pass", "Approved by Priya", "Rough cut v2", "Fine cut", "Picture lock"];
 
@@ -124,6 +134,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
   const pos = new Map<string, number>();
   let revision = 0;
   let n = 0;
+  let turnsDealt = 0;
   const authorsPool = [people.alice, people.alice, people.alice, people.director, people.explore, people.captions, people.bob, people.bob, people.terminal, people.priya, people.bobsDirector];
 
   const push = (v: Version) => {
@@ -154,8 +165,9 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
           : kind === "restore"
             ? `Restored '${NAMES[Math.floor(r() * NAMES.length)]}'`
             : summaryFor(r),
-      ...(kind === "turn" ? { turn: { label: TURNS[Math.floor(r() * TURNS.length)]!, edits: 2 + Math.floor(r() * 18) } } : {}),
+      ...(kind === "turn" ? { turn: { label: TURNS[turnsDealt++ % TURNS.length]!, edits: 2 + Math.floor(r() * 18) } } : {}),
     };
+    if (kind === "fold" && r() < 0.5) return { ...base, summary: "Folded in some of '30s Instagram cut' (2 left out)", foldRest: true, ...over };
     return { ...base, ...over };
   };
 
@@ -178,6 +190,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
   const viewOf = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
   const history: HistorySource = {
     all: () => all,
+    slice: (from) => all.slice(Math.max(0, from)),
     revision: () => revision,
     count: (f) => (f === "all" ? all.length : viewOf(f)!.length),
     at: (f, i) => {
@@ -326,7 +339,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
           { id: "items/logo", summary: "Deleted video 'Logo sting'", author: people.alice, at: now0 - 2_900_000 },
           { id: "root/aspectRatio", summary: "Changed the aspect ratio 16:9 → 9:16", author: people.alice, at: now0 - 2_800_000 },
         ],
-        conflicts: [conflicts[0] ?? defaultCard(now0)],
+        // In a fold, each side says which cut it is on: yours is the cut you fold into.
+        conflicts: [conflicts[0] ?? defaultCard(now0)].map((c) => ({ ...c, mine: { ...c.mine, where: into.label }, theirs: { ...c.theirs, where: from.label }, provisional: "mine" as const })),
         warnings: ["'B-roll city' overlaps 'Interview A' by 0.4 s on 'V1'", "The font 'Denton' isn't on this computer, so the title may look different"],
       };
       return p;
@@ -355,6 +369,15 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     },
     async resolve(id, _choice: ConflictChoice) {
       set("conflicts", () => (conflicts = conflicts.filter((c) => c.id !== id)));
+    },
+    async foldRest(versionId) {
+      const p = pos.get(versionId);
+      if (p == null || !all[p]!.foldRest) return { ok: false, error: "Nothing left to fold in" };
+      const { foldRest: _f, ...v } = all[p]!;
+      all[p] = v;
+      revision++;
+      addVersion({ author: people.alice, kind: "fold", summary: "Folded in the rest of '30s Instagram cut'" });
+      return { ok: true };
     },
     async restore(ref) {
       const v = all.find((x) => x.ref === ref);

@@ -31,12 +31,12 @@ const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "confli
 /** Async methods the client may call on the served view model. */
 const METHODS = [
   "compare", "credits", "shotDiff", "planFold", "switchCut", "newCut", "renameCut", "fold",
-  "resolve", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit",
+  "resolve", "foldRest", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit",
 ] as const;
 type Method = (typeof METHODS)[number];
 
 export type ServerMessage =
-  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[] }
+  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[]; can: { renameCut: boolean } }
   | { t: "topic"; topic: SmallTopic; value: unknown; actors?: Actor[] }
   | { t: "history"; length: number; rows: [number, Version][]; actors?: Actor[] }
   | { t: "ret"; id: number; ok: true; value: unknown }
@@ -92,14 +92,27 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
     for (let i = 0; i < n; i++) out[n - 1 - i] = h.at("all", i)!;
     return out;
   };
+  // Compare with what was sent, by identity, from the first row that can have changed: after an append that is the
+  // tail only (HistorySource.firstChangedSince), so a new version costs O(rows after it), not O(History).
+  let sentRev = -1;
   const pushHistory = () => {
-    const now = snapshot();
+    const h = ui.history();
+    const length = h.count("all");
+    let from = 0;
+    let tail: readonly Version[];
+    if (h.firstChangedSince && h.slice && sentRev >= 0) {
+      // Read only from the first row that can have changed: an append copies the tail, never the whole History.
+      from = Math.min(h.firstChangedSince(sentRev), length, sent.length);
+      tail = h.slice(from);
+    } else tail = snapshot();
+    sentRev = h.revision();
     const rows: [number, Version][] = [];
-    for (let i = 0; i < now.length; i++) if (now[i] !== sent[i]) rows.push([i, now[i]!]);
-    if (!rows.length && now.length === sent.length) return;
-    sent = now.slice();
+    for (let k = 0; k < tail.length; k++) if (tail[k] !== sent[from + k]) rows.push([from + k, tail[k]!]);
+    if (!rows.length && length === sent.length) return;
+    for (const [i, v] of rows) sent[i] = v;
+    sent.length = length;
     const actors = newActors(rows.map((r) => r[1]));
-    send({ t: "history", length: now.length, rows, ...(actors ? { actors } : {}) });
+    send({ t: "history", length, rows, ...(actors ? { actors } : {}) });
   };
 
   const start = () => {
@@ -108,9 +121,10 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
     const topics = {} as Record<SmallTopic, unknown>;
     for (const t of SMALL) topics[t] = read(ui, t);
     sent = snapshot().slice();
+    sentRev = ui.history().revision();
     const actors: Actor[] = [];
     actorsIn([ui.me(), topics, sent], sentActors, actors, ui);
-    send({ t: "init", me: ui.me(), actors, topics, history: sent });
+    send({ t: "init", me: ui.me(), actors, topics, history: sent, can: { renameCut: typeof ui.renameCut === "function" } });
     for (const t of SMALL)
       offs.push(
         ui.subscribe(t, () => {
@@ -160,6 +174,7 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
   const actors = new Map<string, Actor>();
   const topics: Record<SmallTopic, unknown> = { sync: { kind: "local" }, cuts: [], peers: [], ghosts: [], conflicts: [], undo: null, published: null, preview: null };
   let me: Actor = { key: "human/unknown", kind: "human", name: "You", isYou: true };
+  // Changed in place: memoized rows keep their objects, and the indexes are kept incrementally.
   let rows: Version[] = [];
   let named: number[] = [], turns: number[] = [];
   const pos = new Map<string, number>();
@@ -169,11 +184,11 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
   let markReady!: () => void;
   const ready = new Promise<void>((r) => (markReady = r));
 
-  const reindex = () => {
-    named = [];
-    turns = [];
-    pos.clear();
-    for (let i = 0; i < rows.length; i++) {
+  /** Re-index rows[start..] (O(rows after start)): an append re-indexes the tail only. */
+  const reindexFrom = (start: number) => {
+    while (named.length && named[named.length - 1]! >= start) named.pop();
+    while (turns.length && turns[turns.length - 1]! >= start) turns.pop();
+    for (let i = start; i < rows.length; i++) {
       const v = rows[i]!;
       pos.set(v.id, i);
       if (v.name) named.push(i);
@@ -225,6 +240,7 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
       return -1;
     },
     want: (ids) => send({ t: "want", ids: [...ids] }),
+    slice: (from) => rows.slice(Math.max(0, from)),
   };
 
   const call = <T>(method: Method, ...args: unknown[]): Promise<T> =>
@@ -256,9 +272,9 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
     planFold: (f, i, o) => call("planFold", f, i, o),
     switchCut: (id) => call("switchCut", id),
     newCut: (n, r) => call("newCut", n, r),
-    renameCut: (id, n) => call("renameCut", id, n),
     fold: (f, i, o) => call("fold", f, i, o),
     resolve: (id, c) => call("resolve", id, c),
+    foldRest: (id) => call("foldRest", id),
     restore: (r) => call("restore", r),
     nameVersion: (id, n) => call("nameVersion", id, n),
     undo: (id) => call("undo", id),
@@ -274,7 +290,12 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         learn(m.actors);
         for (const t of SMALL) topics[t] = m.topics[t];
         rows = m.history;
-        reindex();
+        pos.clear();
+        named = [];
+        turns = [];
+        reindexFrom(0);
+        if (m.can.renameCut) ui.renameCut = (id, n) => call("renameCut", id, n);
+        else delete ui.renameCut;
         for (const t of [...SMALL, "history" as const]) hub.notify(t);
         markReady();
         break;
@@ -285,10 +306,17 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         break;
       case "history": {
         learn(m.actors);
-        const next = rows.length === m.length ? rows.slice() : rows.slice(0, m.length);
-        for (const [i, v] of m.rows) next[i] = v;
-        rows = next;
-        reindex();
+        let from = Math.min(rows.length, m.length);
+        // Rows past the new length are gone: forget their ids (unless the same id moved to a kept row).
+        for (let i = m.length; i < rows.length; i++) if (pos.get(rows[i]!.id) === i) pos.delete(rows[i]!.id);
+        rows.length = m.length;
+        for (const [i, v] of m.rows) {
+          const old = rows[i];
+          if (old && old.id !== v.id && pos.get(old.id) === i) pos.delete(old.id);
+          rows[i] = v;
+          from = Math.min(from, i);
+        }
+        reindexFrom(from);
         hub.notify("history");
         break;
       }

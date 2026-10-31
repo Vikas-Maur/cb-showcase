@@ -128,6 +128,8 @@ test("fold in with a conflict card: the pick decides, nothing is lost", async ()
   assert.equal(card.id, "items/a/name");
   assert.equal(card.mine.summary, "“Mine”");
   assert.equal(card.theirs.summary, "“Theirs”");
+  assert.equal(card.mine.where, "Main cut", "your side names the cut you fold into");
+  assert.equal(card.theirs.where, "alt", "their side names the cut you fold in");
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: { [card.id]: "theirs" } });
   assert.equal(r.ok, true);
   assert.equal(((await carton.head(main)).doc.items as Rec[]).find((i) => i.id === "a")!.name, "Theirs");
@@ -188,20 +190,24 @@ test("credits and the published cut", async () => {
 });
 
 test("sync words and presence from the sync client's events", async () => {
-  const { ui, emit } = await open();
+  const { carton, ui, emit } = await open();
+  const branchId = carton.cut;
   assert.equal(ui.sync().kind, "local");
   emit({ type: "sync", status: "offline", waiting: 3 });
   assert.deepEqual(ui.sync(), { kind: "offline", waiting: 3 });
   emit({ type: "sync", status: "up-to-date", waiting: 0 });
   assert.deepEqual(ui.sync(), { kind: "upToDate" });
-  emit({ type: "presence", actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 1, end: 6 }] } });
+  emit({ type: "presence", branchId, actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 1, end: 6 }] } });
   assert.equal(ui.peers().length, 1);
   assert.equal(ui.ghosts()[0]!.itemId, "a");
   const peersBefore = ui.peers();
-  emit({ type: "presence", actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 2, end: 7 }] } });
+  emit({ type: "presence", branchId, actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 2, end: 7 }] } });
   assert.equal(ui.peers(), peersBefore, "a ghost moving doesn't change the peers list");
   assert.equal(ui.ghosts()[0]!.start, 2);
-  emit({ type: "presence", actor: bob, state: null });
+  emit({ type: "presence", branchId: "elsewhere", actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 2, end: 7 }] } });
+  assert.equal(ui.ghosts().length, 0, "drags on another cut aren't ghosts over this timeline");
+  assert.equal(ui.peers()[0]!.cutId, "elsewhere");
+  emit({ type: "presence", branchId, actor: bob, state: null });
   assert.equal(ui.peers().length, 0);
   assert.equal(ui.ghosts().length, 0);
   ui.dispose();
@@ -210,10 +216,15 @@ test("sync words and presence from the sync client's events", async () => {
 test("late conflicts addressed to you become cards; picking your side commits it", async () => {
   const { carton, ui, emit } = await open();
   await carton.commit({ ops: [set("a", "name", "Head")], author: bob });
-  emit({ type: "notice", notice: { to: "human/alice", kind: "late-conflict", text: "", by: bob, cards: [{ kind: "field", path: "items/a/name", base: "A", ours: "Mine", theirs: "Head" }] } });
+  // Core's convention (merge3(base, head, mine)): ours is the head on screen, theirs is your edit that lost.
+  emit({ type: "notice", notice: { to: "human/alice", kind: "late-conflict", text: "", by: bob, cards: [{ kind: "field", path: "items/a/name", base: "A", ours: "Head", theirs: "Mine" }] } });
   assert.equal(ui.conflicts().length, 1);
-  assert.equal(ui.conflicts()[0]!.provisional, "theirs");
-  await ui.resolve("items/a/name", "mine");
+  const card = ui.conflicts()[0]!;
+  assert.equal(card.provisional, "theirs");
+  assert.equal(card.mine.summary, "“Mine”");
+  assert.equal(card.theirs.summary, "“Head”");
+  assert.equal(card.theirs.author.name, "Bob");
+  await ui.resolve(card.id, "mine");
   assert.equal(ui.conflicts().length, 0);
   assert.equal(((await carton.head()).doc.items as Rec[]).find((i) => i.id === "a")!.name, "Mine");
   ui.dispose();

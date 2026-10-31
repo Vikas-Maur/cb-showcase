@@ -146,6 +146,8 @@ test("actors: a subagent is named with the agent that started it", () => {
   assert.equal(actorLabel(people.explore, byKey), "Director › Explore");
   assert.equal(actorLabel(people.alice, byKey, "You"), "You");
   assert.equal(actorLabel(people.bob, byKey, "You"), "Bob Okafor");
+  assert.equal(actorLabel(people.director, byKey, "You"), "Director", "your own agent");
+  assert.equal(actorLabel(people.bobsDirector, byKey, "You"), "Bob Okafor's Director", "someone else's agent, by its owner");
   assert.deepEqual(actorChain(people.explore, byKey).map((a) => a.name), ["Alice Moreau", "Director", "Explore"]);
   assert.equal(initials("Bob Okafor"), "BO");
   assert.equal(initials("Émile"), "É");
