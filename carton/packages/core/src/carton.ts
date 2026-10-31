@@ -98,6 +98,11 @@ export interface CommitInput {
   wait?: number;
   /** Extra Store conditions for the append (a lease holder's `fence(nonce)`). */
   conditions?: StoreCondition[];
+  /**
+   * Record the change as an undo of these changes (`kind: "undo"`, `reverts`), so the actor group's undo stack treats
+   * them as undone: `cb undo --turn` inverts a whole agent turn as one change.
+   */
+  undoOf?: ChangeId[];
 }
 
 /** A read-only preview of a state (§9 R2-16): Compare and the A/B toggle render it; editing is disabled. */
@@ -704,6 +709,7 @@ class CartonImpl implements Carton {
           ...(input.choices ? { choices: input.choices } : {}),
           ...(input.unchosen ? { unchosen: input.unchosen } : {}),
           ...(input.name ? { name: input.name } : {}),
+          ...(input.undoOf?.length ? { kind: "undo" as const, extra: { reverts: [...input.undoOf] } } : {}),
           id,
         });
       },
