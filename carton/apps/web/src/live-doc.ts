@@ -2,11 +2,12 @@
 // can bring many rows in a burst (a teammate's drag, a catch-up page): every event only marks the head stale, and it
 // is read once per frame at most, so a burst costs one read and one render (no re-render storm).
 
-import type { Carton, Doc } from "@carton/core";
+import type { Carton, Doc, HeldBase, StateRef } from "@carton/core";
 
 export class LiveDoc {
   readonly #carton: Carton;
   #doc: Doc;
+  #ref: StateRef;
   #cut: string;
   #listeners = new Set<() => void>();
   #stale = false;
@@ -16,9 +17,10 @@ export class LiveDoc {
   /** How many head reads ran (diagnostics: the e2e asserts bursts are coalesced). */
   reads = 0;
 
-  private constructor(carton: Carton, doc: Doc, schedule: (f: () => void) => void) {
+  private constructor(carton: Carton, head: { doc: Doc; ref: StateRef }, schedule: (f: () => void) => void) {
     this.#carton = carton;
-    this.#doc = doc;
+    this.#doc = head.doc;
+    this.#ref = head.ref;
     this.#cut = carton.cut;
     this.#schedule = schedule;
     this.#off = carton.on((e) => {
@@ -31,7 +33,7 @@ export class LiveDoc {
     });
   }
   static async open(carton: Carton, schedule: (f: () => void) => void = defaultSchedule): Promise<LiveDoc> {
-    return new LiveDoc(carton, (await carton.head()).doc, schedule);
+    return new LiveDoc(carton, await carton.head(), schedule);
   }
 
   get doc(): Doc {
@@ -39,6 +41,14 @@ export class LiveDoc {
   }
   get cut(): string {
     return this.#cut;
+  }
+  /**
+   * The state on screen as a commit's base (§6.2: a write is checked against the exact state its author saw). An edit
+   * made from it (a drag begun on it, a field edited from it) is merged onto whatever the head is by then: a teammate's
+   * edit to the same clip in between becomes a card, never silently overwritten.
+   */
+  base(): HeldBase {
+    return { baseDoc: this.#doc, baseSeq: this.#ref.seq, causal: [...(this.#ref.pending ?? [])] };
   }
   subscribe(l: () => void): () => void {
     this.#listeners.add(l);
@@ -65,8 +75,9 @@ export class LiveDoc {
     this.#reading = (async () => {
       this.reads++;
       const cut = this.#carton.cut;
-      const { doc } = await this.#carton.head(cut);
+      const { doc, ref } = await this.#carton.head(cut);
       this.#doc = doc;
+      this.#ref = ref;
       this.#cut = cut;
       for (const l of this.#listeners) l();
     })().finally(() => (this.#reading = null));

@@ -32,6 +32,20 @@ document.documentElement.classList.add("dark");
 const root = createRoot(document.getElementById("root")!);
 
 const slug = (name: string) => name.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "guest";
+/**
+ * The account this install joins a project as: the name's slug plus a random suffix, made once per install and
+ * project. The account is the actor id and the undo group (§8), so two people who type the same name (or names with
+ * no Latin letters) must never share it; the name people see is kept apart, as the actor's display name.
+ */
+function accountFor(projectId: string, name: string): string {
+  const k = `carton.account.${projectId}`;
+  let a = keys.get(k);
+  if (!a) {
+    a = `${slug(name)}-${[...crypto.getRandomValues(new Uint8Array(3))].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+    keys.set(k, a);
+  }
+  return a;
+}
 
 function Card(p: { title: string; children?: unknown }) {
   return h("div", { className: "cb-gate", "data-carton-skin": "cardboard" }, h("div", { className: "cb-gate-card" }, h("h1", null, p.title), p.children as never));
@@ -78,7 +92,7 @@ async function route(): Promise<void> {
     root.render(
       h(JoinScreen, {
         onJoin: async (name: string) => {
-          const session = await Session.join({ baseUrl, projectId: join.projectId, invite: join.invite, account: slug(name), keys });
+          const session = await Session.join({ baseUrl, projectId: join.projectId, invite: join.invite, account: accountFor(join.projectId, name), keys });
           keys.set(`carton.name.${join.projectId}`, name);
           history.replaceState(null, "", `${location.pathname}#p=${join.projectId}`);
           await boot(session, name);

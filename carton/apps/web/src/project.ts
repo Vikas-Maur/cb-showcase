@@ -55,29 +55,32 @@ export async function openProject(o: { session: Session; me: Actor; store: Store
 }
 
 /**
- * Hold this person's push lock for the page's life and connect once it is ours. `onWaiting` is told while another
- * tab holds it. Returns a release (the page unloading releases it too).
+ * Hold this person's push lock for the page's life and connect once it is ours (§6.2: one pusher per replica). While
+ * another tab holds it, `onWaiting(true)`: that tab is read-only (its edits would wait in a queue no one pushes). When
+ * the lock comes to it later, `onTakeOver` runs: the page reloads, so it opens from the store with every edit the
+ * closed tab left waiting, and pushes them.
  */
-export async function holdPushLock(lockId: string, carton: Carton, onWaiting: (waiting: boolean) => void): Promise<() => void> {
+export async function holdPushLock(lockId: string, carton: Carton, onWaiting: (waiting: boolean) => void, onTakeOver: () => void): Promise<{ release: () => void; holding: () => boolean }> {
   const { withPushLock } = await import("@carton/store-idb");
   let release!: () => void;
   const released = new Promise<void>((r) => (release = r));
   let mine = false;
-  // first try without waiting, so the page can say "open in another tab" at once
-  const tryNow = withPushLock(lockId, async () => {
-    mine = true;
-    await carton.sync!.connect().catch(() => false);
-    await released;
-  }, { ifAvailable: true });
-  await Promise.resolve();
-  void tryNow.then(() => {
-    if (mine) return;
+  // first try without waiting, so the page can say "open in another tab" at once: the lock is ours when the callback
+  // starts; when it is taken, the call resolves without running it
+  await new Promise<void>((settled) => {
+    withPushLock(lockId, async () => {
+      mine = true;
+      settled();
+      void carton.sync!.connect().catch(() => false);
+      await released;
+    }, { ifAvailable: true }).then(() => settled(), () => settled());
+  });
+  if (!mine) {
     onWaiting(true);
     void withPushLock(lockId, async () => {
-      onWaiting(false);
-      await carton.sync!.connect().catch(() => false);
+      onTakeOver();
       await released;
     });
-  });
-  return release;
+  }
+  return { release, holding: () => mine };
 }

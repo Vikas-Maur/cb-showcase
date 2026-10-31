@@ -142,3 +142,28 @@ test("the §17 story over a real host: join, live edits with an agent, undo its 
   await alice.carton.close();
   await bob.carton.close();
 });
+
+test("an edit made from what was on screen carries that state as its base: a teammate's edit in between is a card, not overwritten (review R1-2)", async () => {
+  const s2 = await seedDemo({ baseUrl: host.url, adminToken: host.adminToken, media: { given: fakeMedia } });
+  const alice = await person(s2.alice, "alice");
+  const bob = await person(s2.bob, "bob");
+  // Alice begins a drag of clip-2's end: what she sees is the base
+  const seen = await alice.carton.head();
+  const base = { baseDoc: seen.doc, baseSeq: seen.ref.seq, causal: [...(seen.ref.pending ?? [])] };
+  const stale = (seen.doc.timelineItems as Rec[]).find((r) => r.id === "clip-2")!;
+  // Bob trims the same clip before she lets go
+  const b2 = await clip(bob.carton, "clip-2");
+  assert.equal((await bob.carton.commit({ ops: trimOps(b2, "end", (b2.endTime as number) - 1), wait: 5000 })).status, "confirmed");
+  await until(async () => (await clip(alice.carton, "clip-2")).endTime === (b2.endTime as number) - 1, 5000, "alice has bob's trim");
+  // her release: ops from the record she dragged, with the state she dragged on as base
+  const r = await alice.carton.commit({ ops: trimOps(stale, "end", (stale.endTime as number) + 0.5, 6), base });
+  assert.equal(r.status, "conflicts", "a card, not an overwrite");
+  assert.equal((await clip(bob.carton, "clip-2")).endTime, (b2.endTime as number) - 1, "Bob's trim stands");
+  // an edit to another field of the same clip from the same stale view merges cleanly
+  const ok = await alice.carton.commit({ ops: [{ op: "set", path: ["timelineItems", "clip-2", "opacity"], value: 0.5 }], base, wait: 5000 });
+  assert.equal(ok.status, "confirmed");
+  await until(async () => (await clip(bob.carton, "clip-2")).opacity === 0.5, 5000, "bob sees the opacity");
+  assert.equal((await clip(bob.carton, "clip-2")).endTime, (b2.endTime as number) - 1);
+  await alice.carton.close();
+  await bob.carton.close();
+});

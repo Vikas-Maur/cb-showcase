@@ -9,12 +9,12 @@ import { openIdbStore } from "@carton/store-idb";
 import { webSocketTransport } from "@carton/server-node/transport";
 import { App } from "./app.ts";
 import { describeCardWith } from "./cards.ts";
-import { watchHash } from "./descriptor.ts";
+import { parseDescriptor, watchHash } from "./descriptor.ts";
 import { ImageCache } from "./images.ts";
 import { LiveDoc } from "./live-doc.ts";
 import { startMedia } from "./media-client.ts";
 import { PresenceSender } from "./presence.ts";
-import { holdPushLock, openProject, readBlob } from "./project.ts";
+import { holdPushLock, openProject, readBlob, readDescriptor } from "./project.ts";
 import type { KeyStore, Session } from "./session.ts";
 
 /** A small observable value for the views (no framework store needed). */
@@ -32,11 +32,16 @@ function cell<T>(v: T) {
 
 export async function boot({ session, name, root, keys, baseUrl, message }: { session: Session; name: string; root: Root; keys: KeyStore; baseUrl: string; message: (title: string, text: string) => void }): Promise<void> {
   message("Opening…", "Loading the project and catching up with your teammates.");
+  // the account is unique per install (main.ts accountFor); `name` is only what people see
   const me: Actor = { kind: "human", id: session.account, name, group: session.account };
   const store = await openIdbStore(session.projectId, { name: `carton:${session.projectId}:${session.account}` });
-  const { carton, descriptor } = await openProject({ session, me, store, transport: webSocketTransport(), autoConnect: false });
+  // the descriptor is kept in this browser, so a project opened before reopens offline (its state is in the store)
+  const cached = keys.get(`carton.descriptor.${session.projectId}`);
+  const known = cached ? parseDescriptor(cached) : await readDescriptor(session);
+  if (!cached) keys.set(`carton.descriptor.${session.projectId}`, JSON.stringify(known));
+  const { carton, descriptor } = await openProject({ session, me, store, transport: webSocketTransport(), autoConnect: false, descriptor: known });
   const waiting = cell(false);
-  await holdPushLock(`${session.projectId}:${session.account}`, carton, waiting.set);
+  const lock = await holdPushLock(`${session.projectId}:${session.account}`, carton, waiting.set, () => location.reload());
   const live = await LiveDoc.open(carton);
   const presence = new PresenceSender((s) => carton.sync?.presence(s));
   const images = new ImageCache((key) => readBlob(session, key));
@@ -64,9 +69,13 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
     if (url) links.set(rec.id, url);
     return rec;
   };
-  // fromCarton sees this handle with publish going through the host; everything else is the handle itself
+  // fromCarton sees this handle with publish going through the host, and every write refused while another tab of
+  // this person holds the push lock (its edits would sit in a queue nobody pushes); everything else is the handle
+  const WRITES = new Set<PropertyKey>(["commit", "undo", "fold", "foldSome", "restore", "revert", "publish", "fork", "renameCut", "name", "share"]);
+  const otherTab = () => Promise.reject(new Error("This project is open in another tab. Edit it there, or close that tab: this one takes over."));
   const handle = new Proxy(carton, {
     get(t, k) {
+      if (waiting.get() && WRITES.has(k)) return otherTab;
       if (k === "publish") return publishing;
       const v = Reflect.get(t, k, t);
       return typeof v === "function" ? v.bind(t) : v;
@@ -88,16 +97,17 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   ui.subscribe("cuts", () => live.invalidate());
 
   let offline = false;
+  // only the tab holding the push lock ever connects (§6.2); the others stay read-only until it closes
   const setOffline = async (off: boolean) => {
     offline = off;
     if (off) {
       presence.stop();
       await carton.sync!.disconnect();
-    } else await carton.sync!.connect().catch(() => false);
+    } else if (lock.holding()) await carton.sync!.connect().catch(() => false);
   };
   // real offline: the browser says the network went away; back online reconnects (unless the person chose offline)
   addEventListener("offline", () => void carton.sync!.disconnect());
-  addEventListener("online", () => void (!offline && carton.sync!.connect().catch(() => false)));
+  addEventListener("online", () => void (!offline && lock.holding() && carton.sync!.connect().catch(() => false)));
   addEventListener("pagehide", () => presence.stop());
   // presence isn't stored: say we're here when we (re)connect, and once to each teammate who appears
   const heard = new Map<string, number>();

@@ -5,7 +5,7 @@
 // skin; this file only lays them out and connects the timeline's edits to Carton.
 
 import { createElement as h, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import type { Actor, Carton, Doc, Op, Rec } from "@carton/core";
+import type { Actor, Carton, Doc, HeldBase, Op, Rec } from "@carton/core";
 import {
   ConflictList,
   CreditsPopover,
@@ -74,6 +74,8 @@ export function App(p: AppProps) {
     () => p.images.version,
   );
   const doc = previewDoc ?? head;
+  // a preview is read-only (§9 R2-16), and so is a tab that doesn't hold this person's push lock
+  const readOnly = !!previewDoc || waiting;
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
@@ -82,11 +84,11 @@ export function App(p: AppProps) {
   const [error, setError] = useState<string | null>(null);
 
   const onEdit = useCallback(
-    async (ops: Op[]) => {
+    async (ops: Op[], base?: HeldBase) => {
       if (!ops.length) return;
       p.presence.active("Editing");
       try {
-        const r = await p.carton.commit({ ops, author: p.me });
+        const r = await p.carton.commit({ ops, author: p.me, ...(base ? { base } : {}) });
         if (r.status === "conflicts") p.ui.reportConflicts(r.cards);
         else if (r.status === "rejected") setError(`The server refused that edit: ${r.reason}`);
       } catch (e) {
@@ -96,7 +98,7 @@ export function App(p: AppProps) {
     },
     [p.carton, p.me, p.ui, p.live, p.presence],
   );
-  const onBlocked = useCallback(() => ui.blockEdit(), [ui]);
+  const onBlocked = useCallback(() => (waiting ? setError("This project is open in another tab. Edit it there, or close that tab: this one takes over.") : ui.blockEdit()), [ui, waiting]);
 
   const clip = selected ? clipOf(doc, selected) : undefined;
   const length = useMemo(() => Math.max(0, ...((doc[ITEMS] ?? []) as Rec[]).map((r) => r.endTime as number)), [doc]);
@@ -105,7 +107,7 @@ export function App(p: AppProps) {
     "div",
     { className: "cb-app", "data-carton-skin": "cardboard" },
     h(TopBar, { ...p, onFoldIn: (from: Cut, into: Cut) => setFold({ from, into }) }),
-    waiting ? h("div", { className: "cb-banner", role: "status" }, "This project is open in another tab. This tab will sync once that one closes.") : null,
+    waiting ? h("div", { className: "cb-banner", role: "status" }, "This project is open in another tab. Edit it there; this tab is read-only and takes over once that one closes.") : null,
     h(
       "div",
       { className: "cb-main" },
@@ -125,7 +127,7 @@ export function App(p: AppProps) {
             preview ? h("span", { className: "cb-dim" }, `Previewing ${preview.label}: read-only`) : null,
           ),
         ),
-        h(Inspector, { clip, readOnly: !!previewDoc, onEdit, onBlocked, media: p.media }),
+        h(Inspector, { clip, readOnly, onEdit, base: () => p.live.base(), onBlocked, media: p.media }),
       ),
       h(
         "aside",
@@ -137,7 +139,7 @@ export function App(p: AppProps) {
     h(
       "div",
       { className: "cb-bottom" },
-      h(Timeline, { doc, media: p.media, time, onSeek: (t: number) => (setPlaying(false), setTime(t)), selected, onSelect: setSelected, onEdit, presence: p.presence, readOnly: !!previewDoc, onBlocked, image: (k: string) => p.images.get(k) }),
+      h(Timeline, { doc, media: p.media, time, onSeek: (t: number) => (setPlaying(false), setTime(t)), selected, onSelect: setSelected, onEdit, base: () => p.live.base(), presence: p.presence, readOnly, onBlocked, image: (k: string) => p.images.get(k) }),
     ),
     watch ? h(WatchDialog, { ...watch, carton: p.carton, media: p.media, images: p.images, onClose: () => setWatch(null) }) : null,
     fold ? h(FoldInDialog, { fromCutId: fold.from.id, intoCutId: fold.into.id, onClose: () => setFold(null) }) : null,
@@ -181,7 +183,7 @@ function TopBar(p: AppProps & { onFoldIn: (from: Cut, into: Cut) => void }) {
     p.session.role === "owner"
       ? h(Btn, { "data-testid": "invite", onClick: async () => setInvite(`${location.origin}${location.pathname}#join=${p.session.projectId}.${await p.session.invite("editor")}`) }, "Invite to edit")
       : null,
-    h("span", { className: "cb-me", title: `You: ${p.name}` }, p.name),
+    h("span", { className: "cb-me", title: `You: ${p.name} (${p.session.account})` }, p.name),
     invite ? h(InviteDialog, { link: invite, onClose: () => setInvite(null) }) : null,
   );
 }
@@ -225,18 +227,25 @@ function InviteDialog({ link, onClose }: { link: string; onClose: () => void }) 
 }
 
 /** The selected clip: caption text, volume, opacity, and Credits (who changed it, down to the subagent). */
-function Inspector(p: { clip: Rec | undefined; readOnly: boolean; onEdit: (ops: Op[]) => Promise<void>; onBlocked: () => void; media: Record<string, SampleMedia> }) {
+function Inspector(p: { clip: Rec | undefined; readOnly: boolean; onEdit: (ops: Op[], base?: HeldBase) => Promise<void>; base: () => HeldBase | undefined; onBlocked: () => void; media: Record<string, SampleMedia> }) {
   const c = p.clip;
   const [credits, setCredits] = useState(false);
   const [text, setText] = useState("");
   const editing = useRef(false);
+  // the state the person started editing from: what they saw is the edit's base (a teammate's change since is merged)
+  const from = useRef<HeldBase | undefined>(undefined);
+  const begin = () => (from.current ??= p.base());
   useEffect(() => {
     // a teammate's edit to the caption shows here unless this person is typing in it
     if (!editing.current) setText(String(c?.captionText ?? ""));
   }, [c?.id, c?.captionText]);
-  useEffect(() => setCredits(false), [c?.id]);
+  useEffect(() => ((from.current = undefined), setCredits(false)), [c?.id]);
   if (!c) return h("div", { className: "cb-inspector cb-inspector-empty" }, h("p", { className: "cb-dim" }, "Select a clip or caption to edit it. Drag a clip to move it, drag its edges to trim."));
-  const edit = (ops: Op[]) => (p.readOnly ? p.onBlocked() : void p.onEdit(ops));
+  const edit = (ops: Op[]) => {
+    const base = from.current ?? p.base();
+    from.current = undefined;
+    return p.readOnly ? p.onBlocked() : void p.onEdit(ops, base);
+  };
   const isCaption = c.type === "caption";
   return h(
     "div",
@@ -253,7 +262,7 @@ function Inspector(p: { clip: Rec | undefined; readOnly: boolean; onEdit: (ops: 
             value: text,
             "data-testid": "caption-text",
             readOnly: p.readOnly,
-            onFocus: () => (editing.current = true),
+            onFocus: () => ((editing.current = true), begin()),
             onInput: (e: Event) => setText((e.target as HTMLInputElement).value),
             onKeyDown: (e: KeyboardEvent) => e.key === "Enter" && (e.target as HTMLInputElement).blur(),
             onBlur: () => {
@@ -265,14 +274,14 @@ function Inspector(p: { clip: Rec | undefined; readOnly: boolean; onEdit: (ops: 
       : h(
           "div",
           { className: "cb-fields" },
-          h(Slider, { label: "Volume", value: (c.volume as number) ?? 100, min: 0, max: 200, step: 1, unit: "%", testid: "volume", onCommit: (v: number) => edit(fieldOps(c, "volume", v)) }),
-          h(Slider, { label: "Opacity", value: Math.round(((c.opacity as number) ?? 1) * 100), min: 0, max: 100, step: 1, unit: "%", testid: "opacity", onCommit: (v: number) => edit(fieldOps(c, "opacity", v / 100)) }),
+          h(Slider, { label: "Volume", value: (c.volume as number) ?? 100, min: 0, max: 200, step: 1, unit: "%", testid: "volume", onBegin: begin, onCommit: (v: number) => edit(fieldOps(c, "volume", v)) }),
+          h(Slider, { label: "Opacity", value: Math.round(((c.opacity as number) ?? 1) * 100), min: 0, max: 100, step: 1, unit: "%", testid: "opacity", onBegin: begin, onCommit: (v: number) => edit(fieldOps(c, "opacity", v / 100)) }),
         ),
   );
 }
 
 /** A slider that commits once, on release (a version per gesture, not per pixel), and follows remote edits otherwise. */
-function Slider(p: { label: string; value: number; min: number; max: number; step: number; unit: string; testid: string; onCommit: (v: number) => void }) {
+function Slider(p: { label: string; value: number; min: number; max: number; step: number; unit: string; testid: string; onBegin: () => void; onCommit: (v: number) => void }) {
   const [v, setV] = useState(p.value);
   const held = useRef(false);
   useEffect(() => {
@@ -293,7 +302,8 @@ function Slider(p: { label: string; value: number; min: number; max: number; ste
       step: p.step,
       value: v,
       "data-testid": p.testid,
-      onPointerDown: () => (held.current = true),
+      onPointerDown: () => ((held.current = true), p.onBegin()),
+      onKeyDown: () => p.onBegin(),
       onInput: (e: Event) => setV(Number((e.target as HTMLInputElement).value)),
       onChange: commit,
       onKeyUp: commit,

@@ -33,7 +33,6 @@ const common = {
 // chunk both use, and the editor's heavy part (core, the panels) is a chunk the join screen doesn't wait for.
 const pages = await build({ ...common, entryPoints: { app: join(here, "src/main.ts"), watch: join(here, "src/watch.ts") }, outdir: out, format: "esm", splitting: true, chunkNames: "chunks/[name]-[hash]" });
 const results = [pages];
-if (existsSync(join(here, "src/sw.ts"))) results.push(await build({ ...common, entryPoints: [join(here, "src/sw.ts")], outfile: join(out, "sw.js"), format: "iife" }));
 cpSync(join(here, "public"), out, { recursive: true });
 
 // modulepreload every chunk a page loads (static and dynamic imports), so the browser fetches them in parallel with
@@ -50,6 +49,10 @@ for (const [page, entry] of [["index.html", "app.js"], ["watch.html", "watch.js"
   const html = join(out, page);
   writeFileSync(html, readFileSync(html, "utf8").replace("<!--preload-->", links));
 }
+
+// the Service Worker (media, and the app shell for offline reopening): it is told the shell's files at build time
+const shell = ["/", "/index.html", "/watch.html", ...Object.keys(outputs).filter((f) => !f.endsWith(".map")).map(rel)];
+results.push(await build({ ...common, entryPoints: [join(here, "src/sw.ts")], outfile: join(out, "sw.js"), format: "iife", define: { ...common.define, __CARTON_ASSETS__: JSON.stringify(shell) } }));
 
 const rows = [];
 for (const r of results)

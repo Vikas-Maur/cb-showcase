@@ -77,13 +77,21 @@ export class Session {
   static async resume(o: { baseUrl: string; projectId: string; keys: KeyStore; fetch?: typeof fetch; slot?: string }): Promise<Session | null> {
     const raw = o.keys.get(slotKey(o.projectId, o.slot));
     if (!raw) return null;
+    let s: Session;
     try {
       const { token, context } = JSON.parse(raw) as { token: string; context: AuthContext };
-      const s = new Session(o.baseUrl, o.projectId, token, context, o.keys, o.fetch ?? fetch.bind(globalThis), slotKey(o.projectId, o.slot));
+      s = new Session(o.baseUrl, o.projectId, token, context, o.keys, o.fetch ?? fetch.bind(globalThis), slotKey(o.projectId, o.slot));
+    } catch {
+      return null;
+    }
+    try {
       await s.token();
       return s;
-    } catch {
-      return null; // expired past its grace, or the host's key rotated: join again
+    } catch (e) {
+      // offline (the refresh never reached the host): the project still opens from this browser's store, and the
+      // sync client gets a fresh token once the network is back. Refused by the host: expired past its grace, or the
+      // host's key rotated: join again.
+      return (e as { status?: number }).status ? null : s;
     }
   }
 
@@ -105,7 +113,13 @@ export class Session {
   async token(): Promise<string> {
     if (this.#context.expires - Date.now() > EARLY_MS) return this.#token;
     this.#refreshing ??= this.#refresh().finally(() => (this.#refreshing = null));
-    return this.#refreshing;
+    try {
+      return await this.#refreshing;
+    } catch (e) {
+      // the refresh didn't reach the host (offline) and the token hasn't expired yet: it still works
+      if (!(e as { status?: number }).status && this.#context.expires > Date.now()) return this.#token;
+      throw e;
+    }
   }
   onToken(l: (token: string) => void): () => void {
     this.#listeners.add(l);

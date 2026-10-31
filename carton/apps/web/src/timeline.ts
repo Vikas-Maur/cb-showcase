@@ -4,7 +4,7 @@
 // the engine keeps unchanged records as the same objects, so a remote edit redraws only the clips it touched.
 
 import { createElement as h, memo, useLayoutEffect, useRef, useState } from "react";
-import type { Doc, Op, Rec } from "@carton/core";
+import type { Doc, HeldBase, Op, Rec } from "@carton/core";
 import { GhostLayer } from "@carton/react";
 import { ITEMS, TRACKS, type SampleMedia } from "./demo-doc.ts";
 import { docLength, movePlacement, moveOps, trimOps, trimPlacement } from "./edit.ts";
@@ -21,6 +21,8 @@ interface Drag {
   x0: number;
   rec: Rec;
   moved: boolean;
+  /** The state the drag began on: its ops are computed from it, so it is the commit's base. */
+  base: HeldBase | undefined;
 }
 interface Placement {
   id: string;
@@ -35,8 +37,10 @@ export interface TimelineProps {
   onSeek: (t: number) => void;
   selected: string | null;
   onSelect: (id: string | null) => void;
-  /** Commit an edit; resolves once the head shows it. */
-  onEdit: (ops: Op[]) => Promise<void>;
+  /** Commit an edit made on `base`; resolves once the head shows it. */
+  onEdit: (ops: Op[], base?: HeldBase) => Promise<void>;
+  /** The state on screen, as a base for an edit begun now. */
+  base: () => HeldBase | undefined;
   presence: PresenceSender | null;
   /** A read-only preview (§9 R2-16): an edit attempt is reported, never dropped silently. */
   readOnly: boolean;
@@ -96,7 +100,7 @@ export function Timeline(p: TimelineProps) {
     const box = el.getBoundingClientRect();
     const x = e.clientX - box.left;
     const mode: Mode = x <= EDGE ? "start" : x >= box.width - EDGE ? "end" : "move";
-    drag.current = { id: String(rec.id), mode, x0: e.clientX, rec, moved: false };
+    drag.current = { id: String(rec.id), mode, x0: e.clientX, rec, moved: false, base: p.base() };
     el.setPointerCapture(e.pointerId);
   };
   const onMove = (e: PointerEvent) => {
@@ -118,7 +122,7 @@ export function Timeline(p: TimelineProps) {
     const pl = placement(d, e.clientX);
     const ops = d.mode === "move" ? moveOps(d.rec, pl.start) : trimOps(d.rec, d.mode, d.mode === "start" ? pl.start : pl.end, sourceLength(d.rec));
     try {
-      if (ops.length) await p.onEdit(ops);
+      if (ops.length) await p.onEdit(ops, d.base);
     } finally {
       setLocal(null);
     }

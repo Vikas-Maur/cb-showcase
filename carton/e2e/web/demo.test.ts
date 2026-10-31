@@ -172,7 +172,9 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await bob.locator(".carton-ghost").first().waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
 
       // 3. the Director rewrites captions while Bob trims a clip
-      bot = new Bot(seed.bob, "alice");
+      // the Director acts for Alice: its turns are in her undo group (her account is unique per install)
+      const aliceAccount: string = await alice.evaluate(() => (window as unknown as { __carton: { session: { account: string } } }).__carton.session.account);
+      bot = new Bot(seed.bob, aliceAccount);
       await bot.next("ready");
       await bob.locator('.carton-presence .carton-peer[data-kind="agent"]').first().waitFor({ timeout: 10_000 });
       bot.send({ cmd: "turn", plan: "captions" });
@@ -232,6 +234,12 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await bob.locator(".carton-sync", { hasText: "Offline" }).waitFor({ timeout: 10_000 });
       await editCaption(bob, "cap-3", "Written with no network");
       await bob.locator(".carton-sync", { hasText: "Offline: 1 edit waiting" }).waitFor({ timeout: 5000 });
+      // reopening with no network: the shell comes from the Service Worker's cache, the project from the store
+      await bob.reload();
+      await bob.getByTestId("timeline").waitFor({ timeout: 20_000 });
+      await waitCaption(bob, "cap-3", "Written with no network");
+      await bob.locator(".carton-sync", { hasText: "Offline: 1 edit waiting" }).waitFor({ timeout: 10_000 });
+      await shot(bob, `${kind}-6-reopened-offline-bob`);
       await bobCtx.setOffline(false);
       await waitCaption(alice, "cap-3", "Written with no network", 20_000);
 
