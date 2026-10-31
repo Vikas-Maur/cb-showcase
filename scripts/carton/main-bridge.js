@@ -30,8 +30,16 @@ module.exports = String.raw`var __cartonMain = (() => {
     if (!list.length) return {};
     return { decision: "block", reason: list.map((n) => n.text ?? String(n)).join("\n") };
   };
+  // Gate G2 (§6.2): with CARDBOARD_CARTON_TIMING=<file>, every GUI save's round trip to the library worker (the
+  // commit and the write) is appended to <file> as a JSON line, Carton on or off, for comparing the two.
+  const timing = process.env.CARDBOARD_CARTON_TIMING;
   return {
     on,
+    time(p) {
+      if (!timing) return p;
+      const t0 = performance.now();
+      return p.finally(() => require("node:fs").appendFile(timing, JSON.stringify({ at: Date.now(), ms: +(performance.now() - t0).toFixed(2), carton: on }) + "\n", () => {}));
+    },
     library(lib) { library = lib; },
     call(method, args) {
       // The pages ask once, at start, whether to take Carton's paths.

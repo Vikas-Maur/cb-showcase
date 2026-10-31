@@ -53,8 +53,10 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
       }
       last.set(id, out);
       if (!out?.doc || out.doc === res.document) return res;
-      // Someone else's change was merged in: the store and the queued write continue from head.
+      // Someone else's change was merged in: the store and the queued write continue from head, and in the app the
+      // pages are told (main broadcasts it as a project change, which the editor adopts).
       if (entry && entry.document === res.document) store.byId.set(id, { ...entry, document: out.doc });
+      self.emit?.({ kind: "changed", id, bundlePath: entry?.bundlePath });
       return { document: out.doc, changed: true };
     },
     // H1, H3: displace-then-install in place of rename(tmp, file).
@@ -88,7 +90,7 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     status: (id) => { const r = last.get(id); return r && r.status !== "off" ? { carton: { status: r.status, ref: r.ref, conflicts: r.conflicts?.length ?? 0 } } : {}; },
     // H8 (worker only): the engine thread, the per-agent view watcher, and the worker's carton RPC namespace.
     // emit sends a {kind:"carton"} change to main, which passes it to the tabs.
-    worker: (library, emit) => carton().worker({ library, emit }),
+    worker: (library, emit) => ((self.emit = emit), carton().worker({ library, emit })),
   };
   return self;
 })();

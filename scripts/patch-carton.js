@@ -9,12 +9,15 @@
 const fs = require("fs");
 const path = require("path");
 
+// CARTON_LIST_ANCHORS=1 also prints every anchor (bundle, count, offset, bytes, text): the INTEGRATION doc's appendix.
+const list = process.env.CARTON_LIST_ANCHORS === "1";
 const patch = (file, edits) => {
   let src = fs.readFileSync(file, "utf8");
   if (src.includes("__carton")) throw new Error(`${path.basename(file)} already has Carton's patches; run its Windows patch script first`);
   const replace = (from, to, count = 1) => {
     const n = src.split(from).length - 1;
     if (n !== count) throw new Error(`${path.basename(file)}: expected ${count} match(es), found ${n}: ${from}`);
+    if (list) console.log(`${path.basename(file)}\t${n}\t@${src.indexOf(from)}\t${Buffer.byteLength(from)}B\t${JSON.stringify(from)}`);
     src = src.split(from).join(to);
   };
   edits(replace, (text) => (src = text + src));
@@ -162,7 +165,7 @@ if (mode === "--cli") {
       '_e.handle("project:patch",async({document:t,scope:r})=>{',
       '__cartonMain.library(St),_e.handle("carton:call",({method:t,args:r})=>__cartonMain.call(t,r??[])),_e.handle("project:patch",async({document:t,scope:r,carton:__cm})=>{',
     );
-    replace('St.call("projects.updateScoped",t,r)', 'St.call("projects.updateScoped",t,__cartonMain.on&&__cm?{...r,carton:{...__cm,actor:"person"}}:r)');
+    replace('St.call("projects.updateScoped",t,r)', '__cartonMain.time(St.call("projects.updateScoped",t,__cartonMain.on&&__cm?{...r,carton:{...__cm,actor:"person"}}:r))');
     // H5: a project change while Carton is on takes the pages' Carton path (adopt without an undo entry).
     replace('e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s})', 'e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s,...__cartonMain.on&&{carton:!0}})');
     // H8: the worker's Carton events go to every tab.
