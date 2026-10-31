@@ -8,8 +8,9 @@
 //                                 per lineage edge, and the last author per record. No micro-changes, no scrapped cuts.
 //   .carton-export/history.db     opt-in "Include history so they can see every version": a copy of carton.db with the
 //                                 local tables dropped (path map, pins, notices, views, ephemeral data, sync lease)
-// and without `.carton/` or `.scratch/views/` (H11: never ship Carton's database, its displaced files, or agents'
-// view files, whose headers name pins the recipient doesn't have).
+// and without `.carton/` or the view files Carton writes in `.scratch/views/` (H11: never ship Carton's database, its
+// displaced files, or agents' view files, whose headers name pins the recipient doesn't have). A person's or an agent's
+// own files in `.scratch/views/` travel, as in 1.4.0 (walk.ts, the app's rule too).
 //
 // Import. Reading a teammate's file gives the manifest, the shallow export and (if present) the full history. "Bring
 // in their changes" imports their lineage as tracking knowledge and folds their head into the current cut, with cards;
@@ -27,7 +28,7 @@ import type { Choices, Doc, Schema, ShallowExport } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import { ZipReader, ZipWriter, sanitizeEntryName, type ZipWriteResult } from "./zip.ts";
 import { retryMissing } from "../displace.ts";
-import { walkBundle, excludedFromExport, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
+import { walkBundle, excludedFromExport, viewFileCandidate, readViewFileHead, VIEW_STATUS_MAX_BYTES, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
 
 export interface CbprojExportOptions {
   /** The project bundle (`<Name>.cardboard/`). */
@@ -81,7 +82,8 @@ export async function exportCbproj(o: CbprojExportOptions): Promise<CbprojExport
       entries.push(f.archivePath);
     }
     for (const f of o.extraFiles ?? []) {
-      if (excludedFromExport(f.archivePath)) continue;
+      const view = viewFileCandidate(f.archivePath) ? await readViewFileHead(f.sourcePath, path.posix.basename(f.archivePath)) : undefined;
+      if (excludedFromExport(f.archivePath, undefined, view)) continue;
       await zip.addFile(f.archivePath, f.sourcePath);
       entries.push(f.archivePath);
     }
@@ -122,6 +124,15 @@ const SHALLOW_MAX_BYTES = 256 * 1024 * 1024;
 // Two names that differ only in case land on one file on Windows and macOS.
 const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
 
+/** A member's content, to tell a Carton view file (`cartonViewFile`), or null when it can't be read (then it isn't). */
+async function memberContent(z: ZipReader, entry: ZipReader["entries"][number], name: string): Promise<Buffer | null> {
+  try {
+    return await z.readMember(entry, /\.status$/i.test(name) ? VIEW_STATUS_MAX_BYTES : MANIFEST_MAX_BYTES);
+  } catch {
+    return null;
+  }
+}
+
 /** Reads a `.cbproj`: the manifest, Carton's entries, and which bundle files it holds. */
 export async function readCbproj(file: string): Promise<CbprojContents> {
   const z = await ZipReader.open(file);
@@ -139,7 +150,9 @@ export async function readCbproj(file: string): Promise<CbprojContents> {
       // excluded folders. Unsafe names, and a second member that lands on the same path, are ignored too.
       const n = sanitizeEntryName(e.name.replace(/\\/g, "/").split("/").filter((seg) => seg !== "" && seg !== ".").join("/"));
       const key = n !== null && FOLD_CASE ? n.toLowerCase() : n;
-      if (n === null || key === null || taken.has(key) || n === EXPORT_DIR || n.startsWith(`${EXPORT_DIR}/`) || excludedFromExport(n)) {
+      // a member that lands directly in .scratch/views/ is told by its content: only Carton's view files are left out
+      const view = n !== null && viewFileCandidate(n) ? await memberContent(z, e, n) : undefined;
+      if (n === null || key === null || taken.has(key) || n === EXPORT_DIR || n.startsWith(`${EXPORT_DIR}/`) || excludedFromExport(n, undefined, view)) {
         ignored.push(e.name);
         continue;
       }

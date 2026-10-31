@@ -1,7 +1,8 @@
 // `.cbproj` collaboration end to end (PLAN §13, §16 H11) on the real engine and history: two replicas that never share
 // a server pass Cardboard's own Save As files back and forth. Each file carries the shallow export; "Bring in their
 // changes" folds the sender's head in through the DAG. Alice → Bob → Alice twice, then a third fold: the LCA is right
-// and nothing is reverted. The zip never holds `.carton/` or `.scratch/views/`.
+// and nothing is reverted. The zip never holds `.carton/` or the view files Carton wrote in `.scratch/views/`; a person's
+// or an agent's own files there travel (the app's rule too, windows-sync `19c9bce`).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -12,8 +13,8 @@ import type { Store } from "@carton/core/plugins";
 import { createMemoryStore } from "@carton/store-memory";
 import { cardboardAdapter, fromHost, toHost } from "@carton/cardboard";
 import zlib from "node:zlib";
-import { exportCbproj, readCbproj, bringInTheirChanges, extractFullHistory, importFullHistory } from "@carton/cardboard/node";
-import { SCRATCH, clips, find, type Item } from "./world.ts";
+import { exportCbproj, readCbproj, bringInTheirChanges, extractFullHistory, importFullHistory, walkBundle, cartonViewFile, statusPath } from "@carton/cardboard/node";
+import { SCRATCH, clip, clips, find, openWorld, type Item } from "./world.ts";
 
 const ALICE: Actor = { kind: "human", id: "alice", group: "alice@laptop" };
 const BOB: Actor = { kind: "human", id: "bob", group: "bob@desk" };
@@ -28,8 +29,10 @@ function bundle(t: test.TestContext, name: string, project: Record<string, unkno
     "AGENTS.md": "agents",
     ".carton/carton.db": "a database",
     ".carton/displaced/1": "a displaced file",
-    ".scratch/views/director_c_t1.tsx": "// cardboard:rev main@3~deadbeef b:00000000\n",
-    ".scratch/views/director_c_t1.status": "{}",
+    ".scratch/views/director_c_t1.tsx": "// cardboard:rev main@3~deadbeef b:00000000 p:0a1b2c3d\n",
+    ".scratch/views/director_c_t1.status": JSON.stringify({ status: "confirmed", ref: "main@3~deadbeef", seq: 3, conflicts: [], diagnostics: [], change: "c-1", at: 1 }),
+    ".scratch/views/notes.md": "a person's notes, kept with the views",
+    ".scratch/views/plan.tsx": "// cardboard:rev 1700000000000\nexport default null;\n",
     ".scratch/notes.md": "kept",
     "cache/thumbs/1.jpg": "x",
   };
@@ -56,7 +59,7 @@ async function send(t: test.TestContext, from: Carton, dir: string, to: string):
   return out;
 }
 
-test(".cbproj: Alice → Bob → Alice twice, then a third fold; the LCA is right, nothing is reverted, no cards; the zip has no .carton/ or .scratch/views/ [real engine]", async (t) => {
+test(".cbproj: Alice → Bob → Alice twice, then a third fold; the LCA is right, nothing is reverted, no cards; the zip has no .carton/ or Carton's view files, a person's files in .scratch/views/ travel [real engine]", async (t) => {
   const project = { id: "proj-1", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(6) };
   const alice = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
   const aDir = bundle(t, "alice", project);
@@ -65,8 +68,9 @@ test(".cbproj: Alice → Bob → Alice twice, then a third fold; the LCA is righ
   // 1. Alice → Bob: Bob doesn't have the project, so he opens it from her file (a writable cut forked from hers)
   const f1 = await send(t, alice, aDir, "bob");
   const c1 = await readCbproj(f1);
-  for (const n of ["project.json", "timeline.tsx", "AGENTS.md", ".scratch/notes.md", ".carton-export/shallow.json"]) assert.ok(c1.files.includes(n) || n === "project.json" || n.startsWith(".carton-export"), `has ${n}`);
-  for (const n of c1.files) assert.ok(!n.startsWith(".carton/") && !n.startsWith(".scratch/views/") && !n.startsWith("cache/"), `never ${n}`);
+  for (const n of ["project.json", "timeline.tsx", "AGENTS.md", ".scratch/notes.md", ".scratch/views/notes.md", ".scratch/views/plan.tsx", ".carton-export/shallow.json"]) assert.ok(c1.files.includes(n) || n === "project.json" || n.startsWith(".carton-export"), `has ${n}`);
+  for (const n of c1.files) assert.ok(!n.startsWith(".carton/") && !n.startsWith(".scratch/views/director_c_t1.") && !n.startsWith("cache/"), `never ${n}`);
+  assert.deepEqual(c1.ignored, [], "the file the walk wrote has nothing to ignore");
   assert.ok(c1.shallow, "the shallow export is its own entry");
   const bob = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { import: c1.shallow! }, actor: BOB });
   const bDir = bundle(t, "bob", project);
@@ -101,12 +105,14 @@ test(".cbproj: a sender's file that does carry view files or Carton's database l
   const z = await ZipWriter.create(out);
   await z.addBuffer("project.json", Buffer.from(JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] })));
   await z.addBuffer(".scratch/views/director-c3.tsx", Buffer.from("// cardboard:rev main@3~deadbeef b:00000000\n"));
+  await z.addBuffer(".scratch/views/director-c3.status", Buffer.from(JSON.stringify({ status: "conflicts", ref: "main@3~deadbeef", seq: 3, conflicts: [{ path: "x" }], diagnostics: ["error: c3"], change: "c-3", at: 2, error: "x" })));
+  await z.addBuffer(".scratch/views/todo.md", Buffer.from("an agent's own working file"));
   await z.addBuffer(".carton/carton.db", Buffer.from("x"));
   await z.addBuffer("media/a.mp4", Buffer.from("m"));
   await z.close();
   const c = await readCbproj(out);
-  assert.deepEqual(c.ignored.sort(), [".carton/carton.db", ".scratch/views/director-c3.tsx"]);
-  assert.deepEqual(c.files, ["media/a.mp4"]);
+  assert.deepEqual(c.ignored.sort(), [".carton/carton.db", ".scratch/views/director-c3.status", ".scratch/views/director-c3.tsx"]);
+  assert.deepEqual(c.files.sort(), [".scratch/views/todo.md", "media/a.mp4"]);
   assert.equal(c.shallow, null);
   void ({} as Doc);
 });
@@ -228,6 +234,30 @@ test(".cbproj: the opt-in full history is its own entry, written by the store's 
   assert.deepEqual(fs.readFileSync(back), history);
 });
 
+// The export rule (the app's too) is told by content: it must know the files the materializer itself writes.
+test(".cbproj: the view and sidecar the materializer writes are Carton's to the export rule; a person's files next to them aren't [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 10), clip("c", 15, 25)] });
+  const B = w.agent("director/c/t1", { hooked: true, actor: { turn: "t1" } });
+  const { path: vb, name } = await w.mz.printView("vb", B.actor, { hooked: true });
+  await B.editUntilDone(vb, (its) => void (find(its, "a").name = "saved"));
+  await w.tick(500);
+  const read = (rel: string) => fs.readFileSync(w.abs(rel));
+  assert.equal(cartonViewFile(path.basename(vb), read(vb)), true, "the print");
+  assert.equal(cartonViewFile(path.basename(statusPath(name)), read(statusPath(name))), true, "its sidecar after a save");
+  // a refused save's sidecar (an error, no ref) too
+  fs.writeFileSync(w.abs(vb), "// cardboard:rev main@1~00000000 b:00000000\n{}");
+  w.mz.onFsEvent(vb);
+  await w.tick(500);
+  assert.match(read(statusPath(name)).toString(), /"status":"error"/);
+  assert.equal(cartonViewFile(path.basename(statusPath(name)), read(statusPath(name))), true, "a refusal's sidecar");
+  fs.writeFileSync(w.abs(".scratch/views/notes.md"), "a person's notes");
+  fs.writeFileSync(w.abs(".scratch/views/mine.tsx"), "export default null;\n");
+  const walked = (await walkBundle(w.bundle)).map((f) => f.archivePath);
+  assert.ok(walked.includes(".scratch/views/notes.md") && walked.includes(".scratch/views/mine.tsx"), JSON.stringify(walked));
+  assert.ok(!walked.includes(vb) && !walked.includes(statusPath(name)), JSON.stringify(walked));
+  await B.stop();
+});
+
 // Review 1 #8: names that 1.4.0's extraction resolves into an excluded folder (`./.carton/…`, `.scratch/./views/…`),
 // unsafe names, and a second member landing on a path already taken are all ignored.
 test(".cbproj: aliases of excluded paths, unsafe names and colliding members are ignored", async (t) => {
@@ -236,10 +266,12 @@ test(".cbproj: aliases of excluded paths, unsafe names and colliding members are
   const out = path.join(dir, "..", `alias-${Date.now()}.cbproj`);
   t.after(() => fs.rmSync(out, { force: true }));
   const manifest = JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] });
-  const names = ["./.carton/carton.db", ".scratch/./views/x.tsx", "media//a.mp4", "media/a.mp4", "../escape.txt", "./.carton-export/shallow.json", "notes.md"];
-  fs.writeFileSync(out, rawZip([["project.json", manifest], ...names.map((n): [string, string] => [n, "x"])]));
+  const names = ["./.carton/carton.db", ".scratch/./views/x.tsx", ".scratch/./views/y.tsx", "media//a.mp4", "media/a.mp4", "../escape.txt", "./.carton-export/shallow.json", "notes.md"];
+  // x.tsx is a Carton view (judged where it lands); y.tsx is a person's file there
+  const content = (n: string) => (n.endsWith("x.tsx") ? "// cardboard:rev main@3~deadbeef b:00000000\n" : "x");
+  fs.writeFileSync(out, rawZip([["project.json", manifest], ...names.map((n): [string, string] => [n, content(n)])]));
   const c = await readCbproj(out);
-  assert.deepEqual(c.files, ["media//a.mp4", "notes.md"], "only one member per extracted path, and nothing excluded");
+  assert.deepEqual(c.files, [".scratch/./views/y.tsx", "media//a.mp4", "notes.md"], "only one member per extracted path, and nothing excluded");
   assert.deepEqual(c.ignored.sort(), ["../escape.txt", "./.carton-export/shallow.json", "./.carton/carton.db", ".scratch/./views/x.tsx", "media/a.mp4"].sort());
 });
 

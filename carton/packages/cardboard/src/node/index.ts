@@ -9,4 +9,4 @@ export * from "./carton-engine.ts";
 export { exportCbproj, readCbproj, extractFullHistory, importFullHistory, bringInTheirChanges } from "./cbproj/cbproj.ts";
 export type { CbprojExportOptions, CbprojExportResult, CbprojContents, CbprojTarget, BringInResult, HistoryTarget, FullHistoryOptions, FullHistoryResult } from "./cbproj/cbproj.ts";
 export { ZipWriter, ZipReader, sanitizeEntryName, safeEntryPath } from "./cbproj/zip.ts";
-export { walkBundle, excludedFromExport, SHALLOW_ENTRY, FULL_ENTRY, EXPORT_DIR } from "./cbproj/walk.ts";
+export { walkBundle, excludedFromExport, cartonViewFile, viewFileCandidate, readViewFileHead, SHALLOW_ENTRY, FULL_ENTRY, EXPORT_DIR } from "./cbproj/walk.ts";
