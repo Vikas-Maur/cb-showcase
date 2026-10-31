@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { remoteUi, serveUi, type ClientMessage, type ServerMessage } from "../src/remote.ts";
 import { createMockUi, people } from "../src/mock.ts";
-import type { CartonUi } from "../src/model.ts";
+import type { CartonUi, Topic } from "../src/model.ts";
 
 function pipe(served: CartonUi) {
   const toServer: ClientMessage[] = [];
@@ -23,7 +23,20 @@ function pipe(served: CartonUi) {
   });
   return { client, server, toServer, toClient };
 }
-const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
+// Wait for what a test needs, never for a fixed time: Windows wakes timers at about 15.6 ms, so a fixed 10 ms "tick"
+// can expire in the same wake-up as the message hops it waits for (verify-ci #8).
+function until(ui: CartonUi, topic: Topic, ok: () => boolean, label: string, ms = 5000): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (ok()) return resolve();
+    const timer = setTimeout(() => (off(), reject(new Error(`timed out waiting for ${label}`))), ms);
+    const off = ui.subscribe(topic, () => {
+      if (!ok()) return;
+      clearTimeout(timer);
+      off();
+      resolve();
+    });
+  });
+}
 
 test("the client mirrors History and topics after one init", async () => {
   const served = createMockUi({ versions: 10_000 });
@@ -48,7 +61,7 @@ test("a new version costs one row on the wire, and rows that didn't change keep 
   client.ui.subscribe("history", () => notified++);
   toClient.length = 0;
   served.addVersion({ author: people.bob, summary: "Moved 'Intro' 0:00.0 → 0:01.0" });
-  await tick();
+  await until(client.ui, "history", () => client.ui.history().count("all") === served.history().count("all"), "the new version");
   const hist = toClient.filter((m) => m.t === "history");
   assert.equal(hist.length, 1);
   assert.equal(hist[0]!.t === "history" && hist[0]!.rows.length, 1);
@@ -65,7 +78,8 @@ test("small topics travel whole; ghosts at 20 Hz don't touch History", async () 
   toClient.length = 0;
   for (let i = 0; i < 20; i++) served.setGhosts([{ actorKey: people.bob.key, itemId: "x", trackId: "V1", start: i, end: i + 1 }]);
   served.setSync({ kind: "offline", waiting: 2 });
-  await tick();
+  // Messages arrive in the order they were sent: once the sync word is here, every ghost message is too.
+  await until(client.ui, "sync", () => client.ui.sync().kind === "offline", "the sync word");
   assert.deepEqual(client.ui.sync(), { kind: "offline", waiting: 2 });
   assert.equal(client.ui.ghosts()[0]!.start, 19);
   assert.equal(toClient.filter((m) => m.t === "history").length, 0);
@@ -78,7 +92,7 @@ test("calls round-trip, and errors come back as errors", async () => {
   await client.ready;
   const cut = await client.ui.newCut("Teaser", "main@3");
   assert.equal(cut.name, "Teaser");
-  await tick();
+  await until(client.ui, "cuts", () => client.ui.cuts().find((c) => c.current)?.name === "Teaser", "the new cut");
   assert.equal(client.ui.cuts().find((c) => c.current)?.name, "Teaser");
   const c = await client.ui.compare("main@3", "main@9");
   assert.match(String(c.diff.shots), /^\d+$/);
@@ -89,10 +103,10 @@ test("calls round-trip, and errors come back as errors", async () => {
   };
   await assert.rejects(client.ui.renameCut!("cut-main", "x"), /isn't available yet/);
   client.ui.openPreview("main@3", "Sent to client, Monday");
-  await tick();
+  await until(client.ui, "preview", () => !!client.ui.preview(), "the preview");
   assert.equal(client.ui.preview()?.label, "Sent to client, Monday");
   client.ui.blockEdit();
-  await tick();
+  await until(client.ui, "preview", () => !!client.ui.preview()?.blockedEdit, "the blocked edit");
   assert.equal(client.ui.preview()?.blockedEdit, true);
 });
 
@@ -102,9 +116,9 @@ test("a renderer reload says hello again and gets everything again", async () =>
   await client.ready;
   toClient.length = 0;
   server.receive({ t: "hello" });
-  await tick();
-  assert.equal(toClient.filter((m) => m.t === "init").length, 1);
+  assert.equal(toClient.filter((m) => m.t === "init").length, 1, "the server answers a hello at once");
+  const n = served.history().count("all") + 1;
   served.addVersion({});
-  await tick();
+  await until(client.ui, "history", () => client.ui.history().count("all") === n, "the new version");
   assert.equal(toClient.filter((m) => m.t === "history").length, 1, "one subscription after the second hello, not two");
 });

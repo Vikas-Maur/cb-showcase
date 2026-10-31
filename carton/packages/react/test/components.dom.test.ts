@@ -1,5 +1,5 @@
 // Component tests in a DOM. `npm test` runs this file twice: on React 19, then on preact/compat (test/preact-alias.ts).
-import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, runtime, type } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -239,14 +239,14 @@ test(name("presence groups each person with their agents and subagents"), async 
 test(name("ghost layer draws remote drags without rendering through React"), async () => {
   const ui = createMockUi({ versions: 10 });
   const m = await render(wrap(ui, h("div", { style: { position: "relative" } }, h(GhostLayer, { timeToX: (t: number) => t * 10, trackBand: (id: string) => (id === "V1" ? { top: 40, height: 24 } : null) }))));
-  await act(() => new Promise((r) => setTimeout(r, 40)));
+  await waitFor(() => !!$(m.container, ".carton-ghost"), "the ghost to be drawn");
   const g = $(m.container, ".carton-ghost")!;
   assert.ok(g, "a ghost element");
   assert.equal(g.style.transform, "translate(125px, 40px)");
   assert.equal(g.style.width, "40px");
   assert.match(g.textContent ?? "", /Bob Okafor · B-roll city/);
   await act(() => ui.setGhosts([]));
-  await act(() => new Promise((r) => setTimeout(r, 40)));
+  await waitFor(() => !$(m.container, ".carton-ghost"), "the ghost to go");
   assert.equal($(m.container, ".carton-ghost"), null);
   await m.unmount();
 });
