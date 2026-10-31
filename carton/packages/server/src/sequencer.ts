@@ -601,8 +601,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return { branchId: typeof rec.source === "string" ? rec.source : rec.forkOf.slice(0, i), at };
   }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
-    // a reader scoped to some cuts (a Published cut's watch link) reads only those: refused before anything is sent
-    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(m.branchId)) return send(c, { type: "error", reason: `this token can't read ${m.branchId}` });
+    // (a reader scoped to some cuts never gets here for another: process() refuses it first)
     const b = tables.branch(m.branchId);
     if (!b) return send(c, { type: "unknownBranch", branchId: m.branchId });
     if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
@@ -835,9 +834,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const lineage: sync.ClosureEntry[] = [];
     if (m.lineage)
       for (const id of b.closure ?? []) {
-        // a session scoped to some cuts (a Published cut's watch link) reads no ancestor outside them: a private
-        // variant partly folded into the cut carries states that were never published (web-demo review R3-1)
-        if (c.auth.branches && !c.auth.branches.includes(id)) continue;
+        // a reader scoped to some cuts (a Published cut's watch link) reads no ancestor outside them: a private variant
+        // partly folded into the cut carries states that were never published (web-demo review R3-1). A scoped writer
+        // reads every cut (hello), and a join needs its cut's ancestry.
+        if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(id)) continue;
         const t = tables.branch(id);
         if (!t?.tracking) continue;
         const states: NonNullable<sync.ClosureEntry["states"]> = [];
@@ -853,8 +853,6 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
-    // a reader scoped to some cuts learns nothing of others: not their existence, adoption key or head
-    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(m.branchId)) return send(c, { type: "error", reason: `this token can't read ${m.branchId}` });
     const b = tables.branch(m.branchId);
     const msg: sync.StatusMsg = { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 };
     // a hand-off uploads right after this answer: it must know the largest message read before it (round 3 finding 6)
@@ -981,6 +979,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (!inner) return;
       msg = inner;
     }
+    // A reader scoped to some cuts (a Published cut's watch link) learns nothing of any other: every message naming
+    // one is refused alike, before any lookup, so not its rows, head, adoption key, or even whether it exists. A
+    // scoped writer's scope limits its writes (mayWrite).
+    const named = (msg as { branchId?: unknown } | null)?.branchId;
+    if (typeof named === "string" && !WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(named)) return send(c, { type: "error", reason: `this token can't read ${named}` });
     switch (msg?.type) {
       case "hello":
         return onHello(c, msg);

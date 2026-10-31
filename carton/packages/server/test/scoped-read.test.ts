@@ -62,3 +62,21 @@ test("a scoped reader's branchStatus for another cut is refused: not its existen
   await seq.handle(teammate, { type: "branchStatus", branchId: BRANCH });
   assert.equal(teammate.last("status")?.adopted, true, "an unscoped reader still asks of any cut");
 });
+
+test("a scoped reader's push, withdraw and history for another cut are refused alike, existing or not: no head, no existence (web-demo stage review 1)", async () => {
+  const d0 = doc([clip("c0", 0, 5)]);
+  const { seq } = await world(d0);
+  await seq.createBranch({ id: PUB, name: "Main cut (published)", forkOf: `${BRANCH}@0`, owner: "alice", kind: "published", source: BRANCH, sequencer: { kind: "server", since: 0 } }, { doc0: d0 as never, stateHash: "h0" });
+  const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
+  for (const cut of [BRANCH, "no-such-cut"]) {
+    for (const msg of [
+      { type: "push", branchId: cut, epoch: 1, changes: [] },
+      { type: "withdraw", branchId: cut, id: "x.1", base: 0, epoch: 2 },
+      { type: "history", branchId: cut, req: 1, after: 0, upTo: 1, lineage: true },
+    ] as const) {
+      viewer.inbox.length = 0;
+      await seq.handle(viewer, msg as never);
+      assert.deepEqual(viewer.inbox, [{ type: "error", reason: `this token can't read ${cut}` }], `${msg.type} on ${cut}`);
+    }
+  }
+});

@@ -89,4 +89,6 @@ test("history: a session scoped to a cut gets no lineage outside its scope, so a
   assert.deepEqual(teammate.lineage?.map((t) => t.branchId), ["variant"], "an unscoped reader still gets the lineage");
   const both = await ask(fakeConn("e/1", "editor", { branches: ["pub", "variant"] }));
   assert.deepEqual(both.lineage?.map((t) => t.branchId), ["variant"], "a scope that covers the ancestor reads it");
+  const writer = await ask(fakeConn("e/2", "editor", { branches: ["pub"] }));
+  assert.deepEqual(writer.lineage?.map((t) => t.branchId), ["variant"], "a scoped writer's join gets its cut's ancestry (its scope limits writes)");
 });
