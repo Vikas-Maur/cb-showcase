@@ -70,6 +70,8 @@ export interface RemapOp {
   path: readonly ["#remap"];
   maps: RemapMaps;
   lineage?: Lineage;
+  /** The item ids it moved on the state it was made on (credits and descriptions; apply re-derives them). */
+  ids?: string[];
 }
 export type Op = InsertOp | RemoveOp | SetOp | UnsetOp | RemapOp;
 
@@ -281,8 +283,8 @@ export interface RefHeader {
 /** One owner of a pin: a turn, a view, or an MCP ref. The row is released when its last owner releases or expires. */
 export interface PinOwner {
   owner: string;
-  /** ms epoch; agent pins end with their turn, MCP refs after 7 days. */
-  expires: number;
+  /** ms epoch; agent pins end with their turn, MCP refs after 7 days. null: no expiry (until released). */
+  expires: number | null;
 }
 
 export interface PinRow {
@@ -290,7 +292,10 @@ export interface PinRow {
   seq: number;
   hash8: string;
   hash: string;
+  /** The causal past a commit on this pin builds on. */
   pending: ChangeId[];
+  /** Ops on top of the confirmed state at `seq`: the pending changes' ops, or a held state's delta (a freeze view). */
+  delta: Op[];
   owners: PinOwner[];
 }
 
@@ -332,8 +337,8 @@ export interface CutRecord {
 /** A version: a confirmed state, optionally named. `ref` prints as `main@57`. */
 export interface Version {
   ref: StateRef;
-  /** Full state hash. */
-  hash: string;
+  /** Full state hash, when already known (the head, named versions); `hashOf(ref)` computes any other. */
+  hash?: string;
   change: ChangeId | null;
   author: Actor | null;
   at: number;
@@ -515,6 +520,8 @@ export type CartonEvent =
   | { type: "change"; branchId: string; seq: number; change: ConfirmedChange; local: boolean }
   | { type: "pending"; branchId: string; id: ChangeId }
   | { type: "notice"; notice: Notice }
-  | { type: "sync"; status: "offline" | "syncing" | "up-to-date"; waiting: number }
+  | { type: "sync"; status: "offline" | "syncing" | "up-to-date" | "stopped"; waiting: number }
+  /** A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1). */
+  | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
   | { type: "presence"; actor: Actor; state: unknown }
   | { type: "warning"; branchId: string; warnings: SoftWarning[] };

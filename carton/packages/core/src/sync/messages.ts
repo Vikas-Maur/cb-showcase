@@ -1,22 +1,29 @@
-// The sync protocol's messages (PLAN §6.3, §12, §5.3), as the system-v11 prototype sends them. JSON over any
-// Transport. Owned by `sync-sequencer`; the foundation wrote the first version from system-v11 `sync.mjs`/`server.mjs`.
+// The sync protocol's messages (PLAN §6.3, §12, §5.3), as the system-v11 prototype sends them, with PLAN v14's fixes
+// (H1 withdraw, H2 lww retry, bounded confirmed-id lists). JSON over any Transport: spans carry `hi: null` for an open
+// end, so nothing needs a custom codec. Owner: sync-sequencer.
 
 import type { Actor, ChangeId, ConfirmedChange, Change, CutRecord, Doc, DagNode } from "../types.ts";
 
 /** The protocol version both sides speak; `hello` carries the document schema version too. */
 export const PROTOCOL = 1;
 
-/** A pending id the server already confirmed (R10-01): the client drops it from its queue before rebasing. */
+/** A pending id the server already confirmed or withdrew (R10-01): the client drops it before rebasing. */
 export interface ConfirmedId {
   id: ChangeId;
   seq: number;
+  /** The version that was confirmed (its rebase count): late cards come only from the rebases up to it (M3). */
   rebase?: number;
+  /** Spent by a withdraw (H1): it changed nothing. */
+  withdrawn?: boolean;
 }
 
-/** A pending id and the oldest base it was ever pushed on (the server scans only `(base, base + K + 1]`). */
+/**
+ * A pending id the client sent and never saw acked, with every base it was pushed on. A push on base `b` can only
+ * have been confirmed in `(b, b + K + 1]` (the K cap), so the server reads at most K + 1 ids per base (§6.3, R12-01).
+ */
 export interface PendingClaim {
   id: ChangeId;
-  base: number;
+  bases: number[];
 }
 
 /** Why a push was refused. Validation reasons can't be fixed by resubmitting: the change leaves the queue. */
@@ -24,19 +31,36 @@ export type RejectReason =
   | "overlap"
   | "behind"
   | "base unknown"
-  | "unknown branch"
+  /** lww on a change with a span or a group path (R11-01): resubmitted as `merge`, never dropped (H2). */
+  | "lww on structure"
   // validation
+  | "unknown branch"
+  | "read-only branch"
+  | "forbidden"
   | "invalid"
   | "exists"
   | "read of a missing record"
   | "span missing"
+  | "undeclared path"
   | "foreign id"
   | "no ops"
-  | "lww on structure"
-  // FIFO hand-off contingency (§6.1), unused unless enabled
-  | "reserved";
+  | "too large"
+  | "bad change";
 
-export const VALIDATION_REASONS: ReadonlySet<RejectReason> = new Set(["invalid", "exists", "read of a missing record", "span missing", "foreign id", "no ops", "lww on structure"]);
+export const VALIDATION_REASONS: ReadonlySet<RejectReason> = new Set<RejectReason>([
+  "unknown branch",
+  "read-only branch",
+  "forbidden",
+  "invalid",
+  "exists",
+  "read of a missing record",
+  "span missing",
+  "undeclared path",
+  "foreign id",
+  "no ops",
+  "too large",
+  "bad change",
+]);
 
 /** Live presence (§12): 10–20 Hz while dragging, 1 Hz while active, stops after 30 s idle. Never stored. */
 export interface PresenceState {
@@ -50,11 +74,19 @@ export interface PresenceState {
   [extra: string]: unknown;
 }
 
+/** A state the server stores for catch-up: produced by a replica, keyed by seq, checked by its hash on load. */
+export interface KeyframeData {
+  seq: number;
+  stateHash: string;
+  doc: Doc;
+}
+
 // ------------------------------------------------------------------ client -> server
 
 /**
- * Join a branch: what the client has, every pending id with its oldest base (so the server lists those it already
- * confirmed), and every replica id this replica has used (bound to the connection's device credential, §6.3).
+ * Join a branch: what the client has, every pending id it sent with the bases it sent it on (so the server lists
+ * those it already confirmed), and every replica id this replica has used (bound to the connection's device
+ * credential, §6.3).
  */
 export interface HelloMsg {
   type: "hello";
@@ -72,11 +104,15 @@ export interface PushMsg {
   epoch: number;
   changes: Change[];
 }
-/** A pending change a rebase absorbed (empty): its id is spent, so a late push of it is acked as withdrawn (H1). */
+/**
+ * A pending change a rebase absorbed (empty): its id is spent with a withdraw row, so a late push of it (a dead
+ * helper's) is acked as withdrawn, never confirmed (H1). `base` is the client's head when it withdrew.
+ */
 export interface WithdrawMsg {
   type: "withdraw";
   branchId: string;
   id: ChangeId;
+  base: number;
   epoch: number;
 }
 /** Hand-off (§5.3): does the server already hold this branch? Asked on reconnect while `handingOff`. */
@@ -87,6 +123,7 @@ export interface BranchStatusMsg {
 /**
  * Hand-off upload: the branch's confirmed rows 1..n (or a shallow root), keyed `(branchId, n, stateHash@n)` so a
  * repeated upload gets the same answer, plus the ancestry closure as shallow tracking branches.
+ * `doc0` is the state at `rootSeq` (0 with full history; n for "Share without history", with no rows).
  */
 export interface AdoptMsg {
   type: "adopt";
@@ -96,7 +133,22 @@ export interface AdoptMsg {
   rows: ConfirmedChange[];
   rec: CutRecord;
   doc0: Doc | null;
+  rootSeq?: number;
   closure: { branchId: string; rec: CutRecord; nodes: DagNode[] }[];
+}
+/** A shared variant made on the server: O(1), no rows copied; it reads the parent at `seq` (§6.3). */
+export interface ForkMsg {
+  type: "fork";
+  branchId: string;
+  from: string;
+  seq: number;
+  rec: CutRecord;
+}
+/** The keyframe the server asked for (`AckMsg.keyframeWanted`), for far-behind catch-up (§6.3). */
+export interface KeyframeMsg {
+  type: "keyframe";
+  branchId: string;
+  keyframe: KeyframeData;
 }
 export interface PresenceMsg {
   type: "presence";
@@ -104,7 +156,7 @@ export interface PresenceMsg {
   actor: Actor;
   state: PresenceState | null;
 }
-export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | PresenceMsg;
+export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg;
 
 // ------------------------------------------------------------------ server -> client
 
@@ -114,10 +166,12 @@ export interface WelcomeMsg {
   branchId: string;
   head: number;
   rows: ConfirmedChange[];
-  keyframe?: { seq: number; doc: Doc };
+  keyframe?: KeyframeData;
   confirmed: ConfirmedId[];
+  /** More rows follow: send `hello` again with the new `have`. */
+  more?: boolean;
 }
-/** New confirmed rows, fanned out to every subscriber. */
+/** New confirmed rows, fanned out to every subscriber (the pusher too, before its ack). */
 export interface ChangesMsg {
   type: "changes";
   branchId: string;
@@ -126,19 +180,26 @@ export interface ChangesMsg {
 /** Accepted (or already confirmed: `duplicate`; or spent by a withdraw: `withdrawn`). */
 export interface AckMsg {
   type: "ack";
+  branchId: string;
   id: ChangeId;
   seq: number;
   epoch: number;
   duplicate?: boolean;
   withdrawn?: boolean;
+  /** The server holds no keyframe at this seq yet: upload one (`KeyframeMsg`). */
+  keyframeWanted?: number;
 }
-/** Refused. `concurrent` = rows after the change's base (empty for `behind` and validation rejects). */
+/**
+ * Refused. `concurrent` names the rows after the change's base it clashed with; their bodies already reached the
+ * client on this connection (the server fans every row out before it answers the next push).
+ */
 export interface RejectMsg {
   type: "reject";
+  branchId: string;
   id: ChangeId | undefined;
   reason: RejectReason;
   head: number;
-  concurrent: ConfirmedChange[];
+  concurrent: { seq: number; id: ChangeId }[];
   epoch: number;
   confirmed?: ConfirmedId[];
   detail?: string;
@@ -162,6 +223,12 @@ export interface AdoptErrorMsg {
   branchId: string;
   reason: string;
 }
+export interface ForkedMsg {
+  type: "forked";
+  branchId: string;
+  from: string;
+  seq: number;
+}
 export interface UnknownBranchMsg {
   type: "unknownBranch";
   branchId: string;
@@ -173,11 +240,6 @@ export interface OverwrittenMsg {
   id: ChangeId;
   by: ChangeId;
   author: Actor;
-}
-/** FIFO hand-off contingency: the span is yours, push now. */
-export interface GoMsg {
-  type: "go";
-  branchId?: string;
 }
 export interface PresenceFanoutMsg {
   type: "presence";
@@ -197,8 +259,8 @@ export type ServerMessage =
   | StatusMsg
   | AdoptedMsg
   | AdoptErrorMsg
+  | ForkedMsg
   | UnknownBranchMsg
   | OverwrittenMsg
-  | GoMsg
   | PresenceFanoutMsg
   | ErrorMsg;
