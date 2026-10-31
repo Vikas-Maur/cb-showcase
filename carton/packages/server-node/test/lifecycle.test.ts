@@ -151,12 +151,64 @@ test("expired envelope blobs are swept by the host, room open or not, even when 
   const body = new TextEncoder().encode('{"type":"push"}');
   const hour = Math.floor(Date.now() / 3600_000);
   const oldKey = `messages/c/${hour - 30}/${await sha(body)}-00000001`, youngKey = `messages/c/${hour}/${await sha(body)}-00000002`;
-  for (const k of [oldKey, youngKey]) {
-    const r = await fetch(`${h.httpUrl}/api/projects/s/messages/${k}`, { method: "PUT", body, headers: { authorization: `Bearer ${token}` } });
-    assert.equal(r.status, 200);
-  }
+  // the young one through the upload route (which registers the project), the old one as left from 30 hours ago
+  const r = await fetch(`${h.httpUrl}/api/projects/s/messages/${youngKey}`, { method: "PUT", body, headers: { authorization: `Bearer ${token}` } });
+  assert.equal(r.status, 200);
+  await blobs.put(`projects/s/seq/${oldKey}`, body);
   await until(() => h.room("s") === undefined, "the room the upload opened idled out");
   assert.equal(await h.sweepEnvelopes(), 1);
   assert.equal(await blobs.head(`projects/s/seq/${oldKey}`), null, "the expired envelope is gone");
   assert.ok(await blobs.head(`projects/s/seq/${youngKey}`), "the young one stays");
+});
+
+test("an upload still writing when the host closes opens no room afterwards; close waits for it", async () => {
+  const inner = createMemoryBlobStore();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let blocked = 0;
+  const slow = new Proxy(inner, {
+    get(t, prop) {
+      if (prop === "put")
+        return async (...a: Parameters<BlobStore["put"]>) => {
+          blocked++;
+          await gate;
+          return t.put(...a);
+        };
+      const v = Reflect.get(t, prop);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as BlobStore;
+  const h = await startNodeHost({ dataDir: join(scratch("close-upload"), "d"), auth, secret: SECRET, blobs: slow, durability: "normal" });
+  const token = await tokenFor("w", "u");
+  const body = new TextEncoder().encode('{"type":"push"}');
+  const sha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", body))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  const key = `messages/c/${Math.floor(Date.now() / 3600_000)}/${sha}-00000003`;
+  const upload = fetch(`${h.httpUrl}/api/projects/u/messages/${key}`, { method: "PUT", body, headers: { authorization: `Bearer ${token}` } }).catch(() => null);
+  await until(() => blocked > 0, "the upload's write started");
+  let closed = false;
+  const closing = h.close().then(() => (closed = true));
+  await new Promise((r) => setTimeout(r, 200));
+  assert.equal(closed, false, "close resolved with an upload still writing");
+  release();
+  await closing;
+  await upload;
+  assert.equal(h.room("u"), undefined, "a room opened after close");
+});
+
+test("a project id too long for a readable room file name is still swept", async () => {
+  const blobs = createMemoryBlobStore();
+  const dataDir = join(scratch("sweep-long"), "d");
+  const h = await startNodeHost({ dataDir, auth, secret: SECRET, blobs, idleCloseMs: 20, durability: "normal" });
+  hosts.push(h);
+  const p = "P".repeat(128); // every capital escaped: its room file name has to be hashed
+  const token = await tokenFor("w", p);
+  const body = new TextEncoder().encode('{"type":"push"}');
+  const sha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", body))].map((x) => x.toString(16).padStart(2, "0")).join("");
+  const hour = Math.floor(Date.now() / 3600_000);
+  const r = await fetch(`${h.httpUrl}/api/projects/${p}/messages/messages/c/${hour}/${sha}-00000004`, { method: "PUT", body, headers: { authorization: `Bearer ${token}` } });
+  assert.equal(r.status, 200);
+  const oldKey = `projects/${p}/seq/messages/c/${hour - 30}/${sha}-00000005`;
+  await blobs.put(oldKey, body);
+  assert.equal(await h.sweepEnvelopes(), 1);
+  assert.equal(await blobs.head(oldKey), null);
 });
