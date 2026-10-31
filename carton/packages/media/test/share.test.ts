@@ -206,11 +206,19 @@ test("T1 files: the cap applies to the size hashed, a file that can't be opened 
     }
   }
 
-  // Cancelling with a reason that isn't named AbortError still cancels.
+  // Cancelling with a reason that isn't named AbortError still cancels: the hash fails with that very reason (as a
+  // hasher honouring the share's signal does), and the share must not take it for an unreadable file.
   const ac = new AbortController();
-  const slow = new HashScheduler({ hasher: nodeHasher, hash: async (t, o) => (ac.abort(new Error("cancelled by the user")), hashFile(t.key, { signal: o.signal })) });
+  const reason = new Error("cancelled by the user");
+  const cancelling = new HashScheduler({
+    hasher: nodeHasher,
+    hash: async () => {
+      ac.abort(reason);
+      throw reason;
+    },
+  });
   await assert.rejects(
-    shareMedia({ store, record: toMediaRecord({ id: "m9", kind: "video", fileName: "x.mp4", size: 0 }), local: { t1: { poster } }, policy: { originals: false }, encoders: [], workDir: s.dir, scheduler: slow, signal: ac.signal }),
-    /cancelled by the user/,
+    shareMedia({ store, record: toMediaRecord({ id: "m9", kind: "video", fileName: "x.mp4", size: 0 }), local: { t1: { poster } }, policy: { originals: false }, encoders: [], workDir: s.dir, scheduler: cancelling, signal: ac.signal }),
+    (e) => e === reason,
   );
 });
