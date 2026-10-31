@@ -61,6 +61,9 @@ anything.
   Windows, so it should work there, but that hasn't been run. An agent whose shell is cmd or PowerShell doesn't get it.
 - **`cb` on a shared cut waits up to 5 s (L14)** for the server, then answers `pending`; offline it answers `pending`
   at once, and conflicts come later as notices.
+- **`cb undo --turn` is all or nothing** (new). If anyone changed any of the same things after the turn, it undoes
+  nothing and answers `conflicts` with those cards, which aren't stored for later. §8 asks for the rest to land with
+  cards for the clashing parts.
 - **While an agent turn is running, the shared `timeline.tsx` (L16)** doesn't show others' changes until the agent
   prints again. The app always shows head.
 - **The shared `timeline.tsx` (L18):** two outside writers replacing each other's file within the watcher's latency can

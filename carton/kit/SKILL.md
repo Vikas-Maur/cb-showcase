@@ -13,8 +13,9 @@ The words, with git's in brackets (`cb` accepts both): version (commit), cut (br
 (merge conflict), credits (blame), history (log), restore (revert), compare (diff), published cut (tag).
 
 Every command takes the project's name, id or bundle path first, and `--json`. Without hooks (Codex, Gemini and other
-agents), add `--as <tool>/<task>` to every call, for example `--as codex/fix-captions`, so your edits are credited to
-you.
+agents), say who you are once, so your edits are credited to you: `export CARTON_AGENT=codex/fix-captions` in your
+shell (every `cb` call reads it), or `--as codex/fix-captions` on Carton's own commands (history, cut, fold, credits,
+restore, undo, compare, publish, conflicts, resolve).
 
 ## Read every write's result
 
@@ -24,7 +25,7 @@ Every `cb` write (`source apply`, `fold`, `restore`, `undo`, `resolve`…) answe
 |---|---|---|
 | `confirmed` | Saved, in order, for everyone | Go on |
 | `pending` | Saved on this machine, but the server hasn't answered yet (or you are offline). It syncs by itself | Go on. If it later clashes, you hear about it on your next `cb` call |
-| `conflicts` | The rest of your edit landed. Each card kept the other side's value | Read the cards (below). Never write your edit again to get around one |
+| `conflicts` | On a save: the rest of your edit landed, and each card kept the other side's value. On a fold or `undo --turn`: nothing was saved yet (see those sections) | Read the cards (below). Never write your edit again to get around one |
 | `rejected` | Nothing was saved: the edit broke a rule (a clip ending before it starts, a missing track) | Fix the edit and save again |
 
 The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the result is
@@ -78,7 +79,7 @@ cb fold <project> "Director's cut: tighter intro" --check
 ```
 Would fold in with 1 card:
   #1 timelineItems/middle/#time (group: same kind or incompatible) — Main cut: {"startTime":3,"endTime":7,"trimStart":0,"trimEnd":4} · Director's cut: tighter intro: {"startTime":2.5,"endTime":5,"trimStart":0,"trimEnd":2.5}
-Decide with `cb fold "Director's cut: tighter intro" --keep mine` (keep Main cut's) or `--keep theirs` (keep Director's cut: tighter intro's), or keep a clip out with `--reject timelineItems/middle`.
+Decide with `cb fold <project> 'Director'\''s cut: tighter intro' --keep mine` (keep Main cut's) or `--keep theirs` (keep Director's cut: tighter intro's), or keep a clip out with `--reject timelineItems/middle`.
 ```
 
 Tell the user what the fold would do. Fold only when they ask, or let them fold it in the app. A fold with cards
@@ -93,8 +94,10 @@ A clip's start, end, trims and speed are decided together, so a card about `#tim
 ## Undo, restore, compare
 
 - **Undo your own turn:** `cb undo <project> --turn <turn>` takes back every change of that turn, yours and your
-  subagents', as one new version. Changes others made since stay; where someone changed the same thing after you, that
-  part becomes a card instead. `cb history` shows `(turn <turn>)` next to each version. Plain `cb undo <project>` undoes the newest change of your undo group (the person's edits and the turns they
+  subagents', as one new version. Changes others made since stay. If someone changed any of the same things after
+  you, it undoes **nothing** and answers `conflicts` with those cards (they aren't kept for later): tell the user which
+  clips were changed since, and undo the rest by hand only if they ask. `cb history` shows `(turn <turn>)` next to each
+  version. Plain `cb undo <project>` undoes the newest change of your undo group (the person's edits and the turns they
   started).
 - **Restore** brings back an old version as a new version: `cb restore <project> main@12`. It also takes back everyone
   else's edits since then. To undo only your own work, use `undo --turn`.

@@ -19,14 +19,15 @@ Carton; swap the lines marked `← your …` for yours.
 | [`local.test.ts`](conformance/local.test.ts) | `leaseSuite`, `identitySuite`, `localSuite` | Store as the sync lease; your `IdentitySource`s | store-sqlite (two connections) | 12 pass |
 | [`cardboard.test.ts`](conformance/cardboard.test.ts) | `hostAdapterSuite`, `identitySourceSuite`, `cardboardSuite` | `HostAdapter` on your projects; identity from `CARDBOARD_ACTOR` | `cardboardAdapter`, Cardboard-made fixtures | 32 pass |
 | [`engine.test.ts`](conformance/engine.test.ts) | `engineSuite`, `fuzzSuite`, `cardRateSuite` | schema (fields, groups, validators) | `@carton/cardboard`'s `cardboardSchema` | 99 pass, 2 skip |
-| [`host.test.ts`](conformance/host.test.ts) | `sequencerHostSuite`, `transportSuite`, `hostSuite`, `liveSyncSuite`, `sequencerStorageSuite`, `authProviderSuite`, `httpApiSuite` | host, its SQL storage, transport, auth and HTTP API | server-node over WebSocket, HMAC auth | 44 pass |
+| [`host.test.ts`](conformance/host.test.ts) | `sequencerHostSuite`, `transportSuite`, `hostSuite`, `liveSyncSuite`, `sequencerStorageSuite`, `authProviderSuite`, `httpApiSuite` | host, its SQL storage, transport, auth and HTTP API | server-node over WebSocket, HMAC auth | 44 pass, 1 skip |
 | [`system.test.ts`](conformance/system.test.ts) | `systemSuite` | the sequencer's SQL storage, under the whole sync protocol | node:sqlite files | 107 pass (quick) |
 | [`blob.test.ts`](conformance/blob.test.ts) | `blobStoreSuite` | `BlobStore` (your bucket) | blob-fs; blob-memory with signed URLs | 43 pass, 1 skip |
 | [`media.test.ts`](conformance/media.test.ts) | `hasherSuite`, `mediaStoreSuite`, `proxyEncoderSuite`, `browserParitySuite` | `Hasher`, media over your BlobStore, `ProxyEncoder` | node:crypto, WebCrypto, blob-fs, ffmpeg | 16 pass, 6 skip |
 
 The results are from running each template here (Linux, Node 24.21; engine and system with their reduced "quick"
-counts). The skips: engine B8 and B11 are system-level and always skip; blob-fs has no signed URLs; the NVENC, QSV and
-AMF encoders skip without their GPU. `browserParitySuite` runs only when `PLAYWRIGHT` points at a Playwright install.
+counts). The skips: engine B8 and B11 are system-level and always skip; blob-fs has no signed URLs; the host template
+gives clients no blob store, so `liveSyncSuite`'s envelope test skips; the NVENC, QSV and AMF encoders skip without
+their GPU. `browserParitySuite` runs only when `PLAYWRIGHT` points at a Playwright install.
 
 ```sh
 cd carton
@@ -93,20 +94,22 @@ set to frame-accurate times, changes exactly that edit (`kit/test/samples.test.t
 
 ### Your host: `sequencerHostSuite`, `transportSuite`, `hostSuite`, `liveSyncSuite`
 All four take one `HostFixture`: your host's URL, the Transport clients use, an `AuthProvider` that can issue test
-tokens, a fresh device credential per `token()` call, and three optional hooks that turn on stricter checks:
-`restart()` (restart on the same storage), `rows()` (rows read and written) and `tokenFor()` (a token for exactly this
-credential). The template gives all three.
+tokens, a fresh device credential per `token()` call, and optional hooks that turn on stricter checks: `restart()`
+(restart on the same storage), `rows()` (rows read and written), `tokenFor()` (a token for exactly this credential)
+and `clientBlobs(token)` (the blob store a client uses for large messages). The template gives the first three.
 - `sequencerHostSuite` (9): a token the host didn't issue never reaches the sequencer; an accepted change reaches every
   subscriber before the pusher's ack; 20 pipelined pushes acked in order; a viewer's push refused; presence relayed
   and never stored; replica ids bound to the device credential; a duplicate acked with its first seq; the host adds no
   rows of its own (1 per edit, 2 per insert); everything survives a restart.
-- `transportSuite` (4): 500 messages whole and in order; a 300 KB change whole; close fires once and nothing comes
-  after; an aborted connect.
+- `transportSuite` (4): 200 pipelined changes acked and fanned out in order; a 300 KB change whole; close fires once
+  and nothing comes after; an aborted connect.
 - `hostSuite` (10): the protocol through your host: idempotent hand-off, row-before-ack fan-out, rejects and
   duplicates, replica-id claims, withdraw (H1), the 100-behind cap, restart safety, and two real sync clients trimming
   one clip at once and converging.
-- `liveSyncSuite` (1): two real replicas edit one cut at once, the same field included, and settle on one head. With
-  `restart`, the host restarts under them and they reconnect on their own (without it, that half is not run).
+- `liveSyncSuite` (2): two real replicas edit one cut at once, the same field included, and settle on one head. With
+  `restart`, the host restarts under them and they reconnect on their own (without it, that half is not run). With
+  `clientBlobs`, a change over 32 MiB travels as blob envelopes, up to the host and down to the other replica (it
+  skips without).
 
 ### Your SQL storage: `sequencerStorageSuite`, and `systemSuite`
 `sequencerStorageSuite` (6): parameters bound as data, BLOBs exact, transactions all-or-nothing, `WITHOUT ROWID`
