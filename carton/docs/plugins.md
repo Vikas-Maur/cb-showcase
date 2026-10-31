@@ -131,8 +131,15 @@ What follows from that:
 - Grants are never revoked. A project that drops a media record keeps access to bytes it once had.
 
 A sound team object can't be replaced from another project: a manifest must verify against its hash, and a write of
-`m/<hash>` over an object of the manifest's size is a no-op. A damaged object is removed only through the repair
-path, below. Proxy pointers (`px/`) stay per project, because they don't verify themselves.
+`m/<hash>` over an object of the manifest's size is a no-op. Bytes need their manifest first, and must be the
+manifest's size. A write that found nothing there is create-only, so if a teammate's upload lands first, even in
+another process, that copy stays. A damaged object is removed only through the repair path, below. Proxy pointers
+(`px/`) stay per project, because they don't verify themselves.
+
+Known limits, on hosts of many processes (Workers) only: a multipart complete can't be made conditional, and neither
+can the replacement of a wrong-sized object. So a teammate racing an upload there can leave bytes of the right size
+but the wrong content. Every reader verifies each leaf against the manifest, so those bytes are never used. They are
+reported, removed by the repair path and uploaded again. server-node serializes these writes per team.
 
 ## A new SequencerHost
 
@@ -186,7 +193,8 @@ every host runs the same function. The host:
    The host loads the manifest, which the hash itself verifies, re-reads that leaf, and removes the object only if
    its stored bytes really are wrong and it wasn't replaced meanwhile. The owner's next share then finds it missing
    and uploads it again. A report can't remove a sound object. Writes of that key through the API wait for a check
-   in progress, and the check waits for them, within one process. On a host of many processes (Workers) a write
+   in progress, and the check waits for them, within one process. The lock is per store scope: a team's media, which
+   its projects share, or one project's. Another project's write of the same hash doesn't wait. On a host of many processes (Workers) a write
    served by another one can still land between the check and the delete, since BlobStore has no conditional
    delete; that write is undone, and the uploader's next share uploads it again.
 
