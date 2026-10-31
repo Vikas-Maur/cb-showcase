@@ -86,6 +86,10 @@ export const words = {
   differ: (shots: number, s: number, total: number) =>
     shots === 0 ? "No shots differ" : `${plural(shots, "shot", "shots")} / ${seconds(s)} of ${seconds(total)} differ`,
   current: "Current",
+  factWhen: "When",
+  factWho: "Who",
+  factClips: "Clips",
+  factLength: "Length",
 
   // Credits
   creditsFor: (clip: string) => `Credits for ${clip}`,
