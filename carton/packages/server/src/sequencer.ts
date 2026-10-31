@@ -802,17 +802,47 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return true;
   }
 
+  // The latest presence a connection had dropped by its cap, relayed when its bucket refills: a burst (updates that
+  // queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position or its
+  // `state: null` always reaches the others.
+  const presenceTrailing = new Map<string, { branchId: string; msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>();
+  function clearTrailing(id: string): void {
+    const t = presenceTrailing.get(id);
+    if (t) clearTimeout(t.timer);
+    presenceTrailing.delete(id);
+  }
+
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
     if (!stateOf(c).subs.includes(m.branchId)) return;
-    if (!presenceAllowed(c)) {
-      stats.presenceDropped++;
-      return;
-    }
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
+    if (!presenceAllowed(c)) {
+      stats.presenceDropped++;
+      const waiting = presenceTrailing.get(c.id);
+      if (waiting) {
+        waiting.branchId = m.branchId;
+        waiting.msg = msg;
+        return;
+      }
+      const b = presenceBuckets.get(c.id)!;
+      const ms = Math.max(1, Math.ceil(((1 - b.tokens) / PRESENCE_PER_SEC) * 1000));
+      const entry = {
+        branchId: m.branchId,
+        msg,
+        timer: setTimeout(() => {
+          presenceTrailing.delete(c.id);
+          if (!conns.has(c.id) || !stateOf(c).subs.includes(entry.branchId)) return;
+          if (presenceAllowed(c)) fanout(entry.branchId, entry.msg, c.id);
+        }, ms),
+      };
+      (entry.timer as { unref?: () => void }).unref?.();
+      presenceTrailing.set(c.id, entry);
+      return;
+    }
+    clearTrailing(c.id); // this newer state supersedes the waiting one
     fanout(m.branchId, msg, c.id);
   }
 
@@ -870,6 +900,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       conns.delete(conn.id);
       outboxes.delete(conn.id);
       presenceBuckets.delete(conn.id);
+      clearTrailing(conn.id);
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
