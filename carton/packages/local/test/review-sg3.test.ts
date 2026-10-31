@@ -131,3 +131,25 @@ test("SG3-3: a served switch whose materializer call failed is told again at the
     await s.close();
   }
 });
+
+test("request 9: a handle's .cbproj carries a version another process exported after this handle loaded", { todo: "foundation-core request 9 (local-cli notes)" }, async () => {
+  const path = join(mkdtempSync(join(scratch(), "sg3-req9-")), "carton.db");
+  const s = await openSqliteStore(path), os = await openSqliteStore(path);
+  // the app's handle, open all along
+  const app = await Carton.open({ adapter, store: s, actor, init: { doc: doc0() } });
+  const cb = await Carton.open({ adapter, store: os, actor });
+  try {
+    assert.equal((await app.commit({ ops: [set("c1", "opacity", 0.7)] })).status, "confirmed");
+    // a `cb` process sends a .cbproj of version 1: a lineage point from now on
+    const sent = await cb.exportShallow({ to: "Bob" });
+    assert.equal(sent.head, `${app.cut}@1`);
+    assert.equal((await app.commit({ ops: [set("c3", "opacity", 0.2)] })).status, "confirmed");
+    const pkg = await app.exportShallow({ to: "Carol" });
+    assert.ok(pkg.nodes.some((n) => n.seq === 1), `the app's .cbproj carries the version the cb sent: ${JSON.stringify(pkg.nodes.map((n) => [n.seq, n.kinds]))}`);
+  } finally {
+    await cb.close();
+    await app.close();
+    await os.close();
+    await s.close();
+  }
+});
