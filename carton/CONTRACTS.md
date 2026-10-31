@@ -95,7 +95,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
   client's message limit is refused before it is sent (`rejected` / "too large", its author told; the edits after it
   go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
-  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. A pending edit survives a
+  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. An envelope's `sha256` is
+  the SHA-256 of its bytes (WebCrypto where there is one, else the portable hash: the same digest). `presence()`
+  goes out at most 10 times a second (`PRESENCE_PER_SEC`), coalesced: the latest state always arrives, and one
+  still waiting when the handle closes (a leave, `null`) is sent before the close; the relay keeps none. A pending edit survives a
   restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
   when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. Each stored edit keeps its
   causal base (the confirmed seq and the pending edits it was made on) and is rebuilt on it and rebased onto what was

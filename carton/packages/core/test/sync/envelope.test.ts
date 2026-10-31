@@ -17,6 +17,7 @@ import {
   type EnvelopeMsg,
 } from "../../src/sync/index.ts";
 import type { BlobInfo, BlobStore } from "../../src/plugins.ts";
+import { portableSha256Hex, sha256Hex } from "../../src/engine/hash.ts";
 
 const enc = new TextEncoder();
 const utf8 = (v: unknown) => enc.encode(JSON.stringify(v)).byteLength;
@@ -114,6 +115,39 @@ test("envelope: unseal refuses a foreign key, a wrong size, a wrong digest, a mi
   await assert.rejects(open(env.ref), /missing/);
   const inner = await seal(oversized({ type: "blob", ref: env.ref, pad: "x".repeat(3000) }, 1024)!, store, (sha) => serverEnvelopeKey(sha, Date.now()));
   await assert.rejects(open(inner.ref), /envelope inside an envelope/);
+});
+
+test("envelope: the WebCrypto digest is the old portable one, of any text; an old envelope opens; without crypto.subtle the portable hash (owner check of 1e30e70)", async () => {
+  const store = blobs();
+  const texts = ["x".repeat(3000), "ü€".repeat(2000), "🎬 cut ".repeat(800), "lone \ud800 surrogate ".repeat(300), "mixed ✂️ é ".repeat(200_000)];
+  const sealAll = async () => {
+    const out: string[] = [];
+    for (const s of texts) {
+      const big = oversized({ type: "push", s }, 1024)!;
+      const env = await seal(big, store, (sha) => serverEnvelopeKey(sha, Date.now()));
+      assert.equal(env.ref.sha256, sha256Hex(big.text), "the digest the old code gave this text");
+      assert.equal(env.ref.sha256, portableSha256Hex(big.text));
+      assert.deepEqual(await unseal(env.ref, store, { from: "server", maxBytes: 1 << 24 }), JSON.parse(big.text));
+      out.push(env.ref.sha256);
+    }
+    return out;
+  };
+  const native = await sealAll();
+  // an envelope sealed by the old code (the digest of the text) opens with the new one
+  const old = oversized({ type: "push", s: "ä".repeat(5000) }, 1024)!;
+  const key = serverEnvelopeKey(sha256Hex(old.text), Date.now());
+  await store.put(key, old.bytes);
+  assert.deepEqual(await unseal({ key, size: old.bytes.byteLength, sha256: sha256Hex(old.text) }, store, { from: "server", maxBytes: 1 << 20 }), JSON.parse(old.text));
+  // a page with no WebCrypto (an insecure context): the same digests, the portable way
+  const desc = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  Object.defineProperty(globalThis, "crypto", { value: undefined, configurable: true, writable: true });
+  try {
+    assert.equal((globalThis as { crypto?: unknown }).crypto, undefined);
+    assert.deepEqual(await sealAll(), native);
+  } finally {
+    if (desc) Object.defineProperty(globalThis, "crypto", desc);
+  }
+  assert.ok(globalThis.crypto?.subtle, "restored");
 });
 
 test("envelope: blobs expire by hour bucket (server's after 2 hours, a client's after a day); other keys never", () => {
