@@ -101,8 +101,8 @@ export interface SequencerOptions {
   auth: AuthProvider;
   /** Keyframes, archived change segments and bodies over 1 MB (R2 in production). Without it they stay in SQL. */
   blobs?: BlobStore;
-  /** The schema's timeline (which collection holds items, their field names). Default: Cardboard's. */
-  timeline?: TimelineConfig;
+  /** The schema's timeline (which collection holds items, their field names). Default: Cardboard's; null: none. */
+  timeline?: TimelineConfig | null;
   /** The field group a field belongs to (`"time"`). Default: the timeline's time group. */
   groupOf?: (collection: string, field: string) => string | undefined;
   /** Collections whose records' existence the sequencer tracks. Default: the timeline's lanes and items. */
@@ -163,18 +163,20 @@ const ridOf = (id: string) => {
 
 export function createSequencer(opts: SequencerOptions): Sequencer {
   const controls = opts.controls ?? {};
-  const tl = opts.timeline ?? CARDBOARD_TIMELINE;
+  // omitted: Cardboard's timeline; null: the editor's schema has none (spans and tracks are then never checked)
+  const timeline = opts.timeline === undefined ? CARDBOARD_TIMELINE : opts.timeline;
+  const tl = timeline ?? rules.NO_TIMELINE;
   const K = opts.maxBehind ?? rules.DEFAULT_MAX_BEHIND;
   const KF = opts.keyframeEvery ?? 64;
   const catchup = opts.catchupLimit ?? 1000;
   const maxInline = opts.maxInlineBytes ?? 1 << 20;
   const clock = opts.clock ?? Date.now;
-  const collections = opts.collections ?? [tl.lanes, tl.collection];
+  const collections = opts.collections ?? (timeline ? [tl.lanes, tl.collection] : []);
   const cfg: rules.RulesConfig = {
-    timeline: tl,
+    timeline,
     maxBehind: K,
     keying: controls.keying ?? "v3-spans",
-    groupOf: opts.groupOf ?? rules.timeGroupOf(tl),
+    groupOf: opts.groupOf ?? rules.timeGroupOf(timeline),
     controls,
   };
   const tables = new Tables(opts.storage, { records: controls.records ?? "history" });

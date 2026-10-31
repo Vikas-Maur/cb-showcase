@@ -9,7 +9,7 @@ import type { Schema } from "../schema.ts";
 import type { Actor, Change, ConfirmedChange, Declaration, Doc, Notice, Overlap, Rec, Span } from "../types.ts";
 import type { RejectReason } from "../sync/messages.ts";
 import { apply, fork, getIn, pathKey } from "../engine/index.ts";
-import { evaluatePush, isStructural, type RulesConfig, type SequencerView } from "./evaluate.ts";
+import { evaluatePush, isStructural, NO_TIMELINE, type RulesConfig, type SequencerView } from "./evaluate.ts";
 import { storedPaths } from "./overlap.ts";
 import type { TailRow } from "./types.ts";
 
@@ -35,6 +35,7 @@ export {
   type RecordWrite,
   type Verdict,
   DEFAULT_MAX_BEHIND,
+  NO_TIMELINE,
   evaluatePush,
   isStructural,
   spansCover,
@@ -96,9 +97,8 @@ const nameOf = (a: Actor | null | undefined) => a?.name ?? a?.id ?? "someone";
 
 /** The rule's configuration for a schema: its timeline and its field groups. */
 export function rulesFor(schema: Schema, extra: Partial<RulesConfig> = {}): RulesConfig {
-  if (!schema.timeline) throw new Error("sequencer: the schema has no timeline config");
   return {
-    timeline: schema.timeline,
+    timeline: schema.timeline ?? null,
     groupOf: (coll, field) => schema.collections[coll]?.groupOf.get(field)?.name,
     ...extra,
   };
@@ -106,7 +106,7 @@ export function rulesFor(schema: Schema, extra: Partial<RulesConfig> = {}): Rule
 
 export function createLocalSequencer(doc: Doc, schema: Schema, opts: Partial<RulesConfig> = {}): LocalSequencer {
   const cfg = rulesFor(schema, opts);
-  const tl = cfg.timeline;
+  const tl = cfg.timeline ?? NO_TIMELINE;
   let head = fork(doc, schema);
   const log: ConfirmedChange[] = [];
   const tails: TailRow[] = [];

@@ -36,7 +36,8 @@ export interface SequencerView {
 }
 
 export interface RulesConfig {
-  timeline: TimelineConfig;
+  /** null: the schema has no timeline, so there are no spans, tracks or timing fields to check (paths and reads are). */
+  timeline: TimelineConfig | null;
   /** K: how far behind head a base may be (§6.3). */
   maxBehind?: number;
   keying?: Keying;
@@ -72,6 +73,12 @@ export type Verdict =
   | { kind: "reject"; reason: RejectReason; detail?: string };
 
 export const DEFAULT_MAX_BEHIND = 100;
+
+/**
+ * Stands in for a missing timeline: collection names no schema can have (a NUL byte), so every span, track and
+ * timing check finds nothing to check and the rest of the rule runs unchanged (foundation review finding 15).
+ */
+export const NO_TIMELINE: TimelineConfig = { collection: "\u0000items", lanes: "\u0000lanes", lane: "\u0000lane", start: "\u0000s", end: "\u0000e", source: "\u0000ts", sourceEnd: "\u0000te", speed: "\u0000v" };
 const EPS = 1e-9;
 
 export const pathKeyOf = (path: readonly (string | number)[]): string => path.map((s) => escapeSegment(String(s))).join("/");
@@ -82,7 +89,8 @@ export function timingFields(tl: TimelineConfig): Set<string> {
 }
 
 /** The time group of the timeline collection (§4.1): `{start, end, source, sourceEnd, speed}`. */
-export function timeGroupOf(tl: TimelineConfig): (coll: string, field: string) => string | undefined {
+export function timeGroupOf(tl: TimelineConfig | null): (coll: string, field: string) => string | undefined {
+  if (!tl) return () => undefined;
   const fields = new Set([tl.start, tl.end, tl.source, tl.sourceEnd, tl.speed]);
   return (coll, field) => (coll === tl.collection && fields.has(field) ? "time" : undefined);
 }
@@ -96,7 +104,8 @@ const hasMaps = (intent: unknown): boolean => {
  * Structural, computed by the sequencer from the change itself, never trusted from the client: an item insert or
  * remove, a track change, or a remap (an intent with maps, or a first-class `remap` op).
  */
-export function isStructural(ops: readonly Op[], intent: unknown, tl: TimelineConfig): boolean {
+export function isStructural(ops: readonly Op[], intent: unknown, timeline: TimelineConfig | null): boolean {
+  const tl = timeline ?? NO_TIMELINE;
   if (hasMaps(intent)) return true;
   for (const op of ops) {
     if (op.op === "remap") return true;
@@ -155,7 +164,8 @@ function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, fiel
  * the change's base; the overlap test has already rejected any concurrent change to it (H4), so the newest records
  * row at head is that track.
  */
-export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig): boolean {
+export function spansCover(view: SequencerView, ch: Pushed, timeline: TimelineConfig | null): boolean {
+  const tl = timeline ?? NO_TIMELINE;
   const spans: readonly Span[] = ch.spans;
   const hiOf = (s: Span) => s.hi ?? Infinity;
   const on = (track: string | undefined, x?: number) =>
@@ -217,7 +227,7 @@ export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig):
 
 /** Judge one push against a branch. Pure: the caller appends the row and the record writes on "accept". */
 export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig): Verdict {
-  const tl = cfg.timeline;
+  const tl = cfg.timeline ?? NO_TIMELINE;
   const K = cfg.maxBehind ?? DEFAULT_MAX_BEHIND;
   const keying = cfg.keying ?? "v3-spans";
   const controls = cfg.controls ?? {};

@@ -78,3 +78,17 @@ test("local sequencer: a hard-validator failure is rejected 'invalid'; a set on 
   const late = s.push(mk([set("c0", "name", "late")], { base: { seq: 1, pending: [] } }));
   assert.ok(late.ok && late.notices.some((x) => x.kind === "lost-to-delete"));
 });
+
+test("a schema with no timeline: the local sequencer still orders changes by paths and reads (foundation review finding 15)", { skip }, () => {
+  const plain = defineSchema({ collections: { notes: { key: "id" } } });
+  const s = createLocalSequencer({ notes: [{ id: "n1", text: "a" }] } as unknown as Doc, plain);
+  const ch = (id: string, value: string, base = 0): Change => ({
+    id, hash: "h", author: { kind: "human", id: "a" }, branchId: "b", base: { seq: base, pending: [] },
+    ops: [{ op: "set", path: ["notes", "n1", "text"], value }], intent: null, kinds: null, policy: "merge", at: 0,
+    paths: ["notes/n1/text"], reads: ["notes/n1"], spans: [], trackOrder: [],
+  });
+  assert.ok(s.push(ch("x.1", "b")).ok);
+  const clash = s.push(ch("y.1", "c"));
+  assert.ok(!clash.ok && clash.reason === "overlap", "a concurrent edit of the same field still overlaps");
+  assert.ok(s.push(ch("y.1", "c", 1)).ok, "rebased onto head, it is accepted");
+});
