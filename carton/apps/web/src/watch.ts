@@ -71,10 +71,14 @@ async function main(): Promise<void> {
   const session = (await Session.resume({ baseUrl, projectId: link.projectId, keys, slot: `watch.${link.cut}` })) ?? (await Session.join({ baseUrl, projectId: link.projectId, invite: link.invite, account: "viewer", keys, slot: `watch.${link.cut}` }));
   const descriptor = await readDescriptor(session);
   const images = new ImageCache((key) => readBlob(session, key));
-  const media = await startMedia({ baseUrl, projectId: link.projectId, token: () => session.token() });
+  const media = startMedia({ baseUrl, projectId: link.projectId, token: () => session.token() });
+  // media URLs only once the Service Worker controls the page (review R2-2): posters until then
+  let mediaReady = false;
+  const mediaUrl = (hash: string) => (mediaReady ? media.url(hash) : "");
   session.onToken(() => media.refreshToken());
   const state: State = { doc: null, newer: 0, error: null };
-  const render = () => root.render(h(WatchPage, { descriptor, state: { ...state }, images, mediaUrl: media.url }));
+  const render = () => root.render(h(WatchPage, { descriptor, state: { ...state }, images, mediaUrl }));
+  media.ready.then(() => ((mediaReady = true), render()), () => {});
   const common = { transport: webSocketTransport(), url: session.wsUrl, token: () => session.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion, onError: (why: string) => ((state.error = why), render()) };
   // the Published cut alone (the link's token reads nothing else); its welcome counts the source's newer versions
   new Follower({

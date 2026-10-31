@@ -49,6 +49,8 @@ export interface AppProps {
   presence: PresenceSender;
   images: ImageCache;
   mediaUrl: (hash: string) => string;
+  /** The media Service Worker controls the page: until then the player shows posters, never a /media/ URL. */
+  mediaReady: { subscribe: (l: () => void) => () => void; get: () => boolean };
   /** Read-only preview doc (§9 R2-16), set by fromCarton's onPreview. */
   previewDoc: { subscribe: (l: () => void) => () => void; get: () => Doc | null };
   /** Another tab of this person holds the push lock. */
@@ -67,6 +69,8 @@ export function App(p: AppProps) {
     () => p.live.doc,
   );
   const previewDoc = useStore(p.previewDoc);
+  const mediaReady = useStore(p.mediaReady);
+  const mediaUrl = useCallback((hash: string) => (mediaReady ? p.mediaUrl(hash) : ""), [mediaReady, p.mediaUrl]);
   const preview = usePreview();
   const waiting = useStore(p.waiting);
   useSyncExternalStore(
@@ -118,7 +122,7 @@ export function App(p: AppProps) {
           "div",
           { className: "cb-viewer" },
           h(PreviewBanner, { className: "cb-preview-banner" }),
-          h(Player, { doc, media: p.media, time, playing, onTime: setTime, onPause: () => setPlaying(false), mediaUrl: p.mediaUrl, poster: (k: string) => p.images.get(k) }),
+          h(Player, { doc, media: p.media, time, playing, onTime: setTime, onPause: () => setPlaying(false), mediaUrl, poster: (k: string) => p.images.get(k) }),
           h(
             "div",
             { className: "cb-transport" },

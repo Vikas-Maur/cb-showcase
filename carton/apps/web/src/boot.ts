@@ -45,7 +45,11 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const live = await LiveDoc.open(carton);
   const presence = new PresenceSender((s) => carton.sync?.presence(s));
   const images = new ImageCache((key) => readBlob(session, key));
-  const media = await startMedia({ baseUrl, projectId: session.projectId, token: () => session.token() });
+  const media = startMedia({ baseUrl, projectId: session.projectId, token: () => session.token() });
+  // media URLs only once the Service Worker controls this page: a <video> asking before then goes to the network,
+  // gets nothing, and stays broken after the worker takes over (review R2-2). Editing doesn't wait for it.
+  const mediaReady = cell(false);
+  media.ready.then(() => mediaReady.set(true), () => {});
   session.onToken(() => media.refreshToken());
   const previewDoc = cell<Doc | null>(null);
 
@@ -132,7 +136,7 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
     h(
       CartonProvider,
       { ui },
-      h(App, { carton, ui, live, session, me, name, media: descriptor.media, presence, images, mediaUrl: media.url, previewDoc, waiting, setOffline, isOffline: () => offline }),
+      h(App, { carton, ui, live, session, me, name, media: descriptor.media, presence, images, mediaUrl: media.url, mediaReady, previewDoc, waiting, setOffline, isOffline: () => offline }),
     ),
   );
   presence.active("Joined");

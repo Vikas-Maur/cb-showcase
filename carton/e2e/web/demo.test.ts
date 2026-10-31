@@ -146,9 +146,28 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       const bobCtx = await newPerson(browser, vdir("bob"));
       contexts.push(aliceCtx, bobCtx);
 
+      // A slow Service Worker install on Alice's first load: the player must not ask for /media/ before the worker
+      // controls the page, or the video would stay broken after it does (review R2-2)
+      const mediaFromNetwork: string[] = [];
+      await aliceCtx.route("**/sw.js", async (route: { continue(): Promise<void> }) => {
+        await new Promise((r) => setTimeout(r, 1500));
+        await route.continue();
+      });
+      aliceCtx.on("response", (r: { url(): string; fromServiceWorker(): boolean }) => {
+        if (new URL(r.url()).pathname.startsWith("/media/") && !r.fromServiceWorker()) mediaFromNetwork.push(r.url());
+      });
+
       // 1. Alice shares, Bob joins
       const alice = await joinAs(aliceCtx, seed.alice, "Alice");
       pages.push(["alice", alice]);
+      if (!fakeMedia) {
+        // the preview loads its clip through the worker once it is in control
+        await alice.waitForFunction(() => {
+          const v = document.querySelector<HTMLVideoElement>('[data-testid="player"] video');
+          return !!v && !!v.getAttribute("src") && v.readyState >= 2;
+        }, null, { timeout: 30_000 });
+        assert.deepEqual(mediaFromNetwork, [], "no media request bypassed the Service Worker");
+      }
       await alice.getByTestId("invite").click();
       const link = await alice.getByTestId("invite-link").inputValue();
       assert.match(link, /#join=/);
