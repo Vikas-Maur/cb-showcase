@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, safePart } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi } from "@carton/react";
 
@@ -576,7 +576,17 @@ export const internals = {
     const lc = await open(bundlePath), to = keyOf(actorOf(actorId));
     await lc.store.write([{ table: "notices", key: [to, Date.now(), 0, "old"], value: { to, kind: "late-conflict", text: "kept", cards, at: Date.now() } }]);
   },
-  withInstallLock, sweep, readJournal, writeJournal, install, busy, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
+  withInstallLock, sweep, readJournal, writeJournal, install, busy, sameCard, markSeen, sha,
+  headProject: async (bundlePath) => { const lc = await open(bundlePath); return lc ? materializeProject((await lc.carton.head()).doc, readProject(bundlePath)) : null; },
+  // The helper @carton/local starts as a project's lease holder: the files it runs and its spawn. And what this process
+  // opened carton.db with, for comparing a helper's open to it.
+  helper: { entry: helperEntry(), factory: defaultFactory(), spawn: spawnHelper },
+  local: async (bundlePath) => {
+    const lc = await open(bundlePath);
+    if (!lc) return null;
+    const head = await lc.carton.head();
+    return { dbPath: lc.dbPath, schema: sha(canon(lc.carton.schema)), ref: canon(head.ref), doc: sha(canon(head.doc)) };
+  }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {

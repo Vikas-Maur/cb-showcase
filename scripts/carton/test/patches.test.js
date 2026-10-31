@@ -199,6 +199,49 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   `], { env: env(), encoding: "utf8", timeout: 60_000 });
   assert.deepEqual(JSON.parse(ext.stdout.trim().split("\n").pop()), { hello: "open", ping: "pong", bad: false, heard: ["live:Demo.cardboard", "late:Demo.cardboard"] }, ext.stderr);
   assert.match(ext.stderr, /an extension failed to start: broken/);
+  // Every helper Carton starts for a project (a lease holder, for a shared cut) opens carton.db with the worker's own
+  // adapter and schema: openLocal hands it this bundle's helper-main.js and factory.js; that factory opens the worker's
+  // carton.db to the same schema and head; the real helper opens it and exits clean; and from the library worker (an
+  // Electron utility process, where the binary is the app's) its spawn runs the binary as Node.
+  const helper = spawnSync(process.execPath, ["-e", `
+    const fs = require("fs"), path = require("path"), crypto = require("crypto"), cp = require("child_process"), url = require("url");
+    const dir = ${JSON.stringify(path.join(out, "carton"))}, bundle = ${JSON.stringify(b)};
+    const { internals: I } = require(path.join(dir, "carton-node.cjs"));
+    const canon = (v) => JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x));
+    const sha = (t) => crypto.createHash("sha256").update(t).digest("hex");
+    (async () => {
+      const r = {}, w = await I.local(bundle);
+      r.paths = [path.relative(dir, I.helper.entry), path.relative(dir, I.helper.factory)];
+      const { createHolderEngine } = await import(url.pathToFileURL(I.helper.factory).href);
+      const h = await createHolderEngine({ dbPath: w.dbPath, config: { projectDir: bundle } });
+      const head = await h.engine.carton.head();
+      r.same = { schema: sha(canon(h.engine.carton.schema)) === w.schema, ref: canon(head.ref) === w.ref, doc: sha(canon(head.doc)) === w.doc };
+      await h.close();
+      await h.store.close();
+      // The real helper, as spawnHelper starts it (here not detached, with a short idle time).
+      const run = cp.spawnSync(process.execPath, [I.helper.entry, "--db", w.dbPath, "--seen", "-", "--factory", I.helper.factory, "--config", JSON.stringify({ projectDir: bundle }), "--idle-ms", "300"], { timeout: 30000 });
+      const log = (() => { try { return fs.readFileSync(path.join(path.dirname(w.dbPath), "helper.log"), "utf8"); } catch { return ""; } })();
+      const mine = log.split("\\n").filter(Boolean).map((l) => JSON.parse(l)).filter((e) => e.pid === run.pid);
+      r.helper = { status: run.status, errors: mine.filter((e) => e.type === "error").map((e) => String(e.error).split("\\n")[0]), lease: mine.some((e) => e.type === "lease") };
+      // In the worker: the app's binary, without ELECTRON_RUN_AS_NODE.
+      const real = cp.spawn;
+      let seen = null;
+      process.versions.electron = "39.0.0";
+      delete process.env.ELECTRON_RUN_AS_NODE;
+      cp.spawn = (cmd, args, o) => ((seen = { cmd, args, env: o.env }), { unref() {}, pid: 0 });
+      I.helper.spawn({ dbPath: w.dbPath, factory: I.helper.factory });
+      cp.spawn = real;
+      r.worker = { asNode: seen?.env?.ELECTRON_RUN_AS_NODE === "1", entry: seen?.args?.[0] === I.helper.entry, factory: seen?.args?.[seen.args.indexOf("--factory") + 1] === I.helper.factory };
+      console.log(JSON.stringify(r));
+      process.exit(0);
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `], { env: env(), encoding: "utf8", timeout: 120_000 });
+  assert.deepEqual(JSON.parse(helper.stdout.trim().split("\n").pop() || "{}"), {
+    paths: ["helper-main.js", "factory.js"],
+    same: { schema: true, ref: true, doc: true },
+    helper: { status: 0, errors: [], lease: true },
+    worker: { asNode: true, entry: true, factory: true },
+  }, helper.stderr);
   // History: every version, with who made it down to the subagent.
   const by = json(null, "history", "Demo").versions.map((v) => v.by?.id ?? null);
   assert.deepEqual(by.slice(0, 2), ["director/chat1/turn2/sub-Explore-a1", "director/chat1/turn1"]);
