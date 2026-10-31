@@ -1059,46 +1059,86 @@ class CartonImpl implements Carton {
     if (lateNotice) this.#emit({ type: "notice", notice: lateNotice });
   }
   async #commitShared(cut: string, input: CommitInput, author: Actor, id: ChangeId, history?: HistoryFields): Promise<CommitResult> {
+    return (await this.#commitSharedBatch(cut, [{ input, author, id, ...(history ? { history } : {}) }]))[0]!;
+  }
+  /**
+   * Writes on a shared cut, queued as one: each is merged onto the optimistic head as it will stand when it is pushed
+   * (the batch's earlier writes included); all are worked out before any is queued, then queued in one synchronous step
+   * (pushed together) and kept in the store in one batch. So a fold-some's fold never goes without its inverse, and a
+   * write planned on an older head (`base`) meets the rows that arrived since in merge3, never overwrites them.
+   * A Published cut is read-only here too, whichever call got here (commit, fold, undo, restore, revert).
+   */
+  async #commitSharedBatch(cut: string, entries: { input: CommitInput; author: Actor; id: ChangeId; history?: HistoryFields }[]): Promise<CommitResult[]> {
+    if (this.#h.cut(cut)?.kind === "published") throw new Error("Carton: a Published cut is read-only; publish again to update it");
     const sc = await this.#ensureShared(cut);
     const q = sc.queue;
     await this.#refresh(cut);
-    await this.#noopOf(id);
+    for (const e of entries) await this.#noopOf(e.id);
     this.#feedQueue(cut);
-    const done = this.#h.confirmedById(id);
-    if (done) return done;
-    if (q.pending(cut).some((p) => p.id === id)) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
-    const opt = q.optimistic(cut).doc;
-    let ops: Op[];
-    // the cards `choices` decided merging a stale base onto the optimistic head (written with the queued row)
-    let resolved: ConflictCard[] = [];
-    if (input.base === undefined) ops = input.ops ?? E.diff(opt, input.doc!, this.schema);
-    else {
-      // a stale base (an agent's header): merge it onto the optimistic state here, as a local cut's commit would
-      const b = input.base;
-      const baseDoc = typeof b === "object" && "baseDoc" in b ? b.baseDoc : this.#h.resolve(b as StateRef | string).doc;
-      const mine = input.doc ?? E.apply(E.fork(baseDoc, this.schema), input.ops ?? [], this.schema);
-      if (E.hashDoc(baseDoc, this.schema) === E.hashDoc(opt, this.schema)) ops = E.diff(opt, mine, this.schema);
-      else {
-        const m = E.merge3(baseDoc, opt, mine, this.schema, { ...(input.intent?.maps ? { remaps: { theirs: { maps: input.intent.maps } } } : {}), kinds: { theirs: input.kinds ?? {} }, rekeys: "ours" });
-        const unseen = input.unchosen === "prefer" ? [] : unseenCards(m.conflicts, input.choices);
-        if (m.conflicts.length && (!input.choices || unseen.length)) return { status: "conflicts", cards: m.conflicts, ref: this.#sharedRef(cut), merge: m, ...(input.choices ? { unseen: unseen.map((c) => c.path) } : {}) };
-        ops = E.diff(opt, m.conflicts.length ? E.resolve(m, input.choices!) : m.doc, this.schema);
-        if (m.conflicts.length) resolved = m.conflicts;
+    // from here to the queue commits there is no await: no row can arrive between reading the head and queuing on it
+    const out: (CommitResult | null)[] = [];
+    const todo: { e: (typeof entries)[number]; ops: Op[]; resolved: ConflictCard[]; at: number; hist?: HistoryFields }[] = [];
+    let opt = q.optimistic(cut).doc;
+    for (const e of entries) {
+      const { input, id } = e;
+      const done = this.#h.confirmedById(id);
+      if (done) {
+        out.push(done);
+        continue;
       }
+      if (q.pending(cut).some((p) => p.id === id)) {
+        out.push({ status: "pending", id, ref: this.#sharedRef(cut), notices: [] });
+        continue;
+      }
+      let ops: Op[];
+      // the cards `choices` decided merging a stale base onto the optimistic head (written with the queued row)
+      let resolved: ConflictCard[] = [];
+      if (input.base === undefined) ops = input.ops ?? E.diff(opt, input.doc!, this.schema);
+      else {
+        // a stale base (an agent's header, a held state, a plan made on the confirmed head): merge it onto the
+        // optimistic state here, as a local cut's commit would
+        const b = input.base;
+        const baseDoc = typeof b === "object" && "baseDoc" in b ? b.baseDoc : this.#h.resolve(b as StateRef | string).doc;
+        const mine = input.doc ?? E.apply(E.fork(baseDoc, this.schema), input.ops ?? [], this.schema);
+        if (E.hashDoc(baseDoc, this.schema) === E.hashDoc(opt, this.schema)) ops = E.diff(opt, mine, this.schema);
+        else {
+          const m = E.merge3(baseDoc, opt, mine, this.schema, { ...(input.intent?.maps ? { remaps: { theirs: { maps: input.intent.maps } } } : {}), kinds: { theirs: input.kinds ?? {} }, rekeys: "ours" });
+          const unseen = input.unchosen === "prefer" ? [] : unseenCards(m.conflicts, input.choices);
+          // a card stops the whole batch before anything is queued
+          if (m.conflicts.length && (!input.choices || unseen.length)) return entries.map(() => ({ status: "conflicts", cards: m.conflicts, ref: this.#sharedRef(cut), merge: m, ...(input.choices ? { unseen: unseen.map((c) => c.path) } : {}) }));
+          ops = E.diff(opt, m.conflicts.length ? E.resolve(m, input.choices!) : m.doc, this.schema);
+          if (m.conflicts.length) resolved = m.conflicts;
+        }
+      }
+      const hist: HistoryFields | undefined = e.history ?? (input.name ? { name: input.name } : undefined);
+      todo.push({ e, ops, resolved, at: this.#opts.clock?.() ?? Date.now(), ...(hist ? { hist } : {}) });
+      out.push(null);
+      if (entries.length > 1) opt = E.apply(E.fork(opt, this.schema), ops, this.schema);
     }
-    const at = this.#opts.clock?.() ?? Date.now();
-    const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
-    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}) });
-    const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
-    if (r.status === "confirmed") {
-      if (cardWrites.length) await this.store.write(cardWrites);
-      return { status: "confirmed", seq: q.headSeq(cut), ref: this.#sharedRef(cut), change: null, empty: true, rebased: 0, notices: [], ...(resolved.length ? { resolved } : {}) };
+    const results = todo.map((t) => {
+      const { input, author, id } = t.e;
+      return sc.commit({ id, author, ops: t.ops, at: t.at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(t.hist ? { history: t.hist } : {}) });
+    });
+    // queued ones are kept in the store until the server answers, so a restart pushes them again under the same ids
+    const writes: StoreWrite[] = [];
+    todo.forEach((t, i) => {
+      const { input, author, id } = t.e;
+      if (t.resolved.length && input.cardsWrite) writes.push(...input.cardsWrite(t.resolved, null));
+      if (results[i]!.status === "confirmed") return;
+      const row: PendingRow = { id, author, ops: t.ops, at: t.at, intent: input.intent ?? null, kinds: input.kinds ?? null, policy: input.policy ?? "merge", ...(t.hist ? { history: t.hist } : {}) };
+      writes.push({ table: T.pending, key: [cut, id], value: row });
+    });
+    if (writes.length) await this.store.write(writes);
+    let k = 0;
+    for (let i = 0; i < out.length; i++) {
+      if (out[i]) continue;
+      const t = todo[k]!, r = results[k++]!;
+      const extra = t.resolved.length ? { resolved: t.resolved } : {};
+      if (r.status === "confirmed") out[i] = { status: "confirmed", seq: q.headSeq(cut), ref: this.#sharedRef(cut), change: null, empty: true, rebased: 0, notices: [], ...extra };
+      else if (entries.length === 1 && t.e.input.wait) out[i] = this.#outcome(cut, await sc.waitFor(t.e.id, t.e.input.wait));
+      else out[i] = { status: "pending", id: t.e.id, ref: this.#sharedRef(cut), notices: [], ...extra };
     }
-    // queued: kept in the store until the server answers, so a restart pushes it again under the same id
-    const row: PendingRow = { id, author, ops, at, intent: input.intent ?? null, kinds: input.kinds ?? null, policy: input.policy ?? "merge", ...(hist ? { history: hist } : {}) };
-    await this.store.write([{ table: T.pending, key: [cut, id], value: row }, ...cardWrites]);
-    if (input.wait) return this.#outcome(cut, await sc.waitFor(id, input.wait));
-    return { status: "pending", id, ref: this.#sharedRef(cut), notices: [], ...(resolved.length ? { resolved } : {}) };
+    return out as CommitResult[];
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };
@@ -1149,7 +1189,8 @@ class CartonImpl implements Carton {
       mergeEdges: merge ? { first: merge.edges.ours, second: merge.edges.theirs } : { first: {}, second: {} },
       mergeBase: base?.node ? [base.node] : base?.nodes ?? [],
     };
-    return this.#commitShared(into, { ops }, author, opts.id ?? `${this.#rid}.${++this.#n}`, history);
+    // planned on the confirmed head: queued with it as base, so rows that arrived since are merged, not overwritten
+    return this.#commitShared(into, { doc, base: this.#plannedOn(into, ours) }, author, opts.id ?? `${this.#rid}.${++this.#n}`, history);
   }
   /**
    * Before History plans a write on a shared cut's confirmed head (undo, restore, revert, fold some): this replica's
@@ -1157,6 +1198,7 @@ class CartonImpl implements Carton {
    * still waiting the write is refused (it would be planned against a state those edits change), as a fold is.
    */
   async #sharedPlanning(cut: string, what: string): Promise<SharedCut> {
+    if (this.#h.cut(cut)?.kind === "published") throw new Error(`Carton.${what}: a Published cut is read-only; publish again to update it`);
     const sc = await this.#ensureShared(cut);
     const waiting = sc.queue.pending(cut).map((p) => p.id);
     if (waiting.length && sc.state().status !== "offline") await Promise.all(waiting.map((w) => sc.waitFor(w, 3000)));
@@ -1169,9 +1211,13 @@ class CartonImpl implements Carton {
   }
   /** A planned state (the inverse of changes, a restored version) queued as one change with its history fields. */
   #queueState(cut: string, doc: Doc, maps: RemapMaps, author: Actor, id: ChangeId | undefined, history: HistoryFields): Promise<CommitResult> {
-    const ops = E.diff(this.#h.stateOf(this.#h.head(cut))!, doc, this.schema);
     const intent: Intent | undefined = E.isEmptyMap(maps) ? undefined : { kind: "inverse", maps };
-    return this.#commitShared(cut, { ops, ...(intent ? { intent } : {}) }, author, id ?? `${this.#rid}.${++this.#n}`, history);
+    // the head it was planned on is its base: rows that arrive before it is queued are merged, never overwritten
+    return this.#commitShared(cut, { doc, base: this.#plannedOn(cut), ...(intent ? { intent } : {}) }, author, id ?? `${this.#rid}.${++this.#n}`, history);
+  }
+  /** The confirmed head a plan was made on, as a held base. */
+  #plannedOn(cut: string, doc: Doc = this.#h.stateOf(this.#h.head(cut))!): HeldBase {
+    return { baseDoc: doc, baseSeq: this.#h.headSeq(cut), causal: [] };
   }
   /**
    * ⌘Z on a shared cut (§8, "undo the agent's turn" in the §17 script): History plans the inverse of the group's
@@ -1223,15 +1269,19 @@ class CartonImpl implements Carton {
     }
     const { merge, base, doc } = plan.fold;
     const foldId = opts.id ?? `${this.#rid}.${++this.#n}`;
-    const fold = await this.#commitShared(into, { ops: E.diff(this.#h.stateOf(this.#h.head(into))!, doc, this.schema) }, author, foldId, {
-      kind: "merge",
-      mergeOf: parseNode(this.#h.canon(y)),
-      mergeEdges: merge ? { first: merge.edges.ours, second: merge.edges.theirs } : { first: {}, second: {} },
-      mergeBase: base?.node ? [base.node] : base?.nodes ?? [],
-    });
-    if (fold.status !== "pending" && fold.status !== "confirmed") return fold;
-    const inverse = await this.#commitShared(into, { ops: plan.inverse }, author, `${foldId}.inverse`, { kind: "partial-revert", rejected: plan.reject, reverts: foldId });
-    return { ...inverse, fold, inverse } as unknown as FoldResult;
+    // the fold and its inverse in one batch (queued and stored together), each with the state it was planned on
+    const after = E.apply(E.fork(doc, this.schema), plan.inverse, this.schema);
+    const [fold, inverse] = await this.#commitSharedBatch(into, [
+      {
+        input: { doc, base: this.#plannedOn(into) },
+        author,
+        id: foldId,
+        history: { kind: "merge", mergeOf: parseNode(this.#h.canon(y)), mergeEdges: merge ? { first: merge.edges.ours, second: merge.edges.theirs } : { first: {}, second: {} }, mergeBase: base?.node ? [base.node] : base?.nodes ?? [] },
+      },
+      { input: { doc: after, base: this.#plannedOn(into, doc) }, author, id: `${foldId}.inverse`, history: { kind: "partial-revert", rejected: plan.reject, reverts: foldId } },
+    ]);
+    if (fold!.status !== "pending" && fold!.status !== "confirmed") return fold!;
+    return { ...inverse!, fold, inverse } as unknown as FoldResult;
   }
 
   on(listener: (event: CartonEvent) => void) {
