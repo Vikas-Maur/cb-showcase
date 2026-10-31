@@ -16,6 +16,9 @@
       ],
       "@carton/cardboard": [
         "../cardboard/dist/index.d.ts"
+      ],
+      "@carton/cardboard/node": [
+        "../cardboard/dist/node/index.d.ts"
       ]
     }
   },

@@ -475,6 +475,9 @@ export class History {
     // nothing to record: a commit that changes nothing is confirmed empty at the head (system-v11 `store.commit`);
     // a fold or an undo with no ops is still pushed: its merge edge, or the change it undoes, is history
     if (!ops.length && !extra.mergeOf && !extra.reverts) return this.#empty(o.id, cutId, br.log.length);
+    // the cards `choices` decided, over every rebase pass: a pass carries head's values on its card paths forward, so
+    // the union is exactly the proposals that didn't land (reported as `resolved` with the confirmation)
+    const resolved: ConflictCard[] = [];
     for (let rebase = 0; ; rebase++) {
       if (rebase > 8) throw new Error("rebase loop");
       const stored = remapAsOneOp(this.schema, baseDoc, ops, change.intent);
@@ -487,7 +490,7 @@ export class History {
         this.#confirmed(br, res.change);
         this.onConfirmed?.(cutId, res.change);
         const warnings = prior && !res.duplicate ? softAfter(this.schema, br.sq.head, prior, res.change.ops) : [];
-        return { status: "confirmed", seq: res.seq, ref: this.#refAt(cutId, res.seq), change: res.change, notices: res.notices, rebased: rebase, ...(warnings.length ? { warnings } : {}) };
+        return { status: "confirmed", seq: res.seq, ref: this.#refAt(cutId, res.seq), change: res.change, notices: res.notices, rebased: rebase, ...(warnings.length ? { warnings } : {}), ...(resolved.length ? { resolved } : {}) };
       }
       if (res.reason === "lww on structure" && change.policy === "lww") {
         // H2: lww is only for plain leaf edits; anything structural goes through merge3 as a normal change
@@ -518,6 +521,7 @@ export class History {
         if (!o.choices || unseen.length)
           return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(cutId, br.log.length), merge: m, ...(o.choices ? { unseen: unseen.map((c) => c.path) } : {}), retry: (choices: Choices) => this.commit(cutId, { ...o, choices }) };
         merged = E.resolve(m, o.choices);
+        resolved.push(...m.conflicts);
       }
       if (!isEmptyMap(change.intent?.maps)) change.intent = { ...change.intent, maps: m.edges.ours };
       ops = E.diff(head, merged, this.schema);
@@ -525,7 +529,7 @@ export class History {
       baseSeq = br.log.length;
       causal = [];
       mine = merged;
-      if (!ops.length && !extra.mergeOf && !extra.reverts) return { ...this.#empty(o.id, cutId, baseSeq), rebased: rebase + 1 };
+      if (!ops.length && !extra.mergeOf && !extra.reverts) return { ...this.#empty(o.id, cutId, baseSeq), rebased: rebase + 1, ...(resolved.length ? { resolved } : {}) };
     }
   }
   /** A write retried with the id it already confirmed under: that confirmation, never a second change. */
