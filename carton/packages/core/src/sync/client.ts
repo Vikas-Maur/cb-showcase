@@ -472,6 +472,9 @@ export class SyncClient {
         this.stats.rejects++;
         this.epoch++; // everything still in flight from the dead epoch is dropped by the server; resend all
         this.emit({ type: "reject", id: m.id, reason: m.reason, epoch: m.epoch });
+        // a refusal about this connection (its token, its cut) holds for every write it makes: an owner shows it as the
+        // sync's error too, not only as that change's outcome (review SF3-6)
+        if (CONNECTION_REASONS.has(m.reason)) this.emit({ type: "error", error: m.reason });
         if (VALIDATION_REASONS.has(m.reason)) {
           this.fenced(() => {
             const p = m.id ? this.queue.pending(b).find((x) => x.id === m.id) : undefined;

@@ -165,9 +165,12 @@ export class SharedCut {
     this.refreshState();
     return r;
   }
-  /** Pending changes kept across a restart, back in the queue in order, as they were (`ReplicaQueue.restoreAll`). */
-  restoreAll(inputs: readonly RestoreInput[]): string[] {
-    const r = this.queue.restoreAll(this.branchId, inputs);
+  /**
+   * Pending changes kept across a restart, back in the queue in order, as they were (`ReplicaQueue.restoreAll`);
+   * `stateAt`: confirmed states the queue doesn't hold. `held`: those whose base nobody can rebuild yet.
+   */
+  restoreAll(inputs: readonly RestoreInput[], stateAt?: (seq: number) => Doc | null): ReturnType<ReplicaQueue["restoreAll"]> {
+    const r = this.queue.restoreAll(this.branchId, inputs, stateAt);
     this.refreshState();
     return r;
   }

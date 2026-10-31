@@ -132,8 +132,13 @@ export interface RestoreInput extends CommitInput {
   sentBases: readonly number[];
   /** Refused here after a copy was sent: it waits for its withdraw, then is reported rejected with this. */
   rejecting?: string;
-  /** The confirmed seq its ops were made on (with the changes stored before it on that seq); default: the queue's head. */
+  /** The confirmed seq its ops were made on; default: the queue's head. */
   head?: number;
+  /**
+   * The pending changes its ops were made on, in queue order (its version's `base.pending`). Absent (a row from before
+   * they were kept): the changes restored before it on the same `head`.
+   */
+  basePending?: readonly string[];
 }
 
 export const last = <T>(a: readonly T[]): T => a[a.length - 1]!;
@@ -345,30 +350,58 @@ export class ReplicaQueue {
    * head). A head whose state this replica can't rebuild is taken as the current one. Returns the ids restored (not:
    * already queued, or empty, never sent and with nothing to report).
    */
-  restoreAll(b: string, inputs: readonly RestoreInput[]): string[] {
+  restoreAll(b: string, inputs: readonly RestoreInput[], stateAt?: (seq: number) => Doc | null): { restored: string[]; held: RestoreInput[] } {
     const S = this.schema;
     const out: string[] = [];
-    // per recorded head: its confirmed state plus the changes restored on it so far, as stored
-    const chains = new Map<number, { doc: Doc; ids: string[] } | null>();
+    const held: RestoreInput[] = [];
+    // the stored ops of the changes restored so far (what a later row's base may include), and per recorded head the
+    // ids restored on it (a row from before rows kept their pending base is taken as made after them)
+    const storedOps = new Map<string, Op[]>();
+    const onHead = new Map<number, string[]>();
     for (const ch of inputs) {
       const queue = this.queues.get(b)!;
       if (queue.some((p) => p.id === ch.id)) continue;
       const reports = ch.cards.some((c) => c.cards.length > 0) || ch.rejecting !== undefined;
       if (!ch.ops.length && !keepsWhenEmpty(ch.history) && !ch.sentBases.length && !reports) continue;
-      this.rids.add(ridOf(ch.id));
       const head = this.headSeq(b);
-      const o = this.optimistic(b);
       const at = ch.head ?? head;
-      if (at < head && !chains.has(at)) {
-        let doc: Doc | null = null;
-        try {
-          doc = this.confirmedState(b, at);
-        } catch {
-          // inside a stretch held only through a keyframe: not rebuildable here
-        }
-        chains.set(at, doc && { doc, ids: [] });
+      // made on a state past this queue's head: it can't be rebased back onto an older one, it waits (the owner puts the
+      // queue at its saved catch-up state first)
+      if (at > head) {
+        held.push(ch);
+        continue;
       }
-      const chain = at < head ? chains.get(at) : null;
+      // its base: the confirmed state at `at` (this queue's, or the owner's: History, a saved catch-up state), never a
+      // guess; one nobody can rebuild waits, kept as stored (review SF3-1)
+      let baseState: Doc | null = null;
+      try {
+        baseState = this.confirmedState(b, at);
+      } catch {
+        // inside a stretch held only through a keyframe
+      }
+      baseState ??= stateAt?.(at) ?? null;
+      if (!baseState) {
+        held.push(ch);
+        continue;
+      }
+      this.rids.add(ridOf(ch.id));
+      const o = this.optimistic(b);
+      // ...plus the pending changes it was made on, as they were: restored before it here, or confirmed since (then they
+      // are its base, not concurrent: review SF3-3)
+      const deps = ch.basePending ?? onHead.get(at) ?? [];
+      const log = this.logs.get(b)!;
+      let baseDoc = baseState;
+      const inBase = new Set<string>();
+      for (const id of deps) {
+        const ops = storedOps.get(id) ?? (log.slice(at, head).find((r): r is ConfirmedChange => !r.placeholder && r.id === id)?.ops ?? null);
+        if (!ops) continue; // absorbed or refused meanwhile: in neither its base nor the head
+        if (ops.length) baseDoc = apply(fork(baseDoc, S), ops, S);
+        inBase.add(id);
+      }
+      storedOps.set(ch.id, ch.ops);
+      if (ch.ops.length) (onHead.get(at) ?? onHead.set(at, []).get(at)!).push(ch.id);
+      const exact = at === head && hashDoc(baseDoc, S) === hashDoc(o.doc, S);
+      const chain = exact ? null : { doc: baseDoc, ids: [...inBase] };
       const intent = ch.intent ?? null;
       const onBase = (baseDoc: Doc, base: ChangeBase, ops: Op[], i: Intent | null, k: number, supersedes: string[], cards: ConflictCard[]): QueueVersion => {
         const decl = declare(S, baseDoc, ops, i);
@@ -379,13 +412,10 @@ export class ReplicaQueue {
       let top: QueueVersion;
       let rebased: QueueVersion | null = null;
       if (chain) {
-        // as stored, on its own head; then rebased onto what was confirmed since and the changes restored before it
-        top = onBase(chain.doc, { seq: at, pending: [...chain.ids] }, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
-        if (ch.ops.length) {
-          chain.doc = apply(fork(chain.doc, S), ch.ops, S);
-          chain.ids.push(ch.id);
-        }
-        const concurrent = this.logs.get(b)!.slice(at, head).filter((r): r is ConfirmedChange & { withdrawn?: boolean } => !r.placeholder && !(r as { withdrawn?: boolean }).withdrawn);
+        // as stored, on its own base; then rebased onto what was confirmed since (its own base's changes excepted) and
+        // the changes restored before it, as an integrate would have done
+        top = onBase(chain.doc, { seq: at, pending: chain.ids }, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
+        const concurrent = log.slice(at, head).filter((r): r is ConfirmedChange & { withdrawn?: boolean } => !r.placeholder && !(r as { withdrawn?: boolean }).withdrawn && !inBase.has(r.id));
         const r = this.rebaseOne(top, o.doc, concurrent);
         rebased = onBase(o.doc, current, r.ops, r.intent, ch.k + 1, [...top.supersedes, `${ch.id}#${ch.k}`], r.cards);
         rebased.policy = policyFor(top.policy, rebased.decl);
@@ -416,7 +446,7 @@ export class ReplicaQueue {
       out.push(ch.id);
       this.emit({ type: "pending", branchId: b, change: p });
     }
-    return out;
+    return { restored: out, held };
   }
 
   // ---------------------------------------------------------------- integrating confirmed rows
