@@ -48,6 +48,7 @@ export { fromHost, toHost, projectGuiSave, projectDoc, sliceOf, materializeProje
 export type { CardboardProject, ItemProjection } from "./host.ts";
 export { identityProjection, standInProjection } from "./projection.ts";
 export { inferRipple } from "./ripple.ts";
+export { nameTurn, turnName, type TurnRef } from "./turns.ts";
 export { parseActor, subagentActorId, cardboardIdentity } from "./identity.ts";
 export * from "./header.ts";
 export * from "./codec.ts";
