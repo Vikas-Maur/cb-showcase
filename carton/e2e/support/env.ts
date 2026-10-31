@@ -45,6 +45,14 @@ export function scratchProfile(): Record<string, string> {
   };
   const cli = join(REAL_HOME, ".t3", "projects", "cardboard-showcase", "_inspect", "cardboard-1.4.0", "cli", "cardboard.mjs");
   if (!process.env.CARTON_CARDBOARD_CLI && existsSync(cli)) env.CARTON_CARDBOARD_CLI = cli;
+  // Temp files inside scratch too. Windows: TEMP and TMP (holders use named pipes there, no path limit). POSIX: TMPDIR
+  // only while it is short: a lease holder whose bundle is deep puts its control socket in the temp folder, and a Unix
+  // socket path must fit 104 bytes on macOS (the socket's name takes about 46); a longer scratch keeps the OS temp
+  // folder, where those sockets (and nothing else of the suite) go.
+  const t = join(root, "t");
+  mkdirSync(t, { recursive: true });
+  if (process.platform === "win32") env.TEMP = env.TMP = t;
+  else if (t.length <= 50) env.TMPDIR = t;
   return env;
 }
 Object.assign(process.env, scratchProfile());

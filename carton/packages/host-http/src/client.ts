@@ -82,9 +82,8 @@ export interface HostMediaBlobs extends BlobStore {
 const rangeHeader = (r: ByteRange) => (r.length === undefined ? `bytes=${r.offset}-` : `bytes=${r.offset}-${r.offset + r.length - 1}`);
 
 /**
- * A project's media through the host's HTTP API. It has no list or delete (the API offers neither to clients);
- * `put` with `ifAbsent` asks `head` first, so two first writers of one content-addressed key may both write it (the
- * same bytes).
+ * A project's media through the host's HTTP API. It has no list or delete (the API offers neither to clients).
+ * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically, then reads back what is stored.
  */
 export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
   const f = opts.fetch ?? ((u: string | URL | Request, i?: RequestInit) => globalThis.fetch(u, i));
@@ -138,13 +137,17 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
   const store: HostMediaBlobs = {
     kind: "host-media",
     async put(key, data, o = {}) {
-      if (o.ifAbsent) {
-        const old = await store.head(key);
-        if (old) return old;
-      }
-      const r = await f(await sign(key, "PUT"), { method: "PUT", body: data as Uint8Array<ArrayBuffer>, headers: o.contentType ? { "content-type": o.contentType } : {} });
+      const headers: Record<string, string> = {};
+      if (o.contentType) headers["content-type"] = o.contentType;
+      if (o.ifAbsent) headers["if-none-match"] = "*";
+      const r = await f(await sign(key, "PUT"), { method: "PUT", body: data as Uint8Array<ArrayBuffer>, headers });
       if (!r.ok) await failed(r);
       await r.body?.cancel();
+      // with ifAbsent the stored object may be an earlier writer's: report that one
+      if (o.ifAbsent) {
+        const stored = await store.head(key);
+        if (stored) return stored;
+      }
       const info: BlobInfo = { key, size: data.byteLength };
       if (o.contentType) info.contentType = o.contentType;
       const etag = r.headers.get("etag");

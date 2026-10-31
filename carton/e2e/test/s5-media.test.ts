@@ -57,6 +57,11 @@ after(async () => {
 });
 
 const fileSha = (path: string, from = 0, to?: number) => createHash("sha256").update(readFileSync(path).subarray(from, to)).digest("hex");
+/** A file's video packets as ffprobe lists them (size and duration of each), for "the same video" across containers. */
+async function videoPackets(path: string): Promise<string> {
+  const r = await run(FFPROBE, ["-v", "error", "-select_streams", "v:0", "-show_entries", "packet=size,duration_time", "-of", "csv=p=0", path], { timeout: 60_000, maxBuffer: 64 << 20 });
+  return r.stdout.trim();
+}
 const statePath = (m: Machine, hash: string) => join(m.home, "uploads", `m_${hash}.json`);
 /** The parts a machine's FsUploadStateStore has recorded for an open upload (read briefly: the app renames over it). */
 function recorded(m: Machine, hash: string): { parts: number; bytes: number } {
@@ -126,38 +131,49 @@ function settled(p: Promise<unknown>): () => boolean {
 // ------------------------------------------------------------------ 1. share a clip, read it back, dedup
 
 for (const kind of ["blob-fs", "blob-s3", "host-http"] as const) {
-  test(`S5 share a clip through ${kind}: the teammate's process reads every byte back verified; sharing it again, or from the teammate's machine with the same footage, uploads nothing; offline, the teammate replays from its cache`, { timeout: 240_000, skip: NO_FF || skipFor(kind) }, async (t) => {
+  test(`S5 share a clip through ${kind}: the teammate's process reads every byte back verified; sharing it again, or from the teammate's machine with the same footage, uploads nothing; offline, the teammate replays from its cache`, {
+    timeout: 240_000,
+    skip: NO_FF || skipFor(kind),
+    // S5-7: sharing again checks the stream for damage and staleness with store.list (bad/, ps/<stream>/s/); a Carton
+    // host's HTTP media API has no list route, so the second share of any clip through a host fails
+    todo: kind === "host-http" ? "S5-7, media + hosts-plugins: re-sharing a stream proxy needs store.list, which the host's HTTP media API lacks" : undefined,
+  }, async (t) => {
     const w = await world(t, kind);
     const original = placeOriginal(w.owner, clips.original);
     const hostProxy = placeHostProxy(w.owner, clips.hostProxy);
     const { record } = sampleVideo(w.owner);
-    const want = { original: await hashFile(original), proxy: await hashFile(hostProxy) };
+    const want = { original: await hashFile(original) };
     const ownerLink = await w.link();
     const mateLink = await w.link();
 
-    // --- the owner shares the clip: the original (opted in) and Cardboard's own proxy as the collab proxy
+    // --- the owner shares the clip: the original (opted in), and Cardboard's own proxy as the collab proxy, repackaged
+    // (no encode) into a segmented stream a teammate can play while it uploads (media's stream model, §11)
     const owner = await startMachine(w.procs, "owner", w.owner.home, w.side.storeFor("owner", ownerLink));
     const r = await owner.ask({ cmd: "share", record, original, hostProxy, originals: true }, 120_000);
     assert.equal(r.record.hash, want.original.hash, "the clip is named by its content");
     assert.equal(r.record.size, want.original.size);
     assert.equal(r.record.original, "shared");
-    assert.deepEqual([r.record.proxy?.hash, r.record.proxy?.size, r.record.proxy?.encoder], [want.proxy.hash, want.proxy.size, "cardboard-proxy"], "Cardboard's proxy is the collab proxy, as it is");
-    assert.ok(r.events.some((e: any) => e.type === "proxy" && e.how === "host's"));
+    const proxy = r.record.proxy;
+    assert.match(String(proxy?.stream), /^[0-9a-f]{64}$/, `the collab proxy is a stream: ${JSON.stringify(proxy)}`);
+    assert.deepEqual([proxy.encoder, proxy.hash], ["cardboard-proxy", undefined], "Cardboard's proxy, repackaged, not encoded; no single object");
+    assert.ok(Number.isInteger(proxy.size) && proxy.size > 0, "the finished stream's size is in the record");
+    assert.ok(r.events.some((e: any) => e.type === "proxy" && e.how === "host's" && e.stream === proxy.stream), "made from the host's proxy");
     const up = uploaded(r.events, "original");
     assert.equal(up.deduped, false);
     assert.ok(up.partsSent >= 2, `the original went up in parts (${up.partsSent} × ${up.partSize})`);
     assert.equal(up.partsSent, Math.ceil(want.original.size / up.partSize));
-    if (ownerLink) assert.ok(ownerLink.upBytes >= want.original.size + want.proxy.size, "the bytes went over the owner's link");
+    if (ownerLink) assert.ok(ownerLink.upBytes >= want.original.size + proxy.size, "the bytes went over the owner's link");
 
-    // --- the teammate's process reads both back: every byte verifies against the manifest
+    // --- the teammate's process plays the stream as a player does: every part verifies, and what it played is the
+    // owner's proxy, packet for packet (ffprobe); then reads the original back, verified against its id
     const mate = await startMachine(w.procs, "mate", w.mate.home, w.side.storeFor("mate", mateLink));
-    assert.deepEqual((await mate.ask({ cmd: "stat", hash: want.proxy.hash })).stat, { size: want.proxy.size, contentType: "video/mp4" });
-    const px = await mate.ask({ cmd: "read", hash: want.proxy.hash, mode: "play" }, 60_000);
+    const played = join(w.mate.home, "played.mp4");
+    const px = await mate.ask({ cmd: "play", stream: proxy.stream, save: played }, 60_000);
     assert.equal(px.failed, undefined, px.failed);
-    assert.equal(px.bytes, want.proxy.size);
-    assert.equal(px.mediaHash, want.proxy.hash, "the proxy's bytes hash to its id");
-    assert.equal(px.sha256, fileSha(hostProxy), "byte for byte the owner's file");
+    assert.equal(px.bytes, proxy.size, "init plus every segment: the record's size");
+    assert.ok(px.init > 0 && px.segments >= 1 && px.ended?.segments === px.segments, `played to the stream's end: ${JSON.stringify(px)}`);
     assert.deepEqual(px.events, [], "no leaf failed its check");
+    if (FF) assert.deepEqual(await videoPackets(played), await videoPackets(hostProxy), "the same video, packet for packet");
     const og = await mate.ask({ cmd: "read", hash: want.original.hash, mode: "tool" }, 60_000);
     assert.equal(og.failed, undefined, og.failed);
     assert.equal(og.mediaHash, want.original.hash, "the original's bytes hash to its id");
@@ -167,10 +183,10 @@ for (const kind of ["blob-fs", "blob-s3", "host-http"] as const) {
     const before = ownerLink?.upBytes ?? 0;
     const again = await owner.ask({ cmd: "share", record, original, hostProxy, originals: true }, 60_000);
     assert.equal(again.record.hash, want.original.hash);
-    assert.equal(again.record.proxy?.hash, want.proxy.hash);
+    assert.equal(again.record.proxy?.stream, proxy.stream, "the same stream");
     assert.deepEqual([uploaded(again.events, "original")?.deduped, uploaded(again.events, "original")?.bytesSent], [true, 0], "the original is already there");
-    assert.ok(again.events.some((e: any) => e.type === "proxy" && e.how === "teammate's"), "the proxy is found through its pointer");
-    assert.equal(uploaded(again.events, "proxy"), undefined, "the proxy is not uploaded again");
+    assert.ok(again.events.some((e: any) => e.type === "proxy" && e.how === "teammate's" && e.stream === proxy.stream), "the proxy is found through its pointer");
+    assert.ok(!again.events.some((e: any) => e.type === "proxy" && (e.how === "streaming" || e.how === "host's" || e.how === "encoded")), "no new stream is made");
     if (ownerLink) assert.ok(ownerLink.upBytes - before < CHATTER, `sharing again sent ${ownerLink.upBytes - before} bytes up`);
 
     // --- the teammate has the same footage (the camera card's copy): their share uploads nothing either
@@ -178,22 +194,39 @@ for (const kind of ["blob-fs", "blob-s3", "host-http"] as const) {
     const mateBefore = mateLink?.upBytes ?? 0;
     const s = await mate.ask({ cmd: "share", record: sampleVideo(w.mate).record, original: theirs, hostProxy: null, originals: true }, 60_000);
     assert.equal(s.record.hash, want.original.hash, "the same footage has the same id on another machine");
-    assert.equal(s.record.proxy?.hash, want.proxy.hash, "the teammate gets the owner's proxy, with no encode");
+    assert.equal(s.record.proxy?.stream, proxy.stream, "the teammate gets the owner's proxy stream, with no encode");
     assert.equal(uploaded(s.events, "original")?.deduped, true);
     if (mateLink) assert.ok(mateLink.upBytes - mateBefore < CHATTER, `the teammate's share sent ${mateLink.upBytes - mateBefore} bytes up`);
-
-    // --- offline: a restarted teammate process plays the proxy from its disk cache
-    if (mateLink) {
-      await mate.kill();
-      mateLink.drop();
-      const off = await startMachine(w.procs, "mate-offline", w.mate.home, w.side.storeFor("mate", mateLink));
-      assert.deepEqual((await off.ask({ cmd: "stat", hash: want.proxy.hash })).stat, { size: want.proxy.size, contentType: "video/mp4" }, "stat works offline");
-      const o2 = await off.ask({ cmd: "read", hash: want.proxy.hash, mode: "play" }, 60_000);
-      assert.equal(o2.failed, undefined, o2.failed);
-      assert.equal(o2.sha256, fileSha(hostProxy), "served from the teammate's disk cache with the store unreachable");
-    }
   });
 }
+
+// S5-6: a teammate who played a stream proxy can't play it again offline. Its segments' bytes are in the disk cache
+// (MediaReader), but the stream's entries (ps/<stream>/init, /s/<n>, /end) are read from the store on every play and
+// never cached, so the player can't even find the init segment with the store unreachable. Before streams, a whole
+// proxy replayed offline (this scenario's old check).
+test("S5-6 offline: a teammate who played the proxy stream replays it from the disk cache with the store unreachable", {
+  timeout: 240_000,
+  skip: NO_FF || S3_SKIP,
+  todo: "S5-6, media: a stream's entries aren't cached, so a played stream proxy can't be replayed offline",
+}, async (t) => {
+  const w = await world(t, "blob-s3");
+  const original = placeOriginal(w.owner, clips.original);
+  const hostProxy = placeHostProxy(w.owner, clips.hostProxy);
+  const { record } = sampleVideo(w.owner);
+  const owner = await startMachine(w.procs, "owner", w.owner.home, w.side.storeFor("owner", await w.link()));
+  const stream = (await owner.ask({ cmd: "share", record, original, hostProxy, originals: false }, 120_000)).record.proxy?.stream;
+  assert.ok(stream, "shared as a stream");
+  const mateLink = (await w.link())!;
+  const mate = await startMachine(w.procs, "mate", w.mate.home, w.side.storeFor("mate", mateLink));
+  const online = await mate.ask({ cmd: "play", stream }, 60_000);
+  assert.equal(online.failed, undefined, online.failed);
+  await mate.kill();
+  mateLink.drop();
+  const off = await startMachine(w.procs, "mate-offline", w.mate.home, w.side.storeFor("mate", mateLink));
+  const again = await off.ask({ cmd: "play", stream }, 60_000);
+  assert.equal(again.failed, undefined, again.failed);
+  assert.equal(again.sha256, online.sha256, "the same bytes, from this machine's cache");
+});
 
 // The teammate learns which footage the project uses from the project itself, not from the test: the media record's
 // `contentHash` is a versioned field (PLAN §4.2), and the proxy is keyed by (source hash, profile) in the store (§11).
@@ -207,7 +240,7 @@ test("S5 the shared clip's id rides in the project: the owner commits it through
   const original = placeOriginal(w.owner, clips.original);
   const hostProxy = placeHostProxy(w.owner, clips.hostProxy);
   const { record } = sampleVideo(w.owner);
-  const want = { original: await hashFile(original), proxy: await hashFile(hostProxy) };
+  const want = { original: await hashFile(original) };
 
   // --- the owner shares the clip, then commits its content id into the project's media record
   const owner = await startMachine(w.procs, "owner", w.owner.home, w.side.storeFor("owner"));
@@ -231,12 +264,13 @@ test("S5 the shared clip's id rides in the project: the owner commits it through
 
   // --- from that id alone: the proxy through its pointer, then both read back, every byte verified
   const { pointer } = await mate.ask({ cmd: "proxyOf", hash });
-  assert.deepEqual([pointer?.hash, pointer?.size], [want.proxy.hash, want.proxy.size], "the proxy made from this source");
-  const px = await mate.ask({ cmd: "read", hash: pointer.hash, mode: "play" }, 60_000);
+  assert.equal(pointer?.stream, shared.proxy?.stream, `the proxy stream made from this source: ${JSON.stringify(pointer)}`);
+  assert.equal(pointer?.encoder, "cardboard-proxy");
+  const px = await mate.ask({ cmd: "play", stream: pointer.stream, save: join(w.mate.home, "played.mp4") }, 60_000);
   assert.equal(px.failed, undefined, px.failed);
-  assert.equal(px.mediaHash, want.proxy.hash, "the proxy's bytes hash to its id");
-  assert.equal(px.sha256, fileSha(hostProxy), "byte for byte the owner's proxy");
+  assert.equal(px.bytes, shared.proxy.size, "every part, as the owner's record sizes it");
   assert.deepEqual(px.events, [], "no leaf failed its check");
+  assert.deepEqual(await videoPackets(join(w.mate.home, "played.mp4")), await videoPackets(hostProxy), "the owner's proxy, packet for packet");
   const og = await mate.ask({ cmd: "read", hash, mode: "tool" }, 60_000);
   assert.equal(og.failed, undefined, og.failed);
   assert.equal(og.mediaHash, want.original.hash, "the original's bytes hash to the id the project names");
@@ -366,9 +400,10 @@ for (const kind of ["blob-s3", "host-http"] as const) {
 // Minimal case for S5-4 on the host only: an S3 gateway aborted while a part is in flight can take that part and
 // revive the upload (VersityGW does; S3 documents in-flight parts "might or might not succeed"), which makes the drop
 // racy there. The concurrent-resume test above shows the same waste on S3 in its diagnostics.
-test("S5-4 an upload the store dropped mid-way (expired, or completed by another process) costs at most the parts that were in flight (host-http)", {
+// (S5-4, fixed in media d5508fb1: uploadMedia retried uploadPart on NoSuchUpload, re-sending every in-flight part up to
+// 5 times to an upload that could never take it)
+test("an upload the store dropped mid-way (expired, or completed by another process) costs at most the parts that were in flight (host-http)", {
   timeout: 180_000,
-  todo: "S5-4, media: uploadMedia retries uploadPart on NoSuchUpload, re-sending every in-flight part up to 5 times to an upload that can never take it",
 }, async (t) => {
   const w = await world(t, "host-http");
   const want = await hashFile(clips.big);
@@ -464,26 +499,40 @@ async function heldProxyUpload(w: World): Promise<HeldUpload> {
   };
 }
 
-test("S5 a teammate streams the proxy before its upload finishes (PLAN §22 phase 4)", {
-  timeout: 180_000,
-  todo: "S5-1, media (decision pending with the orchestrator): a multipart object is invisible until it completes (one object per variant, §11), so a teammate can't play a proxy until its upload finishes",
-}, async (t) => {
+// PLAN §22 phase 4 (S5-1, fixed by media's segmented proxies): the owner's share puts every segment of the proxy
+// stream but its `end` entry is held, so the stream is still uploading for as long as the teammate's attempt lasts.
+test("S5 a teammate streams the proxy before its upload finishes (PLAN §22 phase 4)", { timeout: 240_000, skip: NO_FF }, async (t) => {
   const w = await world(t, "host-http");
-  const up = await heldProxyUpload(w);
+  const original = placeOriginal(w.owner, clips.original);
+  const hostProxy = placeHostProxy(w.owner, clips.hostProxy);
+  const { record } = sampleVideo(w.owner);
+  const owner = await startMachine(w.procs, "owner", w.owner.home, w.side.storeFor("owner"));
+  const sharing = owner.ask({ cmd: "share", record, original, hostProxy, originals: false, holdEnd: true }, 180_000);
+  sharing.catch(() => {});
   try {
-    // every part is in the store and only the completion is missing, so the first leaf is there to stream
-    await up.owner.next((x) => x.completeHeld, 60_000);
+    const held = await owner.next((x) => x.endHeld || x.shareEvent?.type === "proxy" && x.shareEvent.how === "teammate's", 120_000);
+    assert.ok(held.endHeld, `the proxy was made as a new stream: ${JSON.stringify(held)}`);
+    const stream = String(held.endHeld).split("/")[1]!;
     const mate = await startMachine(w.procs, "mate", w.mate.home, w.side.storeFor("mate"));
-    const seen = (await mate.ask({ cmd: "stat", hash: up.hash })).stat;
-    const first = await mate.ask({ cmd: "read", hash: up.hash, offset: 0, length: MiB, mode: "play" });
-    // the completion is held until after the attempt, and once complete was sent the flag stays set: this covers it all
-    assert.ok(up.incomplete(), "the upload was still incomplete during the teammate's whole attempt");
-    assert.deepEqual(seen, { size: up.size, contentType: "video/mp4" }, "the teammate sees the proxy while it uploads");
+    // the teammate learns the stream from the source's pointer, as from the project's record, while it uploads
+    const { pointer } = await mate.ask({ cmd: "proxyOf", hash: (await hashFile(original)).hash });
+    assert.equal(pointer?.stream, stream, "the teammate finds the stream while it uploads");
+    const first = await mate.ask({ cmd: "play", stream, segments: 1 }, 60_000);
     assert.equal(first.failed, undefined, first.failed);
-    assert.equal(first.sha256, fileSha(clips.proxy, 0, MiB), "the first leaf plays, verified, before the upload ends");
+    assert.ok(first.init > 0 && first.segments === 1, `the init segment and the first segment play, verified: ${JSON.stringify(first)}`);
+    assert.deepEqual(first.events, [], "no leaf failed its check");
+    assert.equal(first.ended, null, "the stream had not ended during the teammate's attempt");
+    assert.ok(!owner.lines.some((x) => x.endSent), "the owner's upload was still going");
+    // then the end goes up: a player that kept going reaches the stream's end, and the record carries its size
+    const whole = mate.ask({ cmd: "play", stream }, 120_000);
+    await owner.ask({ cmd: "release" });
+    const r = await sharing;
+    const all = await whole;
+    assert.equal(all.failed, undefined, all.failed);
+    assert.equal(all.bytes, r.record.proxy?.size, "the whole stream, as the record sizes it");
+    assert.equal(r.record.proxy?.stream, stream);
   } finally {
-    await up.release().catch(() => {});
-    await up.upload.catch(() => {});
+    await owner.ask({ cmd: "release" }).catch(() => {});
   }
 });
 
@@ -562,7 +611,6 @@ test("S5 while its proxy uploads, the uploader plays it at once; the teammate pl
 
 test("S5-5 a damaged object in the store gets repaired: once a teammate hits a leaf that can never verify, the owner's next share replaces it (§11: there is a repair path)", {
   timeout: 180_000,
-  todo: "S5-5, media with hosts-plugins: nothing reports a bad range or marks the object missing, and uploadMedia dedups by size alone, so a damaged object of the right size is never re-uploaded",
 }, async (t) => {
   const w = await world(t, "host-http");
   const owner = await startMachine(w.procs, "owner", w.owner.home, w.side.storeFor("owner"));

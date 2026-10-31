@@ -197,6 +197,8 @@ export class ProxyStreamReader {
   #init: StreamPart | null = null;
   readonly #segments: StreamSegment[] = []; // entries are immutable: 0..n-1 known so far
   #end: StreamEnd | null = null;
+  // Entries are fetched one caller at a time: two overlapping fetches would both append the same entry.
+  #filling: Promise<unknown> = Promise.resolve();
 
   constructor(o: ProxyStreamReaderOptions) {
     if (!isMediaHash(o.id)) throw new TypeError(`not a stream id: ${o.id}`);
@@ -217,6 +219,12 @@ export class ProxyStreamReader {
   /** Entry `index` if it is up, else null. */
   async segment(index: number): Promise<StreamSegment | null> {
     if (index < this.#segments.length) return this.#segments[index];
+    const fill = this.#filling.then(() => this.#fill(index));
+    this.#filling = fill.catch(() => {});
+    return fill;
+  }
+
+  async #fill(index: number): Promise<StreamSegment | null> {
     // Entries land in order, so fetch the ones before it first: the cache stays a prefix.
     while (this.#segments.length <= index) {
       const i = this.#segments.length;
@@ -242,6 +250,8 @@ export class ProxyStreamReader {
       if (seg) return seg;
       const end = await this.end();
       if (end && end.segments <= index) return null;
+      // The writer puts the end after every entry, so an entry missed just before the end was read may be up now.
+      if (end && (await this.segment(index))) return this.#segments[index];
       if (end) {
         // The stream ended with this segment in it, yet an entry up to it can't be read: it will never appear.
         await this.#reportDamage({ entry: this.#segments.length });
@@ -298,6 +308,14 @@ export class ProxyStreamReader {
     if (!init) return null;
     const segs = await this.known();
     const end = await this.end();
+    if (end && segs.length < end.segments) {
+      // Finished, yet an entry can't be read: a live-looking playlist would keep the tool waiting for good.
+      if (!(await this.segment(segs.length))) {
+        await this.#reportDamage({ entry: segs.length });
+        throw new StreamDamagedError(this.id, segs.length);
+      }
+      return this.playlist(urlFor);
+    }
     const target = Math.max(1, Math.ceil(Math.max(0, ...segs.map((s) => s.durationSec))));
     const lines = [
       "#EXTM3U",
@@ -365,6 +383,24 @@ export async function findProxy(store: BlobStore, sourceHash: string, profileId:
   return null;
 }
 
+/**
+ * The proxy of (source, profile) to reuse, or null when there is none or it should be made again: a whole object
+ * that is gone, has the wrong size or was reported damaged; a stream reported damaged (itself, or one of its parts) or
+ * abandoned (no end, nothing new for `staleMs`). Needs no encoder, so a machine that can't encode still reuses one.
+ */
+export async function usableProxy(
+  store: BlobStore,
+  sourceHash: string,
+  profileId: string,
+  opts: { staleMs?: number; now?: () => number } = {},
+): Promise<ProxyPointer | null> {
+  const there = await findProxy(store, sourceHash, profileId);
+  if (!there) return null;
+  return (await replaceable(store, there, opts.staleMs ?? STALE_MS, (opts.now ?? Date.now)())) ? null : there;
+}
+
+const STALE_MS = 10 * 60_000;
+
 export interface ClaimResult {
   /** True: this caller makes the proxy, as `stream`. False: reuse `pointer`. */
   claimed: boolean;
@@ -390,7 +426,7 @@ export async function claimProxyStream(
   await store.put(key, body, { contentType: "application/json", ifAbsent: true });
   const there = await findProxy(store, sourceHash, profileId);
   if (there && "stream" in there && there.stream === (mine as { stream: string }).stream) return { claimed: true, pointer: mine };
-  if (there && !(await replaceable(store, there, opts.staleMs ?? 10 * 60_000, now()))) return { claimed: false, pointer: there };
+  if (there && !(await replaceable(store, there, opts.staleMs ?? STALE_MS, now()))) return { claimed: false, pointer: there };
   // Unreadable, abandoned or damaged: take it over. Two takers at once both write; the last one's pointer wins and the
   // other one's stream is simply never pointed at.
   await store.put(key, body, { contentType: "application/json" });
@@ -398,8 +434,12 @@ export async function claimProxyStream(
 }
 
 async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, now: number): Promise<boolean> {
-  if ("hash" in p) return (await store.head(damagedKey(p.hash))) !== null || (await store.head(mediaKey(p.hash))) === null;
+  if ("hash" in p) {
+    if ((await store.head(damagedKey(p.hash))) !== null) return true;
+    return (await store.head(mediaKey(p.hash)))?.size !== p.size;
+  }
   if ((await store.head(damagedKey(p.stream))) !== null) return true;
+  if (await partDamaged(store, p.stream)) return true;
   if ((await store.head(streamEndKey(p.stream))) !== null) return false;
   // Live if anything happened lately: the newest entry, or the claim itself.
   let latest = p.at;
@@ -416,4 +456,32 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     if (v && isCount(v.at)) latest = Math.max(latest, v.at);
   }
   return now - latest > staleMs;
+}
+
+/**
+ * Whether a reader reported one of the stream's parts damaged: a tool reading a segment through the range server's
+ * /m/<hash> writes bad/<hash>, not bad/<stream>. Reports are rare and go once repaired, so list them first; the
+ * stream's entries are read only when there are any.
+ */
+async function partDamaged(store: BlobStore, stream: string): Promise<boolean> {
+  const bad = new Set<string>();
+  let cursor: string | undefined;
+  do {
+    const page = await store.list("bad/", { cursor });
+    for (const b of page.blobs) bad.add(b.key.slice(4));
+    cursor = page.cursor;
+  } while (cursor);
+  if (bad.size === 0) return false;
+  const init = await getJson(store, streamInitKey(stream));
+  if (init && bad.has(init.hash as string)) return true;
+  cursor = undefined;
+  do {
+    const page = await store.list(`ps/${stream}/s/`, { cursor });
+    for (const b of page.blobs) {
+      const v = await getJson(store, b.key);
+      if (v && bad.has(v.hash as string)) return true;
+    }
+    cursor = page.cursor;
+  } while (cursor);
+  return false;
 }

@@ -18,6 +18,7 @@ import { makeMachine, itemNamed, SAMPLE, type Machine } from "../support/project
 import { Procs, type Proc } from "../support/procs.ts";
 import { dataDirFor, support, until } from "../support/env.ts";
 import { cb, cbOk, cbWrite, setOp } from "../support/cb.ts";
+import { named, untilShown } from "../support/head.ts";
 
 const CUT = "30s Instagram cut";
 const sharedRef = (m: Machine) => (findRev(readFileSync(join(m.bundle, "timeline.tsx"), "utf8"))?.rev as any)?.ref as string;
@@ -73,11 +74,12 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   assert.equal((await cbOk(m, ["history"])).versions[0].ref.seq, mainSeq, "a fold with cards saved nothing");
 
   // fold in some of it: keep the logo change out, keep main's opacity
+  const foldAt = Date.now();
   const some = await cbOk(m, ["fold", CUT, "--reject", `timelineItems/${ids.logo}`, "--keep", "mine"]);
   assert.equal(some.status, "confirmed", JSON.stringify(some));
-  await until(() => itemNamed(m, SAMPLE.title)?.textContent === "30s version", 20_000, "the fold in project.json");
-  assert.equal(itemNamed(m, SAMPLE.clipA)!.opacity, 0.2, "--keep mine kept main's value");
-  assert.equal(itemNamed(m, SAMPLE.logo)!.zIndex, 2, "the rejected record stayed out");
+  const folded = await untilShown(t, m, foldAt, (l) => named(l, SAMPLE.title)?.textContent === "30s version", "the fold");
+  assert.equal(named(folded, SAMPLE.clipA)!.opacity, 0.2, "--keep mine kept main's value");
+  assert.equal(named(folded, SAMPLE.logo)!.zIndex, 2, "the rejected record stayed out");
   const h = await cbOk(m, ["history", "--limit", "10"]);
   assert.deepEqual(h.versions.slice(0, 2).map((v: any) => v.kind), ["partial-revert", "merge"], "a merge, then an inverse change that lists what was kept out");
   assert.equal((await cbOk(m, ["credits", SAMPLE.title])).by.id, "director/chat2/turn1", "the folded edit keeps its author");
@@ -90,6 +92,7 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   });
   // what that command would run: core's revert of the inverse change (History.acceptRest), as a cb write
   const inverse = h.versions[0].change as string;
+  const restAt = Date.now();
   const local = await openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as HostAdapter, actor: { kind: "human", id: "human:me", name: "me" } });
   try {
     const r = await local.write({ kind: "revert", changeId: inverse });
@@ -97,8 +100,8 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   } finally {
     await local.close();
   }
-  await until(() => itemNamed(m, SAMPLE.logo)?.zIndex === 7, 20_000, "the rest folded in");
-  assert.equal(itemNamed(m, SAMPLE.clipA)!.opacity, 0.2, "folding in the rest left the decided card alone");
+  const rest2 = await untilShown(t, m, restAt, (l) => named(l, SAMPLE.logo)?.zIndex === 7, "the rest folded in");
+  assert.equal(named(rest2, SAMPLE.clipA)!.opacity, 0.2, "folding in the rest left the decided card alone");
   assert.equal((await cbOk(m, ["fold", CUT, "--check"])).status, "up-to-date");
 });
 

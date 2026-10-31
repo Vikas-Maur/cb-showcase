@@ -1,8 +1,9 @@
 // A machine's network link to the host, as a real TCP proxy on 127.0.0.1:
 //   down() / up()    drop every open connection and refuse new ones (the laptop goes offline), then let them through;
 //   hold()           the connections open now stop forwarding the machine's bytes (a push in flight that hasn't
-//                    arrived); new connections are not held. If the machine's process dies meanwhile, the held bytes
-//                    are still delivered on release(), as data already on the wire would be (a dead helper's late push);
+//                    arrived); new connections are not held, unless `{all: true}`. If the machine's process dies
+//                    meanwhile, the held bytes are still delivered on release(), as data already on the wire would be
+//                    (a dead helper's late push);
 //   release()        deliver what was held, then close connections whose machine side is gone.
 import { createServer, connect, type Server, type Socket } from "node:net";
 
@@ -12,6 +13,7 @@ export class Link {
   private server: Server;
   private pairs = new Set<Pair>();
   private isDown = false;
+  private holdNew = false;
   port = 0;
   readonly target: number;
 
@@ -35,7 +37,7 @@ export class Link {
   private accept(client: Socket): void {
     if (this.isDown) return void client.destroy();
     const upstream = connect(this.target, "127.0.0.1");
-    const p: Pair = { client, upstream, held: null, clientGone: false };
+    const p: Pair = { client, upstream, held: this.holdNew ? [] : null, clientGone: false };
     this.pairs.add(p);
     const drop = () => { this.pairs.delete(p); client.destroy(); upstream.destroy(); };
     client.on("data", (d) => (p.held ? p.held.push(d) : upstream.write(d)));
@@ -56,11 +58,14 @@ export class Link {
     this.isDown = false;
   }
 
-  hold(): void {
+  /** `all`: connections opened while holding are held too (a reconnect, or a helper taking over, can't slip past). */
+  hold(o: { all?: boolean } = {}): void {
     for (const p of this.pairs) p.held ??= [];
+    if (o.all) this.holdNew = true;
   }
 
   release(): void {
+    this.holdNew = false;
     for (const p of [...this.pairs]) {
       if (!p.held) continue;
       const h = p.held;

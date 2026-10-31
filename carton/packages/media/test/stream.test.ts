@@ -187,3 +187,69 @@ test("a finished stream whose entry can't be read fails the play instead of wait
   assert.deepEqual(got, [0]);
   assert.ok(store.objects.has(damagedKey(writer.id)), "reported, so the owner's next share replaces it");
 });
+
+test("overlapping reads of the same entry keep the cache in order (S5 review round, finding 1)", async () => {
+  const { writer, reader } = setup();
+  await writer.init(INIT);
+  for (let i = 0; i < 3; i++) await writer.segment(seg(i), 2);
+  await writer.end();
+  await Promise.all([reader.segment(0), reader.segment(0), reader.segment(1)]);
+  assert.equal((await reader.segment(1))!.index, 1);
+  assert.deepEqual((await reader.known()).map((s) => s.index), [0, 1, 2]);
+});
+
+test("a stream that ends between the reader's two reads is not damaged (S5 review round, finding 2)", async () => {
+  const { store, writer, reader } = setup();
+  await writer.init(INIT);
+  const get = store.get.bind(store);
+  let raced = false;
+  // The segment's read sees nothing; before the end's read, the writer puts the segment and ends.
+  store.get = async (key, range) => {
+    const got = await get(key, range);
+    if (key === streamSegmentKey(writer.id, 0) && !raced) {
+      raced = true;
+      await writer.segment(seg(0), 2);
+      await writer.end();
+    }
+    return got;
+  };
+  const s0 = await reader.waitFor(0);
+  assert.equal(s0?.index, 0);
+  assert.equal(raced, true);
+  assert.equal(store.objects.has(damagedKey(writer.id)), false);
+});
+
+test("the playlist of a finished stream missing an entry fails and reports it, instead of staying live (S5 review round, finding 3)", async () => {
+  const { store, writer, reader } = setup();
+  await writer.init(INIT);
+  await writer.segment(seg(0), 2);
+  await writer.segment(seg(1), 2);
+  await writer.end();
+  store.objects.delete(streamSegmentKey(writer.id, 1));
+  await assert.rejects(reader.playlist((h) => `/m/${h}`), { name: "StreamDamagedError" });
+  assert.ok(store.objects.has(damagedKey(writer.id)));
+});
+
+test("a finished stream with a segment a tool found damaged is taken over by the next claim (S5 review round, finding 8)", async () => {
+  const store = new CountingMemoryStore();
+  const src = "ab".repeat(32);
+  const a = await claimProxyStream(store, src, "p1", "libx264");
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, id: (a.pointer as { stream: string }).stream });
+  await w.init(INIT);
+  await w.segment(seg(0), 2);
+  const s1 = await w.segment(seg(1), 2);
+  await w.end();
+  await store.put(damagedKey("cd".repeat(32)), new Uint8Array([1])); // someone else's damage: not this stream's
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, false);
+  await store.put(damagedKey(s1.hash), new Uint8Array([1])); // what the range server's reader writes (bad/<hash>)
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
+});
+
+test("a whole-object proxy whose stored size is wrong is replaced (S5 review round, finding 7)", async () => {
+  const store = new CountingMemoryStore();
+  const src = "cd".repeat(32);
+  const h = "ef".repeat(32);
+  await store.put(proxyPointerKey(src, "p1"), new TextEncoder().encode(JSON.stringify({ hash: h, size: 3, encoder: "libx264" })));
+  await store.put(mediaKey(h), new Uint8Array(2));
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
+});

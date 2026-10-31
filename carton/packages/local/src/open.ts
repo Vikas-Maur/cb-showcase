@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Carton } from "@carton/core";
-import type { Actor, CartonEvent, HostAdapter } from "@carton/core";
+import type { Actor, CartonEvent, HostAdapter, OpenOptions } from "@carton/core";
 import type { IdentitySource, Store } from "@carton/core/plugins";
 import { openProjectStore } from "@carton/store-sqlite";
 import type { SqliteStore } from "@carton/store-sqlite";
@@ -23,6 +23,9 @@ import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
 import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
+import { followStore } from "./follow.ts";
+import type { Follower } from "./follow.ts";
+import { nudgeHolder } from "./client.ts";
 
 export interface LocalOptions {
   /** The project bundle directory (holds project.json). */
@@ -51,6 +54,12 @@ export interface LocalOptions {
    * app passes the person's name. Default: a person's own name when one opens it, else the OS user name (S3-1).
    */
   name?: string;
+  /**
+   * Sync for this process's own handle (Carton.open's `sync`): the app's library worker, whose handle is the lease
+   * holder's engine, opens with `autoConnect: false` and connects under its nonce. Absent: the handle can read shared
+   * cuts but hands every write on them to the lease holder.
+   */
+  sync?: OpenOptions["sync"];
 }
 
 export interface LocalCarton {
@@ -72,8 +81,7 @@ export const nextChangeId = (): string => `${RID}.${++n}`;
 export function readProjectId(projectDir: string): string {
   try {
     const p = JSON.parse(readFileSync(join(projectDir, "project.json"), "utf8"));
-    // Cardboard's project.json is an envelope `{format, version, project, media}` with the id at `project.id`;
-    // a bare top-level `id` is other hosts' (and the local tests') shape
+    // Cardboard's envelope is {format, version, project: {id, …}, media}; a bare project keeps `id` at the top
     const id = p?.project?.id ?? p?.id;
     if (typeof id === "string" && id) return id;
   } catch { /* no project.json: a non-Cardboard host */ }
@@ -108,7 +116,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   const name = replicaName(opts.name, actor);
   let carton: Carton;
   try {
-    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, name, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName } : undefined });
+    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, name, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
   } catch (e) {
     await store.close();
     throw e;
@@ -143,9 +151,14 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
         idempotent: IDEMPOTENT.has(op.kind),
         spawnHelper: (seen) => void spawnHelper({ dbPath, seen, factory: recipe?.factory ?? factory, config: { name, ...recipe?.config, projectDir: opts.projectDir, projectId, dataDir: opts.dataDir, ...opts.helperConfig } }),
       });
-      if (r.via === "holder") return r.result as CbResult;
-      if (r.via === "in-process") return withRaceRetry(IDEMPOTENT.has(op.kind), () => runWrite(carton, req));
-      return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
+      if (r.via === "error") return { status: "error", error: r.error, notices: [], ...(r.code ? { code: r.code } : {}) };
+      const out = r.via === "holder" ? (r.result as CbResult) : await withRaceRetry(IDEMPOTENT.has(op.kind), () => runWrite(carton, req));
+      // written without the holder the probe found (it didn't answer, or its lease had expired): if it is alive after
+      // all (the app's engine thread, busy for a moment), tell it to look at carton.db now (B11). Best effort, not
+      // awaited: the app follows carton.db by itself within a poll
+      const passed = r.passedOver;
+      if (passed && ((out.status === "confirmed" && !out.empty) || out.status === "pending") && !(r.via === "holder" && r.holder.socketPath === passed.socketPath)) void nudgeHolder(passed.socketPath);
+      return out;
     },
     async close() {
       await carton.close();
@@ -158,14 +171,44 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
  * The engine a lease holder runs (helper or engine thread): writes through `runWrite`, and, on shared cuts, the sync
  * client started under the lease nonce, quiesced on handover, stopped when fenced.
  */
+export interface HolderEngineOptions {
+  /** The app's materializer (project.json, the shared timeline.tsx, per-agent views). */
+  materializer?: ViewPrinter | null;
+  /**
+   * Follow carton.db's current cut and head whoever writes it (B11): on by default when there is a materializer or an
+   * `onExternal` listener. `intervalMs`: the poll (default FOLLOW_MS; 0: only on a nudge).
+   */
+  follow?: false | { intervalMs?: number };
+  /** Another process moved this machine's head or switched its current cut (the app tells its pages). */
+  onExternal?: (e: { type: "head" | "cut"; cut: string }) => void;
+}
+
 export class CartonHolderEngine implements HolderEngine {
   readonly carton: Carton;
   readonly materializer: ViewPrinter | null;
   private off: (() => void) | null = null;
-  constructor(carton: Carton, opts: { materializer?: ViewPrinter | null } = {}) {
+  private follower: Follower | null = null;
+  constructor(carton: Carton, opts: HolderEngineOptions = {}) {
     this.carton = carton;
     this.materializer = opts.materializer ?? null;
     const mz = this.materializer;
+    if (opts.follow !== false && (mz || opts.onExternal)) {
+      // what the holder's own runWrite tells the materializer, for a write some other process made: a `cb` call
+      // happened (windowless agents are active), and head moved (or the current cut changed)
+      this.follower = followStore(carton, (carton as unknown as { store: Store }).store, {
+        intervalMs: opts.follow ? opts.follow.intervalMs : undefined,
+        onHead: async (cut) => {
+          await mz?.onCb?.();
+          mz?.onHeadChange?.("local");
+          opts.onExternal?.({ type: "head", cut });
+        },
+        onCut: async (cut) => {
+          if (mz?.onCutSwitch) await mz.onCutSwitch(cut);
+          else mz?.onHeadChange?.("local");
+          opts.onExternal?.({ type: "cut", cut });
+        },
+      });
+    }
     if (mz?.onChangeUpdate) {
       // A view save on a shared cut is `pending` in its sidecar until the server answers: the answer (confirmed, late
       // cards, refused) goes to the view whose last save it is (R5-04, B10). On a local cut the save itself answered.
@@ -217,6 +260,17 @@ export class CartonHolderEngine implements HolderEngine {
 
   async quiesce(): Promise<void> {
     await this.carton.sync?.disconnect({ drain: true });
+  }
+
+  /** Look at carton.db now (a `cb` wrote without this holder). */
+  async nudge(): Promise<void> {
+    await this.follower?.check();
+  }
+
+  /** Stop following carton.db (the engine is closing; the lease's stop() leaves it running: a fenced app still follows). */
+  close(): void {
+    this.follower?.stop();
+    this.follower = null;
   }
 
   async stop(): Promise<void> {

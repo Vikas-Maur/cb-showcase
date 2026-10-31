@@ -7,7 +7,7 @@
 // Zero lost edits, zero edits re-attributed to another actor.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeMachine, itemNamed, SAMPLE, readEnvelope, type Machine } from "../support/project.ts";
 import { Procs, killIfOurs } from "../support/procs.ts";
@@ -15,9 +15,9 @@ import { pkg, renameRetry, scratch, support, until, sleep } from "../support/env
 import { cbOk, cbWrite, setOp } from "../support/cb.ts";
 import { Link } from "../support/link.ts";
 import { startHost } from "../support/hosts.ts";
-import { twoMachines, state, gui } from "../support/live.ts";
+import { twoMachines, state, gui, LOCAL_FACTORY, helperConfigFile } from "../support/live.ts";
+import { helperTookLeaseSince } from "../support/head.ts";
 
-const LOCAL_FACTORY = pkg("local", "src", "factory.ts");
 
 test("S6 the helper is killed mid-push; the next cb takes over and retries under the same id: one row, its author kept (H1 late push included)", { timeout: 300_000 }, async (t) => {
   const procs = new Procs();
@@ -148,8 +148,9 @@ test("S6 the server restarts with pushes on the wire: both machines converge, no
   // two edits synced normally
   for (const k of [0, 1]) assert.equal((await write(plan[k][0], k, plan[k][1], plan[k][2], plan[k][3])).status, "confirmed");
   // B's next two pushes are on the wire (held in its link), A's next edit too; then the server dies and comes back
-  b.link.hold();
-  a.link.hold();
+  // every connection, including any opened meanwhile (a reconnect, or a helper taking the lease over on a loaded runner)
+  b.link.hold({ all: true });
+  a.link.hold({ all: true });
   const inflight = [2, 3, 4].map((k) => write(plan[k][0], k, plan[k][1], plan[k][2], plan[k][3], 1000));
   await until(() => b.link.heldBytes > 0 && a.link.heldBytes > 0, 30_000, "pushes from both machines on the wire");
   const res = await Promise.all(inflight);
@@ -177,10 +178,15 @@ test("S6 the server restarts with pushes on the wire: both machines converge, no
 });
 
 test("B7: with the app closed, a plain `cb` write on a shared cut starts a helper that syncs it (not 'open Carton with sync')", { timeout: 300_000, todo: "B7, local-cli + windows: the helper a cb starts gets no sync config (server URL, token file); nothing records it for the project" }, async (t) => {
-  const { host, a, b } = await twoMachines(t, "node");
+  const { host, a, b, procs } = await twoMachines(t, "node");
   await a.app.ask({ cmd: "exit" });
+  // no holder left from setup (a helper started then has the stand-in config and a working sync connection)
+  await procs.stopHelpers();
+  rmSync(helperConfigFile(a.m), { force: true }); // the product's own behaviour: no recorded sync config
+  const since = Date.now();
   const r = await cbWrite(a.m, { kind: "commit", ops: [setOp("timelineItems", itemNamed(a.m, SAMPLE.logo)!.id, "zIndex", 12)] }, { actor: "codex/closed-app" });
   assert.ok(r.status === "confirmed" || r.status === "pending", JSON.stringify(r));
+  assert.ok(helperTookLeaseSince(a.m, since), "the write started a fresh helper");
   // synced for real: the server holds it, and the other machine sees it, credited to the agent
   await until(async () => (await host.rows(a.m.projectId))!.some((x) => x.id === r.id), 30_000, "the change on the server");
   await until(() => itemNamed(b.m, SAMPLE.logo)?.zIndex === 12, 30_000, "the change on B");

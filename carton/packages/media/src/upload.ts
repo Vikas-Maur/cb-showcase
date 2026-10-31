@@ -387,7 +387,8 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     if (await finished()) {
       await states.delete(key);
       result.deduped = true;
-      return result;
+      // When replacing a damaged object, finished() saw a new ETag: it is replaced (by us or another caller).
+      return repaired(result);
     }
     if (uploadGone(e)) await states.delete(key);
     throw e;

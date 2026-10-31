@@ -16,6 +16,7 @@ import { makeMachine, itemNamed, items, SAMPLE } from "../support/project.ts";
 import { Procs } from "../support/procs.ts";
 import { support, until } from "../support/env.ts";
 import { cb, cbOk } from "../support/cb.ts";
+import { named, untilShown } from "../support/head.ts";
 
 const DIRECTOR = "director/chat1/turn1";
 const SUB = (x: string) => `${DIRECTOR}/sub-editor-${x}`;
@@ -69,14 +70,20 @@ test("S1 a real Cardboard project: GUI save, a Director turn with two parallel s
   }
 
   // all six subagent edits (and the Director's) are in head, on disk and in project.json, once each
-  await until(() => itemNamed(m, "Title B")?.startTime === 9 && itemNamed(m, "Title A")?.startTime === 5, 20_000, "project.json to show head");
+  // (the Director's own save can land last: B3's retries delay its print on a loaded machine)
+  await until(() => itemNamed(m, "Title B")?.startTime === 9 && itemNamed(m, "Title A")?.startTime === 5 && itemNamed(m, SAMPLE.clipA)?.opacity === 0.5, 30_000, "project.json to show head");
   for (const [x, at] of [["A", 5], ["B", 9]] as const) {
     const it = itemNamed(m, `Title ${x}`)!;
     assert.equal(it.textContent, `${x} v2`, `${x}'s second edit landed`);
     assert.deepEqual([it.startTime, it.endTime], [at, at + 1], `${x}'s third edit landed`);
   }
   assert.equal(items(m).filter((i) => /^Title [AB]$/.test(i.name ?? "")).length, 2, "no duplicate titles");
-  assert.equal(itemNamed(m, SAMPLE.clipA)!.opacity, 0.5, "the Director's edit landed");
+  if (itemNamed(m, SAMPLE.clipA)!.opacity !== 0.5) {
+    const hist = await cbOk(m, ["history", "--limit", "30"]);
+    const steps = [];
+    for (const v of hist.versions.filter((x: any) => x.ref.seq > 1).reverse()) steps.push([v.version, v.by?.id ?? null, (await cbOk(m, ["compare", `main@${v.ref.seq - 1}`, v.version])).changes]);
+    assert.fail(`the Director's edit isn't in project.json (Clip A opacity ${itemNamed(m, SAMPLE.clipA)!.opacity}); history ${JSON.stringify(steps)}; Director ${JSON.stringify(outs[0])}`);
+  }
   assert.equal(itemNamed(m, SAMPLE.title)!.fontSize, 150, "the person's GUI edit is still there");
 
   // history: every version, attributed down to the subagent (R2-03)
@@ -95,21 +102,23 @@ test("S1 a real Cardboard project: GUI save, a Director turn with two parallel s
   const beforeUndo = h.versions[0].version;
 
   // --- undo the whole turn (Director and subagents): one undo change; the person's GUI edit stays
+  const undoAt = Date.now();
   const u = await cbOk(m, ["undo", "--turn", "turn1"]);
   assert.equal(u.status, "confirmed", JSON.stringify(u));
-  await until(() => !itemNamed(m, "Title A") && !itemNamed(m, "Title B") && itemNamed(m, SAMPLE.clipA)!.opacity === 0.9, 20_000, "the turn undone in project.json");
-  assert.equal(itemNamed(m, SAMPLE.title)!.fontSize, 150, "undo --turn kept the person's edit");
+  const undone = await untilShown(t, m, undoAt, (l) => !named(l, "Title A") && !named(l, "Title B") && named(l, SAMPLE.clipA)!.opacity === 0.9, "the turn undone");
+  assert.equal(named(undone, SAMPLE.title)!.fontSize, 150, "undo --turn kept the person's edit");
   h = await cbOk(m, ["history", "--limit", "50"]);
   assert.equal(h.versions[0].kind, "undo");
   assert.equal(h.versions.filter((v: any) => v.kind === "undo").length, 1, "one undo change for the whole turn");
 
   // --- restore the version before the undo: saved as a new version, every edit back
+  const restoreAt = Date.now();
   const r = await cbOk(m, ["restore", beforeUndo]);
   assert.equal(r.status, "confirmed", JSON.stringify(r));
-  await until(() => itemNamed(m, "Title A")?.textContent === "A v2" && itemNamed(m, "Title B")?.startTime === 9, 20_000, "the restore in project.json");
+  const restored = await untilShown(t, m, restoreAt, (l) => named(l, "Title A")?.textContent === "A v2" && named(l, "Title B")?.startTime === 9, "the restore");
   h = await cbOk(m, ["history", "--limit", "50"]);
   assert.ok(h.versions[0].ref.seq > guiSeq + 7, "restore is a new version, history kept");
-  assert.equal(itemNamed(m, SAMPLE.clipA)!.opacity, 0.5);
+  assert.equal(named(restored, SAMPLE.clipA)!.opacity, 0.5);
 
   // the shared timeline.tsx: a valid header that core resolves exactly (a stale or unknown one would fail loudly)
   const sharedRev = findRev(readFileSync(join(m.bundle, "timeline.tsx"), "utf8"))?.rev as any;
