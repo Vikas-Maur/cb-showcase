@@ -17,7 +17,7 @@ import type { Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase } from "./history/common.ts";
-import { History, actorKey, groupOf, nodeId, parseNode, randomHex } from "./history/history.ts";
+import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import type {
   Actor,
@@ -504,7 +504,13 @@ class CartonImpl implements Carton {
   async undoStack(group?: string, opts: { cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    return this.#h.undoStack(cut, group ?? groupOf(this.#actor()));
+    // an unnamed edit's label says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
+    return this.#h.undoStack(cut, group ?? groupOf(this.#actor())).map((e) => {
+      const c = this.#h.changes(cut)[e.seq - 1]!;
+      if (c.name || c.intent?.kind) return e;
+      const what = E.describe(c.ops, this.#h.stateOf(nodeId(cut, e.seq - 1)) ?? {}, this.schema, c.intent)[0];
+      return what ? { ...e, label: undoLabel(c, what) } : e;
+    });
   }
   async notices(actor?: Actor, opts: { take?: boolean } = {}) {
     const key = actorKey(actor ?? this.#actor());

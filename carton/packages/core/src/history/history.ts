@@ -783,14 +783,9 @@ export class History {
     for (let i = br.log.length - 1; i >= 0; i--) {
       const c = br.log[i]!;
       if (c.kind === "undo" || undone.has(c.id) || groupOf(c.author) !== group) continue;
-      out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: this.#undoLabel(c), author: c.author, at: c.at });
+      out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: undoLabel(c), author: c.author, at: c.at });
     }
     return out;
-  }
-  #undoLabel(c: ConfirmedChange): string {
-    const who = c.author.kind === "human" ? "" : `${c.author.name ?? c.author.agentType ?? c.author.id}${c.author.kind === "external" ? " (terminal)" : ""}: `;
-    const what = c.name ?? E.describe(c.ops, this.stateOf(nodeId(c.branchId, c.seq - 1)) ?? {}, this.schema, c.intent)[0] ?? "change";
-    return `Undo ${who}${what}`;
   }
   /**
    * ⌘Z for an actor group: invert the newest entry of its stack at the head. An agent turn (entries sharing
@@ -1078,6 +1073,12 @@ export class History {
 }
 
 // ------------------------------------------------------------------ helpers
+
+/** "Undo Director: tighter intro": who (agents only) and what (default: the change's name, intent or kind). */
+export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {
+  const who = c.author.kind === "human" ? "" : `${c.author.name ?? c.author.agentType ?? c.author.id}${c.author.kind === "external" ? " (terminal)" : ""}: `;
+  return `Undo ${who}${what}`;
+}
 
 const touchesTimeline = (schema: Schema, ops: readonly Op[]): boolean => !!schema.timeline && ops.some((op) => op.op === "remap" || op.path[0] === schema.timeline!.collection);
 /**
