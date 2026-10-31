@@ -20,10 +20,11 @@ import { hookDelivered, isFallbackActor } from "./identity.ts";
 export type WriteOp =
   /** `base`: the version the edit was made on, as Carton gave it: a StateRef, or a printed header (default: head). */
   /**
-   * `head` (commit, fold, restore, revert, undo, undoTurn): answer a write still pending (the holder offline, or the
-   * server slow) with the holder's head as well (`head: {ref, doc}`: its optimistic state, with this write in, of the
-   * cut the write went to). A caller that writes the project file itself (the Windows app's cb, windows-sync) can't
-   * read that state: its own handle has the confirmed rows only.
+   * `head` (commit, fold, restore, revert, undo, undoTurn): answer a write that saved (confirmed, pending or conflicts)
+   * with the holder's head as well (`head: {ref, doc}`: its optimistic state, with this write in, of the cut the write
+   * went to). A caller that writes the project file itself (the Windows app's cb, windows-sync) can't read that state:
+   * its own handle has the confirmed rows only. A confirmed answer needs it too: a write that changed nothing confirms
+   * at once while the holder's own edits still wait for the server.
    */
   | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
@@ -51,11 +52,16 @@ export interface WriteRequest {
   waitMs?: number;
 }
 
+/**
+ * WriteOp `head`'s answer: the holder's head of the cut written to (core's `head(cut)`: the records are History's own,
+ * frozen and shared, never copied per answer; only the collection arrays are new).
+ */
+export type WriteHead = { ref: StateRef; doc: unknown };
 export type CbResult =
-  | { status: "confirmed"; id?: ChangeId; seq: number; ref: string | null; notices: Notice[]; empty?: boolean; [k: string]: unknown }
-  /** `head`: the holder's head of the cut written to, when the write asked for it (WriteOp `head`). */
-  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; head?: { ref: StateRef; doc: unknown }; [k: string]: unknown }
-  | { status: "conflicts"; id?: ChangeId; conflicts: ConflictCard[]; ref: string | null; notices: Notice[]; [k: string]: unknown }
+  /** `head` (confirmed, pending, conflicts): when the write asked for it (WriteOp `head`). */
+  | { status: "confirmed"; id?: ChangeId; seq: number; ref: string | null; notices: Notice[]; empty?: boolean; head?: WriteHead; [k: string]: unknown }
+  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; head?: WriteHead; [k: string]: unknown }
+  | { status: "conflicts"; id?: ChangeId; conflicts: ConflictCard[]; ref: string | null; notices: Notice[]; head?: WriteHead; [k: string]: unknown }
   | { status: "rejected"; id?: ChangeId; reason: string; notices: Notice[]; [k: string]: unknown }
   | { status: "error"; error: string; notices: Notice[]; [k: string]: unknown };
 
@@ -272,6 +278,8 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   const author = req.actor;
   // the change whose outcome this result reports (its notice is marked delivered, not listed again)
   let answered: ChangeId | null = null;
+  // the cut the write went to (core's answer names it), for WriteOp `head`
+  let into: string | undefined;
   const busy = running(carton);
   busy.set(req.id, (busy.get(req.id) ?? 0) + 1);
   // listen before writing: on a shared cut the ack can arrive before commit() returns
@@ -279,7 +287,11 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   try {
     // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers)
     await opts.materializer?.onCb?.();
-    const result = await run();
+    let result = await run();
+    // WriteOp `head`: the holder's head of the cut the write went to, never of whichever cut is current now
+    if ("head" in op && op.head && (result.status === "confirmed" || result.status === "pending" || result.status === "conflicts")) {
+      result = { ...result, head: await carton.head(into ?? destCut(op)) } as CbResult;
+    }
     notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
     return result;
   } finally {
@@ -397,6 +409,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     }
     default: return { status: "error", error: `unknown write ${(op as any).kind}`, notices };
   }
+  into = (r as { ref?: StateRef | null } | undefined)?.ref?.branchId ?? destCut(op);
   if (r?.status === "confirmed" && !r.empty) opts.materializer?.onHeadChange?.("local");
   if (r?.status === "up-to-date") return { status: "confirmed", seq: 0, ref: null, notices, upToDate: true };
   if (r?.status === "missing-base" || r?.status === "compare") return { status: "conflicts", conflicts: r.cards ?? [], ref: null, notices, dialog: r.dialog };
@@ -406,11 +419,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   // the cut written to, not the current one: a write to another cut waits on that cut's connection
   const st = () => carton.sync?.state(destCut(op)).status;
   const online = opts.online ? opts.online(destCut(op)) : st() === "up-to-date" || st() === "syncing";
-  // a write that asked for it gets the holder's head with a pending answer (WriteOp `head`): the head of the cut the
-  // write went to (core's answer names it), never of whichever cut is current when the answer is made
-  const into = (r as { ref?: StateRef | null } | undefined)?.ref?.branchId ?? destCut(op);
-  const withHead = async (x: CbResult): Promise<CbResult> => ("head" in op && op.head && x.status === "pending" ? { ...x, head: await carton.head(into) } : x);
-  if (!online) return asConflicts(await withHead({ ...toCbResult(r, notices), online: false } as CbResult));
+  if (!online) return asConflicts({ ...toCbResult(r, notices), online: false } as CbResult);
   const ms = req.waitMs ?? WAIT_MS;
   if (carton.sync?.waitFor) {
     // the shared cut's own answer: confirmed by the server, a late conflict, a rejection, or still pending
@@ -418,13 +427,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     if (o.status === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices });
     // spent with no effect of its own: an identical edit was already there. Saved, in effect: never an error
     if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
-    if (o.status === "pending") return asConflicts(await withHead({ ...toCbResult(r, notices), online: true } as CbResult));
+    if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
     // its notice (core stored it before the wait returned) is this result: marked delivered, not listed again
     answered = r.id;
     return o.status === "rejected" ? rejectedResult(r.id, o.reason, notices) : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
   }
   const out = await outcomes.wait(r.id, ms);
-  if (!out) return asConflicts(await withHead({ ...toCbResult(r, notices), online: true } as CbResult));
+  if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
   if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
   // the change came back with a late conflict while we waited: it is this call's answer
   const n = out.notice;
