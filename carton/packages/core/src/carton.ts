@@ -163,8 +163,11 @@ export interface CartonSync {
   /**
    * Start pushing every shared cut (the lease holder passes its nonce; `fence(nonce)` is asked before every step that
    * touches the queue, and false stops the client for good). Resolves once caught up, or after `timeoutMs`.
+   * `conditions` (the holder's `fence(nonce)` as a Store condition) go with every write that settles the server's
+   * answers: a holder replaced before its own fence noticed writes nothing, reloads what the store holds and stops
+   * (a `sync` event, status `stopped`), so its replacement alone records outcomes and authors' notices.
    */
-  connect(opts?: { nonce?: string; fence?: (nonce: string) => boolean; timeoutMs?: number }): Promise<boolean>;
+  connect(opts?: { nonce?: string; fence?: (nonce: string) => boolean; conditions?: StoreCondition[]; timeoutMs?: number }): Promise<boolean>;
   /** Stop; `drain`: push nothing new and resolve once nothing is in flight (a lease hand-over). */
   disconnect(opts?: { drain?: boolean; timeoutMs?: number }): Promise<void>;
   presence(state: PresenceState | null): void;
@@ -332,6 +335,16 @@ class CartonImpl implements Carton {
   #rq: ReplicaQueue | null = null;
   #shared = new Map<string, SharedCut>();
   #connected: { nonce: string; fence?: (nonce: string) => boolean } | null = null;
+  /** Store conditions every settling write carries (`connect({ conditions })`); `#fenced` once one failed. */
+  #settleConds: StoreCondition[] = [];
+  #fenced = false;
+  /** Pending rows being written: a settle waits for them, so it never runs before the row it settles exists. */
+  #inflight = new Set<Promise<unknown>>();
+  /**
+   * The author of each change this handle queued, until its own outcome is settled: an earlier settlement may already
+   * have dropped its pending row (it left the queue), and its notice must still go to its author.
+   */
+  #authors = new Map<ChangeId, Actor>();
   readonly media: CartonMedia | null = null;
   #opts: OpenOptions;
   #h!: History;
@@ -369,6 +382,8 @@ class CartonImpl implements Carton {
         state: (cut?: string) => self.#shared.get(cut ?? self.#h.current)?.state() ?? offline,
         connect: async (o = {}) => {
           self.#connected = { nonce: o.nonce ?? randomHex(8), ...(o.fence ? { fence: o.fence } : {}) };
+          self.#settleConds = o.conditions ?? [];
+          self.#fenced = false;
           let ok = true;
           for (const c of self.#h.cuts()) if (self.#isShared(c.id)) ok = (await (await self.#ensureShared(c.id)).connect({ ...self.#connected, timeoutMs: o.timeoutMs ?? 5000 })) && ok;
           return ok;
@@ -1190,7 +1205,11 @@ class CartonImpl implements Carton {
     // holds its latest version's ops, relative to the stored confirmed head plus the rows before it (rewritten at every
     // settlement), so re-queuing them in order rebuilds the same optimistic state
     const pending = (await this.store.range<PendingRow>(T.pending, { prefix: [cut] })).map((e) => e.value).sort((x, y) => x.order - y.order);
-    for (const p of pending) if (!this.#h.confirmedById(p.id) && !sc.queue.pending(cut).some((q) => q.id === p.id)) sc.commit({ id: p.id, author: p.author, ops: p.ops, at: p.at, intent: p.intent, kinds: p.kinds, policy: p.policy, inferIntent: false, ...(p.history ? { history: p.history } : {}) });
+    for (const p of pending) {
+      if (this.#h.confirmedById(p.id) || sc.queue.pending(cut).some((q) => q.id === p.id)) continue;
+      this.#authors.set(p.id, p.author);
+      sc.commit({ id: p.id, author: p.author, ops: p.ops, at: p.at, intent: p.intent, kinds: p.kinds, policy: p.policy, inferIntent: false, ...(p.history ? { history: p.history } : {}) });
+    }
     sc.on((e) => this.#onShared(cut, e));
     if (this.#connected) void sc.connect(this.#connected);
     return sc;
@@ -1242,14 +1261,19 @@ class CartonImpl implements Carton {
    * handle. A write that fails leaves History where the store is, and the next event settles again.
    */
   #settle(cut: string, e: SharedCutEvent): Promise<void> {
-    const run = () => this.#settleShared(cut, e);
+    // after any pending row still being written: a change settled at once (refused as too large before it was sent)
+    // must find its author there, and its row must not land after the settle removed it (it would come back pending)
+    const run = async () => {
+      if (this.#inflight.size) await Promise.allSettled([...this.#inflight]);
+      return this.#settleShared(cut, e);
+    };
     return (this.#queue = this.#queue.then(run, run).catch((err: unknown) => {
       this.#emit({ type: "notice", notice: { to: actorKey(this.#actor()), kind: "rejected", text: `couldn't save what the server confirmed (it is retried): ${String(err)}` } });
     }));
   }
   async #settleShared(cut: string, e: SharedCutEvent): Promise<void> {
     const sc = this.#shared.get(cut);
-    if (!sc || this.#closed) return;
+    if (!sc || this.#closed || this.#fenced) return;
     const q = sc.queue;
     const writes: StoreWrite[] = [];
     // rows the server confirmed (ours and others'), up to the first stretch known only through a keyframe
@@ -1279,7 +1303,7 @@ class CartonImpl implements Carton {
     // server refused: a notice for its author, in the same batch, returned at the start of that actor's next cb/MCP
     // result and by the Stop hook
     const notices: Notice[] = [];
-    const authorOf = (id: string) => stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
+    const authorOf = (id: string) => this.#authors.get(id) ?? stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
     const late = e.type === "confirmed" ? e.lateCards : e.type === "absorbed" ? e.cards : [];
     if (late.length && (e.type === "confirmed" || e.type === "absorbed")) notices.push({ to: actorKey(authorOf(e.id)), kind: "late-conflict", text: `Your change ${e.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: e.id, cards: late });
     // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
@@ -1291,15 +1315,24 @@ class CartonImpl implements Carton {
     const rec = this.#h.cut(cut)!;
     const handed = E.canonical(qs) !== E.canonical(rec.sequencer) ? { ...rec, sequencer: qs } : null;
     if (handed) writes.push({ table: T.cuts, key: [cut], value: handed });
-    if (writes.length) await this.store.write(writes); // the store first: History only moves to what is saved
+    // the store first: History only moves to what is saved. Under the holder's fence: a holder the lease has moved on
+    // from records nothing more, reloads what the store holds and stops; its replacement settles the same answers once
+    if (writes.length && !(await this.store.write(writes, this.#settleConds))) {
+      this.#fenced = true;
+      await this.#rebuild();
+      for (const s of this.#shared.values()) await s.disconnect();
+      this.#emit({ type: "sync", status: "stopped", waiting: 0 });
+      return;
+    }
     if (fresh.length) {
       this.#h.load(cut, fresh);
       // keyframes for rows the server confirmed: a write of their own (a lost one only means a longer replay at open)
       const k = this.#keyframeWrites(cut, fresh);
-      if (k.writes.length && (await this.store.write(k.writes))) this.#kf.set(cut, k.next);
+      if (k.writes.length && (await this.store.write(k.writes, this.#settleConds))) this.#kf.set(cut, k.next);
     }
     if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs });
+    if (e.type === "confirmed" || e.type === "absorbed" || e.type === "rejected") this.#authors.delete(e.id);
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     for (const n of notices) this.#emit({ type: "notice", notice: n });
   }
@@ -1410,7 +1443,9 @@ class CartonImpl implements Carton {
   #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name">, history?: HistoryFields): CommitResult {
     const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
     const at = this.#opts.clock?.() ?? Date.now();
+    this.#authors.set(id, author);
     const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}) });
+    if (r.status === "confirmed") this.#authors.delete(id);
     const seq = sc.queue.headSeq(cut);
     if (r.status === "confirmed") {
       // nothing to record: the id is spent anyway, so its retry stays a no-op (here and in other processes)
@@ -1428,7 +1463,16 @@ class CartonImpl implements Carton {
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
     const writes: StoreWrite[] = [];
     sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
-    if (writes.length || extra.length) await this.store.write([...writes, ...extra]);
+    // started before anything can settle it: a settle waits for #inflight
+    if (writes.length || extra.length) {
+      const w = this.store.write([...writes, ...extra]);
+      this.#inflight.add(w);
+      try {
+        await w;
+      } finally {
+        this.#inflight.delete(w);
+      }
+    }
     if (!wait) return r;
     const o = await sc.waitFor(id, wait);
     // a confirmation is answered once History holds the row (the result carries the change)
@@ -1468,6 +1512,8 @@ class CartonImpl implements Carton {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };
     if (o.status === "conflicts") return { status: "conflicts", cards: o.cards, ref: this.#sharedRef(cut) };
     if (o.status === "rejected") return { status: "rejected", reason: o.reason };
+    // spent with no effect of its own (an identical edit was already there): saved, in effect, with nothing to record
+    if (o.status === "absorbed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: null, empty: true, rebased: 0, notices: [] };
     return { status: "pending", id: o.id, ref: this.#sharedRef(cut), notices: [] };
   }
   async share(cut: string = this.#h.current): Promise<CutRecord> {

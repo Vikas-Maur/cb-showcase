@@ -41,8 +41,9 @@ export type WriteOutcome =
   | { status: "confirmed"; id: string; seq: number }
   | { status: "conflicts"; id: string; seq?: number; cards: ConflictCard[]; absorbed?: boolean }
   /**
-   * Spent by a withdraw (H1): it changed nothing of its own. Reported when the outcome is older than this process's
-   * record of it, so whether it left cards is no longer known (they went to the replica's cards when it happened).
+   * Spent by a withdraw (H1), or absorbed before it was sent: it changed nothing of its own. Live, it left no cards
+   * (with cards it is `conflicts`, `absorbed: true`); when the outcome is older than this process's record of it,
+   * whether it left cards is no longer known (they went to the replica's cards when it happened).
    */
   | { status: "absorbed"; id: string; seq: number }
   | { status: "rejected"; id: string; reason: string }
@@ -89,7 +90,8 @@ function outcomeLog(queue: ReplicaQueue): OutcomeLog {
         break;
       case "absorbed": {
         const cards = [...e.change.cards, ...e.cards];
-        log.record(e.branchId, e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "confirmed", id: e.change.id, seq: queue.headSeq(e.branchId) });
+        // without cards it is saved in effect, but says so: a `cb` caller reports "already in place", not a new change
+        log.record(e.branchId, e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "absorbed", id: e.change.id, seq: queue.headSeq(e.branchId) });
         break;
       }
       case "rejected":
