@@ -38,6 +38,14 @@ test("open with init, commit, reopen from the same store sees the same history",
   assert.equal((await again.log())[0]!.author?.id, "alice");
 });
 
+test("§16 migration: init asChange records the existing project as main@1, one insert-all change", async () => {
+  const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), asChange: true }, actor: human });
+  const log = await c.log();
+  assert.deepEqual(log.map((v) => [v.ref.seq, v.kind]), [[1, "import"], [0, "root"]]);
+  assert.deepEqual((await c.head()).doc.items, doc0().items);
+  assert.equal((await c.credits(["items", "a"]))?.id, "import");
+});
+
 test("two handles on one store act like two processes: concurrent commits both land, none lost", async () => {
   const data = createMemoryData();
   const a = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), init: { doc: doc0() }, actor: human });
