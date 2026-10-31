@@ -14,6 +14,8 @@ export interface Env {
   AUTH_SECRET: string;
   // enables POST /api/admin/projects/:p/invites, the bootstrap for a project's first owner
   ADMIN_TOKEN?: string;
+  // the newest document schemaVersion the sequencer accepts in hello (default 1)
+  SCHEMA_VERSION?: string;
   // archiving (§18): rows kept live per branch, rows per segment, how often the alarm runs
   ARCHIVE_KEEP?: string;
   ARCHIVE_SEGMENT?: string;

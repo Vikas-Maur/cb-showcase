@@ -47,3 +47,31 @@ test("oversized JSON bodies are refused", async () => {
   const r = await handleHttp(req("/api/projects/p/join", { method: "POST", body: "x".repeat(70_000) }), deps());
   assert.equal(r?.status, 413);
 });
+
+test("a chunked body with no Content-Length is cut off at the budget, and its stream cancelled", async () => {
+  let pulled = 0, cancelled = false;
+  const endless = new ReadableStream<Uint8Array>({
+    pull(c) {
+      pulled++;
+      c.enqueue(new Uint8Array(16 * 1024));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  const r = await handleHttp(new Request("http://host/api/projects/p/join", { method: "POST", body: endless, duplex: "half" } as RequestInit), deps());
+  assert.equal(r?.status, 413);
+  assert.ok(cancelled, "the stream was not cancelled");
+  assert.ok(pulled < 16, `read ${pulled} chunks past a 64 KB budget`);
+});
+
+test("a complete request for the maximum 10,000 parts is not refused for its size", async () => {
+  const d = deps();
+  const tok = await d.auth.issue!({ ...ctx, ttlMs: 60_000 });
+  const store = d.blobsFor("p")!;
+  const up = await store.createMultipart("big");
+  const parts = Array.from({ length: 10_000 }, (_, i) => ({ partNumber: i + 1, etag: `"${"e".repeat(32)}"` }));
+  const r = await handleHttp(req(`/api/projects/p/uploads/${up.uploadId}/complete?key=big`, { method: "POST", headers: { authorization: `Bearer ${tok}` }, body: JSON.stringify({ parts }) }), d);
+  assert.notEqual(r?.status, 413);
+  assert.equal(r?.status, 400, "the store refuses the parts (never uploaded), not the HTTP layer");
+});

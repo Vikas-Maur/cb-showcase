@@ -70,7 +70,9 @@ Use `@carton/blob-memory/rules` for the argument checks, so a bad call fails the
 - **Multipart:** parts are numbered 1–10,000. All parts but the last have the same size, and the last is no larger,
   as R2 requires. S3 and R2 need parts of at least 5 MiB except the last. `complete` joins the parts in part-number
   order. Re-uploading a part replaces it, and the old etag no longer completes. `listParts` must work on a handle made
-  with `resumeMultipart(key, id)` alone. A bogus, aborted or completed id fails.
+  with `resumeMultipart(key, id)` alone. A bogus, aborted or completed id fails. An upload is bound to its key:
+  through another key, `listParts` and `complete` fail and `abort` leaves it alone. Behind a scoped store an upload
+  id is all another project would need otherwise.
 - **`sha256`** is the real hash of the bytes. A store may verify it, as R2 does, and refuse a mismatch.
 
 ### Running the suite
@@ -96,8 +98,12 @@ instead.
 
 ### One bucket, many projects
 
-Wrap a store with `scopedBlobStore(store, "projects/<id>/")` (`@carton/blob-memory/scoped`). Both hosts do this, so
-a project can't name another project's keys.
+Wrap a store with `scopedBlobStore(store, "projects/<id>/")` (`@carton/blob-memory/scoped`), so a project can't name
+another project's keys. Both hosts go one step further and give each project two scopes that no route can cross:
+`projects/<id>/seq/` for the sequencer's keyframes, archived segments and large change bodies, and
+`projects/<id>/media/` for what the HTTP API signs and uploads. An editor can write media, but never a record the
+sequencer relies on, which may belong to a cut they may not write. A signed URL's MAC also covers its route
+(`/blob/<id>/`), so a URL for one project never opens the same key under another.
 
 ## A new SequencerHost
 
@@ -120,10 +126,16 @@ every host runs the same function. The host:
    socket follows, its dead epoch). If your host can evict a project while sockets stay open, as Durable Objects do,
    save `state` with the socket after each message that changed it.
 4. **Keeps the rest thin:**
+   - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
+     `hello`;
+   - accept messages up to Cloudflare's own cap, 32 MiB. This is the protocol's limit, separate from the
+     sequencer's 1 MB threshold for keeping a change body inline;
    - answer a `ping` text frame with `pong`;
    - close a socket whose token expired with 4001, so the client refreshes and reconnects with the same credential
-     and its replica ids;
-   - run archiving (`sequencer.archive(branch, { keep, segmentRows })`) on a timer or alarm, never on a push.
+     and its replica ids. Check before every outgoing message, so a silent subscriber stops getting rows too;
+   - run archiving (`sequencer.archive(branch, { keep, segmentRows })`) on a timer or alarm, never on a push;
+   - never close a project's storage, or let a second sequencer open it, while a `handle` or `archive` is still
+     waiting on the blob store.
 5. **Serves the HTTP API** by mounting `handleHttp(request, deps)` from `@carton/host-http` (web-standard
    Request/Response). It covers join, refresh, invites, signed media URLs and resumable uploads, so clients talk to
    every host the same way. Supply `blobsFor(projectId)` and your WebSocket upgrade.
