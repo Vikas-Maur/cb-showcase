@@ -13,12 +13,26 @@ import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { World, sleep } from "./support/world.ts";
+import type { Ev } from "./support/world.ts";
 
 const ops = (id: string, v: string) => [{ op: "set", path: ["timelineItems", id, "name"], value: v }];
 const STALL = 4000;
 
-async function helperStall(name: string, { at, fence = true }: { at: "push" | "dequeue"; fence?: boolean }) {
+type T = { after(f: () => Promise<void>): void };
+/** Every test's processes are killed when it ends, also on a failure or a timeout (node:test then skips `finally`). */
+function world(t: T, name: string): World {
   const w = new World(name);
+  t.after(() => w.close());
+  return w;
+}
+
+/**
+ * The helper stall scenario, or null when the box was too loaded for it to happen: the call meant to find h1 stalled
+ * pinged it before the stall and, h1 missing that 100 ms ping, took it over at once (R4-04's rule, fencing keeps it
+ * safe). The test then runs it again.
+ */
+async function helperStall(t: T, name: string, { at, fence = true }: { at: "push" | "dequeue"; fence?: boolean }) {
+  const w = world(t, name);
   // the control holds D's first push at the server, so D is still queued in carton.db when the stale holder wakes
   // (in the simulation a remote writer kept the queue busy instead)
   // (held past the stall, so it is still queued when the stale holder wakes)
@@ -29,7 +43,17 @@ async function helperStall(name: string, { at, fence = true }: { at: "push" | "d
   const second = w.cbArmed({ ops: ops("c2", "D") });
   await second.ready;
   const call = w.cb({ ops: ops("c1", "C") });
-  const ev0 = await w.until((ev) => ev.some((e) => e.type === "stall" && e.pid === h1));
+  let ev0: Ev[];
+  try {
+    ev0 = await w.until((ev) => ev.some((e) => e.type === "stall" && e.pid === h1));
+  } catch (e) {
+    const early = w.events().some((x) => x.pid === h1 && x.type === "stop" && /^fenced/.test(String(x.why)));
+    if (!early) throw e;
+    call.catch(() => {});
+    second.result.catch(() => {});
+    await w.close();
+    return null;
+  }
   const stalledAt = ev0.find((e) => e.type === "stall")!.t;
   const C = ev0.filter((e) => e.type === "queued" && e.pid === h1).at(-1)!.id;
   // another agent's call lands while the holder is stalled: its ping times out, it takes over
@@ -41,9 +65,19 @@ async function helperStall(name: string, { at, fence = true }: { at: "push" | "d
   return { w, h1, C, stalledAt, take, r1, r2, ev };
 }
 
+/** The scenario, run again (up to 3 times) when the box was too loaded for it to happen. */
+async function stalled(t: T & { diagnostic(m: string): void }, name: string, o: { at: "push" | "dequeue"; fence?: boolean }) {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const r = await helperStall(t, `${name}-${attempt}`, o);
+    if (r) return r;
+    t.diagnostic(`attempt ${attempt}: the holder was taken over before its stall (a loaded box); running it again`);
+  }
+  throw new Error("the holder was taken over before its stall in 3 attempts");
+}
+
 for (const at of ["push", "dequeue"] as const) {
-  test(`R5-06 holder stalled ${STALL} ms ${at === "push" ? "right after sending a push" : "before its dequeue"}: one push wins, the stale holder stops`, async (t) => {
-    const { w, h1, C, stalledAt, take, r2, ev } = await helperStall(`r506-${at}`, { at });
+  test(`R5-06 holder stalled ${STALL} ms ${at === "push" ? "right after sending a push" : "before its dequeue"}: one push wins, the stale holder stops`, { timeout: 180_000 }, async (t) => {
+    const { w, h1, C, stalledAt, take, r2, ev } = await stalled(t, `r506-${at}`, { at });
     try {
       assert.ok(take && take.t < stalledAt + STALL, `a taker took over during the stall (${take && take.t - stalledAt} ms in)`);
       const st = await w.stats();
@@ -62,8 +96,8 @@ for (const at of ["push", "dequeue"] as const) {
   });
 }
 
-test("R5-06 control: the same dequeue stall with fencing off: the stale holder keeps pushing (stable ids still keep C once)", async (t) => {
-  const { w, h1, C, take, ev, r2 } = await helperStall("r506-control", { at: "dequeue", fence: false });
+test("R5-06 control: the same dequeue stall with fencing off: the stale holder keeps pushing (stable ids still keep C once)", { timeout: 180_000 }, async (t) => {
+  const { w, h1, C, take, ev, r2 } = await stalled(t, "r506-control", { at: "dequeue", fence: false });
   try {
     const after = ev.filter((e) => e.pid === h1 && e.t > take!.t && e.type === "push");
     assert.ok(after.length >= 1, "without the nonce check the replaced holder pushes after the takeover");
@@ -79,8 +113,8 @@ test("R5-06 control: the same dequeue stall with fencing off: the stale holder k
   }
 });
 
-async function workerStall(name: string, engineThread: boolean) {
-  const w = new World(name);
+async function workerStall(t: T, name: string, engineThread: boolean) {
+  const w = world(t, name);
   await w.server();
   const worker = await w.worker({ engineThread });
   const nonce0 = worker.ready.nonce;
@@ -110,13 +144,13 @@ async function workerStall(name: string, engineThread: boolean) {
   return { w, worker, nonce0, r, stalled, now };
 }
 
-test("R5-06 worker main loop stalled 500 ms, pings answered on the engine thread: no false takeover", async (t) => {
+test("R5-06 worker main loop stalled 500 ms, pings answered on the engine thread: no false takeover", { timeout: 180_000 }, async (t) => {
   // Under heavy load on this shared box any process can miss a 100 ms ping, stall or not; that is the plan's rule
   // working (fencing keeps it safe), not the main loop's stall. So an attempt that saw a takeover is run again, up to
   // 3 times, and one attempt must show none. The control below shows the stall itself does cause one.
   const takeovers: number[] = [];
   for (let attempt = 1; attempt <= 3; attempt++) {
-    const { w, worker, nonce0, r, now } = await workerStall("r506-engine-thread", true);
+    const { w, worker, nonce0, r, now } = await workerStall(t, `r506-engine-thread-${attempt}`, true);
     try {
       const ev = w.events();
       const taken = ev.filter((e) => e.type === "lease" && e.pid !== worker.proc.pid).length;
@@ -138,8 +172,8 @@ test("R5-06 worker main loop stalled 500 ms, pings answered on the engine thread
   assert.equal(takeovers.at(-1), 0, `a helper took the lease in every attempt (${takeovers.join(", ")})`);
 });
 
-test("R5-06 control: pings answered on the main loop give a false takeover; fencing keeps one push; the worker takes the lease back", async (t) => {
-  const { w, worker, nonce0, r, now } = await workerStall("r506-main-loop", false);
+test("R5-06 control: pings answered on the main loop give a false takeover; fencing keeps one push; the worker takes the lease back", { timeout: 180_000 }, async (t) => {
+  const { w, worker, nonce0, r, now } = await workerStall(t, "r506-main-loop", false);
   try {
     const ev = w.events();
     const take = ev.find((e) => e.type === "lease" && e.pid !== worker.proc.pid);
