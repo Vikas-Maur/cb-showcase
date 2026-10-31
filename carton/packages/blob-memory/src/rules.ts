@@ -41,6 +41,15 @@ export function checkKey(key: string): void {
     throw new BlobError("InvalidKey", `blob key longer than ${MAX_KEY_BYTES} bytes`);
 }
 
+/**
+ * A store that says, without a call, whether it would refuse a key: a scoped store's prefix leaves less room than
+ * `checkKey`'s 1,024 bytes. Not part of BlobStore; host-http checks a batch's keys with it before any call.
+ */
+export interface ChecksKeys {
+  checkKey(key: string): void;
+}
+export const checksKeys = (s: object): s is ChecksKeys => typeof (s as Partial<ChecksKeys>).checkKey === "function";
+
 export function checkRange(range: { offset: number; length?: number }): void {
   if (!Number.isSafeInteger(range.offset) || range.offset < 0) throw new BlobError("InvalidRange", `bad range offset ${range.offset}`);
   if (range.length !== undefined && (!Number.isSafeInteger(range.length) || range.length < 0))

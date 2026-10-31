@@ -237,6 +237,12 @@ test("media dedup within a team (TEAMS, R2): one copy, found by a teammate's upl
   assert.equal(second.bytesSent, 0);
   assert.deepEqual(await (await client("team-b", "viewer")).get(key, { offset: LEAF_SIZE - 2, length: 4 }), bytes.subarray(LEAF_SIZE - 2, LEAF_SIZE + 2));
   assert.equal(await (await client("team-x")).head(key), null, "another team's editor finds nothing");
+  // REQ-11's batch: HEAD's rules, a viewer's claims nothing, an editor's claims a teammate's copy
+  const manifestAt = manifestKey(manifest.hash);
+  assert.deepEqual(await cView.heads([key, manifestAt]), [null, null]);
+  assert.deepEqual(await (await client("team-c")).heads([key, manifestAt, mediaKey("f".repeat(64))]), [{ size: bytes.byteLength }, { size: manifest.bytes.byteLength }, null]);
+  assert.deepEqual(await cView.heads([key]), [{ size: bytes.byteLength }], "granted by the editor's batch");
+  assert.deepEqual(await (await client("team-x")).heads([key]), [null]);
 });
 
 test("H-SV: the Worker as shipped takes the current Cardboard client's hello, and tells a newer one to update the server", async () => {

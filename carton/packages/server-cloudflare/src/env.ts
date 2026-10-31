@@ -31,4 +31,8 @@ export interface Env {
   // {"film-a":"studio","film-b":"studio"}. A listed project's media bytes and manifests live once under
   // teams/<team>/media/, and the project reads only what it was granted (host-http's team.ts).
   TEAMS?: string;
+  // the most keys one POST /blobs/heads checks (default 200; at most 1000): each key is one to four R2 calls (a team
+  // store's claim and grant check), and Cloudflare limits a Worker request's subrequests, R2 calls included. The
+  // client asks again for the rest, so a lower value costs requests, never answers.
+  BLOB_HEADS_PER_REQUEST?: string;
 }
