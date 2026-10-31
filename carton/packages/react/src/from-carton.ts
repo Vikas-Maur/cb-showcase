@@ -90,10 +90,20 @@ export interface CartonUiHandle extends CartonUi {
   readonly hub: TopicHub<Topic>;
   /** Re-read cuts, history tail, undo and published state (after another process wrote). */
   refresh(): Promise<void>;
-  /** Show conflict cards a commit returned (the GUI's own commits), as late ones are shown. */
+  /**
+   * Show conflict cards a commit returned (the GUI's own commits), as late ones are shown. Cards follow core's
+   * convention: `ours` is the head on screen, `theirs` is the person's own edit (merge3(base, head, mine)).
+   */
   reportConflicts(cards: readonly ConflictCard[], by?: CoreActor): void;
+  /**
+   * The core card behind a Conflict, exactly as it was reported or raised (fields a host added, such as its own card
+   * id, included). `Conflict.id` is opaque: map a resolved card back with this, never by parsing the id.
+   */
+  cardFor<C extends ConflictCard = ConflictCard>(conflictId: string): C | undefined;
   /** Resolves when the first load finished. */
   readonly ready: Promise<void>;
+  /** Resolves when nothing is scheduled or running (refreshes, summaries, checks): for tests and hosts that wait. */
+  settled(): Promise<void>;
   dispose(): void;
 }
 
@@ -206,6 +216,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
   const me = ui(opts.me);
   const someone: Actor = { key: "system/someone", kind: "human", name: "Someone" };
+  // Work started on its own (refreshes after events, summaries, checks), so settled() can wait for it.
+  const inflight = new Set<Promise<unknown>>();
+  const track = <T>(p: Promise<T>): Promise<T> => {
+    inflight.add(p);
+    const done = () => void inflight.delete(p);
+    p.then(done, done);
+    return p;
+  };
 
   // ------------------------------------------------------------ history
   let cutId = carton.cut;
@@ -423,7 +441,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     while (running < (opts.describeConcurrency ?? 2) && queue.length) {
       const id = queue.pop()!; // newest asks first: the top of the list is what people read
       running++;
-      void summarize(id).finally(() => {
+      void track(summarize(id)).finally(() => {
         running--;
         queued.delete(id);
         pump();
@@ -645,6 +663,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         mineSide: "theirs",
         conflict: {
           id,
+          path: card.path,
           title: w.title,
           // describeCard words ours/theirs from core's point of view; here the person's edit is core's theirs.
           mine: { author: me, summary: w.theirs },
@@ -852,12 +871,15 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleRefresh = () => {
     if (refreshTimer) return;
-    refreshTimer = setTimeout(() => {
-      refreshTimer = null;
-      void refreshCuts();
-      void refreshUndo();
-      void checkRest();
-    }, 50);
+    // The debounce itself is tracked, so settled() waits through it rather than for a guessed time.
+    void track(
+      new Promise<void>((done) => {
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          Promise.allSettled([refreshCuts(), refreshUndo(), checkRest()]).then(() => done());
+        }, 50);
+      }),
+    );
   };
 
   const refresh = async () => {
@@ -872,8 +894,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     sweepRest();
     await checkRest();
   };
-  const ready = refresh();
-  const poll = opts.pollMs ? setInterval(() => void refresh(), opts.pollMs) : null;
+  const ready = track(refresh());
+  const poll = opts.pollMs ? setInterval(() => void track(refresh()), opts.pollMs) : null;
   (poll as { unref?: () => void } | null)?.unref?.();
 
   // ------------------------------------------------------------ reads
@@ -921,6 +943,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const mineWhere = where(intoCut), theirWhere = where(fromCut);
     return {
       id: card.path,
+      path: card.path,
       title: w.title,
       mine: { author: me, summary: w.mine, ...(mineWhere ? { where: mineWhere } : {}) },
       theirs: { author: theirs, summary: w.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
@@ -1191,8 +1214,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       hub.notify("preview");
     },
 
-    refresh,
+    refresh: () => track(refresh()),
     reportConflicts: (list, by) => addCards(list, by),
+    cardFor: <C extends ConflictCard = ConflictCard>(id: string) => (cardEntries.get(id)?.card ?? planCards.get(id)) as C | undefined,
+    async settled() {
+      // Work can start more work (a refresh schedules a check): wait until a pass finds nothing in flight.
+      for (let i = 0; i < 1000 && inflight.size && !disposed; i++) await Promise.allSettled([...inflight]);
+      await Promise.resolve();
+    },
     dispose() {
       disposed = true;
       off();

@@ -23,7 +23,17 @@ const alice: Actor = { kind: "human", id: "alice", name: "Alice", group: "alice@
 const director = (turn: string): Actor => ({ kind: "agent", id: "director", name: "Director", turn, chat: "c1", group: "alice@laptop" });
 const bob: Actor = { kind: "human", id: "bob", name: "Bob" };
 const set = (id: string, f: string, v: unknown) => ({ op: "set" as const, path: ["items", id, f], value: v });
-const settle = () => new Promise((r) => setTimeout(r, 80));
+// Every view model a test opens, so settle() waits for their own scheduled and running work, never a guessed time
+// (Windows wakes timers at about 15.6 ms; a fixed wait races the 50 ms refresh debounce: verify-ci #8).
+const live = new Set<ReturnType<typeof fromCarton>>();
+const make = (...a: Parameters<typeof fromCarton>) => {
+  const h = fromCarton(...a);
+  live.add(h);
+  return h;
+};
+const settle = async () => {
+  for (let i = 0; i < 3; i++) await Promise.all([...live].map((h) => h.settled()));
+};
 const item = async (c: Carton, id: string, cut?: string) => ((await c.head(cut)).doc.items as Rec[]).find((i) => i.id === id)!;
 
 async function open(extra: Partial<FromCartonOptions> = {}) {
@@ -34,7 +44,7 @@ async function open(extra: Partial<FromCartonOptions> = {}) {
     taps.push(l);
     return realOn(l);
   };
-  const ui = fromCarton(carton, { me: alice, ...extra });
+  const ui = make(carton, { me: alice, ...extra });
   await ui.ready;
   return { carton, ui, emit: (e: CartonEvent) => taps.forEach((l) => l(e)) };
 }
@@ -163,12 +173,12 @@ test("R1-7: a commit that lands while History is loading is kept", async () => {
     }
     return got;
   };
-  const ui = fromCarton(carton, { me: alice });
+  const ui = fromCarton(carton, { me: alice }); // not in `live`: it is held on the gate until release
+  // The commit's event is handled before commit() resolves, while the load still waits on the gate.
   await carton.commit({ ops: [set("a", "name", "Intro")] });
-  await settle();
   release();
   await ui.ready;
-  await settle();
+  await ui.settled();
   assert.equal(ui.history().count("all"), 2);
   assert.equal(ui.history().at("all", 0)!.seq, 1);
   ui.dispose();
