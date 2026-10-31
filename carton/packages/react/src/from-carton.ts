@@ -924,8 +924,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       title: w.title,
       mine: { author: me, summary: w.mine, ...(mineWhere ? { where: mineWhere } : {}) },
       theirs: { author: theirs, summary: w.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
-      // A §13 compare card resolves to one side only (core's compare2 takes "theirs" or keeps yours): no Keep both.
-      canKeepBoth: card.kind !== "compare" && !!opts.keepBoth?.(card),
+      // Core's compare2 applies a {value} choice too (99db79c), so a §13 compare card can Keep both like any other.
+      canKeepBoth: !!opts.keepBoth?.(card),
       ...(w.reason ? { reason: w.reason } : {}),
       provisional: "mine",
       sig: cardSig(card),
