@@ -4,7 +4,7 @@
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, type HostFixture } from "@carton/conformance";
+import { blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, type HostFixture } from "@carton/conformance";
 import { createHmacAuth } from "@carton/server";
 import { webSocketTransport } from "@carton/server-node";
 import type { Role } from "@carton/core/plugins";
@@ -63,5 +63,6 @@ async function fixture(): Promise<HostFixture> {
 
 sequencerHostSuite("server-cloudflare (Worker + ProjectRoom in wrangler dev)", fixture);
 transportSuite("server-cloudflare (WebSocket through the Worker)", fixture);
+liveSyncSuite("server-cloudflare (Worker + ProjectRoom)", fixture);
 
 httpApiSuite("server-cloudflare (Worker, R2)", async () => ({ origin: dev.origin, adminToken: ADMIN, minPartSize: R2_MIN_PART_SIZE }));
