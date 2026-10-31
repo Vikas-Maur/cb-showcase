@@ -28,10 +28,6 @@ module.exports = String.raw`var __cartonMain = (() => {
   // Commands that reach Carton: cb, cardboard, or a script under the bundle that runs them. Others keep the actor
   // main gave the process (director/<chat>), so a script that calls cb is still the Director's, just without the turn.
   const reachesCarton = (cmd) => /(^|[\s;&|(\x60])(cb|cardboard)(\.cmd)?(\s|$)/.test(cmd);
-  const notices = async (ctx, input) => {
-    try { return await library?.call("carton.notices", { bundlePath: ctx.project.bundlePath, actor: directorActor(ctx, input), take: true }) ?? []; }
-    catch { return []; }
-  };
   // H8: a hook event for the worker's Materializer, waited for up to 3 s (the agent's tool call waits on it; a worker
   // that doesn't answer in time leaves the file as it is, never the agent stuck).
   const agentHook = (ctx, actor, event, input) => {
@@ -39,13 +35,17 @@ module.exports = String.raw`var __cartonMain = (() => {
     const call = library.call("carton.agentHook", { bundlePath: ctx.project.bundlePath, actor, event, input }).catch(() => {});
     return Promise.race([call, new Promise((r) => setTimeout(r, 3000).unref?.())]);
   };
+  // Block once per conflict set: whatever the agent leaves unresolved becomes a card for the person (the worker's
+  // stopHook: @carton/local's, as host Claude Code's cb carton-hook runs it, so the agent's own cards stay for cb
+  // conflicts and cb resolve). A stop that goes through ends the agent's hold on the shared file (H8); a blocked one goes
+  // on with the turn.
   const stop = (ctx) => async (input) => {
-    // Block once per conflict set: whatever the agent leaves unresolved becomes a card for the person. A stop that
-    // goes through ends the agent's hold on the shared file (a blocked one goes on with the turn).
-    if (input?.stop_hook_active) return await agentHook(ctx, directorActor(ctx, input), "stop"), {};
-    const list = await notices(ctx, input);
-    if (!list.length) return await agentHook(ctx, directorActor(ctx, input), "stop"), {};
-    return { decision: "block", reason: list.map((n) => n.text ?? String(n)).join("\n") };
+    const actor = directorActor(ctx, input);
+    let out = {};
+    try { out = (await library?.call("carton.stopHook", { bundlePath: ctx.project.bundlePath, actor, input })) ?? {}; } catch {}
+    if (out.decision === "block") return out;
+    await agentHook(ctx, actor, "stop");
+    return {};
   };
   // Gate G2 (§6.2): with CARDBOARD_CARTON_TIMING=<file>, every GUI save's round trip to the library worker (the
   // commit and the write) is appended to <file> as a JSON line, Carton on or off, for comparing the two.

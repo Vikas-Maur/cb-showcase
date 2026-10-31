@@ -13,7 +13,6 @@
 //   7. a deliberate clash (agent and person both change the title's text) is a conflict card in the agent's notices
 //      (cb conflicts, the Stop hook) and, left unresolved, in the pages' cards (the History panel);
 //   8. credits name the Director turn and the person.
-// A step the app can't do yet is `todo` with the reason; drop the todo when it passes.
 //   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> node --test --test-concurrency=1 scripts/carton/test/sync/director-turn.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -122,7 +121,7 @@ test("1. A project with Carton on: Cardboard's worker opens it, with History", t
   assert.ok(panel.state().history.length >= 3, "History shows the seed's versions: " + panel.state().history.length);
 });
 
-test("2. A Director turn starts: its hooks fire, and it prints its own view (cb source print --view)", { ...t, todo: "local-cli's `cb source print --view <name>` and the worker running the adapter's Materializer (H8, not wired: INTEGRATION-1.4.0 \"Not wired yet\")" }, async () => {
+test("2. A Director turn starts: its hooks fire, and it prints its own view (cb source print --view)", t, async () => {
   need(m, "1");
   // main: the turn starts (turnStarted), the Director's process gets its actor (directorEnv), its Bash calls the hook
   chat = { chatId: CHAT, turn: { id: TURN, state: "running", text: PROMPT } };
@@ -139,7 +138,8 @@ test("2. A Director turn starts: its hooks fire, and it prints its own view (cb 
   statusFile = path.join(ctx.project.bundlePath, ".scratch", "views", VIEW + ".status");
   assert.ok(fs.existsSync(viewFile), "the view is printed at .scratch/views/<name>.tsx: " + r.out);
   const v = fs.readFileSync(viewFile, "utf8");
-  assert.match(v, /cardboard:rev \S+@\d+~[0-9a-f]{8}/, "the view's header is Carton's rev line");
+  // a cut's name can have spaces (core's first cut is "Main cut")
+  assert.match(v, /cardboard:rev .+@\d+~[0-9a-f]{8} b:/, "the view's header is Carton's rev line");
   assert.match(v, /textContent="Hello"/);
 });
 
@@ -152,7 +152,7 @@ test("3. While the turn runs, the person edits the project in the GUI", t, async
   assert.deepEqual([x.textContent, x.fontSize, (await video()).name], [GUI.text, GUI.fontSize, GUI.clip], "the person's edit is head");
 });
 
-test("4. The agent edits and saves its view, and reads the view's .status", { ...t, todo: "the worker's view watcher and `<view>.status` (H8, not wired); needs step 2's view" }, async () => {
+test("4. The agent edits and saves its view, and reads the view's .status", t, async () => {
   need(viewFile && fs.existsSync(viewFile), "2 (the printed view)");
   const before = fs.readFileSync(viewFile, "utf8");
   // the title starts later (no clash) and gets new words (clashes with the person's, step 7)
@@ -161,7 +161,7 @@ test("4. The agent edits and saves its view, and reads the view's .status", { ..
   fs.writeFileSync(viewFile, after);
   const st = await S.until(() => { try { const s = JSON.parse(fs.readFileSync(statusFile, "utf8")); return s.status !== "pending" && s; } catch { return null; } }, 20_000, "the view's .status");
   assert.equal(st.status, "conflicts", "the clash is in the status: " + JSON.stringify(st));
-  assert.match(st.ref, /^\S+@\d+~[0-9a-f]{8}/, "the status names the version it landed as");
+  assert.match(st.ref, /^.+@\d+~[0-9a-f]{8}/, "the status names the version it landed as");
   card = st.conflicts.find((c) => JSON.stringify(c).includes("Agent words"));
   assert.ok(card, "the status's card is the title's text: " + JSON.stringify(st.conflicts));
   assert.match(JSON.stringify(card), /GUI words/);
@@ -173,7 +173,7 @@ test("4. The agent edits and saves its view, and reads the view's .status", { ..
   assert.equal(fs.readFileSync(viewFile, "utf8"), after, "Carton never rewrites the agent's view");
 });
 
-test("5. All through the turn, timeline.tsx stays unchanged for the agent (frozen against the person's edits)", { ...t, todo: "the shared timeline.tsx freeze during an agent's turn (H8, not wired: the worker regenerates it as 1.4.0 does)" }, async () => {
+test("5. All through the turn, timeline.tsx stays unchanged for the agent (frozen against the person's edits)", t, async () => {
   need(sampler, "2 (the turn's start)");
   await S.sleep(1500); // the worker's regeneration (1.4.0's ~300 ms debounce) has had its chance
   seen.push(fs.readFileSync(tsxFile, "utf8"));
@@ -184,7 +184,7 @@ test("5. All through the turn, timeline.tsx stays unchanged for the agent (froze
   for (const s of seen) if (s !== frozenAt) assert.match(s, /start=\{0\.75\}/, "a rewrite during the freeze carries only the agent's saves");
 });
 
-test("7a. The clash is a card in the agent's notices: cb conflicts, as the agent", { ...t, todo: "needs step 4's view save (H8 views not wired)" }, async () => {
+test("7a. The clash is a card in the agent's notices: cb conflicts, as the agent", t, async () => {
   need(card, "4 (the view's clash)");
   const r = await agentBash("cb conflicts Demo");
   assert.equal(r.code, 0, r.out + r.err);
@@ -195,7 +195,7 @@ test("7a. The clash is a card in the agent's notices: cb conflicts, as the agent
 });
 
 let blocked;
-test("6. The turn stops: the Stop hook hands back the clash once, then its work folds into the cut", { ...t, todo: "the turn's work is step 4's view save (H8 views not wired); the Stop hook and turnEnded run here regardless" }, async () => {
+test("6. The turn stops: the Stop hook hands back the clash once, then its work folds into the cut", t, async () => {
   need(chat, "2 (the turn)");
   const stop = m.stopHooks(ctx).Stop[0].hooks[0];
   blocked = await stop({ hook_event_name: "Stop", stop_hook_active: false });
@@ -214,17 +214,18 @@ test("6. The turn stops: the Stop hook hands back the clash once, then its work 
   assert.match(tsx, new RegExp(`fontSize=\\{${GUI.fontSize}\\}`));
 });
 
-test("7b. The clash: the Stop hook handed it to the agent, and, left unresolved, it is a card in the pages", { ...t, todo: "needs step 4's view save (H8 views not wired); the pages show only the person's own cards today (carton-node.js `reportConflicts`)" }, async () => {
+test("7b. The clash: the Stop hook handed it to the agent, and, left unresolved, it is a card in the pages", t, async () => {
   need(blocked, "6 (the Stop hook)");
   assert.equal(blocked.decision, "block", "the Stop hook hands the clash back to the agent: " + JSON.stringify(blocked));
-  assert.match(blocked.reason, /clash/);
+  // @carton/local's Stop hook words: "1 of your changes conflicted after your turn … 1 conflict card on your change …"
+  assert.match(blocked.reason, /conflict/);
   const cards = await S.until(() => { const c = panel.state().conflicts; return c.length && c; }, 20_000, "a card in the pages");
   const c = cards.find((x) => JSON.stringify(x).includes("Agent words"));
   assert.ok(c, "the pages' card is the title's text: " + JSON.stringify(cards));
   assert.match(JSON.stringify(c), /GUI words/);
 });
 
-test("8. Credits name the Director turn and the person", { ...t, todo: "the turn's credit needs step 4's view save (H8 views not wired)" }, async () => {
+test("8. Credits name the Director turn and the person", t, async () => {
   need(id, "1");
   const [x, v] = [await text(), await video()];
   // the title: last changed by the turn's view save; the clip: by the person, in the GUI

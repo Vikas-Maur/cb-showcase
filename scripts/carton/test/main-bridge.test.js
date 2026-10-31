@@ -52,22 +52,31 @@ test("the Director's hook names the turn and the subagent, after the credit gate
   assert.equal((await denied({ hook_event_name: "PreToolUse", tool_input: { command: "cb generate video" } })).hookSpecificOutput.permissionDecision, "deny");
 });
 
-test("Stop blocks once per conflict set with the actor's notices", async () => {
+test("Stop blocks once per conflict set (the worker's stopHook decides), and a stop that goes through lets go", async () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const asked = [];
-  m.library({ call: async (method, arg) => (asked.push([method, arg]), [{ text: "W2's size was changed by Bob meanwhile" }]) });
+  const answers = [{ decision: "block", reason: "1 of your changes conflicted after your turn" }, {}];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? answers.shift() : { delivered: true }) });
   const { Stop, SubagentStop } = m.stopHooks({ chatId: "c1", project: { bundlePath: "/b" } });
-  assert.deepEqual(await Stop[0].hooks[0]({ hook_event_name: "Stop" }), { decision: "block", reason: "W2's size was changed by Bob meanwhile" });
-  assert.deepEqual(await SubagentStop[0].hooks[0]({ hook_event_name: "SubagentStop", stop_hook_active: true }), {});
+  assert.deepEqual(await Stop[0].hooks[0]({ hook_event_name: "Stop" }), { decision: "block", reason: "1 of your changes conflicted after your turn" });
+  const second = { hook_event_name: "SubagentStop", stop_hook_active: true, agent_id: "a1", agent_type: "Explore" };
+  assert.deepEqual(await SubagentStop[0].hooks[0](second), {});
   // H8: the blocked stop goes on with the turn (the agent keeps its hold on timeline.tsx); the one that goes through
   // lets go of it in the worker's Materializer
-  assert.deepEqual(asked, [["carton.notices", { bundlePath: "/b", actor: "director/c1", take: true }], ["carton.agentHook", { bundlePath: "/b", actor: "director/c1", event: "stop", input: undefined }]]);
+  assert.deepEqual(asked, [
+    ["carton.stopHook", { bundlePath: "/b", actor: "director/c1", input: { hook_event_name: "Stop" } }],
+    ["carton.stopHook", { bundlePath: "/b", actor: "director/c1/sub-Explore-a1", input: second }],
+    ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/sub-Explore-a1", event: "stop", input: undefined }],
+  ]);
+  // a worker that fails to answer never holds the agent
+  m.library({ call: async () => { throw new Error("gone"); } });
+  assert.deepEqual(await Stop[0].hooks[0]({ hook_event_name: "Stop" }), {});
 });
 
 test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's end reach the worker's Materializer", async () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const asked = [];
-  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.notices" ? [] : { delivered: true }) });
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
   const ctx = { chatId: "c1", project: { id: "p1", bundlePath: "/b" } };
   m.directorEnv({}, ctx, () => "t7");
   const [files] = m.fileHooks(ctx);
@@ -82,7 +91,7 @@ test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's 
   assert.equal(asked.length, 0);
   // an allowed Stop lets go; the turn's end lets go of the turn and its subagents (however it ended)
   assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop" }), {});
-  assert.deepEqual(asked.splice(0), [["carton.notices", { bundlePath: "/b", actor: "director/c1/t7", take: true }], ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7", event: "stop", input: undefined }]]);
+  assert.deepEqual(asked.splice(0), [["carton.stopHook", { bundlePath: "/b", actor: "director/c1/t7", input: { hook_event_name: "Stop" } }], ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7", event: "stop", input: undefined }]]);
   const chat = { chatId: "c1", turn: { id: "t7", state: "running", text: "Tighten it." } };
   m.turnStarted(chat, "p1", "/b", chat.turn, "director");
   m.turnEnded(chat);

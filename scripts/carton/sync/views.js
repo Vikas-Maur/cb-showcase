@@ -98,7 +98,12 @@ export class View {
       host: cardboardFilesHost,
       codec,
       writeProject: false,
-      onCards: (c) => { try { this.api.agentCards?.(bundlePath, c); } catch (e) { warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e)); } },
+      // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
+      // own path string for the bundle
+      onCards: (c) => {
+        const lost = (e) => warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e));
+        try { Promise.resolve(this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, c)).catch(lost); } catch (e) { lost(e); }
+      },
     });
     // Stopgap until cardboard-adapter's `displacedDir` option: the Materializer's displaced files get a folder of their
     // own. `.carton/displaced` is the facade's (project.json's installs and its journal), and the Materializer's

@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi } from "@carton/react";
 import { viewCards, canon, sameCard } from "./sync/view-cards.js";
@@ -720,7 +720,13 @@ export const cardboard14 = {
         const want = { turn: safePart(String(turn)), chat: chat ? safePart(String(chat)) : null };
         for (const v of await lc.carton.log({ limit: 200 })) {
           if (v.author?.turn !== want.turn || (want.chat && v.author?.chat !== want.chat)) continue;
-          if (!v.name) await lc.carton.name(v.ref, label);
+          if (!v.name) {
+            await lc.carton.name(v.ref, label);
+            // Core tells no one of a name: the History panels open on this project show it through their own
+            // nameVersion (a row keyed as fromCarton keys it; core's name is idempotent, so the repeat writes nothing new).
+            const row = v.change ?? `${v.ref.branchId}@${v.ref.seq}`;
+            for (const h of panels.get(bundleOf(projectId)) ?? []) await h.nameVersion?.(row, label).catch(() => {});
+          }
           return { status: "named" };
         }
         return { status: "none" };
@@ -732,6 +738,22 @@ export const cardboard14 = {
         // person's (R3-09).
         if (take) await views.detach(lc, actorOf(actor));
         return lc.carton.notices(actorOf(actor), { take });
+      },
+      // The Director's Stop and SubagentStop (main): @carton/local's late-conflict hook, as host Claude Code's runs it
+      // (cb carton-hook): a stop with cards the agent hasn't been held on yet (its view saves' clashes too) blocks once;
+      // the next one lets it stop and hands what it left to the person (a copy under `@human`, R3-09), keeping the
+      // agent's own row, so `cb conflicts` and `cb resolve` still have it. `actor` is the id main gives the turn's cb
+      // calls ("director/<chat>/<turn>"), `input` the hook's (a subagent's id and type).
+      stopHook: async ({ bundlePath, actor, input }) => {
+        const lc = await open(bundlePath);
+        const a = typeof actor === "string" ? parseActorId(actor) : null;
+        if (!lc || !a) return {};
+        const turn = a.chat && a.turn ? { chat: a.chat, turn: a.turn } : null;
+        const id = actorIdForHook(input ?? {}, turn);
+        const d = await new StoreNoticeBox(lc.store).run(id, (box) => stopHook(input ?? {}, box, turn));
+        // the turn (or subagent) ends: the person's copies of its cards stand on their own (view-cards.js)
+        if (d.decision === "allow") await views.detach(lc, actorOf(id)).catch(() => {});
+        return stopOutput(d);
       },
       // The History panel: @carton/react's view model, served to each page that asks (remoteUi there).
       ui: async ({ projectId, client, message }) => {
