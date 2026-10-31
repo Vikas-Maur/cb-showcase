@@ -110,6 +110,9 @@ export class FakeEngine implements MaterializerEngine {
   async head(): Promise<Doc> {
     return clone(this.log.at(-1)!.doc);
   }
+  async headRef(): Promise<string> {
+    return JSON.stringify(["main", "b7e1c2d3-0000-4000-8000-000000000000", this.headSeq]);
+  }
   /** A change made elsewhere (the GUI, a remote): applied at head with no merge. */
   external(fn: (d: Doc) => void, id = `ext.${++this.n}`): void {
     const d = clone(this.log.at(-1)!.doc);
