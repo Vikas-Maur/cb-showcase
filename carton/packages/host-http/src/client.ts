@@ -1,10 +1,12 @@
 // Clients of a Carton host's HTTP API, as BlobStores, so code written against the BlobStore plug-in (the sync client,
-// @carton/media) works through any host. Web-standard fetch: Node, Electron and browsers.
+// @carton/media) works through any host. Requests go through @carton/http-node: node:http(s) on Node (a body
+// cut while its reader is paused rejects, where undici behind fetch could crash the process, CI #29), fetch elsewhere.
 // - hostMessageBlobs: the sync envelope routes, for SyncClientOptions.blobs.
 // - hostMediaBlobs: the project's media, for @carton/media: resumable multipart uploads through the session's routes,
 //   small objects and ranged reads through short-lived signed URLs, and the §11 repair report.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
+import { platformFetch } from "@carton/http-node";
 
 export interface HostBlobsOptions {
   /** The host's origin, e.g. `https://carton.example` or `http://127.0.0.1:8787`. */
@@ -20,7 +22,7 @@ const unsupported = (what: string): never => {
 };
 
 export function hostMessageBlobs(opts: HostBlobsOptions): BlobStore {
-  const f = opts.fetch ?? ((u: string | URL | Request, i?: RequestInit) => globalThis.fetch(u, i));
+  const f = opts.fetch ?? platformFetch();
   const base = `${opts.origin.replace(/\/+$/, "")}/api/projects/${encodeURIComponent(opts.projectId)}/messages/`;
   const auth = async () => ({ authorization: `Bearer ${typeof opts.token === "string" ? opts.token : await opts.token()}` });
   return {
@@ -86,7 +88,7 @@ const rangeHeader = (r: ByteRange) => (r.length === undefined ? `bytes=${r.offse
  * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically, then reads back what is stored.
  */
 export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
-  const f = opts.fetch ?? ((u: string | URL | Request, i?: RequestInit) => globalThis.fetch(u, i));
+  const f = opts.fetch ?? platformFetch();
   const base = `${opts.origin.replace(/\/+$/, "")}/api/projects/${encodeURIComponent(opts.projectId)}`;
   const bearer = async () => `Bearer ${typeof opts.token === "string" ? opts.token : await opts.token()}`;
   const api = (path: string, key?: string) => base + path + (key === undefined ? "" : `?key=${encodeURIComponent(key)}`);

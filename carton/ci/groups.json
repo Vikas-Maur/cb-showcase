@@ -126,6 +126,9 @@
           ]
         },
         {
+          "pkg": "http-node"
+        },
+        {
           "pkg": "blob-s3"
         },
         {
@@ -358,6 +361,54 @@
             "kit/test/*.test.ts"
           ]
         }
+      ]
+    },
+    {
+      "name": "web",
+      "os": [
+        "linux",
+        "windows"
+      ],
+      "timeout": 30,
+      "needs": {
+        "linux": [
+          "chromium",
+          "ffmpeg"
+        ],
+        "windows": [
+          "chromium",
+          "ffmpeg"
+        ]
+      },
+      "steps": [
+        {
+          "label": "web demo: the app's own tests (apps/web, happy-dom)",
+          "cwd": "apps/web",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-concurrency=2",
+            "test/**/*.test.ts"
+          ]
+        },
+        {
+          "label": "web demo e2e: the §17 demo script and Fold in, in Chromium, on server-node and wrangler dev (e2e/web)",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-concurrency=1",
+            "e2e/web/demo.test.ts"
+          ],
+          "env": {
+            "CARTON_E2E_HOST": "both"
+          },
+          "timeoutMin": 25
+        }
+      ],
+      "forbidSkip": [
+        "playwright",
+        "Chromium",
+        "ffmpeg"
       ]
     },
     {

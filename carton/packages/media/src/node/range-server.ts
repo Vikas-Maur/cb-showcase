@@ -45,11 +45,19 @@ export interface RangeServerOptions {
    */
   playlist?: (id: string, urlFor: (hash: string) => string, signal: AbortSignal) => Promise<string | null>;
   /**
-   * A segment read through a playlist's URL (which names its stream) failed verification: report the stream, so the
-   * next share makes a new one (e2e S5-5/S5-7: the reuse check reads bad/<stream>, it can't list part reports). Wire
-   * to `ProxyStreamReader.reportPartDamage`, which ignores a hash that isn't one of the stream's parts.
+   * A segment read through a playlist's URL (which names its stream) failed verification, on any attempt (a host that
+   * checks the damage removes the object, so the retry finds it gone, and still this is called): report the stream, so
+   * the next share makes a new one (e2e S5-5/S5-7: the reuse check reads bad/<stream>, it can't list part reports).
+   * Wire to `ProxyStreamReader.reportPartDamage`, which ignores a hash that isn't one of the stream's parts.
    */
   reportDamage?: (stream: string, hash: string) => Promise<unknown>;
+  /**
+   * A segment read through a playlist's URL was not there (and no attempt failed verification). Wire to
+   * `(stream, hash) => reader.reportPartDamage(hash, "missing")`, which reports the stream only if a HEAD finds the part
+   * still gone: a part restored meanwhile isn't damage. Separate from `reportDamage`, so wiring made before it existed
+   * never reports a missing part without that check.
+   */
+  reportMissing?: (stream: string, hash: string) => Promise<unknown>;
 }
 
 export interface RangeRequestInfo {
@@ -164,6 +172,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
 
   const respond = async (req: IncomingMessage, res: ServerResponse, ac: AbortController, info: RangeRequestInfo): Promise<void> => {
     let ofStream = ""; // the stream a playlist's segment URL names (s=)
+    const seen = { mismatch: false }; // a read of this request failed verification, on any attempt
     try {
       if (!hostOk(req.headers.host)) return reply(res, 403, CLOSE);
       const url = req.url ?? "";
@@ -196,7 +205,11 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
 
       const stat = await source.stat(hash, ac.signal);
       if (ac.signal.aborted) return;
-      if (stat === null) return reply(res, 404);
+      if (stat === null) {
+        reply(res, 404);
+        await report(ofStream, hash, "missing");
+        return;
+      }
       const size = stat.size;
       const headers: OutgoingHttpHeaders = {
         "Accept-Ranges": "bytes",
@@ -223,7 +236,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
         res.end();
         return;
       }
-      await sendBody(res, source, hash, offset, length, status, headers, ac.signal, info);
+      await sendBody(res, source, hash, offset, length, status, headers, ac.signal, info, seen);
     } catch (e) {
       if (ac.signal.aborted) return; // the client left; there is no one to answer
       info.error = e;
@@ -231,8 +244,21 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
       // the response so it can't mistake it for a complete one. Before that, a plain 502 says "try again".
       if (res.headersSent) res.destroy();
       else reply(res, 502);
-      if (e instanceof LeafMismatchError && opts.reportDamage && isMediaHash(ofStream) && info.hash) {
-        await opts.reportDamage(ofStream, info.hash).catch(() => {});
+      // A mismatch on the first attempt followed by a missing object on the retry is the mismatch: a host that checks a
+      // reported leaf removes the damaged object, so the retry can't find it.
+      const name = (e as Error)?.name;
+      const why = e instanceof LeafMismatchError || seen.mismatch ? "mismatch" : name === "MediaMissingError" ? "missing" : null;
+      if (why !== null && info.hash) await report(ofStream, info.hash, why);
+    }
+  };
+
+  const report = async (stream: string, hash: string, why: "mismatch" | "missing"): Promise<void> => {
+    const to = why === "mismatch" ? opts.reportDamage : opts.reportMissing;
+    if (to && isMediaHash(stream)) {
+      try {
+        await to(stream, hash);
+      } catch {
+        // best effort: the answer has gone out already
       }
     }
   };
@@ -316,6 +342,7 @@ async function sendBody(
   headers: OutgoingHttpHeaders,
   signal: AbortSignal,
   info: RangeRequestInfo,
+  seen: { mismatch: boolean },
 ): Promise<void> {
   let sent = 0;
   for (let attempt = 0; ; attempt++) {
@@ -337,6 +364,7 @@ async function sendBody(
     } catch (e) {
       // A leaf that failed verification before any of it reached the client costs the client nothing: read again,
       // once. The repair path has refetched the leaf by then; a second failure is answered with 502.
+      if (e instanceof LeafMismatchError) seen.mismatch = true;
       if (sent === 0 && attempt === 0 && e instanceof LeafMismatchError && !signal.aborted) continue;
       throw e;
     }

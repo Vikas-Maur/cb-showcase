@@ -156,8 +156,27 @@ export interface SequencerHost {
  *   the receiver never sees the sender's objects.
  */
 export interface Transport {
+  /**
+   * A connection, or a rejection that says why in `code` (a `TransportError`): the sync client reports it as the cut's
+   * sync error (`carton.sync.error()`), so an offline user is never told their link stopped giving access. An error
+   * without a `code` (a transport from before) is classified by its words.
+   */
   connect(url: string, opts: { token: string; signal?: AbortSignal }): Promise<TransportConnection>;
 }
+
+/**
+ * Why a `connect` failed (web-demo REQ-9b; server-node's `webSocketTransport` reports these):
+ * - `unreachable`: offline, no host there, no answer in time, or dropped before it opened;
+ * - `unauthorized`: the host refused this session (a bad, expired or another project's token);
+ * - `protocol`: the host answered another protocol;
+ * - `closed`: the host closed it before it opened, for a reason of its own.
+ */
+export type TransportFailure = "unreachable" | "unauthorized" | "protocol" | "closed";
+export interface TransportError extends Error {
+  code: TransportFailure;
+}
+/** A `connect` rejection that says why. */
+export const transportError = (message: string, code: TransportFailure): TransportError => Object.assign(new Error(message), { code });
 
 export interface TransportConnection {
   readonly open: boolean;

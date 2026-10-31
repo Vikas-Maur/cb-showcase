@@ -21,6 +21,7 @@ import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } fro
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
 import * as E from "./engine/index.ts";
+import { freezeDeep, seal } from "./engine/doc.ts";
 import type {
   Actor,
   CartonEvent,
@@ -398,6 +399,23 @@ const CODED: Record<string, SyncError["code"]> = {
   closed: "unreachable",
   protocol: "server",
 };
+/**
+ * A state handed to a caller (`head`, `checkout`, `resolve`): its own collection arrays (add, remove or reorder freely),
+ * its records and root values frozen. They are History's own (shared with every state that didn't change them), so one
+ * edited in place would change History's head and the next commit would find nothing to save (kit-docs: "documents are
+ * values: replace the record you change"). Frozen, such an edit throws instead. A record keeps its identity, which
+ * diffs and hashes rely on to skip what didn't change. The cost per call is the fork it always was: a collection
+ * array of History's is sealed once (engine/doc.ts `seal`), and apply keeps it sealed by freezing only what a change
+ * writes into it; `doc` is History's own state (`History.viewOf`), never forked twice.
+ */
+function owned(doc: Doc, schema: Schema): Doc {
+  for (const k of Object.keys(doc)) {
+    const v = doc[k];
+    if (Array.isArray(v) && schema.collections[k]) seal(v as Rec[]);
+    else freezeDeep(v);
+  }
+  return E.fork(doc, schema);
+}
 /** A sync client's error, classified for a status line (the words are kept as they came). */
 function syncError(message: string, code?: string): SyncError {
   const words = message.replace(/^connect: /, "");
@@ -917,10 +935,11 @@ class CartonImpl implements Carton {
     this.#h.resolve(ref); // checks the hash: never a guess
     return nodeId(r.branchId, r.seq);
   }
+  /** History's own state for a ref (read-only: the live head itself for a cut's name; fork it before changing it). */
   #doc(ref: StateRef | string): Doc {
-    if (typeof ref === "string" && this.#h.cut(ref)) return this.#h.stateOf(this.#h.head(ref))!;
+    if (typeof ref === "string" && this.#h.cut(ref)) return this.#h.viewOf(this.#h.head(ref))!;
     if (typeof ref === "string" && /^[^~\s]+@\d+$/.test(ref)) {
-      const d = this.#h.stateOf(ref);
+      const d = this.#h.viewOf(ref);
       if (!d) throw new StateUnknown(ref, "state not held");
       return d;
     }
@@ -946,18 +965,18 @@ class CartonImpl implements Carton {
     const sc = this.#isShared(cut) && this.#opts.sync ? await this.#ensureShared(cut) : undefined;
     if (sc) {
       this.#feedQueue(cut);
-      return { ref: this.#sharedRef(cut), doc: E.fork(sc.queue.optimistic(cut).doc, this.schema) };
+      return { ref: this.#sharedRef(cut), doc: owned(sc.queue.optimistic(cut).doc, this.schema) };
     }
-    return { ref: this.#h.ref(cut), doc: this.#h.stateOf(this.#h.head(cut))! };
+    return { ref: this.#h.ref(cut), doc: owned(this.#h.viewOf(this.#h.head(cut))!, this.schema) };
   }
   async checkout(ref: StateRef | string) {
     await this.#refresh();
-    return E.fork(this.#doc(ref), this.schema);
+    return owned(this.#doc(ref), this.schema);
   }
   async resolve(ref: StateRef | string) {
     await this.#refresh();
     const r = this.#h.resolve(ref);
-    return { doc: r.doc, seq: r.seq, causal: r.causal };
+    return { doc: owned(r.doc, this.schema), seq: r.seq, causal: r.causal };
   }
   async cuts() {
     await this.#refresh();
@@ -2004,7 +2023,8 @@ class CartonImpl implements Carton {
       const mine = input.doc ?? E.apply(E.fork(baseDoc, this.schema), input.ops ?? [], this.schema);
       if (E.hashDoc(baseDoc, this.schema) === E.hashDoc(opt, this.schema)) ops = E.diff(opt, mine, this.schema);
       else {
-        const m = E.merge3(baseDoc, opt, mine, this.schema, { ...(input.intent?.maps ? { remaps: { theirs: { maps: input.intent.maps } } } : {}), kinds: { theirs: input.kinds ?? {} }, rekeys: "ours" });
+        const own = E.intentRemap(input.intent);
+        const m = E.merge3(baseDoc, opt, mine, this.schema, { ...(own ? { remaps: { theirs: own } } : {}), kinds: { theirs: input.kinds ?? {} }, rekeys: "ours" });
         const unseen = input.unchosen === "prefer" ? [] : unseenCards(m.conflicts, input.choices);
         if (m.conflicts.length && (!input.choices || unseen.length)) return { status: "conflicts", cards: m.conflicts, ref: this.#sharedRef(cut), merge: m, ...(input.choices ? { unseen: unseen.map((c) => c.path) } : {}) };
         ops = E.diff(opt, m.conflicts.length ? E.resolve(m, input.choices!) : m.doc, this.schema);

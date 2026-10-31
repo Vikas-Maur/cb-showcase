@@ -1,4 +1,4 @@
-// core-proto's 31 tests as ported to the v5 engine (port of core-v5 `test.mjs`), and its four property fuzz tests
+// core-proto's 28 tests as ported to the v5 engine (port of core-v5 `test.mjs`), and its four property fuzz tests
 // (2,000 cases each by default).
 //
 // Docs are engine docs (tracks and keyed arrays carry "#pos"; fromHost/toHost convert), and a few expectations changed

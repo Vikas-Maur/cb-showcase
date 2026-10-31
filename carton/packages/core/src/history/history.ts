@@ -39,6 +39,7 @@ import type {
 } from "../types.ts";
 import * as E from "../engine/index.ts";
 import { isEmptyMap } from "../engine/remap.ts";
+import { forkSealed } from "../engine/doc.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
 import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
@@ -250,15 +251,25 @@ export class History {
   }
   /** The state at a node; null when it isn't held (a shallow node whose state wasn't carried). Never the live head. */
   stateOf(id: NodeId): Doc | null {
+    return this.#stateOf(id, false);
+  }
+  /**
+   * The same state as History holds it, the live head itself rather than a fork: read-only, for a caller that forks
+   * it anyway (Carton's head and checkout) or only reads it. Changing it changes History.
+   */
+  viewOf(id: NodeId): Doc | null {
+    return this.#stateOf(id, true);
+  }
+  #stateOf(id: NodeId, live: boolean): Doc | null {
     const c = this.canon(id);
-    const d = this.#stateAt(c);
+    const d = this.#stateAt(c, live);
     if (d) return d;
     // a version whose state is gone (compacted after a fork was made from it, in another process or behind a handle
     // that hadn't seen the compaction: review SF1-1) is still the state its fork keeps a copy of
     for (const cut of this.#cuts.values()) if (cut.root && cut.rec.forkOf && this.canon(cut.rec.forkOf) === c) return cut.root;
     return null;
   }
-  #stateAt(id: NodeId): Doc | null {
+  #stateAt(id: NodeId, live = false): Doc | null {
     const { branchId: b, seq: s } = parseNode(id);
     const br = this.#cuts.get(b);
     if (!br || br.rec.shallow) {
@@ -267,12 +278,12 @@ export class History {
     }
     if (s > br.log.length || s < 0) return null;
     if (s > 0 && br.log[s - 1]!.squashedInto) return null; // compacted away (§5.4)
-    if (br.sq && s === br.log.length) return E.fork(br.sq.head, this.schema); // never hand out the live head
+    if (br.sq && s === br.log.length) return live ? br.sq.head : E.fork(br.sq.head, this.schema); // stateOf never hands out the live head
     let k = s;
     while (!br.kf.has(k)) k--;
     let doc = br.kf.get(k)!;
     if (k < s) {
-      doc = E.fork(doc, this.schema);
+      doc = forkSealed(doc, this.schema); // a sealed keyframe's rebuild stays sealed (engine/doc.ts)
       for (let i = k; i < s; i++) E.apply(doc, br.log[i]!.ops, this.schema);
       if (s % this.K === 0) br.kf.set(s, doc);
     }
@@ -411,6 +422,9 @@ export class History {
   parseRef(ref: string | StateRef): (StateRef & { printNonce?: string; by?: string }) | { legacy: number } {
     if (typeof ref !== "string") return ref;
     if (/^\d{13}$/.test(ref)) return { legacy: Number(ref) }; // a 1.4.0 timestamp rev
+    // a node id, `<cutId>@<seq>`, as checkout, diff and restore take it (kit-docs: commit's base refused it)
+    const node = /^([^~\s]+)@(\d+)$/.exec(ref.trim());
+    if (node && this.#cuts.has(node[1]!)) return { branchId: node[1]!, seq: Number(node[2]) };
     const m = REF_RE.exec(ref.trim());
     if (!m) throw new StateUnknown(ref, "unparseable ref");
     const br = [...this.#cuts.values()].find((b) => b.rec.id.startsWith(m[4]!));
@@ -526,11 +540,14 @@ export class History {
       const head = br.sq.head;
       const conc = res.missing.filter((c) => !causal.includes(c.id));
       const rec = conc.filter((c) => !isEmptyMap(c.intent?.maps));
-      const concMaps = rec.length ? { maps: E.composeMaps(...rec.map((c) => c.intent!.maps)) } : undefined;
+      // the concurrent changes' maps and lineage (a split records lineage only: kit-docs)
+      const concLineage: NonNullable<Intent["lineage"]> = {};
+      for (const c of conc) if (c.intent?.lineage) Object.assign(concLineage, c.intent.lineage);
+      const concMaps = E.intentRemap({ maps: rec.length ? E.composeMaps(...rec.map((c) => c.intent!.maps)) : {}, lineage: concLineage });
       const concKinds: Record<string, NonNullable<Change["kinds"]>[string]> = {};
       for (const c of conc) for (const [id, k] of Object.entries(c.kinds ?? {})) concKinds[id] = k;
       const m = E.merge3(baseDoc, head, mine, this.schema, {
-        remaps: { ours: concMaps, theirs: isEmptyMap(change.intent?.maps) ? undefined : (change.intent as { maps: RemapMaps }) },
+        remaps: { ours: concMaps, theirs: E.intentRemap(change.intent) },
         kinds: { ours: concKinds, theirs: change.kinds ?? {} },
         rekeys: "ours",
       });
@@ -583,7 +600,7 @@ export class History {
   #confirmed(br: Cut, c: ConfirmedChange, keyframe = true): void {
     const a = actorKey(c.author);
     for (const op of c.ops) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), a);
-    if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? E.fork(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
+    if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? forkSealed(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
     if (c.name) this.#names.set(nodeId(br.rec.id, c.seq), { name: c.name, at: c.at, by: c.author });
     if (c.mergeOf) this.#anc.clear();
   }
