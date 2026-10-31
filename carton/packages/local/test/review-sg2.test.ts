@@ -5,7 +5,9 @@
 //     cut it had left.
 //   - #2: a project whose opener stopped between core's import and the starting-state mark (S3-4) was marked again
 //     only by an open with `init` while nothing was written since: a `cb` open (no init) and its edit made the mark
-//     impossible, and a copy of that carton.db folded from the empty root (a record card, base null).
+//     impossible, and a copy of that carton.db folded from the empty root (a record card, base null). Since core made
+//     the import a lineage point itself (request 8, `1423f0d`) there is no mark: these check that a copy of such a
+//     project folds cleanly, and that opening it writes no export row.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -101,8 +103,8 @@ test("SG2-1: a failed cut notice is never told after the app switched away itsel
 function project(name: string) {
   return { ...bundle(name), dataDir: mkdtempSync(join(scratch(), `${name}-data-`)) };
 }
-/** A project core created on its own, as one whose opener stopped right after the import: main@1, no mark. */
-async function unmarked(p: ReturnType<typeof project>) {
+/** A project core created on its own (main@1, the import), as one whose opener stopped right after the import. */
+async function coreMade(p: ReturnType<typeof project>) {
   const { store } = await openProjectStore({ bundleDir: p.dir, projectId: p.projectId, appDataDir: p.dataDir });
   const c = await Carton.open({ adapter, store, actor, init: { doc: doc0(), projectId: p.projectId, asChange: true } });
   return { c, store, close: async () => { await c.close(); await store.close(); } };
@@ -145,20 +147,18 @@ async function copyAndBringIn(A: ReturnType<typeof project>) {
   }
 }
 
-test("SG2-2: a project left unmarked is marked by the next open, a `cb` one (no init) too, before its edit; a copy folds cleanly", async () => {
+test("SG2-2: a project core made, opened by a `cb` (no init) that edits: no export row is written; a copy folds cleanly", async () => {
   const A = project("sg2-cb");
-  const raw = await unmarked(A);
-  const cut = raw.c.cut;
+  const raw = await coreMade(A);
   await raw.close();
-  assert.deepEqual(await exportRows(A), [], "no mark yet");
   // a cb call opens without init, and edits
   const cb = await openLocal({ projectDir: A.dir, projectId: A.projectId, dataDir: A.dataDir, adapter, actor });
   try {
-    assert.deepEqual(await exportRows(A), [`${cut}@1`], "marked at the starting version, before anything is written");
     assert.equal((await cb.write({ kind: "commit", ops: [set("c1", "opacity", 0.7)] })).status, "confirmed");
   } finally {
     await cb.close();
   }
+  assert.deepEqual(await exportRows(A), [], "opening writes no export row: the import is a lineage point by itself (core)");
   const { r, head } = await copyAndBringIn(A);
   assert.equal(r.status, "folded", JSON.stringify(r));
   assert.equal((r as { fold?: { status: string } }).fold!.status, "confirmed", JSON.stringify(r));
@@ -166,48 +166,23 @@ test("SG2-2: a project left unmarked is marked by the next open, a `cb` one (no 
   assert.equal(item(head, "c1").opacity, 0.7, "and Alice's kept");
 });
 
-test("SG2-2: written past the starting version before any open could mark it: the head is marked, a copy from then on folds cleanly; marked once", async () => {
+test("SG2-2: written past the starting version by a writer that doesn't open through openLocal: a copy folds cleanly; no export row", async () => {
   const A = project("sg2-late");
-  const raw = await unmarked(A);
-  const cut = raw.c.cut;
+  const raw = await coreMade(A);
   // a writer that doesn't open through openLocal
   assert.equal((await raw.c.commit({ ops: [set("c1", "opacity", 0.7)] })).status, "confirmed");
   await raw.close();
   const a = await openLocal({ projectDir: A.dir, projectId: A.projectId, dataDir: A.dataDir, adapter, actor, init: { doc: doc0() } });
   await a.close();
-  assert.deepEqual(await exportRows(A), [`${cut}@2`], "the head when it was found unmarked");
   const again = await openLocal({ projectDir: A.dir, projectId: A.projectId, dataDir: A.dataDir, adapter, actor });
   try {
     assert.equal((await again.write({ kind: "commit", ops: [set("c3", "opacity", 0.2)] })).status, "confirmed");
   } finally {
     await again.close();
   }
-  assert.deepEqual(await exportRows(A), [`${cut}@2`], "not marked again on later opens");
+  assert.deepEqual(await exportRows(A), [], "no open writes an export row");
   const { r, head } = await copyAndBringIn(A);
   assert.equal(r.status, "folded", JSON.stringify(r));
   assert.equal((r as { fold?: { status: string } }).fold!.status, "confirmed", JSON.stringify(r));
   assert.equal(item(head, "c2").opacity, 0.4);
-});
-
-test("SG2-2: a project whose mark can't be written still opens, and the next open marks it", async () => {
-  const A = project("sg2-fail");
-  const raw = await unmarked(A);
-  const cut = raw.c.cut;
-  await raw.close();
-  const orig = Carton.open;
-  Carton.open = (async function (this: typeof Carton, o: Parameters<typeof Carton.open>[0]) {
-    const c = await orig.call(this, o);
-    c.exportShallow = async () => { throw new Error("stopped before the mark"); };
-    return c;
-  }) as typeof Carton.open;
-  try {
-    const a = await openLocal({ projectDir: A.dir, projectId: A.projectId, dataDir: A.dataDir, adapter, actor });
-    await a.close();
-  } finally {
-    Carton.open = orig;
-  }
-  assert.deepEqual(await exportRows(A), []);
-  const b = await openLocal({ projectDir: A.dir, projectId: A.projectId, dataDir: A.dataDir, adapter, actor });
-  await b.close();
-  assert.deepEqual(await exportRows(A), [`${cut}@1`]);
 });

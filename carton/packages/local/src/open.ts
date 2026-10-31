@@ -100,42 +100,6 @@ export function replicaName(given: string | undefined, actor?: Actor): string {
   try { return userInfo().username || hostname(); } catch { return hostname(); }
 }
 
-/**
- * The starting version (`main@1`, the import) is a point every copy of the project shares: a teammate whose folder is
- * a copy of this one (carton.db and all) starts from it too. A `.cbproj` carries a cut's lineage compressed to its
- * root, forks, merges and exports, so without a mark their export would name only the empty root as what both copies
- * share, and bringing it in would fold from nothing: every record added on both sides, a field the copies hold at
- * different values a card with no base (e2e-qa S3-4, regressed by the import change). Core's own way to make a version
- * part of the lineage graph is an export of it (R4-01: the export node is persisted, its state kept as a keyframe), so
- * the starting version is exported once, while it is the head, to no one.
- *
- * Checked on every open, with or without `init` (a `cb` opens without it): a stop between the import and the mark is
- * repaired by the next process to open the project, before it writes. If something was written meanwhile (a writer
- * that doesn't open through here), the head is marked instead: a copy taken from then on shares that version, the
- * newest both sides hold. An export of a version from the import on (a `.cbproj` sent) is such a point already, so
- * then nothing is added; one of the empty root before it isn't. A copy taken in between still folds from the empty
- * root: only core can make the import itself a lineage point (asked of foundation-core, request 8; this goes then).
- *
- * `exported` is what the store held before this handle loaded it: a handle knows the exports it loaded or made, never
- * one another process wrote later (core's refresh doesn't reload them, request 9), and an export it doesn't know is
- * missing from its own `.cbproj`s. A mark another process wrote meanwhile is made again here (one more row for a
- * version, harmless). Best effort: an open never fails on it, and the next open tries again.
- */
-async function markStartingState(carton: Carton, store: Store, exported: readonly string[]): Promise<void> {
-  const at = await store.get<[string, number]>("ids", [`import.${carton.projectId}`]);
-  if (!at || at[1] !== 1) return;
-  const [cut, seq] = at;
-  if (exported.some((node) => node.startsWith(`${cut}@`) && Number(node.slice(cut.length + 1)) >= seq)) return;
-  if (!(await carton.cuts()).some((c) => c.id === cut && c.sequencer.kind === "local")) return;
-  await carton.exportShallow({ cut, to: STARTING_STATE });
-}
-/** The versions exported so far (lineage points): the export rows' keys are ["export", node, at, nonce], a handful. */
-async function exportedNodes(store: Store): Promise<string[]> {
-  return (await store.range("meta", { prefix: ["export"] })).map((r) => String(r.key[1]));
-}
-/** The recipient of the starting version's export (no one: it only makes that version a lineage point). */
-const STARTING_STATE = "carton:starting-state";
-
 /** The adapter local's default factory opens carton.db with. */
 const DEFAULT_ADAPTER = "cardboard";
 
@@ -151,16 +115,14 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   const adapter = opts.adapter ?? (await defaultAdapter());
   const name = replicaName(opts.name, actor);
   let carton: Carton;
-  let exported: string[] = [];
   try {
-    exported = await exportedNodes(store);
     carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, name, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName, asChange: opts.init.asChange ?? true } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
   } catch (e) {
     await store.close();
     throw e;
   }
-  // a project an older build left at its empty root gets its import in Carton.open (core, request 7: `d7b1f56`)
-  await markStartingState(carton, store, exported).catch(() => {});
+  // a project an older build left at its empty root gets its import in Carton.open (core, request 7: `d7b1f56`); the
+  // import is a lineage point every copy of the project shares, carried by its `.cbproj`s (core, request 8: `1423f0d`)
   const lease = new Lease(store);
   const dbPath = location.dbPath;
   const factory = opts.helperFactory ?? defaultFactory();
