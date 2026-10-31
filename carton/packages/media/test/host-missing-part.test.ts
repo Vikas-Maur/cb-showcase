@@ -10,6 +10,7 @@ import { createHmacAuth } from '@carton/server';
 import { startNodeHost, type NodeHost } from '@carton/server-node';
 import type { BlobStore } from '../src/contracts.ts';
 import { damagedKey, mediaKey, streamEndKey } from '../src/keys.ts';
+import { reportDamage } from '../src/damage.ts';
 import { nodeHasher } from '../src/node/node-hasher.ts';
 import { closeHashWorkers } from '../src/node/hash-file.ts';
 import { startRangeServer } from '../src/node/range-server.ts';
@@ -88,12 +89,19 @@ async function toolReads(store: BlobStore, id: string): Promise<number[]> {
   }
 }
 
-/** `byRead`: the tool's read recorded bad/<stream> already; otherwise the reuse check finds the gap and records it. */
+/** Past the time a stream found whole is remembered (VERIFIED_MS in stream.ts): what another process, or a later share, sees. */
+const later = () => Date.now() + 11 * 60_000;
+
+/**
+ * `byRead`: the tool's read recorded bad/<stream> already (which counts at once). Otherwise the reuse check finds the
+ * gap and records it, once it checks the parts again: `finishedStream` found them whole a moment ago, so look later.
+ */
 async function assertNotReused(store: BlobStore, id: string, byRead = true) {
   if (byRead) assert.ok(await store.head(damagedKey(id)), 'bad/<stream> is recorded by the read');
-  assert.equal(await usableProxy(store, src, 'p1'), null, 'the next share does not reuse the stream');
+  const when = byRead ? {} : { now: later };
+  assert.equal(await usableProxy(store, src, 'p1', when), null, 'the next share does not reuse the stream');
   assert.ok(await store.head(damagedKey(id)), 'bad/<stream> is recorded');
-  const next = await claimProxyStream(store, src, 'p1', 'libx264');
+  const next = await claimProxyStream(store, src, 'p1', 'libx264', when);
   assert.ok(next.claimed, 'the next share makes a new stream');
   assert.notEqual((next.pointer as { stream: string }).stream, id);
 }
@@ -230,4 +238,68 @@ test('cancelling playback does not wait for the report of a missing part (review
   } finally {
     release();
   }
+});
+
+test('a stream found whole is not checked again in this process: no HEADs, but a damage report still counts at once', async () => {
+  const store = new CountingMemoryStore();
+  const { id, segs } = await finishedStream(store); // checked once, inside
+  const heads = store.counters.heads;
+  const lists = { n: 0 };
+  const list = store.list.bind(store);
+  store.list = async (prefix) => (lists.n++, list(prefix));
+  for (let i = 0; i < 4; i++) assert.ok(await usableProxy(store, src, 'p1'));
+  assert.equal(lists.n, 0, 'no listing');
+  assert.ok(store.counters.heads - heads <= 4 * 2, 'no part HEADs (only the end and the report per check)');
+  // A part gone without a report is found once the memory runs out...
+  store.objects.delete(mediaKey(segs[2]!.hash));
+  assert.ok(await usableProxy(store, src, 'p1'), 'remembered');
+  assert.equal(await usableProxy(store, src, 'p1', { now: later }), null, 'checked again later');
+  // ...and a report counts at once.
+  const other = new CountingMemoryStore();
+  const second = await finishedStream(other);
+  await reportDamage(other, second.id, { hash: second.segs[0]!.hash });
+  assert.equal(await usableProxy(other, src, 'p1'), null);
+});
+
+test('where the store can list, a long stream is checked in a few pages, not a HEAD per part; HEADs where it cannot', async () => {
+  const store = new CountingMemoryStore();
+  const claim = await claimProxyStream(store, src, 'p1', 'libx264');
+  const id = (claim.pointer as { stream: string }).stream;
+  const hashes = Array.from({ length: 2000 }, (_, i) => i.toString(16).padStart(64, '0'));
+  for (const h of hashes) store.objects.set(mediaKey(h), new Uint8Array(3));
+  const end = { segments: 1999, durationSec: 3998, size: 6000, at: Date.now(), parts: hashes };
+  store.objects.set(streamEndKey(id), new TextEncoder().encode(JSON.stringify(end)));
+  // pages of 1000, as S3 gives them
+  let lists = 0;
+  store.list = async (prefix: string, opts?: { cursor?: string; limit?: number }) => {
+    lists++;
+    const keys = [...store.objects.keys()].filter((k) => k.startsWith(prefix)).sort();
+    const from = Number(opts?.cursor ?? 0);
+    const page = keys.slice(from, from + (opts?.limit ?? 1000));
+    const next = from + page.length;
+    return { blobs: page.map((key) => ({ key, size: store.objects.get(key)!.length })), ...(next < keys.length ? { cursor: String(next) } : {}) };
+  };
+  let heads = store.counters.heads;
+  assert.ok(await usableProxy(store, src, 'p1'));
+  assert.equal(lists, 2);
+  assert.ok(store.counters.heads - heads <= 2, 'no part HEADs');
+  // a gone part: still found, by the listing plus one HEAD that confirms it
+  store.objects.delete(mediaKey(hashes[1234]!));
+  heads = store.counters.heads;
+  assert.equal(await usableProxy(store, src, 'p1', { now: later }), null);
+  assert.ok(store.counters.heads - heads <= 3);
+
+  // A store that can't list (a Carton host): HEADs, and it isn't asked to list again.
+  const host = new CountingMemoryStore();
+  const two = await finishedStream(host);
+  let tries = 0;
+  host.list = async () => {
+    tries++;
+    throw new Error('the host HTTP API has no list');
+  };
+  assert.ok(await usableProxy(host, src, 'p1', { now: later }));
+  assert.ok(await usableProxy(host, src, 'p1', { now: () => later() + 11 * 60_000 }));
+  assert.equal(tries, 1);
+  host.objects.delete(mediaKey(two.segs[1]!.hash));
+  assert.equal(await usableProxy(host, src, 'p1', { now: () => later() + 22 * 60_000 }), null);
 });
