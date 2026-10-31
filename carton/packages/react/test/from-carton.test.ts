@@ -89,7 +89,7 @@ test("a rebase's card names the other side from Credits (who last changed that r
   const { carton, ui, emit } = await open();
   await carton.commit({ ops: [set("b", "name", "Bob's name")], author: bob });
   await settle();
-  emit({ type: "absorbed", branchId: carton.cut, id: "x.1", cards: [{ kind: "same-field", path: "items/b/name", base: "b", ours: "Bob's name", theirs: "Alice's name" }] });
+  emit({ type: "absorbed", branchId: carton.cut, id: "x.1", cards: [{ kind: "field", path: "items/b/name", base: "b", ours: "Bob's name", theirs: "Alice's name" }] });
   await settle();
   const card = ui.conflicts()[0]!;
   assert.equal(card.theirs.author.name, "Bob");
