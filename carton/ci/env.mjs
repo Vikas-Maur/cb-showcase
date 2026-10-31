@@ -26,6 +26,7 @@ export function testEnv() {
     CARTON_MEDIA_SCRATCH: path.join(root, "carton-media"),
     CARTON_S3_SCRATCH: path.join(root, "carton-s3"),
     CARTON_TEST_DIR: path.join(root, "carton-patch-tests"),
+    CARTON_E2E_TMP: path.join(root, "carton-e2e"),
   };
   for (const k of Object.keys(env)) {
     if (process.env[k]) env[k] = process.env[k];

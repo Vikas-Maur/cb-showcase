@@ -62,6 +62,37 @@ export function VirtualList(p: VirtualListProps) {
     setRange((prev) => (prev[0] === next[0] && prev[1] === next[1] ? prev : next));
   }, [viewport, p.rowHeight, p.count, overscan]);
 
+  // A scroll's new rows are rendered in a task after the frame (as React's scheduler does for scroll), never inside
+  // it: preact/compat renders state set in a scroll handler at once, which put a whole window of row mounts on the
+  // frame's critical path (U3). A MessageChannel task isn't clamped like setTimeout (Windows: ~15.6 ms). Scrolls in one
+  // frame coalesce into one update; the overscan rows cover the frame in between.
+  const recomputeRef = useRef(recompute);
+  recomputeRef.current = recompute;
+  const scrollTask = useRef<{ port: MessagePort; queued: boolean } | null>(null);
+  useEffect(() => {
+    if (typeof MessageChannel === "undefined") return;
+    const ch = new MessageChannel();
+    const task = { port: ch.port2, queued: false };
+    ch.port1.onmessage = () => {
+      task.queued = false;
+      recomputeRef.current();
+    };
+    scrollTask.current = task;
+    return () => {
+      scrollTask.current = null;
+      ch.port1.onmessage = null;
+      ch.port1.close();
+      ch.port2.close();
+    };
+  }, []);
+  const onScroll = useCallback(() => {
+    const task = scrollTask.current;
+    if (!task) return recomputeRef.current();
+    if (task.queued) return;
+    task.queued = true;
+    task.port.postMessage(0);
+  }, []);
+
   // Keep the reader's place when newer versions arrive above: shift the scroll by the rows added, unless the reader
   // is at the very top (then they see the new row arrive, as in a chat).
   const lastCount = useRef(p.count);
@@ -145,7 +176,7 @@ export function VirtualList(p: VirtualListProps) {
       "aria-label": p.label,
       "aria-activedescendant": p.active != null && p.active >= 0 && p.activeId ? p.activeId(p.active) : undefined,
       tabIndex: 0,
-      onScroll: recompute,
+      onScroll,
       onKeyDown,
       // Layout and paint containment: row changes never relayout the panel around the list.
       style: { position: "relative", overflowY: "auto", contain: "content" },

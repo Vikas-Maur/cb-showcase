@@ -10,10 +10,10 @@ on:
   push:
     branches: [ci/carton]
 
-# Only a push that names measurements cancels the measurement run it supersedes; every other push (its run is
-# skipped) and a re-run get a group of their own.
+# Every run has a group of its own: a new push usually names other measurements, and cancelling a measurement run
+# throws its results away. (Pushes without a tag skip at once.)
 concurrency:
-  group: carton-measure-${{ github.ref }}-${{ (github.run_attempt == '1' && contains(github.event.head_commit.message, '[carton-measure')) && 'latest' || github.run_id }}
+  group: carton-measure-${{ github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -78,7 +78,7 @@ jobs:
           key: carton-measure-tools-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/measure.json') }}
 
       - name: Measure ${{ matrix.id }}
-        run: node ci/measure.mjs --id ${{ matrix.id }}
+        run: node ci/measure.mjs --id ${{ matrix.id }} --timeout-min ${{ matrix.timeout }}
 
       - name: Upload results
         if: always()

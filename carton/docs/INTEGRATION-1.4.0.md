@@ -76,6 +76,20 @@ with a plain rename. It says so once in the log. The tests check that `cb` then 
 the hooks call, and it loads `carton-node.cjs` on first use. The bridges are the only code that knows 1.4.0's internals
 (`seenOnDisk`, `byId`, the mirror's options, the editor store's `_m`). The packages only see documents, refs and actors.
 
+**The live-sync and sharing half** (H8's lease holder and sync client, Invite to edit and Join, H10, H11's "Bring in
+their changes", H13) lives in its own files, `scripts/carton/sync/**` and `scripts/patch-carton-sync.js`, and plugs in
+at three points:
+- **Worker services.** `scripts/carton/build.js` bundles `sync/worker.js` (when present) into `carton-node.cjs`, so it
+  shares the facade's one copy of `@carton/*`. It calls the facade's `extend({worker(api)})`; in the library worker its
+  services join the `carton` namespace beside the facade's own, never replacing one. `api` gives each project's open
+  Carton (`carton(projectId)`, `open(bundlePath)`), `onOpen(fn)` for every Carton the worker opens, `emit`, and
+  `materialize(projectId)`. An extension that throws is left out, logged once. `sync/ui.js` is bundled into
+  `carton-ui.js` the same way, and the rest of `sync/` (but its tests) is copied to `resources\carton\sync`.
+- **`carton:call` handlers.** `__cartonMain.handle(name, fn)` answers a method in main (it can still reach the worker
+  with `__cartonMain.forward(name, args)`); `window.__carton.handle(name, fn)` answers one in the page. Off, none runs.
+- **Patches.** `build-windows.js` (and the tests' `stage.js`) runs `scripts/patch-carton-sync.js --app` and `--cli`
+  with the same files as `patch-carton.js`, right after it, when the script exists.
+
 ## 3. Hook table
 
 Bundles: **CLI** = `resources/cli/chunks/chunk-LL26E55H.mjs` (the CLI's store and mirror). **cb** =
@@ -150,8 +164,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    after the hold, a foreign `project.json` is imported and a foreign `timeline.tsx` applied through the mirror, and
    anything that can't be is kept and reported.
 5. **Conflicts stay data.** A clash keeps head's value and the writer's side becomes a card, kept as a notice for its
-   author (`cb conflicts`, the Stop hook). The person's own cards also show in the History panel, which resolves exactly
-   the card it shows.
+   author (`cb conflicts`, the Stop hook). The person's own cards also show in the History panel, passed as core made
+   them (`ours` is head, `theirs` the person's edit, shown as "mine"); resolving one removes the kept cards identical to
+   it (the panel shows those once) and no other.
 6. **If a commit fails** (a Carton bug, a full disk), the write still happens, as in 1.4.0, and the failure is logged.
    The next commit imports that file as an outside change. A Carton failure never stops the person from saving.
 
@@ -287,13 +302,13 @@ onto the packages' APIs, so a package API change touches only the facade.
 
 ## 6. State on 2026-10-31
 
-- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 21 tests):
+- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 23 tests):
   - Carton off: `cb`'s output and files equal our Windows build's; the real library worker runs patched.
   - Carton on, for real (`@carton/local` and `carton.db`): history with authors down to the subagent, credits, a cut
     with `project.json` following the switch, fold, `undo --turn` raising a card, and 4 concurrent `cb` writers losing
     no edit (B1).
   - The rev map: 1.4.0's numeric header and `cb undo <rev>` name Carton versions.
-  - The pages' bridge and main's bridge, on stand-ins.
+  - The pages' bridge and main's bridge, on stand-ins, and the live-sync half's seams.
 - **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
   save projection, cut out at build time) and `carton-ui.js`.
 - **Not wired yet:** the Materializer's per-agent views and the shared `timeline.tsx` freeze (H8; the worker still

@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles } from "@carton/cardboard/node";
+import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, safePart } from "@carton/local";
@@ -51,10 +51,54 @@ function open(bundlePath, { projectId, doc } = {}) {
       return lc;
     })().catch((e) => (warnOnce("open:" + bundlePath, `history is off for ${path.basename(bundlePath)}: ${errText(e)}`), opened.delete(bundlePath), null));
     opened.set(bundlePath, p);
+    p.then((lc) => {
+      if (!lc) return;
+      ready.set(bundlePath, lc);
+      for (const f of openers) tell(f, bundlePath, lc);
+    });
   }
   return p;
 }
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
+
+// ---------------------------------------------------------------- extensions
+// The live-sync and sharing half (scripts/carton/sync, windows-sync) is bundled into this file by build.js and
+// registers here with `extend({worker(api)})`. In the library worker, worker(api) returns services that join the
+// worker's `carton` namespace beside the facade's own (never replacing one): main's carton:call and the pages reach
+// them as carton.<name> (letters only). api:
+//   library, emit(change)   the worker's library, and its channel to main and the pages ({kind: "carton", …} changes)
+//   bundleOf(projectId)     the project's bundle folder
+//   open(bundlePath), carton(projectId)
+//                           the project's LocalCarton ({carton, store, …}), opened on first use; null when history is off
+//                           for it
+//   onOpen(fn)              fn(bundlePath, lc) for each Carton this process opens, the ones open already included;
+//                           returns a function that stops it
+//   materialize(projectId)  head into project.json, and the pages adopt it
+//   actorOf(id)             an actor id ("person", "director/<chat>/<turn>", "external:project.json") as an Actor
+// An extension that throws is left out (logged once); Carton and the save path go on without it.
+const extensions = [], openers = new Set(), ready = new Map(); // ready: bundlePath → LocalCarton
+export function extend(ext) { extensions.push(ext); }
+function tell(f, bundlePath, lc) {
+  try { Promise.resolve(f(bundlePath, lc)).catch((e) => warnOnce("onOpen:" + bundlePath, "an extension failed on open: " + errText(e))); }
+  catch (e) { warnOnce("onOpen:" + bundlePath, "an extension failed on open: " + errText(e)); }
+}
+function onOpen(f) {
+  openers.add(f);
+  for (const [bundlePath, lc] of ready) tell(f, bundlePath, lc);
+  return () => openers.delete(f);
+}
+function extensionServices(api, own) {
+  const out = {};
+  for (const ext of extensions) {
+    let more;
+    try { more = ext.worker?.(api) ?? {}; } catch (e) { warnOnce("ext:" + (ext.name ?? "?"), "an extension failed to start: " + errText(e)); continue; }
+    for (const [name, f] of Object.entries(more)) {
+      if (name in own || name in out || !/^[a-zA-Z]+$/.test(name) || typeof f !== "function") warnOnce("ext:" + name, `an extension's service ${name} was left out (taken, or not a function with a letters-only name)`);
+      else out[name] = f;
+    }
+  }
+  return out;
+}
 
 // The rev map (carton.db's local `views` table): ["rev", ms] → ref; ["ref", branch, seq] → ms.
 const REVS = "views";
@@ -70,29 +114,21 @@ const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 // agents (§8).
 const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : parseActorId(id) ?? identify({ declared: id }));
 
-// The History panels open in this process, per bundle, each with the card it shows for each field (fromCarton shows
-// one per field): a person's GUI save's cards show in them at once, and resolving removes exactly the card shown.
+// The History panels open in this process, per bundle (fromCarton handles): a person's GUI save's cards show in them at
+// once. Cards go to @carton/react as core returns them: core merges merge3(base, head, mine), so `ours` is head and
+// `theirs` the person's edit, which fromCarton shows as "mine". It shows identical cards (same field and values) once,
+// so resolving a card removes every kept card identical to it, and no other.
 const panels = new Map();
-const show = (panel, cards) => {
-  const fresh = [];
-  for (const c of cards) if (!panel.shown.has(c.path)) panel.shown.set(c.path, c.cid), fresh.push(c);
-  if (fresh.length) panel.handle.reportConflicts(forPanel(fresh));
-};
-// A commit rebases the writer's change onto head (merge3(base, head, mine)), so its cards hold head's value as
-// `ours`. The panel reads `ours` as the person's own edit and `theirs` as the change that was kept: swapped for it.
-// A compare card's `ops` take `theirs` as it is, so it stays.
-const forPanel = (cards) => cards.map((c) => (c.kind === "compare" ? c : { ...c, ours: c.theirs, theirs: c.ours }));
+const canon = (v) => JSON.stringify(v ?? null, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x));
+const sameCard = (a, b) => a.path === b.path && canon(a.ours) === canon(b.ours) && canon(a.theirs) === canon(b.theirs);
 
 // Cards a commit raised, as a notice for its author in carton.db's notices table, where `cb conflicts`, the Stop hook
 // and the History panel read them (core keeps notices only for confirmed and pending commits).
 const keyOf = (a) => [a.kind, a.id, a.agentId].filter(Boolean).join("/");
-// Each card gets an id of its own (`cid`), so the one a panel resolves is the one it showed.
 async function keepCards(lc, author, cards) {
   const to = keyOf(author), at = Date.now(), rand = () => Math.random().toString(16).slice(2, 10);
-  const kept = cards.map((c) => ({ ...c, cid: rand() + rand() }));
   const text = `${cards.length} of your edits clashed with a change made meanwhile; the other change was kept. Choose with cb conflicts / cb resolve, or in History.`;
-  await lc.store.write([{ table: "notices", key: [to, at, 0, rand()], value: { to, kind: "late-conflict", text, cards: kept, at } }]);
-  return kept;
+  await lc.store.write([{ table: "notices", key: [to, at, 0, rand()], value: { to, kind: "late-conflict", text, cards, at } }]);
 }
 
 // A Director turn's name in History, from the user's prompt: its first sentence, at most six words ("tighter intro").
@@ -144,9 +180,10 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   // A clash keeps head's value; the writer's side is a conflict card, kept as a notice for its author until it is
   // resolved (`cb conflicts`, the History panel), never dropped.
   if (r.status === "conflicts" && r.cards?.length) {
-    const author = actorOf(meta?.actor ?? actor), kept = await keepCards(lc, author, r.cards);
+    const author = actorOf(meta?.actor ?? actor);
+    await keepCards(lc, author, r.cards);
     // Only the person's own cards go to the person's panel: an agent's are its own (the Stop hook, cb conflicts).
-    if (author.id === "person") for (const panel of panels.get(bundlePath) ?? []) show(panel, kept);
+    if (author.id === "person") for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(r.cards);
   }
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
   const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
@@ -181,7 +218,8 @@ const markSeen = (file, hash) => {
   fs.mkdirSync(path.dirname(seenFile(file)), { recursive: true });
   const tmp = seenFile(file) + "." + process.pid + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(all));
-  fs.renameSync(tmp, seenFile(file));
+  // On Windows a reader (another process, an indexer) holding the old file makes the rename fail busy for a moment.
+  retryBusy(() => fs.renameSync(tmp, seenFile(file)));
 };
 
 // One install at a time per bundle, across processes (mkdir is atomic on NTFS too): the check that a file is still
@@ -325,7 +363,7 @@ const readJournal = (bundle) => { try { return JSON.parse(fs.readFileSync(journa
 const writeJournal = (bundle, j) => {
   const tmp = journalFile(bundle) + "." + process.pid + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(j));
-  fs.renameSync(tmp, journalFile(bundle));
+  retryBusy(() => fs.renameSync(tmp, journalFile(bundle)));
 };
 
 // Files an earlier process displaced and exited before its hold ended: one moved aside over 10 s ago, untouched since
@@ -447,6 +485,11 @@ export const cardboard14 = {
     const bundleOf = (projectId) => library.projects.bundlePathFor?.(projectId) ?? null;
     const lcOf = async (projectId) => open(bundleOf(projectId), { projectId });
     const servers = new Map(); // client → serveUi
+    const own = cardboard14.workerServices({ library, emit, bundleOf, lcOf, servers });
+    const materialize = async (projectId) => { if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) }); };
+    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf }, own) };
+  },
+  workerServices({ library, emit, bundleOf, lcOf, servers }) {
     return {
       ping: async () => "pong",
       head: async ({ projectId }) => library.projects.read(projectId),
@@ -489,42 +532,24 @@ export const cardboard14 = {
           const ui = handle.ui ?? handle;
           const bundlePath = bundleOf(projectId);
           if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
-          const panel = { handle, shown: new Map() };
-          panels.get(bundlePath).add(panel);
-          // Cards kept from earlier GUI saves are shown too, until resolved (the earliest first for each field).
+          panels.get(bundlePath).add(handle);
+          // Cards kept from earlier GUI saves are shown too, until resolved.
           const person = keyOf(actorOf("person"));
-          // Cards kept before cards had ids get one when read, so they can be resolved like the rest.
-          const kept = async () => {
-            const rows = (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
-            const old = rows.filter((x) => x.value.cards.some((c) => !c.cid));
-            if (old.length) {
-              // Derived from the notice and the card's place in it, so two panels opening at once agree.
-              for (const x of old) x.value = { ...x.value, cards: x.value.cards.map((c, i) => (c.cid ? c : { ...c, cid: "k" + sha(JSON.stringify(x.key) + ":" + i).slice(0, 16) })) };
-              await lc.store.write(old.map((x) => ({ table: "notices", key: x.key, value: x.value })));
-            }
-            return rows;
-          };
-          show(panel, (await kept()).flatMap((x) => x.value.cards));
+          const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
+          handle.reportConflicts((await kept()).flatMap((x) => x.value.cards));
           // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
           for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
             const f = ui[m];
             if (typeof f === "function") ui[m] = async (...a) => {
+              // The card behind a conflict, as reported (fromCarton forgets it once resolved).
+              const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
               const r = await f.apply(ui, a);
               if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-              // Exactly the card this panel showed goes (its notice with it, once empty); if another panel resolved it
-              // first, nothing else is touched. The next card kept for that field is shown.
-              if (m === "resolve") {
-                const at = a[0], cid = panel.shown.get(at);
-                panel.shown.delete(at);
-                for (const x of await kept()) {
-                  if (!cid || !x.value.cards.some((c) => c.cid === cid)) continue;
-                  const cards = x.value.cards.filter((c) => c.cid !== cid);
-                  await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
-                }
-                // Another panel showing the same card keeps tracking it: it still shows it, and a later card for the
-                // field isn't shown there until that one is resolved.
-                const next = (await kept()).flatMap((x) => x.value.cards).find((c) => c.path === at);
-                if (next) show(panel, [next]);
+              // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
+              // resolved them first, they are already gone.
+              if (card) for (const x of await kept()) {
+                const cards = x.value.cards.filter((c) => !sameCard(c, card));
+                if (cards.length < x.value.cards.length) await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
               }
               return r;
             };
@@ -542,7 +567,7 @@ export const cardboard14 = {
 // For the tests (scripts/carton/test): the install lock, the sweep and its journal.
 export const internals = {
   testHooks,
-  // A notice as an earlier build wrote it (cards without ids).
+  // A notice as written by another process or an earlier build.
   writeNotice: async (bundlePath, actorId, cards) => {
     const lc = await open(bundlePath), to = keyOf(actorOf(actorId));
     await lc.store.write([{ table: "notices", key: [to, Date.now(), 0, "old"], value: { to, kind: "late-conflict", text: "kept", cards, at: Date.now() } }]);

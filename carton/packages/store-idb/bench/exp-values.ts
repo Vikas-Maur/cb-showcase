@@ -1,4 +1,4 @@
-// In-page A/B for store-idb's value format: structured clones (what IdbStore stores) against JSON strings, on 10k
+// In-page A/B for store-idb's value format: structured clones against JSON strings (what IdbStore stores), on 10k
 // changes. Measures writing them (batches of 1000), reading them all back with getAll, and one small commit.
 import { change } from "../../store-sqlite/bench/fixture.ts";
 

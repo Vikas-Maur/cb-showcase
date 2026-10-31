@@ -1,5 +1,5 @@
 {
-  "$comment": "Phase B: the agents' 'Measurements to run', re-run on CI runners (AGENTS.md rule 6), one job per id (carton-measure.yml, measure.mjs). A step is {label, cwd (relative to carton/), run, env, stdoutTo?, repeat?, allowFail?}; {node}, {electron}, {tmp}, {results}, {pwModules} are filled in. A report reads a results file: jsonl rows grouped by `groupBy`, every numeric field (nested ones as dotted paths) given as median and every run, minus `ignore` (exact keys or prefixes).",
+  "$comment": "Phase B: the agents' 'Measurements to run', re-run on CI runners (AGENTS.md rule 6), one job per id (carton-measure.yml, measure.mjs). A step is {label, cwd (relative to carton/), run, env, stdoutTo?, repeat?, failPattern?}; {node}, {electron}, {tmp}, {results}, {pwModules} are filled in. A report reads a results file: jsonl rows grouped by `groupBy`, every numeric field (nested ones as dotted paths) given as median and every run, minus `ignore` (exact keys or prefixes). A report's `expect` ({rows, cells, runsPerCell}) and `noErrors` (an array field that must be empty) make an incomplete run fail; `failPattern`: a failed run of a repeated step counts as an observation only if its output matches it, any other failure fails the measurement.",
   "measurements": [
     {
       "id": "stores-sqlite-cells",
@@ -45,7 +45,176 @@
             "node",
             "head",
             "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 8,
+            "runsPerCell": 7
+          }
+        }
+      ]
+    },
+    {
+      "id": "stores-sqlite-recheck",
+      "agent": "stores",
+      "claim": "S1 and S3 again after stores' fixes (14ff3cb one bound per side; 969db35 checkpoint outside the write lock): the open and commit cells only, stores' re-run command (notes: Measurements to re-run after Stage F)",
+      "timeout": 45,
+      "steps": [
+        {
+          "label": "bench/run.ts open|commit cells, fresh databases, 7 rounds",
+          "cwd": "packages/store-sqlite",
+          "env": {
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "bench/run.ts",
+            "{tmp}/sqlite-recheck",
+            "7",
+            "{results}/raw-sqlite-recheck.jsonl",
+            "10000,100000",
+            "^(open|commit)"
+          ],
+          "stdoutTo": "{results}/sqlite-recheck-run.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "raw-sqlite-recheck.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
+        }
+      ]
+    },
+    {
+      "id": "stores-sqlite-ab",
+      "agent": "stores",
+      "claim": "verifier's A/B for S3c (commit p50 0.035 → 0.110 ms between two runs on different CPUs): in one job, A = store-sqlite before the fixes (f362256) with its harness, B = the same code with the new harness (yields between commits), C = the fixed code (snapshot) with the new harness; open and commit cells, 7 rounds, side order rotated",
+      "timeout": 75,
+      "steps": [
+        {
+          "label": "check out f362256 twice (A, and B with the new bench/cell.ts), npm ci in each",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd ..; git fetch --no-tags --depth=1 origin f3622561f1ba4e9f164a0350aaca49a8d694a947; git worktree add --detach {tmp}/ab-old f3622561f1ba4e9f164a0350aaca49a8d694a947; git worktree add --detach {tmp}/ab-oldharness f3622561f1ba4e9f164a0350aaca49a8d694a947; cp carton/packages/store-sqlite/bench/cell.ts {tmp}/ab-oldharness/carton/packages/store-sqlite/bench/cell.ts; (cd {tmp}/ab-old/carton && npm ci --no-audit --no-fund); (cd {tmp}/ab-oldharness/carton && npm ci --no-audit --no-fund)"
           ]
+        },
+        {
+          "label": "ci/xcheck/ab-sqlite.mjs: bench/run.ts for A, B, C, one round each per turn, order rotated, 7 rounds",
+          "env": {
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "ci/xcheck/ab-sqlite.mjs",
+            "--rounds",
+            "7",
+            "--cells",
+            "^(open|commit)",
+            "--tmp",
+            "{tmp}",
+            "--results",
+            "{results}",
+            "A={tmp}/ab-old/carton/packages/store-sqlite",
+            "B={tmp}/ab-oldharness/carton/packages/store-sqlite",
+            "C=packages/store-sqlite"
+          ],
+          "stdoutTo": "{results}/ab-run.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "ab-A.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
+        },
+        {
+          "file": "ab-B.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
+        },
+        {
+          "file": "ab-C.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
         }
       ]
     },
@@ -97,7 +266,11 @@
             "node",
             "head",
             "keyframeSeq"
-          ]
+          ],
+          "expect": {
+            "cells": 8,
+            "runsPerCell": 7
+          }
         }
       ]
     },
@@ -134,20 +307,20 @@
           "stdoutTo": "{results}/compress.jsonl"
         },
         {
-          "label": "Carton on carton.db, three processes committing back to back, TIGHT=1, 20 runs (counts runs that fail)",
+          "label": "Carton on carton.db, three processes committing back to back, TIGHT=1, 20 runs (counts runs that fail with core's 'store changed under this write'; any other failure fails the measurement)",
           "cwd": "packages/store-sqlite",
           "env": {
             "TIGHT": "1"
           },
           "repeat": 20,
-          "allowFail": true,
           "run": [
             "{node}",
             "--test",
             "--test-name-pattern=three processes committing",
             "test/import.test.ts"
           ],
-          "stdoutTo": "{results}/tight.log"
+          "stdoutTo": "{results}/tight.log",
+          "failPattern": "Carton: the store changed under this write"
         },
         {
           "label": "P3/P3b under Node (test/xproc.test.ts)",
@@ -178,7 +351,10 @@
       "reports": [
         {
           "file": "idb-values.json",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 1
+          }
         },
         {
           "file": "compress.jsonl",
@@ -188,7 +364,11 @@
           "ignore": [
             "node",
             "items"
-          ]
+          ],
+          "expect": {
+            "cells": 3,
+            "runsPerCell": 1
+          }
         },
         {
           "file": "tight.log",
@@ -196,11 +376,17 @@
         },
         {
           "file": "xproc-node.tap",
-          "kind": "tap-json"
+          "kind": "tap-json",
+          "expect": {
+            "rows": 2
+          }
         },
         {
           "file": "xproc-electron.tap",
-          "kind": "tap-json"
+          "kind": "tap-json",
+          "expect": {
+            "rows": 2
+          }
         }
       ]
     },
@@ -251,7 +437,10 @@
       "reports": [
         {
           "file": "ui-size.json",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 6
+          }
         },
         {
           "file": "ui-bench.jsonl",
@@ -270,6 +459,16 @@
             "vps",
             "burst",
             "errors"
+          ],
+          "expect": {
+            "cells": 14,
+            "runsPerCell": 3
+          },
+          "noErrors": "errors",
+          "optionalKeys": [
+            "n",
+            "full",
+            "shots"
           ]
         }
       ]
@@ -311,7 +510,10 @@
       "reports": [
         {
           "file": "idb-values-x3.jsonl",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 3
+          }
         },
         {
           "file": "compress-x5.jsonl",
@@ -321,7 +523,39 @@
           "ignore": [
             "node",
             "items"
-          ]
+          ],
+          "expect": {
+            "cells": 3,
+            "runsPerCell": 5
+          }
+        }
+      ]
+    },
+    {
+      "id": "stores-compress-samples",
+      "agent": "stores",
+      "claim": "verifier's cross-check of S7 (inflate vs JSON.parse of a level-3 keyframe): every sample kept, the two operations alternated, wall and CPU time (ci/xcheck/compress-samples.ts), in 5 fresh processes",
+      "timeout": 20,
+      "steps": [
+        {
+          "label": "ci/xcheck/compress-samples.ts 200 iterations after 20 warm-up, 5 processes",
+          "repeat": 5,
+          "run": [
+            "{node}",
+            "ci/xcheck/compress-samples.ts",
+            "200",
+            "20"
+          ],
+          "stdoutTo": "{results}/compress-samples.jsonl"
+        }
+      ],
+      "reports": [
+        {
+          "file": "compress-samples.jsonl",
+          "kind": "json",
+          "expect": {
+            "rows": 5
+          }
         }
       ]
     },
@@ -372,7 +606,10 @@
       "reports": [
         {
           "file": "media-size.json",
-          "kind": "json"
+          "kind": "json",
+          "expect": {
+            "rows": 1
+          }
         },
         {
           "file": "hash-throughput.jsonl",
@@ -519,7 +756,8 @@
             "link",
             "load",
             "requests"
-          ]
+          ],
+          "optionalKeys": []
         },
         {
           "file": "ffr-play.jsonl",
@@ -537,7 +775,8 @@
             "link",
             "load",
             "requests"
-          ]
+          ],
+          "optionalKeys": []
         },
         {
           "file": "ffr-verified.jsonl",
@@ -555,6 +794,104 @@
             "link",
             "load",
             "requests"
+          ],
+          "optionalKeys": []
+        }
+      ]
+    },
+    {
+      "id": "media-x264",
+      "agent": "media",
+      "claim": "libx264 collab-proxy encode cost (notes 5, bench/media/x264-cost.ts since a069b7d): two deterministic 10 s 1080p30 sources (easy, grain), the exact ffmpegEncoder('libx264') arguments, CPU time from ffmpeg's -benchmark, 3 rounds",
+      "timeout": 45,
+      "needs": [
+        "ffmpeg"
+      ],
+      "steps": [
+        {
+          "label": "make the two sources (x264-cost.ts make)",
+          "run": [
+            "{node}",
+            "bench/media/x264-cost.ts",
+            "make",
+            "{tmp}/x264"
+          ]
+        },
+        {
+          "label": "x264-cost.ts run, 3 rounds",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/x264-cost.ts",
+            "run",
+            "{tmp}/x264",
+            "3",
+            "{results}/x264-cost.jsonl"
+          ],
+          "stdoutTo": "{results}/x264-summary.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "x264-cost.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at"
+          ],
+          "expect": {
+            "cells": 2,
+            "runsPerCell": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "cardboard-zip",
+      "agent": "cardboard-adapter",
+      "claim": "the .cbproj ZipWriter vs a yazl-style stream copy vs fs.copyFileSync, 256 MiB, 7 runs, order rotating (bench/zip/bench.ts, since 27c9c5d): the check passes and ours beats stream in every rotation and at the median",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "the source's folder",
+          "run": [
+            "{node}",
+            "-e",
+            "require('fs').mkdirSync(process.argv[1], { recursive: true })",
+            "{tmp}/zip"
+          ]
+        },
+        {
+          "label": "bench/zip/bench.ts, 256 MiB source, 7 runs",
+          "run": [
+            "{node}",
+            "bench/zip/bench.ts",
+            "{tmp}/zip/src.bin",
+            "--runs",
+            "7",
+            "--make-mib",
+            "256"
+          ],
+          "stdoutTo": "{results}/zip.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "zip.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^# check: ours wrote one STORED entry",
+            "^median\\tours",
+            "^median\\tstream"
           ]
         }
       ]
@@ -605,6 +942,16 @@
             "size",
             "jitter",
             "pace"
+          ],
+          "optionalKeys": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
           ]
         }
       ]
@@ -672,7 +1019,168 @@
             "size",
             "jitter",
             "pace"
+          ],
+          "optionalKeys": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
           ]
+        }
+      ]
+    },
+    {
+      "id": "cardboard-race-windows",
+      "agent": "cardboard-adapter",
+      "runner": "windows-latest",
+      "claim": "P10 on NTFS (notes 2: the [GATE] run is the user's laptop on mains power; this is a hosted Windows VM with Defender on): the portable matrix on the shipped code, run-windows.ps1's defaults (3 trials x 3000 rounds), node race.ts as the script runs it",
+      "timeout": 80,
+      "steps": [
+        {
+          "label": "the volume's file system (Get-Volume)",
+          "run": [
+            "powershell.exe",
+            "-NoProfile",
+            "-Command",
+            "(Get-Volume -FilePath $env:RUNNER_TEMP).FileSystemType"
+          ],
+          "stdoutTo": "{results}/race-windows-fs.txt"
+        },
+        {
+          "label": "bench/race/race.ts, 3 trials x 3000 rounds, NTFS",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "race.ts",
+            "--dir",
+            "{tmp}/carton-race",
+            "--fs",
+            "windows-NTFS",
+            "--trials",
+            "3",
+            "--rounds",
+            "3000",
+            "--out",
+            "{results}/race-windows.jsonl"
+          ],
+          "stdoutTo": "{results}/race-windows.log"
+        },
+        {
+          "label": "bench/race/summarize.ts",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "summarize.ts",
+            "{results}/race-windows.jsonl"
+          ],
+          "stdoutTo": "{results}/race-windows-summary.md"
+        }
+      ],
+      "reports": [
+        {
+          "file": "race-windows.jsonl",
+          "groupBy": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "ignore": [
+            "round",
+            "trial",
+            "rounds",
+            "ms",
+            "at",
+            "base",
+            "fsLabel",
+            "oracle",
+            "keep",
+            "size",
+            "jitter",
+            "pace"
+          ],
+          "optionalKeys": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "expect": {
+            "rows": 57
+          }
+        }
+      ]
+    },
+    {
+      "id": "core-s8",
+      "agent": "foundation-core",
+      "claim": "S8 again after foundation's append turn (4fbc336): Carton on carton.db, three real processes committing back to back (stores' TIGHT=1 test), 20 runs; before: 1 of 20 failed with 'the store changed under this write'",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "store-sqlite test/import.test.ts 'three processes committing', TIGHT=1, 20 runs (a failure counts only with core's 'store changed under this write'; any other failure fails the measurement)",
+          "cwd": "packages/store-sqlite",
+          "env": {
+            "TIGHT": "1"
+          },
+          "repeat": 20,
+          "failPattern": "Carton: the store changed under this write",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-name-pattern=three processes committing",
+            "test/import.test.ts"
+          ],
+          "stdoutTo": "{results}/s8.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "s8.log",
+          "kind": "repeat"
+        }
+      ]
+    },
+    {
+      "id": "core-open",
+      "agent": "foundation-core",
+      "claim": "open-time scaling (Stage F4, §5.4): Carton.open + head() from the newest keyframe vs replaying every row, alternated per run, N = 1,000 / 10,000 / 30,000 changes on store-sqlite (bench/core/open.ts, RUNS=5)",
+      "timeout": 60,
+      "steps": [
+        {
+          "label": "bench/core/open.ts 1000 10000 30000, RUNS=5",
+          "env": {
+            "RUNS": "5",
+            "OUT": "{results}/open.json",
+            "CARTON_BENCH_SCRATCH": "{tmp}/core-bench",
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/core/open.ts",
+            "1000",
+            "10000",
+            "30000"
+          ],
+          "stdoutTo": "{results}/open.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "open.json",
+          "kind": "json"
         }
       ]
     }

@@ -93,8 +93,8 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
 
   let hostOk = (_host: string | undefined): boolean => false; // set once the port is known
 
-  // Responses not closed yet. close() waits for them, so once it resolves every read it started has been aborted and
-  // the caller can shut the source down.
+  // Responses not closed yet. close() waits for them, so once it resolves every read it started has been told to abort
+  // and the caller can shut the source down. (onRequest waits for the reads themselves to end.)
   let open = 0;
   let drained: (() => void) | undefined;
 
@@ -117,12 +117,14 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
     const closed = new Promise<void>((r) => (markClosed = r));
     res.once("close", () => {
       if (!res.writableFinished) {
-        // The client left, the idle timeout fired, close() ran, or we destroyed the socket after a source error. A
-        // client that hangs up once it has every byte (its Content-Length is met) while we finish the source's read
-        // lost nothing: that is not an abort.
-        if (info.error === undefined && !(info.length > 0 && info.bytes === info.length)) info.aborted = true;
+        // The client left, the idle timeout fired, close() ran, or we destroyed the socket after a source error.
+        // (`info.bytes` counts bytes handed to the socket, not bytes the client got, so it can't tell a client that
+        // had everything from one that missed the tail: any close before we finished counts as an abort.)
+        if (info.error === undefined) info.aborted = true;
         ac.abort();
       }
+      // close() waits for responses, not for sources: a source that ignores its abort must not hold up shutdown.
+      if (--open === 0 && drained !== undefined) drained();
       markClosed();
     });
 
@@ -130,7 +132,8 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
       await respond(req, res, ac, info);
     } finally {
       // Report once the response is closed AND this handler is done, the source's read included (its cleanup can
-      // outlast the socket), so onRequest and close() mean "this request is completely over".
+      // outlast the socket: a client with a Content-Length ends at the last byte, before we leave our loop), so
+      // onRequest means "this request is completely over".
       await closed;
       if (onRequest !== undefined) {
         info.status = res.headersSent ? res.statusCode : 0; // 0: it ended before any answer
@@ -141,7 +144,6 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
           process.emitWarning(`range server onRequest threw: ${String(e)}`);
         }
       }
-      if (--open === 0 && drained !== undefined) drained();
     }
   };
 

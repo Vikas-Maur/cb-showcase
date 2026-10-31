@@ -108,6 +108,14 @@ test("the History panel's calls reach main with their arguments as given", async
   assert.deepEqual(t.calls.at(-1), ["carton:call", "ui", { projectId: "p1", client: "c", message: { t: "hello" } }]);
 });
 
+test("a method the page answers itself (the live-sync half) stays in the page", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.c.handle("join", async (a, b) => ["page", a, b]);
+  assert.deepEqual(await t.c.call("join", [1, 2]), ["page", 1, 2]);
+  assert.deepEqual(t.calls.map((c) => c[1]), ["enabled"]);
+});
+
 test("an edit made while head is being read is saved first, and only then is head adopted", async () => {
   const t = load({ enabled: true });
   await t.c.ready;
