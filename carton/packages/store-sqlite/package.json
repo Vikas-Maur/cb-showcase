@@ -1,0 +1,30 @@
+{
+  "name": "@carton/store-sqlite",
+  "version": "0.1.0",
+  "description": "Store plug-in on node:sqlite: .carton/carton.db (WAL), the local sequencer's tables and the sync lease.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0"
+  }
+}
