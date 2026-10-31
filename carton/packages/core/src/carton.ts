@@ -16,8 +16,8 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, ProxyEncoder, Stor
 import type { Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldResult, type HeldBase } from "./history/common.ts";
-import { History, actorKey, groupOf, nodeId, parseNode, randomHex } from "./history/history.ts";
+import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase } from "./history/common.ts";
+import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import type {
   Actor,
@@ -33,6 +33,7 @@ import type {
   Doc,
   EditKinds,
   Intent,
+  MergeResult,
   NodeId,
   Notice,
   Op,
@@ -85,6 +86,8 @@ export interface CommitInput {
   policy?: Policy;
   /** Decide cards a rebase raises (otherwise the result is `conflicts`). */
   choices?: Choices;
+  /** Cards a list or map of `choices` doesn't name: "card" (default) returns them as conflicts; "prefer" decides them. */
+  unchosen?: "card" | "prefer";
   /** Name the version this commit makes. */
   name?: string;
   /** A stable id (a retried `cb` call): a commit whose id is already confirmed returns that confirmation. */
@@ -98,6 +101,24 @@ export interface Preview {
   readonly ref: StateRef;
   readonly doc: Readonly<Doc>;
   readonly readOnly: true;
+}
+
+/** Who last changed a record, when, and in which change (`at`/`change` are null for a record from an imported `.cbproj`). */
+export interface Credit {
+  actor: Actor;
+  at: number | null;
+  change: ChangeId | null;
+}
+
+/** A Published cut, the cut it was published from, and whether that cut has moved on since. */
+export interface Publication {
+  cut: CutRecord;
+  /** The version published (`<cutId>@<seq>`). */
+  from: NodeId;
+  /** The cut it came from. */
+  source: string;
+  /** The source cut has edits newer than what was published. */
+  newer: boolean;
 }
 
 /** A pinned state for an out-of-process reader (agent, MCP, file view), with the header to print. */
@@ -141,11 +162,18 @@ export interface Carton {
   release(ref: StateRef, owner: string): Promise<void>;
 
   cuts(): Promise<CutRecord[]>;
+  /** Rename a cut (its id never changes; the name is only a label). */
+  renameCut(cut: string, name: string): Promise<CutRecord>;
+  /** Publish a version (default: the current cut's head) as a Published cut: what the share link shows. */
+  publish(opts?: { from?: StateRef | string; name?: string }): Promise<CutRecord>;
+  /** Published cuts, each with the cut it came from and whether that cut has edits newer than what was published. */
+  publications(): Promise<Publication[]>;
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
   fork(name: string, opts?: { from?: StateRef | string; kind?: CutKind }): Promise<CutRecord>;
   switchTo(cut: string): Promise<void>;
   /** Fold `from` (a cut id or a ref) into `into` (default: current cut). */
-  fold(from: string | StateRef, opts?: FoldOptions & { into?: string }): Promise<FoldResult>;
+  /** With `check: true`, nothing is committed and `preview` tells what the fold would bring in. */
+  fold(from: string | StateRef, opts?: FoldOptions & { into?: string }): Promise<FoldResult & { preview?: FoldPreview }>;
   /** Fold in some of it: everything except the rejected record paths, which an inverse change lists. */
   foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult>;
 
@@ -153,8 +181,8 @@ export interface Carton {
   diff(a: StateRef | string, b?: StateRef | string, opts?: { shots?: boolean }): Promise<DiffResult>;
   /** Watch the changes: the shot diff alone. */
   shots(a: StateRef | string, b?: StateRef | string): Promise<ShotDiff>;
-  /** History: versions of a cut, newest first. */
-  log(opts?: { cut?: string; limit?: number; before?: number }): Promise<Version[]>;
+  /** History: versions of a cut, newest first; `summary`: each says what it did in plain words. */
+  log(opts?: { cut?: string; limit?: number; before?: number; summary?: boolean }): Promise<Version[]>;
   /** Name a version ("Sent to client, Monday"). */
   name(ref: StateRef | string, name: string): Promise<void>;
   /** Restore: the state at `ref`, saved as a new version on the current cut. */
@@ -166,8 +194,9 @@ export interface Carton {
   undoStack(group?: string, opts?: { cut?: string }): Promise<UndoEntry[]>;
   /** Read-only preview of a state. */
   preview(ref: StateRef | string): Promise<Preview>;
-  /** Credits: who last changed a record, down to the subagent. */
-  credits(record: PathKey | readonly string[], opts?: { cut?: string }): Promise<Actor | null>;
+  /** Credits: who last changed a record, down to the subagent; `detail`: also when, and in which change. */
+  credits(record: PathKey | readonly string[], opts?: { cut?: string; detail?: false }): Promise<Actor | null>;
+  credits(record: PathKey | readonly string[], opts: { cut?: string; detail: true }): Promise<Credit | null>;
   /** Notices for an actor (late conflicts, overwrites); `take` removes them. */
   notices(actor?: Actor, opts?: { take?: boolean }): Promise<Notice[]>;
 
@@ -183,16 +212,16 @@ export interface Carton {
   close(): Promise<void>;
 }
 
+// The meta table: ["project"] is written once; everything that grows is under its own key, so two processes adding
+// to it never overwrite each other: ["rid", rid], ["export", node, at, nonce], ["authors", node]; ["current"] is this
+// machine's current cut (last writer wins).
 const PROJECT = ["project"] as const;
+const CURRENT = ["current"] as const;
+const NODE_RE = /^[^~\s]+@\d+$/;
 const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.collections).map((k) => [k, []]));
 interface ProjectMeta {
   projectId: string;
   schemaVersion: number;
-  current: string;
-  /** Every replica id that committed here (R10-02: claimed in hello). */
-  rids: string[];
-  exports?: [NodeId, { to: string; at: number }[]][];
-  authors?: [NodeId, Record<PathKey, Actor>][];
 }
 
 export const Carton = {
@@ -219,6 +248,8 @@ class CartonImpl implements Carton {
   #listeners = new Set<(e: CartonEvent) => void>();
   #queue: Promise<unknown> = Promise.resolve();
   #confirmed: { cut: string; change: ConfirmedChange }[] = [];
+  #pinSnap = new Map<string, PinRow>();
+  #ridSaved = false;
   #closed = false;
 
   constructor(opts: OpenOptions) {
@@ -254,10 +285,11 @@ class CartonImpl implements Carton {
       if ("import" in init) return this.#createFromImport(init.import);
       const h = History.create(this.schema, init.asChange ? emptyDoc(this.schema) : init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
       const cut = h.cut(h.current)!;
-      meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, current: cut.id, rids: [this.#rid] };
+      meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion };
       const ok = await s.write(
         [
           { table: T.meta, key: PROJECT, value: meta },
+          { table: T.meta, key: CURRENT, value: cut.id },
           { table: T.cuts, key: [cut.id], value: cut },
           { table: T.keyframes, key: [cut.id, 0], value: h.stateOf(nodeId(cut.id, 0)) },
         ],
@@ -278,11 +310,8 @@ class CartonImpl implements Carton {
     const h = new History(this.schema, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, keyframeEvery: this.#opts.keyframeEvery });
     const res = h.importShallow(pkg);
     if (res.status !== "forked") throw new Error(`Carton.open: import gave ${res.status}`);
-    const k = h.knowledge();
-    const meta: ProjectMeta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, current: h.current, rids: [this.#rid], authors: k.authors, exports: k.exports };
-    const w: StoreWrite[] = [{ table: T.meta, key: PROJECT, value: meta }];
-    for (const n of k.lineage) w.push({ table: T.lineage, key: [n.id], value: n });
-    for (const [hash, doc] of k.states) w.push({ table: T.states, key: [hash], value: doc });
+    const meta: ProjectMeta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion };
+    const w: StoreWrite[] = [{ table: T.meta, key: PROJECT, value: meta }, { table: T.meta, key: CURRENT, value: h.current }, ...this.#knowledgeWrites(h)];
     for (const c of h.cuts()) w.push({ table: T.cuts, key: [c.id], value: c });
     if (!(await this.store.write(w, [{ table: T.meta, key: PROJECT, expect: "absent" }]))) return this.load();
     this.#meta = meta;
@@ -291,11 +320,13 @@ class CartonImpl implements Carton {
   // Rebuild the in-memory model from the store: knowledge first, then cuts parents-first, then names and pins.
   async #rebuild(): Promise<void> {
     const s = this.store;
-    const meta = this.#meta;
-    const h = new History(this.schema, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: meta.projectId, keyframeEvery: this.#opts.keyframeEvery });
+    const h = new History(this.schema, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: this.#meta.projectId, keyframeEvery: this.#opts.keyframeEvery });
     const lineage = (await s.range<DagNode>(T.lineage)).map((e) => e.value);
     const states = (await s.range<Doc>(T.states)).map((e): [string, Doc] => [e.key[0] as string, e.value]);
-    h.loadKnowledge({ lineage, states, authors: meta.authors ?? [], exports: meta.exports ?? [] });
+    const authors = (await s.range<Record<PathKey, Actor>>(T.meta, { prefix: ["authors"] })).map((e): [NodeId, Record<PathKey, Actor>] => [e.key[1] as string, e.value]);
+    const exportsBy = new Map<NodeId, { to: string; at: number }[]>();
+    for (const e of await s.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) (exportsBy.get(e.key[1] as string) ?? exportsBy.set(e.key[1] as string, []).get(e.key[1] as string)!).push(e.value);
+    h.loadKnowledge({ lineage, states, authors, exports: [...exportsBy] });
     const cuts = (await s.range<CutRecord>(T.cuts)).map((e) => e.value);
     const done = new Set<string>();
     const byId = new Map(cuts.map((c) => [c.id, c]));
@@ -314,12 +345,19 @@ class CartonImpl implements Carton {
     };
     for (const c of cuts) await add(c);
     for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) h.nameVersion(nodeId(e.key[0] as string, e.key[1] as number), e.value.name, e.value.by);
-    for (const e of await s.range<PinRow>(T.pins)) h.loadPin(e.value);
-    if (byId.has(meta.current)) h.current = meta.current;
+    await this.#loadPins(h);
+    const current = await s.get<string>(T.meta, CURRENT);
+    if (current && byId.has(current)) h.current = current;
     h.onConfirmed = (cut, change) => this.#confirmed.push({ cut, change });
     this.#h = h;
   }
-  // Re-read the tail of a cut (another process may have appended) and any new cuts.
+  // Pins as the store holds them (other processes pin too), and a snapshot to condition our pin writes on.
+  async #loadPins(h: History): Promise<void> {
+    const rows = await this.store.range<PinRow>(T.pins);
+    h.setPins(rows.map((e) => e.value));
+    this.#pinSnap = new Map(rows.map((e) => [e.key.join("|"), e.value]));
+  }
+  // Re-read the tail of a cut (another process may have appended), any new cuts, and the pins.
   async #refresh(cut?: string): Promise<void> {
     const s = this.store;
     for (const e of await s.range<CutRecord>(T.cuts)) if (!this.#h.cut(e.key[0] as string)) return this.#rebuild();
@@ -328,6 +366,27 @@ class CartonImpl implements Carton {
       const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [id], gt: [id, this.#h.headSeq(id)] })).map((e) => e.value);
       if (rows.length) this.#h.load(id, rows);
     }
+    await this.#loadPins(this.#h);
+  }
+  /** A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite. */
+  #pinWrite(ref: StateRef): { write: StoreWrite; cond: StoreCondition } {
+    const key = [ref.branchId, ref.seq, ref.hash8 ?? ref.hash?.slice(0, 8) ?? ""];
+    const was = this.#pinSnap.get(key.join("|"));
+    return {
+      write: { table: T.pins, key, value: this.#h.pinRow(key[0] as string, key[1] as number, key[2] as string) },
+      cond: { table: T.pins, key, expect: was === undefined ? "absent" : { equals: was } },
+    };
+  }
+  #knowledgeWrites(h: History, prior?: ReturnType<History["knowledge"]>): StoreWrite[] {
+    const k = h.knowledge();
+    const w: StoreWrite[] = [];
+    const seenNodes = new Set(prior?.lineage.map((n) => n.id));
+    const seenStates = new Set(prior?.states.map(([x]) => x));
+    const seenAuthors = new Set(prior?.authors.map(([x]) => x));
+    for (const n of k.lineage) if (!seenNodes.has(n.id) || prior!.lineage.find((x) => x.id === n.id)!.kinds.length !== n.kinds.length) w.push({ table: T.lineage, key: [n.id], value: n });
+    for (const [hash, doc] of k.states) if (!seenStates.has(hash)) w.push({ table: T.states, key: [hash], value: doc });
+    for (const [node, a] of k.authors) if (!seenAuthors.has(node)) w.push({ table: T.meta, key: ["authors", node], value: a });
+    return w;
   }
   /** Writes for every change History confirmed since the last flush, each conditioned on its slot being free. */
   async #flush(extra: StoreWrite[] = [], conditions: StoreCondition[] = []): Promise<boolean> {
@@ -336,27 +395,37 @@ class CartonImpl implements Carton {
     const conds: StoreCondition[] = [...conditions];
     for (const { cut, change } of confirmed) {
       writes.push({ table: T.changes, key: [cut, change.seq], value: change }, { table: T.ids, key: [change.id], value: [cut, change.seq] });
-      conds.push({ table: T.changes, key: [cut, change.seq], expect: "absent" });
+      // the slot is free and the id was never confirmed anywhere (dedup by id spans every cut and process)
+      conds.push({ table: T.changes, key: [cut, change.seq], expect: "absent" }, { table: T.ids, key: [change.id], expect: "absent" });
       if (change.name) writes.push({ table: T.names, key: [cut, change.seq], value: { name: change.name, at: change.at, by: change.author } });
     }
-    if (confirmed.length && !this.#meta.rids.includes(this.#rid)) {
-      this.#meta = { ...this.#meta, rids: [...this.#meta.rids, this.#rid] };
-      writes.push({ table: T.meta, key: PROJECT, value: this.#meta });
-    }
+    // every replica id that committed here (R10-02: claimed in hello), one key each
+    if (confirmed.length && !this.#ridSaved) writes.push({ table: T.meta, key: ["rid", this.#rid], value: { at: this.#opts.clock?.() ?? Date.now() } });
     if (!writes.length) return true;
     const ok = await this.store.write(writes, conds);
+    if (ok && confirmed.length) this.#ridSaved = true;
     if (ok) for (const { cut, change } of confirmed) this.#emit({ type: "change", branchId: cut, seq: change.seq, change, local: true });
     return ok;
   }
   /** Run a History mutation under the handle's queue, persist what it confirmed, and retry after losing a race. */
-  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => StoreWrite[]; conditions?: StoreCondition[]; idempotent?: boolean } = {}): Promise<R> {
+  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
       for (let attempt = 0; ; attempt++) {
         await this.#refresh(cut);
         this.#confirmed.length = 0;
-        const r = fn();
-        if (await this.#flush(opts.extra?.() ?? [], opts.conditions ?? [])) return r;
+        let ok: boolean, r: R;
+        try {
+          r = fn();
+          const x = opts.extra?.() ?? {};
+          ok = await this.#flush(x.writes ?? [], [...(opts.conditions ?? []), ...(x.conds ?? [])]);
+        } catch (e) {
+          // the model may hold changes the store never got (a write that threw): drop them before anything else runs
+          this.#confirmed.length = 0;
+          await this.#rebuild();
+          throw e;
+        }
+        if (ok) return r;
         // another process appended first, or a caller's condition (a lease fence) failed: rebuild and retry
         await this.#rebuild();
         if (attempt >= 4 || !opts.idempotent) throw new Error("Carton: the store changed under this write (lost the append race or a condition failed)");
@@ -427,10 +496,23 @@ class CartonImpl implements Carton {
     await this.#refresh();
     return this.#h.cuts();
   }
-  async log(opts: { cut?: string; limit?: number; before?: number } = {}) {
+  async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    return this.#h.log(cut, opts);
+    const versions = this.#h.log(cut, opts);
+    if (!opts.summary || !versions.length) return versions;
+    // one state per page, walked forward: each version is described against the state just before it
+    const lo = versions[versions.length - 1]!.ref.seq;
+    const log = this.#h.changes(cut);
+    let doc = E.fork(this.#h.stateOf(nodeId(cut, Math.max(0, lo - 1)))!, this.schema);
+    const summary = new Map<number, string>();
+    for (let s = Math.max(1, lo); s <= versions[0]!.ref.seq; s++) {
+      const c = log[s - 1]!;
+      const first = c.name ?? E.describe(c.ops, doc, this.schema, c.intent)[0];
+      if (first) summary.set(s, first);
+      doc = E.apply(doc, c.ops, this.schema);
+    }
+    return versions.map((v) => (summary.has(v.ref.seq) ? { ...v, summary: summary.get(v.ref.seq)! } : v));
   }
   async diff(a: StateRef | string, b?: StateRef | string, opts: { shots?: boolean } = {}): Promise<DiffResult> {
     await this.#refresh();
@@ -454,15 +536,23 @@ class CartonImpl implements Carton {
     const { branchId, seq } = parseNode(node);
     return { ref: { branchId, seq, pending: [] }, doc: Object.freeze(doc), readOnly: true };
   }
-  async credits(record: PathKey | readonly string[], opts: { cut?: string } = {}) {
+  credits(record: PathKey | readonly string[], opts?: { cut?: string; detail?: false }): Promise<Actor | null>;
+  credits(record: PathKey | readonly string[], opts: { cut?: string; detail: true }): Promise<Credit | null>;
+  async credits(record: PathKey | readonly string[], opts: { cut?: string; detail?: boolean } = {}): Promise<Actor | Credit | null> {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    return this.#h.credits(cut, record);
+    return opts.detail ? this.#h.creditsDetail(cut, record) : this.#h.credits(cut, record);
   }
   async undoStack(group?: string, opts: { cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    return this.#h.undoStack(cut, group ?? groupOf(this.#actor()));
+    // an unnamed edit's label says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
+    return this.#h.undoStack(cut, group ?? groupOf(this.#actor())).map((e) => {
+      const c = this.#h.changes(cut)[e.seq - 1]!;
+      if (c.name || c.intent?.kind) return e;
+      const what = E.describe(c.ops, this.#h.stateOf(nodeId(cut, e.seq - 1)) ?? {}, this.schema, c.intent)[0];
+      return what ? { ...e, label: undoLabel(c, what) } : e;
+    });
   }
   async notices(actor?: Actor, opts: { take?: boolean } = {}) {
     const key = actorKey(actor ?? this.#actor());
@@ -476,27 +566,37 @@ class CartonImpl implements Carton {
     const cut = input.cut ?? this.#h.current;
     const rec = this.#h.cut(cut);
     if (rec && rec.sequencer.kind !== "local") throw new Error("Carton: commits on a shared cut go through the sync client (not wired yet)");
+    if (rec?.kind === "published") throw new Error("Carton: a Published cut is read-only; publish again to update it");
     const author = this.#actor(input.author);
     const id = input.id ?? `${this.#rid}.${++this.#n}`;
+    // the base is fixed on the first attempt: a retry after losing a race must rebase on it, never treat what the other
+    // process just wrote as something this commit removes
+    let base = input.base;
     const r = await this.#mutate(
-      cut,
-      () =>
-        this.#h.commit(cut, {
+      input.id ? undefined : cut, // an explicit id: look for it on every cut (dedup by id)
+      (): CommitResult => {
+        const dup = input.id ? this.#h.findChange(input.id) : null;
+        if (dup) return { status: "confirmed", seq: dup.seq, ref: { branchId: dup.branchId, seq: dup.seq, pending: [] }, change: dup, rebased: 0, notices: [] };
+        base ??= { branchId: cut, seq: this.#h.headSeq(cut), pending: [] };
+        return this.#h.commit(cut, {
           ...(input.doc ? { doc: input.doc } : {}),
           ...(input.ops ? { ops: input.ops } : {}),
           author,
-          ...(input.base !== undefined ? { base: input.base } : {}),
+          base,
           intent: input.intent ?? null,
           kinds: input.kinds ?? null,
           ...(input.policy ? { policy: input.policy } : {}),
           ...(input.choices ? { choices: input.choices } : {}),
+          ...(input.unchosen ? { unchosen: input.unchosen } : {}),
           ...(input.name ? { name: input.name } : {}),
           id,
-        }),
+        });
+      },
       { conditions: input.conditions ?? [], idempotent: !input.conditions?.length },
     );
     const { retry: _r, ...out } = r as CommitResult & { retry?: unknown };
     this.#notices(out);
+    if (out.status === "confirmed" && out.warnings?.length) this.#emit({ type: "warning", branchId: cut, warnings: out.warnings });
     await this.#saveNotices(out);
     return out;
   }
@@ -505,49 +605,105 @@ class CartonImpl implements Carton {
     const now = this.#opts.clock?.() ?? Date.now();
     let ref!: StateRef;
     await this.#mutate(cut, () => (ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(opts.doc ? { doc: opts.doc } : {}) })), {
-      extra: () => [{ table: T.pins, key: [ref.branchId, ref.seq, ref.hash8!], value: this.#h.pinRow(ref.branchId, ref.seq, ref.hash8!) }],
+      extra: () => {
+        const pw = this.#pinWrite(ref);
+        return { writes: [pw.write], conds: [pw.cond] };
+      },
       idempotent: true,
     });
     return { ref, header: this.#h.refString(cut, ref.seq, ref.hash!, { printNonce: randomHex(4), ...(opts.by ? { by: opts.by } : {}) }) };
   }
   async release(ref: StateRef, owner: string): Promise<void> {
-    const h8 = ref.hash8 ?? ref.hash?.slice(0, 8) ?? "";
     await this.#mutate(undefined, () => this.#h.release(ref, owner), {
-      extra: () => [{ table: T.pins, key: [ref.branchId, ref.seq, h8], value: this.#h.pinRow(ref.branchId, ref.seq, h8) }],
+      extra: () => {
+        const pw = this.#pinWrite(ref);
+        return { writes: [pw.write], conds: [pw.cond] };
+      },
       idempotent: true,
     });
   }
-  async fork(name: string, opts: { from?: StateRef | string; kind?: CutKind } = {}): Promise<CutRecord> {
+  /** A ref's node, and the held state when it names a pin that isn't a confirmed version (a freeze view, a draft). */
+  #held(ref: StateRef | string): { node: NodeId; doc: Doc | null } {
+    const node = this.#node(ref);
+    if (typeof ref === "string" && (this.#h.cut(ref) || NODE_RE.test(ref))) return { node, doc: null };
+    const p = this.#h.parseRef(ref);
+    const h8 = "legacy" in p ? undefined : (p.hash8 ?? p.hash?.slice(0, 8));
+    if (!h8 || this.#h.hashOf(node)!.startsWith(h8)) return { node, doc: null };
+    return { node, doc: this.#h.resolve(ref).doc };
+  }
+  async fork(name: string, opts: { from?: StateRef | string; kind?: CutKind; author?: Actor } = {}): Promise<CutRecord> {
     let rec!: CutRecord;
     await this.#mutate(
       undefined,
       () => {
-        const from = opts.from === undefined ? this.#h.head(this.#h.current) : this.#node(opts.from);
-        rec = this.#h.cut(this.#h.fork(from, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name }))!;
+        const from = opts.from === undefined ? { node: this.#h.head(this.#h.current), doc: null } : this.#held(opts.from);
+        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name }))!;
+        // forking from a held state: the cut forks at its version and the held edits are its first change
+        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author: this.#actor(opts.author) });
       },
-      { extra: () => [{ table: T.cuts, key: [rec.id], value: rec }], idempotent: false },
+      { extra: () => ({ writes: [{ table: T.cuts, key: [rec.id], value: rec }] }), idempotent: false },
     );
     return rec;
   }
   async switchTo(cut: string): Promise<void> {
     await this.#refresh();
     this.#h.current = cut;
-    this.#meta = { ...this.#meta, current: cut };
-    await this.store.write([{ table: T.meta, key: PROJECT, value: this.#meta }]);
+    await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
   }
-  async fold(from: string | StateRef, opts: FoldOptions & { into?: string } = {}): Promise<FoldResult> {
+  async renameCut(cut: string, name: string): Promise<CutRecord> {
+    let rec!: CutRecord;
+    let was!: CutRecord | undefined;
+    await this.#mutate(
+      undefined,
+      () => {
+        was = this.#h.cut(cut);
+        if (!was) throw new Error(`Carton.renameCut: no cut ${cut}`);
+        rec = this.#h.updateCut(cut, { name });
+      },
+      // conditioned on the record we read, so a concurrent change to it (a hand-off) is never overwritten
+      { extra: () => ({ writes: [{ table: T.cuts, key: [cut], value: rec }], conds: [{ table: T.cuts, key: [cut], expect: { equals: was } }] }), idempotent: true },
+    );
+    return rec;
+  }
+  async publish(opts: { from?: StateRef | string; name?: string } = {}): Promise<CutRecord> {
+    return this.fork(opts.name ?? "Published cut", { kind: "published", ...(opts.from !== undefined ? { from: opts.from } : {}) });
+  }
+  async publications(): Promise<Publication[]> {
+    await this.#refresh();
+    const out: Publication[] = [];
+    for (const cut of this.#h.cuts()) {
+      if (cut.kind !== "published" || !cut.forkOf) continue;
+      const from = this.#h.canon(cut.forkOf);
+      const source = parseNode(from).branchId;
+      const src = this.#h.cut(source);
+      out.push({ cut, from, source, newer: !!src && !src.shallow && this.#h.head(source) !== from });
+    }
+    return out;
+  }
+  #foldable(from: string | StateRef): NodeId {
+    const h = this.#held(from);
+    if (h.doc) throw new Error("Carton.fold: that ref is a pinned state, not a version; commit it to a cut first");
+    return h.node;
+  }
+  async fold(from: string | StateRef, opts: FoldOptions & { into?: string } = {}): Promise<FoldResult & { preview?: FoldPreview }> {
     const into = opts.into ?? this.#h.current;
     const author = this.#actor(opts.author);
     // refresh every cut: the one folded in may have grown in another process
-    const r = await this.#mutate(undefined, () => this.#h.fold(into, this.#node(from), { ...opts, author }), { idempotent: true });
-    const { retry: _r, merge: _m, base: _b, ...out } = r as FoldResult & { retry?: unknown; merge?: unknown; base?: unknown };
+    const r = await this.#mutate(undefined, () => this.#h.fold(into, this.#foldable(from), { ...opts, author }), { idempotent: true });
+    const { retry: _r, merge, base: _b, doc: _d, ...out } = r as FoldResult & { retry?: unknown; merge?: MergeResult; base?: unknown; doc?: unknown };
+    // a dry run tells what the fold would bring in (the Fold in dialog, `cb fold --check`)
+    if (opts.check && merge) {
+      const ours = this.#h.stateOf(this.#h.head(into))!;
+      const ops = merge.ops;
+      return { ...(out as FoldResult), preview: { ops, describe: E.describe(ops, ours, this.schema), warnings: merge.warnings } };
+    }
     return out as FoldResult;
   }
   async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult> {
     const into = opts.into ?? this.#h.current;
     const author = this.#actor(opts.author);
-    const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#node(from), { ...opts, author }), { idempotent: true });
-    const { fold: _f, ...out } = r as FoldResult & { fold?: unknown };
+    const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#foldable(from), { ...opts, author }), { idempotent: true });
+    const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
     return out as FoldResult;
   }
   async name(ref: StateRef | string, name: string): Promise<void> {
@@ -555,14 +711,16 @@ class CartonImpl implements Carton {
     await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, this.#actor()), {
       extra: () => {
         const { branchId, seq } = parseNode(node);
-        return [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by: this.#actor() } }];
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by: this.#actor() } }] };
       },
       idempotent: true,
     });
   }
   async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    return this.#mutate(cut, () => this.#h.restore(cut, this.#node(ref), { author: this.#actor(opts.author) }), { idempotent: false });
+    // History resolves headers and StateRefs itself, pins included, so a held state is restored as held
+    const target = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
+    return this.#mutate(cut, () => this.#h.restore(cut, target, { author: this.#actor(opts.author) }), { idempotent: false });
   }
   async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
@@ -579,10 +737,10 @@ class CartonImpl implements Carton {
     const cut = opts.cut ?? this.#h.current;
     let pkg!: ShallowExport;
     await this.#mutate(cut, () => (pkg = this.#h.exportShallow(cut, { ...(opts.to ? { to: opts.to } : {}) })), {
-      // the export node is part of the lineage graph from now on (R4-01): persist it
+      // the export node is part of the lineage graph from now on (R4-01): persist it, one key per export
       extra: () => {
-        this.#meta = { ...this.#meta, exports: this.#h.knowledge().exports };
-        return [{ table: T.meta, key: PROJECT, value: this.#meta }];
+        const made = this.#h.knowledge().exports.find(([n]) => n === pkg.head)?.[1].at(-1);
+        return { writes: made ? [{ table: T.meta, key: ["export", pkg.head, made.at, randomHex(4)], value: made }] : [] };
       },
       idempotent: true,
     });
@@ -590,19 +748,24 @@ class CartonImpl implements Carton {
   }
   async importShallow(pkg: ShallowExport): Promise<{ status: string; cut?: string }> {
     let res!: ReturnType<History["importShallow"]>;
-    const before = new Set(this.#h.cuts().map((c) => c.id));
-    await this.#mutate(undefined, () => (res = this.#h.importShallow(pkg)), {
-      extra: () => {
-        const k = this.#h.knowledge();
-        this.#meta = { ...this.#meta, projectId: this.#h.projectId ?? this.#meta.projectId, authors: k.authors, exports: k.exports, current: this.#h.current };
-        const w: StoreWrite[] = [{ table: T.meta, key: PROJECT, value: this.#meta }];
-        for (const n of k.lineage) w.push({ table: T.lineage, key: [n.id], value: n });
-        for (const [hash, doc] of k.states) w.push({ table: T.states, key: [hash], value: doc });
-        for (const c of this.#h.cuts()) if (!before.has(c.id)) w.push({ table: T.cuts, key: [c.id], value: c });
-        return w;
+    let prior!: ReturnType<History["knowledge"]>;
+    let before!: Set<string>;
+    await this.#mutate(
+      undefined,
+      () => {
+        prior = this.#h.knowledge();
+        before = new Set(this.#h.cuts().map((c) => c.id));
+        res = this.#h.importShallow(pkg);
       },
-      idempotent: false,
-    });
+      {
+        extra: () => {
+          const w = this.#knowledgeWrites(this.#h, prior);
+          for (const c of this.#h.cuts()) if (!before.has(c.id)) w.push({ table: T.cuts, key: [c.id], value: c });
+          return { writes: w };
+        },
+        idempotent: true,
+      },
+    );
     return { status: res.status, ...("cut" in res ? { cut: res.cut } : {}) };
   }
 

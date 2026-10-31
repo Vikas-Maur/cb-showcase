@@ -283,8 +283,8 @@ export interface RefHeader {
 /** One owner of a pin: a turn, a view, or an MCP ref. The row is released when its last owner releases or expires. */
 export interface PinOwner {
   owner: string;
-  /** ms epoch; agent pins end with their turn, MCP refs after 7 days. */
-  expires: number;
+  /** ms epoch; agent pins end with their turn, MCP refs after 7 days. null: no expiry (until released). */
+  expires: number | null;
 }
 
 export interface PinRow {
@@ -344,6 +344,8 @@ export interface Version {
   at: number;
   name?: string;
   kind: ChangeKind | "root" | "fork";
+  /** What the change did in plain words (describe()'s first line), when asked for (`log({summary: true})`). */
+  summary?: string;
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export";
@@ -498,7 +500,7 @@ export interface UndoEntry {
 export type CommitResult =
   | { status: "confirmed"; seq: number; ref: StateRef; change: ConfirmedChange | null; rebased: number; notices: Notice[]; empty?: boolean; warnings?: SoftWarning[] }
   | { status: "pending"; id: ChangeId; ref: StateRef; notices: Notice[] }
-  | { status: "conflicts"; cards: ConflictCard[]; ref: StateRef; merge?: MergeResult }
+  | { status: "conflicts"; cards: ConflictCard[]; ref: StateRef; merge?: MergeResult; unseen?: PathKey[] }
   | { status: "rejected"; reason: string; invalid?: { path?: PathKey; error: string } };
 
 export type NoticeKind = "overwritten" | "lost-to-delete" | "late-conflict" | "rejected" | "other-changes";
@@ -523,5 +525,5 @@ export type CartonEvent =
   | { type: "sync"; status: "offline" | "syncing" | "up-to-date" | "stopped"; waiting: number }
   /** A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1). */
   | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
-  | { type: "presence"; actor: Actor; state: unknown }
+  | { type: "presence"; branchId: string; actor: Actor; state: unknown }
   | { type: "warning"; branchId: string; warnings: SoftWarning[] };
