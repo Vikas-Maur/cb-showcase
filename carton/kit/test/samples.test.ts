@@ -235,3 +235,51 @@ const cardboardAuth: AuthProvider = {
   },
 };
 authProviderSuite("a Cardboard-accounts sample", async () => cardboardAuth);
+
+test("H1 through the cb write path: a save that clashes on one clip lands the rest, and its card is kept for its author", async () => {
+  const bundleDir = bundle("h1-write");
+  const pre = await importProject({ bundleDir, projectId: readProjectId(bundleDir), adapter: cardboardAdapter, hasher: nodeHasher, host: () => readProjectJson(bundleDir).project });
+  await pre.carton.close();
+  await pre.store.close();
+  const person: Actor = { kind: "human", id: "person", group: "local:me@box" };
+  let lc = await openLocal({ projectDir: bundleDir, actor: person });
+  const { ref, doc: baseDoc } = await lc.carton.head();
+  // the version both writers read, as Carton gave it (a StateRef; a printed header works too)
+  const base = ref as unknown as string;
+  await lc.write({ kind: "commit", doc: withClip(baseDoc, "intro", { textContent: "agent's" }), base }, { actor: agent("director/c/t1") });
+  // the person's save was made on the same base: a clash on the intro, and an independent edit of the outro
+  const mine = withClip(withClip(baseDoc, "intro", { textContent: "person's" }), "outro", { textContent: "independent" });
+  const r = await lc.write({ kind: "commit", doc: mine, base }, { actor: person });
+  assert.deepEqual([r.status, r.landed, r.status === "conflicts" && r.conflicts.length], ["conflicts", "confirmed", 1]);
+  const head = (await lc.carton.head()).doc;
+  assert.deepEqual([clip(head, "intro").textContent, clip(head, "outro").textContent], ["agent's", "independent"], "head keeps the other value; the rest landed");
+  await lc.close();
+  // the card outlives the process: the person (or cb conflicts, or the Stop hook) finds it later
+  lc = await openLocal({ projectDir: bundleDir, actor: person });
+  const { runCb } = await import("@carton/cli-mcp");
+  let out = "";
+  await runCb(["conflicts"], { cwd: ".", env: {}, stdout: (t) => (out += t), stderr: () => {} }, { open: async () => lc, actor: () => person });
+  assert.match(out, /^1 open card:\n  #1 timelineItems\/intro\/textContent .* — yours: "person's" · theirs: "agent's"/);
+  await lc.close();
+});
+
+test("H7: a ripple recorded as an intent maps a concurrent trim of a later clip once", async () => {
+  const { rippleDelete } = await import("@carton/core");
+  const bundleDir = bundle("h7");
+  const { carton, store } = await importProject({ bundleDir, projectId: readProjectId(bundleDir), adapter: cardboardAdapter, hasher: nodeHasher, host: () => readProjectJson(bundleDir).project });
+  try {
+    const { ref: base, doc } = await carton.head();
+    // the person ripple-deletes the intro (0–3 s on "titles"): later clips pull left by 3 s
+    const items = (doc.timelineItems as Rec[]).filter((i) => i.id !== "intro").map((i) => ({ ...i, startTime: (i.startTime as number) - 3, endTime: (i.endTime as number) - 3 }));
+    const ripple = await carton.commit({ doc: { ...doc, timelineItems: items }, base, intent: { kind: "ripple-delete", maps: { titles: rippleDelete(0, 3) } }, author: { kind: "human", id: "person", group: "g" } });
+    assert.equal(ripple.status, "confirmed");
+    // an agent that read the timeline before the ripple trims the outro's end (8 → 7.5)
+    const r = await carton.commit({ doc: withClip(doc, "outro", { endTime: 7.5, trimEnd: 1.5 }), base, author: agent("director/c/t2") });
+    assert.equal(r.status, "confirmed");
+    const outro = clip((await carton.head()).doc, "outro");
+    assert.deepEqual([outro.startTime, outro.endTime], [3, 4.5], "the trim lands on the moved clip, shifted once");
+  } finally {
+    await carton.close();
+    await store.close();
+  }
+});

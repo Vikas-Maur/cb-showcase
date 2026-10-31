@@ -19,8 +19,8 @@ if (!bundle || !clip || !sets.length) throw new Error("usage: node kit/quickstar
 
 const lc = await openLocal({ projectDir: resolve(bundle), actor: identify({ declared }) });
 try {
-  const v = baseText ? await resolveVersion(lc.carton, baseText) : null;
-  const base = v === null ? undefined : typeof v === "string" ? v : `${v.branchId}@${v.seq}`;
+  // the version the edit was made on: a StateRef (or a printed header), as Carton gave it
+  const base = baseText ? await resolveVersion(lc.carton, baseText) : undefined;
   const doc = base ? await lc.carton.checkout(base) : (await lc.carton.head()).doc;
   const items = doc.timelineItems as Record<string, unknown>[];
   const at = items.findIndex((i) => i.id === clip || String(i.name).toLowerCase() === clip.toLowerCase());
@@ -32,7 +32,7 @@ try {
     const [field, raw] = s.split("=");
     item[field] = raw !== "" && Number.isFinite(Number(raw)) ? Number(raw) : raw;
   }
-  const r = await lc.write({ kind: "commit", doc: { ...doc, timelineItems: items.with(at, item) }, base });
+  const r = await lc.write({ kind: "commit", doc: { ...doc, timelineItems: items.with(at, item) }, base: base as string | undefined });
   console.log(`${lc.actor.id}: ${resultText(r, "Saved")}`);
 } finally {
   await lc.close();

@@ -98,7 +98,10 @@ that holds the sync lease (the app's engine thread, or a headless helper `cb` st
 cut is shared). For a cut that is only local, `carton.db` itself orders the writes and nothing else is needed.
 
 - **Open** with `openLocal({ projectDir, projectId, actor: identify(), dataDir })` (`@carton/local`). Its `write(op)`
-  routes the write and answers the `cb` contract: `confirmed`, `pending` or `conflicts` (§6.2).
+  routes the write and answers the `cb` contract: `confirmed`, `pending` or `conflicts` (§6.2). `dataDir` must be the
+  same folder the app passes as `appDataDir` (Electron's `userData`): where a project's history lives outside its
+  bundle (synced folders, network shares, FAT), every process must look in the same place. The standalone `carton`
+  command takes it as `--data-dir`.
 - **Commands.** `register(program, { open, out })` (`@carton/cli-mcp`) adds `cut`, `fold`, `credits`, `restore`,
   `compare`, `conflicts`, `resolve`, `publish`, `activity` and the git aliases to your commander program, and extends
   `history` and `undo` in place (`undo --turn`). `out(json, text)` is your result writer.
@@ -114,13 +117,14 @@ cut is shared). For a cut that is only local, `carton.db` itself orders the writ
 
 ```ts
 // cb's program setup. Cardboard's parts: program (its commander program), resolveBundle (role: project id, name or
-// path to its bundle folder), writeResult (role: its --json/text printer).
+// path to its bundle folder), writeResult (role: its --json/text printer), userDataDir (role: the app's userData
+// folder, the same one the library worker passes as appDataDir).
 import { register } from "@carton/cli-mcp";
 import { identify, openLocal } from "@carton/local";
 
 register(program, {
   open: async (project, { as }) => ({
-    project: await openLocal({ projectDir: resolveBundle(project), actor: identify({ declared: as ?? null }) }),
+    project: await openLocal({ projectDir: resolveBundle(project), dataDir: userDataDir, actor: identify({ declared: as ?? null }) }),
     actor: identify({ declared: as ?? null }),
   }),
   out: (json, text) => writeResult(json, text()),
@@ -170,10 +174,18 @@ replaces the whole `tracks` and `timelineItems` arrays (B3). There is no lock an
 
 **With Carton.**
 - In `applyMutation`, keep the document the mutation was applied to: it is the exact **base**. If the mutation changed
-  anything, commit before the write is queued:
-  `carton.commit({ doc: fromHost(next, baseDoc), base: baseRef, author, id })`.
-- If head moved meanwhile, Carton rebases. Keep the merged head as the mutation's result (`byId`), so the next
-  mutation and the queued write both start from it.
+  anything, commit before the write is queued, through `@carton/local`'s write path, the same one `cb` uses:
+  `lc.write({ kind: "commit", doc: fromHost(next, baseDoc), base: baseRef }, { actor })`. `base` is the `StateRef`
+  Carton gave you for that document (or a printed header).
+- If head moved meanwhile, Carton rebases. A clash keeps head's value and becomes a card, and **the rest of the save
+  still lands**: the result is `{ status: "conflicts", landed: "confirmed", conflicts }`. The cards are stored for
+  their author in the same atomic write as the change, where `cb conflicts`, the Stop hook and the History panel find
+  them. Then keep the merged head as the mutation's result (`byId`), so the next mutation and the queued write both
+  start from it.
+- Calling `carton.commit` directly is lower level: without `choices`, a clash returns `conflicts` and **saves
+  nothing**, not even the edits that didn't clash, and nothing keeps the cards. If you call it directly, pass
+  `choices: () => "ours"` (keep head's value per card, land the rest) and `cardsWrite(cards, change)` (store the cards
+  in the same batch), as `@carton/local`'s `runWrite` does. Commit with a stable `id`, so a retry never lands twice.
 - Fields Carton doesn't version (timestamps, thumbnails) are written as before.
 - `writeNow`'s rename becomes **displace-then-install**: rename what is at `project.json` into `.carton/displaced/`,
   then `link(tmp, project.json)`. `EEXIST` means a foreign write landed in between: displace it too and loop. Then
@@ -227,7 +239,9 @@ memory).
 - `history` adds who made each version and on which cut (the `Version.author` and its cut).
 - `undo(id, rev)` becomes `carton.restore(ref)`: the old state, saved as a new version.
 - `undo --turn <turn>` reverts every change of one agent turn as one inverse change at head
-  (`write({ kind: "undoTurn", turn })`, or `cb undo --turn`). A path someone else changed since gives a card (§8).
+  (`write({ kind: "undoTurn", turn })`, or `cb undo --turn`). Today, if someone else changed any of the same things
+  since, it undoes **nothing** and returns those clashes as cards (they aren't stored): show them, and let the person
+  decide. Landing the parts that don't clash, as §8 describes, isn't built yet ([LIMITS.md](LIMITS.md)).
 - Keep `recordRevision` writing `.revs` while you roll out, so switching Carton off loses nothing.
 - Name versions after the user's words: when a Director turn ends, `nameTurn(carton, { chat, turn }, label)`
   (`@carton/cardboard`) names its last version ("Make the intro tighter"). The label goes into the project's history
@@ -352,15 +366,29 @@ history for a project, today's undo runs.
 
 **Today.** These store actions shift or cut clips with pure operations between the history push and the state write.
 
-**With Carton.** Each records its intent, and the next save carries it:
-- ripple delete: `{ kind: "remap", tracks: [t], at: end, delta: start - end }`;
-- delete all gaps: a piecewise map;
-- remove silences: a remap per clip plus lineage from the old clip to its pieces;
-- split: lineage only;
-- ripple trim: the shift it applies.
+**With Carton.** Each records its intent, and the next save passes it as `commit({ …, intent })`. An `Intent` is
+`{ kind, maps, lineage }`: `maps` holds one remap chain per track (`{ [trackId]: chain }`), built with core's helpers,
+and `lineage` maps a cut-up clip's old id to its pieces' ids.
 
-A concurrent edit is then remapped as an intent, not guessed. Without a recorded intent, Carton infers a ripple only
-when it is unambiguous (`inferRipple`, L9).
+```ts
+import { rippleDelete, rippleInsert, step } from "@carton/core";
+
+// ripple delete of [start, end) on track t: later clips on t pull left
+const ripple = { kind: "ripple-delete", maps: { [t]: rippleDelete(start, end - start) } };
+// delete all gaps on t (gapsOnT: [start, end][]): one step that removes every gap at once
+const gaps = { kind: "delete-gaps", maps: { [t]: [step(gapsOnT)] } };
+// split: the old clip's edits follow to both pieces
+const split = { kind: "split", lineage: { [clipId]: [leftId, rightId] } };
+// remove silences: the removed spans, and the old clip's pieces
+const silences = { kind: "remove-silences", maps: { [t]: [step(silent)] }, lineage: { [clipId]: pieceIds } };
+// ripple trim of a clip's end from e to e2: rippleDelete(e2, e - e2) when it shortens, rippleInsert(e, e2 - e) when it
+// lengthens
+```
+
+A concurrent edit is then mapped through the intent once, not guessed: an agent's trim of a later clip, made before
+the ripple, lands on the moved clip. Save several intents of one save as one (a later one composes after the earlier,
+`composeMaps`). A commit with an `intent` skips inference; without one, Carton infers a ripple only when it is
+unambiguous (`inferRipple`, L9).
 
 **Invariant.** A ripple is applied exactly once, however often it is rebased or re-sent.
 
@@ -496,10 +524,17 @@ the pending queue. When the app is closed, `cb` starts a helper that holds the s
 ### UI · The History panel and conflict cards
 
 `@carton/react` has headless hooks and unstyled components that work under React and `preact/compat`: History,
-cuts, fold in (all, some, none), Compare, credits, the preview banner and conflict cards. They talk to Carton through a
-transport (`{ call(method, args), on(event, cb) }`): in the app, over IPC to the worker (`serveUi` there, `remoteUi`
-in the page); in the browser, directly (`fromCarton(carton, { me })`). Load the panel only when it first shows, and
-subscribe only while it shows. See `packages/react/README.md`.
+cuts, fold in (all, some, none), Compare, credits, the preview banner and conflict cards. They read one view model, a
+`CartonUi`, which you give to `<CartonProvider ui={ui}>`:
+- **In the browser**, over the Carton handle itself: `const ui = fromCarton(carton, { me })`.
+- **In the desktop app**, Carton lives in the library worker and the panel in the page, so the view model travels as
+  messages. In the worker: `const server = serveUi(fromCarton(carton, { me }), send)`, which returns
+  `{ receive, close }`. In the page: `const page = remoteUi(send)`, which returns `{ ui, receive, ready }`. Each side's
+  `send` posts to the other side's `receive` over your IPC; await `page.ready` before the first render, and call
+  `server.close()` when the panel goes away.
+
+Load the panel only when it first shows, and subscribe only while it shows. `kit/test/ui.test.ts` runs this wiring
+with structured clones delivered later, as IPC does. See `packages/react/README.md`.
 
 ## Swapping backends
 
@@ -575,7 +610,8 @@ export const cardboardAuth: AuthProvider = {
 What must hold: `verify` returns `null`, never throws, for a token it didn't issue, a tampered one or an expired one;
 and the same install always gets the same `credential`. `authProviderSuite` checks the first on any provider. Give it a
 provider with `issue` (a test-only one is fine) and it also checks round trips, tampering and expiry. The sequencer
-itself refuses pushes from viewers and commenters (the host suite checks that). A token can also be limited to some
+itself refuses pushes from viewers and commenters; the host suites test the viewer case only, so test commenters on
+your host yourself. A token can also be limited to some
 cuts (`branches`), for remote agents.
 
 ## Migration of existing projects
@@ -618,22 +654,24 @@ cuts (`branches`), for remote agents.
 functions:
 - opening with `importProject` (main@1 once, placement in app data);
 - H1: mutations committed against their base: a stale base rebased, a clash carded, a retried id deduplicated, the file
-  as a view of head, and an in-place edit seen as no change;
+  as a view of head, and an in-place edit seen as no change; through the `cb` write path, a save that clashes on one
+  clip lands the rest and keeps its card for its author, across a restart;
 - H4: a GUI save through a lossy projection carries only the person's edit;
 - H2: history with authors, undo by actor group, restore;
 - H3: a print pin and an apply on its header; a header nothing can rebuild is `StateUnknown`;
 - `cb`'s commands registered on a stand-in for commander, as cli-mcp's own tests do;
 - H9: the hooks' settings and the Director's command prefix;
+- H7: a ripple recorded as an intent maps a concurrent trim of a later clip once;
 - H11: what a `.cbproj` leaves out;
 - the Node host with blobs on disk;
 - a custom `AuthProvider` through `authProviderSuite`.
 
-The quickstart's test (`kit/test/quickstart.test.ts`) runs `.cbproj` export, open and "Bring in their changes", and
+`kit/test/ui.test.ts` runs the UI wiring (`serveUi` ↔ `remoteUi`). The quickstart's test (`kit/test/quickstart.test.ts`) runs `.cbproj` export, open and "Bring in their changes", and
 two live replicas through the Node host. Browser-only and Cloudflare-only samples are marked where they appear, with
 the tests that run them. The S3 sample isn't run here (it needs an S3 service); blob-s3's own tests run the blob suite
 against one.
 
 ```sh
 cd carton
-node --test kit/test/samples.test.ts
+node --test kit/test/samples.test.ts kit/test/ui.test.ts
 ```

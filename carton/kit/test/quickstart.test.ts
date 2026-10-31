@@ -58,6 +58,8 @@ test("quickstart 1: import, agents' edits, history and credits, a cut, a fold wi
   assert.match((await run(qs("edit.ts"), [P, "Middle", "startTime=2.5", "endTime=5", "trimEnd=2.5", "--as", "codex/tighten"])).out, /^codex\/tighten: Saved: confirmed \w{8}@1$/);
   assert.equal((await cb(P, "cut", "switch", "main")).out, `Now on "Main cut"`);
   assert.match((await run(qs("edit.ts"), [P, "Middle", "endTime=7", "trimEnd=4"])).out, /: Saved: confirmed \w{8}@4$/);
+  // an agent that read main@1 edits the intro: --base names that version; its edit lands on top of the others
+  assert.match((await run(qs("edit.ts"), [P, "Intro", "textContent=Hello", "--base", "main@1", "--as", "codex/late"])).out, /^codex\/late: Saved: confirmed \w{8}@5$/);
 
   const chk = await cb(P, "fold", "30s cut", "--check");
   assert.match(chk.out, /^Would fold in with 1 card:\n  #1 timelineItems\/middle\/#time \(group[^)]*\) — Main cut: \{"startTime":3,"endTime":7,"trimStart":0,"trimEnd":4\} · 30s cut: \{"startTime":2.5,"endTime":5,"trimStart":0,"trimEnd":2.5\}\n/);
@@ -65,11 +67,11 @@ test("quickstart 1: import, agents' edits, history and credits, a cut, a fold wi
   assert.equal(f.code, 1);
   assert.match(f.out, /^Not folded in: 1 card, nothing was saved\./);
   const k = await cb(P, "fold", "30s cut", "--keep", "theirs");
-  assert.match(k.out, /^Folded in: confirmed \w{8}@5$/);
-  assert.equal((await cb(P, "compare", "main@4")).out, "- Retimed 'Middle' 3.0 s–7.0 s → 2.5 s–5.0 s");
+  assert.match(k.out, /^Folded in: confirmed \w{8}@6$/);
+  assert.equal((await cb(P, "compare", "main@5")).out, "- Retimed 'Middle' 3.0 s–7.0 s → 2.5 s–5.0 s");
 
-  assert.match((await cb(P, "undo", "--turn", "turn1")).out, /^Undid turn turn1: confirmed \w{8}@6$/);
-  assert.equal((await cb(P, "compare", "main@5", "main@6")).out, `- Trimmed 'Intro' end 2.5 s → 3.0 s\n- Changed 'Outro' color "#ffcc00" → "#f3eee6"`);
+  assert.match((await cb(P, "undo", "--turn", "turn1")).out, /^Undid turn turn1: confirmed \w{8}@7$/);
+  assert.equal((await cb(P, "compare", "main@6", "main@7")).out, `- Trimmed 'Intro' end 2.5 s → 3.0 s\n- Changed 'Outro' color "#ffcc00" → "#f3eee6"`);
   const j = JSON.parse((await cb(P, "history", "--json", "--limit", "1")).out);
   assert.equal(j.versions[0].name, "Undo turn turn1");
 });
