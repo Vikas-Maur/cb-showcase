@@ -14,7 +14,7 @@ import { openProjectStore } from "@carton/store-sqlite";
 import type { SqliteStore } from "@carton/store-sqlite";
 import { submit } from "./client.ts";
 import { spawnHelper } from "./helper.ts";
-import { Lease } from "./lease.ts";
+import { Lease, fence as leaseFence } from "./lease.ts";
 import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
 import { destCut, IDEMPOTENT, runWrite, WAIT_MS, withRaceRetry } from "./writes.ts";
@@ -139,8 +139,8 @@ export class CartonHolderEngine implements HolderEngine {
   serve(req: unknown): Promise<unknown> {
     const r = req as WriteRequest;
     if (!r?.id || !r.actor || !r.op) return Promise.reject(Object.assign(new Error("bad carton.commit request"), { code: -32602 }));
-    // connected (catching up or up to date): wait up to 5 s for the ack; not connected: answer pending at once (L14)
-    const online = () => { const st = this.carton.sync?.status; return st === "up-to-date" || st === "syncing"; };
+    // the written cut connected (catching up or up to date): wait up to 5 s for the ack; not: pending at once (L14)
+    const online = (cut?: string) => { const st = this.carton.sync?.state(cut).status; return st === "up-to-date" || st === "syncing"; };
     return withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
   }
 
@@ -158,8 +158,10 @@ export class CartonHolderEngine implements HolderEngine {
     this.off = this.carton.on((e: CartonEvent) => {
       if (e.type === "sync" && e.status === "stopped") onFenced();
     });
-    // don't hold up the lease while the server is out of reach: cb writes answer `pending` until it is back
-    void sync.connect({ nonce, fence }).catch(() => {});
+    // don't hold up the lease while the server is out of reach: cb writes answer `pending` until it is back. Settling
+    // the server's answers is conditional on the lease in the store (the fence above is this holder's own knowledge,
+    // refreshed by heartbeats): a holder replaced in between records nothing and stops
+    void sync.connect({ nonce, fence, conditions: [leaseFence(nonce)] }).catch(() => {});
   }
 
   async quiesce(): Promise<void> {

@@ -82,7 +82,7 @@ test("a probe never names a nonce it didn't observe: a holder that takes the lea
 test("notices that arrive while a call waits for its ack go out with its answer", async () => {
   const store = createMemoryStore();
   const carton = scripted(store, [() => ({ status: "pending", id: "r.5", ref, notices: [] })], {});
-  carton.sync = { status: "up-to-date" };
+  carton.sync = { status: "up-to-date", state: () => ({ status: "up-to-date" }) };
   const p = runWrite(carton, { id: "r.5", actor: agent, op: { kind: "commit", ops: [] }, waitMs: 2000 });
   await new Promise((r) => setTimeout(r, 30));
   // an older pending change of the same actor conflicted, then this one did
