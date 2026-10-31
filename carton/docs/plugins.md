@@ -175,8 +175,17 @@ every host runs the same function. The host:
 3. **Feeds connections.** A connection is `{ id, auth, state, send }`. Call `sequencer.handle(conn, msg)` for each
    JSON text message, `sequencer.disconnect(conn)` on close, and `sequencer.attach(conn)` for every socket that
    survives a restart or hibernation, with its saved `state`. The sequencer mutates `conn.state` (the branches a
-   socket follows, its dead epoch). If your host can evict a project while sockets stay open, as Durable Objects do,
-   save `state` with the socket after each message that changed it.
+   socket follows, its dead epoch, the actors it shows). If your host can evict a project while sockets stay open,
+   as Durable Objects do, save `state` with the socket after each message that changed it.
+   - **Presence leaves.** A client that crashes or loses its network never sends its `presence(null)`, so
+     `disconnect` sends the branch's other subscribers `state: null` for each actor the connection still showed
+     (`state.shown`, at most 4 actors). So call it for every way a socket ends, including a timeout. A client
+     that lost its network sends no FIN either: drop a socket that has been silent for too long. server-node pings
+     after `idleTimeoutMs` (30 s) of silence and drops the socket after as long again. The Durable Object closes a
+     socket that shows presence and has neither sent anything nor pinged (its `ping` auto-response) for
+     `PRESENCE_TIMEOUT_MS` (120 s). It checks from its alarm, every half of that, only while some socket shows
+     presence; maintenance keeps its own due time (`carton_room.maintain_at`), so these checks never run it
+     early. The conformance host suite drops a client and silences one, and checks that its peers see the leaves.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from
@@ -312,7 +321,9 @@ add none of their own. Measured in a local `ProjectRoom`, with wrangler dev coun
 Archiving is the line to watch: every archived row costs one more row written. `maintain()` follows §18 (rows
 older than the newest 10,000, in gzip segments of 10,000), so a branch pays it only once it has more than 20,000
 live changes. `ARCHIVE_KEEP` and `ARCHIVE_SEGMENT` override it. The WebSocket keepalive (`ping` → `pong`) is
-answered by the runtime without waking the room, so idle sockets cost nothing.
+answered by the runtime without waking the room, so idle sockets cost nothing. While a socket shows presence, the
+alarm wakes the room every `PRESENCE_TIMEOUT_MS / 2` (60 s) to check for silent sockets. Each check reads one row,
+the maintenance due time, and sets the alarm; it writes no table rows.
 
 ## Windows
 

@@ -59,6 +59,9 @@ export interface NodeHostOptions {
   /** Largest WebSocket message (default 32 MiB, Cloudflare's own cap, so both hosts accept the same messages). This
    * is the protocol's limit, separate from the sequencer's 1 MB threshold for keeping a change body inline. */
   maxMessageBytes?: number;
+  /** A socket silent this long is pinged; one still silent after as long again is dropped (default 30 s, 0 = never).
+   * A client that lost its network goes, and so does its presence on its teammates' screens, within twice this. */
+  idleTimeoutMs?: number;
   /** The origin clients reach this host at (`https://carton.example`), for the signed URLs it hands out. Without
    * it, each request's own Host header is used, so a URL works at the address the client used. */
   publicOrigin?: string;
@@ -411,6 +414,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
             protocols: (offered) => (offered.includes(WS_PROTOCOL) ? WS_PROTOCOL : null),
             maxPayload: opts.maxMessageBytes ?? MAX_MESSAGE,
             maxBufferedBytes: 16 << 20,
+            ...(opts.idleTimeoutMs !== undefined ? { idleTimeoutMs: opts.idleTimeoutMs } : {}),
           });
           if (!ws) return;
           try {

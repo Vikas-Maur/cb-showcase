@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import type { TransportConnection } from "@carton/core/plugins";
 import type { sync } from "@carton/core";
 import type { HostFixture } from "./index.ts";
+import { rawWebSocket } from "./raw-ws.ts";
 
 type Msg = sync.ServerMessage;
 
@@ -31,8 +32,8 @@ interface Client {
   waitClose(ms?: number): Promise<string>;
 }
 
-async function client(fx: HostFixture, token: string): Promise<Client> {
-  const conn = await fx.transport.connect(fx.host.url, { token });
+async function client(fx: HostFixture, token: string, given?: TransportConnection): Promise<Client> {
+  const conn = given ?? (await fx.transport.connect(fx.host.url, { token }));
   const waiters: { pred: (m: Msg) => boolean; res: (m: Msg) => void }[] = [];
   const closeWaiters: ((why: string) => void)[] = [];
   const c: Client = {
@@ -233,6 +234,62 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       assert.ok(!a.got.some((m) => m.type === "presence"), "echoed to the sender");
       assert.ok(!outsider.got.some((m) => m.type === "presence"), "sent to a connection not on the branch");
       if (before) assert.equal((await fx.rows!()).rowsWritten - before.rowsWritten, 0, "presence wrote rows");
+    });
+
+    // A client that crashed or lost its network never sends presence(null): the host owes its peers the leave.
+    const showing = async () => {
+      const b = newBranch();
+      const owner = await connect(await fx.token("owner"));
+      await share(owner, b);
+      // over a network, a bare socket that can vanish or go silent; in process, a connection that closes unannounced
+      const token = await fx.token("editor");
+      const raw = fx.host.url.startsWith("ws:") ? await rawWebSocket(fx.host.url, token) : null;
+      const a = raw ? await client(fx, token, raw) : await connect(token);
+      if (raw) open.push(a);
+      const kill = () => (raw ? raw.kill() : a.conn.close());
+      const p = await connect(await fx.token("editor"));
+      const outsider = await connect(await fx.token("editor"));
+      const elsewhere = newBranch();
+      await share(owner, elsewhere);
+      await hello(outsider, elsewhere);
+      await hello(a, b);
+      await hello(p, b);
+      const human = { kind: "human", id: "a-crashes" }, agent = { kind: "agent", id: "a-crashes", agentId: "director-1" };
+      a.conn.send({ type: "presence", branchId: b, actor: human, state: { at: 2, dragging: true, ghosts: [{ item: "c0", track: "V1", start: 2, end: 3 }] } } as sync.ClientMessage);
+      a.conn.send({ type: "presence", branchId: b, actor: agent, state: { at: 4 } } as sync.ClientMessage);
+      await p.wait((m) => m.type === "presence" && (m as sync.PresenceFanoutMsg).actor.kind === "agent", "the agent's presence");
+      const left = (actor: { kind: string; id: string; agentId?: string }) => (m: Msg) =>
+        m.type === "presence" && (m as sync.PresenceFanoutMsg).state === null && (m as sync.PresenceFanoutMsg).actor.kind === actor.kind && (m as sync.PresenceFanoutMsg).actor.id === actor.id && (m as sync.PresenceFanoutMsg).actor.agentId === actor.agentId;
+      return { b, raw, kill, p, outsider, human, agent, left };
+    };
+
+    test("a connection that drops without a leave: its peers get `state: null` for each actor it showed", async () => {
+      const { kill, p, outsider, human, agent, left } = await showing();
+      kill(); // no close frame, no presence(null)
+      await p.wait(left(human), "the human's leave", 5000);
+      await p.wait(left(agent), "the agent's leave", 5000);
+      await new Promise((r) => setTimeout(r, 200));
+      assert.equal(p.got.filter((m) => m.type === "presence" && (m as sync.PresenceFanoutMsg).state === null).length, 2, "one leave each");
+      assert.ok(!outsider.got.some((m) => m.type === "presence"), "a connection on another branch never saw it");
+    });
+
+    test("the leaves survive the host's hibernation: a connection that drops after a wake still owes them", async (t) => {
+      if (!fx.hibernate) return t.skip("needs hibernate");
+      const { kill, p, human, agent, left } = await showing();
+      await fx.hibernate();
+      kill();
+      await p.wait(left(human), "the human's leave", 5000);
+      await p.wait(left(agent), "the agent's leave", 5000);
+    });
+
+    test("a connection that goes silent (no close, no keepalive) is dropped within the host's timeout, and its presence leaves", async (t) => {
+      if (!fx.presenceTimeoutMs || !fx.host.url.startsWith("ws:")) return t.skip("needs presenceTimeoutMs and a ws: host");
+      const { p, human, agent, left } = await showing();
+      // the raw client never pings and never answers a ping: as a laptop whose network went away
+      const t0 = Date.now();
+      await p.wait(left(human), "the human's leave", fx.presenceTimeoutMs + 5000);
+      await p.wait(left(agent), "the agent's leave", 1000);
+      assert.ok(Date.now() - t0 <= fx.presenceTimeoutMs + 5000);
     });
 
     test("replica ids are bound to the device credential and survive a reconnect; another credential can't use them", async (t) => {

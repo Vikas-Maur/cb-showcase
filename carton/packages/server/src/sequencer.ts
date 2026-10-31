@@ -51,6 +51,20 @@ export interface ConnectionState {
   deadEpoch: number;
   /** The client reads envelopes (its hello said so): messages over 1 MiB go to it as blob references. */
   envelopes?: boolean;
+  /**
+   * Who this connection shows on each branch's other screens: actors whose latest presence there wasn't `null`. When
+   * it disconnects (closed, crashed, timed out), each is sent to the branch's others with `state: null`, since a client
+   * that crashed or lost its network never sends its own. Kept here so a host that keeps this state across
+   * hibernation (the Durable Object's socket attachment) keeps these too; so it stays small: at most
+   * PRESENCE_SHOWN_MAX actors, of ids no longer than PRESENCE_ID_MAX (an actor beyond either is relayed, not kept).
+   */
+  shown?: ShownPresence[];
+}
+
+/** An actor a connection shows on a branch: only what names it (`actorKey`: kind, id, agentId). */
+export interface ShownPresence {
+  branchId: string;
+  actor: { kind: sync.PresenceFanoutMsg["actor"]["kind"]; id: string; agentId?: string };
 }
 
 /** A host's connection. `state`, when present, is where the sequencer keeps this connection's protocol state. */
@@ -964,6 +978,25 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (byBranch.size === 0) presenceTrailing.delete(id);
   }
 
+  // Who a connection shows (ConnectionState.shown), noted as each presence is accepted, so a leave is owed for every
+  // actor whose last word wasn't `null`, whether or not the rate cap has relayed that word yet.
+  const sameActor = (a: ShownPresence["actor"], b: sync.PresenceFanoutMsg["actor"]) => a.kind === b.kind && a.id === b.id && a.agentId === (b.agentId ?? undefined);
+  function noteShown(c: HostConnection, branchId: string, actor: sync.PresenceFanoutMsg["actor"], showing: boolean): void {
+    const st = stateOf(c);
+    const i = st.shown?.findIndex((s) => s.branchId === branchId && sameActor(s.actor, actor)) ?? -1;
+    if (!showing) {
+      if (i < 0) return;
+      st.shown!.splice(i, 1);
+      if (st.shown!.length === 0) delete st.shown;
+      return;
+    }
+    if (i >= 0 || (st.shown?.length ?? 0) >= PRESENCE_SHOWN_MAX) return;
+    const { kind, id, agentId } = actor;
+    if (typeof kind !== "string" || typeof id !== "string" || id.length > PRESENCE_ID_MAX || branchId.length > PRESENCE_ID_MAX) return;
+    if (agentId !== undefined && (typeof agentId !== "string" || agentId.length > PRESENCE_ID_MAX)) return;
+    (st.shown ??= []).push({ branchId, actor: { kind, id, ...(agentId !== undefined ? { agentId } : {}) } });
+  }
+
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
     if (!stateOf(c).subs.includes(m.branchId)) return;
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
@@ -971,6 +1004,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
+    noteShown(c, m.branchId, actor, msg.state !== null);
     if (!presenceAllowed(c)) {
       stats.presenceDropped++;
       const byBranch = presenceTrailing.get(c.id) ?? new Map();
@@ -1071,10 +1105,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     },
     attach,
     disconnect(conn) {
+      if (!conns.has(conn.id)) return; // once per connection
       conns.delete(conn.id);
       outboxes.delete(conn.id);
       presenceBuckets.delete(conn.id);
+      // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
+      // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
+      for (const [, t] of presenceTrailing.get(conn.id) ?? []) if (t.msg.state === null) fanout(t.msg.branchId, t.msg, conn.id);
       clearTrailing(conn.id);
+      const st = stateOf(conn);
+      for (const s of st.shown ?? []) fanout(s.branchId, { type: "presence", branchId: s.branchId, actor: s.actor, state: null }, conn.id);
+      delete st.shown;
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
@@ -1222,6 +1263,10 @@ function utf8Over(text: string, limit: number): boolean {
 function declarationTooLarge(ch: Change): boolean {
   return (ch.paths?.length ?? 0) + (ch.reads?.length ?? 0) > 200_000 || (ch.spans?.length ?? 0) > 50_000 || (ch.trackOrder?.length ?? 0) > 10_000 || (ch.base?.pending?.length ?? 0) > 10_000;
 }
+/** At most this many actors per connection are kept for the leave on disconnect (ConnectionState.shown). */
+const PRESENCE_SHOWN_MAX = 4;
+/** Longest actor id, agent id or branch id kept for it (an attachment of a Durable Object's socket stays small). */
+const PRESENCE_ID_MAX = 200;
 /** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
 const PRESENCE_BURST = 20;
 const PRESENCE_PER_SEC = 20;
