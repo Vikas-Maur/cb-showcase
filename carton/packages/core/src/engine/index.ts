@@ -8,7 +8,7 @@ export { fork, getIn, specAt, stripEphemeral } from "./doc.ts";
 export { diff } from "./diff.ts";
 export { apply } from "./apply.ts";
 export { MAX_KEY, keyBetween, keyUp, keyAfter, keysBetween, assignKeys, byPos } from "./keys.ts";
-export { EPS, step, rippleDelete, rippleInsert, remapPoint, remapSpan, transformChain, composeChain, composeMaps, inferRemaps, expandRemap, isEmptyMap } from "./remap.ts";
+export { EPS, step, rippleDelete, rippleInsert, remapPoint, remapSpan, transformChain, composeChain, composeMaps, inferRemaps, expandRemap, isEmptyMap, invertChain, invertMaps } from "./remap.ts";
 export { timeAlgebra } from "./algebra.ts";
 export type { TimeAlgebra, TimeVals } from "./algebra.ts";
 export { diff3 } from "./diff3.ts";

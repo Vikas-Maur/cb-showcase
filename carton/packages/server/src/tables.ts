@@ -115,9 +115,30 @@ export class Tables {
     this.branches.set(id, b);
     return b;
   }
+  /** Create a branch row; throws (rolling the transaction back) if the branch exists: never a silent replace. */
+  insertBranch(b: StoredBranch): void {
+    this.write("INSERT INTO branches (branch, rec) VALUES (?, ?)", b.id, JSON.stringify(b));
+    this.branches.set(b.id, b);
+  }
+  /** Drop every cache about a branch (after a rolled-back transaction: they are rebuilt from the tables). */
+  forget(branch: string): void {
+    this.branches.delete(branch);
+    this.heads.delete(branch);
+    this.decl.delete(branch);
+  }
   putBranch(b: StoredBranch): void {
     this.write("INSERT OR REPLACE INTO branches (branch, rec) VALUES (?, ?)", b.id, JSON.stringify(b));
     this.branches.set(b.id, b);
+  }
+  /**
+   * Benchmark harness only (the P5-style CPU bench): undo a confirmed row so the next measured push sees the same
+   * tail, as the P5 proof's `benchRevert` did. Never called by the sequencer.
+   */
+  benchRevert(branch: string, seq: number): void {
+    this.sql.exec("DELETE FROM changes WHERE branch = ? AND seq = ?", branch, seq);
+    this.sql.exec("DELETE FROM records WHERE branch = ? AND seq = ?", branch, seq);
+    this.heads.set(branch, seq - 1);
+    this.decl.get(branch)?.delete(seq);
   }
   /** Every branch this storage holds (for periodic maintenance). */
   branchIds(): string[] {
@@ -291,8 +312,9 @@ export class Tables {
     );
     const firstLive = live.length ? num(live[0]!.seq) : hi + 1;
     if (firstLive > lo + 1) {
-      for (const s of this.all<{ lo: number; ids: SqlValue }>("SELECT lo, ids FROM segments WHERE branch = ? AND hi > ? ORDER BY hi", branch, lo)) {
-        if (num(s.lo) >= Math.min(hi, firstLive - 1)) break;
+      // only the segments that overlap (lo, min(hi, firstLive - 1)]: the query itself is bounded (finding 16)
+      const top = Math.min(hi, firstLive - 1);
+      for (const s of this.all<{ lo: number; ids: SqlValue }>("SELECT lo, ids FROM segments WHERE branch = ? AND hi > ? AND lo < ? ORDER BY hi", branch, lo, top)) {
         for (const [seq, id, flags, k] of JSON.parse(text(s.ids)) as [number, string, number, number][])
           if (seq > lo && seq <= hi && seq < firstLive) out.push(confirmedId(seq, id, flags, k));
       }
@@ -333,13 +355,53 @@ export class Tables {
     return undefined;
   }
 
-  // ---------------------------------------------------------------- replica ids (§6.3: bound to the device credential)
+  /**
+   * `record` for many ids of one collection at the head of `branch`: one primary-key query per 64 ids (padded, so the
+   * statement shape and its cached plan stay the same). Ids with no row on the branch itself go up the fork chain one
+   * by one, as `record` does.
+   */
+  records(branch: string, coll: string, ids: readonly string[]): Map<string, RecordState | undefined> {
+    const out = new Map<string, RecordState | undefined>();
+    if (this.latestOnly) {
+      for (const id of ids) out.set(id, this.record(branch, coll, id));
+      return out;
+    }
+    // one bounded seek per id (newest row ≤ head, LIMIT 1), 32 to a statement (96 bound parameters): a record's long
+    // history is never read (review finding 15)
+    const CHUNK = 32;
+    const one = "SELECT * FROM (SELECT id, alive, seq, lane FROM records WHERE branch = ? AND coll = ? AND id = ? ORDER BY seq DESC LIMIT 1)";
+    const q = Array(CHUNK).fill(one).join(" UNION ALL ");
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const part = ids.slice(i, i + CHUNK);
+      const params: SqlValue[] = [];
+      // padding seeks an id no record has (a NUL byte), so it reads nothing
+      for (let j = 0; j < CHUNK; j++) params.push(branch, coll, j < part.length ? part[j]! : "\u0000");
+      for (const r of this.all<{ id: SqlValue; alive: number; seq: number; lane: SqlValue }>(q, ...params)) {
+        const id = text(r.id);
+        if (out.has(id)) continue;
+        const state: RecordState = { alive: num(r.alive) === 1, seq: num(r.seq) };
+        if (r.lane !== null && r.lane !== undefined) state.lane = text(r.lane);
+        out.set(id, state);
+      }
+    }
+    for (const id of ids) if (!out.has(id)) out.set(id, this.record(branch, coll, id));
+    return out;
+  }
+
+  // bindings never change once written, and only this sequencer writes them: cache what was read
+  private ridCache = new Map<string, string>();
   ridOwner(rid: string): string | undefined {
+    const hit = this.ridCache.get(rid);
+    if (hit !== undefined) return hit;
     const r = this.all<{ credential: string }>("SELECT credential FROM rids WHERE rid = ?", rid);
-    return r.length ? text(r[0]!.credential) : undefined;
+    if (!r.length) return undefined;
+    const c = text(r[0]!.credential);
+    this.ridCache.set(rid, c);
+    return c;
   }
   bindRid(rid: string, credential: string): void {
     this.write("INSERT OR IGNORE INTO rids (rid, credential) VALUES (?, ?)", rid, credential);
+    this.ridCache.delete(rid); // re-read: OR IGNORE keeps an existing binding
   }
 
   // ---------------------------------------------------------------- keyframes

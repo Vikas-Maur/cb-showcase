@@ -13,13 +13,16 @@
 //   lease it stops for good and never touches the queue again.
 // - Hand-off (§5.3): while the branch is `handingOff`, ask `branchStatus` first; upload only if the server doesn't have
 //   the branch; become `server{since: n}` only on the server's answer. Never resume local sequencing alone.
+// - With a blob store (`blobs`), any message over 1 MiB either way travels as an envelope (`envelope.ts`), in order.
 
-import type { TransportConnection } from "../plugins.ts";
+import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
 import type { AdoptMsg, ClientMessage, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
-import { last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
+import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
+import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, oversized, seal, unseal } from "./envelope.ts";
+import type { ConfirmedId } from "./messages.ts";
 
 export type SyncStatus = "offline" | "connecting" | "syncing" | "up-to-date" | "stopped";
 
@@ -30,7 +33,7 @@ export type SyncEvent =
   | { type: "keyframe"; seq: number }
   | { type: "shared"; since: number }
   | { type: "overwritten"; id: string; by: string; author: unknown }
-  | { type: "presence"; actor: unknown; state: PresenceState | null }
+  | { type: "presence"; branchId: string; actor: unknown; state: PresenceState | null }
   | { type: "push"; ids: string[]; epoch: number }
   | { type: "withdraw"; id: string; epoch: number }
   | { type: "reject"; id: string | undefined; reason: string; epoch: number }
@@ -72,6 +75,14 @@ export interface SyncClientOptions {
   /** Fault injection for tests: rewrite each change just before it is sent. */
   tamper?: (ch: Change) => Change;
   clock?: () => number;
+  /**
+   * The blob store the host's sequencer uses (or a client for it): messages over `envelopeBytes` (1 MiB) either way
+   * travel through it as envelopes. Without it every message goes inline, whatever its size.
+   */
+  blobs?: BlobStore;
+  envelopeBytes?: number;
+  /** The largest message this client fetches from an envelope (default 1 GiB). */
+  maxEnvelopeBytes?: number;
 }
 
 let CONN = 0;
@@ -85,6 +96,8 @@ export class SyncClient {
   epoch = 0;
   private conn: TransportConnection | null = null;
   private connId = 0;
+  /** The current connection's outgoing side: keeps order around envelope uploads. */
+  private out: Outbox<ClientMessage> | null = null;
   stopped = false;
   stopReason: string | null = null;
   caughtUp = false;
@@ -93,12 +106,18 @@ export class SyncClient {
   private waiters: ((ok: boolean) => void)[] = [];
   private statusListeners: ((s: SyncStatus) => void)[] = [];
   private _status: SyncStatus = "offline";
+  /** The server found some claims beyond its per-message cap: their lists so far, merged into the final answer. */
+  private confirmedSoFar: ConfirmedId[] = [];
+  /** A keyframe failed its hash on this connection: catch up by rows only. */
+  private noKeyframe = false;
   /** For hand-off tests: send the upload twice (a retry that crosses the first answer). */
   forceAdoptTwice = false;
   /** For hand-off tests: upload again on the next connection instead of asking `branchStatus` first. */
   reuploadOnReconnect = false;
   tamper: ((ch: Change) => Change) | undefined;
-  readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0 };
+  readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0, envelopesSent: 0, envelopesReceived: 0 };
+
+  private unsubscribe: (() => void) | null = null;
 
   constructor(opts: SyncClientOptions) {
     this.o = opts;
@@ -107,6 +126,13 @@ export class SyncClient {
     this.K = opts.maxBehind ?? 100;
     this.timers = opts.timers ?? { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) };
     this.tamper = opts.tamper;
+    // a local commit joins the queue: push it soon (after the committing task), without the owner having to call pump
+    this.unsubscribe = this.queue.on((e) => {
+      if (e.type === "pending" && e.branchId === this.branchId && !this.stopped) {
+        if (this._status === "up-to-date") this.setStatus("syncing"); // an unconfirmed edit is never "up to date" (finding 20)
+        this.defer(() => this.pump(), 0);
+      }
+    });
   }
 
   get status(): SyncStatus {
@@ -137,6 +163,8 @@ export class SyncClient {
     if (this.stopped) return;
     this.stopped = true;
     this.stopReason = why;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
     const c = this.conn;
     this.conn = null;
@@ -148,8 +176,16 @@ export class SyncClient {
   whenCaughtUp(timeoutMs: number): Promise<boolean> {
     if (this.online) return Promise.resolve(true);
     return new Promise((res) => {
-      this.waiters.push(res);
-      this.timers.setTimeout(() => res(this.online), timeoutMs);
+      // cleared once answered: a settled wait never keeps the process alive
+      const timer = this.timers.setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== done);
+        res(this.online);
+      }, timeoutMs);
+      const done = (ok: boolean) => {
+        this.timers.clearTimeout(timer);
+        res(ok);
+      };
+      this.waiters.push(done);
     });
   }
   /** Run `fn` only while this client holds the lease; otherwise stop for good (R5-06). */
@@ -162,8 +198,9 @@ export class SyncClient {
     fn();
     return true;
   }
+  /** Run `fn` after `n` pending changes' worth of rebase work (n = 0: just after the current task). */
   private defer(fn: () => void, n: number): void {
-    const cost = (this.o.rebaseCostMs ?? 0) * Math.max(1, n);
+    const cost = n === 0 ? 0 : (this.o.rebaseCostMs ?? 0) * n;
     if (this.o.defer) this.o.defer(fn, cost);
     else this.timers.setTimeout(fn, cost);
   }
@@ -187,9 +224,24 @@ export class SyncClient {
         this.connId = ++CONN;
         this.epoch++;
         this.caughtUp = false;
+        this.confirmedSoFar = [];
+        this.noKeyframe = false;
         this.stats.reconnects++;
         const id = this.connId;
-        c.onMessage((m) => this.onMessage(id, m));
+        const conn = c;
+        this.out = new Outbox((m) => conn.send(m));
+        const blobs = this.o.blobs;
+        const inbox = new Inbox<ServerMessage>({
+          deliver: (m) => this.onMessage(id, m),
+          open: async (ref) => {
+            if (!blobs) throw new Error("an envelope, and no blob store to read it from");
+            const m = await unseal(ref, blobs, { from: "server", maxBytes: this.o.maxEnvelopeBytes ?? 1 << 30 });
+            this.stats.envelopesReceived++;
+            return m;
+          },
+          fail: (e) => this.drop(id, `envelope: ${e instanceof Error ? e.message : String(e)}`),
+        });
+        c.onMessage((m) => inbox.receive(m));
         c.onClose((why) => this.onClose(id, why));
         this.setStatus("syncing");
         this.onOpen();
@@ -209,8 +261,21 @@ export class SyncClient {
     this.emit({ type: "offline", why });
     if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.o.backoffMs ?? 500);
   }
+  /** Drop connection `id` (a lost message: the server couldn't read an envelope, or we couldn't): reconnect, catch up. */
+  private drop(id: number, why: string): void {
+    const c = this.conn;
+    if (id !== this.connId || !c) return;
+    this.onClose(id, why);
+    c.close();
+  }
   private send(m: ClientMessage): void {
-    this.conn?.send(m);
+    if (!this.conn || !this.out) return;
+    const blobs = this.o.blobs;
+    const big = blobs ? oversized(m, this.o.envelopeBytes ?? ENVELOPE_BYTES) : null;
+    if (!big) return this.out.push(m);
+    this.stats.envelopesSent++;
+    const now = (this.o.clock ?? Date.now)();
+    this.out.push(m, seal(big, blobs!, (sha) => clientEnvelopeKey(sha, now)));
   }
   private onOpen(): void {
     const br = this.queue.branch(this.branchId);
@@ -222,10 +287,19 @@ export class SyncClient {
    * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
    * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
    */
-  private hello(): ClientMessage {
+  private hello(onlyFrom = -1): ClientMessage {
+    const b = this.branchId;
     const pending: PendingClaim[] = [];
-    for (const p of this.queue.pending(this.branchId)) if (p.sentBases.length) pending.push({ id: p.id, bases: [...p.sentBases] });
-    return { type: "hello", branchId: this.branchId, have: this.queue.headSeq(this.branchId), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
+    for (const p of this.queue.pending(b)) {
+      // a base whose whole range (b, b + K + 1] this replica holds as rows needs no claim: had that push been
+      // confirmed, its row would be here and the change would have left the queue (keeps hellos small, finding 10)
+      const bases = p.sentBases.filter((x) => x >= onlyFrom && !this.queue.holdsRows(b, x, x + this.K + 1));
+      if (bases.length) pending.push({ id: p.id, bases });
+    }
+    const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
+    if (this.noKeyframe) m.noKeyframe = true;
+    if (this.o.blobs) m.envelopes = true;
+    return m;
   }
   private adoptKey(): string | null {
     const s = this.queue.branch(this.branchId).sequencer;
@@ -268,15 +342,34 @@ export class SyncClient {
       case "changes":
         this.fenced(() => {
           if (m.branchId !== b) return;
-          // keyframe catch-up: jump, drop the pending ids already confirmed in the jumped stretch (R10-01), then
-          // rebase the rest of the queue onto the keyframe before the tail
-          if (m.type === "hello" && m.keyframe && this.queue.jumpTo(b, m.keyframe)) {
-            this.queue.confirmFromList(b, m.confirmed);
-            this.queue.rebaseAll(b);
-            this.emit({ type: "keyframe", seq: m.keyframe.seq });
-          } else if (m.type === "hello" && m.confirmed?.length) this.queue.confirmFromList(b, m.confirmed);
+          if (m.type === "hello" && m.uncheckedFrom !== undefined) {
+            // the server checked only part of our claims: keep what it found, ask for the rest, act on nothing yet
+            this.confirmedSoFar.push(...m.confirmed);
+            return this.send(this.hello(m.uncheckedFrom));
+          }
+          const confirmed = m.type === "hello" ? [...this.confirmedSoFar.splice(0), ...m.confirmed] : [];
+          if (m.type === "changes" && m.rows.length && m.rows[0]!.seq > this.queue.headSeq(b) + 1) return this.resync("a gap in the rows");
+          try {
+            // keyframe catch-up: jump, drop the pending ids already confirmed in the jumped stretch (R10-01), then
+            // rebase the rest of the queue onto the keyframe before the tail
+            if (m.type === "hello" && m.keyframe && this.queue.jumpTo(b, m.keyframe)) {
+              this.queue.confirmFromList(b, confirmed);
+              this.queue.rebaseAll(b);
+              this.emit({ type: "keyframe", seq: m.keyframe.seq });
+            } else if (confirmed.length) this.queue.confirmFromList(b, confirmed);
+          } catch (e) {
+            if (!(e instanceof KeyframeMismatch)) throw e;
+            this.emit({ type: "error", error: e.message });
+            this.noKeyframe = true; // catch up by rows only (finding 14)
+            return this.resync("a keyframe failed its hash");
+          }
           const pendingBefore = this.queue.pending(b).length;
-          const res = this.queue.integrate(b, m.rows);
+          let res: ReturnType<ReplicaQueue["integrate"]>;
+          try {
+            res = this.queue.integrate(b, m.rows);
+          } catch (e) {
+            return this.resync(e instanceof Error ? e.message : String(e)); // rows out of order: catch up again (finding 3)
+          }
           if (res.others.length && pendingBefore) {
             this.stats.rebases += this.queue.pending(b).length;
             this.emit({ type: "rebase", n: this.queue.pending(b).length });
@@ -325,6 +418,12 @@ export class SyncClient {
           if (m.reason === "lww on structure" && m.id) {
             this.queue.toMerge(b, m.id); // H2: through merge3, never dropped
           } else if (m.reason === "behind") {
+            if (m.uncheckedFrom !== undefined) {
+              // an incomplete list: never rebase on it; catch up with hello, which asks for the rest
+              this.caughtUp = false;
+              this.send(this.hello());
+              return;
+            }
             this.queue.confirmFromList(b, m.confirmed);
             if (m.head - this.queue.headSeq(b) > this.K) {
               // our own head is too far behind to push from: catch up (a keyframe plus the tail), which rebases
@@ -336,21 +435,30 @@ export class SyncClient {
           }
           this.stats.rebases += n;
           this.emit({ type: "rebase", n });
-          this.defer(() => this.pump(), n);
+          this.defer(() => this.pump(), Math.max(1, n)); // the rebase holds the pusher, then the resubmission
         });
         return;
       }
       case "overwritten":
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
       case "presence":
-        return this.emit({ type: "presence", actor: m.actor, state: m.state });
+        return this.emit({ type: "presence", branchId: m.branchId, actor: m.actor, state: m.state });
       case "unknownBranch":
         return this.emit({ type: "error", error: "unknown branch" });
       case "adoptError":
         return this.emit({ type: "error", error: m.reason });
       case "error":
+        if (m.reconnect) this.drop(id, m.reason);
         return this.emit({ type: "error", error: m.reason });
     }
+  }
+
+  /** Catch up again from what we hold (a gap, a bad keyframe): hello, and no pushes until it is answered. */
+  private resync(why: string): void {
+    this.caughtUp = false;
+    this.setStatus("syncing");
+    this.emit({ type: "offline", why: `resync: ${why}` });
+    this.send(this.hello());
   }
 
   private uploadKeyframe(seq: number): void {
@@ -421,6 +529,7 @@ export class SyncClient {
           trackOrder: v.decl.trackOrder,
         };
         if (v.decl.structural !== undefined) ch.structural = v.decl.structural;
+        if (p.history) Object.assign(ch, p.history); // fold-in and undo fields travel with the change (finding 13)
         if (this.tamper) ch = this.tamper(ch);
         out.push(ch);
       }
