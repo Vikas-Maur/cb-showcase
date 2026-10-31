@@ -86,12 +86,21 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   let running: Promise<void> | null = null;
   /**
    * A notification whose listener failed: the stamp and the baselines have moved past what it reports, so it is kept
-   * and tried again at the next look (poll or nudge) until it goes through; a newer one replaces it.
+   * and told again at the next look (poll or nudge), after that look has read the store (a listener that keeps failing
+   * never holds up adopting a newer cut). It is what to tell, not a call to repeat: it is told for the cut the handle
+   * is on then, merged with what that look found (the larger of the two), and dropped once the handle has left its cut
+   * (whatever moved it told the materializer: a switch served here, or an adoption, told as such).
    */
-  let owed: (() => Promise<void>) | null = null;
-  const tell = async (f: () => void | Promise<void>): Promise<void> => {
-    owed = null;
-    try { await f(); } catch (e) { if (!stopped) owed = async () => { await f(); }; throw e; }
+  let owed: Notice | null = null;
+  const tell = async (n: Notice): Promise<void> => {
+    try {
+      if (n.kind === "cut") await o.onCut(n.cut);
+      else if (n.kind === "head") await o.onHead(n.cut);
+      else await o.onMoved?.(n.cut);
+    } catch (e) {
+      if (!stopped) owed = n;
+      throw e;
+    }
   };
   let again = false;
   let timer: NodeJS.Timeout | null = null;
@@ -128,16 +137,15 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     });
   };
 
-  const look = async (): Promise<void> => {
-    if (!started) await start();
-    if (owed && !stopped) await tell(owed);
+  /** What the store says changed since the last look (null: nothing another connection committed). */
+  const scan = async (): Promise<Notice | null> => {
     const s = await stamp();
-    if (s === lastStamp) return;
+    if (s === lastStamp) return null;
     // the first look only records where the store is
     const first = lastStamp === null;
     lastStamp = s;
     const switched = await adoptCut();
-    if (stopped) return;
+    if (stopped) return null;
     // every cut's rows move its baseline; only the current cut's rows from elsewhere are news
     const cut = carton.cut;
     let mine: string[] = [];
@@ -150,10 +158,17 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     // a commit of this handle emits its event right after its write: one turn later it is known if it is ours
     if (foreign.length) { await new Promise((r) => setImmediate(r)); foreign = foreign.filter((id) => !known.has(id)); }
     for (const id of mine) known.delete(id);
-    if (stopped) return;
-    if (switched) await tell(() => o.onCut(switched));
-    else if (foreign.length) await tell(() => o.onHead(cut));
-    else if (!first && o.onMoved) await tell(() => o.onMoved!(cut));
+    if (switched) return { kind: "cut", cut: switched };
+    if (foreign.length) return { kind: "head", cut };
+    return !first && o.onMoved ? { kind: "moved", cut } : null;
+  };
+  const look = async (): Promise<void> => {
+    if (!started) await start();
+    let n = await scan();
+    const left = owed;
+    owed = null;
+    if (left && left.cut === carton.cut && (!n || RANK[left.kind] > RANK[n.kind])) n = left;
+    if (n && !stopped) await tell(n);
   };
   // one look at a time; a check asked for during one runs once more after it (it may have missed that write)
   const check = (): Promise<void> => {
@@ -189,6 +204,11 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   tick();
   return { check, stop };
 }
+
+/** What a look tells: a cut switch (the whole cut to show), the head moved, or some other write. */
+type Notice = { kind: "cut" | "head" | "moved"; cut: string };
+/** A switch shows the whole cut, head included; a head move tells all a write elsewhere would. */
+const RANK: Record<Notice["kind"], number> = { moved: 0, head: 1, cut: 2 };
 
 /** The store (or Carton on it) was closed under the follower: nothing more to follow. */
 function isClosed(e: unknown): boolean {

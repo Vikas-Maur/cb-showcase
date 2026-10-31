@@ -131,16 +131,23 @@ async function finishImport(carton: Carton, doc: Doc): Promise<void> {
  * share, and bringing it in would fold from nothing: every record added on both sides, a field the copies hold at
  * different values a card with no base (e2e-qa S3-4, regressed by the import change). Core's own way to make a version
  * part of the lineage graph is an export of it (R4-01: the export node is persisted, its state kept as a keyframe), so
- * the starting version is exported once, while it is the head, to no one. Done again on a later open only if a stop
- * came between the import and the mark and nothing was written since. (Asked of foundation-core: carry an import
- * change in the lineage like a root; this goes then.)
+ * the starting version is exported once, while it is the head, to no one.
+ *
+ * Checked on every open, with or without `init` (a `cb` opens without it): a stop between the import and the mark is
+ * repaired by the next process to open the project, before it writes. If something was written meanwhile (a writer
+ * that doesn't open through here), the head is marked instead: a copy taken from then on shares that version, the
+ * newest both sides hold. Any export of a version on the import's cut is such a point already (a `.cbproj` sent), so
+ * then nothing is added. A copy taken in between still folds from the empty root: only core can make the import
+ * itself a lineage point (asked of foundation-core, request 8; this goes then). Best effort: an open never fails on
+ * it, and the next open tries again.
  */
 async function markStartingState(carton: Carton, store: Store): Promise<void> {
   const at = await store.get<[string, number]>("ids", [`import.${carton.projectId}`]);
   if (!at || at[1] !== 1) return;
   const [cut] = at;
-  if ((await carton.head(cut)).ref.seq !== 1) return; // written since: too late to mark it this way (and not needed for a new copy)
-  if ((await store.range("meta", { prefix: ["export", `${cut}@1`], limit: 1 })).length) return;
+  // the export rows' keys are ["export", node, at, nonce]: one per `.cbproj` sent, a handful
+  if ((await store.range("meta", { prefix: ["export"] })).some((r) => String(r.key[1]).startsWith(`${cut}@`))) return;
+  if (!(await carton.cuts()).some((c) => c.id === cut && c.sequencer.kind === "local")) return;
   await carton.exportShallow({ cut, to: STARTING_STATE });
 }
 /** The recipient of the starting version's export (no one: it only makes that version a lineage point). */
@@ -170,13 +177,13 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   if (opts.init && (opts.init.asChange ?? true)) {
     try {
       await finishImport(carton, opts.init.doc as Doc);
-      await markStartingState(carton, store);
     } catch (e) {
       await carton.close();
       await store.close();
       throw e;
     }
   }
+  await markStartingState(carton, store).catch(() => {});
   const lease = new Lease(store);
   const dbPath = location.dbPath;
   const factory = opts.helperFactory ?? defaultFactory();
