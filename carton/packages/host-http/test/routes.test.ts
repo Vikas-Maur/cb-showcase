@@ -100,3 +100,23 @@ test("the message routes reach exactly the two envelope key patterns of the sequ
   for (const bad of ["keyframes/main/0", up, `messages/s/481234/${"b".repeat(64)}x`]) assert.notEqual((await call("GET", bad))?.status, 200, `GET ${bad}`);
   assert.equal((await handleHttp(req(`/api/projects/p/messages/${up}`, { method: "PUT", body: "{}" }), d))?.status, 401, "no session");
 });
+
+test("POST /invites {branches}: the invite's sessions are scoped to those cuts; a scoped owner invites only within its own", async () => {
+  const d = deps();
+  const post = (path: string, tok: string | null, b: unknown) =>
+    handleHttp(req(`/api/projects/p${path}`, { method: "POST", body: JSON.stringify(b), headers: tok ? { authorization: `Bearer ${tok}` } : {} }), d);
+  const owner = await d.auth.issue!({ ...ctx, role: "owner", ttlMs: 60_000 });
+  const r = await post("/invites", owner, { role: "viewer", branches: ["pub-1"] });
+  assert.equal(r?.status, 200);
+  const { invite } = (await r!.json()) as { invite: string };
+  const j = await post("/join", null, { invite, account: "watcher", installKey: "k".repeat(20) });
+  const session = (await j!.json()) as { token: string; context: AuthContext };
+  assert.deepEqual(session.context.branches, ["pub-1"], "a watch link's viewer reads the Published cut only");
+  assert.deepEqual((await d.auth.verify(session.token))?.branches, ["pub-1"]);
+  assert.equal((await post("/invites", owner, { role: "viewer", branches: ["bad id/x"] }))?.status, 400);
+  // an owner scoped to one cut can't mint a wider invite
+  const scopedOwner = await d.auth.issue!({ ...ctx, role: "owner", branches: ["pub-1"], ttlMs: 60_000 });
+  assert.equal((await post("/invites", scopedOwner, { role: "editor" }))?.status, 403, "unscoped");
+  assert.equal((await post("/invites", scopedOwner, { role: "viewer", branches: ["main"] }))?.status, 403, "another cut");
+  assert.equal((await post("/invites", scopedOwner, { role: "viewer", branches: ["pub-1"] }))?.status, 200);
+});

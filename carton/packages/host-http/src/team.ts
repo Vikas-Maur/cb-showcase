@@ -13,9 +13,16 @@
 //
 // A team object can't be overwritten by another project once it is sound: a write of `mf/<hash>` must verify against
 // the hash, and a write of `m/<hash>` whose stored object already has the manifest's size is a no-op (media's own
-// upload replaces only a wrong-sized object, and the §11 repair path removes a damaged one). Proxy pointers (`px/`)
-// and everything else stay per project: a pointer isn't self-verifying, so one project could otherwise steer
-// another's proxy reuse.
+// upload replaces only a wrong-sized object, and the §11 repair path removes a damaged one). A write that found no
+// object is create-only (`ifAbsent`), so one that a teammate's upload overtook, in another process too, leaves that
+// copy standing. Two left as known limits, across processes only (Workers; server-node serializes writes of a team
+// object through the media lock, which `mediaLockScope` gives the team's scope): a multipart complete, which BlobStore
+// can't make conditional, and the replacement of a wrong-sized object. Either can leave bytes of the right size but
+// the wrong content; every reader verifies each leaf against the manifest, so they are never used, only reported,
+// removed by the repair path and uploaded again. Bytes come after their
+// manifest, as media's upload already does it: an `m/<hash>` write needs the team's verified manifest, and its size
+// (a PUT's body, a multipart upload's parts) must be the manifest's. Proxy pointers (`px/`) and everything else stay
+// per project: a pointer isn't self-verifying, so one project could otherwise steer another's proxy reuse.
 //
 // Grants live outside the media scope (`grants` is a host-only store), so no client can write one. They are never
 // revoked: a project that drops a media record keeps the right to the bytes it once had.
@@ -47,15 +54,34 @@ export const isTeamMediaStore = (s: BlobStore): s is TeamMediaStore => typeof (s
 
 const TEAM_ID = /^[A-Za-z0-9._~-]{1,128}$/;
 
+// The physical scope a project's media store writes to, for the host's media lock: the team's for a team store, so
+// writes from any of its projects and a repair in another serialize; the project's otherwise. Keyed by the bucket too,
+// so two hosts in one process never share a lock.
+const lockScopes = new WeakMap<BlobStore, string>();
+const rootIds = new WeakMap<BlobStore, number>();
+let roots = 0;
+const rootId = (root: BlobStore): number => {
+  let id = rootIds.get(root);
+  if (id === undefined) rootIds.set(root, (id = ++roots));
+  return id;
+};
+/** The scope the host's media lock uses for `store` (from `projectMediaStore`; any other store: its project). */
+export const mediaLockScope = (store: BlobStore, projectId: string): string => lockScopes.get(store) ?? `project:${projectId}`;
+
 /**
  * The media store a host gives one project's HTTP API, from its bucket: `projects/<p>/media/` alone, or with a team
  * its media bytes and manifests under `teams/<team>/media/` and its grants under `projects/<p>/grants/`.
  */
 export function projectMediaStore(root: BlobStore, projectId: string, team?: string | null): BlobStore {
   const project = scopedBlobStore(root, `projects/${projectId}/media/`);
-  if (!team) return project;
+  if (!team) {
+    lockScopes.set(project, `${rootId(root)}:projects/${projectId}/media/`);
+    return project;
+  }
   if (!TEAM_ID.test(team)) throw new Error(`bad team id for project ${projectId}: ${JSON.stringify(team)}`);
-  return teamMediaStore({ project, team: scopedBlobStore(root, `teams/${team}/media/`), grants: scopedBlobStore(root, `projects/${projectId}/grants/`) });
+  const store = teamMediaStore({ project, team: scopedBlobStore(root, `teams/${team}/media/`), grants: scopedBlobStore(root, `projects/${projectId}/grants/`) });
+  lockScopes.set(store, `${rootId(root)}:teams/${team}/media/`);
+  return store;
 }
 
 export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
@@ -75,14 +101,19 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
       return null;
     }
   };
-  // The stored object when it is sound enough that no other write may replace it: a verifying manifest, or bytes of
-  // the size the manifest gives. (A wrong-sized `m/` object is broken, and media's upload replaces it.)
-  const keeper = async (key: string, hash: string): Promise<BlobInfo | null> => {
+  // The stored object, and whether it is sound enough that no other write may replace it: a verifying manifest, or
+  // bytes of the size the manifest gives. (A wrong-sized `m/` object is broken, and media's upload replaces it.)
+  const inspect = async (key: string, hash: string): Promise<{ info: BlobInfo | null; sound: boolean }> => {
     const info = await team.head(key);
-    if (!info) return null;
+    if (!info) return { info, sound: false };
     const m = await manifestOf(hash);
-    if (key.startsWith("mf/")) return m ? info : null;
-    return m && m.size === info.size ? info : null;
+    return { info, sound: key.startsWith("mf/") ? !!m : !!m && m.size === info.size };
+  };
+  // the team's verified manifest, which a write of `m/<hash>` needs
+  const manifestFor = async (hash: string): Promise<Manifest> => {
+    const m = await manifestOf(hash);
+    if (!m) throw new BlobError("PreconditionFailed", `no verified manifest for ${hash}: write mf/${hash} first`);
+    return m;
   };
   const wrap = (u: MultipartUpload, hash: string): MultipartUpload => ({
     key: u.key,
@@ -90,12 +121,16 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
     uploadPart: (n, d) => u.uploadPart(n, d),
     listParts: () => u.listParts(),
     async complete(parts) {
-      const kept = await keeper(u.key, hash);
-      if (kept) {
+      const seen = await inspect(u.key, hash);
+      if (seen.sound) {
         // someone completed a sound copy meanwhile: keep it, drop this one
         await u.abort().catch(() => {});
-        return kept;
+        return seen.info!;
       }
+      const m = await manifestFor(hash);
+      const sizes = new Map((await u.listParts()).map((p) => [p.partNumber, p.size]));
+      const total = parts.reduce((n, p) => n + (sizes.get(p.partNumber) ?? Number.NaN), 0);
+      if (total !== m.size) throw new BlobError("InvalidPart", `the parts hold ${total} bytes; the manifest says ${m.size}`);
       return u.complete(parts);
     },
     abort: () => u.abort(),
@@ -120,9 +155,14 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
         }
       }
       await grant(hash);
-      const kept = await keeper(key, hash);
-      if (kept) return kept;
-      return team.put(key, data, opts);
+      const seen = await inspect(key, hash);
+      if (seen.sound) return seen.info!;
+      if (key.startsWith("m/")) {
+        const m = await manifestFor(hash);
+        if (data.byteLength !== m.size) throw new BlobError("InvalidPart", `${data.byteLength} bytes; the manifest says ${m.size}`);
+      }
+      // nothing there: create-only, so a copy someone wrote since the head stands
+      return team.put(key, data, seen.info ? opts : { ...opts, ifAbsent: true });
     },
     async get(key: string, range?: ByteRange) {
       const hash = shared(key);
@@ -145,6 +185,9 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
     async createMultipart(key, opts) {
       const hash = shared(key);
       if (!hash) return project.createMultipart(key, opts);
+      // a manifest is small and written whole; bytes need their manifest first (and multipart is only for bytes)
+      if (key.startsWith("mf/")) throw new BlobError("InvalidKey", "a manifest is written whole, with put");
+      await manifestFor(hash);
       await grant(hash);
       return wrap(await team.createMultipart(key, opts), hash);
     },

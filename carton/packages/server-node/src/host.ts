@@ -277,9 +277,16 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     room.idle.unref();
   }
 
+  // A project known to the sweep without a room: an upload that landed while the host was closing.
+  function registerProject(projectId: string): void {
+    const name = roomFileName(projectId);
+    const idFile = join(roomsDir, name + ".id");
+    if (!existsSync(join(roomsDir, name + ".db")) && !existsSync(idFile)) writeFileSync(idFile, projectId);
+  }
+
   // Envelope blobs expire hours after they were made (core's envelopeExpired), longer than a room usually stays
   // open, and an upload may come with no socket at all. So the sweep runs at the host, over every project with a
-  // room file, open or not; room maintenance (archiving) stays with the room.
+  // room file or a `.id` file, open or not; room maintenance (archiving) stays with the room.
   async function sweepEnvelopes(): Promise<number> {
     if (!opts.blobs) return 0;
     const now = Date.now();
@@ -288,16 +295,18 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     try {
       files = readdirSync(roomsDir);
     } catch {}
+    const projects = new Set<string>();
     for (const f of files) {
-      if (!f.endsWith(".db")) continue;
-      let projectId = decodeSegment(f.slice(0, -3));
-      if (projectId === null) {
+      if (f.endsWith(".db")) {
+        const id = decodeSegment(f.slice(0, -3));
+        if (id !== null) projects.add(id); // a hashed name has its .id file beside it
+      } else if (f.endsWith(".id")) {
         try {
-          projectId = readFileSync(join(roomsDir, f.slice(0, -3) + ".id"), "utf8");
-        } catch {
-          continue;
-        }
+          projects.add(readFileSync(join(roomsDir, f), "utf8"));
+        } catch {}
       }
+    }
+    for (const projectId of projects) {
       const store = scoped(projectId, "seq")!;
       let cursor: string | undefined;
       do {
@@ -350,9 +359,11 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     blobsFor,
     sequencerBlobsFor: (projectId) => scoped(projectId, "seq"),
     ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
-    // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes
+    // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes;
+    // while closing no room opens, so the project is registered with a `.id` file for the next start's sweep
     onEnvelope: (projectId) => {
-      if (!closing) idleLater(openRoom(projectId));
+      if (closing) registerProject(projectId);
+      else idleLater(openRoom(projectId));
     },
     // a plain GET on the socket route (no Upgrade header): the upgrade itself goes through server.on("upgrade")
     upgrade: async () => new Response("expected a WebSocket upgrade", { status: 426 }),
@@ -386,18 +397,31 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     const headers = { get: (n: string) => (req.headers[n.toLowerCase()] as string | undefined) ?? null };
     const token = tokenFromRequest(headers);
     if (!token) return rejectUpgrade(socket, 401, "session token required");
-    void checkSession(opts.auth, token, projectId).then(
-      (auth) => {
-        if (socket.destroyed) return;
-        const ws = acceptWebSocket(req, socket, head, {
-          protocols: (offered) => (offered.includes(WS_PROTOCOL) ? WS_PROTOCOL : null),
-          maxPayload: opts.maxMessageBytes ?? MAX_MESSAGE,
-          maxBufferedBytes: 16 << 20,
-        });
-        if (ws) connect(ws, auth, projectId);
-      },
-      (e: { status?: number; message?: string }) => rejectUpgrade(socket, e?.status === 403 ? 403 : 401, e?.message ?? "unauthorized"),
-    );
+    void checkSession(opts.auth, token, projectId)
+      .then(
+        (auth) => {
+          if (socket.destroyed) return;
+          // the host began closing while this upgrade was being checked: refuse it before accepting it
+          if (closing) return rejectUpgrade(socket, 503, "host shutting down");
+          const ws = acceptWebSocket(req, socket, head, {
+            protocols: (offered) => (offered.includes(WS_PROTOCOL) ? WS_PROTOCOL : null),
+            maxPayload: opts.maxMessageBytes ?? MAX_MESSAGE,
+            maxBufferedBytes: 16 << 20,
+          });
+          if (!ws) return;
+          try {
+            connect(ws, auth, projectId);
+          } catch (e) {
+            onError(e);
+            ws.close(1011, "internal error");
+          }
+        },
+        (e: { status?: number; message?: string }) => rejectUpgrade(socket, e?.status === 403 ? 403 : 401, e?.message ?? "unauthorized"),
+      )
+      .catch((e) => {
+        onError(e);
+        socket.destroy();
+      });
   });
 
   return {
