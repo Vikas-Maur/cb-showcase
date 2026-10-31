@@ -30,6 +30,8 @@ export interface SequencerView {
   tail(after: number): Iterable<TailRow>;
   /** A record's newest state at head on this branch, following the fork chain (§6.3). */
   record(coll: string, id: string): RecordState | undefined;
+  /** Optional batch form of `record` (one query for a 200-item remap instead of 200). */
+  records?(coll: string, ids: readonly string[]): Map<string, RecordState | undefined>;
 }
 
 export interface RulesConfig {
@@ -125,8 +127,7 @@ function shapeError(ch: Pushed): string | null {
 }
 
 /** Every op is covered by a declared path, a grouped field declares its group path, a reorder its track. */
-function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, field: string) => string | undefined): string | null {
-  const declared = new Set(ch.paths);
+function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, field: string) => string | undefined, declared: ReadonlySet<string>): string | null {
   const order = new Set(ch.trackOrder);
   for (const op of ch.ops) {
     if (op.op === "remap") continue; // a remap's surface is its span, checked below
@@ -135,10 +136,14 @@ function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, fiel
     for (let i = p.lastIndexOf("/"); !covered && i > 0; i = p.lastIndexOf("/", i - 1)) covered = declared.has(p.slice(0, i));
     if (!covered) return p;
     if (op.path.length >= 3) {
-      const coll = String(op.path[0]), id = String(op.path[1]), field = String(op.path[2]);
+      const coll = String(op.path[0]), field = String(op.path[2]);
       const g = groupOf(coll, field);
-      if (g !== undefined && !declared.has(`${escapeSegment(coll)}/${escapeSegment(id)}/#${g}`)) return `${p} (group #${g})`;
-      if (coll === tl.lanes && field === "#pos" && !order.has(id)) return `${p} (track order)`;
+      if (g !== undefined) {
+        // the record's own key is the op's key up to its second separator: no re-escaping per op
+        const rec = p.slice(0, p.indexOf("/", p.indexOf("/") + 1));
+        if (!declared.has(`${rec}/#${g}`)) return `${p} (group #${g})`;
+      }
+      if (coll === tl.lanes && field === "#pos" && !order.has(String(op.path[1]))) return `${p} (track order)`;
     }
   }
   return null;
@@ -162,8 +167,20 @@ export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig):
     if (op.path.length === 3 && op.path[2] === tl.lane && op.op === "set") moved.set(String(op.path[1]), String(op.value));
     if (op.path.length === 2 && op.op === "insert") inserted.set(String(op.path[1]), String((op.value as Record<string, unknown>)?.[tl.lane]));
   }
+  // one records lookup per item, however many of its fields the change sets (a 200-item remap sets 400), and one
+  // query for all of them when the view can batch
+  let seen = new Map<string, ReturnType<SequencerView["record"]>>();
+  if (view.records) {
+    const ids = new Set<string>();
+    for (const op of ch.ops) if (op.path[0] === tl.collection && op.path.length >= 2 && !inserted.has(String(op.path[1]))) ids.add(String(op.path[1]));
+    if (ids.size > 1) seen = view.records(tl.collection, [...ids]);
+  }
+  const recordOf = (id: string) => {
+    if (!seen.has(id)) seen.set(id, view.record(tl.collection, id));
+    return seen.get(id);
+  };
   const trackOf = (id: string): string | undefined => {
-    const r = view.record(tl.collection, id);
+    const r = recordOf(id);
     return r?.alive ? r.lane : inserted.get(id);
   };
   for (const op of ch.ops) {
@@ -180,7 +197,7 @@ export function spansCover(view: SequencerView, ch: Pushed, tl: TimelineConfig):
         const lane = String(v[tl.lane]), s0 = Number(v[tl.start]), e0 = Number(v[tl.end]);
         if (!spans.some((s) => s.track === lane && s.lo <= s0 + EPS && e0 <= hiOf(s) + EPS)) return false;
       } else if (op.op === "remove") {
-        const r = view.record(tl.collection, id);
+        const r = recordOf(id);
         if (r?.alive && !on(r.lane)) return false; // removing an absent record is a no-op (§4.4)
       }
       continue;
@@ -221,17 +238,21 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
     for (const row of tail) if (past.has(row.id)) found++;
     if (found !== past.size) return { kind: "reject", reason: "base unknown", detail: "a pending id it builds on isn't confirmed" };
   }
-  if (!ch.ops.length) return { kind: "reject", reason: "no ops" };
+  // a fold whose result equals its first parent has no ops but is still a DAG node (its merge edge must be recorded,
+  // or a later fold of the same cut finds an older base); an undo whose effect is already at the head still marks its
+  // change undone. Any other empty change is refused.
+  if (!ch.ops.length && !ch.mergeOf && !ch.reverts) return { kind: "reject", reason: "no ops" };
   if (ch.policy === "lww" && controls.lwwCheck !== false && (ch.spans.length > 0 || ch.trackOrder.length > 0 || ch.paths.some(hasGroupSegment)))
     return { kind: "reject", reason: "lww on structure" };
-  const missing = undeclared(ch, tl, cfg.groupOf ?? timeGroupOf(tl));
+  const declared = new Set(ch.paths); // built once: the declaration check and the overlap index share it
+  const missing = undeclared(ch, tl, cfg.groupOf ?? timeGroupOf(tl), declared);
   if (missing) return { kind: "reject", reason: "undeclared path", detail: missing };
 
   const structural = isStructural(ch.ops, ch.intent, tl);
   const overwrote: TailRow[] = [];
   let any = false, blocking = false;
   if (tail.length) {
-    const me = indexChange(ch, structural, keying);
+    const me = indexChange(ch, structural, keying, declared);
     for (const row of tail) {
       if (row.withdrawn || past.has(row.id)) continue;
       let k = overlapKind(me, row);

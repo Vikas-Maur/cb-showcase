@@ -26,7 +26,7 @@ test("closing a gap (every later clip on the track shifted by the same amount) i
 test("the inferred remap maps the other side's concurrent insert once (R4-02 case 2)", () => {
   const saved = edit(base, { c: { startTime: 10, endTime: 20 }, d: { startTime: 20, endTime: 30 } });
   const withH = fromHost({ ...toHost(base), timelineItems: [...toHost(base).timelineItems!, clip("h", 40, 45)] }, base);
-  const m = merge3(base, withH, saved, S, { remaps: { theirs: inferRipple(base, saved)! } });
+  const m = merge3(base, withH, saved, S, { remaps: { theirs: { maps: inferRipple(base, saved)!.maps! } } });
   assert.equal(m.conflicts.length, 0);
   assert.deepEqual([itemOf(m.doc, "h")!.startTime, itemOf(m.doc, "h")!.endTime], [35, 40]);
 });

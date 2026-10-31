@@ -212,6 +212,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     head: () => tables.head(branchId),
     tail: (after) => tables.tail(branchId, after),
     record: (coll, id) => tables.record(branchId, coll, id),
+    records: (coll, ids) => tables.records(branchId, coll, ids),
   });
 
   // ---------------------------------------------------------------- the confirmed-id list (R10-01, bounded: R12-01)
@@ -287,13 +288,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     }
     return { seq: k.seq, stateHash: k.hash, doc: JSON.parse(docText ?? "null") as Doc };
   }
-  async function storeKeyframe(branchId: string, seq: number, stateHash: string, doc: Doc | null): Promise<void> {
+  // synchronous without a blob store (the DO-blob fallback keeps keyframes in SQL), so setup paths stay synchronous
+  function storeKeyframe(branchId: string, seq: number, stateHash: string, doc: Doc | null): void | Promise<void> {
     const body = JSON.stringify(doc);
-    if (opts.blobs) {
-      const key = `keyframes/${branchId}/${seq}`;
-      await opts.blobs.put(key, enc.encode(body), { contentType: "application/json" });
-      tables.putKeyframe(branchId, seq, stateHash, { blob: key });
-    } else tables.putKeyframe(branchId, seq, stateHash, { inline: body });
+    if (!opts.blobs) return tables.putKeyframe(branchId, seq, stateHash, { inline: body });
+    const key = `keyframes/${branchId}/${seq}`;
+    return opts.blobs.put(key, enc.encode(body), { contentType: "application/json" }).then(() => tables.putKeyframe(branchId, seq, stateHash, { blob: key }));
   }
 
   // ---------------------------------------------------------------- record writes for rows the server didn't judge
@@ -312,9 +312,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return [...out.values()];
   }
 
-  async function createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[] = [], adoptKey: string | null = null) {
+  function createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[] = [], adoptKey: string | null = null): void | Promise<void> {
     const root = init.rootSeq ?? 0;
-    if (init.doc0 !== null) await storeKeyframe(rec.id, root, init.stateHash ?? "", init.doc0);
+    const stored = init.doc0 !== null ? storeKeyframe(rec.id, root, init.stateHash ?? "", init.doc0) : undefined;
+    return stored ? stored.then(() => writeBranch(rec, init, rows, adoptKey)) : writeBranch(rec, init, rows, adoptKey);
+  }
+  function writeBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[], adoptKey: string | null): void {
+    const root = init.rootSeq ?? 0;
     tables.transaction(() => {
       tables.putBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey });
       const doc = init.doc0 as Record<string, unknown> | null;
@@ -545,7 +549,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const parent = tables.branch(m.from);
     if (!parent) return c.send({ type: "unknownBranch", branchId: m.from });
     if (!(Number.isInteger(m.seq) && m.seq >= parent.root && m.seq <= tables.head(m.from))) return c.send({ type: "error", reason: `fork point ${m.seq} is outside ${m.from}` });
-    if (!tables.branch(m.branchId)) await createBranch(m.rec, { doc0: null, forkOf: { branchId: m.from, seq: m.seq } });
+    if (!tables.branch(m.branchId)) createBranch(m.rec, { doc0: null, forkOf: { branchId: m.from, seq: m.seq } });
     c.send({ type: "forked", branchId: m.branchId, from: m.from, seq: m.seq });
   }
 
@@ -599,12 +603,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 
   // one message at a time per project, even across awaits on the blob store
   let queue: Promise<void> = Promise.resolve();
+  let busy = 0;
   return {
     handle(conn, msg) {
       const c = conn as HostConnection;
       if (!conns.has(c.id)) attach(c);
+      busy++;
       const run = queue.then(() => process(c, msg));
-      queue = run.catch(() => {});
+      queue = run.catch(() => {}).then(() => void busy--);
       return run.catch((e: unknown) => {
         c.send({ type: "error", reason: `internal: ${e instanceof Error ? e.message : String(e)}` });
       });
@@ -617,6 +623,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       tables.dropBranch(branchId);
     },
     createBranch: (rec, init) => {
+      // without a blob store this is synchronous, so a host (or a simulation) can set a branch up before any message
+      if (!opts.blobs && !busy) {
+        createBranch(rec, init);
+        return Promise.resolve();
+      }
       const run = queue.then(() => createBranch(rec, init));
       queue = run.catch(() => {});
       return run;

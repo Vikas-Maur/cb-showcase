@@ -4,7 +4,7 @@
 import type { Change, Span } from "../types.ts";
 
 /** The parts of a change the rule reads. A full `Change` fits; tests can pass less. */
-export type Pushed = Pick<Change, "id" | "base" | "ops" | "intent" | "policy" | "paths" | "reads" | "spans" | "trackOrder">;
+export type Pushed = Pick<Change, "id" | "base" | "ops" | "intent" | "policy" | "paths" | "reads" | "spans" | "trackOrder"> & Partial<Pick<Change, "mergeOf" | "reverts">>;
 
 /** What the overlap test reads of each confirmed row in the tail since a base. */
 export interface TailRow {

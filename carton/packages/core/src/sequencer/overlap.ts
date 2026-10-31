@@ -88,12 +88,17 @@ function counts(p: string, keying: Keying): boolean {
   return !isFieldGroupPath(p);
 }
 
-export function indexChange(d: Pick<Declaration, "paths" | "reads" | "spans" | "trackOrder">, structural: boolean, keying: Keying = "v3-spans"): ChangeIndex {
-  const exact = new Set<string>(), prefixes = new Set<string>(), readsAtOrAbove = new Set<string>();
-  for (const p of storedPaths(d)) {
-    if (!counts(p, keying)) continue;
-    exact.add(p);
-    forEachStrictPrefix(p, (q) => prefixes.add(q));
+export function indexChange(d: Pick<Declaration, "paths" | "reads" | "spans" | "trackOrder">, structural: boolean, keying: Keying = "v3-spans", pathSet?: ReadonlySet<string>): ChangeIndex {
+  const prefixes = new Set<string>(), readsAtOrAbove = new Set<string>();
+  // the plan's keying counts every path: reuse the caller's set of the change's paths when it has one
+  const reuse = keying === "v3-spans" && pathSet !== undefined && !d.trackOrder.length;
+  const exact = reuse ? new Set<string>(pathSet) : new Set<string>();
+  for (const p of reuse ? d.paths : storedPaths(d)) {
+    if (!reuse) {
+      if (!counts(p, keying)) continue;
+      exact.add(p);
+    }
+    for (let i = p.indexOf("/"); i > 0; i = p.indexOf("/", i + 1)) prefixes.add(p.slice(0, i));
   }
   for (const r of d.reads) {
     readsAtOrAbove.add(r);

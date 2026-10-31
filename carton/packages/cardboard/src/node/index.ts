@@ -3,3 +3,9 @@
 export * from "./displace.ts";
 export * from "./displaced.ts";
 export * from "./materializer.ts";
+export * from "./migrate.ts";
+export * from "./carton-engine.ts";
+export { exportCbproj, readCbproj, extractFullHistory, bringInTheirChanges } from "./cbproj/cbproj.ts";
+export type { CbprojExportOptions, CbprojExportResult, CbprojContents, CbprojTarget, BringInResult } from "./cbproj/cbproj.ts";
+export { ZipWriter, ZipReader, sanitizeEntryName, safeEntryPath } from "./cbproj/zip.ts";
+export { walkBundle, excludedFromExport, SHALLOW_ENTRY, FULL_ENTRY, EXPORT_DIR } from "./cbproj/walk.ts";

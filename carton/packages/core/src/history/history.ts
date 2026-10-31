@@ -439,6 +439,9 @@ export class History {
       ...(o.name ? { name: o.name } : {}),
       ...extra,
     };
+    // nothing to record: a commit that changes nothing is confirmed empty at the head (system-v11 `store.commit`);
+    // a fold or an undo with no ops is still pushed: its merge edge, or the change it undoes, is history
+    if (!ops.length && !extra.mergeOf && !extra.reverts) return { status: "confirmed", seq: br.log.length, ref: this.#refAt(cutId, br.log.length), change: null, empty: true, rebased: 0, notices: [] };
     for (let rebase = 0; ; rebase++) {
       if (rebase > 8) throw new Error("rebase loop");
       const stored = remapAsOneOp(this.schema, baseDoc, ops, change.intent);
@@ -483,7 +486,7 @@ export class History {
       baseSeq = br.log.length;
       causal = [];
       mine = merged;
-      if (!ops.length && !o.allowEmpty) return { status: "confirmed", seq: baseSeq, ref: this.#refAt(cutId, baseSeq), change: null, empty: true, rebased: rebase + 1, notices: [] };
+      if (!ops.length && !extra.mergeOf && !extra.reverts) return { status: "confirmed", seq: baseSeq, ref: this.#refAt(cutId, baseSeq), change: null, empty: true, rebased: rebase + 1, notices: [] };
     }
   }
   #refAt(cutId: string, seq: number): StateRef {
@@ -646,7 +649,7 @@ export class History {
 
   // ------------------------------------------------------------ fold in, partial accept, revert, restore
   /** "Fold into …": a DAG merge of node `from` into cut `into`. */
-  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: unknown; retry?: (choices: Choices) => FoldResult } {
+  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult } {
     const { author = { kind: "human", id: this.name } as Actor, choices, prefer = "ours", missingBase = "dialog", remapPath = "first" } = opts;
     const x = this.head(into),
       y = this.canon(from);

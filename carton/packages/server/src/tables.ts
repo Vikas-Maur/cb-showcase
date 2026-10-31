@@ -119,6 +119,16 @@ export class Tables {
     this.write("INSERT OR REPLACE INTO branches (branch, rec) VALUES (?, ?)", b.id, JSON.stringify(b));
     this.branches.set(b.id, b);
   }
+  /**
+   * Benchmark harness only (the P5-style CPU bench): undo a confirmed row so the next measured push sees the same
+   * tail, as the P5 proof's `benchRevert` did. Never called by the sequencer.
+   */
+  benchRevert(branch: string, seq: number): void {
+    this.sql.exec("DELETE FROM changes WHERE branch = ? AND seq = ?", branch, seq);
+    this.sql.exec("DELETE FROM records WHERE branch = ? AND seq = ?", branch, seq);
+    this.heads.set(branch, seq - 1);
+    this.decl.get(branch)?.delete(seq);
+  }
   /** Every branch this storage holds (for periodic maintenance). */
   branchIds(): string[] {
     return this.all<{ branch: string }>("SELECT branch FROM branches").map((r) => text(r.branch));
@@ -333,13 +343,51 @@ export class Tables {
     return undefined;
   }
 
+  /**
+   * `record` for many ids of one collection at the head of `branch`: one primary-key query per 64 ids (padded, so the
+   * statement shape and its cached plan stay the same). Ids with no row on the branch itself go up the fork chain one
+   * by one, as `record` does.
+   */
+  records(branch: string, coll: string, ids: readonly string[]): Map<string, RecordState | undefined> {
+    const out = new Map<string, RecordState | undefined>();
+    if (this.latestOnly) {
+      for (const id of ids) out.set(id, this.record(branch, coll, id));
+      return out;
+    }
+    const CHUNK = 64;
+    const q = `SELECT id, alive, seq, lane FROM records WHERE branch = ? AND coll = ? AND id IN (${Array(CHUNK).fill("?").join(",")})`;
+    for (let i = 0; i < ids.length; i += CHUNK) {
+      const part = ids.slice(i, i + CHUNK);
+      const params: SqlValue[] = [branch, coll, ...part];
+      while (params.length < CHUNK + 2) params.push(part[part.length - 1]!);
+      for (const r of this.all<{ id: SqlValue; alive: number; seq: number; lane: SqlValue }>(q, ...params)) {
+        const id = text(r.id), seq = num(r.seq);
+        const prev = out.get(id);
+        if (prev && prev.seq >= seq) continue;
+        const state: RecordState = { alive: num(r.alive) === 1, seq };
+        if (r.lane !== null && r.lane !== undefined) state.lane = text(r.lane);
+        out.set(id, state);
+      }
+    }
+    for (const id of ids) if (!out.has(id)) out.set(id, this.record(branch, coll, id));
+    return out;
+  }
+
   // ---------------------------------------------------------------- replica ids (§6.3: bound to the device credential)
+  // bindings never change once written, and only this sequencer writes them: cache what was read
+  private ridCache = new Map<string, string>();
   ridOwner(rid: string): string | undefined {
+    const hit = this.ridCache.get(rid);
+    if (hit !== undefined) return hit;
     const r = this.all<{ credential: string }>("SELECT credential FROM rids WHERE rid = ?", rid);
-    return r.length ? text(r[0]!.credential) : undefined;
+    if (!r.length) return undefined;
+    const c = text(r[0]!.credential);
+    this.ridCache.set(rid, c);
+    return c;
   }
   bindRid(rid: string, credential: string): void {
     this.write("INSERT OR IGNORE INTO rids (rid, credential) VALUES (?, ?)", rid, credential);
+    this.ridCache.delete(rid); // re-read: OR IGNORE keeps an existing binding
   }
 
   // ---------------------------------------------------------------- keyframes

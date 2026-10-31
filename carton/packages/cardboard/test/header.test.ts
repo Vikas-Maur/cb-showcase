@@ -1,7 +1,7 @@
 // The timeline.tsx header contract (§5.2): Carton refs, the print nonce, legacy 1.4.0 timestamps.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderRev, findRev, setRev, parseRevBody, printNonce } from "../src/header.ts";
+import { renderRev, findRev, setRev, parseRevBody, printNonce, revBody } from "../src/header.ts";
 
 // The shape of Cardboard's printed header block (our own sample text, not Cardboard's printer).
 const printed = (rev: string) =>
@@ -14,10 +14,12 @@ test("renders and parses the full Carton header", () => {
   assert.deepEqual(f?.rev, { kind: "carton", ref: "main@57~3f9a1c0e", branch8: "1a2b3c4d", nonce: "9f8e7d6c", by: "director/c/t1" });
 });
 
-test("a cut name with spaces survives as one token; an actor name keeps its spaces", () => {
-  const line = renderRev({ ref: "30s Instagram cut@4", nonce: "00ff00ff", by: "Claude Code (terminal)" });
-  assert.equal(line, "// cardboard:rev 30s%20Instagram%20cut@4 p:00ff00ff by Claude Code (terminal)");
-  assert.deepEqual(findRev(line)?.rev, { kind: "carton", ref: "30s Instagram cut@4", branch8: null, nonce: "00ff00ff", by: "Claude Code (terminal)" });
+test("core's format: a cut name with spaces runs up to b:, an actor name keeps its spaces", () => {
+  const line = renderRev({ ref: "30s Instagram cut@4~0badf00d", branchId: "1a2b3c4d-0000", nonce: "00ff00ff", by: "Claude Code (terminal)" });
+  assert.equal(line, "// cardboard:rev 30s Instagram cut@4~0badf00d b:1a2b3c4d p:00ff00ff by Claude Code (terminal)");
+  const rev = findRev(line)?.rev;
+  assert.deepEqual(rev, { kind: "carton", ref: "30s Instagram cut@4~0badf00d", branch8: "1a2b3c4d", nonce: "00ff00ff", by: "Claude Code (terminal)" });
+  assert.equal(revBody(rev as never), line.slice("// cardboard:rev ".length), "round trip to the string core's parseRef reads");
 });
 
 test("a bare 13-digit number still parses, as 1.4.0's timestamp rev", () => {

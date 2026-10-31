@@ -34,7 +34,8 @@
     "@carton/store-memory": "0.1.0",
     "@carton/blob-memory": "0.1.0",
     "@carton/cardboard": "0.1.0",
-    "@carton/local": "0.1.0"
+    "@carton/local": "0.1.0",
+    "@carton/server": "0.1.0"
   },
   "devDependencies": {
     "@carton/store-sqlite": "0.1.0"
