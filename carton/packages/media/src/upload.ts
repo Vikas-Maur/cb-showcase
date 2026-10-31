@@ -196,20 +196,42 @@ const inFlight = new WeakMap<BlobStore, Map<string, Promise<unknown>>>();
  * someone else completes it, which the run after finds.
  */
 async function uploadSettled(o: UploadOptions): Promise<UploadResult> {
-  const key = mediaKey(o.manifest.hash);
+  const { store, manifest: m } = o;
+  const key = mediaKey(m.hash);
   const base = o.retryDelayMs ?? 250;
+  // One session's totals across the runs: bytesSent and progress `sent` count what every run sent (they never go back).
+  const acc: Session = { partsSent: 0, bytesSent: 0 };
   for (let attempt = 0; ; attempt++) {
     try {
-      return await uploadOnce(o);
+      return await uploadOnce(o, acc);
     } catch (e) {
       if (!uploadGone(e) || attempt >= 2) throw e;
+      let there = false;
       for (const wait of [base, 2 * base, 4 * base]) {
         await sleep(wait, o.signal);
-        const h = await o.store.head(key).catch(() => null);
-        if (h && h.size === o.manifest.size) break;
+        const h = await untilAborted(store.head(key), o.signal).catch((err) => (isAbort(err) || o.signal?.aborted ? Promise.reject(err) : null));
+        if (h && h.size === m.size) {
+          there = true;
+          break;
+        }
+      }
+      // It showed up while a report is open (a repair whose completion answer came back as NoSuchUpload): the next run
+      // would replace it again, and again. Verify it instead, and answer the report if it holds the manifest's bytes.
+      const report = there ? await openReport(store, m.hash).catch(() => null) : null;
+      if (report && (await storedMatches(store, key, m, o.hasher, o.signal))) {
+        await markRepaired(store, m.hash, report).catch(() => {});
+        await (o.state ?? new MemoryUploadStateStore()).delete(key);
+        return { hash: m.hash, size: m.size, deduped: true, partSize: acc.partSize ?? 0, resumedParts: 0, partsSent: acc.partsSent, bytesSent: acc.bytesSent };
       }
     }
   }
+}
+
+/** What one uploadMedia call has sent so far, over every run of uploadOnce. */
+interface Session {
+  partsSent: number;
+  bytesSent: number;
+  partSize?: number;
 }
 
 /** Makes sure m/<hash> and mf/<hash> are in the store, sending only what is missing. */
@@ -249,7 +271,7 @@ function untilAborted<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   });
 }
 
-async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
+async function uploadOnce(o: UploadOptions, session: Session = { partsSent: 0, bytesSent: 0 }): Promise<UploadResult> {
   const { store, manifest: m } = o;
   if (o.source.size !== m.size) throw new SourceChangedError(`file is ${o.source.size} bytes, manifest says ${m.size}`);
   const key = mediaKey(m.hash);
@@ -260,7 +282,9 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   // size would throw away every part already sent.
   const resumable = state && state.hash === m.hash && state.size === m.size && (forced === undefined || forced === state.partSize);
   const partSize = forced ?? (resumable ? state!.partSize : choosePartSize(m.size, o.bytesPerSecond));
-  const result: UploadResult = { hash: m.hash, size: m.size, deduped: false, partSize, resumedParts: 0, partsSent: 0, bytesSent: 0 };
+  // Shared with the session (uploadSettled), so a run that fails still counts what it sent.
+  const result = session as UploadResult;
+  Object.assign(result, { hash: m.hash, size: m.size, deduped: false, partSize, resumedParts: 0 });
 
   const head = await withRetries(o, () => store.head(key));
   // A reader found leaves of the stored object that never verify (e2e S5-5): replace it rather than dedup on it.
@@ -277,7 +301,7 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
       await states.delete(key);
     }
     result.deduped = true;
-    o.onProgress?.({ done: m.size, total: m.size, sent: 0 });
+    o.onProgress?.({ done: m.size, total: m.size, sent: result.bytesSent });
     return result;
   }
   // A different size at a content-addressed key, or a reported damage, means a broken object: the upload below
@@ -291,9 +315,9 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   if (m.size <= partSize && !resumable) {
     const bytes = await readVerified(o, 0, m.size);
     await withRetries(o, () => store.put(key, bytes, { contentType: o.contentType }));
-    result.partsSent = 1;
-    result.bytesSent = m.size;
-    o.onProgress?.({ done: m.size, total: m.size, sent: m.size });
+    result.partsSent += 1;
+    result.bytesSent += m.size;
+    o.onProgress?.({ done: m.size, total: m.size, sent: result.bytesSent });
     return repaired(result);
   }
 
@@ -343,7 +367,7 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   result.resumedParts = done.size;
   let doneBytes = 0;
   for (const n of done.keys()) doneBytes += partLength(n);
-  o.onProgress?.({ done: doneBytes, total: m.size, sent: 0 });
+  o.onProgress?.({ done: doneBytes, total: m.size, sent: result.bytesSent });
 
   // Saves are chained so a slow save can't overwrite a newer one.
   let saving: Promise<void> = Promise.resolve();
