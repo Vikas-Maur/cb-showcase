@@ -189,7 +189,12 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await waitCaption(alice, "cap-4", "Same time next weekend?");
       await waitCaption(bob, "cap-1", "Saturday. 7 am. Let's go.");
       await waitClip(alice, "clip-3", "data-end", trimmed.end);
+      // Credits: who last changed a clip, down to the subagent
+      await clipEl(alice, "cap-3").click();
+      await alice.getByTestId("credits").click();
+      await alice.locator(".cb-credits", { hasText: "Director › captions" }).waitFor({ timeout: 5000 });
       await shot(alice, `${kind}-3-director-alice`);
+      await alice.getByTestId("credits").click();
 
       // 4. Alice undoes the agent's turn
       const undo = alice.locator(".carton-undo", { hasText: "Undo Director: punch up the captions" });
