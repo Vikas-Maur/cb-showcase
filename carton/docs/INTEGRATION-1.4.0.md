@@ -156,7 +156,10 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    that isn't Carton's last view is imported as an `external:project.json` change. On Windows a step that finds the
    file busy (another process has it open) is tried again on a timer for up to 5 s, never by blocking the worker's
    thread; every step is awaited, so one that still fails fails the save, as a failed rename did in 1.4.0.
-3. **`read(id)`**: a document Carton never materialized is imported at once. The worker's watcher reads every outside
+3. **`read(id)`**: a document Carton never materialized is imported at once. A read that finds `project.json` (or
+   `timeline.tsx`) missing in a bundle Carton tracks waits for it while an install holds the lock (else 50 ms):
+   1.4.0's loader, its rescan and its watcher take a missing `project.json` for a removed project, and Carton's
+   install leaves the name missing for a moment. The worker's watcher reads every outside
    save, so a foreign write is attributed when it lands, not when the next edit commits on top of it.
 4. **Files follow commit order.** Two processes install `project.json` and `timeline.tsx` one at a time per bundle (a
    lock folder in `.carton/`, with its holder's pid and a heartbeat; a holder that is gone, or silent for a minute, is
@@ -304,7 +307,7 @@ onto the packages' APIs, so a package API change touches only the facade.
 
 ## 6. State on 2026-10-31
 
-- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 23 tests):
+- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 27 tests):
   - Carton off: `cb`'s output and files equal our Windows build's; the real library worker runs patched.
   - Carton on, for real (`@carton/local` and `carton.db`): history with authors down to the subagent, credits, a cut
     with `project.json` following the switch, fold, `undo --turn` raising a card, and 4 concurrent `cb` writers losing
@@ -326,12 +329,15 @@ Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and a
 patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
 file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
 
-### A.1 The anchors patch-carton.js replaces (73)
+### A.1 The anchors patch-carton.js replaces (77)
 
 ```
 ok  Worker 1 @1263890   27B  "async applyMutation(t,r,n){"
 ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
 ok  Worker 1 @1266073   38B  "l=await G1(c),await(0,Bt.rename)(c,s)}"
+ok  Worker 1 @1255225   71B  "try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),\"utf8\")}catch{return null}"
+ok  Worker 1 @1468657   62B  "k=await(0,_d.readFile)((0,Vn.join)(g,Mt),\"utf8\")}catch{k=null}"
+ok  Worker 1 @1477718   90B  "let $=await(0,Ar.readFile)(m.mirrorPath(N),\"utf8\");return m.apply(y,$,{..._,writeBack:!0})"
 ok  Worker 1 @1262348   59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
 ok  Worker 1 @1471612   38B  "n.onWritten((y,x)=>m.afterWrite(y,x));"
 ok  Worker 1 @1424720   82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
@@ -381,6 +387,7 @@ ok  CLI    1 @84        50B  "const require = __createRequire(import.meta.url);\
 ok  CLI    1 @158790    27B  "async applyMutation(t,r,n){"
 ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
 ok  CLI    1 @160835    28B  "d=await Qo(l),await Bx(l,c)}"
+ok  CLI    1 @150270    50B  "try{t=await jm(Pe(e,re),\"utf8\")}catch{return null}"
 ok  CLI    1 @157257    59B  "return this.seenOnDisk.set(t,{stamp:a,document:c.project}),"
 ok  CLI    1 @344422    38B  "n.onWritten((h,y)=>f.afterWrite(h,y));"
 ok  CLI    1 @305827    82B  "let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);"
