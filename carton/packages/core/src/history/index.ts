@@ -27,6 +27,10 @@ import type {
   UndoEntry,
   Version,
   ConflictCard,
+  Change,
+  Notice,
+  PinRow,
+  RemapMaps,
 } from "../types.ts";
 import { notImplemented } from "../todo.ts";
 
@@ -145,8 +149,40 @@ export class History {
   get current(): string {
     return notImplemented("History.current");
   }
+  set current(cutId: string) {
+    notImplemented("History.current");
+  }
+  get projectId(): string | null {
+    return notImplemented("History.projectId");
+  }
+  /** This replica's id (change ids are `${rid}.${n}`). */
+  get rid(): string {
+    return notImplemented("History.rid");
+  }
+  /** Local tables, never exported (R3-07): path map, notices, ephemeral data, sync lease. */
+  get local(): { pathMap: Record<string, string>; notices: Notice[]; ephemeral: Record<string, unknown>; lease: unknown } {
+    return notImplemented("History.local");
+  }
   cuts(): CutRecord[] {
     return notImplemented("History.cuts");
+  }
+  cut(cutId: string): CutRecord | undefined {
+    return notImplemented("History.cut");
+  }
+  /** A cut's confirmed log (seq n is at index n - 1). Empty for tracking/shallow cuts. */
+  changes(cutId: string): readonly ConfirmedChange[] {
+    return notImplemented("History.changes");
+  }
+  /** The change that made node `b@s` (null for s = 0 or a shallow node). */
+  changeAt(node: NodeId): ConfirmedChange | null {
+    return notImplemented("History.changeAt");
+  }
+  /** `(b, 0)` of a forked cut canonicalizes to its fork node. */
+  canon(node: NodeId): NodeId {
+    return notImplemented("History.canon");
+  }
+  pinRow(cutId: string, seq: number, hash8: string): PinRow | undefined {
+    return notImplemented("History.pinRow");
   }
   fork(from: NodeId | StateRef, name: string): string {
     return notImplemented("History.fork");
@@ -178,7 +214,7 @@ export class History {
     return notImplemented("History.resolve");
   }
   /** A pin row for an out-of-process reader of a local optimistic state; `owner` joins its owner set. */
-  pin(o: { cutId: string; seq?: number; pending?: ConfirmedChange[]; owner: string; expires?: number }): StateRef {
+  pin(o: { cutId: string; seq?: number; pending?: readonly Pick<Change, "id" | "ops">[]; owner: string; expires?: number }): StateRef {
     return notImplemented("History.pin");
   }
   release(ref: StateRef, owner: string): void {
@@ -234,7 +270,22 @@ export class History {
   credits(cutId: string, record: PathKey | readonly string[], at?: number): Actor | null {
     return notImplemented("History.credits");
   }
-  exportShallow(cutId: string, opts?: { to?: string }): ShallowExport {
+  /** Recorded remaps along one DAG path from ancestor `from` to `to`, composed (first parent preferred). */
+  pathRemap(from: NodeId, to: NodeId, opts?: { prefer?: "first" | "second" }): RemapMaps {
+    return notImplemented("History.pathRemap");
+  }
+  /** Print a per-agent view (§6.4): its header ref (with a new print nonce) and state. */
+  printView(cutId: string, name: string, opts?: { owner?: string; expires?: number }): { header: string; doc: Doc } {
+    return notImplemented("History.printView");
+  }
+  /**
+   * A save of a view file (R4-02): while its header is the one Carton last wrote, the base is the pinned parsed state of
+   * the last applied save of this file, so earlier edits are never re-merged; after a re-print the header ref is the base.
+   */
+  saveView(name: string, header: string, doc: Doc, opts: { author: Actor; intent?: Intent | null; kinds?: EditKinds | null; choices?: Choices }): CommitResult {
+    return notImplemented("History.saveView");
+  }
+  exportShallow(cutId: string, opts?: { to?: string; carry?: "fork-merge-export" | "export-only" | "head-only"; encoding?: "delta" | "full" }): ShallowExport {
     return notImplemented("History.exportShallow");
   }
   importShallow(pkg: ShallowExport): { status: "forked"; cut: string; head: NodeId } | { status: "imported"; head: NodeId } | { status: "other-project" } | { status: "no-shared-lineage"; newProjectId: string } {
