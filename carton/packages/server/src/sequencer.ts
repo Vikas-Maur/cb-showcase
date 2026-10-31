@@ -140,6 +140,11 @@ export interface Sequencer {
   createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }): Promise<void>;
   /** Move rows older than `head - keep` into blob segments (§6.3 archive). Needs `blobs`. */
   archive(branchId: string, opts?: { keep?: number; segmentRows?: number }): Promise<number>;
+  /**
+   * Periodic work, for a DO alarm or a Node timer: archive every branch's old rows to blob segments. Resolves with
+   * the rows moved and when to call again. A no-op without `blobs`.
+   */
+  maintain(): Promise<{ archived: number; nextAt: number | null }>;
   readonly stats: SequencerStats;
   /** The tables (read access for hosts' admin tools and tests). */
   readonly tables: Tables;
@@ -641,9 +646,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       queue = run.then(() => {}, () => {});
       return run;
     },
+    async maintain() {
+      if (!opts.blobs) return { archived: 0, nextAt: null };
+      let archived = 0;
+      for (const id of tables.branchIds()) if (!tables.branch(id)?.tracking) archived += await this.archive(id);
+      return { archived, nextAt: clock() + MAINTAIN_EVERY_MS };
+    },
     stats,
     tables,
   };
 }
+
+const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
 
 export type { AuthContext, Change, StoredBranch };
