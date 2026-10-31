@@ -6,6 +6,11 @@
 //   branches it follows, its dead epoch); after a wake the constructor re-attaches every socket with that state, so
 //   fan-out still reaches them.
 // - Keepalive: a text frame `ping` is answered `pong` by the runtime without waking the room.
+// - Presence leaves: when a socket closes, the sequencer sends its peers `state: null` for each actor it showed
+//   (ConnectionState.shown, kept in the attachment, so a close after a wake still owes them). A socket that shows
+//   presence and goes silent (no messages, no `ping`) for PRESENCE_TIMEOUT_MS is closed from the alarm, which runs
+//   for that only while some socket shows presence. The alarm's maintenance keeps its own due time
+//   (`carton_room.maintain_at`), so a presence check never runs maintenance early.
 // - Alarms: archiving old change rows to blob segments (§18) runs from an alarm, never on a push. Defaults follow
 //   §18 (rows older than the newest 10,000, in segments of 10,000), because every archived row costs one more row
 //   written (a DELETE is billed like an INSERT) against the Free plan's 100k rows a day (L6).
@@ -101,6 +106,10 @@ export class ProjectRoom {
   #projectId: string | null = null;
   #alarmArmed = false;
   #nextId = 0;
+  /** When each socket last sent anything, or was adopted (accepted, or re-attached after a wake). */
+  #seen = new WeakMap<CfWebSocket, number>();
+  /** The alarm this instance set for the presence check, while it is pending. */
+  #presenceCheckAt: number | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     this.#ctx = ctx;
@@ -153,6 +162,7 @@ export class ProjectRoom {
       },
     };
     this.#conns.set(ws, conn);
+    this.#seen.set(ws, Date.now());
     seq.attach(conn);
     return conn;
   }
@@ -210,13 +220,15 @@ export class ProjectRoom {
     } catch {
       return conn.send({ type: "error", reason: "bad json" });
     }
-    const before = conn.state.subs.length + ":" + conn.state.deadEpoch + ":" + conn.state.subs.join(",");
+    this.#seen.set(ws, Date.now());
+    const before = stateKey(conn.state);
     // a hello may be answered with envelopes (a big catch-up): their sweep runs from the alarm, so arm it as a push does
     if (msg?.type === "hello" && !this.#alarmArmed) void this.#armAlarm();
     await this.#seq!.handle(conn, msg);
-    const after = conn.state.subs.length + ":" + conn.state.deadEpoch + ":" + conn.state.subs.join(",");
-    // persist the protocol state only when it changed (a hello, a reject): hibernation must not lose it
-    if (after !== before) ws.serializeAttachment({ id: conn.id, auth: conn.auth, state: conn.state } satisfies Attachment);
+    // persist the protocol state only when it changed (a hello, a reject, presence shown or withdrawn): hibernation
+    // must not lose it
+    if (stateKey(conn.state) !== before) ws.serializeAttachment({ id: conn.id, auth: conn.auth, state: conn.state } satisfies Attachment);
+    if (conn.state.shown?.length) await this.#armPresenceCheck();
   }
 
   async webSocketClose(ws: CfWebSocket, code: number): Promise<void> {
@@ -238,9 +250,71 @@ export class ProjectRoom {
     this.#seq?.disconnect(conn);
   }
 
+  // Maintenance (archiving, the envelope sweep) is wanted by a push, a hello or an envelope upload, and due
+  // ARCHIVE_EVERY_MS after the first of them. Its due time is a row, since the presence check shares the one alarm.
   async #armAlarm(): Promise<void> {
     this.#alarmArmed = true;
-    if ((await this.#ctx.storage.getAlarm()) === null) await this.#ctx.storage.setAlarm(Date.now() + this.#archiveEveryMs());
+    const due = this.#maintainAt();
+    if (due !== null && due > 0) return this.#alarmBy(due);
+    const at = Date.now() + this.#archiveEveryMs();
+    this.#setMaintainAt(at);
+    await this.#alarmBy(at);
+  }
+
+  /** Maintenance's due time: a time, 0 for none wanted, null if never recorded (an alarm armed before this row). */
+  #maintainAt(): number | null {
+    try {
+      const row = this.#ctx.storage.sql.exec<Record<string, unknown>>("SELECT v FROM carton_room WHERE k = 'maintain_at'").toArray()[0];
+      return row ? Number(row.v) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  #setMaintainAt(at: number): void {
+    this.#ctx.storage.sql.exec("INSERT OR REPLACE INTO carton_room (k, v) VALUES ('maintain_at', ?)", String(at));
+  }
+
+  /** Makes sure the alarm fires by `at`: sets it unless one is already due sooner. */
+  async #alarmBy(at: number): Promise<void> {
+    const cur = await this.#ctx.storage.getAlarm();
+    if (cur === null || cur > at) await this.#ctx.storage.setAlarm(at);
+  }
+
+  #presenceTimeoutMs(): number {
+    const v = Number(this.#env.PRESENCE_TIMEOUT_MS ?? 120_000);
+    return Number.isFinite(v) && v > 0 ? v : 0;
+  }
+
+  // While a socket shows presence, the alarm checks every half timeout for sockets gone silent.
+  async #armPresenceCheck(): Promise<void> {
+    const timeout = this.#presenceTimeoutMs();
+    if (!timeout) return;
+    const now = Date.now();
+    if (this.#presenceCheckAt !== null && this.#presenceCheckAt > now) return;
+    const at = now + Math.ceil(timeout / 2);
+    await this.#alarmBy(at);
+    this.#presenceCheckAt = at;
+  }
+
+  /** Closes every socket that shows presence and has been silent past the timeout; true if any showing one is left. */
+  #checkPresence(now: number): boolean {
+    const timeout = this.#presenceTimeoutMs();
+    if (!timeout) return false;
+    let showing = false;
+    for (const [ws, conn] of [...this.#conns]) {
+      if (!conn.state.shown?.length) continue;
+      const pinged = this.#ctx.getWebSocketAutoResponseTimestamp?.(ws)?.getTime() ?? 0;
+      if (now - Math.max(this.#seen.get(ws) ?? 0, pinged) <= timeout) {
+        showing = true;
+        continue;
+      }
+      try {
+        ws.close(1001, "keepalive timed out");
+      } catch {}
+      this.#drop(ws); // its leaves go out now; the runtime's close event finds it gone
+    }
+    return showing;
   }
 
   #archiveEveryMs(): number {
@@ -257,21 +331,41 @@ export class ProjectRoom {
       if (!row) return;
       this.#sequencer(row.v as string);
     }
+    const now = Date.now();
+    this.#presenceCheckAt = null;
+    const showing = this.#checkPresence(now);
+    const due = this.#maintainAt();
+    // null: an alarm armed before maintenance kept its due time, so it runs as it always did
+    if (due === null || (due > 0 && due <= now)) await this.#maintain();
+    // the next alarm, set outright (the one now running may still read as pending): the sooner of the two wants
+    const next: number[] = [];
+    if (showing) next.push((this.#presenceCheckAt = now + Math.ceil(this.#presenceTimeoutMs() / 2)));
+    const still = this.#maintainAt();
+    if (still !== null && still > 0) next.push(Math.max(still, now + 1000));
+    if (next.length) await this.#ctx.storage.setAlarm(Math.min(...next));
+  }
+
+  async #maintain(): Promise<void> {
     const seq = this.#seq!;
-    if (!sequencerBlobs(this.#env, this.#projectId!)) return;
+    if (!sequencerBlobs(this.#env, this.#projectId!)) return this.#setMaintainAt(0);
     const o: { keep?: number; segmentRows?: number } = {};
     if (this.#env.ARCHIVE_KEEP) o.keep = Number(this.#env.ARCHIVE_KEEP);
     if (this.#env.ARCHIVE_SEGMENT) o.segmentRows = Number(this.#env.ARCHIVE_SEGMENT);
     try {
       // archives old rows to gzip segments and sweeps expired envelope blobs
       await seq.maintain(o);
+      this.#setMaintainAt(0);
       this.#alarmArmed = false; // re-armed by the next push, hello or envelope upload...
       // ...or now, while envelope blobs remain: they expire hours after they were made, and nothing else may wake
       // the room to sweep them
       const left = await sequencerBlobs(this.#env, this.#projectId!)!.list("messages/", { limit: 1 });
       if (left.blobs.length) await this.#armAlarm();
     } catch {
-      await this.#ctx.storage.setAlarm(Date.now() + ALARM_RETRY_MS);
+      // still due: retried
+      this.#setMaintainAt(Date.now() + ALARM_RETRY_MS);
     }
   }
 }
+
+/** What of a connection's state the attachment must keep up with. */
+const stateKey = (s: ConnectionState) => `${s.deadEpoch}|${s.envelopes ? 1 : 0}|${s.subs.join(",")}|${JSON.stringify(s.shown ?? null)}`;

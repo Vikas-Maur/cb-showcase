@@ -70,3 +70,93 @@ test("trailing presence is kept per branch: a burst on one branch never replaces
   assert.equal(onOther.at(-1)?.state?.at, 1);
   seq.disconnect(a);
 });
+
+// foundation-core's owner check: a client that crashed or lost its network never sends `presence(null)`, so its
+// teammates kept its cursor and ghosts forever. The server owes them a leave for each actor the connection showed.
+const leaves = (c: { inbox: sync.ServerMessage[] }) => c.inbox.filter((m): m is sync.PresenceFanoutMsg => m.type === "presence" && m.state === null);
+
+test("a connection that goes without a leave: each actor it showed gets `state: null` at its branch's others, once", async () => {
+  const { seq } = await world(doc([clip("c0", 0, 5)]));
+  await seq.createBranch({ id: "other", name: "other", forkOf: null, owner: "alice", kind: "variant", sequencer: { kind: "server", since: 0 } } as never, { doc0: doc([clip("c0", 0, 5)]) as never });
+  const a = fakeConn("alice/1"), b = fakeConn("bob/1"), elsewhere = fakeConn("carol/1");
+  await seq.handle(a, hello());
+  await seq.handle(b, hello());
+  await seq.handle(elsewhere, { ...hello(), branchId: "other" });
+  const human = { kind: "human" as const, id: "alice" };
+  const agent = { kind: "agent" as const, id: "alice", agentId: "a-7", name: "Director" };
+  const gone = { kind: "human" as const, id: "alice-2" };
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: human, state: { at: 1, dragging: true, ghosts: [{ item: "c0", track: "V1", start: 1, end: 2 }] } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: agent, state: { at: 2 } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: gone, state: { at: 3 } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: gone, state: null }); // withdrew itself
+  assert.deepEqual(a.state?.shown?.map((s) => s.actor), [{ kind: "human", id: "alice" }, { kind: "agent", id: "alice", agentId: "a-7" }], "kept: only what names each actor");
+  b.inbox.length = 0;
+  seq.disconnect(a); // no presence(null) from the client: it crashed
+  assert.deepEqual(leaves(b).map((m) => [m.branchId, m.actor]), [[BRANCH, { kind: "human", id: "alice" }], [BRANCH, { kind: "agent", id: "alice", agentId: "a-7" }]]);
+  assert.equal(b.inbox.length, 2, "nothing but the two leaves");
+  assert.equal(leaves(elsewhere).length, 0, "a connection on another branch never saw it");
+  seq.disconnect(a);
+  assert.equal(b.inbox.length, 2, "a second disconnect sends nothing");
+  seq.disconnect(b);
+  assert.equal(elsewhere.inbox.filter((m) => m.type === "presence").length, 0, "b showed nothing, so it owes nothing");
+});
+
+test("a leave waiting behind the rate cap goes out on disconnect, not dropped with the connection", async () => {
+  const now = 4_000_000;
+  const { seq } = await world(doc([clip("c0", 0, 5)]), { clock: () => now });
+  const a = fakeConn("alice/1"), b = fakeConn("bob/1");
+  for (const x of [a, b]) await seq.handle(x, hello());
+  b.inbox.length = 0;
+  const actor = { kind: "human" as const, id: "alice" };
+  for (let i = 0; i < 25; i++) await seq.handle(a, { type: "presence", branchId: BRANCH, actor, state: { at: i } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor, state: null }); // behind the cap
+  assert.equal(leaves(b).length, 0);
+  seq.disconnect(a); // before the bucket refills
+  assert.equal(leaves(b).length, 1, "the client's own leave, once");
+  assert.equal(b.inbox.length, 21);
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(b.inbox.length, 21, "no trailing relay after the disconnect");
+  seq.disconnect(b);
+});
+
+test("the leave needs only the connection's state: a sequencer that never saw its presence (a host woken from hibernation) still sends it", async () => {
+  const { seq } = await world(doc([clip("c0", 0, 5)]));
+  const b = fakeConn("bob/1");
+  await seq.handle(b, hello());
+  b.inbox.length = 0;
+  // the state a Durable Object kept in the socket's attachment, back after a wake
+  const a = { ...fakeConn("alice/1"), state: { subs: [BRANCH], deadEpoch: -1, shown: [{ branchId: BRANCH, actor: { kind: "human" as const, id: "alice" } }] } };
+  seq.attach(a);
+  seq.disconnect(a);
+  assert.deepEqual(leaves(b).map((m) => m.actor), [{ kind: "human", id: "alice" }]);
+  seq.disconnect(b);
+});
+
+test("what a connection keeps for its leaves stays small: 4 actors at most, ids up to 200 characters; the rest is still relayed", async () => {
+  const { seq } = await world(doc([clip("c0", 0, 5)]));
+  const a = fakeConn("alice/1"), b = fakeConn("bob/1");
+  for (const x of [a, b]) await seq.handle(x, hello());
+  b.inbox.length = 0;
+  for (let i = 0; i < 6; i++) await seq.handle(a, { type: "presence", branchId: BRANCH, actor: { kind: "agent", id: `bot-${i}` }, state: { at: i } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: { kind: "human", id: "x".repeat(201) }, state: { at: 9 } });
+  assert.equal(b.inbox.length, 7, "every update relayed");
+  assert.deepEqual(a.state?.shown?.map((s) => s.actor.id), ["bot-0", "bot-1", "bot-2", "bot-3"]);
+  assert.ok(JSON.stringify(a.state).length < 1024);
+  seq.disconnect(a);
+  seq.disconnect(b);
+});
+
+test("no leave while another connection shows the same actor there: a reconnect whose old socket times out later, or a second tab", async () => {
+  const { seq } = await world(doc([clip("c0", 0, 5)]));
+  const old = fakeConn("alice/1"), fresh = fakeConn("alice/1"), b = fakeConn("bob/1");
+  for (const x of [old, fresh, b]) await seq.handle(x, hello());
+  const actor = { kind: "human" as const, id: "alice" };
+  await seq.handle(old, { type: "presence", branchId: BRANCH, actor, state: { at: 1 } });
+  await seq.handle(fresh, { type: "presence", branchId: BRANCH, actor, state: { at: 2 } }); // back on a new socket
+  b.inbox.length = 0;
+  seq.disconnect(old); // the old socket's timeout, after the new one began
+  assert.equal(leaves(b).length, 0, "the cursor alice still shows stays");
+  seq.disconnect(fresh);
+  assert.deepEqual(leaves(b).map((m) => m.actor), [{ kind: "human", id: "alice" }], "the last one out leaves");
+  seq.disconnect(b);
+});

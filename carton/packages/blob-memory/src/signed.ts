@@ -3,7 +3,7 @@
 // the URL may GET (with HTTP ranges, so a <video> element or ffmpeg can seek) or PUT that one key until it expires.
 // blob-s3 presigns natively instead. Web-standard Request/Response, so Workers and Node hosts share it.
 
-import type { BlobStore } from "@carton/core/plugins";
+import type { BlobInfo, BlobStore } from "@carton/core/plugins";
 import { checkKey } from "./rules.ts";
 
 export interface BlobUrlSigner {
@@ -145,6 +145,15 @@ export async function readBody(req: Request, max: number): Promise<Uint8Array> {
   return out;
 }
 
+// The response to a signed PUT: the stored object's info, whoever's bytes it holds.
+function storedInfo(status: number, i: BlobInfo): Response {
+  const info: BlobInfo = { key: i.key, size: i.size };
+  if (i.etag) info.etag = i.etag;
+  if (i.contentType) info.contentType = i.contentType;
+  if (i.sha256) info.sha256 = i.sha256;
+  return Response.json(info, { status, headers: i.etag ? { etag: i.etag } : {} });
+}
+
 export interface ServeOptions {
   // Bodies of a signed PUT above this are refused (Workers' request limit is 100 MB on the Free plan). Large media go
   // through multipart instead.
@@ -158,7 +167,9 @@ export interface ServeOptions {
 export const SHA256_HEADER = "x-carton-sha256";
 
 // Answers a request on a signed blob URL: GET/HEAD (with ranges) or PUT. 403 for a bad or expired signature; on a PUT,
-// 400 for a body that doesn't match its SHA256_HEADER.
+// 400 for a body that doesn't match its SHA256_HEADER, 412 when `If-None-Match: *` finds the key, and otherwise 200.
+// A PUT's 200 and 412 both carry the stored object's info as JSON (`key`, `size`, `etag`, `contentType`, `sha256`;
+// `etag` in its header too), so a client learns what is stored without reading it back.
 export async function serveSignedBlob(req: Request, store: BlobStore, signer: BlobUrlSigner, opts: ServeOptions = {}): Promise<Response> {
   const url = new URL(req.url);
   const key = await signer.verify(url, req.method);
@@ -187,9 +198,21 @@ export async function serveSignedBlob(req: Request, store: BlobStore, signer: Bl
       if (Array.from(digest, (x) => x.toString(16).padStart(2, "0")).join("") !== sha256)
         return new Response(`the body does not match its ${SHA256_HEADER}`, { status: 400 });
     }
-    const write = () => store.put(key, body, { ...(ct ? { contentType: ct } : {}), ...(sha256 ? { sha256 } : {}), ...(createOnly ? { ifAbsent: true } : {}) });
-    const info = await (opts.aroundPut ? opts.aroundPut(key, write) : write());
-    return new Response(null, { status: 200, headers: info.etag ? { etag: info.etag } : {} });
+    // A create-only PUT that finds the key answers 412, as S3 and R2 do, and writes nothing. The head runs inside
+    // `aroundPut`, so no write of the key through this host comes between it and the put. A writer the host doesn't
+    // serialize with (another Worker, a multipart complete elsewhere) can still create the key in between: the store's
+    // ifAbsent keeps that object, and when its info differs from this body's (size, digest, type) the answer is 412 too.
+    const write = async (): Promise<[200 | 412, BlobInfo]> => {
+      if (createOnly) {
+        const there = await store.head(key);
+        if (there) return [412, there];
+      }
+      const info = await store.put(key, body, { ...(ct ? { contentType: ct } : {}), ...(sha256 ? { sha256 } : {}), ...(createOnly ? { ifAbsent: true } : {}) });
+      const theirs = info.size !== body.byteLength || (sha256 && info.sha256 && info.sha256 !== sha256) || (ct && info.contentType && info.contentType !== ct);
+      return [createOnly && theirs ? 412 : 200, info];
+    };
+    const [status, info] = await (opts.aroundPut ? opts.aroundPut(key, write) : write());
+    return storedInfo(status, info);
   }
   const head = await store.head(key);
   if (!head) return new Response("not found", { status: 404 });

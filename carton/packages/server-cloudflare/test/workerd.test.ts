@@ -4,7 +4,7 @@
 import { test, after, before } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { helloAtSchema, blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, hostSuite, type HostFixture } from "@carton/conformance";
+import { helloAtSchema, blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, hostSuite, rawWebSocket, HOST_SUITE_DOC, type HostFixture } from "@carton/conformance";
 import { createHmacAuth } from "@carton/server";
 import { webSocketTransport } from "@carton/server-node";
 import { hostMessageBlobs, hostMediaBlobs } from "@carton/host-http/client";
@@ -23,7 +23,7 @@ const PROJECT = "cf-conformance";
 // the maintenance alarm every 2 s here, so the sweep tests see it run; three projects of one team and one of another
 // for the team dedup test (no other test uses these ids)
 const TEAMS = { "team-a": "studio", "team-b": "studio", "team-c": "studio", "team-x": "other" };
-const dev: DevServer = await startDev({ config: join(import.meta.dirname, "wrangler.r2.dev.toml"), state: stateDir(`dev-r2-${Date.now()}`), vars: { AUTH_SECRET: SECRET, ADMIN_TOKEN: ADMIN, ARCHIVE_EVERY_MS: "2000", TEAMS: JSON.stringify(TEAMS) } });
+const dev: DevServer = await startDev({ config: join(import.meta.dirname, "wrangler.r2.dev.toml"), state: stateDir(`dev-r2-${Date.now()}`), vars: { AUTH_SECRET: SECRET, ADMIN_TOKEN: ADMIN, ARCHIVE_EVERY_MS: "2000", PRESENCE_TIMEOUT_MS: "2000", TEAMS: JSON.stringify(TEAMS) } });
 after(() => dev.stop());
 
 test("SequencerStorage checks pass on a Durable Object's SQLite (inside workerd)", async () => {
@@ -51,7 +51,14 @@ async function fixture(): Promise<HostFixture> {
   const issue = (account: string, credential: string, role: Role, projectId = PROJECT) => auth.issue({ account, credential, role, projectId, ttlMs: 3600_000 });
   return {
     host: { kind: "cloudflare (wrangler dev)", url: `ws://127.0.0.1:${dev.port}/api/projects/${PROJECT}/ws`, close: async () => {} },
-    transport: webSocketTransport({ keepaliveMs: 0 }),
+    // the room closes a socket that shows presence and is silent for PRESENCE_TIMEOUT_MS (2 s here): these clients
+    // ping well inside it, as real ones do inside the default
+    transport: webSocketTransport({ keepaliveMs: 400 }),
+    presenceTimeoutMs: 3000, // the timeout plus the half-timeout between the alarm's checks
+    hibernate: async () => {
+      const r = await fetch(`${dev.origin}/__test/wake/${PROJECT}`);
+      assert.equal(r.status, 204);
+    },
     auth,
     token: (role = "editor") => {
       const a = `cf-${++devN}`;
@@ -70,6 +77,31 @@ async function fixture(): Promise<HostFixture> {
 }
 
 sequencerHostSuite("server-cloudflare (Worker + ProjectRoom in wrangler dev)", fixture);
+
+// The presence check shares the room's one alarm with maintenance: a socket that starts showing presence must bring
+// the alarm forward to half PRESENCE_TIMEOUT_MS (1 s here), not wait for maintenance (due 2 s after the hello).
+test("a socket that shows presence brings the room's alarm forward to half the presence timeout", async () => {
+  const p = `presence-alarm-${Date.now().toString(36)}`;
+  const token = await createHmacAuth({ secret: SECRET }).issue({ account: "pa", credential: "pa/1", role: "owner", projectId: p, ttlMs: 3600_000 });
+  const raw = await rawWebSocket(`ws://127.0.0.1:${dev.port}/api/projects/${p}/ws`, token);
+  const got: { type: string }[] = [];
+  raw.onMessage((m) => void got.push(m as { type: string }));
+  const until = async (type: string) => {
+    for (let i = 0; i < 200 && !got.some((m) => m.type === type); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(got.some((m) => m.type === type), `no ${type}: ${got.map((m) => m.type)}`);
+  };
+  const rec = { id: "b", name: "main", forkOf: null, owner: "pa", kind: "main", sequencer: { kind: "server", since: 0 } };
+  raw.send({ type: "adopt", branchId: "b", n: 0, stateHash: "", rows: [], rec, doc0: HOST_SUITE_DOC, closure: [] } as never);
+  await until("adopted");
+  raw.send({ type: "hello", branchId: "b", have: 0, pending: [], rids: [], schemaVersion: 1 });
+  await until("hello");
+  const t0 = Date.now();
+  raw.send({ type: "presence", branchId: "b", actor: { kind: "human", id: "pa" }, state: { at: 1 } });
+  await new Promise((r) => setTimeout(r, 150));
+  const { alarm } = (await (await fetch(`${dev.origin}/__test/alarm/${p}`)).json()) as { alarm: number | null };
+  raw.kill();
+  assert.ok(alarm !== null && alarm - t0 <= 1300, `alarm ${alarm === null ? "none" : `${alarm - t0} ms after the presence`}`);
+});
 transportSuite("server-cloudflare (WebSocket through the Worker)", fixture);
 liveSyncSuite("server-cloudflare (Worker + ProjectRoom)", fixture);
 hostSuite("server-cloudflare (Worker + ProjectRoom)", fixture);

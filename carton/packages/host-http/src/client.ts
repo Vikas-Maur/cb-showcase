@@ -59,6 +59,21 @@ export class HostApiError extends Error {
   }
 }
 
+// The stored object's info a signed PUT's answer carries, under the caller's key; null when it carries none.
+async function storedInfo(r: Response, key: string): Promise<BlobInfo | null> {
+  if (!/^application\/json\b/i.test(r.headers.get("content-type") ?? "")) {
+    await r.body?.cancel();
+    return null;
+  }
+  const j = (await r.json().catch(() => null)) as Partial<Record<keyof BlobInfo, unknown>> | null;
+  if (!j || typeof j.size !== "number") return null;
+  const info: BlobInfo = { key, size: j.size };
+  if (typeof j.etag === "string") info.etag = j.etag;
+  if (typeof j.contentType === "string") info.contentType = j.contentType;
+  if (typeof j.sha256 === "string") info.sha256 = j.sha256;
+  return info;
+}
+
 async function failed(r: Response): Promise<never> {
   const text = await r.text().catch(() => "");
   let code: string | undefined, message = text || r.statusText;
@@ -86,7 +101,10 @@ const rangeHeader = (r: ByteRange) => (r.length === undefined ? `bytes=${r.offse
 
 /**
  * A project's media through the host's HTTP API. It has no list or delete (the API offers neither to clients).
- * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically, then reads back what is stored.
+ * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically: 412 when the key was there. A
+ * host's answer carries the stored object's info, so `put` needs no read-back. It decides by the answer, not by who
+ * signed the URL: a URL presigned straight to a bucket (S3, R2) gets the bucket's answer, and an older host's has no
+ * info either, so without a JSON body holding the info a create-only `put` reads back with `head`.
  * `put` with `sha256` sends it in `X-Carton-Sha256`: the host refuses a body that doesn't hash to it (400) and the
  * store keeps it, for `head`.
  */
@@ -147,12 +165,15 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
       if (o.ifAbsent) headers["if-none-match"] = "*";
       if (o.sha256) headers[SHA256_HEADER] = o.sha256;
       const r = await f(await sign(key, "PUT"), { method: "PUT", body: data as Uint8Array<ArrayBuffer>, headers });
-      if (!r.ok) await failed(r);
-      await r.body?.cancel();
-      // with ifAbsent the stored object may be an earlier writer's: report that one
+      const kept = o.ifAbsent && r.status === 412; // an earlier writer's object stays
+      if (!r.ok && !kept) await failed(r);
+      const said = await storedInfo(r, key);
+      if (said) return said;
+      // no info: a bucket's own answer (a presigned URL), or an older host's (200 and an etag whatever happened)
       if (o.ifAbsent) {
         const stored = await store.head(key);
         if (stored) return stored;
+        if (kept) throw new HostApiError(412, undefined, `${key} was there, and is gone now`);
       }
       const info: BlobInfo = { key, size: data.byteLength };
       if (o.contentType) info.contentType = o.contentType;

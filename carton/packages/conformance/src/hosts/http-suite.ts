@@ -98,6 +98,29 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       assert.equal(opened, false, "a bad token opened a socket");
     });
 
+    // web-demo's REQ-10: a create-only PUT costs no read-back. S3 and R2 answer 412 when the key is there.
+    test("a signed PUT with If-None-Match: * answers 412 when the key is there, and both answers carry the stored info", async () => {
+      const p = project();
+      const o = await owner(p);
+      const url = async (key: string) => ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method: "PUT", expiresIn: 60 } })).json()) as { url: string }).url;
+      const head = async (key: string) => (await (await call(`/api/projects/${p}/blobs/head?key=${encodeURIComponent(key)}`, { token: o.token })).json()) as Record<string, unknown>;
+      const first = enc.encode("the first writer's bytes");
+      const made = await fetch(await url("media/once"), { method: "PUT", body: first, headers: { "if-none-match": "*", "content-type": "image/png" } });
+      assert.equal(made.status, 200);
+      const info = (await made.json()) as Record<string, unknown>;
+      assert.equal(info.size, first.byteLength);
+      assert.equal(info.contentType, "image/png");
+      assert.equal(made.headers.get("etag"), (info.etag as string | undefined) ?? null);
+      const stored = await head("media/once");
+      for (const k of ["size", "etag", "contentType"] as const) assert.equal(info[k], stored[k], k);
+      const again = await fetch(await url("media/once"), { method: "PUT", body: enc.encode("another"), headers: { "if-none-match": "*", "content-type": "text/plain" } });
+      assert.equal(again.status, 412);
+      const kept = (await again.json()) as Record<string, unknown>;
+      for (const k of ["size", "etag", "contentType"] as const) assert.equal(kept[k], stored[k], `the first object's ${k}`);
+      const get = ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key: "media/once", method: "GET", expiresIn: 60 } })).json()) as { url: string }).url;
+      assert.deepEqual(new Uint8Array(await (await fetch(get)).arrayBuffer()), first, "the first writer's bytes stay");
+    });
+
     test("signed media URLs: PUT, then GET with ranges, bound to their key; viewers can't sign a PUT", async () => {
       const p = project();
       const o = await owner(p);

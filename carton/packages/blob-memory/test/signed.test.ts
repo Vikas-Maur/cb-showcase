@@ -71,14 +71,36 @@ test("list pages in code-point order across the BMP / astral boundary (U+E000 so
   assert.deepEqual(second.blobs.map((b) => b.key), ["u/\u{10000}"]);
 });
 
-test("a signed PUT with If-None-Match: * creates only: an existing object keeps its bytes (the store's ifAbsent)", async () => {
-  await store.put("once.bin", new Uint8Array([1, 1]));
+test("a signed PUT with If-None-Match: * creates only: 412 when the key is there, and every answer carries the stored info", async () => {
+  await store.put("once.bin", new Uint8Array([1, 1]), { contentType: "a/first" });
   const put = await signer.sign("PUT", "once.bin", 60);
-  assert.equal((await local(put, { method: "PUT", body: new Uint8Array([2, 2, 2]), headers: { "if-none-match": "*" } })).status, 200);
+  const refused = await local(put, { method: "PUT", body: new Uint8Array([2, 2, 2]), headers: { "if-none-match": "*", "content-type": "a/second" } });
+  assert.equal(refused.status, 412);
+  const first = (await refused.json()) as { key: string; size: number; etag?: string; contentType?: string };
+  assert.deepEqual([first.key, first.size, first.contentType], ["once.bin", 2, "a/first"], "the earlier object's info");
+  assert.equal(refused.headers.get("etag"), first.etag ?? null);
   assert.deepEqual(await store.get("once.bin"), new Uint8Array([1, 1]));
   const fresh = await signer.sign("PUT", "fresh.bin", 60);
-  assert.equal((await local(fresh, { method: "PUT", body: new Uint8Array([3]), headers: { "if-none-match": "*" } })).status, 200);
+  const made = await local(fresh, { method: "PUT", body: new Uint8Array([3]), headers: { "if-none-match": "*", "content-type": "a/third" } });
+  assert.equal(made.status, 200);
+  assert.deepEqual(await made.json(), await store.head("fresh.bin"), "the new object's info, as head reports it");
   assert.deepEqual(await store.get("fresh.bin"), new Uint8Array([3]));
   assert.equal((await local(put, { method: "PUT", body: new Uint8Array([4]) })).status, 200, "without the header a PUT replaces");
   assert.deepEqual(await store.get("once.bin"), new Uint8Array([4]));
+});
+
+test("a create-only signed PUT that loses a race to a writer the host doesn't serialize with answers 412 with that writer's info", async () => {
+  const url = await signer.sign("PUT", "raced.bin", 60);
+  // the other writer gets in between this host's head and its put
+  const racing = {
+    kind: store.kind,
+    put: store.put.bind(store),
+    head: async () => {
+      await store.put("raced.bin", new Uint8Array([9, 9, 9, 9]), { contentType: "a/theirs" });
+      return null;
+    },
+  } as unknown as typeof store;
+  const r = await serveSignedBlob(new Request(url, { method: "PUT", body: new Uint8Array([5]), headers: { "if-none-match": "*" } }), racing, signer);
+  assert.equal(r.status, 412);
+  assert.deepEqual([((await r.json()) as { size: number }).size, await store.get("raced.bin")], [4, new Uint8Array([9, 9, 9, 9])]);
 });

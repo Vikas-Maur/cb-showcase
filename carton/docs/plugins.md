@@ -102,6 +102,22 @@ A signed PUT takes two optional headers, neither signed, since each can only nar
 before writing, so every store gives the same guarantee (R2 checks it again), and the store keeps it for `head`.
 `hostMediaBlobs` sends both. A client of its own (a browser's) should too, rather than a `head` before the PUT.
 
+A signed PUT answers with the stored object's info as JSON (`key`, `size`, `etag`, `contentType`, `sha256`; `etag`
+in its header too): 200 when its bytes went in, and 412, as S3 and R2 answer, when `If-None-Match: *` found the key
+already there, with the earlier object's info and nothing written. So a create-only PUT needs no read-back: a
+client takes the info from either answer (or, reading only the status, heads the key after a 412). The host heads
+the key under the same per-key lock its other writes of the key take; a writer outside that lock that creates the
+key in between still loses nothing (the store's `ifAbsent` keeps the first object), and the answer is 412 whenever
+the kept object's size, digest or type differ from the body's. A `hostMediaBlobs` from before this takes the 412 for
+an error.
+
+Not every PUT answer holds that info, so a client decides by the answer, not by which host signed the URL. A URL a
+host presigns straight to its bucket (S3's or R2's presigned URLs, not `serveSignedBlob`) gets the bucket's answer:
+200 with an etag and no body, or 412 with an XML error. So does a host from before this (200 and an etag, whatever
+happened). `hostMediaBlobs.put` takes the info only from a JSON body holding a numeric `size`; without it, a
+create-only PUT reads back with `head` (after a 200 as after a 412), and a plain PUT reports its own bytes with the
+answer's etag. A client of its own should do the same.
+
 On Node, `blob-s3` and host-http's clients (`hostMediaBlobs`, `hostMessageBlobs`) send their requests through
 `@carton/http-node`, which uses `node:http` and `node:https` instead of the global `fetch`. When a server ended the
 connection while a reader had paused the body, Node's built-in undici either crashed the process with an uncaught
@@ -175,8 +191,17 @@ every host runs the same function. The host:
 3. **Feeds connections.** A connection is `{ id, auth, state, send }`. Call `sequencer.handle(conn, msg)` for each
    JSON text message, `sequencer.disconnect(conn)` on close, and `sequencer.attach(conn)` for every socket that
    survives a restart or hibernation, with its saved `state`. The sequencer mutates `conn.state` (the branches a
-   socket follows, its dead epoch). If your host can evict a project while sockets stay open, as Durable Objects do,
-   save `state` with the socket after each message that changed it.
+   socket follows, its dead epoch, the actors it shows). If your host can evict a project while sockets stay open,
+   as Durable Objects do, save `state` with the socket after each message that changed it.
+   - **Presence leaves.** A client that crashes or loses its network never sends its `presence(null)`, so
+     `disconnect` sends the branch's other subscribers `state: null` for each actor the connection still showed
+     (`state.shown`, at most 4 actors). So call it for every way a socket ends, including a timeout. A client
+     that lost its network sends no FIN either: drop a socket that has been silent for too long. server-node pings
+     after `idleTimeoutMs` (30 s) of silence and drops the socket after as long again. The Durable Object closes a
+     socket that shows presence and has neither sent anything nor pinged (its `ping` auto-response) for
+     `PRESENCE_TIMEOUT_MS` (120 s). It checks from its alarm, every half of that, only while some socket shows
+     presence; maintenance keeps its own due time (`carton_room.maintain_at`), so these checks never run it
+     early. The conformance host suite drops a client and silences one, and checks that its peers see the leaves.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from
@@ -312,7 +337,9 @@ add none of their own. Measured in a local `ProjectRoom`, with wrangler dev coun
 Archiving is the line to watch: every archived row costs one more row written. `maintain()` follows §18 (rows
 older than the newest 10,000, in gzip segments of 10,000), so a branch pays it only once it has more than 20,000
 live changes. `ARCHIVE_KEEP` and `ARCHIVE_SEGMENT` override it. The WebSocket keepalive (`ping` → `pong`) is
-answered by the runtime without waking the room, so idle sockets cost nothing.
+answered by the runtime without waking the room, so idle sockets cost nothing. While a socket shows presence, the
+alarm wakes the room every `PRESENCE_TIMEOUT_MS / 2` (60 s) to check for silent sockets. Each check reads one row,
+the maintenance due time, and sets the alarm; it writes no table rows.
 
 ## Windows
 
