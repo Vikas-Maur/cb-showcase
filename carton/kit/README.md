@@ -78,17 +78,18 @@ You need Node 24 or newer and this repository. Everything runs on one machine, w
 deploy. The scripts are short: read them in [`quickstart/`](quickstart/).
 
 Tested on Linux with Node 24.21. Written for Mac and Windows too, but not yet run there. The commands below use a
-POSIX shell. In PowerShell, write `$env:CARDBOARD_ACTOR="director/chat1/turn1"` on its own line instead of the
-`CARDBOARD_ACTOR=… node …` prefix.
+POSIX shell (on Windows, Git Bash). In PowerShell, set `$env:CARDBOARD_ACTOR="director/chat1/turn1"` on its own line
+instead of the `CARDBOARD_ACTOR=… node …` prefix, and clear it afterwards (`Remove-Item Env:CARDBOARD_ACTOR`): while
+it is set, it names every later command's actor, `--as` included.
 
 ### 1. Install, and give a project a history
 
 ```sh
 cd carton
 npm install
-mkdir -p ~/carton-try && cp -r kit/quickstart/Demo.cardboard ~/carton-try/
-P=~/carton-try/Demo.cardboard
-node kit/quickstart/import.ts $P
+mkdir -p "$HOME/carton-try" && cp -r kit/quickstart/Demo.cardboard "$HOME/carton-try"/
+P="$HOME/carton-try/Demo.cardboard"
+node kit/quickstart/import.ts "$P"
 ```
 ```
 Imported as main@1 (head @1, history in /home/you/carton-try/Demo.cardboard/.carton/carton.db)
@@ -103,10 +104,10 @@ version `main@1`. Running the import again changes nothing.
 the Director, its turn and its subagents.
 
 ```sh
-CARDBOARD_ACTOR=director/chat1/turn1 node kit/quickstart/edit.ts $P Intro endTime=2.5 trimEnd=2.5
-CARDBOARD_ACTOR=director/chat1/turn1/sub-general-purpose-a1b2 node kit/quickstart/edit.ts $P Outro color=#ffcc00
-npx carton --project $P history
-npx carton --project $P credits Outro
+CARDBOARD_ACTOR=director/chat1/turn1 node kit/quickstart/edit.ts "$P" Intro endTime=2.5 trimEnd=2.5
+CARDBOARD_ACTOR=director/chat1/turn1/sub-general-purpose-a1b2 node kit/quickstart/edit.ts "$P" Outro color=#ffcc00
+npx carton --project "$P" history
+npx carton --project "$P" credits Outro
 ```
 ```
 director/chat1/turn1: Saved: confirmed 7b0b265c@2
@@ -125,12 +126,12 @@ Cardboard, the same commands are part of `cb`. Ids such as `7b0b265c` differ on 
 ### 3. A second cut, and a fold with a conflict card
 
 ```sh
-npx carton --project $P cut new "30s cut"
-npx carton --project $P cut switch "30s cut"
-node kit/quickstart/edit.ts $P Middle startTime=2.5 endTime=5 trimEnd=2.5 --as codex/tighten
-npx carton --project $P cut switch main
-node kit/quickstart/edit.ts $P Middle endTime=7 trimEnd=4
-npx carton --project $P fold "30s cut" --check
+npx carton --project "$P" cut new "30s cut"
+npx carton --project "$P" cut switch "30s cut"
+node kit/quickstart/edit.ts "$P" Middle startTime=2.5 endTime=5 trimEnd=2.5 --as codex/tighten
+npx carton --project "$P" cut switch main
+node kit/quickstart/edit.ts "$P" Middle endTime=7 trimEnd=4
+npx carton --project "$P" fold "30s cut" --check
 ```
 ```
 New cut "30s cut" (59d9b345)
@@ -140,7 +141,7 @@ Now on "Main cut"
 terminal:you@your-machine: Saved: confirmed 7b0b265c@4
 Would fold in with 1 card:
   #1 timelineItems/middle/#time (group: same kind or incompatible) — Main cut: {"startTime":3,"endTime":7,"trimStart":0,"trimEnd":4} · 30s cut: {"startTime":2.5,"endTime":5,"trimStart":0,"trimEnd":2.5}
-Decide with `cb fold "30s cut" --keep mine` (keep Main cut's) or `--keep theirs` (keep 30s cut's), or keep a clip out with `--reject timelineItems/middle`.
+Decide with `cb fold <project> '30s cut' --keep mine` (keep Main cut's) or `--keep theirs` (keep 30s cut's), or keep a clip out with `--reject timelineItems/middle`.
 ```
 
 Both cuts retimed Middle. A clip's start, end, trims and speed are decided together, so Carton raises one card for
@@ -148,8 +149,8 @@ them and never mixes half of one edit with half of the other. `--check` saved no
 result:
 
 ```sh
-npx carton --project $P fold "30s cut" --keep theirs
-npx carton --project $P compare main@4
+npx carton --project "$P" fold "30s cut" --keep theirs
+npx carton --project "$P" compare main@4
 ```
 ```
 Folded in: confirmed 7b0b265c@5
@@ -159,8 +160,8 @@ Folded in: confirmed 7b0b265c@5
 ### 4. Undo a whole agent turn
 
 ```sh
-npx carton --project $P undo --turn turn1
-npx carton --project $P compare main@5 main@6
+npx carton --project "$P" undo --turn turn1
+npx carton --project "$P" compare main@5 main@6
 ```
 ```
 Undid turn turn1: confirmed 7b0b265c@6
@@ -175,16 +176,16 @@ The Director's edit and its subagent's edit came back out as one change. Your ow
 No server is needed. Alice exports, Bob opens it, both keep editing, and Alice brings Bob's changes back in.
 
 ```sh
-mkdir -p ~/carton-try/bob
-node kit/quickstart/cbproj.ts export $P ~/carton-try/demo.cbproj
-node kit/quickstart/cbproj.ts open ~/carton-try/demo.cbproj ~/carton-try/bob/Demo.cardboard
-B=~/carton-try/bob/Demo.cardboard
-node kit/quickstart/edit.ts $B Outro color=#ff0000 --as bob
-node kit/quickstart/edit.ts $B Middle endTime=6 trimEnd=3.5 --as bob
-node kit/quickstart/edit.ts $P Middle endTime=7 trimEnd=4.5 --as alice
-node kit/quickstart/cbproj.ts export $B ~/carton-try/bob.cbproj
-node kit/quickstart/cbproj.ts bring-in $P ~/carton-try/bob.cbproj --check
-node kit/quickstart/cbproj.ts bring-in $P ~/carton-try/bob.cbproj --keep mine
+mkdir -p "$HOME/carton-try/bob"
+node kit/quickstart/cbproj.ts export "$P" "$HOME/carton-try/demo.cbproj"
+node kit/quickstart/cbproj.ts open "$HOME/carton-try/demo.cbproj" "$HOME/carton-try/bob/Demo.cardboard"
+B="$HOME/carton-try/bob/Demo.cardboard"
+node kit/quickstart/edit.ts "$B" Outro color=#ff0000 --as bob
+node kit/quickstart/edit.ts "$B" Middle endTime=6 trimEnd=3.5 --as bob
+node kit/quickstart/edit.ts "$P" Middle endTime=7 trimEnd=4.5 --as alice
+node kit/quickstart/cbproj.ts export "$B" "$HOME/carton-try/bob.cbproj"
+node kit/quickstart/cbproj.ts bring-in "$P" "$HOME/carton-try/bob.cbproj" --check
+node kit/quickstart/cbproj.ts bring-in "$P" "$HOME/carton-try/bob.cbproj" --keep mine
 ```
 ```
 Wrote /home/you/carton-try/demo.cbproj: 2 entries (.carton-export/shallow.json)
@@ -206,7 +207,7 @@ Start a host in a second terminal, from the repository's root. It is the same se
 Durable Object, here on `node:sqlite`:
 
 ```sh
-cd carton && node kit/quickstart/host.ts ~/carton-try/host
+cd carton && node kit/quickstart/host.ts "$HOME/carton-try/host"
 ```
 ```
 Carton host on http://127.0.0.1:8787 (projects connect to ws://127.0.0.1:8787/api/projects/<project id>/ws)
@@ -215,7 +216,7 @@ Carton host on http://127.0.0.1:8787 (projects connect to ws://127.0.0.1:8787/ap
 Back in the first terminal:
 
 ```sh
-node kit/quickstart/live.ts $P ~/carton-try/host
+node kit/quickstart/live.ts "$P" "$HOME/carton-try/host"
 ```
 ```
 Alice shared "Main cut": Up to date

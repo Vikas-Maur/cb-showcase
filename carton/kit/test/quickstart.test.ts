@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFile, spawn } from "node:child_process";
-import { cpSync, existsSync, mkdirSync, mkdtempSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -82,6 +82,13 @@ test("quickstart 2: .cbproj round trip, a teammate's changes brought back in wit
   await run(qs("import.ts"), [A]);
   await run(qs("edit.ts"), [A, "Intro", "endTime=2.5", "trimEnd=2.5", "--as", "alice"]);
   assert.match((await run(qs("cbproj.ts"), ["export", A, join(T, "demo.cbproj")])).out, /: 2 entries \(\.carton-export\/shallow\.json\)$/);
+  // opening into a folder that already holds something is refused, and the folder is left as it was
+  mkdirSync(join(T, "busy"));
+  writeFileSync(join(T, "busy", "project.json"), "someone else's project");
+  const refused = await run(qs("cbproj.ts"), ["open", join(T, "demo.cbproj"), join(T, "busy")]);
+  assert.notEqual(refused.code, 0);
+  assert.match(refused.out, /already exists and isn't empty: pick a new folder/);
+  assert.equal(readFileSync(join(T, "busy", "project.json"), "utf8"), "someone else's project");
   assert.equal((await run(qs("cbproj.ts"), ["open", join(T, "demo.cbproj"), B])).out, `Opened demo-project with their history; you are on "Main cut"`);
   assert.ok(!existsSync(join(B, ".carton", "displaced")));
   assert.match((await cb(B, "cut", "list")).out, /Main cut\s+main\s+-\s+read-only[\s\S]*\*\s+Main cut\s+main\s+@0\s+local/);

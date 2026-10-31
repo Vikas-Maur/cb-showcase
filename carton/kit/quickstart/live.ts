@@ -2,9 +2,10 @@
 //   node kit/quickstart/live.ts <bundle> <host data dir> [http://127.0.0.1:8787]
 // Alice owns <bundle> (made by import.ts). She shares its current cut; Bob gets a copy of its history (what a
 // `.cbproj` with "Include history" carries) and joins with an editor invite. Both edit at once, each sees the other's
-// edit, then Bob goes offline, edits, and comes back. Bob's copy goes next to the bundle, in `Bob's copy/`.
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
-import { join, resolve } from "node:path";
+// edit, then Bob goes offline, edits, and comes back. Bob's copy goes in a new folder next to the bundle,
+// `Bob's copy-XXXXXX/`.
+import { mkdtempSync, readFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 import { Carton, LOCAL_TABLES, type Actor, type Doc, type Rec } from "@carton/core";
 import { cardboardAdapter } from "@carton/cardboard";
 import { nodeHasher, readProjectId } from "@carton/local";
@@ -50,9 +51,7 @@ await until("the host to take the cut", async () => (await a.cuts()).find((c) =>
 console.log(`Alice shared "${(await a.cuts()).find((c) => c.id === a.cut)!.name}": ${a.sync!.state().label}`);
 
 // Bob gets a copy of the history (without Alice's local tables) and joins
-const bobDir = join(bundle, "..", "Bob's copy");
-rmSync(bobDir, { recursive: true, force: true });
-mkdirSync(bobDir, { recursive: true });
+const bobDir = mkdtempSync(join(dirname(bundle), "Bob's copy-"));
 await aliceStore.exportCopy(join(bobDir, "carton.db"), [...LOCAL_TABLES]);
 const bobStore = await openSqliteStore(join(bobDir, "carton.db"));
 const b = await open(bobStore, bob, await session("bob", "editor"));
