@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Carton } from "@carton/core";
-import type { Actor, CartonEvent, HostAdapter, OpenOptions } from "@carton/core";
+import type { Actor, CartonEvent, Doc, HostAdapter, OpenOptions } from "@carton/core";
 import type { IdentitySource, Store } from "@carton/core/plugins";
 import { openProjectStore } from "@carton/store-sqlite";
 import type { SqliteStore } from "@carton/store-sqlite";
@@ -105,6 +105,25 @@ export function replicaName(given: string | undefined, actor?: Actor): string {
   try { return userInfo().username || hostname(); } catch { return hostname(); }
 }
 
+/**
+ * A new project's starting state is `main@1`, one change by the import (`init.asChange`). Core writes the empty root
+ * and then commits that change, in two steps: a process stopped between them (or a second process that opened the
+ * project in that moment and then was the only one left) leaves an empty project at `main@0`, and core never imports
+ * again, since the project exists. Opened again with `init`, the import is finished here: one change, by the import
+ * actor, under core's own id for it (`import.<projectId>`), so a concurrent first open's commit and this one are one
+ * change. Nothing happens to a project that has any change, cut or record. (Asked of foundation-core: make the two
+ * steps one, or resume them in `Carton.open`; this goes then.)
+ */
+async function finishImport(carton: Carton, doc: Doc): Promise<void> {
+  const empty = (d: Doc) => Object.values(d).every((v) => Array.isArray(v) && v.length === 0);
+  if (empty(doc)) return;
+  const cuts = await carton.cuts();
+  if (cuts.length !== 1) return;
+  const h = await carton.head(cuts[0]!.id);
+  if (h.ref.seq !== 0 || h.ref.pending?.length || !empty(h.doc)) return;
+  await carton.commit({ doc, base: h.ref, cut: cuts[0]!.id, author: { kind: "system", id: "import", name: "Import" }, id: `import.${carton.projectId}` });
+}
+
 /** The adapter local's default factory opens carton.db with. */
 const DEFAULT_ADAPTER = "cardboard";
 
@@ -125,6 +144,15 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   } catch (e) {
     await store.close();
     throw e;
+  }
+  if (opts.init && (opts.init.asChange ?? true)) {
+    try {
+      await finishImport(carton, opts.init.doc as Doc);
+    } catch (e) {
+      await carton.close();
+      await store.close();
+      throw e;
+    }
   }
   const lease = new Lease(store);
   const dbPath = location.dbPath;
