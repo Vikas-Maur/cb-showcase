@@ -4,10 +4,17 @@
 // Where R2 differs from the contract, this adapter closes the gap:
 // - A range at or past the end, or of length 0, makes R2 throw; the contract wants an empty array. On a ranged
 //   read that throws, one HEAD tells "absent" (null) from "past the end" (empty) — no extra request otherwise.
-// - The binding has no ListParts, which resuming an upload after a cut link needs. Each upload keeps small marker
-//   objects under `.carton-uploads/<uploadId>/` (a `meta` record, and one per part with its etag and size), written
-//   after R2 accepts the part, so listParts never names a part R2 doesn't have. That is one extra Class A operation
-//   per part (§18 budgets R2 ops at < $0.10 per team-month), and the markers go when the upload completes or aborts.
+// - The binding has no ListParts, which resuming an upload after a cut link needs. Each upload keeps small records
+//   under `.carton-uploads/<uploadId>/`: `meta` (its key), `p<n>` per part (etag and size) and `l<n>`, a per-part
+//   lock (see uploadPart). Per part that is 3 Class A operations besides the part itself (lock, record, release;
+//   deletes are free): about $0.03 a month for §18's 90 GB of proxies in 64 MiB parts [E], and inside R2's free
+//   million Class A operations a month for the demo. The records go when the upload completes or aborts.
+// - What is guaranteed: listParts names the bytes R2 holds whenever uploads of one part don't overlap, and the lock
+//   refuses an overlap while its holder is alive. R2 can't stop a holder whose lock expired (30 minutes) from still
+//   writing, so a record is created only if absent, and a writer that finds one clears it and fails: the part is
+//   then unlisted and sent again. Whatever happens, complete never publishes wrong bytes: the adapter checks each
+//   part's etag against its record and R2 checks it against the bytes it holds, so a stale record makes complete
+//   fail with InvalidPart, and the client sends that part again.
 // - `sha256` is passed to R2, which then refuses bytes that don't match, and kept in custom metadata for `head`.
 // R2 itself enforces the part rules (5 MiB minimum, equal parts, the last no larger); the shared checks run first so
 // the error is the same as on every other store.
@@ -143,31 +150,34 @@ export class R2BlobStore implements BlobStore {
     if (!meta || meta.customMetadata?.key !== key) throw new BlobError("NoSuchUpload", `no multipart upload ${uploadId} for ${key}`);
   }
 
-  // A per-part lock made from R2's conditional put: created only if absent. Another upload of the part is refused
-  // at once (the client retries). A lock older than LOCK_TTL_MS, left by a request that died, is taken over by
-  // compare-and-swap on its etag, so two takers can't both win.
+  // A per-part lock made from R2's conditional puts. Each holder writes a fresh random token as the lock's body, so
+  // every acquisition changes the lock's etag, and every transition is a compare-and-swap on that etag:
+  // - acquire: create it if absent; otherwise take it over only if it was released, or is older than LOCK_TTL_MS (its
+  //   holder died), by a put conditional on the etag just read, so of two takers only one wins;
+  // - release: a put conditional on our own etag, to a "released" state, so a holder that outlived its TTL can't
+  //   release (or delete) a lock someone else now holds.
+  // Another upload of the part while the lock is held is refused at once; the client retries.
   async #lockPart(uploadId: string, n: string): Promise<string> {
     const lockKey = `${UPLOADS}${uploadId}/l${n}`;
     const busy = () => new BlobError("PreconditionFailed", `part ${Number(n)} is being uploaded by another request; try again`);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const at = String(Date.now());
-      const made = await this.#b.put(lockKey, null, { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: { at } });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const held = { state: "held", at: String(Date.now()) };
+      const made = await this.#b.put(lockKey, crypto.randomUUID(), { onlyIf: { etagDoesNotMatch: "*" }, customMetadata: held });
       if (made) return made.etag;
       const cur = await this.#b.head(lockKey);
-      if (!cur) continue; // released meanwhile: try once more
-      if (Date.now() - Number(cur.customMetadata?.at ?? 0) < LOCK_TTL_MS) throw busy();
-      const taken = await this.#b.put(lockKey, null, { onlyIf: { etagMatches: cur.etag }, customMetadata: { at } });
+      if (!cur) continue; // gone meanwhile (the upload completed or aborted): the next put says which
+      const free = cur.customMetadata?.state === "released" || Date.now() - Number(cur.customMetadata?.at ?? 0) >= LOCK_TTL_MS;
+      if (!free) throw busy();
+      const taken = await this.#b.put(lockKey, crypto.randomUUID(), { onlyIf: { etagMatches: cur.etag }, customMetadata: held });
       if (taken) return taken.etag;
-      throw busy();
+      throw busy(); // another request took it between our read and our put
     }
     throw busy();
   }
 
-  // Releases only our own lock: if it was taken over (we outlived the TTL), the taker's stays.
   async #unlockPart(uploadId: string, n: string, etag: string): Promise<void> {
     const lockKey = `${UPLOADS}${uploadId}/l${n}`;
-    const cur = await this.#b.head(lockKey).catch(() => null);
-    if (cur?.etag === etag) await this.#b.delete(lockKey).catch(() => {});
+    await this.#b.put(lockKey, "released", { onlyIf: { etagMatches: etag }, customMetadata: { state: "released", at: String(Date.now()) } }).catch(() => null);
   }
 
   async #markers(uploadId: string): Promise<{ key: string; partNumber: number; etag: string; size: number }[]> {
@@ -212,17 +222,25 @@ export class R2BlobStore implements BlobStore {
         // the upload must belong to this key before anything is touched: an id alone must not reach another
         // project's upload or its part records
         await store.#checkUpload(key, uploadId);
-        // One uploader per part at a time, so a part's record always names the bytes R2 kept: two uploads of one part
-        // that overlap give no way to tell which R2 kept. Inside the lock the record is removed before the part is
-        // sent and written after it, so a failure in between leaves the part unlisted, and a resuming client sends it
-        // again. (R2 deletes are free; R2 refuses parts of an aborted, completed or unknown upload itself, 10024.)
+        // Under the part's lock: the record is removed before the part is sent and created after it, create-only. A
+        // failure in between leaves the part unlisted (a resuming client sends it again). Finding a record already
+        // there means another writer overlapped this one (only possible past the lock's TTL): nothing tells which
+        // bytes R2 kept, so the record goes, the part is unlisted, and this call fails. (R2 refuses parts of an
+        // aborted, completed or unknown upload itself, 10024.)
         const n = String(partNumber).padStart(5, "0");
         const lock = await store.#lockPart(uploadId, n);
         try {
           const marker = `${UPLOADS}${uploadId}/p${n}`;
           await b.delete(marker);
           const part = await b.resumeMultipartUpload(key, uploadId).uploadPart(partNumber, data).catch(translate);
-          await b.put(marker, null, { customMetadata: { partNumber: String(partNumber), etag: part.etag, size: String(data.byteLength) } });
+          const made = await b.put(marker, null, {
+            onlyIf: { etagDoesNotMatch: "*" },
+            customMetadata: { partNumber: String(partNumber), etag: part.etag, size: String(data.byteLength) },
+          });
+          if (!made) {
+            await b.delete(marker);
+            throw new BlobError("InvalidPart", `part ${partNumber} was written by another request at the same time; upload it again`);
+          }
           return { partNumber, etag: part.etag };
         } finally {
           await store.#unlockPart(uploadId, n, lock);
