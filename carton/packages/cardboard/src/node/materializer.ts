@@ -285,6 +285,7 @@ export class Materializer {
   private readonly quietTimers = new Map<string, unknown>();
   /** The head (`headRef`) the files were last brought up to, or were scheduled to be (B11). */
   private knownHead: string | null = null;
+  private sharedRetryTimer: unknown = null;
   /** Paths whose save is being applied right now (its finishing steps read the path again: R7-01). */
   private readonly applying = new Set<string>();
   private readonly retryTimers = new Map<string, unknown>();
@@ -392,7 +393,7 @@ export class Materializer {
     this.watchers = [];
     await this.run(() => this.reviewDisplaced()).catch(() => undefined);
     this.closed = true;
-    for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, this.freeze.timer, ...this.quietTimers.values(), ...this.retryTimers.values()]) if (t) this.clock.clearTimeout(t);
+    for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, this.sharedRetryTimer, this.freeze.timer, ...this.quietTimers.values(), ...this.retryTimers.values()]) if (t) this.clock.clearTimeout(t);
     await this.queue;
   }
 
@@ -549,6 +550,22 @@ export class Materializer {
     }, this.opts.localRewriteMs);
   }
 
+  /** The shared file's rewrite failed (a locked database, a printer error): tried again with a growing delay. */
+  private retryShared(attempt = 0): void {
+    if (this.closed || this.sharedRetryTimer || attempt >= 12) return;
+    this.sharedRetryTimer = this.clock.setTimeout(() => {
+      this.sharedRetryTimer = null;
+      this.fire(async () => {
+        try {
+          await this.writeSharedNow("retry");
+        } catch (e) {
+          this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: `rewrite retry: ${e instanceof Error ? e.message : String(e)}` });
+          this.retryShared(attempt + 1);
+        }
+      });
+    }, Math.min(30_000, 250 * 2 ** attempt));
+  }
+
   /** project.json follows head promptly (coalesced). */
   private scheduleProjectWrite(cause: string): void {
     if (this.closed || !this.opts.writeProject || this.projectTimer) return;
@@ -657,8 +674,9 @@ export class Materializer {
     if (!force && cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body) return; // unchanged
     const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
     const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
-    this.sharedRef = body;
     await this.install(TIMELINE_FILE, text);
+    this.sharedRef = body; // only once installed: a failed rewrite must not read as done
+
     this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
   }
 
@@ -772,7 +790,8 @@ export class Materializer {
     let r;
     try {
       // under the bundle's install lock, shared with the app's facade: the app's readers wait while it is held
-      r = await withInstallLock(this.bundle, () => displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null }), this.busy);
+      // `mine`: a holder taken over while it stalled stops rather than install its (older) file over a newer one
+      r = await withInstallLock(this.bundle, (mine) => displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null, mine }), this.busy);
     } catch (e) {
       // a rename may have moved a file aside before the failure: hold whatever is in the folder unreviewed
       await this.recoverDisplaced();
@@ -826,11 +845,18 @@ export class Materializer {
   /** Content at the path that is the current generation already (installed, applied or tried): nothing to do. */
   private async isCurrent(rel: string, hash: string): Promise<boolean> {
     if ((await this.pathState(rel)).last !== hash) return false;
-    if (this.applying.has(rel)) return true; // being finished now
-    // stored, but not finished (it failed, or the process died, after the receipt): a view's base and sidecar are
-    // still to be written, so the save is read again and finished from its recorded result
+    return !(await this.unfinished(rel, hash));
+  }
+  /**
+   * A save stored but not finished (it failed, or the process died, after its receipt): its attempt slot still holds
+   * its result for these bytes, so a view's base and sidecar are still to be written. Such a save is read again (at
+   * its path, or displaced) and finished from its recorded result. Not while it is being finished now (R7-01 reads the
+   * path again).
+   */
+  private async unfinished(rel: string, hash: string): Promise<boolean> {
+    if (this.applying.has(rel)) return false;
     const slot = await this.engine.getMeta<Attempt>(["attempt", rel]);
-    return !(slot?.result && slot.hash === hash);
+    return !!slot?.result && slot.hash === hash;
   }
 
   // ------------------------------------------------------------------ foreign saves
@@ -854,16 +880,19 @@ export class Materializer {
       if (pending) this.clock.clearTimeout(pending);
       this.retryTimers.delete(rel);
     } catch (e) {
-      if (!this.closed && !this.retryTimers.has(rel) && attempt < 12) {
-        const timer: unknown = this.clock.setTimeout(() => {
-          if (this.retryTimers.get(rel) !== timer) return; // cancelled, or replaced
-          this.retryTimers.delete(rel);
-          if (!this.closed) this.fire(() => this.readWithRetry(rel, attempt + 1));
-        }, Math.min(30_000, 250 * 2 ** attempt));
-        this.retryTimers.set(rel, timer);
-      }
+      this.scheduleRead(rel, attempt);
       throw e;
     }
+  }
+  /** Reads `rel` again after a failure, with a growing delay (one pending retry per path). */
+  private scheduleRead(rel: string, attempt: number): void {
+    if (this.closed || this.retryTimers.has(rel) || attempt >= 12) return;
+    const timer: unknown = this.clock.setTimeout(() => {
+      if (this.retryTimers.get(rel) !== timer) return; // cancelled, or replaced
+      this.retryTimers.delete(rel);
+      if (!this.closed) this.fire(() => this.readWithRetry(rel, attempt + 1));
+    }, Math.min(30_000, 250 * 2 ** attempt));
+    this.retryTimers.set(rel, timer);
   }
 
   /** The canonical relative path of a watched file, or null. */
@@ -976,7 +1005,9 @@ export class Materializer {
       try {
         await this.importUnseen(rel, { unparsed: "wait" });
       } catch (e) {
+        // a transient failure (a locked database): read again later, as a watch event's would be; no event will come
         this.log.errors.push({ t: this.clock.now(), path: rel, error: e instanceof Error ? e.message : String(e) });
+        this.scheduleRead(rel, 0);
       }
     }
   }
@@ -1008,8 +1039,8 @@ export class Materializer {
       const ps = await this.pathState(rel);
       const stamp = stampOf(st);
       const hash = sha(bytes);
-      if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || ps.applied.includes(stamp)) {
-        await this.held.release(file); // Carton's own install, or a copy of a save already stored
+      if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || (ps.applied.includes(stamp) && !(await this.unfinished(rel, hash)))) {
+        await this.held.release(file); // Carton's own install, or a copy of a save already stored (and finished)
         continue;
       }
       if (ps.failed.includes(stamp)) {
@@ -1073,7 +1104,8 @@ export class Materializer {
       this.origin.delete(d.path);
       await this.held.release(d.path);
     };
-    if ((d.stamp && ps.applied.includes(d.stamp)) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done(); // a copy: that save is stored
+    // a copy: that save is stored (and finished; an unfinished one is applied again, from its recorded result)
+    if ((d.stamp && ps.applied.includes(d.stamp) && !(await this.unfinished(d.rel, hash))) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done();
     if (d.stamp && ps.failed.includes(d.stamp)) {
       this.origin.delete(d.path);
       this.keptFiles.add(d.path);
@@ -1271,6 +1303,7 @@ export class Materializer {
         await this.writeSharedNow("save");
       } catch (e) {
         this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: `regenerate after a save: ${e instanceof Error ? e.message : String(e)}` });
+        this.retryShared(); // during a freeze nothing else would rewrite it until the turn ends
       }
     }
     if (name && row) {

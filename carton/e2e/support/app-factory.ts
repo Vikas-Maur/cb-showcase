@@ -3,7 +3,7 @@
 // watching the bundle (project.json, the shared timeline.tsx, per-agent views and their `.status` sidecars), and, when
 // `sync` is configured, the sync client to a real sequencer host (server-node or the Worker under wrangler dev).
 //   config: { projectDir, projectId, codec?: "json" | "cli", sync?: { url, tokenFile }, remoteRewriteMs?, freezeIdleMs?,
-//             wireSidecars?: false, join?: JoinInit (an invite: open the shared cut from nothing, support/invite.ts) }
+//             join?: JoinInit (an invite: open the shared cut from nothing, support/invite.ts) }
 // On a first open the project is imported as `main@1` (§16 migration) and the files on disk are adopted as that state.
 // Requests with an `e2e` field are the test's hands on the app (a GUI save, a status read); everything else is a `cb`
 // write, served exactly as the app serves one.
@@ -61,31 +61,9 @@ export async function createHolderEngine({ dbPath, config }: HelperFactoryOption
   mz.watch();
   // remote rows move head: the shared file and project.json follow (the app wires the same event)
   carton.on((e) => { if (e.type === "change" && !e.local) mz.onHeadChange("remote"); });
-  // A view save on a shared cut is `pending` in its sidecar until the server answers; the app forwards that answer
-  // (confirmed, late conflicts, refused) to the view's sidecar (R5-04). `@carton/local`'s CartonHolderEngine doesn't
-  // (B10): `wireSidecars: false` runs without it, to pin that.
-  if (config.wireSidecars !== false) {
-    // The server's answer can arrive before the materializer has recorded the save's change id on its view (the ack
-    // races the save's own bookkeeping). A file save writes its change id into its attempt slot (`["attempt", rel]`)
-    // before committing, so: after the materializer's current work, an id that a view claims is settled now; one still
-    // in an attempt slot is looked up again until its view claims it; any other (a cb commit, a GUI save) is no view's.
-    const settleView = async (id: string, s: Parameters<Materializer["onChangeUpdate"]>[2]) => {
-      for (const end = Date.now() + 30_000; Date.now() < end; await new Promise((r) => setTimeout(r, 100))) {
-        await mz.idle();
-        const rows = (await store.range<{ lastChange?: string | null }>("views", { prefix: ["view"] })).filter((r) => r.value?.lastChange === id);
-        for (const r of rows) await mz.onChangeUpdate(String(r.key[1]), id, s);
-        if (rows.length) return;
-        const attempts = await store.range<{ id?: string }>("views", { prefix: ["attempt"] });
-        if (!attempts.some((r) => r.value?.id === id)) return;
-      }
-    };
-    carton.on((e) => {
-      if (e.type === "change" && e.local && e.change.id) void settleView(e.change.id, { status: "confirmed", seq: e.seq });
-      else if (e.type === "absorbed") void settleView(e.id, e.cards.length ? { status: "conflicts", conflicts: e.cards } : { status: "confirmed" });
-      else if (e.type === "notice" && e.notice.change && e.notice.kind === "late-conflict") void settleView(e.notice.change, { status: "conflicts", conflicts: e.notice.cards ?? [] });
-      else if (e.type === "notice" && e.notice.change && e.notice.kind === "rejected") void settleView(e.notice.change, { status: "rejected", reason: e.notice.text });
-    });
-  }
+  // A view save on a shared cut is `pending` in its sidecar until the server answers; `@carton/local`'s
+  // CartonHolderEngine forwards that answer to the view's sidecar itself (B10, fixed by local-cli f9a656c), so the
+  // scenarios check the product's own wiring.
   const inner = new CartonHolderEngine(carton, { materializer: mz });
   const engine: HolderEngine = Object.assign(Object.create(inner), {
     serve: async (req: any) => (req?.e2e ? e2e(req) : inner.serve(req)),

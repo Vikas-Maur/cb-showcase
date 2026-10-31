@@ -6,16 +6,19 @@
 //   2. Carton opens the project from the shallow export (`init: {import}`), still in the staging folder: the sender's
 //      cuts become tracking cuts and a writable cut is forked from their head;
 //   3. the materializer adopts the unpacked project.json and timeline.tsx as that state (they are, not foreign saves);
-//   4. only then is the folder renamed into the library. Renamed first, the library's watcher could open the new bundle
+//   4. with "Include history" (`.carton-export/history.db`, store-sqlite's real `exportCopy` on the sender's side), the
+//      sender's versions are read back with `importFullHistory` (cardboard-adapter, S3-2), the history copy opened
+//      read-only with store-sqlite: as the app's Open Project does it, right after Carton opened the project;
+//   5. only then is the folder renamed into the library. Renamed first, the library's watcher could open the new bundle
 //      before its carton.db exists and migrate it as a fresh `main@1`, with no lineage shared with the sender.
 //   s3-open <cbproj> <bundle>
-// Prints {bundle, projectId, cut, head, cuts, files, ignored}.
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
+// Prints {bundle, projectId, cut, head, cuts, files, ignored, history}.
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { assertInScratch, dataDirFor } from "./env.ts";
 import { Carton, type HostAdapter } from "@carton/core";
 import { cardboardAdapter, cardboardFilesHost, jsonTimelineCodec } from "@carton/cardboard";
-import { Materializer, readCbproj, ZipReader, safeEntryPath } from "@carton/cardboard/node";
+import { importFullHistory, Materializer, readCbproj, ZipReader, safeEntryPath } from "@carton/cardboard/node";
 import { CartonMaterializerEngine, nodeHasher } from "@carton/local";
 import { locateCartonDb, openSqliteStore } from "@carton/store-sqlite";
 
@@ -46,8 +49,18 @@ const carton = await Carton.open({ adapter: cardboardAdapter as HostAdapter, sto
 const mz = new Materializer({ bundle: staging, engine: new CartonMaterializerEngine(carton), host: cardboardFilesHost, codec: jsonTimelineCodec });
 await mz.adoptCurrentFiles();
 await mz.close();
+// the sender's history, when the file carries it (S3-2): `.carton-export/history.db` opened read-only by store-sqlite
+// (unpacked under scratch beside the bundle, never the OS temp folder, and removed after)
+const tmpDir = `${bundle}.history-${process.pid}`;
+mkdirSync(tmpDir, { recursive: true });
+let history: unknown;
+try {
+  history = await importFullHistory(carton, file, { openStore: (path) => openSqliteStore(path, { readOnly: true }), tmpDir });
+} finally {
+  rmSync(tmpDir, { recursive: true, force: true });
+}
 const head = await carton.head();
-const out = { bundle, projectId, cut: carton.cut, head: head.ref, cuts: await carton.cuts(), files: c.files, ignored: c.ignored };
+const out = { bundle, projectId, cut: carton.cut, head: head.ref, cuts: await carton.cuts(), files: c.files, ignored: c.ignored, history };
 await carton.close();
 await store.close();
 renameSync(staging, bundle);

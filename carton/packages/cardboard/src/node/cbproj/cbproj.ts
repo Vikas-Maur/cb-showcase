@@ -13,11 +13,16 @@
 //
 // Import. Reading a teammate's file gives the manifest, the shallow export and (if present) the full history. "Bring
 // in their changes" imports their lineage as tracking knowledge and folds their head into the current cut, with cards;
-// a missing merge base is said plainly, never replaced by an older one (core's fold).
+// a missing merge base is said plainly, never replaced by an older one (core's fold). A file with history also brings
+// the sender's versions (S3-2): `importFullHistory` opens its copy and hands it to core's `Carton.importHistory`, which
+// fills their cuts in as read-only cuts with every version, author and name (Open Project: after `Carton.open` with
+// `init: {import}`; Bring in: between the shallow import and the fold).
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import type { Choices, Doc, ShallowExport } from "@carton/core";
+import type { Store } from "@carton/core/plugins";
 import { ZipReader, ZipWriter, sanitizeEntryName, type ZipWriteResult } from "./zip.ts";
 import { retryMissing } from "../displace.ts";
 import { walkBundle, excludedFromExport, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
@@ -157,32 +162,94 @@ export async function extractFullHistory(file: string, toPath: string): Promise<
   }
 }
 
+/** The part of the Carton handle that takes a full-history copy (`Carton.importHistory`). */
+export interface HistoryTarget {
+  importHistory(from: Store): Promise<{ cuts: string[] }>;
+}
+
+export interface FullHistoryOptions {
+  /**
+   * Opens the extracted copy as a Store: in the app, store-sqlite's `openSqliteStore(path, { readOnly: true })`. It is
+   * closed (if it has `close`) and the copy removed afterwards.
+   */
+  openStore: (path: string) => Promise<Store>;
+  /** A folder for the extracted copy (default: the OS temp folder). */
+  tmpDir?: string;
+}
+
+export type FullHistoryResult =
+  | { status: "no-history" }
+  | { status: "imported"; cuts: string[] }
+  /** core refused it: another project's history, another document schema, or a copy it can't read. */
+  | { status: "refused"; reason: string };
+
+/**
+ * "Include history so they can see every version" (§13, L17; S3-2): the file's full-history copy is extracted, opened
+ * (`openStore`) and taken by core's `importHistory`: the sender's cuts this replica doesn't hold in full become read-only
+ * cuts with their versions, authors and names (a cut held as shallow lineage from the same file is filled in). Call it
+ * after the shallow import (Open Project's `init: {import}`, or `bringInTheirChanges`, which does it with `history`).
+ * Taking the same file twice takes nothing new.
+ */
+export async function importFullHistory(target: HistoryTarget, file: string, o: FullHistoryOptions): Promise<FullHistoryResult> {
+  const dir = fs.mkdtempSync(path.join(o.tmpDir ?? os.tmpdir(), "cbproj-history-"));
+  try {
+    const db = path.join(dir, "history.db");
+    if (!(await extractFullHistory(file, db))) return { status: "no-history" };
+    let store: Store;
+    try {
+      store = await o.openStore(db);
+    } catch (e) {
+      return { status: "refused", reason: `the history copy can't be opened: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    try {
+      const r = await target.importHistory(store);
+      return { status: "imported", cuts: r.cuts };
+    } catch (e) {
+      return { status: "refused", reason: e instanceof Error ? e.message : String(e) };
+    } finally {
+      await (store as { close?: () => Promise<void> | void }).close?.();
+    }
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true }); // the copy and any -wal/-shm beside it
+  }
+}
+
 /** The part of the Carton handle "Bring in their changes" needs. */
 export interface CbprojTarget {
   importShallow(pkg: ShallowExport): Promise<{ status: string; cut?: string; head?: string; newProjectId?: string }>;
   fold(from: string, opts?: { choices?: Choices; check?: boolean; missingBase?: "dialog" | "all-cards" }): Promise<{ status: string; [k: string]: unknown }>;
+  importHistory?(from: Store): Promise<{ cuts: string[] }>;
 }
 
-export type BringInResult =
+export type BringInResult = (
   | { status: "no-carton-data" }
   | { status: "other-project" }
   | { status: "no-shared-lineage"; newProjectId?: string }
   | { status: "forked"; cut?: string }
-  | { status: "folded"; fold: { status: string; [k: string]: unknown } };
+  | { status: "folded"; fold: { status: string; [k: string]: unknown } }
+) & { history?: FullHistoryResult };
 
 /**
  * "Bring in their changes" (§13): their lineage becomes tracking knowledge, then their head is folded into the current
  * cut with cards. Opening a project you don't have forks a writable cut from theirs instead (§5.3). With `check`, the
  * fold is a dry run (`cb fold --check`).
  */
-export async function bringInTheirChanges(target: CbprojTarget, contents: Pick<CbprojContents, "shallow">, opts: { choices?: Choices; check?: boolean; missingBase?: "dialog" | "all-cards" } = {}): Promise<BringInResult> {
+export async function bringInTheirChanges(
+  target: CbprojTarget,
+  contents: Pick<CbprojContents, "shallow">,
+  opts: { choices?: Choices; check?: boolean; missingBase?: "dialog" | "all-cards"; history?: FullHistoryOptions & { file: string } } = {},
+): Promise<BringInResult> {
   if (!contents.shallow) return { status: "no-carton-data" };
   const imp = await target.importShallow(contents.shallow);
   if (imp.status === "other-project") return { status: "other-project" };
   if (imp.status === "no-shared-lineage") return { status: "no-shared-lineage", ...(imp.newProjectId ? { newProjectId: imp.newProjectId } : {}) };
-  if (imp.status === "forked") return { status: "forked", ...(imp.cut ? { cut: imp.cut } : {}) };
-  const fold = await target.fold(imp.head ?? contents.shallow.head, opts);
-  return { status: "folded", fold };
+  // their versions too, when the file has them (S3-2); a refused history never stops the fold (it is said)
+  const history = opts.history && target.importHistory && !opts.check ? await importFullHistory(target as HistoryTarget, opts.history.file, opts.history) : undefined;
+  const h = history ? { history } : {};
+  if (imp.status === "forked") return { status: "forked", ...(imp.cut ? { cut: imp.cut } : {}), ...h };
+  const { choices, check, missingBase } = opts;
+  const fold = await target.fold(imp.head ?? contents.shallow.head, { ...(choices ? { choices } : {}), ...(check !== undefined ? { check } : {}), ...(missingBase ? { missingBase } : {}) });
+  return { status: "folded", fold, ...h };
 }
 
 export { VIEWS_DIR as CBPROJ_VIEWS_DIR };

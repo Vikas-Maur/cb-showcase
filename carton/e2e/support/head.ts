@@ -1,6 +1,5 @@
 // What a machine's carton.db says head is, read in this process (a reader beside the app; never the user's data), and
 // a wait that prefers the files the person sees.
-import type { test } from "node:test";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Carton } from "@carton/core";
@@ -38,21 +37,11 @@ export function helperTookLeaseSince(m: Machine, since: number): boolean {
 }
 
 /**
- * Waits for project.json to show a `cb` write made at or after `since`. Only when a headless helper provably took the
- * lease since then (B3's takeover on a loaded machine) and carton.db's head has the write does a miss count as B11
- * (the write served outside the app's holder, pinned by s1-takeover-views.test.ts): a diagnostic, and the scenario
- * goes on from carton.db's head. Any other miss (the app held the lease and didn't rewrite the files) fails.
+ * Waits for project.json to show a `cb` write. Strict: since B11's fix (local-cli 38814d9) a write served by any holder
+ * reaches the app's files, so a miss here is a regression, never a known bug to step around.
  */
-export async function untilShown(t: test.TestContext, m: Machine, since: number, pred: (items: Item[]) => boolean, what: string, ms = 20_000): Promise<Item[]> {
-  try {
-    return await until(() => { const it = items(m); return pred(it) && it; }, ms, `${what} in project.json`);
-  } catch (e) {
-    if (!helperTookLeaseSince(m, since)) throw e;
-    const head = await headItems(m);
-    if (!pred(head)) throw e;
-    t.diagnostic(`B11 hit: ${what} is in carton.db's head but not in project.json (a helper took the lease and served the write)`);
-    return head;
-  }
+export async function untilShown(m: Machine, pred: (items: Item[]) => boolean, what: string, ms = 20_000): Promise<Item[]> {
+  return until(() => { const it = items(m); return pred(it) && it; }, ms, `${what} in project.json`);
 }
 
 /** The item called `name` in a list of items. */

@@ -6,7 +6,7 @@
 //      read the `.status` sidecar until it reports this save. The next edit starts from the agent's own file, so the
 //      three edits depend on each other (R2-03), and each save's base is the previous save of the same print.
 // Identity comes from CARDBOARD_ACTOR, as Cardboard's Director hook (or our PreToolUse prefixer) sets it.
-//   agent <bundle> <projectId> <json: {steps, view?, statusMs?, noRetry?, waitGo?, settled?}>  (waitGo: after printing, wait for a
+//   agent <bundle> <projectId> <json: {steps, view?, statusMs?, noRetry?, waitGo?, waitStart?, settled?}>  (waitGo: after printing, wait for a
 //   line on stdin before editing)
 // A step: {op: "insert", like: <item name>, id, name, set: {...}} | {op: "set", name, set: {...}} | {op: "remove", name}
 // (those three read the JSON codec's body) | {op: "text", find, replace} (any codec, Cardboard's JSX included)
@@ -25,14 +25,21 @@ import type { HostAdapter } from "@carton/core";
 const acked = new Set<string>();
 
 const [bundle, projectId, json] = process.argv.slice(2);
-const cfg = JSON.parse(json!) as { steps: any[]; view?: string; statusMs?: number; noRetry?: boolean; waitGo?: boolean; settled?: boolean };
+const cfg = JSON.parse(json!) as { steps: any[]; view?: string; statusMs?: number; noRetry?: boolean; waitGo?: boolean; settled?: boolean; waitStart?: boolean };
 const actor = identify();
 const local = await openLocal({ projectDir: bundle!, projectId, dataDir: dataDirFor(bundle!), adapter: cardboardAdapter as HostAdapter, actor });
 const results: any[] = [];
 let view: { name: string; path: string; ref: string };
-// B3 (routed to local-cli): on a loaded machine a `cb` call that misses one 100 ms ping takes the app's lease over with a
-// helper that has no materializer, and `print --view` says "views need the app open" until the app takes the lease
-// back (≈2 s). An agent following AGENTS.md would retry; counted here, pinned by s1-takeover-views.test.ts.
+// lines on stdin: "start" (waitStart: loaded and connected, before the first print), "go" after a pause (waitGo, or a
+// {op: "wait"} step)
+const stdinLines = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
+const nextLine = async () => void (await stdinLines.next());
+if (cfg.waitStart) {
+  process.stdout.write(JSON.stringify({ ready: true }) + "\n");
+  await nextLine();
+}
+// An agent following AGENTS.md retries a print that says "views need the app open" (B3 before local-cli's fix: a
+// takeover helper without a materializer); counted here, and s1-takeover-views.test.ts runs with noRetry.
 let printRetries = 0;
 try {
   for (;;) {
@@ -48,9 +55,6 @@ try {
   await local.close();
 }
 const file = join(bundle!, ...view.path.split("/"));
-// lines on stdin: "go" after a pause (waitGo, or a {op: "wait"} step)
-const stdinLines = createInterface({ input: process.stdin })[Symbol.asyncIterator]();
-const nextLine = async () => void (await stdinLines.next());
 if (cfg.waitGo) {
   // printed; the test changes things before this agent saves (a stale save), then says go
   process.stdout.write(JSON.stringify({ printed: view }) + "\n");

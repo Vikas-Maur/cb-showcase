@@ -12,7 +12,8 @@
 // system). It matters beyond Windows: stock 1.4.0 takes an unreadable project.json for a removed project (dropped from
 // the index and the rescan, the watcher says `removed`). So:
 //   - the caller holds the bundle's install lock (`.carton/install.lock/`, `withInstallLock`, shared with the app's
-//     facade) around the whole install, from step 1 to step 3;
+//     facade) around the whole install, from step 1 to step 3, and passes its `mine()`: a holder that stalled long
+//     enough to be taken over stops before step 1 instead of installing its older file over the successor's;
 //   - readers wait on ENOENT while the lock is held: the app's store bridge up to 6 s (50 ms without the lock), Carton's
 //     own through `retryMissing` (6 s, 100 ms without); agents' file tools see a transient error;
 //   - an install that fails between 1 and 2 (a link error other than EEXIST, or a busy file past its budget) puts the
@@ -171,6 +172,12 @@ export interface InstallOptions extends BusyOptions {
   lastStamp?: string | null;
   /** How many foreign files one install displaces before it gives up (`InstallGaveUp`), default 50. */
   maxDisplaced?: number;
+  /**
+   * The install lock's `mine()`: checked before each displacing rename. False means another process took the lock over
+   * (this one stalled for a minute) and may have installed newer state since: this install stops (`InstallLockLost`)
+   * instead of putting its older file in place.
+   */
+  mine?: () => boolean;
 }
 
 /**
@@ -187,6 +194,16 @@ export class InstallGaveUp extends Error {
   }
 }
 
+/** The install lock was taken over while this install waited: it installed nothing (`displaced`: what it moved aside). */
+export class InstallLockLost extends Error {
+  readonly displaced: string[];
+  constructor(target: string, displaced: string[]) {
+    super(`${target}: another process took the install lock over; this install stopped (its content may be older)`);
+    this.name = "InstallLockLost";
+    this.displaced = displaced;
+  }
+}
+
 const hr = (): bigint => process.hrtime.bigint();
 
 /**
@@ -199,6 +216,7 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
   let eexist = 0;
   let first: bigint | null = null;
   for (;;) {
+    if (opts.mine && !opts.mine()) throw new InstallLockLost(target, displaced);
     const slot = nextSlot();
     const t0 = hr();
     first ??= t0;
@@ -256,6 +274,7 @@ async function installWithoutLinks(target: string, tmp: string, nextSlot: () => 
   const displaced: string[] = [];
   const t0 = hr();
   const stamp = await statStamp(target, opts);
+  if (opts.mine && !opts.mine()) throw new InstallLockLost(target, displaced);
   if (stamp !== null && stamp !== opts.lastStamp) {
     const slot = nextSlot();
     try {

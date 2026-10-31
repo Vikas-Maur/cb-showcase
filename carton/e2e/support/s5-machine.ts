@@ -5,9 +5,10 @@
 // printed as they happen, so the scenario can act mid-upload (kill this process, cut its link).
 //   S5_STORE=<store JSON> s5-machine <home>
 //
-// Collab proxies are segmented streams (media's stream.ts): `share` with `holdEnd` puts every segment but holds the
-// stream's `end` entry until `release` (prints {endHeld}, then {endSent}), so "while the proxy uploads" lasts as long
-// as a test needs; `play` reads a stream as a player does (init, then each segment, verified, waiting for the rest).
+// Collab proxies are segmented streams (media's stream.ts): `share` with `holdSegment: n` holds the stream's entry for
+// segment n (and so everything after it) until `release` (prints {entryHeld}, then {entrySent}), so "while the proxy
+// uploads" lasts as long as a test needs; `play` reads a stream as a player does (init, then each segment, verified,
+// waiting for the ones still uploading), printing {played} for each part as it goes.
 //
 // The store goes in the environment, not the command line, since it may hold keys. Store JSON: {kind:"fs", root} | {kind:"s3", endpoint, bucket, region, accessKeyId, secretAccessKey}
 //           | {kind:"http", baseUrl, projectId, token}
@@ -134,9 +135,10 @@ function holdCompletes(s: BlobStore): BlobStore {
   };
 }
 
-/** `s` with a stream's `end` entry (ps/<stream>/end) held until `releaseHeld()`: its segments go up, it never ends. */
-function holdStreamEnd(s: BlobStore): BlobStore {
+/** `s` with a stream's entry for segment `n` (ps/<stream>/s/<n>) held until `releaseHeld()`; the rest go through. */
+function holdStreamEntry(s: BlobStore, n: number): BlobStore {
   const gate = new Promise<void>((r) => (releaseHeld = r));
+  const held = new RegExp(`^ps/[0-9a-f]{64}/s/${String(n).padStart(6, "0")}$`);
   return new Proxy(s, {
     get(target, prop) {
       if (prop !== "put") {
@@ -144,10 +146,10 @@ function holdStreamEnd(s: BlobStore): BlobStore {
         return typeof v === "function" ? v.bind(target) : v; // stores may be classes with private fields
       }
       return async (key: string, data: Uint8Array, opts?: unknown) => {
-        if (/^ps\/[0-9a-f]{64}\/end$/.test(key)) {
-          out({ endHeld: key });
+        if (held.test(key)) {
+          out({ entryHeld: key });
           await gate;
-          out({ endSent: key });
+          out({ entrySent: key });
         }
         return (target.put as (k: string, d: Uint8Array, o?: unknown) => Promise<unknown>)(key, data, opts);
       };
@@ -191,7 +193,7 @@ async function run(c: Cmd): Promise<Record<string, unknown>> {
     case "share": {
       const shareEvents: ShareEvent[] = [];
       const r = await shareMedia({
-        store: c.holdEnd ? holdStreamEnd(store) : store,
+        store: c.holdSegment !== undefined ? holdStreamEntry(store, Number(c.holdSegment)) : store,
         ...(process.env.FFMPEG ? { ffmpeg: process.env.FFMPEG } : {}),
         record: toMediaRecord(c.record),
         local: { original: c.original },
@@ -261,6 +263,7 @@ async function run(c: Cmd): Promise<Record<string, unknown>> {
       try {
         for await (const p of sr.play()) {
           parts.push(p.bytes.slice());
+          out({ played: { stream: c.stream, part: p.part, index: p.part === "segment" ? p.segment.index : null } });
           if (p.part === "init") init = p.bytes.length;
           else if (++segments === c.segments) break;
         }
