@@ -4,7 +4,7 @@
 import { assignKeys, stripEphemeral, deepEqual, POS } from "@carton/core";
 import type { Doc, Rec, ObjectSpec, FieldSpec } from "@carton/core";
 import type { OwnFn } from "@carton/core/plugins";
-import { cardboardSchema as S, ITEMS, TRACKS, MEDIA, LOCAL_ONLY } from "./schema.ts";
+import { cardboardSchema as S, ITEMS, TRACKS, MEDIA, LOCAL_ONLY, CARTON_MEDIA_FIELDS } from "./schema.ts";
 
 /** The slice of a Cardboard `project.json` `project` object that Carton versions. */
 export interface CardboardProject {
@@ -100,8 +100,10 @@ export function fromHost(host: Readonly<Record<string, unknown>>, base: Doc | nu
   if (h.media) {
     const bm = new Map(((base?.[MEDIA] ?? []) as Rec[]).map((m) => [m.id, m]));
     out[MEDIA] = h.media.map((m) => {
-      const r = stripEphemeral(m, S.collections[MEDIA]!.record);
+      let r = stripEphemeral(m, S.collections[MEDIA]!.record);
       const b = bm.get(m.id);
+      // Carton's own fields: an entry without them (Cardboard never writes them) keeps the base's
+      if (b) for (const f of CARTON_MEDIA_FIELDS) if (r[f] === undefined && b[f] !== undefined) r = { ...r, [f]: b[f] };
       return b && deepEqual(b, r) ? b : r;
     });
   }
