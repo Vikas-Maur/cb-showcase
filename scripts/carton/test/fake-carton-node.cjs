@@ -17,6 +17,21 @@ exports.cardboard14 = {
   history: async ({ rows }) => rows.map((r) => ({ ...r, who: "fake-actor", cut: "Main" })),
   merge3: async ({ base, current, file, prefer, rn }) => { log("merge3", { prefer: prefer ?? null }); return rn(base, current, file, { prefer }); },
   undoTurn: async ({ turn, actor }) => { log("undoTurn", { turn, actor }); return { status: "confirmed", seq: 99, ref: "main@99" }; },
+  hasHistory: async () => true,
+  headProject: async (bundlePath, current) => (log("headProject", { bundle: bundlePath.split("/").pop(), rev: current?.stateUpdatedAt }), null),
+  // cb: one probe command and one tool stand for @carton/cli-mcp's; they show what the bridge hands over.
+  registerCommands: (program, { open, out, after }) => {
+    program.command("carton-probe").argument("<project>").action(async (ref) => {
+      const t = await open(ref);
+      log("open", { id: t.id, bundle: t.bundlePath.split("/").pop() });
+      await after(t);
+      out({ probed: t.id }, () => "probed");
+    });
+  },
+  registerMcp: (tool, { z, projectParam, open, result }) => tool("timeline_cuts", "Cuts (fake)", { project: projectParam }, true, async ({ project }) => {
+    const t = await open(project);
+    return result({ cuts: ["Main"], bundle: t.bundlePath }, "Main");
+  }),
   run: async (argv, io) => { log("run", { argv, bundle: io.bundlePath.split("/").pop(), json: io.json }); io.stdout("fake run " + argv.join(" ") + "\n"); return 0; },
   mcpTools: () => [{ name: "timeline_cuts", description: "Cuts (fake)", inputSchema: { properties: { project: { type: "string" } }, required: ["project"] }, readOnly: true, call: async (a, io) => ({ text: "Main", result: { cuts: ["Main"], bundle: io.bundlePath } }) }],
   hook: async ({ event, input, env }) => { log("hook", { event, actor: env.CARDBOARD_ACTOR, input }); return event === "pre-tool-use" ? { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow" } } : null; },

@@ -41,7 +41,7 @@ const STORE = {
       ["let d=await this.listRevisions(r);for(let m of d.slice(20))", "let d=await this.__cartonListRevisions(r);for(let m of d.slice(20))"],
     ],
     undoWrite: ["return await this.writeTimeline(o,c.doc,c.added),a.rev}", "return await this.writeTimeline(o,c.doc,c.added,{source:\"undo\",rev:a.rev}),a.rev}"],
-    base: ["B=await this.revisionAtOrBefore(o,g.rev)??j,", "B=await this.revisionAtOrBefore(o,g.rev)??(__carton.on?__carton.missingRev(g.rev,j):j),"],
+    base: ["B=await this.revisionAtOrBefore(o,g.rev)??j,", "B=await this.revisionAtOrBefore(o,g.rev)??(__carton.on?await __carton.missingRev(g.rev,j,o):j),"],
     merge: ["Z=rn(B,j,J.doc,{prefer:n.prefer})", "Z=__carton.on?await __carton.merge3(B,j,J.doc,{prefer:n.prefer},rn):rn(B,j,J.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added]);return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt})",
@@ -68,7 +68,7 @@ const STORE = {
       ["let l=await this.listRevisions(r);for(let u of l.slice(20))", "let l=await this.__cartonListRevisions(r);for(let u of l.slice(20))"],
     ],
     undoWrite: ["return await this.writeTimeline(i,s.doc,s.added),o.rev}", "return await this.writeTimeline(i,s.doc,s.added,{source:\"undo\",rev:o.rev}),o.rev}"],
-    base: ["be=await this.revisionAtOrBefore(i,h.rev)??de,", "be=await this.revisionAtOrBefore(i,h.rev)??(__carton.on?__carton.missingRev(h.rev,de):de),"],
+    base: ["be=await this.revisionAtOrBefore(i,h.rev)??de,", "be=await this.revisionAtOrBefore(i,h.rev)??(__carton.on?await __carton.missingRev(h.rev,de,i):de),"],
     merge: ["ee=$f(be,de,qe.doc,{prefer:n.prefer})", "ee=__carton.on?await __carton.merge3(be,de,qe.doc,{prefer:n.prefer},$f):$f(be,de,qe.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added]);return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt})",
@@ -128,22 +128,19 @@ if (mode === "--cli") {
   });
   patch(cbFile, (replace) => {
     replace(shim, shim + require("./carton/cli-bridge"));
-    // The Carton commands (cut, fold, credits, restore, compare, conflicts, resolve, publish and their git aliases),
-    // registered once every Cardboard command is, so `cb --help` lists them after Cardboard's.
+    // @carton/cli-mcp's commands (cut, fold, credits, restore, compare, conflicts, resolve, publish, the git words),
+    // registered once every Cardboard command is: Carton's history and undo take over Cardboard's when on.
     replace("var FN=ak(Ie);", "__cartonCli.commands(Ie,{options:De,open:()=>H(De()),resolve:I,out:He});var FN=ak(Ie);");
-    // cb history: WHO and CUT columns when Carton supplies them.
-    const table = 'me([["REV","SAVED","TRACKS","ITEMS","DURATION"],...i.map(c=>[String(c.rev),hs(c.at),String(c.tracks),String(c.items),`${c.duration.toFixed(1)}s`])])';
-    replace(table, `me(__cartonCli.historyTable(${table.slice(3, -1)},i))`);
-    // cb undo --turn <id>.
+    // cb undo --turn <id> is Carton's; with Carton off it says so instead of undoing something else.
     replace(
-      ".action(async(a,s)=>{let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);e().result({id:i.id,restored:c},()=>c===null?\"Nothing to undo\":`Restored revision ${c}`)})",
-      ".option(\"--turn <id>\",\"undo every change one agent turn made (Carton)\").action(async(a,s,__o)=>{let o=await H(r()),i=await I(o,a);if(__o?.turn!==void 0){let c=await __cartonCli.undoTurn(o,i.id,__o.turn);return e().result({id:i.id,...c},()=>__cartonCli.statusLine(c))}let c=await o.timeline.undo(i.id,s);e().result({id:i.id,restored:c},()=>c===null?\"Nothing to undo\":`Restored revision ${c}`)})",
+      ".action(async(a,s)=>{let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);",
+      ".option(\"--turn <id>\",\"undo every change one agent turn made (Carton)\").action(async(a,s,__o)=>{if(__o?.turn!==void 0)await __cartonCli.undoTurn();let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);",
     );
-    // MCP: undo_timeline takes a turn too, and Carton's tools go in before list_media.
-    replace(
-      "{project:fe,rev:f.number().int().optional()},!1,async({project:_,rev:y})=>{let w=await I(s,_),v=await s.timeline.undo(w.id,y);return Y({restored:v},v===null?\"Nothing to undo\":`Restored revision ${v}`)}),p(\"list_media\",",
-      "{project:fe,rev:f.number().int().optional(),...__cartonCli.on&&{turn:f.string().optional().describe(\"Undo every change one agent turn made\")}},!1,async({project:_,rev:y,turn:__t})=>{let w=await I(s,_);if(__t!==void 0){let v=await __cartonCli.undoTurn(s,w.id,__t);return Y(v,__cartonCli.statusLine(v))}let v=await s.timeline.undo(w.id,y);return Y({restored:v},v===null?\"Nothing to undo\":`Restored revision ${v}`)}),__cartonCli.mcp(p,{z:f,project:fe,resolve:async(x)=>{let q=await I(s,x);return{id:q.id,bundlePath:s.projects?.bundlePathFor?.(q.id)}},result:Y}),p(\"list_media\",",
-    );
+    // MCP: Carton serves timeline_history and undo_timeline (with cuts, stats and turns) in place of Cardboard's own,
+    // and adds its tools before list_media.
+    replace('p("timeline_history",', '__cartonCli.own("timeline_history")&&p("timeline_history",');
+    replace('p("undo_timeline",', '__cartonCli.own("undo_timeline")&&p("undo_timeline",');
+    replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:s,result:Y}),p("list_media",');
   });
 } else if (mode === "--app") {
   const [mainFile, workerFile, indexFile, editorFile, storeFile] = files;

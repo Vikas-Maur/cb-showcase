@@ -1,7 +1,9 @@
 // Bundles Carton for the Windows build (build-windows.js runs it; see carton/docs/INTEGRATION-1.4.0.md §2):
 //   <resources>/carton/carton-node.cjs     the facade (carton-node.js) with @carton/* for the library worker, main and cb
-//   <resources>/carton/engine-thread-main.js, helper-main.js
-//                                          @carton/local's engine thread and headless helper, which it finds beside it
+//   <resources>/carton/engine-thread-main.js, helper-main.js, factory.js
+//                                          @carton/local's engine thread, headless helper and engine factory, which it
+//                                          finds beside it
+//   <resources>/carton/fmsv.cjs            the editor's GUI save projection, cut out of its bundle (fmsv.js)
 //   <assets>/carton-ui.js                  the History panel (ui.js) with @carton/react, on the editor's own React
 // esbuild comes from the carton workspace (cd carton && npm ci). The Node side is CommonJS for Electron's Node 24;
 // `import.meta.url` is the file's own URL there, so @carton/local finds its sibling scripts.
@@ -33,9 +35,11 @@ const build = async (resources, assets) => {
   // (carton-node.cjs keeps its own extension), and require() inside them is Node's own.
   const lib = path.join(CARTON, "packages", "local", "src");
   fs.writeFileSync(path.join(out, "package.json"), JSON.stringify({ type: "module" }) + "\n");
-  for (const entry of ["engine-thread-main", "helper-main"])
+  for (const entry of ["engine-thread-main", "helper-main", "factory"])
     if (fs.existsSync(path.join(lib, entry + ".ts")))
       await esbuild.build({ ...node, format: "esm", banner: { js: "import { createRequire as __cartonRequire } from \"node:module\"; const require = __cartonRequire(import.meta.url);" }, define: {}, entryPoints: [path.join(lib, entry + ".ts")], outfile: path.join(out, entry + ".js") });
+  // The GUI save projection the worker diffs a GUI save through: Cardboard's own, from the editor store's bundle.
+  fs.writeFileSync(path.join(out, "fmsv.cjs"), require("./fmsv").source(fs.readFileSync(path.join(assets, "installErrorTelemetry-DxKId8tA.js"), "utf8")));
   // The pages: React is the editor's own (window.__cartonReact, set before the import).
   await esbuild.build({
     bundle: true,

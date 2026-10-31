@@ -115,15 +115,9 @@ test("Carton on: every cb hook reaches the facade", { skip }, () => {
   assert.equal(commits[3].meta.source, "undo");
   assert.ok(log.read().filter((l) => l.what === "merge3").length === 2, "merge3 in place of rn for both applies");
   assert.ok(log.read().some((l) => l.what === "install" && l.file.endsWith("project.json")), "displace-then-install");
-  // cb history gets WHO and CUT; cb undo --turn and the Carton commands go to Carton.
-  const hist = cb(carton.cli, root, ["history", "Demo"], extra);
-  assert.match(spawnSync(process.execPath, [path.join(carton.cli, "cardboard.mjs"), "--root", root, "history", "Demo"], { env: env(extra), encoding: "utf8" }).stdout, /WHO\s+CUT/);
-  assert.equal(hist.code, 0);
-  const undo = cb(carton.cli, root, ["undo", "Demo", "--turn", "t-42"], { ...extra, CARDBOARD_ACTOR: "director/chat1/t-42" });
-  assert.equal(JSON.parse(undo.out).status, "confirmed");
-  assert.deepEqual(log.read().filter((l) => l.what === "undoTurn").map((l) => [l.turn, l.actor]), [["t-42", "director/chat1/t-42"]]);
-  assert.equal(cb(carton.cli, root, ["branch", "Demo", "new", "30s cut"], extra).code, 0);
-  assert.deepEqual(log.read().filter((l) => l.what === "run").map((l) => [l.argv, l.bundle]), [[["cut", "new", "30s cut"], "Demo.cardboard"]]);
+  // The Carton commands get the project as Cardboard resolves it, and head goes back into project.json after them.
+  assert.deepEqual(JSON.parse(cb(carton.cli, root, ["carton-probe", "Demo"], extra).out), { probed: JSON.parse(fs.readFileSync(path.join(root, "Demo.cardboard", "project.json"), "utf8")).project.id });
+  assert.deepEqual(log.read().filter((l) => l.what === "open" || l.what === "headProject").map((l) => [l.what, l.bundle]), [["open", "Demo.cardboard"], ["headProject", "Demo.cardboard"]]);
   // Off, undo --turn says it needs Carton rather than undoing something else.
   const off = cb(carton.cli, root, ["undo", "Demo", "--turn", "t-42"], { CARDBOARD_CARTON: "0" });
   assert.notEqual(off.code, 0);
@@ -153,23 +147,54 @@ test("the library worker: Windows build, Carton off, Carton on", { skip }, () =>
   assert.equal(commits[1].meta.source, "timeline");
 });
 
-// The real facade, built from the carton workspace. Until @carton/local can open a project, Carton on must behave as
-// Cardboard does: no history, and writes exactly as 1.4.0 makes them.
+// The real facade, built from the carton workspace, on real Carton and carton.db: the cb commands end to end.
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
 const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
-test("Carton on with the real facade and no history yet: cb is Cardboard's", { skip: noBuild }, async () => {
+test("Carton on, for real: history with authors, credits, cuts, fold, undo --turn, no lost update", { skip: noBuild }, async () => {
   const out = path.join(TMP, "bundle");
   fs.rmSync(out, { recursive: true, force: true });
-  fs.mkdirSync(path.join(out, "assets"), { recursive: true });
-  await require("../build.js").build(out, path.join(out, "assets"));
-  for (const f of ["carton-node.cjs", "engine-thread-main.js", "helper-main.js", "package.json"]) assert.ok(fs.existsSync(path.join(out, "carton", f)), f);
-  assert.ok(fs.existsSync(path.join(out, "assets", "carton-ui.js")));
-  const real = { CARDBOARD_CARTON: "1", CARTON_DIR: path.join(out, "carton") };
-  const a = session(win.cli, path.join(TMP, "lib-win2")), b = session(carton.cli, path.join(TMP, "lib-real"), real);
-  assert.deepEqual(b.map((s) => s.code), a.map((s) => s.code));
-  // The same JSON results; the only addition is the warning that history is off.
-  const json = (s) => norm(s.out.replace(/\[carton\][^\n]*\n/g, ""));
-  assert.deepEqual(b.map(json), a.map(json));
-  assert.deepEqual(files(path.join(TMP, "lib-real")), files(path.join(TMP, "lib-win2")));
-  assert.ok(!fs.existsSync(path.join(TMP, "lib-real", "Demo.cardboard", ".carton", "displaced")), "nothing displaced without history");
+  await require("../build.js").build(out, carton.assets);
+  for (const f of ["carton-node.cjs", "engine-thread-main.js", "helper-main.js", "factory.js", "fmsv.cjs", "package.json"]) assert.ok(fs.existsSync(path.join(out, "carton", f)), f);
+  assert.ok(fs.existsSync(path.join(carton.assets, "carton-ui.js")));
+  const real = (actor) => ({ CARDBOARD_CARTON: "1", CARTON_DIR: path.join(out, "carton"), CARDBOARD_ACTOR: actor ?? "" });
+  const root = path.join(TMP, "lib-real"), b = path.join(root, "Demo.cardboard");
+  fs.rmSync(root, { recursive: true, force: true });
+  const run = (actor, ...a) => { const r = cb(carton.cli, root, a, real(actor)); assert.equal(r.code, 0, a.join(" ") + "\n" + r.out); return r.out; };
+  const json = (actor, ...a) => JSON.parse(run(actor, ...a).replace(/^\[carton\][^\n]*\n/gm, ""));
+  run(null, "project", "create", "Demo");
+  run(null, "media", "add", "Demo", clip);
+  const edit = path.join(TMP, "real-edit.tsx");
+  fs.writeFileSync(edit, 'export default (\n  <timeline aspect="16:9">\n    <track name="V1">\n      <clip src="clip.mp4" start={0} end={2} />\n    </track>\n    <track name="Titles">\n      <text name="Hello" start={0.5} end={2.5} fontSize={120} textContent="Hello" />\n    </track>\n  </timeline>\n);\n');
+  assert.equal(json("director/chat1/turn1", "source", "apply", "Demo", edit).carton.status, "confirmed");
+  fs.writeFileSync(edit, fs.readFileSync(path.join(b, "timeline.tsx"), "utf8").replace("fontSize={120}", "fontSize={140}"));
+  json("director/chat1/turn2/sub-Explore-a1", "source", "apply", "Demo", edit);
+  assert.ok(fs.existsSync(path.join(b, ".carton", "carton.db")));
+  const textId = () => JSON.parse(fs.readFileSync(path.join(b, "project.json"), "utf8")).project.timelineItems.find((i) => i.type === "text");
+  // History: every version, with who made it down to the subagent.
+  const by = json(null, "history", "Demo").versions.map((v) => v.by?.id ?? null);
+  assert.deepEqual(by.slice(0, 2), ["director/chat1/turn2/sub-Explore-a1", "director/chat1/turn1"]);
+  assert.equal(json(null, "credits", "Demo", textId().id).by.id, "director/chat1/turn2/sub-Explore-a1");
+  // A cut: project.json follows the switch, the cut's edit stays on it, and folds back in.
+  run(null, "cut", "new", "Demo", "30s cut");
+  run(null, "cut", "switch", "Demo", "30s cut");
+  fs.writeFileSync(edit, fs.readFileSync(path.join(b, "timeline.tsx"), "utf8").replace("fontSize={140}", "fontSize={90}"));
+  json("codex/c7", "source", "apply", "Demo", edit);
+  assert.equal(textId().fontSize, 90);
+  run(null, "cut", "switch", "Demo", "Main cut");
+  assert.equal(textId().fontSize, 140);
+  run(null, "fold", "Demo", "30s cut");
+  assert.equal(textId().fontSize, 90);
+  // Undoing turn2 after the fold changed the same size again: a card, nothing lost.
+  // (cb says so with exit code 1: a card is waiting.)
+  const u = cb(carton.cli, root, ["undo", "Demo", "--turn", "turn2"], real("director/chat1/turn3"));
+  assert.equal(JSON.parse(u.out.replace(/^\[carton\][^\n]*\n/gm, "")).status, "conflicts", u.out);
+  assert.equal(textId().fontSize, 90);
+  // Four agents at once on different titles: none loses its last edit (B1).
+  const wroot = path.join(TMP, "lib-real-writers");
+  fs.rmSync(wroot, { recursive: true, force: true });
+  const w = (...a) => spawnSync(process.execPath, [path.join(__dirname, "..", "writers.js"), ...a], { env: env(real()), encoding: "utf8", timeout: 300_000 });
+  assert.equal(w("setup", path.join(carton.cli, "cardboard.mjs"), wroot).status, 0);
+  const r = w("run", path.join(carton.cli, "cardboard.mjs"), wroot, "--writers", "4", "--rate", "2", "--seconds", "15");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /no lost updates/);
 });
