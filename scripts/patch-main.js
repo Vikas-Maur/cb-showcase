@@ -199,6 +199,16 @@ var __cbEnv = () => {
 // strip's right end on a clear background so the strip shows through. The strip draws the app menu
 // (patch-strip.js) from this description of it, and has main run the item picked.
 var __cbTitleBar = { color: "#00000000", symbolColor: "#a3a3a3", height: 40 };
+// Patch 15: how much bigger than asked a window without the native title bar came out (w.__cbAskedBounds,
+// the size it was created at), in DIP, or null when it came out as asked. A side that came out smaller or
+// more than 32 DIP bigger is something else (not this) and is left alone.
+var __cbWindowGrowth = (w, got) => {
+  const asked = __cbWin && w.__cbAskedBounds;
+  if (!asked) return null;
+  const extra = (d) => (d > 0 && d <= 32 ? d : 0);
+  const width = extra(got.width - asked.width), height = extra(got.height - asked.height);
+  return width || height ? { width, height } : null;
+};
 var __cbMenuJson = (items, at = []) => items.flatMap((m, i) => m.visible === false ? [] : [{
   path: [...at, i],
   type: m.type,
@@ -655,6 +665,25 @@ if (speed)
 replace(
   "deliver(t,r=!0){this.send(t).catch(()=>{r?this.defect({process:\"main\",kind:\"telemetry_delivery\",workflow_stage:t.kind}):this.deps.warn(`[telemetry] ${t.kind} delivery failed`)})}",
   "deliver(t,r=!0){this.send(t).catch(__cbE=>{r?this.defect({process:\"main\",kind:\"telemetry_delivery\",workflow_stage:t.kind}):this.deps.warn(`[telemetry] ${t.kind} delivery failed`+(__cbE?.message?`: ${String(__cbE.message).slice(0,120)}`:\"\"))})}",
+);
+
+// 15. The window opens at the size it closed at, instead of a little bigger each time. Cardboard saves the
+// window's size when it closes (window-state.json) and creates the next window at that size. Without the
+// native title bar (patch 9), Electron on Windows makes the window a few DIP bigger than asked (1440x800
+// came out 1446x804 at 125% scaling; with the native frame it comes out as asked), so every launch saved
+// and reopened it bigger, until the work area capped it: the default window is as tall as the screen, so
+// it grew in width, and one the user made smaller grew both ways. Now the difference is noted when the
+// window is made and taken off the size that is saved. How much bigger it comes out depends on the size
+// and position, so the size the user drags the window to is kept to within a few DIP on the next launch,
+// and exactly after that.
+replace(
+  `this.closingWindow=!1,this.persist=CSe(n,`,
+  `this.closingWindow=!1,__cbWin&&(n.__cbAskedBounds=r.bounds),this.persist=CSe(n,`,
+);
+replace(`i=e.getNormalBounds(),s=()=>{`, `i=e.getNormalBounds(),__cbGrow=__cbWindowGrowth(e,i),s=()=>{`);
+replace(
+  `let c={bounds:i,maximized:e.isMaximized()}`,
+  `let c={bounds:__cbGrow?{...i,width:i.width-__cbGrow.width,height:i.height-__cbGrow.height}:i,maximized:e.isMaximized()}`,
 );
 
 fs.writeFileSync(file, src);

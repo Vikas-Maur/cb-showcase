@@ -126,6 +126,16 @@ they are Cardboard's software, not ours to redistribute.
     its own problems, and a failed analytics upload is one, to cardboard.ai; when that report can't be sent
     either, main warned without the reason (145 times in an hour of test exports, from both builds and from
     a normal session, so not from these changes).
+15. The window opens at the size it was closed at. Cardboard saves the window's size when it closes and
+    opens the next one at that size. Without the native title bar (patch 9), Electron on Windows makes a
+    window slightly bigger than asked, so each launch saved a bigger size and opened bigger still. On the
+    test laptop (125% scaling) it went 1440 → 1446 → 1452 → 1458 points wide over three launches, and
+    would go on until the screen's width, where Cardboard caps it. The default window is as tall as the
+    screen, so only its width grew. A window dragged smaller, or quit maximized, grew both ways. Now main
+    notes how much bigger the window came out when it was made, and takes that off the size it saves.
+    Over repeated launches, a resize, and quitting maximized then restoring down, the window kept its
+    size. How much bigger Windows makes it depends on the size and position. So the first launch after a
+    resize can open it a few pixels off the size it was dragged to, and it keeps that size afterwards.
 
 `scripts\patch-worker.js` (applied to `asar-src\dist\library-worker.js`) uses the NVIDIA GPU
 (NVENC) for converting imported media and making preview copies, where macOS uses VideoToolbox.
