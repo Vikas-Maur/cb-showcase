@@ -15,16 +15,16 @@
 // - Archiving (§18) runs on a timer per open room, with the same defaults as the Durable Object.
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { mkdirSync, createReadStream, statSync } from "node:fs";
+import { mkdirSync, createReadStream, statSync, readdirSync } from "node:fs";
 import { join, resolve, sep, extname } from "node:path";
 import { Readable } from "node:stream";
 import type { Duplex } from "node:stream";
 import type { AuthContext, BlobStore, SequencerHost } from "@carton/core/plugins";
-import type { sync } from "@carton/core";
+import { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, tokenFromRequest, WS_PROTOCOL } from "@carton/server";
 import { handleHttp, checkSession, type HttpAuth, type HttpDeps } from "@carton/host-http";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
-import { encodeSegment } from "@carton/blob-fs/keys";
+import { encodeSegment, decodeSegment } from "@carton/blob-fs/keys";
 import { acceptWebSocket, rejectUpgrade, type ServerWebSocket } from "./ws.ts";
 import { nodeSqliteStorage, type NodeSqliteStorage } from "./storage.ts";
 
@@ -55,6 +55,9 @@ export interface NodeHostOptions {
   maxMessageBytes?: number;
   /** The newest document schemaVersion this host's sequencer accepts in `hello` (default 1). */
   schemaVersion?: number;
+  /** The largest message carried as an envelope, read by the sequencer and taken by the upload route (default 64
+   * MiB, the sequencer's own). */
+  maxEnvelopeBytes?: number;
   durability?: "full" | "normal";
   onError?: (e: unknown) => void;
 }
@@ -66,6 +69,8 @@ export interface NodeHost extends SequencerHost {
   readonly port: number;
   /** The open rooms (tests and admin). */
   room(projectId: string): { sequencer: Sequencer; storage: NodeSqliteStorage; connections: number } | undefined;
+  /** Delete expired envelope blobs of every project this host knows, room open or not (runs hourly by itself). */
+  sweepEnvelopes(): Promise<number>;
 }
 
 interface Room {
@@ -138,7 +143,14 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     if (room) return room;
     const storage = nodeSqliteStorage(join(roomsDir, encodeSegment(projectId) + ".db"), opts.durability ? { durability: opts.durability } : {});
     const blobs = scoped(projectId, "seq");
-    const sequencer = createSequencer({ storage, auth: opts.auth, projectId, schemaVersion: opts.schemaVersion ?? 1, ...(blobs ? { blobs } : {}) });
+    const sequencer = createSequencer({
+      storage,
+      auth: opts.auth,
+      projectId,
+      schemaVersion: opts.schemaVersion ?? 1,
+      ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
+      ...(blobs ? { blobs } : {}),
+    });
     room = { projectId, storage, sequencer, conns: new Map(), idle: null, archive: null, pending: new Set(), closeWhenDrained: false };
     if (blobs) {
       const r = room;
@@ -218,14 +230,50 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     ws.on("close", () => {
       room.conns.delete(ws);
       room.sequencer.disconnect(conn);
-      if (room.conns.size === 0 && !closing) {
-        room.idle = setTimeout(() => {
-          if (room.conns.size === 0) closeRoom(room);
-        }, idleCloseMs);
-        room.idle.unref();
-      }
+      idleLater(room);
     });
   }
+
+  function idleLater(room: Room): void {
+    if (room.conns.size > 0 || closing || room.idle) return;
+    room.idle = setTimeout(() => {
+      room.idle = null;
+      if (room.conns.size === 0) closeRoom(room);
+    }, idleCloseMs);
+    room.idle.unref();
+  }
+
+  // Envelope blobs expire hours after they were made (core's envelopeExpired), longer than a room usually stays
+  // open, and an upload may come with no socket at all. So the sweep runs at the host, over every project with a
+  // room file, open or not; room maintenance (archiving) stays with the room.
+  async function sweepEnvelopes(): Promise<number> {
+    if (!opts.blobs) return 0;
+    const now = Date.now();
+    let swept = 0;
+    let files: string[] = [];
+    try {
+      files = readdirSync(roomsDir);
+    } catch {}
+    for (const f of files) {
+      if (!f.endsWith(".db")) continue;
+      const projectId = decodeSegment(f.slice(0, -3));
+      if (!projectId) continue;
+      const store = scoped(projectId, "seq")!;
+      let cursor: string | undefined;
+      do {
+        const page = await store.list("messages/", cursor ? { cursor } : {});
+        for (const b of page.blobs)
+          if (sync.envelopeExpired(b.key, now)) {
+            await store.delete(b.key).catch(() => {});
+            swept++;
+          }
+        cursor = page.cursor;
+      } while (cursor);
+    }
+    return swept;
+  }
+  const sweeper = setInterval(() => void sweepEnvelopes().catch(onError), archiveEvery);
+  sweeper.unref();
 
   const server: Server = createServer();
   const listenHost = opts.host ?? "127.0.0.1";
@@ -246,6 +294,9 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     secret: opts.secret ?? new Uint8Array(32),
     blobsFor,
     sequencerBlobsFor: (projectId) => scoped(projectId, "seq"),
+    ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
+    // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes
+    onEnvelope: (projectId) => idleLater(openRoom(projectId)),
     // a plain GET on the socket route (no Upgrade header): the upgrade itself goes through server.on("upgrade")
     upgrade: async () => new Response("expected a WebSocket upgrade", { status: 426 }),
   };
@@ -298,8 +349,10 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
       const r = rooms.get(projectId);
       return r && { sequencer: r.sequencer, storage: r.storage, connections: r.conns.size };
     },
+    sweepEnvelopes,
     async close() {
       closing = true;
+      clearInterval(sweeper);
       for (const room of rooms.values()) for (const ws of room.conns.keys()) ws.close(1001, "host shutting down");
       await new Promise<void>((ok) => {
         server.close(() => ok());
