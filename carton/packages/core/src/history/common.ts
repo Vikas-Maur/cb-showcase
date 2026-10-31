@@ -58,6 +58,8 @@ export interface HistoryOptions {
   projectId?: string | null;
   /** A keyframe every K confirmed changes (default 64). */
   keyframeEvery?: number;
+  /** Change ids for commits that don't pass one (default `${rid}.${n}`). A handle that rebuilds its History passes its own. */
+  nextId?: () => string;
 }
 
 /** A commit's base when the caller holds the doc (GUI base in engine memory, a view's last applied state). */
@@ -77,6 +79,7 @@ export interface HistoryCommit {
   policy?: Policy;
   choices?: Choices;
   id?: ChangeId;
+  /** Unused (the prototype's flag): an empty commit is confirmed empty; an empty fold or undo is always recorded. */
   allowEmpty?: boolean;
   name?: string;
 }

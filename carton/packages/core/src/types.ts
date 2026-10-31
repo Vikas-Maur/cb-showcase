@@ -520,6 +520,8 @@ export type CartonEvent =
   | { type: "change"; branchId: string; seq: number; change: ConfirmedChange; local: boolean }
   | { type: "pending"; branchId: string; id: ChangeId }
   | { type: "notice"; notice: Notice }
-  | { type: "sync"; status: "offline" | "syncing" | "up-to-date"; waiting: number }
+  | { type: "sync"; status: "offline" | "syncing" | "up-to-date" | "stopped"; waiting: number }
+  /** A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1). */
+  | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
   | { type: "presence"; actor: Actor; state: unknown }
   | { type: "warning"; branchId: string; warnings: SoftWarning[] };
