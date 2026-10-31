@@ -34,18 +34,24 @@ function stubFns(file, names) {
   writeFileSync(file, s);
 }
 const variants = {
-  "cbproj export/import (+lastAuthorMap, knowledge)": (d) => stubMethods(d + "/history/history.ts", ["exportShallow", "importShallow", "exportFull", "importFull", "lastAuthorMap", "knowledge", "loadKnowledge"]),
-  "undo by actor group (+inverse remaps)": (d) => stubMethods(d + "/history/history.ts", ["undoStack", "undo", "#inverted"]),
-  "pins with owner sets": (d) => stubMethods(d + "/history/history.ts", ["pin", "release", "expirePins", "pinRow", "pinRows", "loadPin", "setPins"]),
-  "views (R4-02)": (d) => stubMethods(d + "/history/history.ts", ["printView", "saveView"]),
-  "fold-some (atomic, inverse)": (d) => stubMethods(d + "/history/history.ts", ["foldSome"]),
-  "log, names, restore": (d) => stubMethods(d + "/history/history.ts", ["log", "nameVersion", "names", "restore"]),
-  "remap as one op": (d) => stubFns(d + "/history/history.ts", ["remapAsOneOp"]),
-  "soft warnings on confirm": (d) => stubFns(d + "/history/history.ts", ["softAfter"]),
-  "local sequencer (v11 rule)": (d) => {
+  "local sequencer (v11 rule, shared with the server)": (d) => {
     const f = d + "/history/history.ts";
     writeFileSync(f, readFileSync(f, "utf8").replace(`import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";`, `import type { LocalSequencer } from "../sequencer/index.ts";\nconst createLocalSequencer = (..._: unknown[]): LocalSequencer => { throw 0; };`));
   },
+  "cbproj export/import (+last authors, knowledge, copied-folder ids)": (d) => stubMethods(d + "/history/history.ts", ["exportShallow", "importShallow", "exportFull", "importFull", "lastAuthorMap", "knowledge", "loadKnowledge", "#unclash"]),
+  "hand-off closure (Stage F2/F3)": (d) => stubMethods(d + "/history/history.ts", ["closure", "loadClosure"]),
+  "cbproj + closure together (+their shared lineage walk)": (d) => stubMethods(d + "/history/history.ts", ["exportShallow", "importShallow", "exportFull", "importFull", "lastAuthorMap", "knowledge", "loadKnowledge", "#unclash", "closure", "loadClosure"]),
+  "undo by actor group (+inverse remaps)": (d) => stubMethods(d + "/history/history.ts", ["undoStack", "undo", "planUndo", "#inverted"]),
+  "revert, restore, log, names": (d) => stubMethods(d + "/history/history.ts", ["planRevert", "revert", "restore", "restoreTarget", "log", "nameVersion", "names"]),
+  "fold-some (atomic, inverse)": (d) => stubMethods(d + "/history/history.ts", ["foldSome", "planFoldSome"]),
+  "pins with owner sets": (d) => stubMethods(d + "/history/history.ts", ["pin", "release", "expirePins", "pinRow", "pinRows", "loadPin", "setPins"]),
+  "credits (last author per record)": (d) => stubMethods(d + "/history/history.ts", ["creditsDetail", "credits", "#creditsAt", "authorsFrom"]),
+  "refs (print, parse, any cut id)": (d) => stubMethods(d + "/history/history.ts", ["parseRef", "refString"]),
+  "views (R4-02)": (d) => stubMethods(d + "/history/history.ts", ["printView", "saveView"]),
+  "keyframe milestones": (d) => stubMethods(d + "/history/history.ts", ["milestone"]),
+  "remap as one op": (d) => stubFns(d + "/history/history.ts", ["remapAsOneOp"]),
+  "soft warnings on confirm": (d) => stubFns(d + "/history/history.ts", ["softAfter"]),
+  "frozen records handed out": (d) => stubFns(d + "/engine/doc.ts", ["freezeDeep", "seal"]),
   "portable SHA-256": (d) => stubFns(d + "/engine/hash.ts", ["sha256Bytes"]),
 };
 const base = await measure(SRC);

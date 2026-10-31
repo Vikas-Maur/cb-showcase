@@ -1400,7 +1400,7 @@ function softAfter(schema: Schema, head: Doc, prior: Doc, ops: readonly Op[]): S
   return schema.soft!(head, touched, [prior], placed, placed);
 }
 /** A path key back to its segments (`~1` is `/`, `~0` is `~`). */
-const unkey = (k: PathKey): string[] => k.split("/").map((x) => x.replaceAll("~1", "/").replaceAll("~0", "~"));
+const unkey = (k: PathKey): string[] => k.split("/").map(E.unescapeSegment);
 
 /** Ops that put each rejected record (or field) of `post` back to its value in `pre`. */
 function inverseOps(schema: Schema, pre: Doc, post: Doc, reject: readonly (PathKey | readonly string[])[]): Op[] {

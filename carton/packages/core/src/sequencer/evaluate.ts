@@ -92,7 +92,8 @@ export const DEFAULT_MAX_BEHIND = 100;
 export const NO_TIMELINE: TimelineConfig = { collection: "\u0000items", lanes: "\u0000lanes", lane: "\u0000lane", start: "\u0000s", end: "\u0000e", source: "\u0000ts", sourceEnd: "\u0000te", speed: "\u0000v" };
 const EPS = 1e-9;
 
-export const pathKeyOf = (path: readonly (string | number)[]): string => path.map((s) => escapeSegment(String(s))).join("/");
+export { pathKey as pathKeyOf } from "../engine/json.ts";
+import { pathKey as pathKeyOf, unescapeSegment as unescape } from "../engine/json.ts";
 
 /** Fields that change an item's placement or timing: an op on one of them must carry a span (§6.3). */
 export function timingFields(tl: TimelineConfig): Set<string> {
@@ -386,4 +387,3 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   return { kind: "accept", lww, overwrote, records: [...records.values()], structural };
 }
 
-const unescape = (s: string): string => (s.includes("~") ? s.replaceAll("~1", "/").replaceAll("~0", "~") : s);
