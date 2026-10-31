@@ -52,7 +52,7 @@ test("R5-04 the agent reads its status after each save: confirmed, conflicts, di
     let s = (await agent.next()).status;
     assert.equal(s.status, "confirmed", JSON.stringify(s));
     assert.equal(typeof s.seq, "number");
-    assert.match(s.ref, /@\d+~[0-9a-f]{8}$/);
+    assert.match(s.ref, /@\d+~[0-9a-f]{8}( b:[0-9a-f]{8})?$/); // the full ref, as the materializer prints it
     seen.push(s.status);
 
     // another person trims c3 meanwhile (through the lease holder); the agent's view still shows 20
