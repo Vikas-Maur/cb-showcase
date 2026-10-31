@@ -47,3 +47,5 @@ export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, Previ
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";
 export { WatchTheChanges, stripLayout, xAt, type WatchTheChangesProps, type Box } from "./components/WatchTheChanges.ts";
 export { ChangesPlayer, type PlayerState, type Side, type Clock } from "./player.ts";
+export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
+export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";

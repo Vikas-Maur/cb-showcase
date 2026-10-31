@@ -47,7 +47,8 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   const words = useWords();
   const locale = useLocale();
   const v = p.v;
-  const title = v.name ?? v.turn?.label ?? v.summary;
+  // A turn without a label (the engine knows none) is titled by what it did.
+  const title = v.name || v.turn?.label || v.summary;
   const meta = [
     h(Avatar, { key: "a", actor: v.author, size: 14 }),
     h(ActorName, { key: "n", actor: v.author }),
@@ -145,9 +146,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const open = useCallback(
     (id: string) => {
       const v = find(id);
-      if (!v) return;
+      // A version still waiting to sync has no state to show yet (L5).
+      if (!v || v.provisional) return;
       if (props.onOpen) props.onOpen(v);
-      else ui.openPreview(v.ref, v.name ?? v.turn?.label ?? v.summary);
+      else ui.openPreview(v.ref, v.name || v.turn?.label || v.summary);
     },
     [find, props.onOpen, ui],
   );
@@ -174,7 +176,20 @@ export function HistoryPanel(props: HistoryPanelProps) {
     [ui, find],
   );
 
+  // Keyboard: the context-menu key on the active row opens its actions, anchored to the row.
+  const onKeyMenu = useCallback(
+    (i: number) => {
+      const v = ui.history().at(filter, i);
+      if (!v) return;
+      const rowId = `${listId}-${v.id}`;
+      const row = [...(panel.current?.querySelectorAll<HTMLElement>("[role=option]") ?? [])].find((el) => el.id === rowId);
+      if (row) onMenu(v.id, row.querySelector<HTMLElement>(".carton-version-more") ?? row);
+    },
+    [ui, filter, listId, onMenu],
+  );
+
   const menuVersion = menu ? find(menu.id) : undefined;
+  const waiting = !!menuVersion?.provisional;
   const compareVersion = comparing ? find(comparing) : undefined;
   const filters = useMemo(() => (["all", "named", "turns"] as const).map((f) => ({ f, label: words.historyFilters[f] })), [words]);
   const empty = filter === "named" ? words.historyEmptyNamed : filter === "turns" ? words.historyEmptyTurns : words.historyEmpty;
@@ -221,6 +236,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           active,
           activeId: (i: number) => `${listId}-${hist.at(filter, i)?.id ?? i}`,
           onActiveChange: (i: number) => setActiveId(hist.at(filter, i)?.id ?? null),
+          onMenu: onKeyMenu,
           onActivate: (i: number) => {
             const v = hist.at(filter, i);
             if (v) open(v.id);
@@ -252,14 +268,16 @@ export function HistoryPanel(props: HistoryPanelProps) {
             className: "carton-history-menu",
             style: { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 220) },
           },
-          h(MenuItem, { icon: "eye", onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
+          // A version still waiting to sync can't be previewed, compared, named or restored yet (L5).
+          h(MenuItem, { icon: "eye", disabled: waiting, title: waiting ? words.provisionalHint : undefined, onSelect: () => (setMenu(null), open(menuVersion.id)) }, words.preview),
           props.currentRef
-            ? h(MenuItem, { icon: "history", onSelect: () => (setMenu(null), setComparing(menuVersion.id)) }, words.compareWithCurrent)
+            ? h(MenuItem, { icon: "history", disabled: waiting, onSelect: () => (setMenu(null), setComparing(menuVersion.id)) }, words.compareWithCurrent)
             : null,
-          h(MenuItem, { icon: "bookmark", onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "version" })) }, menuVersion.name ? words.rename : words.nameVersion),
-          h(MenuItem, { icon: "cut", onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
+          h(MenuItem, { icon: "bookmark", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "version" })) }, menuVersion.name ? words.rename : words.nameVersion),
+          h(MenuItem, { icon: "cut", disabled: waiting, onSelect: () => (setMenu(null), setNaming({ id: menuVersion.id, mode: "cut" })) }, words.newCutFromHere),
+          menuVersion.foldRest ? h(MenuItem, { icon: "fold", onSelect: () => (setMenu(null), void ui.foldRest(menuVersion.id)) }, words.foldRest) : null,
           h(MenuSeparator, null),
-          h(MenuItem, { icon: "restore", title: words.restoreHint, onSelect: () => (setMenu(null), void ui.restore(menuVersion.ref)) }, words.restore),
+          h(MenuItem, { icon: "restore", disabled: waiting, title: waiting ? words.provisionalHint : words.restoreHint, onSelect: () => (setMenu(null), void ui.restore(menuVersion.ref)) }, words.restore),
         )
       : null,
     compareVersion && props.currentRef
