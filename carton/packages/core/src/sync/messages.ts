@@ -107,6 +107,8 @@ export interface HelloMsg {
   noKeyframe?: boolean;
   /** The client reads envelopes (it has the blob store): the server may send it messages over 1 MiB as references. */
   envelopes?: boolean;
+  /** A continuation of the claims (`WelcomeMsg.checkedThrough`): they were checked through this seq already. */
+  claimsAfter?: number;
 }
 /** Pipelined push of pending changes in queue order. A reject kills the rest of that `epoch`. */
 export interface PushMsg {
@@ -218,6 +220,11 @@ export interface WelcomeMsg {
    * acting on the list. Unchecked ids are never to be taken as unconfirmed.
    */
   uncheckedFrom?: number;
+  /**
+   * With `uncheckedFrom`: the list reached the page's byte budget inside the claims from that base, which were checked
+   * through this seq; ask again with `claimsAfter` set to it. Such a page holds the list alone (no rows, no keyframe).
+   */
+  checkedThrough?: number;
 }
 /** New confirmed rows, fanned out to every subscriber (the pusher too, before its ack). */
 export interface ChangesMsg {
