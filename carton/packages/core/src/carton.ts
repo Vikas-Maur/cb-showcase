@@ -16,9 +16,9 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, ProxyEncoder, Stor
 import type { Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { ReplicaQueue, type HistoryFields } from "./sync/queue.ts";
+import { ReplicaQueue, type HistoryFields, type QueuedChange } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
-import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase } from "./history/common.ts";
+import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import type {
@@ -250,6 +250,10 @@ interface PendingRow {
   policy: Policy;
   history?: HistoryFields;
 }
+const pendingRow = (p: QueuedChange, order: number): PendingRow => {
+  const v = p.versions[p.versions.length - 1]!;
+  return { id: p.id, author: p.author, ops: v.ops, at: p.created, order, intent: v.intent, kinds: v.kinds, policy: v.policy, ...(p.history ? { history: p.history } : {}) };
+};
 const PROJECT = ["project"] as const;
 const CURRENT = ["current"] as const;
 const NODE_RE = /^[^~\s]+@\d+$/;
@@ -320,8 +324,14 @@ class CartonImpl implements Carton {
         },
         presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#actor(), state),
         waitFor: async (id, ms, cut) => {
-          const sc = self.#shared.get(cut ?? self.#h.current);
-          if (sc) return sc.waitFor(id, ms);
+          const b = cut ?? self.#h.current;
+          const sc = self.#shared.get(b);
+          if (sc) {
+            const o = await sc.waitFor(id, ms);
+            // read your writes: once this says confirmed, log(), credits() and diff() see the change
+            if (o.status === "confirmed") await self.#settle(b, { type: "remote", rows: [] });
+            return o;
+          }
           const done = self.#h.confirmedById(id);
           return done ? { status: "confirmed", id, seq: done.seq } : { status: "pending", id };
         },
@@ -636,12 +646,20 @@ class CartonImpl implements Carton {
   }
   async undoStack(group?: string, opts: { cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
+    const sc = this.#shared.get(cut);
+    if (sc) await this.#queue;
     await this.#refresh(cut);
+    // a shared cut's edits still waiting to sync are its newest entries (and a waiting undo hides its change)
+    if (sc) this.#feedQueue(cut);
+    const tail = sc && sc.queue.headSeq(cut) === this.#h.headSeq(cut) ? this.#tail(cut, sc) : undefined;
+    const n = this.#h.headSeq(cut);
+    const log = tail ? [...this.#h.changes(cut), ...tail.rows] : this.#h.changes(cut);
     // an unnamed edit's label says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
-    return this.#h.undoStack(cut, group ?? groupOf(this.#actor())).map((e) => {
-      const c = this.#h.changes(cut)[e.seq - 1]!;
+    return this.#h.undoStack(cut, group ?? groupOf(this.#actor()), tail).map((e) => {
+      const c = log[e.seq - 1]!;
       if (c.name || c.intent?.kind) return e;
-      const what = E.describe(c.ops, this.#h.stateOf(nodeId(cut, e.seq - 1)) ?? {}, this.schema, c.intent)[0];
+      const before = e.seq - 1 > n ? tail!.states[e.seq - n - 2] : this.#h.stateOf(nodeId(cut, e.seq - 1));
+      const what = E.describe(c.ops, before ?? {}, this.schema, c.intent)[0];
       return what ? { ...e, label: undoLabel(c, what) } : e;
     });
   }
@@ -818,7 +836,7 @@ class CartonImpl implements Carton {
   }
   async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult> {
     const into = opts.into ?? this.#h.current;
-    this.#localOnly(into, "foldSome");
+    if (this.#isShared(into)) return this.#foldShared(into, from, opts);
     const author = this.#actor(opts.author);
     const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#foldable(from), { ...opts, author }), { idempotent: true, ...(opts.id ? { id: opts.id } : {}) });
     const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
@@ -836,20 +854,21 @@ class CartonImpl implements Carton {
   }
   async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    this.#localOnly(cut, "restore");
+    const target = () => (typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref);
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, () => ({ doc: this.#h.restoreTarget(target()), author: this.#actor(opts.author), kind: "restore" }));
     // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
     // its head as of now (inside the mutation, after the refresh), never a cached one
-    return this.#mutate(undefined, () => this.#h.restore(cut, typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    return this.#mutate(undefined, () => this.#h.restore(cut, target(), { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    this.#localOnly(cut, "revert");
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planRevert(cut, changeId, { author: this.#actor(opts.author), tail }));
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    this.#localOnly(cut, "undo");
     const actor = this.#actor(opts.author);
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail }));
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
@@ -957,13 +976,18 @@ class CartonImpl implements Carton {
         this.#emit({ type: "absorbed", branchId: cut, id: e.id, cards: e.cards });
         break;
     }
-    // confirmed rows go into the store and then History, pending rows are rewritten from the queue, late conflicts
-    // become notices, and a finished hand-off is recorded on the cut; serialized behind every other write of this
-    // handle. A write that fails leaves History where the store is, and the next event settles again.
+    void this.#settle(cut, e);
+  }
+  /**
+   * Confirmed rows go into the store and then History, pending rows are rewritten from the queue, late conflicts
+   * become notices, and a finished hand-off is recorded on the cut; serialized behind every other write of this
+   * handle. A write that fails leaves History where the store is, and the next event settles again.
+   */
+  #settle(cut: string, e: SharedCutEvent): Promise<void> {
     const run = () => this.#settleShared(cut, e);
-    this.#queue = this.#queue.then(run, run).catch((err: unknown) => {
+    return (this.#queue = this.#queue.then(run, run).catch((err: unknown) => {
       this.#emit({ type: "notice", notice: { to: actorKey(this.#actor()), kind: "rejected", text: `couldn't save what the server confirmed (it is retried): ${String(err)}` } });
-    });
+    }));
   }
   async #settleShared(cut: string, e: SharedCutEvent): Promise<void> {
     const sc = this.#shared.get(cut);
@@ -989,11 +1013,7 @@ class CartonImpl implements Carton {
     const live = q.pending(cut);
     const liveIds = new Set(live.map((p) => p.id));
     for (const r of stored) if (!liveIds.has(r.value.id)) writes.push({ table: T.pending, key: r.key, value: undefined });
-    live.forEach((p, order) => {
-      const v = p.versions[p.versions.length - 1]!;
-      const row: PendingRow = { id: p.id, author: p.author, ops: v.ops, at: p.created, order, intent: v.intent, kinds: v.kinds, policy: v.policy, ...(p.history ? { history: p.history } : {}) };
-      writes.push({ table: T.pending, key: [cut, p.id], value: row });
-    });
+    live.forEach((p, order) => writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
     // late conflicts (an edit that came back with cards after its writer moved on) are kept for the writer (§6.2)
     const notices: Notice[] = [];
     const authorOf = (id: string) => stored.find((r) => r.value.id === id)?.value.author ?? this.#actor();
@@ -1015,6 +1035,9 @@ class CartonImpl implements Carton {
   }
   /** Everything a shared write reads first: the cut's queue, the stored rows, other processes' ids, the caller's fence. */
   async #prepShared(cut: string, id: ChangeId, conditions: readonly StoreCondition[] = []): Promise<{ sc: SharedCut; done: CommitResult | null }> {
+    // the sequencer binds the part before the first dot to the device that first pushed it (§6.3): refuse here what it
+    // would refuse later, after the edit had shown as pending
+    if (id.indexOf(".") < 1) throw new Error(`Carton: change id "${id}" isn't \`<rid>.<n>\`; a shared cut's sequencer refuses it`);
     const sc = await this.#ensureShared(cut);
     await this.#queue;
     await this.#refresh(); // every cut: an id another process confirmed anywhere is known before this one is used
@@ -1044,21 +1067,20 @@ class CartonImpl implements Carton {
     return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
   }
   /** Keep what `#enqueue` did: the pending row (in queue order), or the spent id of an empty write. */
-  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number): Promise<CommitResult> {
+  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = []): Promise<CommitResult> {
     if (r.status === "confirmed") {
       await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }], [{ table: T.meta, key: ["noop", id], expect: "absent" }, { table: T.ids, key: [id], expect: "absent" }]);
       return r;
     }
-    const live = sc.queue.pending(cut);
-    const order = live.findIndex((p) => p.id === id);
-    const p = live[order];
-    if (p) {
-      const v = p.versions[p.versions.length - 1]!;
-      const row: PendingRow = { id, author: p.author, ops: v.ops, at: p.created, order, intent: v.intent, kinds: v.kinds, policy: v.policy, ...(p.history ? { history: p.history } : {}) };
-      await this.store.write([{ table: T.pending, key: [cut, id], value: row }]);
-    }
-    if (wait) return this.#outcome(cut, await sc.waitFor(id, wait));
-    return r;
+    // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
+    const writes: StoreWrite[] = [];
+    sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
+    if (writes.length) await this.store.write(writes);
+    if (!wait) return r;
+    const o = await sc.waitFor(id, wait);
+    // a confirmation is answered once History holds the row (the result carries the change)
+    if (o.status === "confirmed") await this.#settle(cut, { type: "remote", rows: [] });
+    return this.#outcome(cut, o);
   }
   async #commitShared(cut: string, input: CommitInput, author: Actor, id: ChangeId): Promise<CommitResult> {
     const { sc, done } = await this.#prepShared(cut, id, input.conditions ?? []);
@@ -1109,35 +1131,79 @@ class CartonImpl implements Carton {
     await this.#ensureShared(cut);
     return this.#h.cut(cut)!;
   }
-  /** Folds onto a shared cut: History computes the fold on the confirmed head, the SharedCut queues it as a fold. */
-  async #foldShared(into: string, from: string | StateRef, opts: FoldOptions): Promise<FoldResult & { preview?: FoldPreview }> {
+  /**
+   * Folds onto a shared cut: History computes the fold on the confirmed head, the SharedCut queues it as a fold. With
+   * `reject` (fold-some), the inverse of the rejected paths is queued right after it as `<id>.inverse`.
+   */
+  async #foldShared(into: string, from: string | StateRef, opts: FoldOptions & { reject?: PathKey[] }): Promise<FoldResult & { preview?: FoldPreview }> {
     const id = opts.id ?? `${this.#rid}.${++this.#n}`;
-    const { sc, done } = await this.#prepShared(into, id);
+    const inverse = opts.reject ? `${id}.inverse` : null;
+    const { sc, done } = await this.#prepShared(into, inverse ?? id);
     if (done && opts.id) return done;
     // from the pending check to the enqueue nothing awaits, so no edit can slip in between the fold and its queuing
     const waiting = sc.queue.pending(into).length;
     if (waiting && !opts.check) throw new Error(`Carton.fold: ${waiting} edit${waiting === 1 ? "" : "s"} waiting to sync on this cut; fold once it is up to date`);
     const author = this.#actor(opts.author);
     const y = this.#foldable(from);
-    const r = this.#h.fold(into, y, { ...opts, check: true, author }) as FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; doc?: Doc; retry?: unknown };
+    const some = opts.reject ? this.#h.planFoldSome(into, y, { ...opts, reject: opts.reject, author }) : null;
+    if (some && !("reject" in some)) {
+      const { merge: _m, base: _b, doc: _d, retry: _r, ...out } = some as FoldResult & { merge?: unknown; base?: unknown; doc?: unknown; retry?: unknown };
+      return out as FoldResult;
+    }
+    const r = some ? some.dry : this.#h.fold(into, y, { ...opts, check: true, author });
     const { merge, base, doc, retry: _r, ...out } = r;
     if (r.status !== "confirmed" || !doc) return out as FoldResult;
     const ours = this.#h.stateOf(this.#h.head(into))!;
     const ops = E.diff(ours, doc, this.schema);
     if (opts.check) return { ...(out as FoldResult), preview: { ops, describe: E.describe(ops, ours, this.schema), warnings: merge?.warnings ?? [] } };
-    // the fold's DAG fields travel with the change (the queue keeps them through rebases)
+    // the fold's DAG fields travel with the change (the queue keeps them through rebases), and so do the authors of
+    // what it brings in: credits name who made a record on the cut folded in, not who folded
     const history: HistoryFields = {
       kind: "merge",
       mergeOf: parseNode(this.#h.canon(y)),
       mergeEdges: merge ? { first: merge.edges.ours, second: merge.edges.theirs } : { first: {}, second: {} },
       mergeBase: base?.node ? [base.node] : base?.nodes ?? [],
+      lastAuthors: this.#h.authorsFrom(ops, y, author),
     };
     const res = this.#enqueue(sc, into, id, author, ops, {}, history);
-    return this.#persistEnqueued(sc, into, id, res);
+    if (!some) return this.#persistEnqueued(sc, into, id, res);
+    const inv = this.#enqueue(sc, into, inverse!, author, some.ops, {}, { kind: "partial-revert", rejected: some.reject, reverts: id });
+    return this.#persistEnqueued(sc, into, inverse!, inv, undefined, [id]);
   }
-  /** Writes History can't make on a shared cut yet: they say so instead of confirming locally. */
-  #localOnly(cut: string, what: string): void {
-    if (this.#isShared(cut)) throw new Error(`Carton.${what}: not available on a shared cut yet (commit and fold are)`);
+  /**
+   * Undo, revert and restore on a shared cut: planned on the optimistic state (this replica's pending edits included,
+   * so ⌘Z right after an edit undoes it) and queued as an ordinary change with its intent, kind and `reverts` under a
+   * stable id: pending, then confirmed or rebased like any edit, and credited to its author.
+   */
+  async #planShared<R extends object>(cut: string, given: ChangeId | undefined, plan: (tail: Tail) => (Omit<Planned, "extra"> & { extra?: Planned["extra"] } & R) | (CommitResult & { status: "conflicts" }) | null): Promise<CommitResult & Partial<R>> {
+    const id = given ?? `${this.#rid}.${++this.#n}`;
+    const { sc, done } = await this.#prepShared(cut, id);
+    if (done) return done;
+    // from the plan to the enqueue nothing awaits: it is made on the state it joins
+    const p = plan(this.#tail(cut, sc));
+    if (p && "status" in p) return { ...p, ref: this.#sharedRef(cut) };
+    // nothing to undo: an empty write, so a retry under the same id stays a no-op
+    if (!p) return this.#persistEnqueued(sc, cut, id, this.#enqueue(sc, cut, id, this.#actor(), [], {}));
+    const { doc, author, kind, intent, extra, ...rest } = p;
+    const ops = E.diff(sc.queue.optimistic(cut).doc, doc, this.schema);
+    const r = this.#enqueue(sc, cut, id, author, ops, intent ? { intent } : {}, { kind, ...extra });
+    return { ...(await this.#persistEnqueued(sc, cut, id, r)), ...(rest as Partial<R>) };
+  }
+  /** A shared cut's pending changes as History's newest changes, each with the optimistic state after it. */
+  #tail(cut: string, sc: SharedCut): Tail {
+    const q = sc.queue;
+    let seq = this.#h.headSeq(cut);
+    if (q.headSeq(cut) !== seq) throw new Error(`Carton: cut ${this.#h.cut(cut)!.name} is still loading its history from the server; try again once it has caught up`);
+    let doc = this.#h.stateOf(this.#h.head(cut))!;
+    const rows: ConfirmedChange[] = [],
+      states: Doc[] = [];
+    for (const p of q.pending(cut)) {
+      const v = p.versions[p.versions.length - 1]!;
+      if (v.ops.length) doc = E.apply(E.fork(doc, this.schema), v.ops, this.schema);
+      rows.push({ ...p.history, id: p.id, author: p.author, branchId: cut, seq: ++seq, ops: v.ops, intent: v.intent, kinds: v.kinds, policy: v.policy, at: p.created } as ConfirmedChange);
+      states.push(doc);
+    }
+    return { rows, states };
   }
 
   on(listener: (event: CartonEvent) => void) {
