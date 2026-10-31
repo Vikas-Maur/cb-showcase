@@ -634,14 +634,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   const onEvent = (e: CartonEvent) => {
     if (disposed) return;
-    // Events core may add before the contract lists them ("absorbed": a pending change a rebase emptied).
-    const ext = e as unknown as { type: string; branchId?: string; id?: string; cards?: ConflictCard[] };
-    if (ext.type === "absorbed") {
-      if (ext.id) dropProvisional(ext.id);
-      if (ext.cards?.length) addCards(ext.cards, undefined, ext.branchId ?? cutId);
-      return;
-    }
     switch (e.type) {
+      case "absorbed": {
+        // A pending change a rebase emptied (head already had its effect, or cards took its place): no confirmation
+        // will come, so its provisional row goes, and its cards are shown.
+        if (e.branchId === cutId) dropProvisional(e.id);
+        if (e.cards.length) addCards(e.cards, undefined, e.branchId);
+        break;
+      }
       case "change": {
         if (e.branchId !== cutId) {
           void refreshCuts();

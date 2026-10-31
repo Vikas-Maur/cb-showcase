@@ -230,7 +230,7 @@ test("R1-11 and R1-12: a provisional row can't be previewed or restored, and an 
   ui.openPreview(v.ref, "x");
   assert.equal(ui.preview(), null);
   await assert.rejects(ui.restore(v.ref), /waiting to sync/);
-  emit({ type: "absorbed", branchId: carton.cut, id: "rid.7", cards: [] } as unknown as CartonEvent);
+  emit({ type: "absorbed", branchId: carton.cut, id: "rid.7", cards: [] });
   assert.equal(ui.history().at("all", 0)!.provisional, undefined);
   assert.equal(ui.history().count("all"), 1);
   assert.deepEqual(previews, []);
