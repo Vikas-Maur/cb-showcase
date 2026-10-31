@@ -1,0 +1,444 @@
+// The sync client (PLAN §6.2, §6.3, §12, §5.3): the one pusher of a replica (only the sync-lease holder runs one).
+// Port of system-v11 `sync.mjs`, with PLAN v14's fixes.
+// - Pipelined: every pending change is pushed as soon as it exists, with base = (confirmed seq, earlier pending ids).
+// - A reject kills the rest of that epoch on the server. The client is already rebased on the rows it received (they
+//   reach it before the reject, FIFO), so it resubmits its whole queue in a new epoch.
+// - "behind" (the K cap): drop the ids the reject lists as confirmed, then rebase the whole queue on head and push it
+//   with every base = head, so a long offline burst can't livelock (§6.3). If head itself is more than K behind the
+//   server, catch up first (a keyframe plus the tail).
+// - "lww on structure": resubmit as `merge`, never drop (H2). Validation rejects leave the queue as rejected.
+// - An absorbed change (empty after a rebase) is withdrawn if any copy of it may have been sent (H1), and absorbed only
+//   when the server confirms the withdraw (or that an older copy was confirmed after all: then it is confirmed).
+// - Fencing (R5-06): every step that touches the queue first asks `fence()`; if this client no longer holds the sync
+//   lease it stops for good and never touches the queue again.
+// - Hand-off (§5.3): while the branch is `handingOff`, ask `branchStatus` first; upload only if the server doesn't have
+//   the branch; become `server{since: n}` only on the server's answer. Never resume local sequencing alone.
+
+import type { TransportConnection } from "../plugins.ts";
+import type { Change, ConfirmedChange, Doc } from "../types.ts";
+import { hashDoc } from "../engine/index.ts";
+import type { AdoptMsg, ClientMessage, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
+import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
+import { last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
+
+export type SyncStatus = "offline" | "connecting" | "syncing" | "up-to-date" | "stopped";
+
+export type SyncEvent =
+  | { type: "status"; status: SyncStatus }
+  | { type: "online" }
+  | { type: "offline"; why: string }
+  | { type: "keyframe"; seq: number }
+  | { type: "shared"; since: number }
+  | { type: "overwritten"; id: string; by: string; author: unknown }
+  | { type: "presence"; actor: unknown; state: PresenceState | null }
+  | { type: "push"; ids: string[]; epoch: number }
+  | { type: "withdraw"; id: string; epoch: number }
+  | { type: "reject"; id: string | undefined; reason: string; epoch: number }
+  | { type: "rebase"; n: number }
+  | { type: "stopped"; why: string }
+  | { type: "error"; error: string };
+
+export interface Timers {
+  setTimeout(fn: () => void, ms: number): unknown;
+  clearTimeout(handle: unknown): void;
+}
+
+export interface SyncClientOptions {
+  queue: ReplicaQueue;
+  branchId: string;
+  /** Open a connection to the branch's host (Transport.connect with a fresh token). */
+  connect: () => Promise<TransportConnection>;
+  schemaVersion: number;
+  /** K, the server's behind cap (default 100). */
+  maxBehind?: number;
+  /** false: one push message in flight at a time (a sensitivity row of the load test). Default true. */
+  pipeline?: boolean;
+  backoffMs?: number;
+  timers?: Timers;
+  /**
+   * Run `fn` after `costMs` of the pusher's work (a rebase holds the engine thread). Default: soon, on a timer. The
+   * simulation passes its engine thread here.
+   */
+  defer?: (fn: () => void, costMs: number) => void;
+  /** Cost of rebasing one pending change, ms (only used to size `defer`). Default 0. */
+  rebaseCostMs?: number;
+  /** True while this client still holds the sync lease (R5-06). Checked before every step that touches the queue. */
+  fence?: () => boolean;
+  /** For the hand-off upload: the rows 1..n, the state at the root and the ancestry closure (§5.3). */
+  adoptPayload?: () => Pick<AdoptMsg, "rows" | "rec" | "doc0" | "closure"> & { rootSeq?: number };
+  onEvent?: (e: SyncEvent) => void;
+  /** Called after confirmed rows were integrated (incremental soft validators, GUI adopt, materializer). */
+  afterIntegrate?: (res: { mine: ConfirmedChange[]; others: ConfirmedChange[] }) => void;
+  /** Fault injection for tests: rewrite each change just before it is sent. */
+  tamper?: (ch: Change) => Change;
+  clock?: () => number;
+}
+
+let CONN = 0;
+
+export class SyncClient {
+  readonly queue: ReplicaQueue;
+  readonly branchId: string;
+  private readonly o: SyncClientOptions;
+  private readonly timers: Timers;
+  private readonly K: number;
+  epoch = 0;
+  private conn: TransportConnection | null = null;
+  private connId = 0;
+  stopped = false;
+  stopReason: string | null = null;
+  caughtUp = false;
+  private quiesced = false;
+  private retry: unknown = null;
+  private waiters: ((ok: boolean) => void)[] = [];
+  private statusListeners: ((s: SyncStatus) => void)[] = [];
+  private _status: SyncStatus = "offline";
+  /** For hand-off tests: send the upload twice (a retry that crosses the first answer). */
+  forceAdoptTwice = false;
+  /** For hand-off tests: upload again on the next connection instead of asking `branchStatus` first. */
+  reuploadOnReconnect = false;
+  tamper: ((ch: Change) => Change) | undefined;
+  readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0 };
+
+  constructor(opts: SyncClientOptions) {
+    this.o = opts;
+    this.queue = opts.queue;
+    this.branchId = opts.branchId;
+    this.K = opts.maxBehind ?? 100;
+    this.timers = opts.timers ?? { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) };
+    this.tamper = opts.tamper;
+  }
+
+  get status(): SyncStatus {
+    return this._status;
+  }
+  private setStatus(s: SyncStatus): void {
+    if (s === this._status) return;
+    this._status = s;
+    this.emit({ type: "status", status: s });
+    for (const l of this.statusListeners) l(s);
+  }
+  onStatus(l: (s: SyncStatus) => void): () => void {
+    this.statusListeners.push(l);
+    return () => (this.statusListeners = this.statusListeners.filter((x) => x !== l));
+  }
+  private emit(e: SyncEvent): void {
+    this.o.onEvent?.(e);
+  }
+  get online(): boolean {
+    return !!this.conn?.open && this.caughtUp;
+  }
+
+  start(): this {
+    void this.connectLoop();
+    return this;
+  }
+  stop(why = "stopped"): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.stopReason = why;
+    if (this.retry !== null) this.timers.clearTimeout(this.retry);
+    const c = this.conn;
+    this.conn = null;
+    c?.close();
+    this.setStatus("stopped");
+    this.emit({ type: "stopped", why });
+    for (const w of this.waiters.splice(0)) w(false);
+  }
+  whenCaughtUp(timeoutMs: number): Promise<boolean> {
+    if (this.online) return Promise.resolve(true);
+    return new Promise((res) => {
+      this.waiters.push(res);
+      this.timers.setTimeout(() => res(this.online), timeoutMs);
+    });
+  }
+  /** Run `fn` only while this client holds the lease; otherwise stop for good (R5-06). */
+  private fenced(fn: () => void): boolean {
+    if (this.stopped) return false;
+    if (this.o.fence && !this.o.fence()) {
+      this.stop("fenced: lease nonce changed");
+      return false;
+    }
+    fn();
+    return true;
+  }
+  private defer(fn: () => void, n: number): void {
+    const cost = (this.o.rebaseCostMs ?? 0) * Math.max(1, n);
+    if (this.o.defer) this.o.defer(fn, cost);
+    else this.timers.setTimeout(fn, cost);
+  }
+
+  // ---------------------------------------------------------------- connection
+  private async connectLoop(): Promise<void> {
+    while (!this.stopped) {
+      this.setStatus("connecting");
+      let c: TransportConnection | null = null;
+      try {
+        c = await this.o.connect();
+      } catch {
+        c = null;
+      }
+      if (this.stopped) {
+        c?.close();
+        return;
+      }
+      if (c?.open) {
+        this.conn = c;
+        this.connId = ++CONN;
+        this.epoch++;
+        this.caughtUp = false;
+        this.stats.reconnects++;
+        const id = this.connId;
+        c.onMessage((m) => this.onMessage(id, m));
+        c.onClose((why) => this.onClose(id, why));
+        this.setStatus("syncing");
+        this.onOpen();
+        return;
+      }
+      c?.close();
+      this.setStatus("offline");
+      await new Promise<void>((r) => (this.retry = this.timers.setTimeout(r, this.o.backoffMs ?? 500)));
+      this.retry = null;
+    }
+  }
+  private onClose(id: number, why: string): void {
+    if (id !== this.connId || !this.conn) return;
+    this.conn = null;
+    this.caughtUp = false;
+    this.setStatus("offline");
+    this.emit({ type: "offline", why });
+    if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.o.backoffMs ?? 500);
+  }
+  private send(m: ClientMessage): void {
+    this.conn?.send(m);
+  }
+  private onOpen(): void {
+    const br = this.queue.branch(this.branchId);
+    if (br.sequencer.kind === "handingOff" && this.reuploadOnReconnect && this.stats.reconnects > 1) this.upload();
+    else if (br.sequencer.kind === "handingOff") this.send({ type: "branchStatus", branchId: this.branchId });
+    else this.send(this.hello());
+  }
+  /**
+   * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
+   * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
+   */
+  private hello(): ClientMessage {
+    const pending: PendingClaim[] = [];
+    for (const p of this.queue.pending(this.branchId)) if (p.sentBases.length) pending.push({ id: p.id, bases: [...p.sentBases] });
+    return { type: "hello", branchId: this.branchId, have: this.queue.headSeq(this.branchId), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
+  }
+  private adoptKey(): string | null {
+    const s = this.queue.branch(this.branchId).sequencer;
+    return s.kind === "handingOff" ? `${this.branchId}|${s.n}|${s.stateHash}` : null;
+  }
+  private upload(): void {
+    const s = this.queue.branch(this.branchId).sequencer;
+    if (s.kind !== "handingOff" || !this.o.adoptPayload) return;
+    const msg: AdoptMsg = { type: "adopt", branchId: this.branchId, n: s.n, stateHash: s.stateHash, ...this.o.adoptPayload() };
+    this.send(msg);
+    if (this.forceAdoptTwice) {
+      this.forceAdoptTwice = false;
+      this.send(msg);
+    }
+  }
+  private becomeServer(since: number): void {
+    this.fenced(() => {
+      const br = this.queue.branch(this.branchId);
+      if (br.sequencer.kind === "handingOff") this.queue.setSequencer(this.branchId, { kind: "server", since });
+      this.emit({ type: "shared", since });
+    });
+    this.send(this.hello());
+  }
+
+  // ---------------------------------------------------------------- messages
+  private onMessage(id: number, m: ServerMessage): void {
+    if (id !== this.connId || this.stopped) return;
+    const b = this.branchId;
+    switch (m.type) {
+      case "status": {
+        if (this.queue.branch(b).sequencer.kind !== "handingOff") return;
+        if (m.adopted && m.adoptKey === this.adoptKey()) return this.becomeServer(m.since ?? 0);
+        if (!m.adopted) return this.upload();
+        return this.emit({ type: "error", error: "branch id already adopted with another log" });
+      }
+      case "adopted":
+        if (this.queue.branch(b).sequencer.kind !== "handingOff") return;
+        return this.becomeServer(m.since);
+      case "hello":
+      case "changes":
+        this.fenced(() => {
+          if (m.branchId !== b) return;
+          // keyframe catch-up: jump, drop the pending ids already confirmed in the jumped stretch (R10-01), then
+          // rebase the rest of the queue onto the keyframe before the tail
+          if (m.type === "hello" && m.keyframe && this.queue.jumpTo(b, m.keyframe)) {
+            this.queue.confirmFromList(b, m.confirmed);
+            this.queue.rebaseAll(b);
+            this.emit({ type: "keyframe", seq: m.keyframe.seq });
+          } else if (m.type === "hello" && m.confirmed?.length) this.queue.confirmFromList(b, m.confirmed);
+          const pendingBefore = this.queue.pending(b).length;
+          const res = this.queue.integrate(b, m.rows);
+          if (res.others.length && pendingBefore) {
+            this.stats.rebases += this.queue.pending(b).length;
+            this.emit({ type: "rebase", n: this.queue.pending(b).length });
+          }
+          this.o.afterIntegrate?.(res);
+          if (m.type === "hello") {
+            if (m.more) return this.send(this.hello()); // more rows to catch up on
+            this.caughtUp = true;
+            this.setStatus(this.queue.pending(b).length ? "syncing" : "up-to-date");
+            for (const w of this.waiters.splice(0)) w(true);
+            this.emit({ type: "online" });
+          }
+          this.pump();
+        });
+        return;
+      case "ack": {
+        this.stats.acks++;
+        if (m.duplicate) this.stats.duplicates++;
+        if (m.withdrawn) {
+          // the id is spent (H1): the change is absorbed for good
+          this.fenced(() => {
+            const p = this.queue.pending(b).find((x) => x.id === m.id);
+            if (p) this.queue.finishAbsorb(b, p, true);
+            this.pump();
+          });
+        }
+        if (m.keyframeWanted !== undefined) this.uploadKeyframe(m.keyframeWanted);
+        if (this.caughtUp && !this.queue.pending(b).length) this.setStatus("up-to-date");
+        return;
+      }
+      case "reject": {
+        if (m.epoch !== this.epoch) return;
+        this.stats.rejects++;
+        this.epoch++; // everything still in flight from the dead epoch is dropped by the server; resend all
+        this.emit({ type: "reject", id: m.id, reason: m.reason, epoch: m.epoch });
+        if (VALIDATION_REASONS.has(m.reason)) {
+          // can't be fixed by resubmitting: it leaves the queue as rejected; the rest is rebased without it
+          this.fenced(() => {
+            if (m.id) this.queue.rejectPending(b, m.id, m.reason);
+            this.defer(() => this.pump(), 1);
+          });
+          return;
+        }
+        this.fenced(() => {
+          const n = this.queue.pending(b).length;
+          if (m.reason === "lww on structure" && m.id) {
+            this.queue.toMerge(b, m.id); // H2: through merge3, never dropped
+          } else if (m.reason === "behind") {
+            this.queue.confirmFromList(b, m.confirmed);
+            if (m.head - this.queue.headSeq(b) > this.K) {
+              // our own head is too far behind to push from: catch up (a keyframe plus the tail), which rebases
+              this.caughtUp = false;
+              this.send(this.hello());
+              return;
+            }
+            this.queue.rebaseAll(b);
+          }
+          this.stats.rebases += n;
+          this.emit({ type: "rebase", n });
+          this.defer(() => this.pump(), n);
+        });
+        return;
+      }
+      case "overwritten":
+        return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
+      case "presence":
+        return this.emit({ type: "presence", actor: m.actor, state: m.state });
+      case "unknownBranch":
+        return this.emit({ type: "error", error: "unknown branch" });
+      case "adoptError":
+        return this.emit({ type: "error", error: m.reason });
+      case "error":
+        return this.emit({ type: "error", error: m.reason });
+    }
+  }
+
+  private uploadKeyframe(seq: number): void {
+    if (seq > this.queue.headSeq(this.branchId)) return;
+    let doc: Doc;
+    try {
+      doc = this.queue.confirmedState(this.branchId, seq);
+    } catch {
+      return; // not held (inside a jumped stretch): someone else will upload it
+    }
+    this.send({ type: "keyframe", branchId: this.branchId, keyframe: { seq, stateHash: hashDoc(doc, this.queue.schema), doc } });
+  }
+
+  sendPresence(actor: Change["author"], state: PresenceState | null): void {
+    if (this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor, state });
+  }
+
+  // ---------------------------------------------------------------- pushing
+  private inFlight(p: QueuedChange): boolean {
+    return p.sentConn === this.connId && p.sentEpoch === this.epoch;
+  }
+  /** Fenced dequeue: withdraw what was absorbed, then send every pending change not yet sent in this epoch, in order. */
+  pump(): void {
+    if (!this.conn?.open || !this.caughtUp || this.stopped || this.quiesced) return;
+    const b = this.branchId;
+    if (this.queue.branch(b).sequencer.kind !== "server") return;
+    this.fenced(() => {
+      const head = this.queue.headSeq(b);
+      for (const p of [...this.queue.pending(b)]) {
+        if (!this.queue.isEmpty(p)) continue;
+        if (!p.sentBases.length) {
+          this.queue.absorbLocally(b, p); // never sent: no copy can exist anywhere
+          continue;
+        }
+        if (p.withdrawSent?.conn === this.connId && p.withdrawSent.epoch === this.epoch) continue;
+        p.withdrawSent = { conn: this.connId, epoch: this.epoch };
+        this.stats.withdraws++;
+        this.emit({ type: "withdraw", id: p.id, epoch: this.epoch });
+        this.send({ type: "withdraw", branchId: b, id: p.id, base: head, epoch: this.epoch });
+      }
+      const pend = this.queue.pending(b);
+      if (this.o.pipeline === false && pend.some((p) => !this.queue.isEmpty(p) && this.inFlight(p))) return;
+      const out: Change[] = [];
+      for (const p of pend) {
+        if (this.queue.isEmpty(p) || this.inFlight(p)) continue;
+        const v = last(p.versions);
+        p.sentEpoch = this.epoch;
+        p.sentConn = this.connId;
+        p.sentAt ??= (this.o.clock ?? Date.now)();
+        p.sends++;
+        if (!p.sentBases.includes(v.base.seq)) p.sentBases.push(v.base.seq);
+        let ch: Change = {
+          id: p.id,
+          hash: v.hash,
+          author: p.author,
+          branchId: b,
+          base: v.base,
+          ops: v.ops,
+          intent: v.intent,
+          kinds: v.kinds,
+          policy: v.policy,
+          at: p.created,
+          rebase: v.k,
+          supersedes: v.supersedes,
+          paths: v.decl.paths,
+          reads: v.decl.reads,
+          spans: v.decl.spans,
+          trackOrder: v.decl.trackOrder,
+        };
+        if (v.decl.structural !== undefined) ch.structural = v.decl.structural;
+        if (this.tamper) ch = this.tamper(ch);
+        out.push(ch);
+      }
+      if (!out.length) return;
+      this.stats.pushMsgs++;
+      this.stats.changesSent += out.length;
+      this.emit({ type: "push", ids: out.map((c) => c.id), epoch: this.epoch });
+      this.send({ type: "push", branchId: b, epoch: this.epoch, changes: out });
+    });
+  }
+
+  /** Handover / idle exit: push nothing new from now on. */
+  quiesce(): void {
+    this.quiesced = true;
+  }
+  /** Nothing of ours is in flight on the current connection (true when offline). */
+  drained(): boolean {
+    if (!this.conn?.open) return true;
+    return this.queue.pending(this.branchId).every((p) => !this.inFlight(p) && !(p.withdrawSent?.conn === this.connId && p.withdrawSent.epoch === this.epoch));
+  }
+}

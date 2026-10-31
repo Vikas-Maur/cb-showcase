@@ -80,6 +80,7 @@ export interface HistoryCommit {
   policy?: Policy;
   choices?: Choices;
   id?: ChangeId;
+  /** Unused (the prototype's flag): an empty commit is confirmed empty; an empty fold or undo is always recorded. */
   allowEmpty?: boolean;
   name?: string;
 }
@@ -110,7 +111,7 @@ export interface FoldOptions {
 /**
  * What a dry-run fold would bring in (`check: true`), for the Fold in dialog's list and partial accept: the ops that
  * turn the target cut's head into the folded state (cards on their provisional side), described, plus the soft
- * warnings on the result. Added for @carton/react (contract(core) by agent ui).
+ * warnings on the result. Added for @carton/react (agent ui's f064dd1, absorbed by foundation-core).
  */
 export interface FoldPreview {
   ops: Op[];
