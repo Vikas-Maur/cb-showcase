@@ -196,3 +196,19 @@ test("a recorded ripple is stored as one remap op and replays to the same state 
   assert.deepEqual((await again.head()).doc, head);
   assert.equal((await again.credits(["items", "f"]))?.id, "alice", "credits see the items a remap moved");
 });
+
+test("a dry-run fold (check) commits nothing and previews what it would bring in (ui's f064dd1)", async () => {
+  const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() }, actor: human });
+  const v = await c.fork("variant");
+  await c.commit({ cut: v.id, ops: [set("b", "name", "Shorter")], author: bob });
+  const dry = await c.fold(v.id, { check: true });
+  assert.equal(dry.status, "confirmed");
+  assert.deepEqual(dry.preview?.ops, [{ op: "set", path: ["items", "b", "name"], value: "Shorter" }]);
+  assert.equal(dry.preview?.describe.length, 1);
+  assert.match(dry.preview!.describe[0]!, /name/);
+  assert.deepEqual(dry.preview?.warnings, []);
+  assert.equal((await c.log()).length, 1, "nothing committed");
+  const real = await c.fold(v.id);
+  assert.equal(real.status, "confirmed");
+  assert.equal((real as { preview?: unknown }).preview, undefined, "a real fold has no preview");
+});
