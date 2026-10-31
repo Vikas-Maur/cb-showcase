@@ -61,7 +61,10 @@ export const nextChangeId = (): string => `${RID}.${++n}`;
 export function readProjectId(projectDir: string): string {
   try {
     const p = JSON.parse(readFileSync(join(projectDir, "project.json"), "utf8"));
-    if (typeof p.id === "string" && p.id) return p.id;
+    // Cardboard's project.json is an envelope `{format, version, project, media}` with the id at `project.id`;
+    // a bare top-level `id` is other hosts' (and the local tests') shape
+    const id = p?.project?.id ?? p?.id;
+    if (typeof id === "string" && id) return id;
   } catch { /* no project.json: a non-Cardboard host */ }
   throw new Error(`no project id: ${join(projectDir, "project.json")} has none; pass projectId`);
 }

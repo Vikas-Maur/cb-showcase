@@ -1,0 +1,6 @@
+{
+  "extends": "../tsconfig.node.json",
+  "include": ["support", "test"],
+  // e2e/web is web-demo's (its own workspace and tsconfig)
+  "exclude": ["web"]
+}

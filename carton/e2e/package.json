@@ -1,0 +1,25 @@
+{
+  "name": "@carton/e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "End-to-end tests of the whole Carton system: real processes, real files, real sockets. A Cardboard project on disk, the app's engine thread and materializer, cb processes and subagents, cuts and folds, .cbproj round trips, live sync between two machines through server-node and server-cloudflare (wrangler dev), media through blob-fs and blob-s3, and crash safety.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "scripts": {
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0",
+    "@carton/store-sqlite": "0.1.0",
+    "@carton/cardboard": "0.1.0",
+    "@carton/local": "0.1.0",
+    "@carton/cli-mcp": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/server-node": "0.1.0",
+    "@carton/media": "0.1.0",
+    "@carton/blob-fs": "0.1.0",
+    "@carton/blob-s3": "0.1.0",
+    "@carton/blob-memory": "0.1.0"
+  }
+}
