@@ -695,7 +695,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         for (const id of rev) markRestDone(id); // folding in the rest reverts the inverse: no longer offered
         touchRest(e.branchId, c.paths ?? [], !!c.intent?.maps || c.ops.some((op) => op.op === "remap"), e.seq);
         if (e.branchId !== cutId) {
-          void refreshCuts();
+          void track(refreshCuts()); // tracked: settled() waits for it too
           break;
         }
         appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
@@ -844,10 +844,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
   /** A confirmed change on `cut`: invalidate the decisions of the partial folds whose records it touched. */
   const touchRest = (cut: string, paths: readonly string[], remap: boolean, seq: number) => {
-    seenSeq.set(cut, Math.max(seenSeq.get(cut) ?? -1, seq));
+    const before = seenSeq.get(cut);
+    seenSeq.set(cut, Math.max(before ?? -1, seq));
     const byRecord = restIndex.get(cut);
     if (!byRecord) return;
-    if (remap) {
+    // A gap (changes this handle never got an event for, written by another handle) can have touched anything: every
+    // decision on the cut is checked again. Only a contiguous run of seen changes may keep them.
+    if (remap || (before !== undefined && seq > before + 1)) {
       // A ripple moves many records at once: every decision on the cut is checked again.
       for (const ids of byRecord.values()) for (const id of ids) invalidateRest(id);
       return;
@@ -869,13 +872,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   // Refreshing cuts and undo after a burst of changes: once, after it settles.
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  // Resolves the pending debounce's tracked promise; dispose() calls it too, so a settled() waiter never hangs.
+  let refreshDone: (() => void) | null = null;
   const scheduleRefresh = () => {
     if (refreshTimer) return;
     // The debounce itself is tracked, so settled() waits through it rather than for a guessed time.
     void track(
       new Promise<void>((done) => {
+        refreshDone = done;
         refreshTimer = setTimeout(() => {
           refreshTimer = null;
+          refreshDone = null;
           Promise.allSettled([refreshCuts(), refreshUndo(), checkRest()]).then(() => done());
         }, 50);
       }),
@@ -1137,12 +1144,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const i = pos.get(versionId);
       const r = i === undefined ? undefined : rows[i];
       if (!r?.core?.change || !r.v.foldRest) return { ok: false, error: "Nothing left to fold in" };
-      // Check again right before acting: the records may have changed since the flag was set.
+      // Check again right before acting: the records may have changed since the flag was set. Like checkRest(), the
+      // answer is kept only if no change landed while it was read.
+      const id = r.core.change;
+      const gen = restGen.get(id) ?? 0;
       if (!(await leftOut(r.core))) {
-        restDecision.set(r.core.change, false);
-        showRest(r.core.change);
+        if ((restGen.get(id) ?? 0) === gen) {
+          restDecision.set(id, false);
+          showRest(id);
+        }
         return { ok: false, error: "Nothing left to fold in" };
       }
+      if ((restGen.get(id) ?? 0) !== gen) return { ok: false, error: "Something changed. Try again." };
       const res = await carton.revert(r.core.change, { author: opts.me, cut: r.core.ref.branchId });
       if (res.status === "confirmed" || res.status === "pending") {
         markRestDone(r.core.change);
@@ -1228,6 +1241,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       clearInterval(idleTimer);
       if (poll) clearInterval(poll);
       if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = null;
+      refreshDone?.();
+      refreshDone = null;
     },
   };
   handle.renameCut = async (id, name) => {

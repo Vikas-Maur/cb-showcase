@@ -110,7 +110,20 @@ export function CutsMenu(p: CutsMenuProps) {
         // Offered only when the engine can rename cuts.
         rename ? h(MenuItem, { key: "ren", icon: "pencil", disabled: !current || current.readOnly, onSelect: () => setMode("rename") }, words.renameCut) : null,
         main && current && current.id !== main.id && p.onFoldIn
-          ? h(MenuItem, { key: "fold", icon: "fold", onSelect: () => (close(), p.onFoldIn!(current, main)) }, words.foldInto(main.label))
+          ? h(
+              MenuItem,
+              {
+                key: "fold",
+                icon: "fold",
+                onSelect: () => {
+                  close();
+                  // The shown cuts don't follow head moves: hand the host the cuts as they are now (their heads).
+                  const now = ui.cuts();
+                  p.onFoldIn!(now.find((c) => c.id === current.id) ?? current, now.find((c) => c.id === main.id) ?? main);
+                },
+              },
+              words.foldInto(main.label),
+            )
           : null,
       ];
     },
