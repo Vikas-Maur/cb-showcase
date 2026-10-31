@@ -137,10 +137,15 @@ export class FakeEngine implements MaterializerEngine {
     if (!p) throw new Error("state unknown: re-print");
     return { baseDoc: clone(p.doc), baseSeq: p.seq, causal: [...p.causal] };
   }
-  async commit({ doc, base, author, meta }: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string } }): Promise<SaveResult> {
+  newChangeId(): string {
+    return `fakeid.${++this.n}`;
+  }
+  async commit({ doc, base, author, meta, id: given }: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string }; id?: string }): Promise<SaveResult> {
+    const prior = given ? this.commits.find((c) => c.id === given) : undefined;
+    if (prior) return { status: "confirmed", id: prior.id, seq: prior.seq }; // dedup by id, as the engine does
     const held = "baseDoc" in base ? base : await this.resolve(base);
     const m = merge3(held.baseDoc, await this.head(), doc);
-    const id = `fake.${++this.n}`;
+    const id = given ?? `fake.${++this.n}`;
     this.log.push({ doc: m.doc, id, causal: [] });
     this.commits.push({ id, seq: this.headSeq, author, file: meta.file, view: meta.view, base: "baseDoc" in base ? "held" : base.kind === "carton" ? base.ref : String(base.rev), cards: m.cards.length });
     return { status: m.cards.length ? "conflicts" : "confirmed", id, seq: this.headSeq, cards: m.cards.map((c) => ({ kind: "field", path: c.path }) as never) };

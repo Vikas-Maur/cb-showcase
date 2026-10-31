@@ -739,3 +739,39 @@ test("review 4 #3: if reporting a displaced view file that doesn't parse fails, 
   await mz2.onChangeUpdate(name, first, { status: "confirmed", seq: 9 });
   assert.equal(status().status, "error");
 });
+
+// ------------------------------------------------------------------ review round 5 regressions
+
+test("review 5 #2: a leftover attempt for the same file generation on another base is never reused: the save commits", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel } = await s.mz.printView("v", agent, { hooked: true });
+  const content = s.edited(s.read(rel), (its) => (its[0]!.name = "A again"));
+  fs.writeFileSync(s.abs(rel), content);
+  const st = fs.statSync(s.abs(rel), { bigint: true });
+  const { createHash } = await import("node:crypto");
+  const h = (x: string | Buffer) => createHash("sha256").update(x).digest("hex");
+  const gen = h(`${st.ino}:${st.size}:${st.mtimeNs}\n${h(content)}`).slice(0, 24);
+  // an abandoned attempt of an earlier save that had these very bytes and stamp, on another base
+  await s.engine.putMeta(["attempt", rel], { gen, base: "held:0::older", result: { status: "confirmed", id: "stale", seq: 0 } });
+  await s.event(rel);
+  assert.equal(s.find(await s.head(), "a").name, "A again", "committed, not answered by the stale attempt");
+});
+
+test("review 5 #3: if removing a finished save's attempt fails, the save is still finished (view base, status) and applied once", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("v", agent, { hooked: true });
+  const realPut = s.engine.putMeta.bind(s.engine);
+  s.engine.putMeta = async (k, v) => {
+    if (k[0] === "attempt" && v === undefined) throw new Error("database is locked");
+    return realPut(k, v);
+  };
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[0]!.name = "done")));
+  await s.event(rel);
+  await s.tick(2000);
+  assert.equal(s.find(await s.head(), "a").name, "done");
+  assert.equal(JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8")).status, "confirmed", "the sidecar was written");
+  assert.ok((await s.engine.getMeta<ViewRow>(["view", name]))?.last, "the view's base was recorded");
+  assert.equal(s.engine.commits.length, 1, "applied once");
+});

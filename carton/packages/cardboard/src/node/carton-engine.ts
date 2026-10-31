@@ -78,15 +78,18 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       }
       return toHeld(await carton.resolve(revBody(rev)));
     },
-    async commit({ doc, base, author }) {
+    async commit({ doc, base, author, id }) {
       const b = "baseDoc" in base ? base : base.kind === "carton" ? revBody(base) : ((await getMeta<string>(["legacy", String(base.rev)])) ?? String(base.rev));
-      let r = await carton.commit({ doc, base: b, author, cut: cut() });
+      const withId = id ? { id } : {};
+      let r = await carton.commit({ doc, base: b, author, cut: cut(), ...withId });
       let cards: ConflictCard[] = [];
       if (r.status === "conflicts") {
-        // cards keep head's value; the save's other edits land
+        // cards keep head's value; the save's other edits land. With an id, the cards are recorded first: a retry
+        // that gets the confirmation back by id (no merge, so no cards) still reports them
         cards = r.cards;
-        r = await carton.commit({ doc, base: b, author, cut: cut(), choices: () => "ours" });
-      }
+        if (id) await putMeta(["attempt-cards", id], cards);
+        r = await carton.commit({ doc, base: b, author, cut: cut(), choices: () => "ours", ...withId });
+      } else if (id && r.status === "confirmed") cards = (await getMeta<ConflictCard[]>(["attempt-cards", id])) ?? [];
       const out = (s: SaveResult): SaveResult => (cards.length ? { ...s, status: "conflicts", cards } : s);
       switch (r.status) {
         case "confirmed":
@@ -106,6 +109,7 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       await store.write([{ table: "notices", key: [value.to, at, 0, Math.random().toString(16).slice(2, 10)], value }]);
     },
     own: (author: Actor) => carton.own(author),
+    newChangeId: () => carton.newChangeId(),
     getMeta,
     putMeta,
     shared: () => opts.shared?.() ?? false,

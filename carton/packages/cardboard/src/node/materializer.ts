@@ -75,8 +75,13 @@ export interface MaterializerEngine {
   release(owner: string): Promise<void>;
   /** A printed ref -> its exact state and causal past. Throws "state unknown: re-print" when it can't (§4.4). */
   resolve(rev: Rev): Promise<HeldBase>;
-  /** Commits `doc` made on `base`; cards keep head's value and are reported (late conflicts arrive as notices). */
-  commit(input: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string } }): Promise<SaveResult>;
+  /**
+   * Commits `doc` made on `base`; cards keep head's value and are reported (late conflicts arrive as notices). With
+   * `id`, a commit whose id is already confirmed returns that confirmation (and its cards), never a second change.
+   */
+  commit(input: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string }; id?: string }): Promise<SaveResult>;
+  /** A fresh change id, recorded before committing so a retry commits with the same id (dedup by id). */
+  newChangeId?(): string;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
   /** M4: did `author` create sequence element `id`? Keeps one author's run of inserts contiguous across saves. */
   own?(author: Actor): OwnFn;
@@ -197,6 +202,12 @@ const KEEP_WRITTEN = 8;
 const KEEP_STAMPS = 32;
 
 type Record_ = { t: number; path: string; [k: string]: unknown };
+/**
+ * One save of a path in progress, recorded before its commit: which file generation (stamp and bytes) on which base,
+ * the change id it commits with, and once committed, the result. A retry of that same save reuses the id (and the
+ * result) instead of committing again; a different save of the path takes the slot over.
+ */
+type Attempt = { gen: string; base: string; id?: string; result?: SaveResult };
 /** A foreign project.json's envelope, kept for its unversioned fields until Carton's next write consumes it. */
 type Overlay = { id: string; envelope: Record<string, unknown>; mtimeNs?: string };
 type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null; viewGen?: number };
@@ -1018,16 +1029,35 @@ export class Materializer {
       if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
-    // A retry of this same file (same path, stamp and bytes) after a failure below must not commit again: the engine
-    // would confirm it as empty, and the change's id (a view's causal past, the freeze view's) would be lost. The
-    // result is recorded right after the commit, before any other write, and removed with the receipt.
-    const attemptKey = ["attempt", rel, sha(`${rel}\n${stamp ?? ""}\n${hash}`).slice(0, 24)] as const;
-    const earlier = await this.engine.getMeta<SaveResult>(attemptKey);
-    const res = earlier ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) } }));
-    if (!earlier && res.status !== "rejected") await this.engine.putMeta(attemptKey, res);
+    // A retry of this same save after a failure below (or a crash) must not commit again: the engine would confirm it
+    // as empty, without the change's id that a view's causal past and the freeze view need. So the save records its
+    // change id before committing, and its result right after; a retry commits with the same id (dedup by id) or reuses
+    // the result. The slot is per path and bound to the file generation and the base, so it never answers for another save.
+    const attemptKey = ["attempt", rel] as const;
+    const gen = sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
+    const baseKey = "baseDoc" in base ? `held:${base.baseSeq}:${base.causal.join(",")}:${row?.last?.contentHash ?? ""}` : base.kind === "carton" ? `ref:${base.ref} b:${base.branch8 ?? ""}` : `legacy:${base.rev}`;
+    let slot = await this.engine.getMeta<Attempt>(attemptKey);
+    if (!slot || slot.gen !== gen || slot.base !== baseKey) {
+      const id = this.engine.newChangeId?.();
+      slot = { gen, base: baseKey, ...(id ? { id } : {}) };
+      await this.engine.putMeta(attemptKey, slot);
+    }
+    const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
+    if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res });
+    const settle = async () => {
+      // the save is finished: its slot (and the engine's record of its cards) can go. Never fatal: a leftover slot is
+      // taken over by the path's next save
+      try {
+        await this.engine.putMeta(attemptKey, undefined);
+        if (slot.id) await this.engine.putMeta(["attempt-cards", slot.id], undefined);
+      } catch (e) {
+        this.log.errors.push({ t: this.clock.now(), path: rel, error: `attempt cleanup: ${e instanceof Error ? e.message : String(e)}` });
+      }
+    };
     if (res.status === "rejected") {
       await this.engine.notice(actor, { kind: "error", text: `${rel}: rejected${res.reason ? `: ${res.reason}` : ""}; kept, not applied` });
       if (name && row) await this.failView(name, row, { status: "rejected", error: res.reason ?? "rejected", ref: rev?.kind === "carton" ? rev.ref : null });
+      await settle();
       return failed();
     }
     if (rel === PROJECT_FILE) {
@@ -1051,7 +1081,6 @@ export class Materializer {
     if (!o.fromDisplaced) ps.last = hash;
     if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
     await this.saveState(rel);
-    await this.engine.putMeta(attemptKey, undefined);
     this.log.applied.push({ t: this.clock.now(), path: rel, id: res.id ?? null, status: res.status, cards: cards.length, actor: actor.id, hash });
     if (batch) await this.reportCards(batch, !name);
     if (this.freeze.active && this.freeze.view && rel !== PROJECT_FILE) {
@@ -1075,6 +1104,7 @@ export class Materializer {
       await this.writeStatus(name, { status, seq: res.seq ?? null, conflicts: cards, diagnostics: this.host.diagnose(saved, head), ref: refBodyOf(pinned), ...(res.reason ? { error: res.reason } : {}) }, res.id ?? null, { immediate: true });
     }
     this.onHeadChange("local");
+    await settle();
     return true;
   }
 
