@@ -152,6 +152,7 @@ test("opsForChoice: leaf, field group, whole record", () => {
   assert.deepEqual(opsForChoice({ kind: "group", path: "timelineItems/c1/#time", base: null, ours: null, theirs: null }, { startTime: 1, endTime: 2 }), [
     { op: "set", path: ["timelineItems", "c1", "startTime"], value: 1 }, { op: "set", path: ["timelineItems", "c1", "endTime"], value: 2 }]);
   assert.deepEqual(opsForChoice({ kind: "record", path: "timelineItems/c~19", base: null, ours: null, theirs: null }, undefined), [{ op: "remove", path: ["timelineItems", "c/9"] }]);
+  assert.deepEqual(opsForChoice({ kind: "record", path: "timelineItems/c1", base: null, ours: { id: "c1" }, theirs: null }, null), [{ op: "remove", path: ["timelineItems", "c1"] }], "core's deleted side is null");
 });
 
 test("the cb result contract: confirmed@seq / pending / conflicts as JSON plus short text; exit codes", () => {
@@ -176,4 +177,13 @@ test("usage errors exit 2 and print usage; --json errors are JSON", async () => 
   assert.equal(j.code, 2);
   assert.equal(j.json().status, "error");
   assert.match((await cb(ctx, ["help"])).out, /cut new <name>/);
+});
+
+test("Stage F wording: an absorbed change is confirmed, already in place; a too-large one fails alone", () => {
+  const a = resultText({ status: "confirmed", seq: 4, ref: null, notices: [], absorbed: true });
+  assert.match(a, /^Saved: confirmed, already in place \(an identical edit was already there/);
+  assert.equal(exitCodeOf({ status: "confirmed", seq: 4, ref: null, notices: [], absorbed: true }), 0, "never an error");
+  const t = resultText({ status: "rejected", reason: "too large", notices: [] });
+  assert.match(t, /not saved: this edit is larger than the server accepts .* The edits after it still went through/);
+  assert.equal(exitCodeOf({ status: "rejected", reason: "too large", notices: [] }), 1);
 });

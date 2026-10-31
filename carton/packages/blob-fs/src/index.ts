@@ -432,18 +432,27 @@ export class FsBlobStore implements BlobStore {
         await store.#mkdirp(dirname(file));
         const buf = new Uint8Array(COPY_CHUNK);
         let size = 0;
+        // One part open at a time (an upload may have 10,000), and each is re-checked through the handle it is
+        // copied from: a part renamed over since the check above has another fingerprint, and the whole complete
+        // fails before anything is published.
         const { tmp, fp } = await store.#writeTmp(async (out) => {
           for (const n of order) {
-            const src = await open(stored.get(n)!.file, "r");
+            const want = stored.get(n)!;
+            const fh = await open(want.file, "r").catch((e) => {
+              if (isCode(e, "ENOENT")) throw new BlobError("InvalidPart", `part ${n} is gone`);
+              throw e;
+            });
             try {
-              for (;;) {
-                const { bytesRead } = await src.read(buf, 0, buf.byteLength, null);
-                if (bytesRead === 0) break;
-                await out.write(buf, 0, bytesRead);
+              if (`"${fingerprint(await fh.stat({ bigint: true }))}"` !== want.etag) throw new BlobError("InvalidPart", `part ${n} was replaced during complete`);
+              for (let at = 0; at < want.size; ) {
+                const { bytesRead } = await fh.read(buf, 0, Math.min(buf.byteLength, want.size - at), at);
+                if (bytesRead === 0) throw new Error(`part ${n} ended early: ${at} of ${want.size} bytes`);
+                await writeAll(out, buf, bytesRead);
+                at += bytesRead;
                 size += bytesRead;
               }
             } finally {
-              await src.close();
+              await fh.close();
             }
           }
         });
@@ -457,10 +466,27 @@ export class FsBlobStore implements BlobStore {
         if (contentType) info.contentType = contentType;
         return info;
       },
+      // Idempotent for a gone upload, but bound to the key (an id alone must not reach another project's upload).
       async abort() {
-        await rm(store.#uploadDir(uploadId), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+        const dir = store.#uploadDir(uploadId); // a malformed id is refused, never resolved to a path
+        try {
+          await store.#uploadMeta(key, uploadId);
+        } catch (e) {
+          if (e instanceof BlobError && /another key/.test(e.message)) throw e;
+          return;
+        }
+        await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
       },
     };
+  }
+}
+
+// FileHandle.write may write fewer bytes than asked; loop until all are written, and fail rather than spin.
+export async function writeAll(fh: Pick<FileHandle, "write">, buf: Uint8Array, length: number): Promise<void> {
+  for (let off = 0; off < length; ) {
+    const { bytesWritten } = await fh.write(buf, off, length - off);
+    if (!(bytesWritten > 0)) throw new Error(`write made no progress at ${off} of ${length} bytes`);
+    off += bytesWritten;
   }
 }
 

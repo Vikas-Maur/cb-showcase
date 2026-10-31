@@ -48,7 +48,10 @@ const srv = createServer((s) => {
       const line = buf.slice(0, nl);
       buf = buf.slice(nl + 1);
       if (!line) continue;
-      const m = JSON.parse(line);
+      let m: any;
+      // the box is shared: anything may connect to this port (another agent's HTTP probe); drop what isn't ours
+      try { m = JSON.parse(line); } catch { s.destroy(); return; }
+      if (!m || typeof m.type !== "string") { s.destroy(); return; }
       if (m.type === "hello") {
         c.pid = m.pid ?? 0;
         const confirmed = (m.pending ?? []).filter((id: string) => ids.has(id)).map((id: string) => ({ id, seq: ids.get(id) }));

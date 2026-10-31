@@ -12,6 +12,12 @@ export interface EngineThreadOptions {
   /** The engine factory module (as for the helper): `createHolderEngine({dbPath, config, log})`. */
   factory: string;
   config?: Record<string, unknown>;
+  /**
+   * What a helper should run when one takes over or runs with the app closed (recorded in carton.db, B3/B7): by default
+   * this factory and config. An app whose factory needs the app around passes a headless one here.
+   */
+  helperFactory?: string;
+  helperConfig?: Record<string, unknown>;
   reacquireMs?: number;
   onEvent?: (event: Record<string, unknown>) => void;
 }
@@ -36,18 +42,28 @@ export class EngineThread {
       this.waiting.delete(m.id);
       if (m.error) p.reject(Object.assign(new Error(m.error.message), { code: m.error.code })); else p.resolve(m.result);
     });
-    w.on("error", (e) => { for (const p of this.waiting.values()) p.reject(e); this.waiting.clear(); });
+    w.on("error", (e) => this.fail(e));
+    // a thread that exits without an error (or after one) leaves nobody to answer: fail what waits, and what comes
+    w.on("exit", (code) => this.fail(Object.assign(new Error(`the engine thread exited (code ${code})`), { code: "ENGINE_EXIT" })));
+  }
+
+  private dead: Error | null = null;
+  private fail(e: Error): void {
+    this.dead ??= e;
+    for (const p of this.waiting.values()) p.reject(e);
+    this.waiting.clear();
   }
 
   /** Start the thread; resolves once it holds the lease (asking a live helper to hand over first). */
   static async start(o: EngineThreadOptions): Promise<EngineThread> {
-    const w = new Worker(entry(), { workerData: { dbPath: o.dbPath, factory: o.factory, config: o.config ?? {}, reacquireMs: o.reacquireMs ?? 2000 } });
+    const w = new Worker(entry(), { workerData: { dbPath: o.dbPath, factory: o.factory, config: o.config ?? {}, helperFactory: o.helperFactory, helperConfig: o.helperConfig, reacquireMs: o.reacquireMs ?? 2000 } });
     const t = new EngineThread(w, o.onEvent);
     await t.call("ready", {});
     return t;
   }
 
   call<T = any>(method: string, params: unknown): Promise<T> {
+    if (this.dead) return Promise.reject(this.dead);
     return new Promise((resolve, reject) => {
       const id = this.next++;
       this.waiting.set(id, { resolve, reject });

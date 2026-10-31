@@ -33,12 +33,32 @@ async function localLock<T>(projectId: string, fn: () => Promise<T>, opts: PushL
   const mine = new Promise<void>((r) => (release = r));
   const tail = (before ?? Promise.resolve()).then(() => mine);
   tails.set(name, tail);
+  const done = () => {
+    release();
+    if (tails.get(name) === tail) tails.delete(name);
+  };
+  if (before) {
+    // Waiting: an abort rejects at once. The place in the queue is still handed on in order, the moment the
+    // predecessor releases, so the waiters behind this one neither skip ahead nor wait for nothing.
+    const aborted = await new Promise<boolean>((resolve) => {
+      const onAbort = () => resolve(true);
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      void before.then(() => {
+        opts.signal?.removeEventListener("abort", onAbort);
+        resolve(false);
+      });
+    });
+    if (aborted) {
+      void before.then(done);
+      throw opts.signal!.reason;
+    }
+  }
   try {
-    await before;
+    // An abort that landed while the lock was being handed over (after the predecessor let go, before this line)
+    // still counts; `finally` hands the place on either way.
     opts.signal?.throwIfAborted();
     return await fn();
   } finally {
-    release();
-    if (tails.get(name) === tail) tails.delete(name);
+    done();
   }
 }

@@ -25,7 +25,9 @@ import { doBlobStore } from "./blob-do.ts";
 
 export const AUTH_HEADER = "x-carton-auth";
 export const PROJECT_HEADER = "x-carton-project";
-const MAX_MESSAGE = 1 << 20;
+// The platform's own cap on a WebSocket message (32 MiB, measured in workerd), so the room refuses nothing workerd
+// would deliver; separate from the sequencer's 1 MB threshold for keeping a change body inline.
+const MAX_MESSAGE = 32 << 20;
 const ALARM_RETRY_MS = 60_000;
 
 interface Attachment {
@@ -38,11 +40,16 @@ interface Attachment {
 // only fills createSequencer's option.
 const trusted: AuthProvider = { kind: "worker-verified", verify: async () => null };
 
-export function blobsFor(env: Env, projectId: string): BlobStore | undefined {
-  if (env.BLOBS) return scopedBlobStore(r2BlobStore(env.BLOBS), `projects/${projectId}/`);
-  if (env.BLOB_VAULT) return doBlobStore(env.BLOB_VAULT, projectId);
+// One project's blobs, in two scopes no route can cross: the sequencer's keyframes, segments and large change bodies
+// under `projects/<p>/seq/`, and the media the HTTP API signs and uploads under `projects/<p>/media/`. An editor
+// can write media, never the sequencer's records (which may belong to a cut they may not write).
+function projectBlobs(env: Env, projectId: string, scope: "seq" | "media"): BlobStore | undefined {
+  if (env.BLOBS) return scopedBlobStore(r2BlobStore(env.BLOBS), `projects/${projectId}/${scope}/`);
+  if (env.BLOB_VAULT) return scopedBlobStore(doBlobStore(env.BLOB_VAULT, projectId), `${scope}/`);
   return undefined;
 }
+export const sequencerBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "seq");
+export const mediaBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "media");
 
 export class ProjectRoom {
   readonly #ctx: DurableObjectState;
@@ -74,11 +81,12 @@ export class ProjectRoom {
     // remembered for an alarm that wakes the room with no socket attached (1 row, written once per project)
     this.#ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS carton_room (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID");
     this.#ctx.storage.sql.exec("INSERT OR IGNORE INTO carton_room (k, v) VALUES ('project', ?)", projectId);
-    const blobs = blobsFor(this.#env, projectId);
+    const blobs = sequencerBlobs(this.#env, projectId);
     this.#seq = createSequencer({
       storage: doSqlStorage(this.#ctx.storage),
       auth: trusted,
       projectId,
+      schemaVersion: Number(this.#env.SCHEMA_VERSION ?? 1),
       ...(blobs ? { blobs } : {}),
       onEvent: (e) => {
         if (e.type === "accept" && !this.#alarmArmed) void this.#armAlarm();
@@ -95,6 +103,8 @@ export class ProjectRoom {
       state: att.state,
       send(msg: sync.ServerMessage) {
         try {
+          // a subscriber whose token expired gets nothing more, even if it never sends (fan-out, presence)
+          if (att.auth.expires < Date.now()) return ws.close(4001, "token expired");
           ws.send(JSON.stringify(msg));
         } catch {} // closing: the close handler drops it
       },
@@ -193,7 +203,7 @@ export class ProjectRoom {
       this.#sequencer(row.v as string);
     }
     const seq = this.#seq!;
-    if (!blobsFor(this.#env, this.#projectId!)) return;
+    if (!sequencerBlobs(this.#env, this.#projectId!)) return;
     const keep = Number(this.#env.ARCHIVE_KEEP ?? 10_000), segmentRows = Number(this.#env.ARCHIVE_SEGMENT ?? 10_000);
     try {
       for (const id of seq.tables.branchIds()) if (!seq.tables.branch(id)?.tracking) await seq.archive(id, { keep, segmentRows });

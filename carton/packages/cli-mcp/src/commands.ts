@@ -81,7 +81,8 @@ function findRecord(carton: Carton, doc: Doc, text: string): { coll: string; id:
 /** The ops that put a card's chosen value in place (a leaf, a field group `…/#time`, or a whole record). */
 export function opsForChoice(card: ConflictCard, value: unknown): Op[] {
   const segs = card.path.split("/").map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"));
-  if (segs.length === 2) return value === undefined ? [{ op: "remove", path: segs }] : [{ op: "insert", path: segs, value }];
+  // a record card's deleted side is null in core's cards (undefined once it has been through JSON)
+  if (segs.length === 2) return value == null ? [{ op: "remove", path: segs }] : [{ op: "insert", path: segs, value }];
   const last = segs.at(-1)!;
   if (last.startsWith("#") && value && typeof value === "object") {
     const base = segs.slice(0, -1);
@@ -90,7 +91,8 @@ export function opsForChoice(card: ConflictCard, value: unknown): Op[] {
   return value === undefined ? [{ op: "unset", path: segs }] : [{ op: "set", path: segs, value }];
 }
 
-const conflictNotices = (ns: readonly Notice[]) => ns.filter((n) => (n.kind === "late-conflict" || n.kind === "rejected") && n.cards?.length);
+// cards handed to the person are theirs now (the app's list), not the agent's
+const conflictNotices = (ns: readonly Notice[]) => ns.filter((n) => (n.kind === "late-conflict" || n.kind === "rejected") && n.cards?.length && !(n as { handedToHuman?: number }).handedToHuman);
 
 /** Open cards for the actor, numbered across its notices (newest notices last). */
 async function openCards(ctx: CbContext): Promise<{ notice: Notice; card: ConflictCard }[]> {
@@ -159,7 +161,7 @@ const cutNew: CommandSpec = {
   write: true,
   async run(ctx, a) {
     const from = a.from ? await resolveVersion(ctx.project.carton, a.from) : undefined;
-    const r = await ctx.project.write({ kind: "fork", name: String(a.name), from: typeof from === "string" ? from : from ? `${from.branchId}@${from.seq}` : undefined });
+    const r = await ctx.project.write({ kind: "fork", name: String(a.name), from: typeof from === "string" ? from : from ? `${from.branchId}@${from.seq}` : undefined }, { actor: ctx.actor });
     const cut = (r as any).cut as CutRecord | undefined;
     return { json: r, text: r.status === "error" ? resultText(r) : `New cut "${cut?.name ?? a.name}" (${cut?.id.slice(0, 8) ?? "?"})`, exitCode: exitCodeOf(r) };
   },
@@ -174,7 +176,7 @@ const cutSwitch: CommandSpec = {
   write: true,
   async run(ctx, a) {
     const cut = await resolveCut(ctx.project.carton, a.cut);
-    const r = await ctx.project.write({ kind: "switch", cut: cut.id });
+    const r = await ctx.project.write({ kind: "switch", cut: cut.id }, { actor: ctx.actor });
     return { json: { ...r, cut: { id: cut.id, name: cut.name } }, text: r.status === "error" ? resultText(r) : `Now on "${cut.name}"`, exitCode: exitCodeOf(r) };
   },
 };
@@ -182,13 +184,14 @@ const cutSwitch: CommandSpec = {
 const fold: CommandSpec = {
   path: ["fold"],
   gitAlias: ["merge"],
-  summary: "Fold a cut into the current cut (or --into). --check reports cards without saving; --reject keeps parts out",
+  summary: "Fold a cut into the current cut (or --into). --check reports cards without saving; --reject keeps parts out (fold it again later to fold in the rest)",
   args: [{ name: "cut", description: "the cut (or version) to fold in", required: true }],
   options: [
     { name: "into", type: "string", description: "fold into this cut instead of the current one" },
     { name: "check", type: "boolean", description: "dry run: what would change and which cards, nothing saved" },
     { name: "reject", type: "strings", description: "fold in some of it: a record path to keep out (repeatable), e.g. timelineItems/c3" },
     { name: "all-cards", type: "boolean", description: "when the merge base is missing, bring it in with every difference as a card" },
+    { name: "keep", type: "string", description: "decide every card one way: mine (this cut's value) or theirs (the folded cut's)" },
   ],
   write: true,
   async run(ctx, a) {
@@ -210,10 +213,11 @@ const fold: CommandSpec = {
         : "Would fold in cleanly (no cards)";
       return out({ check: true, ...r, merge: undefined }, text);
     }
-    const r = await ctx.project.write({ kind: "fold", from, into, reject: a.reject, missingBase });
+    if (a.keep !== undefined && a.keep !== "mine" && a.keep !== "theirs") throw new UsageError("--keep wants mine or theirs");
+    const r = await ctx.project.write({ kind: "fold", from, into, reject: a.reject, missingBase, keep: a.keep }, { actor: ctx.actor });
     if ((r as any).upToDate) return out(r, "Already folded in: nothing to do");
     if ((r as any).dialog) return { json: r, text: (r as any).dialog.text, exitCode: 1 };
-    return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : "Folded in");
+    return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : (r as any).rest ? "Folded in the rest (what an earlier partial fold kept out)" : "Folded in");
   },
 };
 
@@ -243,7 +247,7 @@ const restore: CommandSpec = {
   write: true,
   async run(ctx, a) {
     const v = await resolveVersion(ctx.project.carton, String(a.version));
-    const r = await ctx.project.write({ kind: "restore", ref: typeof v === "string" ? v : `${v.branchId}@${v.seq}` });
+    const r = await ctx.project.write({ kind: "restore", ref: typeof v === "string" ? v : `${v.branchId}@${v.seq}` }, { actor: ctx.actor });
     return writeOut(r, `Restored ${a.version}`);
   },
 };
@@ -264,10 +268,10 @@ const undo: CommandSpec = {
     if (a.turn !== undefined) {
       const turn = a.turn === true || a.turn === "" ? ctx.actor.turn : String(a.turn);
       if (!turn) throw new UsageError("no turn to undo: pass --turn <turn id> (see `cb history`)");
-      const r = await ctx.project.write({ kind: "undoTurn", turn, cut });
+      const r = await ctx.project.write({ kind: "undoTurn", turn, cut }, { actor: ctx.actor });
       return writeOut(r, `Undid turn ${turn}`);
     }
-    const r = await ctx.project.write({ kind: "undo", group: ctx.actor.group, cut });
+    const r = await ctx.project.write({ kind: "undo", group: ctx.actor.group, cut }, { actor: ctx.actor });
     if (r.status === "confirmed" && r.empty) return out(r, "Nothing to undo");
     const entry = (r as any).undid;
     return writeOut(r, entry?.label ?? "Undid your last change");
@@ -303,7 +307,7 @@ const publish: CommandSpec = {
     const v = a.version ? await resolveVersion(carton, String(a.version)) : (await carton.head()).ref;
     const from = typeof v === "string" ? v : `${v.branchId}@${v.seq}`;
     const label = a.name ? String(a.name) : `Published ${new Date(ctx.now?.() ?? Date.now()).toISOString().slice(0, 10)}`;
-    const r = await ctx.project.write({ kind: "fork", name: label, from, cutKind: "published" });
+    const r = await ctx.project.write({ kind: "fork", name: label, from, cutKind: "published" }, { actor: ctx.actor });
     const cut = (r as any).cut as CutRecord | undefined;
     return { json: { ...r, published: from }, text: r.status === "error" ? resultText(r) : `Published ${a.version ?? "head"} as "${cut?.name ?? label}"`, exitCode: exitCodeOf(r) };
   },
@@ -339,8 +343,8 @@ const resolve: CommandSpec = {
     // a rebase card's `theirs` is the actor's own edit and `ours` is head's value, which stayed in place provisionally
     const value = a.value !== undefined ? JSON.parse(String(a.value)) : a.keep === "mine" ? hit.card.theirs : hit.card.ours;
     const ops = a.keep === "theirs" && a.value === undefined ? [] : opsForChoice(hit.card, value);
-    const r: CbResult = ops.length ? await ctx.project.write({ kind: "commit", ops }) : { status: "confirmed", seq: 0, ref: null, notices: [], empty: true };
-    if (r.status === "confirmed" || r.status === "pending") await ctx.project.write({ kind: "closeCard", change: hit.notice.change ?? null, path: hit.card.path } as any).catch(() => null);
+    const r: CbResult = ops.length ? await ctx.project.write({ kind: "commit", ops }, { actor: ctx.actor }) : { status: "confirmed", seq: 0, ref: null, notices: [], empty: true };
+    if (r.status === "confirmed" || r.status === "pending") await ctx.project.write({ kind: "closeCard", change: hit.notice.change ?? null, path: hit.card.path } as any, { actor: ctx.actor }).catch(() => null);
     return writeOut(r, `Resolved ${hit.card.path} (${a.value !== undefined ? "your value" : a.keep})`);
   },
 };

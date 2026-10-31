@@ -6,6 +6,7 @@ import { mkdtempSync, readFileSync, statSync } from "node:fs";
 import { createConnection } from "node:net";
 import { join } from "node:path";
 import { ControlClient, ControlServer, pipeName, tokenPath, RpcError } from "../src/ipc.ts";
+import { holderSocketPath } from "../src/holder.ts";
 import { scratch } from "./support/scratch.ts";
 
 const dir = mkdtempSync(join(scratch(), "ipc-"));
@@ -88,4 +89,19 @@ test("a call times out; a connection to nothing fails fast; closing the server f
   await new Promise((r) => setTimeout(r, 20));
   await srv.close();
   await assert.rejects(waiting, (e: any) => e.code === "ECONNRESET");
+});
+
+test("holder socket paths fit sun_path: a deep folder falls back to the temp folder (POSIX only)", async () => {
+  const deep = join(dir, "x".repeat(120));
+  const p = holderSocketPath(deep, "helper", "linux");
+  assert.ok(Buffer.byteLength(p) <= 104, p);
+  assert.ok(!p.startsWith(deep));
+  assert.ok(holderSocketPath(deep, "helper", "win32").startsWith(deep), "Windows pipes have no such limit");
+  const short = holderSocketPath(dir, "worker", "linux");
+  assert.ok(short.startsWith(dir));
+  const srv = await ControlServer.listen({ path: p, open: ["ping"], methods: { ping: () => 1 } });
+  const c = await ControlClient.connect(p, { auth: false });
+  assert.equal(await c.call("ping"), 1);
+  c.close();
+  await srv.close();
 });

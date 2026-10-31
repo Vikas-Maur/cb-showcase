@@ -231,7 +231,7 @@ const size = (entry: string, files: string[]) => {
 const ENGINE = "packages/core/src/engine/index.ts",
   HISTORY = "packages/core/src/history/index.ts",
   CBPROJ = "packages/conformance/src/engine/cbproj.ts";
-const srcFiles = (dir: string) => (execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", dir], { cwd: CARTON, encoding: "utf8" }).trim().split("\n").filter((f) => f.endsWith(".ts")));
+const srcFiles = (dir: string) => (execFileSync("git", ["ls-files", "--cached", "--others", "--exclude-standard", dir], { cwd: CARTON, encoding: "utf8" }).trim().split(/\r?\n/).filter((f) => f.endsWith(".ts")));
 out.engineSize = {
   esbuild: execFileSync(esb, ["--version"], { encoding: "utf8" }).trim(),
   engine: size(`export * from "./${ENGINE}";`, srcFiles("packages/core/src/engine")),

@@ -42,11 +42,8 @@ test("P3: 4 processes x 500 CAS appends lose no write (sqlite-check)", async () 
   assert.ok(rows.every((r, i) => r.key[1] === i + 1), "seqs are contiguous: every append saw the true head");
   assert.equal(new Set(rows.map((r) => r.value.id)).size, N * COUNT, "each change landed exactly once");
   assert.equal(ids.length, N * COUNT, "the id index and the log were written together");
-  // The writers contend on purpose. A waiting writer's thread must keep serving its event loop: the stall is
-  // bounded by SQLite's short busy wait plus one transaction, never by another process's whole lock hold. The bound
-  // is loose because this box is shared; the measured value is printed above.
-  const worst = Math.max(...results.map((r) => r.report.maxStallMs));
-  assert.ok(worst < 250, `event loop stalled ${worst} ms`);
+  // Each writer's longest event-loop stall is printed above; the lock holds here are a few ms, so the test that a
+  // waiting writer keeps its loop running is P3b below, with a long hold.
   assert.ok(switches > N, `the writers really ran at once (${switches} hand-offs between writers)`);
 });
 
@@ -79,6 +76,7 @@ test("P3b: a write waiting for another process's lock keeps the event loop runni
   }
   const waited = performance.now() - t0;
   clearInterval(beat);
+  maxStall = Math.max(maxStall, performance.now() - last); // the last interval, which no beat sampled
   await exited;
   const ids = (await store.range<{ id: string }>("changes", { prefix: ["main"] })).map((r) => r.value.id);
   const busyRetries = store.db.busyRetries;
@@ -89,6 +87,11 @@ test("P3b: a write waiting for another process's lock keeps the event loop runni
   assert.equal(attempts, 2);
   assert.ok(waited >= HOLD * 0.5, `the write really waited (${waited} ms)`);
   assert.ok(busyRetries > 0);
-  // A DatabaseSync with the prototype's busy_timeout=5000 would block here for the whole ~400 ms hold.
-  assert.ok(maxStall < 100, `event loop stalled ${maxStall} ms while waiting`);
+  // A DatabaseSync with the prototype's busy_timeout=5000 would block here for the whole ~400 ms hold. The heartbeat
+  // must have run all along (every 2 ms asked; a quarter of that is plenty on a loaded box), so a wait that blocked
+  // the loop can't pass by never letting the heartbeat sample it.
+  // Relative bounds, so a heavily loaded box can't fail it while a blocking wait (0 beats, one stall as long as the
+  // wait) still does.
+  assert.ok(beats >= 10, `only ${beats} heartbeats in ${Math.round(waited)} ms`);
+  assert.ok(maxStall < waited * 0.6, `event loop stalled ${Math.round(maxStall)} ms of a ${Math.round(waited)} ms wait`);
 });

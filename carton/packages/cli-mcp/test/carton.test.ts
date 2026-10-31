@@ -88,20 +88,94 @@ test("real Carton: undo by actor group; undo --turn as one change keeps the pers
   }
 });
 
-test("real Carton: the cb result contract for a stale base: conflicts with the card, nothing else lost; exit 1", async () => {
+test("real Carton: a stale-base save lands except its cards; the cards stay until resolved (other writes don't eat them)", async () => {
   const { local, reopen } = await realProject("cli-real-4", human);
   try {
     const agent = await reopen(director("t2"));
     const pin = await agent.carton.pin({ owner: "turn:t2" });
-    await local.write({ kind: "commit", ops: [set("c3", "endTime", 19), set("c3", "trimEnd", 4)] });
-    // the agent applies a different trim of the same edge from the version it printed, plus an unrelated rename
+    await local.write({ kind: "commit", ops: [set("c3", "endTime", 19), set("c3", "trimEnd", 4), set("c2", "name", "theirs-2")] });
+    // the agent applies different edits of the same fields from the version it printed, plus an unrelated rename
     const mine = structuredClone((await agent.carton.checkout(pin.ref)) as any);
     Object.assign(mine.timelineItems.find((i: Rec) => i.id === "c3"), { endTime: 18.5, trimEnd: 3.5 });
+    mine.timelineItems.find((i: Rec) => i.id === "c2").name = "mine-2";
     mine.timelineItems.find((i: Rec) => i.id === "c1").name = "kept";
     const r = await agent.write({ kind: "commit", base: pin.header, doc: mine });
-    assert.equal(r.status, "conflicts");
-    assert.ok(r.status === "conflicts" && r.conflicts.some((c) => c.path === "timelineItems/c3/#time"), JSON.stringify(r));
+    assert.equal(r.status, "conflicts", JSON.stringify(r));
+    assert.ok(r.status === "conflicts" && r.conflicts.some((c) => c.path === "timelineItems/c3/#time") && r.conflicts.some((c) => c.path === "timelineItems/c2/name"));
+    const item = async (id: string) => ((await local.carton.head()).doc.timelineItems as Rec[]).find((i) => i.id === id)!;
+    assert.equal((await item("c1")).name, "kept", "the non-conflicting part landed");
+    assert.deepEqual([(await item("c3")).endTime, (await item("c2")).name], [19, "theirs-2"], "each card kept head's value");
+    // an unrelated write by the same agent must not consume the cards
+    await agent.write({ kind: "commit", ops: [set("c0", "name", "other")] });
+    const c = await cb(agent, ["conflicts", "--json"], director("t2"));
+    assert.equal(c.json().cards.length, 2, c.out);
+    const n = c.json().cards.findIndex((x: any) => x.path === "timelineItems/c3/#time") + 1;
+    const res = await cb(agent, ["resolve", String(n), "--keep", "mine"], director("t2"));
+    assert.equal(res.code, 0, res.out + res.err);
+    assert.deepEqual([(await item("c3")).endTime, (await item("c3")).trimEnd], [18.5, 3.5], "resolving picked the agent's trim");
+    const left = await cb(agent, ["conflicts", "--json"], director("t2"));
+    assert.deepEqual(left.json().cards.map((x: any) => x.path), ["timelineItems/c2/name"], "only the resolved card went away");
     await agent.close();
+  } finally {
+    await local.close();
+  }
+});
+
+test("real Carton: --as names the actor of the write, not the process's environment identity", async () => {
+  const { local } = await realProject("cli-real-5", human);
+  try {
+    const codex: Actor = { kind: "agent", id: "codex/fix-captions", name: "Codex (fix-captions) (terminal)", provider: "codex", group: "local:me@box" };
+    // the project was opened as `human`; the command runs as codex (what `--as codex/fix-captions` resolves to)
+    const r = await cb(local, ["cut", "new", "Alt", "--json"], codex);
+    assert.equal(r.code, 0, r.out);
+    await cb(local, ["publish", "--name", "P"], codex);
+    await local.write({ kind: "commit", ops: [set("c0", "name", "x")] }, { actor: codex });
+    const u = await cb(local, ["undo", "--json"], codex);
+    assert.equal(u.json().status, "confirmed", u.out);
+    assert.equal((await local.carton.log())[0].author?.id, "codex/fix-captions", "the undo is credited to the --as actor");
+  } finally {
+    await local.close();
+  }
+});
+
+test("real Carton: undo --turn is recorded as an undo of every change of the turn", async () => {
+  const { local } = await realProject("cli-real-6", human);
+  try {
+    await local.write({ kind: "commit", ops: [set("c1", "name", "A")] }, { actor: director("t7") });
+    await local.write({ kind: "commit", ops: [set("c2", "name", "B")] }, { actor: director("t7", ["editor", "q"]) });
+    const ids = (await local.carton.log()).filter((v) => v.author?.turn === "t7").map((v) => v.change);
+    const u = await cb(local, ["undo", "--turn", "t7", "--json"], director("t7"));
+    assert.equal(u.json().status, "confirmed", u.out);
+    const top = (await local.carton.log())[0];
+    assert.equal(top.kind, "undo");
+    const stack = await local.carton.undoStack("local:me@box");
+    assert.ok(!stack.some((e) => ids.includes(e.changeId)), "the turn's changes are no longer undoable: they are undone");
+    // a second undo --turn of the same turn finds nothing left to undo
+    const again = await cb(local, ["undo", "--turn", "t7", "--json"], director("t7"));
+    assert.equal(again.json().empty, true, again.out);
+  } finally {
+    await local.close();
+  }
+});
+
+test("real Carton: check_timeline dry-runs the proposed edit against head, writing nothing", async () => {
+  const { local } = await realProject("cli-real-7", human);
+  try {
+    const { mcpTools } = await import("../src/mcp.ts");
+    const check = mcpTools().find((t) => t.name === "check_timeline")!;
+    const head = await local.carton.head();
+    const doc = structuredClone(head.doc) as any;
+    doc.timelineItems.find((i: Rec) => i.id === "c1").name = "proposed";
+    const r = await check.call({ project: local, actor: human }, { doc });
+    assert.match(r.text, /c1|proposed/i, r.text);
+    assert.equal((r.result as any).ops, 1);
+    assert.equal(r.isError, false);
+    const bad = structuredClone(head.doc) as any;
+    bad.timelineItems.find((i: Rec) => i.id === "c2").endTime = 1; // ends before it starts
+    const b = await check.call({ project: local, actor: human }, { doc: bad });
+    assert.ok((b.result as any).conflicts.some((c: any) => c.kind === "invalid" && c.path === "timelineItems/c2"), b.text);
+    assert.equal(b.isError, true);
+    assert.equal((await local.carton.head()).ref.seq, head.ref.seq, "nothing was written");
   } finally {
     await local.close();
   }

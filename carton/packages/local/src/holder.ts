@@ -9,7 +9,9 @@
 // nonce we saw). A live helper is asked to hand over; a worker never waits for a helper's 60 s idle timeout.
 // Losing it: every heartbeat is fenced on our nonce, and so is the sync client's every dequeue. The first failed one
 // stops this holder for good: it pushes and rebases nothing more, and a helper exits.
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { ControlServer, ControlClient, RpcError } from "./ipc.ts";
 import { Lease, LEASE_BEAT_MS, LEASE_EXPIRY_MS, PING_TIMEOUT_MS } from "./lease.ts";
 import type { HolderKind, LeaseRow } from "./lease.ts";
@@ -18,8 +20,11 @@ import type { HolderKind, LeaseRow } from "./lease.ts";
 export interface HolderEngine {
   /** Serve one `cb` request. Must resolve within the request's own wait budget (§6.2: up to 5 s on shared cuts). */
   serve(req: unknown, ctx: { holder: Holder }): Promise<unknown>;
-  /** The lease is ours: start pushing (shared cuts). Every dequeue must carry `fence(nonce)`. */
-  startSync?(nonce: string, onFenced: () => void): void | Promise<void>;
+  /**
+   * The lease is ours: start pushing (shared cuts). `fence(nonce)` says synchronously whether this holder still holds
+   * the lease (asked before every queue step); `onFenced` is called when the client stops because it doesn't.
+   */
+  startSync?(nonce: string, onFenced: () => void, fence: (nonce: string) => boolean): void | Promise<void>;
   /** Push nothing new and resolve once nothing is in flight (handover, idle exit). */
   quiesce?(): Promise<void>;
   /** Stop everything (after quiesce, or when fenced). */
@@ -40,27 +45,59 @@ export interface HolderOptions {
   log?: (event: Record<string, unknown>) => void;
 }
 
-/** Ping a holder: its nonce if it answered within `timeoutMs`, else null. */
-export async function ping(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise<{ nonce: string; pid: number } | null> {
+/** A ping's outcome: the holder's answer, or why there is none: nothing listens (`gone`: it died) or no answer in time
+ * (`slow`: busy, preempted, or hung). */
+export type PingResult = { answer: { nonce: string; pid: number } } | { gone: true } | { slow: true };
+
+export async function pingWhy(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise<PingResult> {
   const deadline = Date.now() + timeoutMs;
   let c: ControlClient | null = null;
   try {
     c = await ControlClient.connect(socket, { timeoutMs, auth: false });
-    return await c.call("carton.ping", {}, Math.max(1, deadline - Date.now()));
-  } catch {
-    return null;
+    return { answer: await c.call("carton.ping", {}, Math.max(1, deadline - Date.now())) };
+  } catch (e) {
+    return (e as { code?: string })?.code === "ETIMEDOUT" ? { slow: true } : { gone: true };
   } finally {
     c?.close();
   }
 }
 
-/** The live holder, or null. Live = the row isn't expired and its socket answers a ping with the row's nonce. */
-export async function liveHolder(lease: Lease, now = Date.now()): Promise<LeaseRow | null> {
-  const row = await lease.read();
-  if (!row || now - row.heartbeat > LEASE_EXPIRY_MS) return null;
-  const r = await ping(row.socketPath);
-  return r?.nonce === row.nonce ? row : null;
+/** Ping a holder: its nonce if it answered within `timeoutMs`, else null. */
+export async function ping(socket: string, timeoutMs = PING_TIMEOUT_MS): Promise<{ nonce: string; pid: number } | null> {
+  const r = await pingWhy(socket, timeoutMs);
+  return "answer" in r ? r.answer : null;
 }
+
+/**
+ * Further pings for a holder worth waiting for when it was merely slow (B3): the app's engine thread, whose takeover
+ * by a helper loses the app's materializer and fences the app, or a helper the starting app would rather have hand
+ * over. A dead holder refuses at once (`gone`), so a takeover after a crash waits for none of these.
+ */
+export const PATIENT_PINGS_MS = [300, 1000];
+
+/**
+ * Look at the lease: the live holder, or null, and the nonce that was observed (live or not). Live = the row isn't
+ * expired and its socket answers a ping with the row's nonce. A taker must take over from exactly the nonce whose
+ * holder it saw fail, never from one it reads later (that one may be a healthy holder another caller just started).
+ */
+export async function probeHolder(lease: Lease, now = Date.now(), opts: { patient?: (row: LeaseRow) => boolean } = {}): Promise<{ live: LeaseRow | null; seen: string | null; fresh: boolean }> {
+  // one observation: the nonce a taker may take over from is the one this probe saw, never one read afterwards
+  const { nonce, row } = await lease.snapshot();
+  if (!row) return { live: null, seen: nonce, fresh: false };
+  if (now - row.heartbeat > LEASE_EXPIRY_MS) return { live: null, seen: row.nonce, fresh: false };
+  let r = await pingWhy(row.socketPath);
+  if ("slow" in r && opts.patient?.(row)) for (const ms of PATIENT_PINGS_MS) if (!("slow" in (r = await pingWhy(row.socketPath, ms)))) break;
+  // fresh: a holder beat within 6 s, even if it missed this ping (busy, or dead a moment ago)
+  return { live: "answer" in r && r.answer.nonce === row.nonce ? row : null, seen: row.nonce, fresh: true };
+}
+
+/** The live holder, or null. */
+export async function liveHolder(lease: Lease, now = Date.now(), opts: { patient?: (row: LeaseRow) => boolean } = {}): Promise<LeaseRow | null> {
+  return (await probeHolder(lease, now, opts)).live;
+}
+
+/** A `cb` call waits for a slow app (its engine thread), never for a slow helper (R4-04: takeover in under 1 s). */
+export const patientWithApp = (row: LeaseRow): boolean => row.kind === "worker";
 
 export class Holder {
   readonly kind: HolderKind;
@@ -104,7 +141,10 @@ export class Holder {
     this.log({ type: "lease", nonce: row.nonce, from: this.opts.seen ?? null });
     this.beatTimer = setInterval(() => void this.heartbeat(), LEASE_BEAT_MS);
     this.beatTimer.unref?.();
-    await this.opts.engine.startSync?.(row.nonce, () => void this.stop("fenced: lease nonce changed"));
+    // the fence is this holder's own knowledge, refreshed by every heartbeat (a failed beat stops it); between beats a
+    // replaced holder can push at most what the server deduplicates by id (§6.2, R5-06). What it would record from the
+    // server's answers is conditional on the lease in the store (the engine's `startSync`), so it records nothing
+    await this.opts.engine.startSync?.(row.nonce, () => void this.stop("fenced: lease nonce changed"), (n) => !this.stopped && this.nonce === n);
     if (this.opts.idleMs) this.armIdle();
     return true;
   }
@@ -123,7 +163,8 @@ export class Holder {
         return lease.take(seen, who);
       }
       if (!cur) { const r = await lease.take(null, who); if (r) return r; continue; }
-      if (!(await liveHolder(lease))) { const r = await lease.take(cur.nonce, who); if (r) return r; continue; }
+      // a slow holder is asked to hand over rather than fenced: only one that is gone (or never answers) is taken over
+      if (!(await liveHolder(lease, Date.now(), { patient: () => true }))) { const r = await lease.take(cur.nonce, who); if (r) return r; continue; }
       // a live helper: ask it to finish its in-flight push and leave
       this.log({ type: "handover-request", to: cur.nonce });
       try {
@@ -198,8 +239,16 @@ export class Holder {
 }
 
 /** A socket path for a holder: next to carton.db, carrying the pid and a random part (never reused). */
-export function holderSocketPath(dir: string, kind: HolderKind): string {
-  return `${dir.replace(/[\\/]+$/, "")}/${kind}-${process.pid}-${randomBytes(3).toString("hex")}.sock`;
+/**
+ * A socket path for a holder: next to carton.db, carrying the pid and a random part (never reused). A Unix socket path
+ * must fit `sun_path` (104 bytes on macOS, 108 on Linux), so a deep library folder falls back to a per-project name in
+ * the OS temp folder. Windows maps the path to a named pipe (`pipeName`), which has no such limit.
+ */
+export function holderSocketPath(dir: string, kind: HolderKind, platform: string = process.platform): string {
+  const name = `${kind}-${process.pid}-${randomBytes(3).toString("hex")}.sock`;
+  const near = join(dir, name);
+  if (platform === "win32" || Buffer.byteLength(near) <= 100) return near;
+  return join(tmpdir(), `carton-${createHash("sha256").update(dir).digest("hex").slice(0, 12)}-${name}`);
 }
 
 /**

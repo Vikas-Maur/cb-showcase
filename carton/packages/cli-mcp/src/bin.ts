@@ -79,9 +79,9 @@ async function main(): Promise<number> {
     return 0;
   }
   if (argv[0] === "hook-settings") {
-    const { hookSettings } = await import("@carton/local");
+    const { hookSettings, shQuote } = await import("@carton/local");
     const self = fileURLToPath(import.meta.url);
-    process.stdout.write(JSON.stringify(hookSettings({ command: `${JSON.stringify(process.execPath)} ${JSON.stringify(self)}`, projectDir: projectDir() }), null, 2) + "\n");
+    process.stdout.write(JSON.stringify(hookSettings({ command: `${shQuote(process.execPath)} ${shQuote(self)}`, projectDir: projectDir() }), null, 2) + "\n");
     return 0;
   }
   if (argv[0] === "mcp") return serveMcp();

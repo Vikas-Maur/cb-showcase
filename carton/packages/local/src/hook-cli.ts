@@ -31,9 +31,18 @@ export async function runHook(event: HookEvent, input: HookInput, opts: { env?: 
   }
 }
 
-/** `--settings` hooks for host Claude Code: the prefixer on Bash, the late-conflict hook on Stop and SubagentStop. */
+/**
+ * One word for the shell Claude Code runs hook commands in (sh, or Git Bash on Windows): single quotes, so nothing in a
+ * path (`$(…)`, backticks, `"`) is expanded; a single quote inside becomes `'\''`.
+ */
+export const shQuote = (s: string): string => (/^[A-Za-z0-9_./:@%+=,-]+$/.test(s) ? s : `'${s.replace(/'/g, "'\\''")}'`);
+
+/**
+ * `--settings` hooks for host Claude Code: the prefixer on Bash, the late-conflict hook on Stop and SubagentStop.
+ * `command` is already shell words (quote each with `shQuote`); `projectDir` is quoted here.
+ */
 export function hookSettings({ command, projectDir }: { command: string; projectDir: string }): object {
-  const q = (s: string) => (/^[A-Za-z0-9_./:\\-]+$/.test(s) ? s : JSON.stringify(s));
+  const q = shQuote;
   const stop = { hooks: [{ type: "command", command: `${command} hook stop --project ${q(projectDir)}` }] };
   return {
     hooks: {
