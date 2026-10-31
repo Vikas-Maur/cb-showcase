@@ -518,6 +518,52 @@ The build's last step checks that `carton-node.cjs` loads in Cardboard's own Nod
    `timeline.tsx` in a loop while `writers.js` runs, and count the edits it reports against those in `cb history`;
    in-place writers may very rarely lose one (L19), never silently in a per-agent view.
 
+#### Carton: live sync and sharing
+
+With Carton on, a project can be shared through a Carton host (`carton\apps\server-node`, or the Cloudflare Worker),
+so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
+with Carton off none of it runs at all.
+
+- **Share** (the editor's left rail, "Share"): enter the host and the invite you were given (the host's owner gets
+  one with its admin token). The project goes up with its whole history and authors. Its clips go up too: each clip's
+  content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
+  segments that upload as they are made. Originals stay on your computer.
+- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch") that expires. **Join** in another
+  library from the link: the project arrives with its history, and its clips play from the host.
+- **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
+  step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
+  The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
+  what they are doing. Offline you keep working; your changes go out when the host is back.
+- **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
+  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. Agent tools that run ffmpeg
+  read it from a loopback URL.
+- **Agents**: `cb` on a shared project hands its edit to the app's library worker, which holds the project's sync
+  connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
+  cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper
+  catches up and the newest state goes into `project.json`) and is never PUT as a whole file afterwards.
+- **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their
+  versions in instead of 1.4.0's "This project ID already exists".
+
+Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
+engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
+`scripts\carton\sync\patches\*.js`: the Share tab and presence in the editor (`ui.js`), `cardboard-media://` for clips
+that live on the host (`media.js`), `cb`'s cloud mode (`cloud.js`) and `.cbproj` (`cbproj.js`). Sessions and tokens are
+in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
+
+Tests (Linux, Cardboard's own bundles; two libraries, each with its own app data and its own real library worker,
+syncing through a real host on 127.0.0.1): share with history, invite and join, concurrent edits, presence, media by
+range and by URL, media while it uploads, offline and rejoin, `cb` with the app open, and with it closed in cloud
+mode.
+
+```sh
+set CARDBOARD_PRISTINE=C:\cb-pristine
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js
+```
+
+Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview
+(Electron's protocol handler and the media element), NVENC/QSV/AMF proxies, the helper under named pipes, and renames
+under Defender.
+
 ### Benchmarks
 
 `scripts\bench\` measures builds against each other on one machine, the way someone uses Cardboard. It runs the real

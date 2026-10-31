@@ -2,6 +2,8 @@
 // the demo HMAC invites, an admin token for the first owner's invite, and blob-fs for the projects' media scope
 // (share descriptors, media). State lives under <dir>, so a restart on the same port and dir is the same host.
 // Prints one JSON line {ready, port, origin} when it listens; `exit` on stdin stops it. It never outlives 10 minutes.
+// `hold-ends` makes it hold every segmented proxy's end entry (ps/<stream>/end) until `release-ends`, so a test can
+// read a proxy that is still uploading (answers {held} / {released}).
 //   node host.mjs <dir> [port]
 // Test-only secrets: the host's signing secret and admin token are fixed strings, for a host on loopback.
 import path from "node:path";
@@ -20,12 +22,26 @@ const { createFsBlobStore } = await load("@carton/blob-fs");
 export const SECRET = "carton-sync-test-secret-0123456789abcdef";
 export const ADMIN = "carton-sync-test-admin";
 const auth = createHmacAuth({ secret: SECRET });
+let hold = null; // {promise, release} while ends are held
+const END = /(^|\/)ps\/[0-9a-f]{64}\/end$/;
+const fsBlobs = createFsBlobStore({ root: path.join(dir, "blobs"), durable: false });
+const blobs = new Proxy(fsBlobs, {
+  get(t, k) {
+    const v = Reflect.get(t, k);
+    if (typeof v !== "function") return v;
+    if (!String(k).startsWith("put")) return v.bind(t);
+    return async (...a) => {
+      if (typeof a[0] === "string" && END.test(a[0]) && hold) await hold.promise;
+      return v.apply(t, a);
+    };
+  },
+});
 const node = await startNodeHost({
   dataDir: path.join(dir, "rooms"),
   auth,
   secret: SECRET,
   adminToken: ADMIN,
-  blobs: createFsBlobStore({ root: path.join(dir, "blobs"), durable: false }),
+  blobs,
   port: Number(port ?? 0),
   host: "127.0.0.1",
   durability: "normal",
@@ -33,7 +49,18 @@ const node = await startNodeHost({
 process.stdout.write(JSON.stringify({ ready: true, port: node.port, origin: node.httpUrl }) + "\n");
 setTimeout(() => process.exit(0), 600_000).unref();
 for await (const line of createInterface({ input: process.stdin })) {
-  if (line.trim() === "exit") break;
+  let cmd = line.trim();
+  try { cmd = JSON.parse(cmd); } catch {} // the tests send JSON lines ("exit")
+  if (cmd === "exit") break;
+  if (cmd === "hold-ends" && !hold) {
+    let release;
+    hold = { promise: new Promise((r) => (release = r)), release };
+    process.stdout.write(JSON.stringify({ held: true }) + "\n");
+  } else if (cmd === "release-ends") {
+    hold?.release();
+    hold = null;
+    process.stdout.write(JSON.stringify({ released: true }) + "\n");
+  }
 }
 await node.close();
 process.exit(0);

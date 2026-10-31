@@ -60,7 +60,10 @@ async function build() {
   await require("./shim.js").build(bundle, s.assets);
   const clip = path.join(TMP, "clip.mp4");
   if (!fs.existsSync(clip)) execFileSync(process.env.CARDBOARD_FFMPEG ?? "ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip]);
-  return (built = { ...s, carton: path.join(bundle, "carton"), clip });
+  // A second clip, longer and different footage, for media that is still uploading (three ~2 s segments).
+  const clip2 = path.join(TMP, "clip2.mp4");
+  if (!fs.existsSync(clip2)) execFileSync(process.env.CARDBOARD_FFMPEG ?? "ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30", "-f", "lavfi", "-i", "sine=frequency=660", "-t", "6", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip2]);
+  return (built = { ...s, carton: path.join(bundle, "carton"), clip, clip2 });
 }
 
 async function startHost(dir, port) {
@@ -100,8 +103,33 @@ async function computer(name, b) {
     return r.data;
   };
   const events = () => (w ? w.lines.filter((x) => x.event).map((x) => x.event) : []);
+  // cb as an agent's MCP server on this library (`cb --root <library> mcp`), JSON-RPC over stdio. Any HTTP(S) request it
+  // (or a helper it starts) makes goes to a dead local proxy, so a test never reaches Cardboard's servers (cloud mode
+  // has no account here); loopback, where the test's Carton host is, goes direct.
+  const mcp = async (extra = {}) => {
+    const dead = "http://127.0.0.1:9";
+    const p = proc(path.join(b.cli, "cardboard.mjs"), ["--root", root, "mcp"], { ...env, NODE_USE_ENV_PROXY: "1", HTTP_PROXY: dead, HTTPS_PROXY: dead, NO_PROXY: "127.0.0.1,localhost", ...extra });
+    let k = 0;
+    const request = async (method, params, ms = 90_000) => {
+      const id = ++k;
+      p.send({ jsonrpc: "2.0", id, method, params });
+      const r = await p.next((x) => x.id === id, ms);
+      if (r.error) throw new Error(`${name} mcp ${method}: ${JSON.stringify(r.error)}`);
+      return r.result;
+    };
+    await request("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "carton-sync-test", version: "0" } });
+    p.send({ jsonrpc: "2.0", method: "notifications/initialized" });
+    return {
+      tool: async (tool, args) => {
+        const r = await request("tools/call", { name: tool, arguments: args });
+        return { ...r, text: (r.content ?? []).filter((c) => c.type === "text").map((c) => c.text).join("\n") };
+      },
+      close: async () => { p.p.stdin.end(); await new Promise((ok) => { if (p.p.exitCode !== null) return ok(); const t = setTimeout(() => p.p.kill("SIGKILL"), 3000); p.p.once("exit", () => (clearTimeout(t), ok())); }); },
+      stderr: p.stderr,
+    };
+  };
   return {
-    name, home, root, env, cb, call, events, startWorker,
+    name, home, root, env, cb, mcp, call, events, startWorker,
     stopWorker: async () => { if (!w) return; w.send({ method: "exit" }); await new Promise((ok) => (w.p.exitCode !== null ? ok() : w.p.once("exit", ok))); w = null; },
     kill: () => { try { w?.p.kill("SIGKILL"); } catch {} },
     worker: () => w,
@@ -149,4 +177,11 @@ async function asComputer(pc, fn) {
 /** A media file's duration as ffprobe reads it (a path or a URL). */
 const probeDuration = (input) => Number(execFileSync(process.env.CARDBOARD_FFPROBE ?? "ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", input], { encoding: "utf8", timeout: 60_000 }).trim());
 
-module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration };
+/** Headless helpers a test's cb runs started (detached, they outlive cb by their idle time): stopped at the end. */
+function killHelpers() {
+  spawnSync("pkill", ["-f", `--db ${TMP}`]);
+}
+/** A project's file as it is on a computer's disk (its worker may be stopped). */
+const fileOf = (pc, bundle = "Demo") => JSON.parse(fs.readFileSync(path.join(pc.root, bundle + ".cardboard", "project.json"), "utf8")).project;
+
+module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf };

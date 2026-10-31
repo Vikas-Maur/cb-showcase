@@ -26,7 +26,12 @@ const open = (file) => {
       src = src.split(from).join(to);
       changed = true;
     },
-    prepend(text) { src = text + src; changed = true; },
+    // At the top, but after a "#!" line (the CLI's files start with one).
+    prepend(text) {
+      const nl = src.startsWith("#!") ? src.indexOf("\n") + 1 : 0;
+      src = src.slice(0, nl) + text + src.slice(nl);
+      changed = true;
+    },
     save() {
       if (!changed) return;
       // A comment at the top, after a "#!" line when the file has one (the CLI's entry).

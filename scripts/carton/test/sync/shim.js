@@ -4,7 +4,10 @@
 //   R1: open() merges each extension's openOptions({bundlePath, projectId}) into openLocal's options.
 //   R2: commit() on a shared cut asks the extension's commitShared(lc, {doc, base, author, intent, gui}), and treats
 //       `pending` like a confirmation that merged nothing in.
-//   R4: materializeIn writes media and description too (a teammate's new clip or content id reaches project.json).
+//   R4: materializeIn writes description, and media through Cardboard's own media scope (ownedMediaIds for records
+//       added or changed, removedMediaIds for records gone: 1.4.0's updateScoped never takes media from ownedFields).
+//   R6: before that write, each extension's materializeDoc(next, {bundlePath, projectId, current}) may fill in what
+//       only the host knows (a teammate's new clip: where it plays from, its size and duration).
 const fs = require("fs"), path = require("path");
 
 const ROOT = path.join(__dirname, "..", "..", "..", "..");
@@ -19,16 +22,30 @@ const once = (src, from, to) => {
 
 function patched() {
   let s = fs.readFileSync(FACADE, "utf8");
-  if (/openOptions/.test(s) && /commitShared/.test(s) && /"description", "media"\]/.test(s)) return null; // landed: no shim needed
+  if (/openOptions/.test(s) && /commitShared/.test(s) && /ownedMediaIds/.test(s) && /materializeDoc/.test(s)) return null; // landed: no shim needed
   s = once(s, "const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined });",
     "const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined, ...(await __shimOpenOptions({ bundlePath, projectId: id })) });");
   s = once(s, "const r = await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });",
     "const __ext = extensions.find((e) => e.commitShared), __shared = __ext && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind !== \"local\";\n" +
     "  const r = __shared ? await __ext.commitShared(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef }) : await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });");
   s = once(s, "if (r.status === \"confirmed\" && !r.rebased) {", "if ((r.status === \"confirmed\" && !r.rebased) || r.status === \"pending\") {");
-  // R4: head goes into project.json with every versioned root field, media and description included.
-  s = once(s, 'await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name"], carton: { materialize: true } });',
-    'await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name", "description", "media"], carton: { materialize: true } });');
+  // R4 + R6: head goes into project.json with description, and media by Cardboard's media scope; extensions fill in
+  // what only the host knows first.
+  s = once(s, `  const next = await headProject(library.projects.bundlePathFor(projectId), current);
+  if (!next) return false;
+  await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name"], carton: { materialize: true } });`,
+    `  const bundlePath = library.projects.bundlePathFor(projectId);
+  let next = await headProject(bundlePath, current);
+  if (!next) return false;
+  for (const e of extensions) {
+    if (typeof e.materializeDoc !== "function") continue;
+    try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
+  }
+  const had = new Map((current?.media ?? []).map((m) => [m.id, JSON.stringify(m)]));
+  const keep = new Set((next.media ?? []).map((m) => m.id));
+  const ownedMediaIds = (next.media ?? []).filter((m) => had.get(m.id) !== JSON.stringify(m)).map((m) => m.id);
+  const removedMediaIds = [...had.keys()].filter((mid) => !keep.has(mid));
+  await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name", "description"], ownedMediaIds, removedMediaIds, carton: { materialize: true } });`);
   s += `
 async function __shimOpenOptions(o) {
   let out = {};

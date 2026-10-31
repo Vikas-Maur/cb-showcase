@@ -4,7 +4,8 @@
 // ../patches.test.js); without them the tests skip.
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js
 // One scenario, in order (each step needs the one before): share with history, invite, join in the other library,
-// concurrent edits, presence, offline and rejoin, cb on the shared project with the app open.
+// concurrent edits, presence, media, offline and rejoin, cb on the shared project with the app open, then with the
+// app closed in cb's cloud mode (a headless helper syncs; H13).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path");
@@ -31,6 +32,7 @@ test.after(async () => {
     fs.writeFileSync(path.join(S.TMP, pc.name + "-events.jsonl"), pc.events().map((e) => JSON.stringify(e)).join("\n"));
   }
   for (const pc of [alice, bob]) pc?.kill();
+  S.killHelpers();
   await host?.stop().catch(() => {});
 });
 
@@ -79,14 +81,15 @@ test("presence: what Alice is doing shows on Bob's computer, and goes when she s
 test("media: Alice's clips are shared (content id, collab proxy); Bob streams one by range and a tool reads it by URL", t, async () => {
   // Sharing the project started sharing its clips in the background; this waits for that, and skips what is done.
   const results = await alice.call("carton.liveShareMedia", { projectId: id });
-  const r = results.find((x) => x.proxy?.hash);
-  assert.ok(r, "a collab proxy went up: " + JSON.stringify(results));
+  const r = results.find((x) => x.proxy?.stream && x.proxy.size > 0);
+  assert.ok(r, "a collab proxy went up, as a segmented stream that has ended: " + JSON.stringify(results));
   assert.match(r.hash, /^[0-9a-f]{64}$/);
   const mediaId = r.mediaId;
   assert.ok((await S.projectOf(bob, id)).media.some((m) => m.id === mediaId), "Bob's copy lists the clip");
   // Bob has no file for it: main asks his worker where it lives, then answers cardboard-media:// from the range cache.
   const src = await bob.call("carton.liveMediaSource", { mediaId });
-  assert.equal(src.hash, r.proxy.hash);
+  assert.equal(src.stream, r.proxy.stream);
+  assert.equal(src.size, r.proxy.size);
   const body = await S.asComputer(bob, async () => {
     const res = await S.facade(b).media.serve(new Request(`cardboard-media://media/${mediaId}`, { headers: { range: "bytes=0-1023" } }), src);
     assert.equal(res.status, 206);
@@ -102,6 +105,54 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
   const { url } = await bob.call("carton.liveMediaUrl", { mediaId });
   assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/m\/[0-9a-f]{64}\?t=/);
   assert.ok(Math.abs(S.probeDuration(url) - 3) < 0.2, "ffprobe reads the shared proxy by URL");
+});
+
+test("media before its upload finishes: Bob plays Alice's new clip from its first segments, and a tool follows it live", t, async () => {
+  // The host holds each stream's end entry, so the proxy stays "still uploading" for as long as the test needs.
+  host.send("hold-ends");
+  await host.next((x) => x.held);
+  const before = new Set((await S.projectOf(alice, id)).media.map((m) => m.id));
+  const add = alice.cb(["media", "add", "Demo", b.clip2]);
+  assert.equal(add.code, 0, add.out + add.err);
+  const mediaId = (await S.projectOf(alice, id)).media.find((m) => !before.has(m.id))?.id;
+  assert.ok(mediaId, "the clip is in Alice's project");
+  const sharing = alice.call("carton.liveShareMedia", { projectId: id, mediaIds: [mediaId] });
+  try {
+    // The record goes up as soon as the stream is claimed: a stream with no size yet.
+    const src = await S.until(async () => { const s = await bob.call("carton.liveMediaSource", { mediaId }); return s?.stream && s; }, 60_000, "the new clip's stream at bob");
+    assert.equal(src.size, null, "still uploading");
+    const head = await S.asComputer(bob, async () => {
+      const res = await S.facade(b).media.serve(new Request(`cardboard-media://media/${mediaId}`), src);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get("content-length"), null, "a growing body");
+      // The init segment, then media segments as they are up: read until the first fragment (moof) has arrived.
+      const rd = res.body.getReader();
+      let got = Buffer.alloc(0);
+      while (!got.includes("moof")) {
+        const c = await rd.read();
+        if (c.done) break;
+        got = Buffer.concat([got, Buffer.from(c.value)]);
+      }
+      await rd.cancel();
+      return got;
+    });
+    assert.equal(head.subarray(4, 8).toString("latin1"), "ftyp", "the init segment first");
+    assert.ok(head.includes("moof"), "then a media segment, while the upload hasn't finished");
+    const live = await bob.call("carton.liveMediaUrl", { mediaId });
+    assert.match(live.url, /^http:\/\/127\.0\.0\.1:\d+\/s\/[0-9a-f]{64}\.m3u8\?t=/);
+    const m3u8 = await (await fetch(live.url)).text();
+    assert.match(m3u8, /#EXT-X-MAP:URI="http:\/\/127\.0\.0\.1:\d+\/m\/[0-9a-f]{64}(\.m4s)?\?t=/);
+    assert.doesNotMatch(m3u8, /#EXT-X-ENDLIST/, "a live playlist while it uploads");
+  } finally {
+    host.send("release-ends");
+  }
+  const done = (await sharing).find((x) => x.mediaId === mediaId);
+  assert.ok(done?.proxy?.size > 0, JSON.stringify(done));
+  const src = await S.until(async () => { const s = await bob.call("carton.liveMediaSource", { mediaId }); return s?.size && s; }, 20_000, "the finished stream at bob");
+  const { url } = await bob.call("carton.liveMediaUrl", { mediaId });
+  assert.match(url, /\/m\/[0-9a-f]{64}\?t=/, "once it has ended, one file by range");
+  assert.ok(Math.abs(S.probeDuration(url) - 6) < 0.3, "ffprobe reads all of it");
+  assert.equal(src.stream, done.proxy.stream);
 });
 
 test("offline and rejoin: Bob edits while the host is down; his edit waits, then reaches Alice when it is back", t, async () => {
@@ -125,4 +176,30 @@ test("cb on the shared project with the app open: the agent's edit goes through 
   await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 77, 30_000, "the agent's edit at bob");
   const h = bob.cb(["history", "Demo"]);
   assert.equal(h.json().versions[0].by?.id, "codex/c9", "credited to the agent on Bob's computer");
+});
+
+test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the pull brings Bob's edit in, the agent's edit reaches Bob, no whole-file PUT", t, async () => {
+  await alice.stopWorker();
+  await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, fontSize: 55 } : null));
+  await S.sleep(1000);
+  assert.notEqual(S.textOf(S.fileOf(alice)).fontSize, 55, "with Alice's app closed, nothing writes her file");
+  // CARDBOARD_CLOUD_PROJECTS=1: Cardboard's own path would GET and PUT the whole project.json from its storage around
+  // each tool call (support.js sends any HTTP request to a dead local proxy, and there is no account here).
+  const m = await alice.mcp({ CARDBOARD_CLOUD_PROJECTS: "1", CARDBOARD_ACTOR: "codex/c10" });
+  try {
+    const p = await m.tool("print_timeline", { project: "Demo" });
+    assert.ok(!p.isError, p.text);
+    assert.match(p.text, /fontSize=\{55\}/, "the pull caught up through a helper before the tool read");
+    assert.equal(S.textOf(S.fileOf(alice)).fontSize, 55, "and head went into Alice's project.json");
+    const rev = Number(p.text.match(/cardboard:rev[^\d]*(\d+)/)?.[1]);
+    const a = await m.tool("apply_timeline", { project: "Demo", edits: [{ oldText: "fontSize={55}", newText: "fontSize={66}" }], ...(rev ? { rev } : {}) });
+    assert.ok(!a.isError, a.text);
+    assert.doesNotMatch(a.text, /Not saved to Cardboard storage/, "no whole-file PUT was tried");
+  } catch (e) {
+    throw new Error(e.message + "\n--- cb mcp stderr (tail):\n" + m.stderr().slice(-3000));
+  } finally {
+    await m.close();
+  }
+  await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 66, 30_000, "the agent's edit at bob");
+  assert.equal(bob.cb(["history", "Demo"]).json().versions[0].by?.id, "codex/c10", "credited to the agent on Bob's computer");
 });

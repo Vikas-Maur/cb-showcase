@@ -15,10 +15,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { extend } from "../carton-node.js";
+import { extend, cardboard14 } from "../carton-node.js";
 import { Carton, hashDoc } from "@carton/core";
 import { cardboardAdapter, materializeProject } from "@carton/cardboard";
-import { CartonHolderEngine, localGroup, nodeHasher } from "@carton/local";
+import { CartonHolderEngine, localGroup, nodeHasher, openLocal } from "@carton/local";
 import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 import { webSocketTransport } from "@carton/server-node";
 import * as host from "./host.js";
@@ -79,7 +79,8 @@ async function startLive(api, bundlePath, lc) {
       warnOnce("nosync:" + bundlePath, `${path.basename(bundlePath)} is shared, but this build can't open it with sync; edits stay on this computer`);
       return null;
     }
-    const live = new Live({ api, bundlePath, projectId, lc, log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : undefined) });
+    // A clip added while the project is shared (by the person, an agent or cb) is shared as it was at share time.
+    const live = new Live({ api, bundlePath, projectId, lc, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : undefined) });
     await live.start();
     holding.set(lc, live);
     return live;
@@ -155,6 +156,41 @@ function shareMediaOf(api, bundlePath, projectId, { only, force = false } = {}) 
   return p;
 }
 
+// One automatic share run waiting per bundle at most: changes that come while one waits add nothing to do.
+const autoQueued = new Set();
+function autoShare(api, bundlePath, projectId) {
+  if (autoQueued.has(bundlePath)) return;
+  autoQueued.add(bundlePath);
+  const p = (mediaJobs.get(bundlePath) ?? Promise.resolve()).then(() => autoQueued.delete(bundlePath));
+  mediaJobs.set(bundlePath, p);
+  return shareMediaOf(api, bundlePath, projectId);
+}
+
+// R6: a teammate's clip has no file here. Its record in project.json gets where it plays from
+// (cardboard-media://media/<id>, which main answers from the host) and what the host's shared record says about it
+// (size, duration, picture), as join does for the clips there at share time. A record whose shared record isn't up yet
+// gets the rest on a later materialize.
+const hostSrc = (id) => `cardboard-media://media/${id}`;
+async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
+  if (!bundlePath || !projectId || !store.readConfig(bundlePath, projectId) || !next?.media?.length) return next;
+  const had = new Map((current?.media ?? []).map((m) => [m.id, m]));
+  const now = new Date().toISOString();
+  const list = await Promise.all(next.media.map(async (m) => {
+    const src = m.data?.src;
+    if (src && src !== hostSrc(m.id)) return m; // a file on this computer
+    if (src && m.data?.size !== undefined) return m; // filled already
+    const rec = await Promise.race([media.sharedRecord(bundlePath, projectId, m.id).catch(() => null), sleep(2000).then(() => null)]);
+    const data = { ...m.data, src: hostSrc(m.id) };
+    if (rec) {
+      const from = { fileName: rec.fileName, size: rec.size, duration: rec.durationSec, width: rec.width, height: rec.height, frameRate: rec.fps, hasAudio: rec.hasAudio, codec: rec.codec };
+      for (const [k, v] of Object.entries(from)) if (v !== undefined && data[k] === undefined) data[k] = v;
+    }
+    const prev = had.get(m.id);
+    return { ...m, createdAt: m.createdAt ?? prev?.createdAt ?? now, addedAt: m.addedAt ?? prev?.addedAt ?? now, data };
+  }));
+  return { ...next, media: list };
+}
+
 /** Wait for a cut's hand-off to finish (local → handing off → server), up to `ms`. */
 async function handedOff(carton, cut, ms) {
   const end = Date.now() + ms;
@@ -220,6 +256,8 @@ extend({
   },
   // R3
   person: ({ bundlePath, projectId }) => person(bundlePath, projectId),
+  // R6
+  materializeDoc: (next, o) => fillTeammateMedia(next, o),
   // R2: a commit on a shared cut. The worker's handle is the lease holder: commit there, a clash keeping head's value
   // (the rest lands; the cards go back as a conflicts result, which the facade keeps for the author). Anywhere else
   // (cb), hand it to the holder, or to a headless helper when the app is closed.
@@ -358,13 +396,16 @@ extend({
         const p = media.playable(await media.sharedRecord(bundlePath, projectId, mediaId).catch(() => null));
         return p ? { bundlePath, projectId, mediaId, ...p } : null;
       },
-      /** A loopback URL an ffmpeg-based tool can read a shared clip from (verified bytes only), or null. */
+      /**
+       * A loopback URL an ffmpeg-based tool can read a shared clip from (verified bytes only), or null: a file by range,
+       * or for a proxy still uploading a live HLS playlist the tool follows until it ends.
+       */
       async liveMediaUrl({ mediaId }) {
         const projectId = await projectOfMedia(api, mediaId);
         const bundlePath = projectId && api.bundleOf(projectId);
         if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
         const p = media.playable(await media.sharedRecord(bundlePath, projectId, mediaId));
-        return p ? { url: await media.toolUrl(bundlePath, projectId, p.hash), hash: p.hash, size: p.size } : null;
+        return p ? { url: await media.toolUrl(bundlePath, projectId, p), ...p } : null;
       },
       /** The person's presence while they edit (the pages send it at most once a second; null when idle). */
       async livePresence({ projectId, state }) {
@@ -378,6 +419,45 @@ extend({
   },
 });
 
-// For the headless helper's factory (sync/factory.js loads this bundle): what it needs from the packages, from this
-// bundle's one copy of them.
-globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync, media };
+// ---------------------------------------------------------------- H13: cb's cloud mode on a Carton-shared project
+// With CARDBOARD_CLOUD_PROJECTS=1, cb pulls the whole project.json from Cardboard's storage before each MCP tool call
+// and PUTs it back after (`ifVersion`, CloudConflictError on a 412). For a project Carton shares, the document already
+// syncs change by change through the lease holder, so (patches/cloud.js):
+//   pull: the holder (the app's worker, or a headless helper started now) catches up with the host, then head goes
+//         into project.json, so the tool reads the newest state;
+//   push: nothing to PUT (each edit went through the holder as it was made). Cardboard's own path stays for every
+//         project Carton doesn't share.
+const OWNED = ["tracks", "timelineItems", "aspectRatio", "name", "description"];
+const shared = (lib, projectId) => {
+  const bundlePath = lib?.projects?.bundlePathFor?.(projectId);
+  return bundlePath && store.readConfig(bundlePath, projectId) ? bundlePath : null;
+};
+const cli = {
+  async pull(lib, projectId) {
+    const bundlePath = shared(lib, projectId);
+    if (!bundlePath) return false;
+    const lc = await openLocal({ projectDir: bundlePath, projectId, helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } });
+    try {
+      // Any write reaches the holder; a short pin is one that changes nothing (the holder catches up before it answers).
+      await lc.write({ kind: "pin", owner: "cloud-pull", ttlMs: 1000 });
+    } finally {
+      await lc.close();
+    }
+    const current = await lib.projects.read(projectId);
+    let next = await cardboard14.headProject(bundlePath, current);
+    if (!next) return true;
+    next = await fillTeammateMedia(next, { bundlePath, projectId, current });
+    // Media through 1.4.0's own media scope (its updateScoped never takes media from ownedFields), as R4 asks.
+    const had = new Map((current?.media ?? []).map((m) => [m.id, JSON.stringify(m)]));
+    const keep = new Set((next.media ?? []).map((m) => m.id));
+    const ownedMediaIds = (next.media ?? []).filter((m) => had.get(m.id) !== JSON.stringify(m)).map((m) => m.id);
+    const removedMediaIds = [...had.keys()].filter((id) => !keep.has(id));
+    await lib.projects.updateScoped(next, { ownedFields: OWNED, ownedMediaIds, removedMediaIds, carton: { materialize: true } });
+    return true;
+  },
+  push: async (lib, projectId) => !!shared(lib, projectId),
+};
+
+// For the headless helper's factory (sync/factory.js loads this bundle) and cb's patches: what they need from the
+// packages, from this bundle's one copy of them.
+globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync, media, cli };

@@ -11,14 +11,18 @@
 // - What other replicas confirm (and what cb writes through this holder) goes into project.json at once, and the
 //   pages adopt it (H5's Carton path: no undo entry, the pending save goes first).
 // - Status and presence also go to the pages as `{kind: "carton", id, topic: "live"}` events for the Share panel.
+// - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut.
 import path from "node:path";
 import { keepLease, holderSocketPath, CartonHolderEngine } from "@carton/local";
 
 const MATERIALIZE_MS = 40;
 const PEER_IDLE_MS = 30_000;
+const ON_CHANGE_MS = 2000;
 
 export class Live {
-  constructor({ api, bundlePath, projectId, lc, log }) {
+  constructor({ api, bundlePath, projectId, lc, log, onChange }) {
+    this.onChange = onChange ?? null;
+    this.changeTimer = null;
     this.api = api;
     this.bundlePath = bundlePath;
     this.projectId = projectId;
@@ -63,7 +67,17 @@ export class Live {
         // A change confirmed on the cut the app shows (another replica's, one cb made through this holder, or this
         // handle's own once the host answers): head into the file. When the file shows head already, the facade
         // writes nothing.
-        if (e.branchId === this.lc.carton.cut) this.#materializeSoon();
+        if (e.branchId === this.lc.carton.cut) {
+          this.#materializeSoon();
+          if (this.onChange && !this.stopped) {
+            clearTimeout(this.changeTimer);
+            this.changeTimer = setTimeout(() => {
+              this.changeTimer = null;
+              Promise.resolve().then(this.onChange).catch((err) => this.log({ type: "on-change-failed", error: String(err?.message ?? err) }));
+            }, ON_CHANGE_MS);
+            this.changeTimer.unref?.();
+          }
+        }
         break;
       case "sync":
         this.status = this.lc.carton.sync?.state() ?? this.status;
@@ -114,6 +128,7 @@ export class Live {
   async stop() {
     this.stopped = true;
     clearTimeout(this.timer);
+    clearTimeout(this.changeTimer);
     this.off?.();
     await this.lease?.stop().catch(() => {});
   }

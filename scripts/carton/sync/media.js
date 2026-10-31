@@ -1,18 +1,21 @@
 // Media for shared projects (H10, PLAN §11): nothing happens for a project that isn't shared.
 // - Share (the sharer's library worker): each clip whose original is on this computer is hashed (1 MiB leaves, in
-//   worker threads), and its collab proxy goes up through the host's media API with resumable multipart
-//   (@carton/media shareMedia): Cardboard's own proxy when it qualifies, else NVENC → QSV → AMF → libx264. Originals
-//   stay here (T3 is opt-in). The clip's shared record (T0: kind, size, duration, its content id and the proxy's) is
-//   written to the host as `carton/media/<mediaId>.json`, next to the share descriptor; teammates find it by the
+//   worker threads), and its collab proxy goes up through the host's media API (@carton/media shareMedia) as a
+//   segmented stream (~2 s fMP4 segments, each uploaded as ffmpeg finishes it): Cardboard's own proxy remuxed when it
+//   qualifies, else NVENC → QSV → AMF → libx264. Originals stay here (T3 is opt-in). The clip's shared record (T0:
+//   kind, size, duration, its content id and the proxy's) is written to the host as `carton/media/<mediaId>.json`,
+//   next to the share descriptor, as soon as the stream is claimed and again when it ends; teammates find it by the
 //   clip's media id (why not in project.json: worker.js, "media").
 // - Play (a teammate's app): `cardboard-media://media/<id>` for a clip with no file here is answered by main from the
 //   range cache (MediaReader: play first, verify each 1 MiB leaf when it completes, on disk in app data), over the
-//   host (patches/media.js asks the worker's liveMediaSource where the clip lives).
-// - Tools (ffmpeg-based: grab_frame, filmstrip…): a loopback range server, `http://127.0.0.1:<port>/m/<hash>?t=<token>`,
-//   which hands out verified bytes only (liveMediaUrl). ffmpeg seeks with Range, so a frame grab fetches what it reads.
+//   host (patches/media.js asks the worker's liveMediaSource where the clip lives). A finished proxy is one fMP4 served
+//   by range; one still uploading plays from its start as it grows (a progressive body of verified segments).
+// - Tools (ffmpeg-based: grab_frame, filmstrip…): a loopback range server (liveMediaUrl), which hands out verified
+//   bytes only: `http://127.0.0.1:<port>/m/<id>?t=<token>` (ffmpeg seeks with Range, so a frame grab fetches what it
+//   reads), or for a proxy still uploading `/s/<stream>.m3u8`, a live HLS playlist ffmpeg follows until it ends.
 import fs from "node:fs";
 import path from "node:path";
-import { MediaReader, serveMedia, toMediaRecord } from "@carton/media";
+import { COLLAB_PROXY_720P, MediaReader, ProxyStreamReader, serveMedia, streamRangeSource, toMediaRecord } from "@carton/media";
 import { shareMedia, hostProxyEncoder, defaultEncoderChain, FsLeafCache, FsUploadStateStore, startRangeServer, nodeHasher } from "@carton/media/node";
 import { hostBlobStore } from "./host-blobs.js";
 import * as store from "./store.js";
@@ -68,6 +71,14 @@ export async function shareClip({ bundlePath, projectId, mediaId, envelope = rea
   const encoders = kind === "video"
     ? [hostProxyEncoder({ locate: () => cardboardProxy(bundlePath, mediaId), ffprobe: tool("ffprobe") }), ...defaultEncoderChain({ ffmpeg: tool("ffmpeg"), lowPriority: true, tempDir: work })]
     : [];
+  // Teammates can play the proxy from its first segment: the record goes up as soon as the stream is claimed.
+  const put = (rec) => blobs.put(recordKey(mediaId), new TextEncoder().encode(JSON.stringify({ v: 1, record: rec })), { contentType: "application/json" });
+  let hash = null, early = null;
+  const events = (e) => {
+    if (e.type === "hashed" && e.what === "original") hash = e.hash;
+    if (e.type === "proxy" && e.how === "streaming" && hash) early = put({ ...record, hash, proxy: { stream: e.stream, profile: COLLAB_PROXY_720P.id, encoder: "streaming" } }).catch(() => {});
+    onEvent?.(e);
+  };
   const r = await shareMedia({
     store: blobs,
     record,
@@ -76,10 +87,13 @@ export async function shareClip({ bundlePath, projectId, mediaId, envelope = rea
     encoders,
     workDir: work,
     uploadState: new FsUploadStateStore(path.join(store.projectDir(bundlePath, projectId), "uploads")),
-    ...(onEvent ? { onEvent } : {}),
+    ffmpeg: tool("ffmpeg"),
+    onEvent: events,
     ...(signal ? { signal } : {}),
   });
-  await blobs.put(recordKey(mediaId), new TextEncoder().encode(JSON.stringify({ v: 1, record: r.record })), { contentType: "application/json" });
+  await early;
+  await put(r.record);
+  records.delete(`${projectId}|${mediaId}`);
   return { record: r.record, skipped: r.skipped };
 }
 
@@ -98,35 +112,99 @@ function readerFor(bundlePath, projectId) {
   return r;
 }
 
-/** Where a clip with no file here lives: its shared record, read from the host (cached for a minute). */
+/**
+ * Where a clip with no file here lives: its shared record, read from the host. Kept a minute once its proxy is
+ * complete; a record without one yet (or none) is asked again after 2 s.
+ */
 const records = new Map(); // `${projectId}|${mediaId}` → {at, value}
+const done = (rec) => !!rec?.proxy && (rec.proxy.hash || rec.proxy.size !== undefined);
 export async function sharedRecord(bundlePath, projectId, mediaId) {
   const k = `${projectId}|${mediaId}`, hit = records.get(k);
-  if (hit && Date.now() - hit.at < 60_000) return hit.value;
+  if (hit && Date.now() - hit.at < (done(hit.value) ? 60_000 : 2_000)) return hit.value;
   const b = await storeFor(bundlePath, projectId).get(recordKey(mediaId));
   const value = b ? JSON.parse(new TextDecoder().decode(b)).record : null;
   records.set(k, { at: Date.now(), value });
   return value;
 }
 
-/** What to stream for a clip: its proxy when shared, else its original when that was shared (T3). */
-export const playable = (record) => (record?.proxy ? { hash: record.proxy.hash, size: record.proxy.size, mime: "video/mp4" } : record?.original === "shared" && record.hash ? { hash: record.hash, size: record.size, mime: record.mime ?? "application/octet-stream" } : null);
+/**
+ * What to stream for a clip: its proxy when shared (a segmented stream, `size` once it has ended; or an older
+ * whole-object proxy), else its original when that was shared (T3).
+ */
+export const playable = (record) => {
+  const p = record?.proxy;
+  if (p?.stream) return { stream: p.stream, size: p.size ?? null, mime: "video/mp4" };
+  if (p?.hash) return { hash: p.hash, size: p.size, mime: "video/mp4" };
+  return record?.original === "shared" && record.hash ? { hash: record.hash, size: record.size, mime: record.mime ?? "application/octet-stream" } : null;
+};
 
-/** Main's `cardboard-media://` answer for a clip that lives on the host: a range response from the cache. */
+// A stream's reader per project and stream id: its entries are immutable, so it keeps what it has read.
+const streams = new Map(); // `${host}|${projectId}|${stream}` → ProxyStreamReader
+const streamKey = (bundlePath, projectId, id) => `${store.readConfig(bundlePath, projectId)?.host}|${projectId}|${id}`;
+function streamOf(bundlePath, projectId, id) {
+  const key = streamKey(bundlePath, projectId, id);
+  let r = streams.get(key);
+  if (!r) {
+    r = new ProxyStreamReader({ store: storeFor(bundlePath, projectId), media: readerFor(bundlePath, projectId), id });
+    streams.set(key, r);
+  }
+  return r;
+}
+const sourceOf = (bundlePath, projectId, stream, media) => streamRangeSource({ streams: (id) => (id === stream ? streamOf(bundlePath, projectId, id) : null), media });
+
+/**
+ * Main's `cardboard-media://` answer for a clip that lives on the host. A whole object, or a stream that has ended: a
+ * range response from the cache. A stream still uploading: its segments from the start as they arrive, verified (a
+ * fragmented MP4 a media element plays progressively; Range is answered with the whole body until it has ended).
+ */
 export async function serve(request, src) {
-  return serveMedia(readerFor(src.bundlePath, src.projectId), src.hash, request);
+  if (!src.stream) return serveMedia(readerFor(src.bundlePath, src.projectId), src.hash, request);
+  const reader = streamOf(src.bundlePath, src.projectId, src.stream);
+  if (await reader.end()) return serveMedia(sourceOf(src.bundlePath, src.projectId, src.stream, readerFor(src.bundlePath, src.projectId)), src.stream, request);
+  if (request.method !== "GET" && request.method !== "HEAD") return new Response(null, { status: 405, headers: { allow: "GET, HEAD" } });
+  const headers = { "content-type": "video/mp4", "cache-control": "no-store" };
+  if (request.method === "HEAD") return new Response(null, { status: 200, headers });
+  const ac = new AbortController();
+  request.signal?.addEventListener("abort", () => ac.abort(request.signal.reason), { once: true });
+  const parts = reader.play({ signal: ac.signal });
+  const body = new ReadableStream({
+    async pull(ctl) {
+      try {
+        const r = await parts.next();
+        if (r.done) ctl.close();
+        else ctl.enqueue(r.value.bytes);
+      } catch (e) {
+        ctl.error(e);
+      }
+    },
+    async cancel(reason) {
+      ac.abort(reason);
+      await parts.return?.();
+    },
+  });
+  return new Response(body, { status: 200, headers });
 }
 
-// One loopback range server per shared project, for ffmpeg-based tools; verified bytes only.
-const servers = new Map();
-export async function toolUrl(bundlePath, projectId, hash) {
+// One loopback range server per shared project, for ffmpeg-based tools; verified bytes only. A finished stream reads
+// as one fMP4 at /m/<stream>; one still uploading as a live HLS playlist at /s/<stream>.m3u8.
+const servers = new Map(); // bundlePath → Promise<RangeServer>
+export async function toolUrl(bundlePath, projectId, src) {
   let s = servers.get(bundlePath);
   if (!s) {
-    s = startRangeServer({ source: readerFor(bundlePath, projectId).toolSource(), unref: true });
+    const tools = readerFor(bundlePath, projectId).toolSource();
+    s = startRangeServer({
+      // Only ids a clip's record named as a stream are streams; anything else is a whole object.
+      source: streamRangeSource({ streams: (id) => streams.get(streamKey(bundlePath, projectId, id)) ?? null, media: tools }),
+      playlist: (id, urlFor) => streamOf(bundlePath, projectId, id).playlist(urlFor),
+      unref: true,
+    });
     servers.set(bundlePath, s);
     s.catch(() => servers.delete(bundlePath));
   }
-  return (await s).url(hash);
+  const server = await s;
+  if (!src.stream) return server.url(src.hash);
+  const reader = streamOf(bundlePath, projectId, src.stream);
+  return (await reader.end()) ? server.url(src.stream) : server.playlistUrl(src.stream);
 }
 export async function closeServers() {
   for (const s of servers.values()) await (await s).close().catch(() => {});
