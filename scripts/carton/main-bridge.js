@@ -12,9 +12,12 @@ module.exports = String.raw`var __cartonMain = (() => {
   // The Director's running turn per chat, asked when a hook runs (the chat's process outlives its turns).
   const turns = new Map();
   const shQuote = (s) => "'" + String(s).replaceAll("'", "'\\''") + "'";
+  // Actor ids as @carton/local writes them (identity.ts): safe characters only, and a subagent's own id with "_" for
+  // "-", so "sub-<type>-<id>" splits one way.
+  const safe = (x) => String(x).replace(/[^A-Za-z0-9._:-]/g, "-").slice(0, 64);
   const directorActor = (ctx, input) => {
     const turn = turns.get(ctx.chatId)?.();
-    return "director/" + ctx.chatId + (turn ? "/" + turn : "") + (input?.agent_id ? "/sub-" + (input.agent_type || "agent") + "-" + input.agent_id : "");
+    return "director/" + safe(ctx.chatId) + (turn ? "/" + safe(turn) : "") + (input?.agent_id ? "/sub-" + safe(input.agent_type || "agent") + "-" + safe(input.agent_id).replace(/-/g, "_") : "");
   };
   // Commands that reach Carton: cb, cardboard, or a script under the bundle that runs them. Others keep the actor
   // main gave the process (director/<chat>), so a script that calls cb is still the Director's, just without the turn.
@@ -33,8 +36,20 @@ module.exports = String.raw`var __cartonMain = (() => {
   // Gate G2 (§6.2): with CARDBOARD_CARTON_TIMING=<file>, every GUI save's round trip to the library worker (the
   // commit and the write) is appended to <file> as a JSON line, Carton on or off, for comparing the two.
   const timing = process.env.CARDBOARD_CARTON_TIMING;
+  // The Director's running turn per chat session, so its last version can be named when it ends (History shows
+  // turns as the chat's checkpoints). The prompt goes only to the worker, into the project's own history: never logged.
+  const running = new WeakMap();
   return {
     on,
+    turnStarted(chat, projectId, bundlePath, turn, provider) {
+      if (on && provider === "director") running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text });
+    },
+    turnEnded(chat) {
+      const t = on ? running.get(chat) : null;
+      if (!t) return;
+      running.delete(chat);
+      if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt }).catch(() => {});
+    },
     time(p) {
       if (!timing) return p;
       const t0 = performance.now();

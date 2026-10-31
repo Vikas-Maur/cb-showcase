@@ -15,7 +15,8 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook } from "@carton/local";
+import * as cardboardHost from "@carton/cardboard";
+import { openLocal, identify, localGroup, parseActorId, runHook, safePart } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi } from "@carton/react";
 
@@ -77,6 +78,17 @@ async function keepCards(lc, author, cards) {
   const text = `${cards.length} of your edits clashed with a change made meanwhile; the other change was kept. Choose with cb conflicts / cb resolve, or in History.`;
   await lc.store.write([{ table: "notices", key: [to, at, 0, Math.random().toString(16).slice(2, 10)], value: { to, kind: "late-conflict", text, cards, at } }]);
 }
+
+// A Director turn's name in History, from the user's prompt: its first sentence, at most six words ("tighter intro").
+// The adapter's helper wins when it has one. It is the user's own text, so it goes into the project's history only.
+const turnLabel = (prompt) => {
+  if (typeof cardboardHost.turnLabel === "function") return cardboardHost.turnLabel(prompt);
+  const t = String(prompt ?? "").replace(/\s+/g, " ").trim();
+  if (!t) return null;
+  const words = t.split(/(?<=[.!?])\s/)[0].replace(/[.!?]+$/, "").split(" ");
+  const label = words.slice(0, 6).join(" ");
+  return label.length > 48 ? label.slice(0, 47).trimEnd() + "…" : words.length > 6 ? label + "…" : label;
+};
 
 // ---------------------------------------------------------------- H1: one change per mutation
 async function commit({ bundlePath, base, doc, actor, meta }) {
@@ -359,6 +371,18 @@ export const cardboard14 = {
         return r;
       },
       redo: async () => ({ status: "unavailable" }),
+      // A Director turn ended: its last version on the current cut takes the turn's label, unless it has a name.
+      nameTurn: async ({ projectId, chat, turn, prompt }) => {
+        const lc = await lcOf(projectId), label = turnLabel(prompt);
+        if (!lc || !label) return { status: "unavailable" };
+        const want = { turn: safePart(String(turn)), chat: chat ? safePart(String(chat)) : null };
+        for (const v of await lc.carton.log({ limit: 200 })) {
+          if (v.author?.turn !== want.turn || (want.chat && v.author?.chat !== want.chat)) continue;
+          if (!v.name) await lc.carton.name(v.ref, label);
+          return { status: "named" };
+        }
+        return { status: "none" };
+      },
       notices: async ({ bundlePath, actor, take }) => ((await open(bundlePath))?.carton.notices(actorOf(actor), { take }) ?? []),
       // The History panel: @carton/react's view model, served to each page that asks (remoteUi there).
       ui: async ({ projectId, client, message }) => {

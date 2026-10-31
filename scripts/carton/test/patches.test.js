@@ -170,6 +170,14 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   json("director/chat1/turn2/sub-Explore-a1", "source", "apply", "Demo", edit);
   assert.ok(fs.existsSync(path.join(b, ".carton", "carton.db")));
   const textId = () => JSON.parse(fs.readFileSync(path.join(b, "project.json"), "utf8")).project.timelineItems.find((i) => i.type === "text");
+  // A Director turn that ended takes a short name from its prompt, as History shows the chat's checkpoints.
+  const named = spawnSync(process.execPath, ["-e", `
+    const { cardboard14 } = require(${JSON.stringify(path.join(out, "carton", "carton-node.cjs"))});
+    const w = cardboard14.worker({ library: { projects: { bundlePathFor: () => ${JSON.stringify(b)} } }, emit() {} });
+    w.nameTurn({ projectId: "p", chat: "chat1", turn: "turn1", prompt: "Make the intro tighter. Then add a lower third." }).then((r) => console.log(JSON.stringify(r)));
+  `], { env: env(), encoding: "utf8", timeout: 60_000 });
+  assert.equal(JSON.parse(named.stdout.trim().split("\n").pop()).status, "named", named.stderr);
+  assert.equal(json(null, "history", "Demo").versions.find((v) => v.by?.id === "director/chat1/turn1")?.name, "Make the intro tighter");
   // History: every version, with who made it down to the subagent.
   const by = json(null, "history", "Demo").versions.map((v) => v.by?.id ?? null);
   assert.deepEqual(by.slice(0, 2), ["director/chat1/turn2/sub-Explore-a1", "director/chat1/turn1"]);

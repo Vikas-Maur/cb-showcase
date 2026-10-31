@@ -173,6 +173,10 @@ if (mode === "--cli") {
     // H9: the Director's Bash hook names the turn and the subagent; Stop and SubagentStop return late conflicts.
     replace('PreToolUse:[{matcher:"Bash",hooks:[async v=>{', 'PreToolUse:[{matcher:"Bash",hooks:[__cartonMain.directorHook(e,async v=>{');
     replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt}],...__cartonMain.stopHooks(e)}");
+    // H9: each Director turn's last version is named from the turn's prompt when the turn ends (as the chat's
+    // checkpoints are); the label stays in the project's history.
+    replace('n.turn={state:"running",id:s.id,text:s.text}', 'n.turn={state:"running",id:s.id,text:s.text},__cartonMain.turnStarted(n,t,i.project?.bundlePath,s,i.launch?.provider)');
+    replace('closeTurn(t,r){t.turn.state==="running"&&', 'closeTurn(t,r){__cartonMain.turnEnded(t,r);t.turn.state==="running"&&');
     // H9: host Claude Code gets the same hooks through --settings.
     replace('"--append-system-prompt",ju(e),', '"--append-system-prompt",ju(e),...__cartonMain.hostSettings(),');
   });

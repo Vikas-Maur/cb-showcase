@@ -413,7 +413,8 @@ What changes with it on:
   against the exact version it was made on. A stale one is merged in, and a clash becomes a conflict card. Nothing is
   overwritten.
 - **History** keeps every version, not the last 20, with who made it, down to the Director's turn and subagent.
-  `cb history` gets WHO and CUT columns. `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
+  `cb history` shows who made each version, and each Director turn is named from your prompt ("Make the intro
+  tighter"). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
   agent turn.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit.

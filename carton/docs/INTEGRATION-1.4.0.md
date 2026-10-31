@@ -237,6 +237,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 - **The Director's hook.** Its `PreToolUse` Bash hook prefixes the command with
   `export CARDBOARD_ACTOR='director/<chat>/<turn>[/sub-…]';`. That covers compound commands too. The turn comes from
   main's record of the chat's running turn. A credit-gate rewrite is kept and prefixed in the same way.
+- **Turn names.** When a Director turn ends (`closeTurn`), its last version on the current cut is named with a short
+  label from the user's prompt (its first sentence, at most six words: "Make the intro tighter"), so History shows
+  turns as the chat shows its checkpoints. The prompt goes only into the project's history, never into a log.
 - **The conflict hooks.** The `Stop` and `SubagentStop` hooks read that actor's notices. They block once per conflict
   set with the conflict text, and don't block again when `stop_hook_active` is set.
 

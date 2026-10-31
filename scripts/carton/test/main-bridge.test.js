@@ -87,3 +87,30 @@ test("G2's timing log records each save's round trip, on and off", async () => {
   const p = Promise.resolve(1);
   assert.equal(load({ CARDBOARD_CARTON: "1" }).time(p), p);
 });
+
+test("a Director turn's end asks the worker to name its last version; the prompt is never logged", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [], logged = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { status: "named" }) });
+  const original = { log: console.log, warn: console.warn, error: console.error };
+  for (const k of Object.keys(original)) console[k] = (...a) => logged.push(a.join(" "));
+  try {
+    const chat = { chatId: "c1", turn: { state: "running" } };
+    m.turnStarted(chat, "p1", "/b", { id: "t9", text: "Make the intro tighter, then add a title." }, "director");
+    m.turnEnded(chat, "result");
+    const host = { chatId: "c2", turn: { state: "running" } };
+    m.turnStarted(host, "p1", "/b", { id: "t1", text: "secret words" }, "claude");
+    m.turnEnded(host, "result");
+    await new Promise((r) => setImmediate(r));
+  } finally { Object.assign(console, original); }
+  assert.deepEqual(asked, [["carton.nameTurn", { projectId: "p1", chat: "c1", turn: "t9", prompt: "Make the intro tighter, then add a title." }]]);
+  assert.ok(!logged.some((l) => /intro|secret/.test(l)), logged.join("\n"));
+  // Off: nothing is remembered or asked.
+  const off = load({});
+  const offAsked = [];
+  off.library({ call: async (...a) => offAsked.push(a) });
+  const c = { chatId: "c3", turn: { state: "running" } };
+  off.turnStarted(c, "p1", "/b", { id: "t2", text: "x" }, "director");
+  off.turnEnded(c);
+  assert.deepEqual(offAsked, []);
+});
