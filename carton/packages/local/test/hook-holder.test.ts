@@ -5,6 +5,8 @@
 //     freeze at once (a hook event is no `cb` call, which would keep the file frozen for a minute).
 //   - A Write/Edit of timeline.tsx credits the next foreign save of it to the agent; the same request told twice (a
 //     retry) credits only one.
+//   - A hooked agent's own `cb` call (served by the holder, or committed by another process and found by the follower)
+//     freezes it the same way, until that Stop; not for a minute after it, as a windowless agent's does.
 //   - With no holder, nobody is told, no helper starts, and a project without Carton gets no carton.db.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -101,6 +103,40 @@ test("a hooked agent's Read of timeline.tsx freezes it against the person's chan
   assert.deepEqual(await hook("stop", { hook_event_name: "Stop" }), {});
   assert.deepEqual(answers.at(-1)?.hook, { event: "stop", delivered: true });
   // the turn is over: the shared file catches up now, not a minute later (a hook event is no cb call)
+  await until(() => named(shared(dir), "c3") === "person 2", 5_000, "the shared file to catch up after the stop", () => shared(dir));
+});
+
+const set = (id: string, f: string, v: unknown) => ({ op: "set" as const, path: ["timelineItems", id, f], value: v });
+
+test("a hooked agent's cb call freezes timeline.tsx until its Stop, which ends the freeze at once (not a minute later)", { timeout: 60_000 }, async (t) => {
+  const { dir, projectId, answers, hook, person } = await world(t, "hook-cb");
+  // the agent's own `cb` (CARDBOARD_ACTOR as its hooks name it), served by the app's holder
+  const agent = parseActorId("claude-code/abcdef12")!;
+  const cb = await openLocal({ projectDir: dir, projectId, adapter, actor: agent });
+  t.after(() => cb.close());
+  const w = await cb.write({ kind: "commit", ops: [set("c1", "name", "the agent's cb edit")] });
+  assert.equal(w.status, "confirmed", JSON.stringify(w));
+  await person("c3", "person 2");
+  await sleep(500);
+  assert.equal(named(shared(dir), "c3"), "c3", "the agent is working: the shared file stays as it was");
+
+  assert.deepEqual(await hook("stop", { hook_event_name: "Stop" }), {});
+  assert.deepEqual(answers.at(-1)?.hook, { event: "stop", delivered: true });
+  await until(() => named(shared(dir), "c3") === "person 2", 5_000, "the shared file to catch up after the stop", () => shared(dir));
+});
+
+test("a hooked agent's change another process committed (the follower) freezes timeline.tsx until its Stop, too", { timeout: 60_000 }, async (t) => {
+  const { dir, other, answers, hook, person } = await world(t, "hook-cb-follow");
+  // committed outside the holder (a cb in its own process, or a helper that had the lease): the app's follower finds it
+  const agent = parseActorId("claude-code/abcdef12")!;
+  await other.carton.commit({ author: agent, ops: [set("c1", "name", "committed elsewhere")] });
+  await until(() => named(project(dir), "c1") === "committed elsewhere", 10_000, "the follower to bring project.json up", () => project(dir));
+  await person("c3", "person 2");
+  await sleep(500);
+  assert.equal(named(shared(dir), "c3"), "c3", "the agent is working: the shared file stays as it was");
+
+  assert.deepEqual(await hook("stop", { hook_event_name: "Stop" }), {});
+  assert.deepEqual(answers.at(-1)?.hook, { event: "stop", delivered: true });
   await until(() => named(shared(dir), "c3") === "person 2", 5_000, "the shared file to catch up after the stop", () => shared(dir));
 });
 

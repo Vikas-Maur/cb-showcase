@@ -11,7 +11,7 @@ import { createMemoryStore } from "@carton/store-memory";
 import { hookEventFor, prefixCommand, preToolUse } from "../src/hooks.ts";
 import { hookDelivered, parseActorId } from "../src/identity.ts";
 import { hookSettings, runHook } from "../src/hook-cli.ts";
-import { actorKey, runWrite } from "../src/writes.ts";
+import { actorKey, runWrite, tellBusy } from "../src/writes.ts";
 import type { CbResult, ViewPrinter } from "../src/writes.ts";
 import { adapter, doc0 } from "./support/real.ts";
 
@@ -93,6 +93,7 @@ function recorder() {
 }
 
 const agent = parseActorId("claude-code/abcdef12")!;
+const codex: Actor = { kind: "agent", id: "codex/fix", name: "Codex (fix)", provider: "codex" };
 async function opened() {
   return Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() }, actor: { kind: "system", id: "engine" } });
 }
@@ -110,7 +111,7 @@ test("runWrite `hook`: the materializer's hookRead / hookWrite / hookStop with t
     await runWrite(c, { id: "h.4", actor: agent, op: { kind: "hook", event: "stop" } }, { materializer: mz });
     assert.deepEqual(calls, ["read claude-code/abcdef12", "write claude-code/abcdef12 timeline.tsx", "write claude-code/abcdef12 sub/project.json", "stop claude-code/abcdef12"]);
     assert.equal(mz.onCbs, 0, "a hook event is not a cb call: it doesn't freeze the shared file by itself");
-    await runWrite(c, { id: "h.5", actor: agent, op: { kind: "pin", owner: "x" } }, { materializer: mz });
+    await runWrite(c, { id: "h.5", actor: codex, op: { kind: "pin", owner: "x" } }, { materializer: mz });
     assert.equal(mz.onCbs, 1, "a cb call does");
 
     for (const file of [undefined, "", "../timeline.tsx", "/etc/passwd", "C:\\x\\timeline.tsx", "a//b"]) {
@@ -128,6 +129,48 @@ test("runWrite `hook`: the materializer's hookRead / hookWrite / hookStop with t
   } finally {
     await c.close();
   }
+});
+
+test("a cb call: a hooked agent's is hookRead (its Stop ends the freeze), anyone else's onCb (windows-sync H8)", async () => {
+  const c = await opened();
+  try {
+    const { mz, calls } = recorder();
+    const sub = parseActorId("claude-code/abcdef12/sub-editor-q")!;
+    const director = parseActorId("director/chat1/turn2")!;
+    const person = { kind: "human" as const, id: "human:me" };
+    const w = (id: string, actor: Actor, m: ViewPrinter = mz) => runWrite(c, { id, actor, op: { kind: "pin", owner: id } }, { materializer: m });
+    for (const [i, a] of [agent, sub, director].entries()) {
+      assert.ok(hookDelivered(a), a.id);
+      await w(`b.${i}`, a);
+    }
+    assert.deepEqual(calls.splice(0), ["read claude-code/abcdef12", "read claude-code/abcdef12/sub-editor-q", "read director/chat1/turn2"]);
+    assert.equal(mz.onCbs, 0, "no windowless freeze: the agent's Stop ends it");
+    await w("b.codex", codex);
+    await w("b.person", person);
+    await w("b.unknown", { kind: "agent", id: "claude-code" });
+    assert.deepEqual([calls, mz.onCbs], [[], 3], "nothing reports their stop: onCb");
+    // a materializer that can't end a hooked freeze (no hookStop): onCb for everyone
+    let read = 0, cbs = 0;
+    const noStop: ViewPrinter = { printView: mz.printView, hookRead: async () => void read++, onCb: async () => void cbs++ };
+    await w("b.noStop", agent, noStop);
+    assert.deepEqual([read, cbs], [0, 1]);
+    // a hook event is none of these (the Stop must not freeze the file again)
+    await runWrite(c, { id: "b.stop", actor: agent, op: { kind: "hook", event: "stop" } }, { materializer: mz });
+    assert.deepEqual([calls, mz.onCbs], [["stop claude-code/abcdef12"], 3]);
+  } finally {
+    await c.close();
+  }
+});
+
+test("tellBusy: one hookRead per hooked author; onCb once if anyone else (or nobody known) is among them", async () => {
+  const { mz, calls } = recorder();
+  await tellBusy(mz, [agent, agent, null, codex]);
+  assert.deepEqual([calls.splice(0), mz.onCbs], [["read claude-code/abcdef12"], 1]);
+  await tellBusy(mz, []);
+  assert.deepEqual([calls.splice(0), mz.onCbs], [[], 2], "authors unknown: as a windowless call");
+  await tellBusy(mz, [agent]);
+  assert.deepEqual([calls.splice(0), mz.onCbs], [["read claude-code/abcdef12"], 2]);
+  await tellBusy(null, [agent]);
 });
 
 test("runWrite `hook`: one request id is told once (a retry, or the same request twice at once, or after it failed)", async () => {

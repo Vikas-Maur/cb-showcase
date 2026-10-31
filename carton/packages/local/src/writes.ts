@@ -268,10 +268,14 @@ interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[];
 export interface ViewPrinter {
   /** `status`: the view's status file (project-relative); default `.scratch/views/<name>.status` (cardboard's). */
   printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string; status?: string }>;
-  /** Hook events (WriteOp `hook`): a hooked agent read the shared file, is about to write `rel`, ended its turn. */
+  /**
+   * Hook events (WriteOp `hook`): a hooked agent read the shared file, is about to write `rel`, ended its turn. A
+   * hooked agent's own `cb` call is `hookRead` too (`tellBusy`).
+   */
   hookRead?(actor: Actor): Promise<void>;
   hookWrite?(actor: Actor, rel: string): Promise<void>;
   hookStop?(actor: Actor): Promise<void>;
+  /** A `cb` call by someone whose stop nobody reports (`tellBusy`): the shared file stays frozen a while after it. */
   onCb?(): Promise<void>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
   /**
@@ -289,6 +293,29 @@ export interface ViewPrinter {
   onExternalHeadChange?(): Promise<unknown>;
   /** A view's change settled after its save returned (a shared cut): its `.status` sidecar says so (R5-04). */
   onChangeUpdate?(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; reason?: string }): Promise<void>;
+}
+
+/**
+ * `cb` calls by `authors` reached the holder (its own runWrite, or another process's changes its follower found): tell
+ * the materializer an agent is working (§6.4 freeze triggers). A hooked agent (its hook events reach the holder, its
+ * Stop too) is `hookRead`: the shared timeline.tsx stays frozen until its Stop, which ends the freeze at once. Anyone
+ * else (a windowless agent, the person's own `cb`, a change with no author) is `onCb`: nothing reports their stop, so
+ * the file stays frozen for a while after the call. A materializer without hookRead/hookStop gets `onCb` for all.
+ * Without this, a hooked agent's `cb` call kept timeline.tsx frozen a minute after its turn ended (windows-sync H8).
+ */
+export async function tellBusy(mz: ViewPrinter | null | undefined, authors: readonly (Actor | null | undefined)[]): Promise<void> {
+  if (!mz) return;
+  const hooks = !!(mz.hookRead && mz.hookStop);
+  let windowless = authors.length === 0;
+  const told = new Set<string>();
+  for (const a of authors) {
+    if (!(a && hooks && hookDelivered(a))) windowless = true;
+    else if (!told.has(a.id)) {
+      told.add(a.id);
+      await mz.hookRead!(a);
+    }
+  }
+  if (windowless) await mz.onCb?.();
 }
 
 const HOOK_EVENTS: ReadonlySet<string> = new Set(["read", "write", "stop"]);
@@ -358,9 +385,10 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   // listen before writing: on a shared cut the ack can arrive before commit() returns
   const outcomes = watchOutcomes(carton);
   try {
-    // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers); a
-    // hook event isn't one (a Stop would freeze the file again just as the turn ends)
-    if (op.kind !== "hook") await opts.materializer?.onCb?.();
+    // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes: a hooked agent's until its Stop, anyone
+    // else's for a while (§6.4 freeze triggers; tellBusy); a hook event isn't one (a Stop would freeze the file again
+    // just as the turn ends)
+    if (op.kind !== "hook") await tellBusy(opts.materializer, [author]);
     let result = await run();
     // WriteOp `head`: the holder's head of the cut the write went to, never of whichever cut is current now
     if ("head" in op && op.head && (result.status === "confirmed" || result.status === "pending" || result.status === "conflicts")) {
