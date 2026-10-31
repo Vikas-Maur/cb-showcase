@@ -144,7 +144,8 @@ const tools = {
       run(process.execPath, [path.join(pw, "cli.js"), "install", "chromium"]);
       browser = createRequire(path.join(pw, "index.js"))("playwright").chromium.executablePath();
     }
-    exportEnv({ CARTON_PLAYWRIGHT: pw, PLAYWRIGHT: pw, CARTON_CHROMIUM: browser, CHROMIUM: browser });
+    // store-idb reads CARTON_*, media's suites PLAYWRIGHT/CHROMIUM and its range-server test CHROME
+    exportEnv({ CARTON_PLAYWRIGHT: pw, PLAYWRIGHT: pw, CARTON_CHROMIUM: browser, CHROMIUM: browser, CHROME: browser });
     // Start it once here, so a browser that can't run fails this step with its own error, not as skipped tests.
     const check = `const { chromium } = require(${JSON.stringify(pw)}); chromium.launch({ headless: true, executablePath: ${JSON.stringify(browser)} }).then(async (b) => { console.log("browser " + b.version()); await b.close(); }).catch((e) => { console.error(e); process.exit(1); });`;
     console.log("  " + firstLine(process.execPath, ["-e", check]));
@@ -173,11 +174,16 @@ const tools = {
       run(npm, ["install", "--prefix", pdir, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", `prettier@${VERSIONS.prettier}`]);
       fs.mkdirSync(path.dirname(renderer), { recursive: true });
       const out = fs.openSync(renderer + ".part", "w");
-      run(process.execPath, [path.join(pdir, "node_modules", "prettier", "bin", "prettier.cjs"), "--parser", "babel", path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js")], { stdio: ["ignore", out, "inherit"] });
+      // --no-config: prettier's defaults, as the copy the agents sliced (_inspect/pretty) was made
+      run(process.execPath, [path.join(pdir, "node_modules", "prettier", "bin", "prettier.cjs"), "--no-config", "--no-editorconfig", "--parser", "babel", path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js")], { stdio: ["ignore", out, "inherit"] });
       fs.closeSync(out);
       fs.renameSync(renderer + ".part", renderer);
       fs.rmSync(work, { recursive: true, force: true });
     }
+    // Fingerprints only (never the code): the dev box's copies are c30cd768… (minified) and 00c7775b… (prettified).
+    const sha = (f) => createHash("sha256").update(fs.readFileSync(f)).digest("hex").slice(0, 8);
+    const pretty = fs.readFileSync(renderer, "utf8");
+    console.log(`  renderer ${sha(path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js"))}…, prettified ${sha(renderer)}… (${pretty.length} chars, fm∘sv anchor ${/\bho = \(t\) => Math\.round\(t \* 10\) \/ 10/.test(pretty) ? "found" : "MISSING"})`);
     const version = fs.readFileSync(path.join(dest, "cli", "version.txt"), "utf8").trim();
     if (!version.startsWith(VERSIONS.cardboard)) throw new Error(`Cardboard CLI version ${version}, expected ${VERSIONS.cardboard}`);
     exportEnv({ CARTON_CARDBOARD_DIR: dest, CARDBOARD_PRISTINE: dest, CARTON_CARDBOARD_CLI: path.join(dest, "cli", "cardboard.mjs"), CARTON_CARDBOARD_RENDERER: renderer });

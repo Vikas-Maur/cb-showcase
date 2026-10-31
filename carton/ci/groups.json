@@ -46,7 +46,7 @@
         { "pkg": "server-node" },
         { "pkg": "server-cloudflare" }
       ],
-      "forbidSkip": { "linux": ["VersityGW"] }
+      "forbidSkip": { "linux": ["VersityGW binary not found"] }
     },
     {
       "name": "local",
