@@ -43,9 +43,20 @@ function parseTap(text) {
   const skips = [];
   const todos = [];
   const totals = { tests: 0, pass: 0, fail: 0, cancelled: 0, skipped: 0, todo: 0 };
-  let sawSummary = false;
+  // Each `node --test` prints one TAP document: its header, then results, then a summary block whose last line is
+  // `# duration_ms`. A document without that end (the runner crashed or was killed) is incomplete.
+  let documents = 0;
+  let summaries = 0;
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
+    if (/^TAP version \d+$/.test(line)) {
+      documents++;
+      continue;
+    }
+    if (/^# duration_ms [\d.]+$/.test(line)) {
+      summaries++;
+      continue;
+    }
     let m = /^( *)# Subtest: (.*)$/.exec(line);
     if (m) {
       const depth = m[1].length >> 2;
@@ -72,22 +83,26 @@ function parseTap(text) {
       continue;
     }
     m = /^# (tests|pass|fail|cancelled|skipped|todo) (\d+)$/.exec(line);
-    if (m) {
-      totals[m[1]] += Number(m[2]);
-      sawSummary = true;
-    }
+    if (m) totals[m[1]] += Number(m[2]);
   }
   // a failed subtest fails its parents too: report the innermost ones
   const failures = fails.filter((f) => !fails.some((g) => g !== f && g.name.startsWith(f.name + " › ")));
-  return { totals, sawSummary, failures, skips, todos };
+  return { totals, documents, summaries, failures, skips, todos };
 }
 
 // The YAML diagnostics block after a result line, trimmed to what helps: the error, its location and stack head.
+// In a group that runs Cardboard's code, an error can quote a line of it (a code frame, a minified source line), so
+// there only the location and the error's first line, cut short, are kept.
 function yaml(lines, from) {
   if (!/^\s*---$/.test(lines[from] ?? "")) return "";
   const out = [];
   for (let i = from + 1; i < lines.length && !/^\s*\.\.\.$/.test(lines[i]); i++) out.push(lines[i].trim());
-  return out.filter((l) => !/^(duration_ms|type|failureType|code):/.test(l)).slice(0, 40).join("\n");
+  const kept = out.filter((l) => !/^(duration_ms|type|failureType|code):/.test(l));
+  if (!group.proprietary) return kept.slice(0, 40).join("\n");
+  const at = kept.find((l) => l.startsWith("location:"));
+  const err = kept.findIndex((l) => l.startsWith("error:"));
+  const first = err < 0 ? "" : kept[err] === "error: |-" ? (kept[err + 1] ?? "") : kept[err].slice("error: ".length);
+  return [at, first && `error: ${first.slice(0, 160)}${first.length > 160 ? "…" : ""}`].filter(Boolean).join("\n");
 }
 
 // ---- running a step ----
@@ -111,8 +126,13 @@ function runStep(step, index) {
   // &&), each with the TAP reporter added.
   const script = step.pkg && JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")).scripts.test;
   const [cmd, ...cmdArgs] = step.pkg ? [script.replace(/(^|\s)--test(?=\s|$)/g, `$1--test ${TAP}`)] : tapArgs(step.run.map(fill));
+  // how many TAP documents the step must print: one per `node --test` it runs
+  const expectedDocs = step.kind === "plain" ? 0 : step.pkg ? (script.match(/(^|\s)--test(?=\s|$)/g) ?? []).length : step.run.includes("--test") ? 1 : 0;
   const shell = Boolean(step.pkg || (OS === "windows" && step.shell));
-  const logFile = path.join(dirs.results, `${groupName}-${OS}-${String(index + 1).padStart(2, "0")}.log`);
+  // A group that runs Cardboard's code keeps its raw logs out of the uploaded results (they may quote that code).
+  const logDir = group.proprietary ? path.join(dirs.root, "carton-logs-private") : dirs.results;
+  fs.mkdirSync(logDir, { recursive: true });
+  const logFile = path.join(logDir, `${groupName}-${OS}-${String(index + 1).padStart(2, "0")}.log`);
   const log = fs.createWriteStream(logFile);
   const t0 = Date.now();
   console.log(`::group::${label}`);
@@ -133,27 +153,59 @@ function runStep(step, index) {
     };
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
+    // The step ends when its output closes. A descendant that outlives the step's process can keep a pipe open (and
+    // on Windows taskkill /T can't reach it once its parent is gone), so after the process exits, or after a timeout
+    // kill, the step is finished within GRACE_MS whatever its pipes do.
+    const GRACE_MS = 15_000;
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      onData(`\n[ci] step timed out after ${step.timeoutMin ?? stepTimeoutMin} min; killing it\n`);
-      killTree(child);
-    }, (step.timeoutMin ?? stepTimeoutMin) * 60_000);
-    child.on("error", (e) => onData(`\n[ci] could not start: ${e.message}\n`));
-    child.on("close", (code, signal) => {
+    let exited = null;
+    let finished = false;
+    const finish = (how) => {
+      if (finished) return;
+      finished = true;
       clearTimeout(timer);
+      clearTimeout(grace);
+      child.stdout.destroy();
+      child.stderr.destroy();
       log.end();
       console.log("::endgroup::");
+      const code = exited?.code ?? null;
+      const signal = exited?.signal ?? null;
       const ms = Date.now() - t0;
       const tap = step.kind === "plain" ? null : parseTap(text);
       const problems = [];
       if (timedOut) problems.push("timed out");
-      if (code !== 0) problems.push(`exit ${code ?? signal}`);
-      if (tap && !tap.sawSummary) problems.push("no node:test summary in the output");
-      if (tap && tap.totals.fail + tap.totals.cancelled > 0) problems.push(`${tap.totals.fail + tap.totals.cancelled} failed`);
+      if (how) problems.push(how);
+      if (code !== 0) problems.push(`exit ${code ?? signal ?? "unknown"}`);
+      if (tap) {
+        if (tap.documents !== expectedDocs || tap.summaries !== tap.documents) problems.push(`expected ${expectedDocs} complete node:test report(s), got ${tap.documents} started and ${tap.summaries} finished`);
+        if (tap.totals.tests === 0 && !step.allowEmpty) problems.push("no tests ran");
+        const failed = Math.max(tap.totals.fail + tap.totals.cancelled, tap.failures.length);
+        if (failed > 0) problems.push(`${failed} failed`);
+      }
       const badSkips = tap ? tap.skips.filter((s) => forbidden.some((re) => re.test(s.reason))) : [];
       if (badSkips.length) problems.push(`${badSkips.length} skipped for a missing tool CI installed`);
-      resolve({ label, cwd: path.relative(CARTON, cwd) || ".", command: [cmd, ...cmdArgs].join(" "), exit: code, signal, timedOut, ms, ok: problems.length === 0, problems, ...(tap ?? {}), badSkips, log: path.basename(logFile) });
+      resolve({ label, cwd: path.relative(CARTON, cwd) || ".", command: [cmd, ...cmdArgs].join(" "), exit: code, signal, timedOut, ms, ok: problems.length === 0, problems, ...(tap ?? {}), badSkips, log: group.proprietary ? null : path.basename(logFile) });
+    };
+    let grace;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      onData(`\n[ci] step timed out after ${step.timeoutMin ?? stepTimeoutMin} min; killing it\n`);
+      killTree(child);
+      grace = setTimeout(() => finish("its processes didn't end after the kill"), GRACE_MS);
+    }, (step.timeoutMin ?? stepTimeoutMin) * 60_000);
+    child.on("error", (e) => {
+      onData(`\n[ci] could not start: ${e.message}\n`);
+      exited ??= { code: null, signal: null };
+      finish("could not start");
+    });
+    child.on("exit", (code, signal) => {
+      exited = { code, signal };
+      grace ??= setTimeout(() => finish("a process it started kept its output open"), GRACE_MS);
+    });
+    child.on("close", (code, signal) => {
+      exited ??= { code, signal };
+      finish(null);
     });
   });
 }

@@ -1,5 +1,5 @@
 {
-  "$comment": "Carton CI's job groups (read by plan.mjs, fetch.mjs and run-tests.mjs). A step is {pkg} (its npm test) or {label, cwd, run} (cwd relative to carton/; {node} and {electron} are filled in). kind 'plain' = pass/fail by exit code, otherwise node:test TAP. forbidSkip: skip reasons that fail the group, because CI installed what the test asks for.",
+  "$comment": "Carton CI's job groups (read by plan.mjs, fetch.mjs and run-tests.mjs). A step is {pkg} (its npm test) or {label, cwd, run} (cwd relative to carton/; {node} and {electron} are filled in). kind 'plain' = pass/fail by exit code, otherwise node:test TAP. forbidSkip: skip reasons that fail the group, because CI installed what the test asks for. proprietary: the group runs Cardboard's code, so its raw logs stay out of the uploaded results and failure details are cut to a line.",
   "runners": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" },
   "groups": [
     {
@@ -81,6 +81,7 @@
     },
     {
       "name": "cardboard-real",
+      "proprietary": true,
       "os": ["linux", "windows"],
       "timeout": 30,
       "needs": ["cardboard", "ffmpeg"],
