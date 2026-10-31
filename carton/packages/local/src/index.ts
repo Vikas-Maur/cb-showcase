@@ -5,7 +5,17 @@
 // timeline.tsx during agent turns, and exports/imports `.cbproj`. Windows: named pipes, EPERM rename retries,
 // case-insensitive paths. Owner: local-cli.
 import type { Actor, Carton, CommitResult, StateRef } from "@carton/core";
-import type { Hasher, IdentitySource } from "@carton/core/plugins";
+import type { IdentitySource } from "@carton/core/plugins";
+
+export * from "./ipc.ts";
+export * from "./lease.ts";
+export * from "./holder.ts";
+export * from "./client.ts";
+export * from "./helper.ts";
+export * from "./identity.ts";
+export * from "./hooks.ts";
+export * from "./writes.ts";
+export { nodeHasher } from "./hasher.ts";
 
 const todo = (what: string): never => {
   throw new Error(`not implemented: ${what}`);
@@ -34,13 +44,6 @@ export interface LocalCarton {
 export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   return todo("openLocal");
 }
-
-/** SHA-256 from node:crypto, with the synchronous form core uses for state hashes. */
-export const nodeHasher: Hasher = {
-  name: "node:crypto",
-  sha256: async () => todo("nodeHasher.sha256"),
-  sha256HexSync: () => todo("nodeHasher.sha256HexSync"),
-};
 
 /**
  * Displace, then install (§6.4): rename whatever is at `path` into `displacedDir`, link the new bytes into place
