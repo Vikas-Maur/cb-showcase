@@ -31,9 +31,10 @@ own functions use them by role (`projectStore.latest(id)`), and say so.
   `tracks`, `timelineItems` and the media records' content fields. Everything else (`id`, `stateUpdatedAt`,
   `updatedAt`, `cast`…) stays Cardboard's and never becomes a change. `@carton/cardboard` converts both ways:
   `fromHost(project, base)` and `materializeProject(doc, currentProject)`.
-- **Documents are values.** Never change a record of a document Carton gave you in place: copy the record you change
-  (`{ ...clip, endTime: 4 }`). Carton shares unchanged records between versions (that is what makes it fast), so an
-  in-place edit would also change the version you started from, and the commit would see no difference.
+- **Documents are values, and frozen.** The records `head()`, `checkout()` and `resolve()` give you are frozen
+  (nested values too): an edit in place throws a `TypeError`. Replace the record you change (`{ ...clip, endTime: 4 }`)
+  in a copy of its array, and commit that. Carton shares unchanged records between versions. A record you commit
+  becomes Carton's, and is frozen once Carton hands it out.
 - **One schema per project.** Every process that opens a project (the app, its library worker, the helper, `cb`)
   must use the same adapter. Carton stores the schema's fingerprint with the project and refuses, at open, a process
   whose schema differs at the same schema version: its states would hash and merge differently.
@@ -389,8 +390,8 @@ const silences = { kind: "remove-silences", maps: { [t]: [step(silent)] }, linea
 ```
 
 A concurrent edit is then mapped through the intent once, not guessed: an agent's trim of a later clip, made before
-the ripple, lands on the moved clip. Record lineage too, but know that today a commit's rebase uses only the `maps`:
-an edit made on the old clip lands on the piece that kept its id, not on the other pieces ([LIMITS.md](LIMITS.md)). Save several intents of one save as one (a later one composes after the earlier,
+the ripple, lands on the moved clip. Record lineage too: when a commit is rebased over a split (or a split over an edit), an edit made on the old clip
+reaches every piece. Save several intents of one save as one (a later one composes after the earlier,
 `composeMaps`). A commit with an `intent` skips inference; without one, Carton infers a ripple only when it is
 unambiguous (`inferRipple`, L9).
 
@@ -664,7 +665,7 @@ cuts (`branches`), for remote agents.
 functions:
 - opening with `importProject` (main@1 once, placement in app data);
 - H1: mutations committed against their base: a stale base rebased, a clash carded, a retried id deduplicated, the file
-  as a view of head, and an in-place edit seen as no change; through the `cb` write path, a save that clashes on one
+  as a view of head, an in-place edit throwing (records are frozen) and a replaced record committed; through the `cb` write path, a save that clashes on one
   clip lands the rest and keeps its card for its author, across a restart;
 - H4: a GUI save through a lossy projection carries only the person's edit;
 - H2: history with authors, undo by actor group, restore;

@@ -19,7 +19,7 @@ Rules for the whole job:
   checkpoint.
 - Never paste Carton's internals into Cardboard: import @carton/* packages. Never change Carton's packages; if one
   needs a change, write it down for me instead.
-- Documents from Carton are values: copy a record before you change it.
+- Documents from Carton are values, and frozen (an edit in place throws): replace the record you change.
 - No edit may ever be dropped silently. A write Carton didn't make is imported, never overwritten.
 - Small commits, one hook per commit, each with its test. Stop at every CHECKPOINT and show me the commands you ran
   and their pass/fail/skip counts, exactly as printed.
