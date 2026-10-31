@@ -22,8 +22,10 @@ const log = helperLog(dbPath);
 const seen = !a.seen || a.seen === "-" ? null : a.seen;
 
 try {
-  const mod = (await import(factoryUrl(a.factory))) as { createHolderEngine(o: HelperFactoryOptions): Promise<{ store: Store; engine: HolderEngine; close?: () => Promise<void> }> };
-  const { store, engine, close } = await mod.createHolderEngine({ dbPath, config: a.config ? JSON.parse(a.config) : {}, log });
+  const mod = (await import(factoryUrl(a.factory))) as { createHolderEngine(o: HelperFactoryOptions): Promise<{ store: Store; engine: HolderEngine; close?: () => Promise<void>; log?: (e: Record<string, unknown>) => void }> };
+  const made = await mod.createHolderEngine({ dbPath, config: a.config ? JSON.parse(a.config) : {}, log });
+  const { store, engine, close } = made;
+  const holderLog = made.log ? (e: Record<string, unknown>) => { log(e); made.log!(e); } : log;
   const idleMs = a["idle-ms"] ? Number(a["idle-ms"]) : 60000;
   let exiting = false;
   const exit = async (code: number) => {
@@ -39,7 +41,7 @@ try {
     socketPath: holderSocketPath(dirname(dbPath), "helper"),
     seen,
     idleMs,
-    log,
+    log: holderLog,
     onStop: (why) => void exit(why.startsWith("fenced") ? 3 : 0),
   });
   for (const sig of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(sig, () => void holder.retire(`signal ${sig}`));
