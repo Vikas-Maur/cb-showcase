@@ -116,7 +116,8 @@ export class Replica {
   readonly overlaps = new Map<string, Set<string>>();
   readonly warnings: { t: number; kind: string; track: string; pair: string[]; after: string }[] = [];
   /** Pending changes whose rebase left nothing to push. */
-  readonly absorbed: { t: number; id: string; author: SimActor; cards: number; withdrawn: boolean }[] = [];
+  /** `head`: the optimistic state just after it left the queue (an absorbed change without cards must be in it). */
+  readonly absorbed: { t: number; id: string; author: SimActor; cards: number; withdrawn: boolean; head: Doc }[] = [];
   /** Per path, the content hashes Carton wrote or applied: anything else at a watched path is an unseen foreign save. */
   readonly seen = new Map<string, Set<string>>();
   link: Link;
@@ -274,7 +275,7 @@ export class Replica {
       // its effect is already in head, or its cards kept head's values; its cards reach the human and the actor
       const p = e.change;
       if (e.cards.length) this.lateCards(p, e.cards);
-      this.absorbed.push({ t: this.sim.now, id: p.id, author: p.author as SimActor, cards: e.cards.length, withdrawn: e.withdrawn });
+      this.absorbed.push({ t: this.sim.now, id: p.id, author: p.author as SimActor, cards: e.cards.length, withdrawn: e.withdrawn, head: this.store.optimistic(this.b).doc });
       const st = e.cards.length || p.cards.length ? { status: "conflicts", conflicts: [...p.cards, ...e.cards].map(cardOf), absorbed: true } : { status: "confirmed", absorbed: true };
       for (const w of this.waiters.get(p.id)?.splice(0) ?? []) w(st);
       if (p.meta.view) this.worker?.materializer?.writeStatus(p.meta.view as string, { ...st, ref: null }, p.id);

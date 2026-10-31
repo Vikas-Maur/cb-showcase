@@ -96,6 +96,8 @@ export interface HelloMsg {
   rids: string[];
   schemaVersion: number;
   protocol?: number;
+  /** Rows only, no keyframe (the client found a keyframe's hash wrong). */
+  noKeyframe?: boolean;
 }
 /** Pipelined push of pending changes in queue order. A reject kills the rest of that `epoch`. */
 export interface PushMsg {
@@ -143,6 +145,8 @@ export interface ForkMsg {
   from: string;
   seq: number;
   rec: CutRecord;
+  /** The state at the fork point: the fork's root, so a joiner that doesn't hold the parent can start from it. */
+  root?: { stateHash: string; doc: Doc };
 }
 /** The keyframe the server asked for (`AckMsg.keyframeWanted`), for far-behind catch-up (§6.3). */
 export interface KeyframeMsg {
@@ -170,6 +174,11 @@ export interface WelcomeMsg {
   confirmed: ConfirmedId[];
   /** More rows follow: send `hello` again with the new `have`. */
   more?: boolean;
+  /**
+   * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
+   * acting on the list. Unchecked ids are never to be taken as unconfirmed.
+   */
+  uncheckedFrom?: number;
 }
 /** New confirmed rows, fanned out to every subscriber (the pusher too, before its ack). */
 export interface ChangesMsg {
@@ -202,6 +211,8 @@ export interface RejectMsg {
   concurrent: { seq: number; id: ChangeId }[];
   epoch: number;
   confirmed?: ConfirmedId[];
+  /** As `WelcomeMsg.uncheckedFrom`: the list is incomplete; catch up with `hello` before rebasing. */
+  uncheckedFrom?: number;
   detail?: string;
 }
 export interface StatusMsg {

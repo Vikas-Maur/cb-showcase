@@ -115,6 +115,17 @@ export class Tables {
     this.branches.set(id, b);
     return b;
   }
+  /** Create a branch row; throws (rolling the transaction back) if the branch exists: never a silent replace. */
+  insertBranch(b: StoredBranch): void {
+    this.write("INSERT INTO branches (branch, rec) VALUES (?, ?)", b.id, JSON.stringify(b));
+    this.branches.set(b.id, b);
+  }
+  /** Drop every cache about a branch (after a rolled-back transaction: they are rebuilt from the tables). */
+  forget(branch: string): void {
+    this.branches.delete(branch);
+    this.heads.delete(branch);
+    this.decl.delete(branch);
+  }
   putBranch(b: StoredBranch): void {
     this.write("INSERT OR REPLACE INTO branches (branch, rec) VALUES (?, ?)", b.id, JSON.stringify(b));
     this.branches.set(b.id, b);
@@ -301,8 +312,9 @@ export class Tables {
     );
     const firstLive = live.length ? num(live[0]!.seq) : hi + 1;
     if (firstLive > lo + 1) {
-      for (const s of this.all<{ lo: number; ids: SqlValue }>("SELECT lo, ids FROM segments WHERE branch = ? AND hi > ? ORDER BY hi", branch, lo)) {
-        if (num(s.lo) >= Math.min(hi, firstLive - 1)) break;
+      // only the segments that overlap (lo, min(hi, firstLive - 1)]: the query itself is bounded (finding 16)
+      const top = Math.min(hi, firstLive - 1);
+      for (const s of this.all<{ lo: number; ids: SqlValue }>("SELECT lo, ids FROM segments WHERE branch = ? AND hi > ? AND lo < ? ORDER BY hi", branch, lo, top)) {
         for (const [seq, id, flags, k] of JSON.parse(text(s.ids)) as [number, string, number, number][])
           if (seq > lo && seq <= hi && seq < firstLive) out.push(confirmedId(seq, id, flags, k));
       }
@@ -354,17 +366,20 @@ export class Tables {
       for (const id of ids) out.set(id, this.record(branch, coll, id));
       return out;
     }
-    const CHUNK = 64;
-    const q = `SELECT id, alive, seq, lane FROM records WHERE branch = ? AND coll = ? AND id IN (${Array(CHUNK).fill("?").join(",")})`;
+    // one bounded seek per id (newest row ≤ head, LIMIT 1), 32 to a statement (96 bound parameters): a record's long
+    // history is never read (review finding 15)
+    const CHUNK = 32;
+    const one = "SELECT * FROM (SELECT id, alive, seq, lane FROM records WHERE branch = ? AND coll = ? AND id = ? ORDER BY seq DESC LIMIT 1)";
+    const q = Array(CHUNK).fill(one).join(" UNION ALL ");
     for (let i = 0; i < ids.length; i += CHUNK) {
       const part = ids.slice(i, i + CHUNK);
-      const params: SqlValue[] = [branch, coll, ...part];
-      while (params.length < CHUNK + 2) params.push(part[part.length - 1]!);
+      const params: SqlValue[] = [];
+      // padding seeks an id no record has (a NUL byte), so it reads nothing
+      for (let j = 0; j < CHUNK; j++) params.push(branch, coll, j < part.length ? part[j]! : "\u0000");
       for (const r of this.all<{ id: SqlValue; alive: number; seq: number; lane: SqlValue }>(q, ...params)) {
-        const id = text(r.id), seq = num(r.seq);
-        const prev = out.get(id);
-        if (prev && prev.seq >= seq) continue;
-        const state: RecordState = { alive: num(r.alive) === 1, seq };
+        const id = text(r.id);
+        if (out.has(id)) continue;
+        const state: RecordState = { alive: num(r.alive) === 1, seq: num(r.seq) };
         if (r.lane !== null && r.lane !== undefined) state.lane = text(r.lane);
         out.set(id, state);
       }
@@ -373,7 +388,6 @@ export class Tables {
     return out;
   }
 
-  // ---------------------------------------------------------------- replica ids (§6.3: bound to the device credential)
   // bindings never change once written, and only this sequencer writes them: cache what was read
   private ridCache = new Map<string, string>();
   ridOwner(rid: string): string | undefined {

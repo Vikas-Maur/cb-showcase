@@ -18,7 +18,7 @@
 
 import type { AuthContext, AuthProvider, BlobStore, SequencerConnection, SequencerStorage } from "@carton/core/plugins";
 import type { Change, CutRecord, Doc, Op, Rec, TimelineConfig } from "@carton/core";
-import { sequencer as rules } from "@carton/core";
+import { sequencer as rules, sha256Hex } from "@carton/core";
 import type { sync } from "@carton/core";
 import { Tables, type Row, type StoredBranch, FLAG_STRUCTURAL, FLAG_WITHDRAWN } from "./tables.ts";
 
@@ -95,6 +95,8 @@ export interface SequencerControls extends rules.RuleControls {
   claimScan?: "every-base" | "newest";
   /** false: ignore the rids a hello claims (an unpinned v12 rule, now pinned by a test). */
   helloRidClaim?: boolean;
+  /** Merged claim ranges read per message (default 256): lowered by a test of the cap. */
+  claimRanges?: number;
 }
 
 export interface SequencerOptions {
@@ -223,9 +225,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 
   // ---------------------------------------------------------------- the confirmed-id list (R10-01, bounded: R12-01)
   // A push on base b can only have been confirmed in (b, b + K + 1]: read the id column of those ranges only.
-  const MAX_CLAIM_BASES = 256;
-  function confirmedOf(branchId: string, claims: readonly PendingClaim[] | undefined): ConfirmedId[] {
-    if (controls.confirmedList === false || !claims?.length) return [];
+  const MAX_CLAIM_RANGES = 256;
+  /**
+   * The ids of `claims` confirmed or withdrawn. At most MAX_CLAIM_RANGES merged ranges are read per message (a
+   * hostile hello can't ask for more); bases past that are reported in `uncheckedFrom`, never treated as unconfirmed:
+   * the client asks again for those before acting on the list (review finding 10).
+   */
+  function confirmedOf(branchId: string, claims: readonly PendingClaim[] | undefined): { list: ConfirmedId[]; uncheckedFrom: number | null } {
+    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null };
     const head = tables.head(branchId);
     const want = new Set<string>();
     const bases = new Set<number>();
@@ -237,11 +244,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (bs.length) bases.add(Math.max(...bs));
       } else for (const b of bs) bases.add(b);
     }
-    if (!want.size || !bases.size) return [];
-    // merge the ranges so overlapping claims never read a row twice; cap the work a hostile hello can ask for
-    const sorted = [...bases].sort((a, b) => a - b).slice(0, MAX_CLAIM_BASES);
+    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null };
+    // merge the ranges so overlapping claims never read a row twice
+    const sorted = [...bases].sort((a, b) => a - b);
     const out: ConfirmedId[] = [];
-    let lo = -1, hi = -1;
+    let lo = -1, hi = -1, ranges = 0;
     const flush = () => {
       if (hi > lo) for (const e of tables.idsIn(branchId, lo, hi)) if (want.has(e.id)) out.push(e);
     };
@@ -250,12 +257,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (b <= hi) hi = Math.max(hi, top);
       else {
         flush();
+        if (++ranges > (controls.claimRanges ?? MAX_CLAIM_RANGES)) return { list: out, uncheckedFrom: b };
         lo = b;
         hi = top;
       }
     }
     flush();
-    return out;
+    return { list: out, uncheckedFrom: null };
   }
 
   // ---------------------------------------------------------------- rows for catch-up (live and archived)
@@ -295,12 +303,18 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     }
     return { seq: k.seq, stateHash: k.hash, doc: JSON.parse(docText ?? "null") as Doc };
   }
-  // synchronous without a blob store (the DO-blob fallback keeps keyframes in SQL), so setup paths stay synchronous
-  function storeKeyframe(branchId: string, seq: number, stateHash: string, doc: Doc | null): void | Promise<void> {
+  // Where a keyframe's document goes: a blob (uploaded first, outside any transaction; an orphan blob is harmless) or
+  // inline in SQL (the DO-blob fallback). Synchronous without a blob store, so set-up paths stay synchronous.
+  function placeKeyframe(branchId: string, seq: number, doc: Doc | null): { blob: string } | { inline: string } | Promise<{ blob: string }> {
     const body = JSON.stringify(doc);
-    if (!opts.blobs) return tables.putKeyframe(branchId, seq, stateHash, { inline: body });
-    const key = `keyframes/${branchId}/${seq}`;
-    return opts.blobs.put(key, enc.encode(body), { contentType: "application/json" }).then(() => tables.putKeyframe(branchId, seq, stateHash, { blob: key }));
+    if (!opts.blobs) return { inline: body };
+    const key = `keyframes/${branchId}/${seq}/${sha256Hex(body)}`;
+    return opts.blobs.put(key, enc.encode(body), { contentType: "application/json", ifAbsent: true }).then(() => ({ blob: key }));
+  }
+  function storeKeyframe(branchId: string, seq: number, stateHash: string, doc: Doc | null): void | Promise<void> {
+    const where = placeKeyframe(branchId, seq, doc);
+    if (where instanceof Promise) return where.then((w) => tables.putKeyframe(branchId, seq, stateHash, w));
+    tables.putKeyframe(branchId, seq, stateHash, where);
   }
 
   // ---------------------------------------------------------------- record writes for rows the server didn't judge
@@ -319,27 +333,74 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return [...out.values()];
   }
 
-  function createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[] = [], adoptKey: string | null = null): void | Promise<void> {
-    const root = init.rootSeq ?? 0;
-    const stored = init.doc0 !== null ? storeKeyframe(rec.id, root, init.stateHash ?? "", init.doc0) : undefined;
-    return stored ? stored.then(() => writeBranch(rec, init, rows, adoptKey)) : writeBranch(rec, init, rows, adoptKey);
+  interface BranchInit {
+    doc0: Doc | null;
+    rootSeq?: number;
+    stateHash?: string;
+    forkOf?: { branchId: string; seq: number };
   }
-  function writeBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; forkOf?: { branchId: string; seq: number } }, rows: readonly Row[], adoptKey: string | null): void {
+  /**
+   * Create a branch atomically: the branch row, its root keyframe, its records and its rows commit together or not at
+   * all, and the caches are dropped if the transaction fails (review finding 5). An existing branch is never replaced.
+   * `rids`: the credential that uploaded the rows, bound to their replica ids (review finding 11).
+   */
+  function createBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[] = [], adoptKey: string | null = null, rids?: string): void | Promise<void> {
     const root = init.rootSeq ?? 0;
-    tables.transaction(() => {
-      tables.putBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey });
-      const doc = init.doc0 as Record<string, unknown> | null;
-      if (doc) for (const coll of collections) for (const r of (doc[coll] as Rec[] | undefined) ?? []) {
-        const lane = coll === tl.collection ? (r[tl.lane] as string | undefined) : undefined;
-        tables.putRecord(rec.id, coll, String(r.id), root, true, lane);
-      }
-      let seq = root;
-      for (const row of rows) {
-        if (row.seq !== ++seq) throw new Error(`adopt: rows must be ${root + 1}..n in order (got ${row.seq} for ${seq})`);
-        const stored = { paths: rules.storedPaths(row), structural: rules.isStructural(row.ops, row.intent, tl) };
-        tables.append(rec.id, row, stored, recordWritesOf(row.ops), { inline: Tables.body(row) });
-      }
-    });
+    let seq = root;
+    for (const row of rows) if (row?.seq !== ++seq) throw new Error(`rows must be ${root + 1}..${root + rows.length} in order (got ${row?.seq} for ${seq})`);
+    const where = init.doc0 !== null ? placeKeyframe(rec.id, root, init.doc0) : null;
+    if (where instanceof Promise) return where.then((w) => writeBranch(rec, init, rows, adoptKey, w, rids));
+    writeBranch(rec, init, rows, adoptKey, where, rids);
+  }
+  function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string): void {
+    const root = init.rootSeq ?? 0;
+    try {
+      tables.transaction(() => {
+        tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey });
+        if (kf) tables.putKeyframe(rec.id, root, init.stateHash ?? "", kf);
+        const doc = init.doc0 as Record<string, unknown> | null;
+        if (doc) for (const coll of collections) for (const r of (doc[coll] as Rec[] | undefined) ?? []) {
+          const lane = coll === tl.collection ? (r[tl.lane] as string | undefined) : undefined;
+          tables.putRecord(rec.id, coll, String(r.id), root, true, lane);
+        }
+        for (const row of rows) {
+          const clean = rowFrom(row, rec.id, row.seq);
+          const stored = { paths: rules.storedPaths(clean), structural: rules.isStructural(clean.ops, clean.intent, timeline) };
+          tables.append(rec.id, clean, stored, recordWritesOf(clean.ops), { inline: Tables.body(clean) });
+          if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) tables.bindRid(ridOf(row.id), rids);
+        }
+      });
+    } catch (e) {
+      tables.forget(rec.id);
+      throw e;
+    }
+  }
+
+  /**
+   * A confirmed row from a client's change: only the fields a change may carry. The server's own fields (`seq`,
+   * `withdrawn`, `blob`) are never taken from the client (review finding 6).
+   */
+  function rowFrom(ch: Change, branchId: string, seq: number): Row {
+    const row: Row = {
+      id: ch.id,
+      hash: typeof ch.hash === "string" ? ch.hash : "",
+      author: ch.author,
+      branchId,
+      base: { seq: ch.base?.seq ?? 0, pending: [...(ch.base?.pending ?? [])] },
+      ops: ch.ops,
+      intent: ch.intent ?? null,
+      kinds: ch.kinds ?? null,
+      policy: ch.policy,
+      at: typeof ch.at === "number" ? ch.at : 0,
+      paths: ch.paths,
+      reads: ch.reads,
+      spans: ch.spans,
+      trackOrder: ch.trackOrder,
+      rebase: Number.isInteger(ch.rebase) ? ch.rebase! : 0,
+      seq,
+    };
+    for (const k of HISTORY_FIELDS) if (ch[k] !== undefined) (row as unknown as Record<string, unknown>)[k] = ch[k];
+    return row;
   }
 
   // ---------------------------------------------------------------- handlers
@@ -363,12 +424,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return bound === who;
   }
 
+  /** May this connection write to `branchId` (role and the token's cut scope, §14)? Checked by every mutation. */
+  function mayWrite(c: HostConnection, branchId: string): boolean {
+    return WRITE_ROLES.has(c.auth.role) && (!c.auth.branches || c.auth.branches.includes(branchId));
+  }
   function writable(c: HostConnection, branchId: string): RejectReason | null {
     const b = tables.branch(branchId);
     if (!b) return "unknown branch";
     if (b.tracking) return "read-only branch";
-    if (!WRITE_ROLES.has(c.auth.role)) return "forbidden";
-    if (c.auth.branches && !c.auth.branches.includes(branchId)) return "forbidden";
+    if (!mayWrite(c, branchId)) return "forbidden";
     return null;
   }
 
@@ -377,7 +441,6 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (!b) return c.send({ type: "unknownBranch", branchId: m.branchId });
     if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return c.send({ type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
     const st = stateOf(c);
-    if (!st.subs.includes(m.branchId)) st.subs.push(m.branchId);
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
     if (controls.helloRidClaim !== false && controls.bindRid !== false && WRITE_ROLES.has(c.auth.role)) {
       const who = credentialOf(c);
@@ -392,11 +455,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       }
     }
     const head = tables.head(m.branchId);
-    const confirmed = confirmedOf(m.branchId, m.pending);
+    const { list: confirmed, uncheckedFrom } = confirmedOf(m.branchId, m.pending);
     let from = Math.max(-1, Math.min(m.have, head));
     let keyframe: sync.KeyframeData | undefined;
-    // below the root (a fresh joiner sends have: -1), or more than K behind: the latest keyframe, then its tail
-    if (from < b.root || head - from > K) {
+    // below the root (a fresh joiner sends have: -1), or more than K behind: the latest keyframe, then its tail. A
+    // client that found a keyframe's hash wrong asks for rows only (noKeyframe).
+    if (from < b.root || (head - from > K && !m.noKeyframe)) {
       const k = tables.latestKeyframe(m.branchId, head);
       if (k && k.seq > from) {
         keyframe = await loadKeyframe(m.branchId, k);
@@ -407,7 +471,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
+    if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
     if (last < head) msg.more = true;
+    // fan-out starts with the last page: a subscriber still paging would get live rows ahead of its backlog (finding 3)
+    else if (!st.subs.includes(m.branchId)) st.subs.push(m.branchId);
     c.send(msg);
   }
 
@@ -424,10 +491,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const head0 = tables.head(m.branchId);
       if (Number.isInteger(ch.base?.seq) && head0 - ch.base.seq > K) {
         // the K cap (§6.3): no scan of the log, only the bounded id list for this push's changes
-        const list = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })));
-        return reject(c, m.branchId, ch.id, "behind", m.epoch, list ? { confirmed: list } : {});
+        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })));
+        return reject(c, m.branchId, ch.id, "behind", m.epoch, r ? { confirmed: r.list, ...(r.uncheckedFrom !== null ? { uncheckedFrom: r.uncheckedFrom } : {}) } : {});
       }
-      const row: Row = { ...ch, branchId: m.branchId, rebase: ch.rebase ?? 0, seq: 0 };
+      if (declarationTooLarge(ch)) return reject(c, m.branchId, ch.id, "too large", m.epoch);
+      const row = rowFrom(ch, m.branchId, 0);
       // judge first: a rejected push never pays for serializing its body. A body over the inline limit goes to the
       // blob store (async), and the push is judged again afterwards, since other pushes may have landed meanwhile.
       let blobKey: string | null = null;
@@ -439,7 +507,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           if (blobKey) body = { blob: blobKey };
           else {
             const text = Tables.body(row);
-            if (text.length > maxInline) return { kind: "large" as const, text };
+            if (utf8Over(text, maxInline)) return { kind: "large" as const, text };
             body = { inline: text };
           }
           row.seq = tables.head(m.branchId) + 1;
@@ -449,7 +517,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       let verdict = judge();
       if (verdict.kind === "large") {
         if (!opts.blobs) return reject(c, m.branchId, ch.id, "too large", m.epoch);
-        blobKey = `changes/${m.branchId}/${ch.hash || ch.id}`;
+        // keyed by the digest of the exact body the server stores, never by a hash the client supplied (finding 2)
+        blobKey = `changes/${m.branchId}/${sha256Hex(verdict.text)}`;
         await opts.blobs.put(blobKey, enc.encode(verdict.text), { contentType: "application/json", ifAbsent: true });
         verdict = judge();
         if (verdict.kind === "large") throw new Error("unreachable: a blob body is never inline");
@@ -489,8 +558,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const head = tables.head(m.branchId);
     if (m.base > head) return reject(c, m.branchId, m.id, "base unknown", m.epoch);
     if (head - m.base > K) {
-      const list = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, [{ id: m.id, bases: [m.base] }]);
-      return reject(c, m.branchId, m.id, "behind", m.epoch, list ? { confirmed: list } : {});
+      const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, [{ id: m.id, bases: [m.base] }]);
+      return reject(c, m.branchId, m.id, "behind", m.epoch, r ? { confirmed: r.list } : {});
     }
     const row: Row = {
       id: m.id,
@@ -530,7 +599,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   async function onAdopt(c: HostConnection, m: sync.AdoptMsg) {
-    if (!WRITE_ROLES.has(c.auth.role)) return c.send({ type: "adoptError", branchId: m.branchId, reason: "forbidden" });
+    const fail = (reason: string) => c.send({ type: "adoptError", branchId: m.branchId, reason });
+    if (typeof m.branchId !== "string" || !m.rec || m.rec.id !== m.branchId) return fail("rec.id must be the branchId"); // finding 1
+    const closure = Array.isArray(m.closure) ? m.closure : [];
+    if (!mayWrite(c, m.branchId) || closure.some((t) => !mayWrite(c, t?.branchId))) return fail("forbidden"); // finding 4
+    if (closure.some((t) => !t?.rec || t.rec.id !== t.branchId)) return fail("closure rec.id must be its branchId");
     const key = `${m.branchId}|${m.n}|${m.stateHash}`;
     const b = tables.branch(m.branchId);
     if (b) {
@@ -539,16 +612,21 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         emit({ type: "adopt", branchId: m.branchId, n: m.n, repeat: true });
         return c.send({ type: "adopted", branchId: m.branchId, since: m.n, repeat: true });
       }
-      return c.send({ type: "adoptError", branchId: m.branchId, reason: "branch exists with another log" });
+      return fail("branch exists with another log");
     }
     const rootSeq = m.rootSeq ?? 0;
-    if (rootSeq + (m.rows?.length ?? 0) !== m.n) return c.send({ type: "adoptError", branchId: m.branchId, reason: `rows ${rootSeq + 1}..${m.n} expected` });
-    await createBranch(m.rec, { doc0: m.doc0, rootSeq, stateHash: rootSeq === m.n ? m.stateHash : "" }, (m.rows ?? []) as Row[], key);
-    // the ancestry closure goes up shallow, as read-only tracking branches (§5.3, R4-07)
+    const rows = Array.isArray(m.rows) ? (m.rows as Row[]) : [];
+    if (rootSeq + rows.length !== m.n) return fail(`rows ${rootSeq + 1}..${m.n} expected`);
+    try {
+      await createBranch(m.rec, { doc0: m.doc0, rootSeq, stateHash: rootSeq === m.n ? m.stateHash : "" }, rows, key, credentialOf(c));
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+    // the ancestry closure goes up shallow, as read-only tracking branches (§5.3, R4-07); existing ones are kept
     tables.transaction(() => {
-      for (const t of m.closure ?? []) {
+      for (const t of closure) {
         if (tables.branch(t.branchId)) continue;
-        tables.putBranch({ id: t.branchId, rec: t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: t.nodes });
+        tables.insertBranch({ id: t.branchId, rec: t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: t.nodes });
       }
     });
     stats.adopts++;
@@ -562,16 +640,26 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   async function onFork(c: HostConnection, m: sync.ForkMsg) {
-    if (!WRITE_ROLES.has(c.auth.role)) return c.send({ type: "error", reason: "forbidden" });
+    if (!m.rec || m.rec.id !== m.branchId) return c.send({ type: "error", reason: "rec.id must be the branchId" }); // finding 1
+    if (!mayWrite(c, m.branchId)) return c.send({ type: "error", reason: "forbidden" }); // finding 4
     const parent = tables.branch(m.from);
     if (!parent) return c.send({ type: "unknownBranch", branchId: m.from });
     if (!(Number.isInteger(m.seq) && m.seq >= parent.root && m.seq <= tables.head(m.from))) return c.send({ type: "error", reason: `fork point ${m.seq} is outside ${m.from}` });
-    if (!tables.branch(m.branchId)) createBranch(m.rec, { doc0: null, forkOf: { branchId: m.from, seq: m.seq } });
+    if (!tables.branch(m.branchId)) {
+      // the state at the fork point, when the forking client sends it, is the fork's root keyframe: a fresh joiner
+      // (have: -1) starts from it; without it a joiner must hold the parent (review finding 12)
+      const root = m.root && typeof m.root.stateHash === "string" ? m.root : null;
+      try {
+        await createBranch(m.rec, { doc0: root ? root.doc : null, stateHash: root?.stateHash ?? "", forkOf: { branchId: m.from, seq: m.seq } });
+      } catch (e) {
+        return c.send({ type: "error", reason: e instanceof Error ? e.message : String(e) });
+      }
+    }
     c.send({ type: "forked", branchId: m.branchId, from: m.from, seq: m.seq });
   }
 
   async function onKeyframe(c: HostConnection, m: sync.KeyframeMsg) {
-    if (!WRITE_ROLES.has(c.auth.role)) return;
+    if (writable(c, m.branchId)) return; // role, the token's cut scope, not a tracking branch (finding 4)
     const b = tables.branch(m.branchId);
     const k = m.keyframe;
     if (!b || !k || !Number.isInteger(k.seq) || k.seq < b.root || k.seq > tables.head(m.branchId)) return;
@@ -686,6 +774,19 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 }
 
 const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
+
+/** History fields a change may carry into its row (fold-ins, undo, partial accept, names): stored in the body. */
+const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "structural"] as const;
+
+/** UTF-8 byte length over `limit`, without encoding short strings (each UTF-16 unit is at most 3 bytes). */
+function utf8Over(text: string, limit: number): boolean {
+  if (text.length * 3 <= limit) return false;
+  return new TextEncoder().encode(text).length > limit;
+}
+/** Declarations bigger than any engine produces for a sane change (the sequencer stores them in SQL columns). */
+function declarationTooLarge(ch: Change): boolean {
+  return (ch.paths?.length ?? 0) + (ch.reads?.length ?? 0) > 200_000 || (ch.spans?.length ?? 0) > 50_000 || (ch.trackOrder?.length ?? 0) > 10_000 || (ch.base?.pending?.length ?? 0) > 10_000;
+}
 /** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
 const ARCHIVE_KEEP = 10_000;
 const ARCHIVE_SEGMENT = 10_000;

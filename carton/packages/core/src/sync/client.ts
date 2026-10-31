@@ -19,7 +19,8 @@ import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
 import type { AdoptMsg, ClientMessage, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
-import { last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
+import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
+import type { ConfirmedId } from "./messages.ts";
 
 export type SyncStatus = "offline" | "connecting" | "syncing" | "up-to-date" | "stopped";
 
@@ -30,7 +31,7 @@ export type SyncEvent =
   | { type: "keyframe"; seq: number }
   | { type: "shared"; since: number }
   | { type: "overwritten"; id: string; by: string; author: unknown }
-  | { type: "presence"; actor: unknown; state: PresenceState | null }
+  | { type: "presence"; branchId: string; actor: unknown; state: PresenceState | null }
   | { type: "push"; ids: string[]; epoch: number }
   | { type: "withdraw"; id: string; epoch: number }
   | { type: "reject"; id: string | undefined; reason: string; epoch: number }
@@ -93,6 +94,10 @@ export class SyncClient {
   private waiters: ((ok: boolean) => void)[] = [];
   private statusListeners: ((s: SyncStatus) => void)[] = [];
   private _status: SyncStatus = "offline";
+  /** The server found some claims beyond its per-message cap: their lists so far, merged into the final answer. */
+  private confirmedSoFar: ConfirmedId[] = [];
+  /** A keyframe failed its hash on this connection: catch up by rows only. */
+  private noKeyframe = false;
   /** For hand-off tests: send the upload twice (a retry that crosses the first answer). */
   forceAdoptTwice = false;
   /** For hand-off tests: upload again on the next connection instead of asking `branchStatus` first. */
@@ -111,7 +116,10 @@ export class SyncClient {
     this.tamper = opts.tamper;
     // a local commit joins the queue: push it soon (after the committing task), without the owner having to call pump
     this.unsubscribe = this.queue.on((e) => {
-      if (e.type === "pending" && e.branchId === this.branchId && !this.stopped) this.defer(() => this.pump(), 0);
+      if (e.type === "pending" && e.branchId === this.branchId && !this.stopped) {
+        if (this._status === "up-to-date") this.setStatus("syncing"); // an unconfirmed edit is never "up to date" (finding 20)
+        this.defer(() => this.pump(), 0);
+      }
     });
   }
 
@@ -196,6 +204,8 @@ export class SyncClient {
         this.connId = ++CONN;
         this.epoch++;
         this.caughtUp = false;
+        this.confirmedSoFar = [];
+        this.noKeyframe = false;
         this.stats.reconnects++;
         const id = this.connId;
         c.onMessage((m) => this.onMessage(id, m));
@@ -231,10 +241,18 @@ export class SyncClient {
    * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
    * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
    */
-  private hello(): ClientMessage {
+  private hello(onlyFrom = -1): ClientMessage {
+    const b = this.branchId;
     const pending: PendingClaim[] = [];
-    for (const p of this.queue.pending(this.branchId)) if (p.sentBases.length) pending.push({ id: p.id, bases: [...p.sentBases] });
-    return { type: "hello", branchId: this.branchId, have: this.queue.headSeq(this.branchId), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
+    for (const p of this.queue.pending(b)) {
+      // a base whose whole range (b, b + K + 1] this replica holds as rows needs no claim: had that push been
+      // confirmed, its row would be here and the change would have left the queue (keeps hellos small, finding 10)
+      const bases = p.sentBases.filter((x) => x >= onlyFrom && !this.queue.holdsRows(b, x, x + this.K + 1));
+      if (bases.length) pending.push({ id: p.id, bases });
+    }
+    const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
+    if (this.noKeyframe) m.noKeyframe = true;
+    return m;
   }
   private adoptKey(): string | null {
     const s = this.queue.branch(this.branchId).sequencer;
@@ -277,15 +295,34 @@ export class SyncClient {
       case "changes":
         this.fenced(() => {
           if (m.branchId !== b) return;
-          // keyframe catch-up: jump, drop the pending ids already confirmed in the jumped stretch (R10-01), then
-          // rebase the rest of the queue onto the keyframe before the tail
-          if (m.type === "hello" && m.keyframe && this.queue.jumpTo(b, m.keyframe)) {
-            this.queue.confirmFromList(b, m.confirmed);
-            this.queue.rebaseAll(b);
-            this.emit({ type: "keyframe", seq: m.keyframe.seq });
-          } else if (m.type === "hello" && m.confirmed?.length) this.queue.confirmFromList(b, m.confirmed);
+          if (m.type === "hello" && m.uncheckedFrom !== undefined) {
+            // the server checked only part of our claims: keep what it found, ask for the rest, act on nothing yet
+            this.confirmedSoFar.push(...m.confirmed);
+            return this.send(this.hello(m.uncheckedFrom));
+          }
+          const confirmed = m.type === "hello" ? [...this.confirmedSoFar.splice(0), ...m.confirmed] : [];
+          if (m.type === "changes" && m.rows.length && m.rows[0]!.seq > this.queue.headSeq(b) + 1) return this.resync("a gap in the rows");
+          try {
+            // keyframe catch-up: jump, drop the pending ids already confirmed in the jumped stretch (R10-01), then
+            // rebase the rest of the queue onto the keyframe before the tail
+            if (m.type === "hello" && m.keyframe && this.queue.jumpTo(b, m.keyframe)) {
+              this.queue.confirmFromList(b, confirmed);
+              this.queue.rebaseAll(b);
+              this.emit({ type: "keyframe", seq: m.keyframe.seq });
+            } else if (confirmed.length) this.queue.confirmFromList(b, confirmed);
+          } catch (e) {
+            if (!(e instanceof KeyframeMismatch)) throw e;
+            this.emit({ type: "error", error: e.message });
+            this.noKeyframe = true; // catch up by rows only (finding 14)
+            return this.resync("a keyframe failed its hash");
+          }
           const pendingBefore = this.queue.pending(b).length;
-          const res = this.queue.integrate(b, m.rows);
+          let res: ReturnType<ReplicaQueue["integrate"]>;
+          try {
+            res = this.queue.integrate(b, m.rows);
+          } catch (e) {
+            return this.resync(e instanceof Error ? e.message : String(e)); // rows out of order: catch up again (finding 3)
+          }
           if (res.others.length && pendingBefore) {
             this.stats.rebases += this.queue.pending(b).length;
             this.emit({ type: "rebase", n: this.queue.pending(b).length });
@@ -334,6 +371,12 @@ export class SyncClient {
           if (m.reason === "lww on structure" && m.id) {
             this.queue.toMerge(b, m.id); // H2: through merge3, never dropped
           } else if (m.reason === "behind") {
+            if (m.uncheckedFrom !== undefined) {
+              // an incomplete list: never rebase on it; catch up with hello, which asks for the rest
+              this.caughtUp = false;
+              this.send(this.hello());
+              return;
+            }
             this.queue.confirmFromList(b, m.confirmed);
             if (m.head - this.queue.headSeq(b) > this.K) {
               // our own head is too far behind to push from: catch up (a keyframe plus the tail), which rebases
@@ -352,7 +395,7 @@ export class SyncClient {
       case "overwritten":
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
       case "presence":
-        return this.emit({ type: "presence", actor: m.actor, state: m.state });
+        return this.emit({ type: "presence", branchId: m.branchId, actor: m.actor, state: m.state });
       case "unknownBranch":
         return this.emit({ type: "error", error: "unknown branch" });
       case "adoptError":
@@ -360,6 +403,14 @@ export class SyncClient {
       case "error":
         return this.emit({ type: "error", error: m.reason });
     }
+  }
+
+  /** Catch up again from what we hold (a gap, a bad keyframe): hello, and no pushes until it is answered. */
+  private resync(why: string): void {
+    this.caughtUp = false;
+    this.setStatus("syncing");
+    this.emit({ type: "offline", why: `resync: ${why}` });
+    this.send(this.hello());
   }
 
   private uploadKeyframe(seq: number): void {
@@ -430,6 +481,7 @@ export class SyncClient {
           trackOrder: v.decl.trackOrder,
         };
         if (v.decl.structural !== undefined) ch.structural = v.decl.structural;
+        if (p.history) Object.assign(ch, p.history); // fold-in and undo fields travel with the change (finding 13)
         if (this.tamper) ch = this.tamper(ch);
         out.push(ch);
       }
