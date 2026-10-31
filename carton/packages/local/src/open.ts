@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Carton } from "@carton/core";
-import type { Actor, CartonEvent, HostAdapter } from "@carton/core";
+import type { Actor, CartonEvent, HostAdapter, OpenOptions } from "@carton/core";
 import type { IdentitySource, Store } from "@carton/core/plugins";
 import { openProjectStore } from "@carton/store-sqlite";
 import type { SqliteStore } from "@carton/store-sqlite";
@@ -40,6 +40,12 @@ export interface LocalOptions {
   helperFactory?: string;
   /** Extra factory config for helpers (server URL, token file…; never secrets). */
   helperConfig?: Record<string, unknown>;
+  /**
+   * Sync for this process's own handle (Carton.open's `sync`): the app's library worker, whose handle is the lease
+   * holder's engine, opens with `autoConnect: false` and connects under its nonce. Absent: the handle can read shared
+   * cuts but hands every write on them to the lease holder.
+   */
+  sync?: OpenOptions["sync"];
 }
 
 export interface LocalCarton {
@@ -83,7 +89,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   const adapter = opts.adapter ?? (await defaultAdapter());
   let carton: Carton;
   try {
-    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName } : undefined });
+    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
   } catch (e) {
     await store.close();
     throw e;
