@@ -15,11 +15,13 @@
 // - `adopt` / `branchStatus` are the idempotent hand-off (§5.3); `fork` makes a server-side variant (O(1)).
 // - `keyframe` stores a state a replica uploaded when an ack asked for one (`keyframeWanted`).
 // - `presence` is relayed to the branch's other subscribers and never stored (§12).
+// - Any message over 1 MiB either way travels as an envelope through the blob store (`sync/envelope.ts`): a client's is
+//   opened (and its blob deleted) before the message is handled; the server's go to connections whose hello said
+//   `envelopes`, one upload per message however many connections it goes to, in order with the rest.
 
 import type { AuthContext, AuthProvider, BlobStore, SequencerConnection, SequencerStorage } from "@carton/core/plugins";
 import type { Change, CutRecord, Doc, Op, Rec, TimelineConfig } from "@carton/core";
-import { sequencer as rules, sha256Hex } from "@carton/core";
-import type { sync } from "@carton/core";
+import { sequencer as rules, sha256Hex, sync } from "@carton/core";
 import { Tables, type Row, type StoredBranch, FLAG_STRUCTURAL, FLAG_WITHDRAWN } from "./tables.ts";
 
 type ClientMessage = sync.ClientMessage;
@@ -46,6 +48,8 @@ export interface ConnectionState {
   subs: string[];
   /** The newest epoch a reject killed: messages of that epoch or older are ignored (§6.2 pipelining). */
   deadEpoch: number;
+  /** The client reads envelopes (its hello said so): messages over 1 MiB go to it as blob references. */
+  envelopes?: boolean;
 }
 
 /** A host's connection. `state`, when present, is where the sequencer keeps this connection's protocol state. */
@@ -77,6 +81,9 @@ export interface SequencerStats {
   keyframes: number;
   rowsRead: number;
   rowsWritten: number;
+  /** Envelopes opened (from clients) and sealed (to clients: one per message, however many connections). */
+  envelopesIn: number;
+  envelopesOut: number;
 }
 
 /** Controls for the conformance suite's negative tests and the P9 comparisons only. Never set them in a host. */
@@ -122,6 +129,10 @@ export interface SequencerOptions {
   catchupLimit?: number;
   /** Change bodies over this go to a blob (default 1 MB, §5.1). */
   maxInlineBytes?: number;
+  /** Messages over this many bytes travel as envelopes through `blobs` (default 1 MiB). */
+  envelopeBytes?: number;
+  /** The largest message read from a client's envelope (default 64 MiB; a Durable Object has 128 MB of memory). */
+  maxEnvelopeBytes?: number;
   clock?: () => number;
   onEvent?: (e: SequencerEvent) => void;
   controls?: SequencerControls;
@@ -147,10 +158,11 @@ export interface Sequencer {
    */
   archive(branchId: string, opts?: { keep?: number; segmentRows?: number }): Promise<number>;
   /**
-   * Periodic work, for a DO alarm or a Node timer: archive every branch's old rows to blob segments. Resolves with
-   * the rows moved and when to call again. A no-op without `blobs`.
+   * Periodic work, for a DO alarm or a Node timer: archive every branch's old rows to blob segments and delete
+   * envelope blobs past their keep. Resolves with the rows moved, the blobs swept and when to call again. A no-op
+   * without `blobs`.
    */
-  maintain(opts?: { keep?: number; segmentRows?: number }): Promise<{ archived: number; nextAt: number | null }>;
+  maintain(opts?: { keep?: number; segmentRows?: number }): Promise<{ archived: number; swept: number; nextAt: number | null }>;
   readonly stats: SequencerStats;
   /** The tables (read access for hosts' admin tools and tests). */
   readonly tables: Tables;
@@ -201,6 +213,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     get rowsWritten() {
       return opts.storage.stats?.().rowsWritten ?? tables.meter.rowsWritten;
     },
+    envelopesIn: 0,
+    envelopesOut: 0,
   };
   const emit = (e: SequencerEvent) => opts.onEvent?.(e);
 
@@ -211,9 +225,57 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     conns.set(c.id, c as HostConnection);
     stateOf(c as HostConnection);
   };
+
+  // ---------------------------------------------------------------- sending: in order, oversized ones as envelopes
+  const envelopeBytes = opts.envelopeBytes ?? sync.ENVELOPE_BYTES;
+  const outboxes = new Map<string, sync.Outbox<ServerMessage>>();
+  /** The envelope for `msg` when it is over the threshold (its upload started); null: it goes inline. */
+  function sealed(msg: ServerMessage): Promise<sync.EnvelopeMsg> | null {
+    if (!opts.blobs || !MAYBE_BIG.has(msg.type)) return null;
+    const big = sync.oversized(msg, envelopeBytes);
+    if (!big) return null;
+    stats.envelopesOut++;
+    const now = clock();
+    return sync.seal(big, opts.blobs, (sha) => sync.serverEnvelopeKey(sha, now));
+  }
+  /** Send on `c` after what was sent before; `env`: the envelope already made for this message (a fan-out's). */
+  function send(c: HostConnection, msg: ServerMessage, env?: Promise<sync.EnvelopeMsg> | null): void {
+    let out = outboxes.get(c.id);
+    if (!out) outboxes.set(c.id, (out = new sync.Outbox((m) => c.send(m))));
+    const e = stateOf(c).envelopes ? (env === undefined ? sealed(msg) : env) : null;
+    out.push(msg, e ?? undefined);
+  }
   const fanout = (branchId: string, msg: ServerMessage, except?: string) => {
-    for (const c of conns.values()) if (c.id !== except && stateOf(c).subs.includes(branchId)) c.send(msg);
+    let env: Promise<sync.EnvelopeMsg> | null | undefined; // made once, for the first subscriber that reads envelopes
+    for (const c of conns.values()) {
+      if (c.id === except || !stateOf(c).subs.includes(branchId)) continue;
+      if (stateOf(c).envelopes && env === undefined) env = sealed(msg);
+      send(c, msg, env ?? null);
+    }
   };
+  /** A client's envelope: its message, checked; its blob deleted (read once). Null after telling the client it was lost. */
+  async function openEnvelope(c: HostConnection, m: sync.EnvelopeMsg): Promise<ClientMessage | null> {
+    const lost = (why: string, reconnect: boolean) => {
+      send(c, { type: "error", reason: `envelope: ${why}`, ...(reconnect ? { reconnect: true } : {}) });
+      return null;
+    };
+    if (!opts.blobs) return lost("this server has no blob store", false);
+    const max = opts.maxEnvelopeBytes ?? 64 << 20;
+    // too big to read: dropped unread (resending it can't help, so no reconnect)
+    if (Number(m.ref?.size) > max) {
+      if (sync.envelopeKeyOk(m.ref, "client")) await opts.blobs.delete(m.ref.key).catch(() => {});
+      return lost(`${m.ref.size} bytes (the limit is ${max})`, false);
+    }
+    let inner: unknown;
+    try {
+      inner = await sync.unseal(m.ref, opts.blobs, { from: "client", maxBytes: max });
+    } catch (e) {
+      return lost(e instanceof Error ? e.message : String(e), true);
+    }
+    stats.envelopesIn++;
+    await opts.blobs.delete(m.ref.key).catch(() => {}); // read once; the sweep gets any delete that fails
+    return inner as ClientMessage;
+  }
   const credentialOf = (c: HostConnection) => (controls.bindRid === "connection" ? `conn:${c.id}` : c.auth.credential);
 
   const view = (branchId: string): rules.SequencerView => ({
@@ -409,7 +471,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     stats.rejectReasons[reason] = (stats.rejectReasons[reason] ?? 0) + 1;
     stateOf(c).deadEpoch = Math.max(stateOf(c).deadEpoch, epoch);
     emit({ type: "reject", branchId, id, reason });
-    c.send({ type: "reject", branchId, id, reason, head: tables.branch(branchId) ? tables.head(branchId) : 0, concurrent: [], epoch, ...extra });
+    send(c, { type: "reject", branchId, id, reason, head: tables.branch(branchId) ? tables.head(branchId) : 0, concurrent: [], epoch, ...extra });
   }
 
   /** The rid check (§6.3): a replica id belongs to the device credential that first used it. */
@@ -438,9 +500,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
     const b = tables.branch(m.branchId);
-    if (!b) return c.send({ type: "unknownBranch", branchId: m.branchId });
-    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return c.send({ type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
+    if (!b) return send(c, { type: "unknownBranch", branchId: m.branchId });
+    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
     const st = stateOf(c);
+    if (m.envelopes === true && opts.blobs) st.envelopes = true;
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
     if (controls.helloRidClaim !== false && controls.bindRid !== false && WRITE_ROLES.has(c.auth.role)) {
       const who = credentialOf(c);
@@ -465,7 +528,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (k && k.seq > from) {
         keyframe = await loadKeyframe(m.branchId, k);
         from = k.seq;
-      } else if (from < b.root) return c.send({ type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
+      } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
     const rows = await readRows(m.branchId, from, catchup);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
@@ -475,7 +538,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (last < head) msg.more = true;
     // fan-out starts with the last page: a subscriber still paging would get live rows ahead of its backlog (finding 3)
     else if (!st.subs.includes(m.branchId)) st.subs.push(m.branchId);
-    c.send(msg);
+    send(c, msg);
   }
 
   async function onPush(c: HostConnection, m: sync.PushMsg) {
@@ -483,7 +546,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (m.epoch <= st.deadEpoch) return; // a later change of a rejected chain: the client resubmits it
     const bad = writable(c, m.branchId);
     if (bad) return reject(c, m.branchId, m.changes?.[0]?.id, bad, m.epoch);
-    if (!st.subs.includes(m.branchId)) return c.send({ type: "error", reason: `push before hello on ${m.branchId}` });
+    if (!st.subs.includes(m.branchId)) return send(c, { type: "error", reason: `push before hello on ${m.branchId}` });
     for (const ch of Array.isArray(m.changes) ? m.changes : []) {
       stats.pushes++;
       if (typeof ch?.id !== "string") return reject(c, m.branchId, undefined, "bad change", m.epoch);
@@ -526,7 +589,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (verdict.kind === "duplicate") {
         stats.duplicates++;
         emit({ type: "duplicate", branchId: m.branchId, id: ch.id, seq: verdict.seq, withdrawn: verdict.withdrawn });
-        c.send({ type: "ack", branchId: m.branchId, id: ch.id, seq: verdict.seq, epoch: m.epoch, duplicate: true, ...(verdict.withdrawn ? { withdrawn: true } : {}) });
+        send(c, { type: "ack", branchId: m.branchId, id: ch.id, seq: verdict.seq, epoch: m.epoch, duplicate: true, ...(verdict.withdrawn ? { withdrawn: true } : {}) });
         continue;
       }
       if (verdict.kind === "reject") {
@@ -544,7 +607,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (verdict.lww) for (const o of verdict.overwrote) fanout(m.branchId, { type: "overwritten", branchId: m.branchId, id: o.id, by: row.id, author: row.author });
       const ack: sync.AckMsg = { type: "ack", branchId: m.branchId, id: ch.id, seq: row.seq, epoch: m.epoch };
       if (row.seq % KF === 0 && !tables.keyframeAt(m.branchId, row.seq)) ack.keyframeWanted = row.seq;
-      c.send(ack);
+      send(c, ack);
     }
   }
 
@@ -590,16 +653,16 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (dup) {
       stats.duplicates++;
       emit({ type: "duplicate", branchId: m.branchId, id: m.id, seq: dup.seq, withdrawn: dup.withdrawn });
-      return c.send({ type: "ack", branchId: m.branchId, id: m.id, seq: dup.seq, epoch: m.epoch, duplicate: true, ...(dup.withdrawn ? { withdrawn: true } : {}) });
+      return send(c, { type: "ack", branchId: m.branchId, id: m.id, seq: dup.seq, epoch: m.epoch, duplicate: true, ...(dup.withdrawn ? { withdrawn: true } : {}) });
     }
     stats.withdraws++;
     emit({ type: "withdraw", branchId: m.branchId, id: m.id, seq: row.seq });
     fanout(m.branchId, { type: "changes", branchId: m.branchId, rows: [row] });
-    c.send({ type: "ack", branchId: m.branchId, id: m.id, seq: row.seq, epoch: m.epoch, withdrawn: true });
+    send(c, { type: "ack", branchId: m.branchId, id: m.id, seq: row.seq, epoch: m.epoch, withdrawn: true });
   }
 
   async function onAdopt(c: HostConnection, m: sync.AdoptMsg) {
-    const fail = (reason: string) => c.send({ type: "adoptError", branchId: m.branchId, reason });
+    const fail = (reason: string) => send(c, { type: "adoptError", branchId: m.branchId, reason });
     if (typeof m.branchId !== "string" || !m.rec || m.rec.id !== m.branchId) return fail("rec.id must be the branchId"); // finding 1
     const closure = Array.isArray(m.closure) ? m.closure : [];
     if (!mayWrite(c, m.branchId) || closure.some((t) => !mayWrite(c, t?.branchId))) return fail("forbidden"); // finding 4
@@ -610,7 +673,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (b.adoptKey === key) {
         stats.adoptRepeats++;
         emit({ type: "adopt", branchId: m.branchId, n: m.n, repeat: true });
-        return c.send({ type: "adopted", branchId: m.branchId, since: m.n, repeat: true });
+        return send(c, { type: "adopted", branchId: m.branchId, since: m.n, repeat: true });
       }
       return fail("branch exists with another log");
     }
@@ -631,20 +694,20 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     });
     stats.adopts++;
     emit({ type: "adopt", branchId: m.branchId, n: m.n, repeat: false });
-    c.send({ type: "adopted", branchId: m.branchId, since: m.n });
+    send(c, { type: "adopted", branchId: m.branchId, since: m.n });
   }
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
     const b = tables.branch(m.branchId);
-    c.send({ type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 });
+    send(c, { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 });
   }
 
   async function onFork(c: HostConnection, m: sync.ForkMsg) {
-    if (!m.rec || m.rec.id !== m.branchId) return c.send({ type: "error", reason: "rec.id must be the branchId" }); // finding 1
-    if (!mayWrite(c, m.branchId)) return c.send({ type: "error", reason: "forbidden" }); // finding 4
+    if (!m.rec || m.rec.id !== m.branchId) return send(c, { type: "error", reason: "rec.id must be the branchId" }); // finding 1
+    if (!mayWrite(c, m.branchId)) return send(c, { type: "error", reason: "forbidden" }); // finding 4
     const parent = tables.branch(m.from);
-    if (!parent) return c.send({ type: "unknownBranch", branchId: m.from });
-    if (!(Number.isInteger(m.seq) && m.seq >= parent.root && m.seq <= tables.head(m.from))) return c.send({ type: "error", reason: `fork point ${m.seq} is outside ${m.from}` });
+    if (!parent) return send(c, { type: "unknownBranch", branchId: m.from });
+    if (!(Number.isInteger(m.seq) && m.seq >= parent.root && m.seq <= tables.head(m.from))) return send(c, { type: "error", reason: `fork point ${m.seq} is outside ${m.from}` });
     if (!tables.branch(m.branchId)) {
       // the state at the fork point, when the forking client sends it, is the fork's root keyframe: a fresh joiner
       // (have: -1) starts from it; without it a joiner must hold the parent (review finding 12)
@@ -652,10 +715,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       try {
         await createBranch(m.rec, { doc0: root ? root.doc : null, stateHash: root?.stateHash ?? "", forkOf: { branchId: m.from, seq: m.seq } });
       } catch (e) {
-        return c.send({ type: "error", reason: e instanceof Error ? e.message : String(e) });
+        return send(c, { type: "error", reason: e instanceof Error ? e.message : String(e) });
       }
     }
-    c.send({ type: "forked", branchId: m.branchId, from: m.from, seq: m.seq });
+    send(c, { type: "forked", branchId: m.branchId, from: m.from, seq: m.seq });
   }
 
   async function onKeyframe(c: HostConnection, m: sync.KeyframeMsg) {
@@ -678,12 +741,20 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (!stateOf(c).subs.includes(m.branchId)) return;
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
-    fanout(m.branchId, { type: "presence", branchId: m.branchId, actor, state: m.state ?? null }, c.id);
+    const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
+    // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
+    if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
+    fanout(m.branchId, msg, c.id);
   }
 
   async function process(c: HostConnection, msg: ClientMessage): Promise<void> {
-    if (opts.projectId !== undefined && c.auth.projectId !== opts.projectId) return c.send({ type: "error", reason: "this token is for another project" });
-    if (c.auth.expires < clock()) return c.send({ type: "error", reason: "token expired" });
+    if (opts.projectId !== undefined && c.auth.projectId !== opts.projectId) return send(c, { type: "error", reason: "this token is for another project" });
+    if (c.auth.expires < clock()) return send(c, { type: "error", reason: "token expired" });
+    if (msg?.type === "blob") {
+      const inner = await openEnvelope(c, msg);
+      if (!inner) return;
+      msg = inner;
+    }
     switch (msg?.type) {
       case "hello":
         return onHello(c, msg);
@@ -702,8 +773,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       case "presence":
         return onPresence(c, msg);
       default:
-        return c.send({ type: "error", reason: `unknown message type ${(msg as { type?: unknown })?.type}` });
+        return send(c, { type: "error", reason: `unknown message type ${(msg as { type?: unknown })?.type}` });
     }
+  }
+
+  /** Every send so far delivered (envelope uploads done): a host may hibernate once a message's handling resolves. */
+  async function flushed(): Promise<void> {
+    for (const o of outboxes.values()) if (o.pending) await o.flushed();
   }
 
   // one message at a time per project, even across awaits on the blob store
@@ -714,15 +790,16 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const c = conn as HostConnection;
       if (!conns.has(c.id)) attach(c);
       busy++;
-      const run = queue.then(() => process(c, msg));
+      const run = queue.then(() => process(c, msg)).then(flushed);
       queue = run.catch(() => {}).then(() => void busy--);
       return run.catch((e: unknown) => {
-        c.send({ type: "error", reason: `internal: ${e instanceof Error ? e.message : String(e)}` });
+        send(c, { type: "error", reason: `internal: ${e instanceof Error ? e.message : String(e)}` });
       });
     },
     attach,
     disconnect(conn) {
       conns.delete(conn.id);
+      outboxes.delete(conn.id);
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
@@ -763,10 +840,23 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       return run;
     },
     async maintain(o = {}) {
-      if (!opts.blobs) return { archived: 0, nextAt: null };
+      if (!opts.blobs) return { archived: 0, swept: 0, nextAt: null };
       let archived = 0;
       for (const id of tables.branchIds()) if (!tables.branch(id)?.tracking) archived += await this.archive(id, o);
-      return { archived, nextAt: clock() + MAINTAIN_EVERY_MS };
+      // envelope blobs past their keep (a client's the server never read, every server one after its hours)
+      let swept = 0;
+      const now = clock();
+      let cursor: string | undefined;
+      do {
+        const page = await opts.blobs.list("messages/", cursor ? { cursor } : {});
+        for (const b of page.blobs)
+          if (sync.envelopeExpired(b.key, now)) {
+            await opts.blobs.delete(b.key);
+            swept++;
+          }
+        cursor = page.cursor;
+      } while (cursor);
+      return { archived, swept, nextAt: now + MAINTAIN_EVERY_MS };
     },
     stats,
     tables,
@@ -774,6 +864,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 }
 
 const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
+/** Server messages that can be over the envelope threshold; the rest (acks, statuses, errors…) are never sized. */
+const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject"]);
 
 /** History fields a change may carry into its row (fold-ins, undo, partial accept, names): stored in the body. */
 const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "structural"] as const;

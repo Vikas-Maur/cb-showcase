@@ -4,7 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { defineSchema } from "../../src/schema.ts";
 import { timeAlgebra, hashDoc } from "../../src/engine/index.ts";
-import { ReplicaQueue, SyncClient, type ClientMessage, type ServerMessage } from "../../src/sync/index.ts";
+import { ReplicaQueue, SharedCut, SyncClient, type ClientMessage, type ServerMessage, type Timers } from "../../src/sync/index.ts";
 import type { TransportConnection } from "../../src/plugins.ts";
 import type { ConfirmedChange, Doc, Op } from "../../src/types.ts";
 
@@ -258,4 +258,35 @@ test("finding 20: a commit after catching up turns the status back to syncing un
   c.feed({ type: "ack", branchId: B, id, seq: 1, epoch: client.epoch });
   assert.equal(client.status, "up-to-date");
   client.stop();
+});
+
+test("a settled waitFor or connect clears its timer, so it never keeps a process (a `cb` write) alive", async () => {
+  const live = new Set<unknown>();
+  const timers: Timers = {
+    setTimeout(f, ms) {
+      const h = setTimeout(() => (live.delete(h), f()), ms);
+      if (ms >= 1000) live.add(h);
+      return h;
+    },
+    clearTimeout(h) {
+      live.delete(h);
+      clearTimeout(h as ReturnType<typeof setTimeout>);
+    },
+  };
+  const conns: Scripted[] = [];
+  const transport = { connect: async () => { const c = new Scripted(); conns.push(c); return c; } };
+  const cut = new SharedCut({ schema, branch: { id: B, name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, doc0: d0, transport, url: "x", token: "t", schemaVersion: 1, client: { timers, defer: (fn) => queueMicrotask(fn) } });
+  const joined = cut.connect({ nonce: "n", timeoutMs: 60_000 });
+  await tick();
+  conns[0]!.feed({ type: "hello", branchId: B, head: 0, rows: [], confirmed: [] });
+  assert.equal(await joined, true);
+  cut.commit({ id: "r1.1", author: me, ops: [set("c0", "name", "a")], at: 0 });
+  const out = cut.waitFor("r1.1", 60_000);
+  await flush();
+  const push = conns[0]!.last("push")!;
+  conns[0]!.feed({ type: "changes", branchId: B, rows: [rowOf(cut.queue, "r1.1", 1, push.changes[0]!.ops)] });
+  conns[0]!.feed({ type: "ack", branchId: B, id: "r1.1", seq: 1, epoch: push.epoch });
+  assert.deepEqual(await out, { status: "confirmed", id: "r1.1", seq: 1 });
+  assert.equal(live.size, 0, "no 60 s timer left running");
+  cut.close();
 });

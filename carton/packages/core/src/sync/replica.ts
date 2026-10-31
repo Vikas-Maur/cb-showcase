@@ -103,15 +103,21 @@ export class SharedCut {
     const v = this.queue.versionId(this.branchId, id);
     if (v && !v.provisional) return Promise.resolve({ status: "confirmed", id, seq: Number(v.id.slice(v.id.lastIndexOf("@") + 1)) });
     return new Promise((res) => {
-      const list = this.waiters.get(id) ?? [];
-      list.push(res);
-      this.waiters.set(id, list);
-      this.timers().setTimeout(() => {
+      const t = this.timers();
+      // the timer is cleared once the outcome arrives, so a settled wait never keeps a process (a `cb` write) alive
+      const done = (o: WriteOutcome) => {
+        t.clearTimeout(timer);
+        res(o);
+      };
+      const timer = t.setTimeout(() => {
         const l = this.waiters.get(id);
-        if (!l?.includes(res)) return;
-        l.splice(l.indexOf(res), 1);
+        if (!l?.includes(done)) return;
+        l.splice(l.indexOf(done), 1);
         res({ status: "pending", id });
       }, ms);
+      const list = this.waiters.get(id) ?? [];
+      list.push(done);
+      this.waiters.set(id, list);
     });
   }
 

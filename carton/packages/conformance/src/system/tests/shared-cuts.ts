@@ -5,16 +5,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sync, type Doc, type Op } from "@carton/core";
-import type { AuthContext, AuthProvider, Transport } from "@carton/core/plugins";
+import type { AuthContext, AuthProvider, BlobStore, Transport } from "@carton/core/plugins";
 import { createInProcessHost, type InProcessHost } from "@carton/server";
 import { cardboard, withKeys } from "../../engine/fixtures/cardboard-schema.ts";
-import { sqliteStorage } from "../sqlite.ts";
+import { suiteStorage } from "../helpers.ts";
 
-const clip = (id: string, s: number, e: number) => ({ id, trackId: "V1", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: e - s, opacity: 1 });
-const set = (id: string, f: string, v: unknown): Op => ({ op: "set", path: ["timelineItems", id, f], value: v });
-const item = (d: Doc, id: string) => (d.timelineItems as Record<string, unknown>[]).find((i) => i.id === id)!;
+export const clip = (id: string, s: number, e: number) => ({ id, trackId: "V1", type: "video", name: id, startTime: s, endTime: e, trimStart: 0, trimEnd: e - s, opacity: 1 });
+export const set = (id: string, f: string, v: unknown): Op => ({ op: "set", path: ["timelineItems", id, f], value: v });
+export const item = (d: Doc, id: string) => (d.timelineItems as Record<string, unknown>[]).find((i) => i.id === id)!;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until(pred: () => boolean, ms = 5000, what = "condition"): Promise<void> {
+export async function until(pred: () => boolean, ms = 5000, what = "condition"): Promise<void> {
   const end = Date.now() + ms;
   while (!pred()) {
     if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
@@ -38,17 +38,31 @@ function withLatency(t: Transport, ms: number): Transport {
   };
 }
 
-async function setup({ latencyMs = 0 } = {}) {
+/**
+ * An in-process host on the suite's storage with cut `cut-main` (three clips on V1) and two replicas, alice and bob,
+ * connected. `replica(name)` makes another (connect it yourself). `blobs`: the host's blob store, which the replicas
+ * use for envelopes too unless `clientBlobs` is false.
+ */
+export async function sharedCutWorld({ latencyMs = 0, blobs, clientBlobs = true }: { latencyMs?: number; blobs?: BlobStore; clientBlobs?: boolean } = {}) {
   const tokens = new Map<string, AuthContext>();
   const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
-  const host: InProcessHost = createInProcessHost({ storage: sqliteStorage(), auth });
+  const host: InProcessHost = createInProcessHost({ storage: suiteStorage(), auth, ...(blobs ? { blobs } : {}) });
   const d0 = withKeys({ name: "e2e", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: [clip("c0", 0, 5), clip("c1", 5, 10), clip("c2", 10, 15)] });
   const branch = { id: "cut-main", name: "Main cut", kind: "main", sequencer: { kind: "server" as const, since: 0 } };
   await host.sequencer.createBranch({ id: branch.id, name: branch.name, forkOf: null, owner: "alice", kind: "main", sequencer: { kind: "server", since: 0 } }, { doc0: d0 });
   const replica = (name: string) => {
     const token = `tok-${name}`;
     tokens.set(token, { account: name, credential: `${name}/install`, role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
-    const cut = new sync.SharedCut({ schema: cardboard, branch, doc0: d0, transport: latencyMs ? withLatency(host.transport, latencyMs) : host.transport, url: host.url, token, schemaVersion: 1 });
+    const cut = new sync.SharedCut({
+      schema: cardboard,
+      branch,
+      doc0: d0,
+      transport: latencyMs ? withLatency(host.transport, latencyMs) : host.transport,
+      url: host.url,
+      token,
+      schemaVersion: 1,
+      ...(blobs && clientBlobs ? { client: { blobs } } : {}),
+    });
     const events: sync.SharedCutEvent[] = [];
     cut.on((e) => events.push(e));
     let n = 0;
@@ -63,12 +77,18 @@ async function setup({ latencyMs = 0 } = {}) {
   const a = replica("alice"), b = replica("bob");
   assert.ok(await a.cut.connect({ nonce: "na" }), "alice caught up");
   assert.ok(await b.cut.connect({ nonce: "nb" }), "bob caught up");
-  return { host, a, b, d0, branch, close: async () => { a.cut.close(); b.cut.close(); await host.close(); } };
+  const extra: ReturnType<typeof replica>[] = [];
+  const more = (name: string) => {
+    const r = replica(name);
+    extra.push(r);
+    return r;
+  };
+  return { host, a, b, d0, branch, replica: more, close: async () => { for (const r of [a, b, ...extra]) r.cut.close(); await host.close(); } };
 }
 
 export function register(): void {
   test("shared cuts end to end: a commit goes pending, then confirmed; both replicas end on one log", async () => {
-    const { a, b, close } = await setup();
+    const { a, b, close } = await sharedCutWorld();
     try {
       const id = a.commit([set("c0", "name", "intro")]);
       assert.equal(a.cut.queue.pending("cut-main").length, 1, "pending at once");
@@ -86,7 +106,7 @@ export function register(): void {
   });
 
   test("shared cuts end to end: concurrent edits of one clip rebase and compose (trim-in ∘ trim-out)", async () => {
-    const { a, b, close } = await setup();
+    const { a, b, close } = await sharedCutWorld();
     try {
       const ia = a.commit([set("c1", "endTime", 9.5), set("c1", "trimEnd", 4.5)]);
       const ib = b.commit([set("c1", "startTime", 5.5), set("c1", "trimStart", 0.5)]);
@@ -103,7 +123,7 @@ export function register(): void {
   });
 
   test("shared cuts end to end: a clash becomes a card on the side the sequencer ordered second; the first edit stands", async () => {
-    const { a, b, close } = await setup({ latencyMs: 30 });
+    const { a, b, close } = await sharedCutWorld({ latencyMs: 30 });
     try {
       // Both move c2's end, differently, in the same tick; with 30 ms from server to replica, both are pushed on base 0
       // before either sees the other's row. The same time-group fields, so the second push to arrive is rejected
@@ -128,7 +148,7 @@ export function register(): void {
   });
 
   test("shared cuts end to end: an offline queue drains on reconnect", async () => {
-    const { a, b, close } = await setup();
+    const { a, b, close } = await sharedCutWorld();
     try {
       await b.cut.disconnect({ drain: true });
       const ids = [b.commit([set("c0", "opacity", 0.5)], "lww"), b.commit([set("c1", "name", "b1")]), b.commit([set("c2", "name", "b2")])];
@@ -146,7 +166,7 @@ export function register(): void {
   });
 
   test("shared cuts end to end: presence reaches the other replica with its cut, and is never stored", async () => {
-    const { host, a, b, close } = await setup();
+    const { host, a, b, close } = await sharedCutWorld();
     try {
       a.cut.sendPresence({ kind: "human", id: "alice" }, { at: 3.5, dragging: true });
       await until(() => b.events.some((e) => e.type === "presence"), 2000, "presence at bob");

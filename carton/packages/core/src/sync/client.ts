@@ -13,13 +13,15 @@
 //   lease it stops for good and never touches the queue again.
 // - Hand-off (§5.3): while the branch is `handingOff`, ask `branchStatus` first; upload only if the server doesn't have
 //   the branch; become `server{since: n}` only on the server's answer. Never resume local sequencing alone.
+// - With a blob store (`blobs`), any message over 1 MiB either way travels as an envelope (`envelope.ts`), in order.
 
-import type { TransportConnection } from "../plugins.ts";
+import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
 import type { AdoptMsg, ClientMessage, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
+import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, oversized, seal, unseal } from "./envelope.ts";
 import type { ConfirmedId } from "./messages.ts";
 
 export type SyncStatus = "offline" | "connecting" | "syncing" | "up-to-date" | "stopped";
@@ -73,6 +75,14 @@ export interface SyncClientOptions {
   /** Fault injection for tests: rewrite each change just before it is sent. */
   tamper?: (ch: Change) => Change;
   clock?: () => number;
+  /**
+   * The blob store the host's sequencer uses (or a client for it): messages over `envelopeBytes` (1 MiB) either way
+   * travel through it as envelopes. Without it every message goes inline, whatever its size.
+   */
+  blobs?: BlobStore;
+  envelopeBytes?: number;
+  /** The largest message this client fetches from an envelope (default 1 GiB). */
+  maxEnvelopeBytes?: number;
 }
 
 let CONN = 0;
@@ -86,6 +96,8 @@ export class SyncClient {
   epoch = 0;
   private conn: TransportConnection | null = null;
   private connId = 0;
+  /** The current connection's outgoing side: keeps order around envelope uploads. */
+  private out: Outbox<ClientMessage> | null = null;
   stopped = false;
   stopReason: string | null = null;
   caughtUp = false;
@@ -103,7 +115,7 @@ export class SyncClient {
   /** For hand-off tests: upload again on the next connection instead of asking `branchStatus` first. */
   reuploadOnReconnect = false;
   tamper: ((ch: Change) => Change) | undefined;
-  readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0 };
+  readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0, envelopesSent: 0, envelopesReceived: 0 };
 
   private unsubscribe: (() => void) | null = null;
 
@@ -164,8 +176,16 @@ export class SyncClient {
   whenCaughtUp(timeoutMs: number): Promise<boolean> {
     if (this.online) return Promise.resolve(true);
     return new Promise((res) => {
-      this.waiters.push(res);
-      this.timers.setTimeout(() => res(this.online), timeoutMs);
+      // cleared once answered: a settled wait never keeps the process alive
+      const timer = this.timers.setTimeout(() => {
+        this.waiters = this.waiters.filter((w) => w !== done);
+        res(this.online);
+      }, timeoutMs);
+      const done = (ok: boolean) => {
+        this.timers.clearTimeout(timer);
+        res(ok);
+      };
+      this.waiters.push(done);
     });
   }
   /** Run `fn` only while this client holds the lease; otherwise stop for good (R5-06). */
@@ -208,7 +228,20 @@ export class SyncClient {
         this.noKeyframe = false;
         this.stats.reconnects++;
         const id = this.connId;
-        c.onMessage((m) => this.onMessage(id, m));
+        const conn = c;
+        this.out = new Outbox((m) => conn.send(m));
+        const blobs = this.o.blobs;
+        const inbox = new Inbox<ServerMessage>({
+          deliver: (m) => this.onMessage(id, m),
+          open: async (ref) => {
+            if (!blobs) throw new Error("an envelope, and no blob store to read it from");
+            const m = await unseal(ref, blobs, { from: "server", maxBytes: this.o.maxEnvelopeBytes ?? 1 << 30 });
+            this.stats.envelopesReceived++;
+            return m;
+          },
+          fail: (e) => this.drop(id, `envelope: ${e instanceof Error ? e.message : String(e)}`),
+        });
+        c.onMessage((m) => inbox.receive(m));
         c.onClose((why) => this.onClose(id, why));
         this.setStatus("syncing");
         this.onOpen();
@@ -228,8 +261,21 @@ export class SyncClient {
     this.emit({ type: "offline", why });
     if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.o.backoffMs ?? 500);
   }
+  /** Drop connection `id` (a lost message: the server couldn't read an envelope, or we couldn't): reconnect, catch up. */
+  private drop(id: number, why: string): void {
+    const c = this.conn;
+    if (id !== this.connId || !c) return;
+    this.onClose(id, why);
+    c.close();
+  }
   private send(m: ClientMessage): void {
-    this.conn?.send(m);
+    if (!this.conn || !this.out) return;
+    const blobs = this.o.blobs;
+    const big = blobs ? oversized(m, this.o.envelopeBytes ?? ENVELOPE_BYTES) : null;
+    if (!big) return this.out.push(m);
+    this.stats.envelopesSent++;
+    const now = (this.o.clock ?? Date.now)();
+    this.out.push(m, seal(big, blobs!, (sha) => clientEnvelopeKey(sha, now)));
   }
   private onOpen(): void {
     const br = this.queue.branch(this.branchId);
@@ -252,6 +298,7 @@ export class SyncClient {
     }
     const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
     if (this.noKeyframe) m.noKeyframe = true;
+    if (this.o.blobs) m.envelopes = true;
     return m;
   }
   private adoptKey(): string | null {
@@ -401,6 +448,7 @@ export class SyncClient {
       case "adoptError":
         return this.emit({ type: "error", error: m.reason });
       case "error":
+        if (m.reconnect) this.drop(id, m.reason);
         return this.emit({ type: "error", error: m.reason });
     }
   }
