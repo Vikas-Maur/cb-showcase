@@ -20,14 +20,17 @@ let segs: { path: string; durationSec: number }[] = [];
 let initPath = "";
 before(() => {
   if (!haveFfmpeg()) return;
+  // ffmpeg runs IN the scratch folder with relative output names, as segment-encoder.ts does: ffmpeg 8's hlsenc.c finds
+  // the init segment's folder with strrchr(playlist, '/') only, so with a Windows path (backslashes) it wrote init.mp4
+  // into its own current folder instead (CI #20).
   execFileSync(FFMPEG, [
     "-hide_banner", "-v", "error", "-y",
     "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=30:duration=6", "-f", "lavfi", "-i", "sine=duration=6",
     "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", "-force_key_frames", "expr:gte(t,n_forced*2)",
     "-c:a", "aac", "-shortest",
     "-f", "hls", "-hls_time", "2", "-hls_playlist_type", "vod", "-hls_segment_type", "fmp4",
-    "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", join(s.dir, "seg_%03d.m4s"), join(s.dir, "index.m3u8"),
-  ]);
+    "-hls_fmp4_init_filename", "init.mp4", "-hls_segment_filename", "seg_%03d.m4s", "index.m3u8",
+  ], { cwd: s.dir, windowsHide: true });
   initPath = join(s.dir, "init.mp4");
   const lines = readFileSync(join(s.dir, "index.m3u8"), "utf8").split("\n");
   for (let i = 0; i < lines.length; i++) {
