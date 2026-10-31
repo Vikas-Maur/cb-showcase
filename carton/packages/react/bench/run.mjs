@@ -34,6 +34,7 @@ if (process.argv.includes("--cell")) {
       const b = window.__bench;
       if (c.kind === "list") return b.list(c.n, c.full);
       if (c.kind === "live") return b.live(c.seconds, c.vps, c.burst);
+      if (c.kind === "idle") return b.idle(c.seconds);
       return b.play(c.shots, c.seconds);
     }, cell);
     console.log(JSON.stringify({ ...cell, load1: load, uptime: spawnSync("uptime").stdout.toString().trim(), result, errors }));
@@ -45,8 +46,9 @@ if (process.argv.includes("--cell")) {
 
 // ------------------------------------------------------------ the runner
 const runs = Number(arg("--runs", "3"));
-const only = (arg("--only", "list,live,play") ?? "").split(",");
+const only = (arg("--only", "idle,list,live,play") ?? "").split(",");
 const cells = [];
+if (only.includes("idle")) cells.push({ kind: "idle", seconds: 5 });
 if (only.includes("list"))
   for (const [n, full] of [[10_000, false], [100_000, false], [10_000, true]]) cells.push({ kind: "list", n, full });
 if (only.includes("live")) cells.push({ kind: "live", seconds: 8, vps: 10, burst: 5 });
@@ -57,7 +59,8 @@ for (let r = 0; r < runs; r++)
   for (const c of cells)
     for (const runtime of r % 2 ? ["preact", "react"] : ["react", "preact"]) {
       const cell = { ...c, runtime, run: r };
-      const p = spawnSync("flock", [LOCK, process.execPath, fileURLToPath(import.meta.url), "--cell", JSON.stringify(cell)], { env: process.env, encoding: "utf8", timeout: 240_000 });
+      // The wait for the shared lock can be long (other agents' benchmarks): only the cell itself has a time limit.
+      const p = spawnSync("flock", [LOCK, "timeout", "300", process.execPath, fileURLToPath(import.meta.url), "--cell", JSON.stringify(cell)], { env: process.env, encoding: "utf8" });
       const line = (p.stdout ?? "").trim().split("\n").pop();
       if (!line || p.status !== 0) {
         console.error(`cell failed: ${JSON.stringify(cell)}\n${p.stderr}`);
@@ -67,7 +70,9 @@ for (let r = 0; r < runs; r++)
       const j = JSON.parse(line);
       const s = j.result;
       const brief =
-        c.kind === "list"
+        c.kind === "idle"
+          ? `empty page: frames p50 ${s.frames.stats.p50.toFixed(1)} p99 ${s.frames.stats.p99.toFixed(1)} ms, ${s.frames.stats.frames} frames in ${s.seconds} s`
+          : c.kind === "list"
           ? `mount ${s.mountMs.toFixed(1)} ms, ${s.rowsInDom} rows in DOM, scroll p50 ${s.scroll.stats.p50.toFixed(1)} p99 ${s.scroll.stats.p99.toFixed(1)} ms`
           : c.kind === "live"
             ? `+${s.versionsAdded} versions, frames p99 ${s.frames.stats.p99.toFixed(1)} ms, renders ${JSON.stringify(s.renders)}`

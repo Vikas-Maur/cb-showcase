@@ -194,5 +194,12 @@ async function play(shots: number, seconds: number) {
   return { shots, seconds, frameCalls, stillPlaying: playing === "Pause", renders: { ...renders }, frames };
 }
 
-(window as unknown as Record<string, unknown>).__bench = { list, live, play, runtime };
+/** What the browser gives an empty page: the frame-rate ceiling every other number is read against. */
+async function idle(seconds: number) {
+  const stop = recordFrames();
+  await sleep(seconds * 1000);
+  return { seconds, frames: stop() };
+}
+
+(window as unknown as Record<string, unknown>).__bench = { list, live, play, idle, runtime };
 (window as unknown as Record<string, unknown>).__benchReady = true;
