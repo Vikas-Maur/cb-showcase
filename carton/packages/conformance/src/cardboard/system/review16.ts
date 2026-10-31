@@ -1,8 +1,9 @@
 // Regressions found by review round 16 (GPT 6.1 Sol), on the real engine, history and materializer. Round 15 built a
 // state on a save that repeated a hidden edit at the save's own commit, on the cut the commit went to, and printed the
 // view again there. The cut was the one current at the commit call, so a retry answered by id (core's dedup spans every
-// cut) after a switch named the other cut; and the reprint dropped the base of a save the agent wrote on the print it
-// had saved, so one landing while the reprint rendered was taken against that print's state (a spurious card).
+// cut) after a switch named the other cut; and a save the agent wrote on the print it had saved, landing while the
+// reprint rendered, was taken against that print's state (a spurious card). Such a save is refused "re-print" (round 17:
+// no base describes it).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -57,7 +58,7 @@ test("review 16 #1: a save committed on Main, its result lost, retried after a s
 });
 
 for (const race of [false, true])
-  test(`review 16 #2: a save written on the print it saved${race ? ", landing while the reprint renders" : ", after the reprint"}: based on that save, no spurious card [real engine]`, async (t) => {
+  test(`review 16 #2, round 17: a save written on the print a reprint replaced${race ? ", landing while the reprint renders" : ", after the reprint"}: refused "re-print", no card; redone after a print, it lands [real engine]`, async (t) => {
     let during: (() => Promise<void>) | null = null;
     const codec: TimelineCodec = {
       ...jsonTimelineCodec,
@@ -98,28 +99,32 @@ for (const race of [false, true])
       await remoteThenSecond();
       await w.tick(1000);
     }
-    assert.equal(reprints, 2, "printed again at each save's commit");
+    w.engine.pin = pin;
+    assert.equal(reprints, 1, "printed again once, at the first save's commit");
     const head = await w.head();
-    assert.deepEqual([find(head, "a").name, find(head, "a").opacity, find(head, "c").name], ["mine", 0.8, "remote rename"]);
-    assert.deepEqual(w.mz.log.cards, [], "0.5 is B's own saved value, not an edit of the print's 1");
+    assert.deepEqual([find(head, "a").name, find(head, "a").opacity, find(head, "c").name], ["a", 0.8, "remote rename"], "the second save is not applied");
+    assert.deepEqual(w.mz.log.cards, [], "no card: neither 0.5 (B's own saved value) nor anything else");
     assert.deepEqual(w.mz.log.errors, []);
-    const shown = parseFile(fs.readFileSync(w.abs(vb), "utf8")).items;
-    assert.deepEqual([find(shown, "a").name, find(shown, "a").opacity], ["mine", 0.8], "the view shows the second save's commit");
-    // a third save from B's buffer (the first print still): based on the second save
-    const third = structuredClone(second);
-    find(third, "c").startTime = 16;
-    find(third, "c").endTime = 26;
-    w.writeAtomic(vb, render(v0, third));
-    await w.tick(1000);
-    // and a save of the file as printed now
-    const r = await B.read(vb);
-    await B.editUntilDone(vb, (its) => void (find(its, "a").name = "mine again"));
+    const status = JSON.parse(fs.readFileSync(w.abs(statusPath(name)), "utf8"));
+    assert.equal(status.status, "error");
+    assert.match(status.error, /state unknown: re-print .*cb source print --view vb/);
+    // as the status says: print the view again, redo the edit
+    await w.mz.printView("vb", B.actor, { hooked: true });
+    await B.read(vb);
+    await B.editUntilDone(vb, (its) => void (find(its, "a").name = "mine"));
     await w.tick(1000);
     const end = await w.head();
-    assert.deepEqual([find(end, "a").name, find(end, "a").opacity, find(end, "c").startTime], ["mine again", 0.8, 16]);
-    assert.ok(r.items.length);
+    assert.deepEqual([find(end, "a").name, find(end, "a").opacity, find(end, "c").name], ["mine", 0.8, "remote rename"]);
     assert.deepEqual(w.mz.log.cards, []);
     assert.deepEqual(w.mz.log.errors, []);
     assert.equal(JSON.parse(fs.readFileSync(w.abs(statusPath(name)), "utf8")).status, "confirmed");
+    // the replaced print stays refused after the new print: B's old buffer once more
+    const third = structuredClone(second);
+    find(third, "c").startTime = 16;
+    w.writeAtomic(vb, render(v0, third));
+    await w.tick(1000);
+    assert.equal(find(await w.head(), "c").startTime, 15);
+    assert.match(JSON.parse(fs.readFileSync(w.abs(statusPath(name)), "utf8")).error, /state unknown: re-print/);
+    assert.deepEqual(w.mz.log.cards, []);
     await B.stop();
   });

@@ -143,108 +143,147 @@ test("H-SV: server-cloudflare's room accepts Cardboard's schema version unset an
 /**
  * The SCHEMA_VERSION values a wrangler.toml pins for the Worker: every key whose full path is `vars.SCHEMA_VERSION` or
  * `env.<name>.vars.SCHEMA_VERSION`, however TOML spells it: under a table header, as a dotted key, inside an inline table,
- * with bare, "basic" or 'literal' key parts (round 16 #3: a quoted key). Enough TOML for a config: one key per line,
- * comments, string or bare values, arrays and multi-line strings skipped.
+ * with bare, "basic" or 'literal' key parts (round 16 #3), with any string form or a bare value (round 17 #5: escapes
+ * read once, multi-line strings). Arrays (one line or several, nested, holding tables) are values, never pins, and the
+ * keys after them are still read. Enough TOML (1.0) for a config; invalid TOML is skipped a line at a time.
  */
 export function pinnedSchemaVersions(toml: string): { table: string; value: string }[] {
   const out: { table: string; value: string }[] = [];
-  const found = (path: string[], value: string) => {
+  const found = (path: string[] | null, value: string) => {
+    if (!path || path[path.length - 1] !== "SCHEMA_VERSION") return;
     const t = path.slice(0, -1);
-    if (path[path.length - 1] !== "SCHEMA_VERSION") return;
     if ((t.length === 1 && t[0] === "vars") || (t.length === 3 && t[0] === "env" && t[2] === "vars")) out.push({ table: t.join("."), value });
   };
-  let table: string[] = [];
-  let multi: string | null = null; // inside a multi-line string: its closing delimiter
-  for (const line of toml.split(/\r?\n/)) {
-    if (multi) {
-      if (line.includes(multi)) multi = null;
-      continue;
+  const s = toml;
+  let i = 0;
+  const ws = () => {
+    while (s[i] === " " || s[i] === "\t") i++;
+  };
+  /** Whitespace, newlines and comments (between values in an array; between lines). */
+  const wsnl = () => {
+    for (;;) {
+      ws();
+      if (s[i] === "#") while (i < s.length && s[i] !== "\n") i++;
+      else if (s[i] === "\r" || s[i] === "\n") i++;
+      else return;
     }
-    let i = 0;
-    const ws = () => {
-      while (line[i] === " " || line[i] === "\t") i++;
-    };
-    const str = (): string | null => {
-      const q = line[i];
-      if (q === "'") {
-        const j = line.indexOf("'", i + 1);
-        if (j < 0) return null;
-        const s = line.slice(i + 1, j);
-        i = j + 1;
-        return s;
+  };
+  const escape = (): string => {
+    const c = s[i + 1] ?? "";
+    i += 2;
+    if (c === "u" || c === "U") {
+      const n = c === "u" ? 4 : 8;
+      const v = String.fromCodePoint(parseInt(s.slice(i, i + n), 16) || 0);
+      i += n;
+      return v;
+    }
+    return ({ n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", e: "\x1b" } as Record<string, string>)[c] ?? c;
+  };
+  const str = (): string | null => {
+    const q3 = s.startsWith('"""', i) ? '"""' : s.startsWith("'''", i) ? "'''" : null;
+    if (q3) {
+      i += 3;
+      if (s[i] === "\n") i++;
+      else if (s.startsWith("\r\n", i)) i += 2;
+      let v = "";
+      while (i < s.length) {
+        if (s.startsWith(q3, i)) {
+          let j = i + 3;
+          while (s[j] === q3[0] && j - i < 5) j++; // up to two quotes before the delimiter are content
+          v += s.slice(i, j - 3);
+          i = j;
+          return v;
+        }
+        if (q3 === '"""' && s[i] === "\\") {
+          let j = i + 1;
+          while (s[j] === " " || s[j] === "\t") j++;
+          if (s[j] === "\n" || s.startsWith("\r\n", j)) {
+            for (i = j; s[i] === " " || s[i] === "\t" || s[i] === "\r" || s[i] === "\n"; i++); // a line-ending backslash
+            continue;
+          }
+          v += escape();
+          continue;
+        }
+        v += s[i++];
       }
-      if (q !== '"') return null;
-      let s = "";
-      for (i++; i < line.length && line[i] !== '"'; i++) {
-        if (line[i] !== "\\") s += line[i];
-        else if (line[i + 1] === "u" || line[i + 1] === "U") {
-          const n = line[i + 1] === "u" ? 4 : 8;
-          s += String.fromCodePoint(parseInt(line.slice(i + 2, i + 2 + n), 16));
-          i += 1 + n;
-        } else s += ({ n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" } as Record<string, string>)[line[i + 1]!] ?? line[++i];
+      return null;
+    }
+    const q = s[i];
+    if (q !== '"' && q !== "'") return null;
+    let v = "";
+    for (i++; i < s.length && s[i] !== q && s[i] !== "\n"; ) v += q === '"' && s[i] === "\\" ? escape() : s[i++];
+    if (s[i] !== q) return null;
+    i++;
+    return v;
+  };
+  const key = (): string[] | null => {
+    const parts: string[] = [];
+    for (;;) {
+      ws();
+      let part: string | null = null;
+      if ((s[i] === '"' || s[i] === "'") && !s.startsWith(s[i]!.repeat(3), i)) part = str();
+      else {
+        const m = /^[A-Za-z0-9_-]+/.exec(s.slice(i, i + 256));
+        if (m) [part, i] = [m[0], i + m[0].length];
       }
-      if (line[i] !== '"') return null;
+      if (part === null) return null;
+      parts.push(part);
+      ws();
+      if (s[i] !== ".") return parts;
       i++;
-      return s;
-    };
-    const key = (): string[] | null => {
-      const parts: string[] = [];
+    }
+  };
+  /** Reads one value; a pin if `path` names one (null: inside an array, never a pin). */
+  const value = (path: string[] | null): boolean => {
+    ws();
+    if (s[i] === "{") {
+      i++;
       for (;;) {
         ws();
-        let part: string | null = null;
-        if (line[i] === '"' || line[i] === "'") part = str();
-        else {
-          const m = /^[A-Za-z0-9_-]+/.exec(line.slice(i));
-          if (m) [part, i] = [m[0], i + m[0].length];
-        }
-        if (part === null) return null;
-        parts.push(part);
+        if (s[i] === "}") return (i++, true);
+        const k = key();
+        if (!k || (ws(), s[i] !== "=")) return false;
+        i++;
+        if (!value(path && [...path, ...k])) return false;
         ws();
-        if (line[i] !== ".") return parts;
-        i++;
+        if (s[i] === ",") i++;
+        else if (s[i] !== "}") return false;
       }
-    };
-    const value = (path: string[]): boolean => {
-      ws();
-      if (line[i] === "{") {
-        i++;
-        for (;;) {
-          ws();
-          if (line[i] === "}") return (i++, true);
-          const k = key();
-          if (!k || (ws(), line[i] !== "=")) return false;
-          i++;
-          if (!value([...path, ...k])) return false;
-          ws();
-          if (line[i] === ",") i++;
-          else if (line[i] !== "}") return false;
-        }
-      }
-      for (const q of ['"""', "'''"]) {
-        if (!line.startsWith(q, i)) continue;
-        if (line.indexOf(q, i + 3) < 0) multi = q;
-        return false; // never a schema version
-      }
-      if (line[i] === '"' || line[i] === "'") {
-        const s = str();
-        return s !== null && (found(path, s), true);
-      }
-      const m = /^[^\s,}#[\]]+/.exec(line.slice(i)); // a number, boolean or date; an array is skipped
-      return !!m && ((i += m[0].length), found(path, m[0]), true);
-    };
-    ws();
-    if (line[i] === "[") {
-      const array = line[i + 1] === "[";
-      i += array ? 2 : 1;
-      const k = key();
-      if (k && line[i] === "]") table = k;
-      continue;
     }
-    const k = key();
-    if (k && (ws(), line[i] === "=")) {
+    if (s[i] === "[") {
       i++;
-      value([...table, ...k]);
+      for (;;) {
+        wsnl();
+        if (s[i] === "]") return (i++, true);
+        if (!value(null)) return false;
+        wsnl();
+        if (s[i] === ",") i++;
+        else if (s[i] !== "]") return false;
+      }
     }
+    if (s[i] === '"' || s[i] === "'") {
+      const v = str();
+      return v !== null && (found(path, v), true);
+    }
+    const m = /^[^\s,{}#[\]]+/.exec(s.slice(i, i + 256)); // a number, boolean or date
+    return !!m && ((i += m[0].length), found(path, m[0]), true);
+  };
+  let table: string[] = [];
+  while (i < s.length) {
+    wsnl();
+    if (i >= s.length) break;
+    if (s[i] === "[") {
+      i += s[i + 1] === "[" ? 2 : 1;
+      const k = key();
+      if (k && s[i] === "]") table = k;
+    } else {
+      const k = key();
+      if (k && (ws(), s[i] === "=")) {
+        i++;
+        value([...table, ...k]);
+      }
+    }
+    while (i < s.length && s[i] !== "\n") i++; // the rest of the line (a comment; or what didn't parse)
   }
   return out;
 }
@@ -300,4 +339,28 @@ test("H-SV: wrangler.toml's SCHEMA_VERSION however TOML spells its key: quoted, 
     "[env.a.b.vars]",
     'SCHEMA_VERSION = "0"',
   ]), [], "never a multi-line string's text, an array, or another table's key");
+});
+
+test("H-SV: wrangler.toml's SCHEMA_VERSION after an array, in a multi-line string, with escapes (round 17 #5)", () => {
+  const pins = (lines: string[]) => pinnedSchemaVersions(lines.join("\n"));
+  assert.deepEqual(pins(['vars = { OTHER = ["x"], SCHEMA_VERSION = "1" }']), [{ table: "vars", value: "1" }], "an array before it in an inline table");
+  assert.deepEqual(pins([
+    "[vars]",
+    "LIST = [",
+    "  [1, [2]], # nested",
+    '  { SCHEMA_VERSION = "0" }, # a table in an array is no pin',
+    '  "]", \'[\',',
+    "]",
+    'SCHEMA_VERSION = "1"',
+  ]), [{ table: "vars", value: "1" }], "a multi-line array before it");
+  assert.deepEqual(pins(["[vars]", 'SCHEMA_VERSION = """1"""', "[env.a.vars]", "SCHEMA_VERSION = '''2'''", "[env.b.vars]", 'SCHEMA_VERSION = """', '3"""', "[env.c.vars]", 'SCHEMA_VERSION = """\\', "   4\"\"\""]), [
+    { table: "vars", value: "1" },
+    { table: "env.a.vars", value: "2" },
+    { table: "env.b.vars", value: "3" },
+    { table: "env.c.vars", value: "4" },
+  ], "multi-line strings");
+  assert.deepEqual(pins(["[vars]", 'SCHEMA_VERSION = "\\t2"', "[env.u.vars]", 'SCHEMA_VERSION = "\\u0031"']), [
+    { table: "vars", value: "\t2" },
+    { table: "env.u.vars", value: "1" },
+  ], "escapes, each read once");
 });

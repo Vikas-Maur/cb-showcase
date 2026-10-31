@@ -202,6 +202,8 @@ export interface ViewRow {
   printGen?: number;
   /** The last applied save of this print: its parsed state, the base of the next save with the same nonce. */
   last?: { contentHash: string; nonce: string; held: HeldBase } | null;
+  /** Nonces of prints this view was printed again over at a save's commit (`reprintView`): a save on one is refused. */
+  reprinted?: string[];
   /** The change behind the sidecar now; a later update for another change (or after a print or an error) is stale. */
   lastChange?: string | null;
 }
@@ -236,6 +238,8 @@ interface PathState {
 const KEEP_WRITTEN = 8;
 /** At most this many changes a save didn't see are read for it; past them it takes the exact path (round 15 #1). */
 const HIDDEN_SCAN = 256;
+/** The printed-over nonces a view row keeps (a buffer older than these resolves against its own header). */
+const REPRINTED_KEPT = 64;
 const KEEP_STAMPS = 32;
 
 type Record_ = { t: number; path: string; [k: string]: unknown };
@@ -750,7 +754,7 @@ export class Materializer {
       const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
       await this.install(rel, text, prev?.printGen ?? 0);
       // a print starts a new generation: late updates for an earlier save never reach this print's sidecar
-      const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), printGen: (prev?.printGen ?? 0) + 1, last: null, lastChange: null };
+      const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), printGen: (prev?.printGen ?? 0) + 1, last: null, lastChange: null, ...(prev?.reprinted ? { reprinted: prev.reprinted } : {}) };
       await this.engine.putMeta(["view", view], row);
       return { name: view, path: rel, ref: refBodyOf(p) };
     });
@@ -760,19 +764,18 @@ export class Materializer {
    * A view whose save repeated an edit of a change its print didn't hold is printed again at the save's own commit (see
    * `repeatsHidden`), with a new nonce: its next save's base is that exact state. The same print generation, sidecar and
    * latest change: a late update for this save still reaches the sidecar. An agent's edit after it re-reads the file.
-   * A save the agent writes on the print it saved (its own content, before it re-reads; also one landing while this
-   * renders, which the install displaces) is based on the saved content at the commit, never on that print's state, which
-   * shows none of the agent's saved edits (round 16 #2): its own new edits are what count, applied on the commit (a remap
-   * of a change up to the commit is not applied to them: the agent saved after seeing at least part of it).
+   * A later save written on the print it replaces (the agent's own buffer, or a save landing while this renders, which
+   * the install displaces) is refused "state unknown: re-print" (`reprinted`): no base describes it. Its saved content
+   * holds part of a change it never saw whole, so taking it as seen loses the rest without a card (round 17 #1), and
+   * taking the print's state counts the agent's own saved edits again (round 16 #2). The agent reads the file again.
    */
-  private async reprintView(view: string, row: ViewRow, res: SaveResult, save: { contentHash: string; nonce: string; saved: Doc }): Promise<void> {
+  private async reprintView(view: string, row: ViewRow, res: SaveResult): Promise<void> {
     const p = await this.commitState(res, row.pinOwner);
     const nonce = printNonce();
     const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
-    const last: ViewRow["last"] = { contentHash: save.contentHash, nonce: save.nonce, held: { baseDoc: save.saved, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) } };
     const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
     await this.install(viewPath(view), text, row.printGen ?? 0);
-    Object.assign(row, { header, nonce, last });
+    Object.assign(row, { header, nonce, last: null, reprinted: [...(row.reprinted ?? []), row.nonce].slice(-REPRINTED_KEPT) });
     await this.engine.putMeta(["view", view], row);
   }
 
@@ -1313,10 +1316,11 @@ export class Materializer {
         if (!prev) throw new Error("state unknown: re-print (project.json was never written by Carton)");
         base = prev;
         held = await this.engine.resolve(prev);
-      } else if (row?.last && rev?.kind === "carton" && rev.nonce === row.last.nonce) {
-        // R4-02: the same print as the last applied save: only the agent's new edits count. After a reprint (see
-        // reprintView) the last save keeps the nonce of the print it was made on: a save written on that print before the
-        // reprint reached the file is the agent's next save of it (round 16 #2)
+      } else if (rev?.kind === "carton" && rev.nonce && row?.reprinted?.includes(rev.nonce)) {
+        // written on a print this view was printed again over (see reprintView): no base describes it (rounds 16-17)
+        throw new Error(`state unknown: re-print (${rel} was written on a print of it replaced at the commit of a save that repeated a change made after that print; print it again, cb source print --view ${name}, and redo this save's edits)`);
+      } else if (row?.last && rev?.kind === "carton" && rev.nonce === row.nonce && row.last.nonce === row.nonce) {
+        // R4-02: the same print as the last applied save: only the agent's new edits count
         base = held = row.last.held;
       } else {
         if (!rev) throw new Error("state unknown: re-print (the file has no cardboard:rev header)");
@@ -1461,13 +1465,13 @@ export class Materializer {
     let reprint = false;
     if (name && row) {
       // the saved content's causal past: its base's, plus this save's own change
-      if (rev?.kind === "carton" && (rev.nonce === row.nonce || rev.nonce === row.last?.nonce)) {
+      if (rev?.kind === "carton" && rev.nonce === row.nonce) {
         // the next save's base is this save: its base's causal past and its own change. A save that repeated an edit of
         // a change its print didn't hold has no such past (see repeatsHidden): the view is printed again at the save's
-        // own commit below (review 14 #4, round 15 #2, #3). So is a save of the print before such a reprint (written
-        // while it rendered): the file no longer shows it (round 16 #2)
+        // own commit below, and the next save's base is that exact state (review 14 #4, round 15 #2, #3); a save still
+        // written on this print is refused (rounds 16-17, see reprintView)
         const causal = res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal;
-        reprint = rev.nonce !== row.nonce || (await this.repeatsHidden(baseDoc, saved, held.baseSeq, causal, res.cut, upTo(res)));
+        reprint = await this.repeatsHidden(baseDoc, saved, held.baseSeq, causal, res.cut, upTo(res));
         row.last = reprint ? null : { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal } };
       }
       row.lastChange = res.id ?? null;
@@ -1476,7 +1480,7 @@ export class Materializer {
       const status: StatusBody["status"] = cards.length ? "conflicts" : res.status;
       const pinned = await this.engine.pin({ owner: row.pinOwner, ttlMs: 7 * DAY });
       await this.writeStatus(name, { status, seq: res.seq ?? null, conflicts: cards, diagnostics: this.host.diagnose(saved, head), ref: refBodyOf(pinned), ...(res.reason ? { error: res.reason } : {}) }, res.id ?? null, { immediate: true });
-      if (reprint && rev?.kind === "carton" && rev.nonce) await this.reprintView(name, row, res, { contentHash: hash, nonce: rev.nonce, saved });
+      if (reprint) await this.reprintView(name, row, res);
     }
     this.onHeadChange("local");
     await settle();

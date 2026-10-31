@@ -25,6 +25,7 @@ import "../src/cardboard/system/review13.ts";
 import "../src/cardboard/system/review14.ts";
 import "../src/cardboard/system/review15.ts";
 import "../src/cardboard/system/review16.ts";
+import "../src/cardboard/system/review17.ts";
 import "../src/cardboard/system/hosts-schema.ts";
 import "../src/cardboard/cli-codec.test.ts";
 
