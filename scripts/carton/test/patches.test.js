@@ -349,30 +349,44 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       fs.writeFileSync(ours, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: oursRev } }));
       // The successor installs (B) and frees the lock a moment later; with a third writer (C, newer still), C
       // installs before that. B goes back only if it is still the newest on disk.
-      const takeover = async (third) => {
+      // "third": a third writer installs before the lock is freed. "slow": the successor's file is Carton's (in
+      // seen.json) and the lock stays taken past the review. "external": someone else saves just before it is freed.
+      const theirs = JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: theirsRev } });
+      const takeover = async (mode) => {
         let fired = false;
         fs.writeFileSync(ours, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: oursRev } }));
+        if (mode === "slow") await I.markSeen(pj, I.sha(Buffer.from(theirs)));
         I.testHooks.between = () => {
           if (fired) return;
           fired = true;
           I.testHooks.between = null;
           fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: process.pid, me: "successor" }));
-          fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: theirsRev } }));
+          fs.writeFileSync(pj, theirs);
           setTimeout(() => {
-            if (third) fs.rmSync(pj, { force: true }), fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: thirdRev } }));
+            if (mode === "third") fs.rmSync(pj, { force: true }), fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: thirdRev } }));
+            if (mode === "external") fs.rmSync(pj, { force: true }), fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, name: "Saved elsewhere", stateUpdatedAt: 1700000000250 } }));
             fs.rmSync(dir, { recursive: true, force: true });
-          }, 200);
+          }, mode === "slow" ? 900 : 200);
         };
         const res = await I.install(ours, pj);
         return [res, JSON.parse(fs.readFileSync(pj, "utf8")).project.stateUpdatedAt];
       };
       const thirdRev = 1700000000203;
       await I.setRevFor(bundle, thirdRev, { branchId: head.branchId, seq: head.seq + 2 });
-      const [r1, on1] = await takeover(false), [r2, on2] = await takeover(true);
+      const [r1, on1] = await takeover(), [r2, on2] = await takeover("third");
       out.putBack = r1 === false && on1 === theirsRev && r2 === false && on2 === thirdRev;
+      // The file to put back survives a review that runs while the successor still holds the lock.
+      const [r3, on3] = await takeover("slow");
+      // A save made while the put-back waited is moved aside by it, then imported, not deleted as Carton's.
+      const [r4, on4] = await takeover("external");
+      let imported = false;
+      for (let i = 0; i < 60 && !imported; i++) await new Promise((r) => setTimeout(r, 50)), (imported = (await I.headProject(bundle))?.name === "Saved elsewhere");
+      out.putBackLater = { slow: r3 === false && on3 === theirsRev, external: r4 === false && on4 === theirsRev, imported };
       fs.rmSync(dir, { recursive: true, force: true });
       // A rename of seen.json or displaced.json that fails (a file kept busy past the retry budget on Windows; here a
       // folder in its place) fails the install: every busy-file call is awaited, so none fails unnoticed.
+      // Kept cards are told apart as the panel tells them apart: a missing value isn't null; key order doesn't count.
+      out.cardsApart = !I.sameCard({ path: "a", ours: undefined, theirs: 1 }, { path: "a", ours: null, theirs: 1 }) && I.sameCard({ path: "a", ours: { x: 1, y: 2 }, theirs: 1 }, { path: "a", ours: { y: 2, x: 1 }, theirs: 1 });
       out.surfaced = {};
       for (const [k, name] of ["seen.json", "displaced.json"].entries()) {
         const at = path.join(bundle, ".carton", name), saved = fs.existsSync(at) ? fs.readFileSync(at) : null;
@@ -389,7 +403,7 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       console.log(JSON.stringify(out));
     })().catch((e) => { console.error(e); process.exit(1); });
   `], { env: env(), encoding: "utf8", timeout: 60_000 });
-  assert.deepEqual(JSON.parse(locks.stdout.trim().split("\n").pop()), { dead: true, waited: true, reused: true, fresh: true, skipped: true, putBack: true, surfaced: { "seen.json": "rejected", "displaced.json": "rejected" } }, locks.stderr);
+  assert.deepEqual(JSON.parse(locks.stdout.trim().split("\n").pop()), { dead: true, waited: true, reused: true, fresh: true, skipped: true, putBack: true, putBackLater: { slow: true, external: true, imported: true }, cardsApart: true, surfaced: { "seen.json": "rejected", "displaced.json": "rejected" } }, locks.stderr);
   // Four agents at once on different titles: none loses its last edit (B1).
   const wroot = path.join(TMP, "lib-real-writers");
   fs.rmSync(wroot, { recursive: true, force: true });

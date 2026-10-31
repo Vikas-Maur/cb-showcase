@@ -40,7 +40,10 @@ test("off: nothing is attached and nothing is taken", async () => {
   assert.equal(t.c.saveMeta({ id: "p1", stateUpdatedAt: 101 }, { ownedFields: ["tracks", "timelineItems"] }), undefined);
   assert.equal(t.c.undo(), false);
   t.c.intent({ kind: "split" });
-  assert.deepEqual(t.calls.map((c) => c[1]), ["enabled"]);
+  // A method the page would answer goes to main, which refuses it while Carton is off.
+  t.c.handle("join", () => "page");
+  await t.c.call("join", []);
+  assert.deepEqual(t.calls.map((c) => c[1]), ["enabled", "join"]);
 });
 
 test("a timeline save names the version the editor shows, and carries the recorded remaps once", async () => {
@@ -113,6 +116,7 @@ test("a method the page answers itself (the live-sync half) stays in the page", 
   await t.c.ready;
   t.c.handle("join", async (a, b) => ["page", a, b]);
   assert.deepEqual(await t.c.call("join", [1, 2]), ["page", 1, 2]);
+  assert.throws(() => t.c.handle("enabled", () => true), /letters only/);
   assert.deepEqual(t.calls.map((c) => c[1]), ["enabled"]);
 });
 

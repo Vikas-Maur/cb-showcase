@@ -98,8 +98,11 @@ module.exports = String.raw`window.__carton = (() => {
     },
     get stale() { return stale; },
     // For the History panel (carton-ui.js): the worker's carton namespace, and its events for the tabs.
-    call: (method, args) => (handlers.has(method) ? Promise.resolve().then(() => handlers.get(method)(...(args ?? []))) : call(method, ...(args ?? []))),
-    handle(name, fn) { handlers.set(name, fn); },
+    call: (method, args) => (on && handlers.has(method) ? Promise.resolve().then(() => handlers.get(method)(...(args ?? []))) : call(method, ...(args ?? []))),
+    handle(name, fn) {
+      if (!/^[a-zA-Z]+$/.test(name) || name === "enabled") throw new Error("A Carton method name is letters only, and not enabled: " + name);
+      handlers.set(name, fn);
+    },
     onEvent: (f) => store.on("carton:event", f),
   };
 })();
