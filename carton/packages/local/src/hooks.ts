@@ -51,8 +51,9 @@ export const preToolUsePrefixer = {
 /**
  * Claude Code's PreToolUse hook output for a rewritten command. It carries the new input only: attribution must never
  * grant a permission, so no `permissionDecision` is given and the command goes through the user's normal permission
- * rules (a command that needs approval still asks). [Needs a check on a real Claude Code: that `updatedInput` applies
- * without a decision. If it doesn't, the call simply runs unprefixed and the actor falls back to the environment.]
+ * rules (a command that needs approval still asks). Claude Code applies `updatedInput` without a decision (checked
+ * headless on Claude Code 2.1.314, 2026-10-31: a stub hook rewrote `echo before` to `echo after` with no decision, and
+ * the tool ran `echo after` under the session's own allow rule; the docs only describe it with "allow" or "ask").
  */
 export function preToolUseOutput(input: HookInput, r: PrefixResult | null): object {
   if (!r) return {};
