@@ -129,3 +129,24 @@ test("an idempotent write is run again after core lost its append race too often
   assert.equal(n, 1, "a fold or undo is never run twice");
   await assert.rejects(withRaceRetry(true, async () => { throw new Error("other"); }), /other/);
 });
+
+test("Stage F: an absorbed change reads as confirmed, already in place; a too-large one fails alone, clearly", async () => {
+  const { runWrite: rw, ALREADY_IN_PLACE, TOO_LARGE } = await import("../src/writes.ts");
+  const mk = (outcome: any) => ({
+    store: createMemoryStore(), schema: {} as any, cut: "cut1",
+    sync: { status: "up-to-date", waitFor: async () => outcome },
+    on: () => () => {}, notices: async () => [],
+    async cuts() { return [{ id: "cut1", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }]; },
+    async head() { return { ref: { branchId: "cut1", seq: 3, pending: [] }, doc: {} }; },
+    async commit() { return { status: "pending", id: "r.1", ref: { branchId: "cut1", seq: 3, pending: [] }, notices: [] }; },
+  }) as any;
+  const a = await rw(mk({ status: "absorbed", id: "r.1", seq: 4 }), { id: "r.1", actor: agent, op: { kind: "commit", ops: [set("c1", "name", "same")] } });
+  assert.equal(a.status, "confirmed", "never an error");
+  assert.equal((a as any).absorbed, true);
+  assert.equal((a as any).note, ALREADY_IN_PLACE);
+  const t = await rw(mk({ status: "rejected", id: "r.1", reason: "too large" }), { id: "r.1", actor: agent, op: { kind: "commit", ops: [set("c1", "name", "x".repeat(10))] } });
+  assert.equal(t.status, "rejected");
+  assert.equal((t as any).reason, "too large");
+  assert.equal((t as any).note, TOO_LARGE);
+  assert.match(TOO_LARGE, /edits after it still went through/);
+});
