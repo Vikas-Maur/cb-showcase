@@ -134,3 +134,28 @@ test("materializeProject writes the versioned slice back over the file's project
   assert.deepEqual(out.media[0], { id: "g", createdAt: "t", data: { type: "code", fileName: "F", thumbnailIds: ["t1"], code: { source: "new", width: 1920, height: 1080 } } });
   assert.deepEqual(out.tracks, current.tracks);
 });
+
+test("§4.1 unknown fields from newer clients pass through as atomic leaves (replaced whole; both changed = a card)", () => {
+  const b = doc([clip("x", 0, 5, { futureThing: { a: 1, b: 1 } })]);
+  const one = merge3(b, setItem(b, "x", { futureThing: { a: 2, b: 1 } }), b, S);
+  assert.deepEqual([one.conflicts.length, itemOf(one.doc, "x")!.futureThing], [0, { a: 2, b: 1 }]);
+  const both = merge3(b, setItem(b, "x", { futureThing: { a: 2, b: 1 } }), setItem(b, "x", { futureThing: { a: 1, b: 2 } }), S);
+  assert.equal(both.conflicts.length, 1, "not merged per key: an unknown object is one leaf");
+  assert.equal(both.conflicts[0]!.path, "timelineItems/x/futureThing");
+});
+
+test("§4.1 ephemeral: Cardboard's local-only fields and the non-versioned media fields are never versioned", () => {
+  const host = { name: "P", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: [clip("x", 0, 5, { annotations: [{ a: 1 }], borderDrawProgress: 0.4, autoReframeSegmentationStatus: "pending" })], media: [{ id: "m", contentHash: "h", data: { type: "video", fileName: "a.mp4", src: "/Users/alice/a.mp4" }, thumbnail: "blob:..." }] };
+  const d = fromHost(host, null);
+  for (const f of ["annotations", "borderDrawProgress", "autoReframeSegmentationStatus"]) assert.equal(itemOf(d, "x")![f], undefined, `${f} not versioned`);
+  assert.deepEqual((d.media as Rec[])[0], { id: "m", contentHash: "h", data: { type: "video", fileName: "a.mp4" } });
+  const changed = fromHost({ ...host, timelineItems: [clip("x", 0, 5, { annotations: [{ a: 2 }], borderDrawProgress: 0.9, autoReframeSegmentationStatus: "done" })] }, d);
+  assert.deepEqual(diff(d, changed, S), [], "changing local-only state is not a change");
+});
+
+test("§4.1 soft validators: an overlap that only the merge creates is a warning on the merge, not a card", () => {
+  const b = doc([clip("a", 0, 5), clip("b", 10, 15)]);
+  const m = merge3(b, setItem(b, "a", { endTime: 9, trimEnd: 9 }), setItem(b, "b", { startTime: 8, endTime: 13 }), S);
+  assert.deepEqual(m.conflicts, []);
+  assert.deepEqual(m.warnings, [{ kind: "overlap", items: ["a", "b"] }]);
+});
