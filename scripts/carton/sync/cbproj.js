@@ -134,7 +134,10 @@ async function exportEntries(bundle, entries) {
       // Round 2 #4: a shared cut's head is its optimistic state (confirmed versions plus this computer's edits still
       // waiting for the server), but exportShallow exports confirmed versions only. Rather than a file whose history
       // lacks edits its project.json shows (a teammate's bring-in would miss them without a word), no history at all.
-      const waiting = (await c.head()).ref.pending?.length ?? 0;
+      // Round 4 #2: cb's handle has no sync, so its head shows none of them: the edits the holder keeps waiting are
+      // counted from the store too (core keeps each as a row of table `pending`, key [cut, id]).
+      const stored = await lc.store.range("pending", { prefix: [c.cut] }).catch(() => []);
+      const waiting = Math.max((await c.head()).ref.pending?.length ?? 0, stored.length);
       if (waiting) {
         console.warn(`[carton] the .cbproj of ${name} was saved without its history: ${waiting} edit${waiting === 1 ? " is" : "s are"} still waiting to sync, and a file's history can only hold synced versions. The file has everything you see; save it again once you are back online so a teammate can bring its changes in.`);
         return;
@@ -266,15 +269,24 @@ async function materialize(store, id, bundle) {
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
 const SAFE_EXT = /^\.[A-Za-z0-9]{1,12}$/;
 
+// A registry entry whose file is there (round 4 #4: one whose file was deleted or moved doesn't keep their file out).
+// A bundle's own media may be named relative to the bundle.
+function usable(entry, bundle) {
+  const p = entry?.nativePath;
+  if (typeof p !== "string" || !p) return false;
+  try { return fs.statSync(path.isAbsolute(p) ? p : path.join(bundle, p)).isFile(); } catch { return false; }
+}
+
 /**
  * Round 2 #5: the clips their copy added come with their files, as Cardboard's own .cbproj import brings them. Its
  * Save As stores each clip the bundle owns as `media/<id><ext>`, with a manifest entry {mediaId, nativePath:
  * "media/…", ownedByBundle: true}; its import extracts the members into the bundle's `media/` and the library indexes
  * the entries (the media registry, from which every project write builds project.json's `media` list). Here, for each
- * clip head now uses that this library has no file for (not in the registry, not another project's), the member goes to
- * `<bundle>/media/<id><ext>` (never over an existing file) and is registered as the bundle's own, before head is
- * materialized: that write lists it in project.json, and the clip plays. A member that can't be copied leaves the clip
- * offline (logged), as before. `store` is Cardboard's project store (the library worker's, or cb's).
+ * clip head now uses that this library has no file for (not in the registry, or registered with its file gone; not
+ * another project's), the member goes to `<bundle>/media/<id><ext>` (never over an existing file) and is registered as
+ * the bundle's own, before head is materialized: that write lists it in project.json, and the clip plays. A member that
+ * can't be copied leaves the clip offline (logged), as before. `store` is Cardboard's project store (the library
+ * worker's, or cb's).
  */
 async function adoptMedia(file, contents, store, bundle, projectId, wanted) {
   const registry = store.options?.registry;
@@ -285,7 +297,7 @@ async function adoptMedia(file, contents, store, bundle, projectId, wanted) {
     if (!m || typeof m.mediaId !== "string" || !SAFE_ID.test(m.mediaId) || !wanted.has(m.mediaId) || m.ownedByBundle !== true) return false;
     if (typeof m.nativePath !== "string" || !/^media\/[^/\\]+$/.test(m.nativePath) || !members.has(m.nativePath)) return false;
     const owner = store.idForMedia?.(m.mediaId);
-    return !registry.get(m.mediaId) && (owner === undefined || owner === projectId);
+    return !usable(registry.get(m.mediaId), bundle) && (owner === undefined || owner === projectId);
   });
   if (!todo.length) return [];
   const adopted = [];
@@ -367,8 +379,9 @@ async function bringIn(file, store) {
         return f;
       },
     }, contents);
-    // the clips head uses now, for their files (adoptMedia)
-    if (res.status === "forked" || (res.status === "folded" && (res.fold.status === "confirmed" || res.fold.status === "pending"))) {
+    // the clips head uses now, for their files (adoptMedia); up to date too (round 4 #3: a file that comes again with a
+    // clip's member an earlier copy lacked still brings it in)
+    if (res.status === "forked" || (res.status === "folded" && ["confirmed", "pending", "up-to-date"].includes(res.fold.status))) {
       wanted = new Set((materializeProject((await c.head()).doc, await store.read(id))?.media ?? []).map((m) => m.id));
     }
     return history ? { ...res, history } : res;
@@ -397,10 +410,9 @@ async function bringIn(file, store) {
   // "This copy builds on a version from Bob that you don't have. Ask Bob for their copy, or …" (core's words).
   if (f.status === "missing-base" || f.status === "compare") throw new Error(f.dialog?.text ?? "This copy builds on a version you don't have.");
   if (f.status === "rejected") throw new Error(`Their changes couldn't be brought into "${name}": ${f.reason ?? "rejected"}`);
-  if (f.status !== "up-to-date") {
-    await adoptMedia(file, contents, store, bundle, id, wanted);
-    await materialize(store, id, bundle);
-  }
+  // Up to date: nothing of theirs is new, so project.json is written only when a clip's file came in.
+  const adopted = await adoptMedia(file, contents, store, bundle, id, wanted);
+  if (f.status !== "up-to-date" || adopted.length) await materialize(store, id, bundle);
   return store.read(id);
 }
 

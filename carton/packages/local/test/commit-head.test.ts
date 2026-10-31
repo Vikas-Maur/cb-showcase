@@ -1,7 +1,8 @@
-// contract(local), windows-sync: a commit still pending can ask for the holder's head (`WriteOp` commit `head: true`).
+// contract(local), windows-sync: a commit that saved can ask for the holder's head (`WriteOp` commit `head: true`).
 // The Windows app's cb writes project.json itself after each save, from its own handle, which holds the confirmed rows
 // only: with the holder offline, the state that includes the edit (merged onto the holder's own pending edits and what
-// it had from teammates) is the holder's, so the holder hands it back. Real processes, as R2-02: a server-node host,
+// it had from teammates) is the holder's, so the holder hands it back. A save that changes nothing confirms at once,
+// and gets it too (windows-sync review round 4 #1: cb wrote its confirmed state, losing the holder's waiting edits). Real processes, as R2-02: a server-node host,
 // the lease holder (a worker), a cb-like handle writing through it.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -74,6 +75,14 @@ test("a pending commit that asks for it gets the holder's head: its edit merged 
     const mine = (await local.carton.head()).doc as any;
     assert.notEqual(item(mine, "c2").opacity, 0.4);
     assert.notEqual(item(mine, "c1").name, "the holder's");
+
+    // a save that changes nothing (the holder's state as it is): confirmed at once, and the head still comes back
+    const same = await local.write({ kind: "commit", doc: head.doc, head: true });
+    assert.equal(same.status, "confirmed", JSON.stringify(same));
+    const again = same.head as { ref: unknown; doc: any } | undefined;
+    assert.ok(again?.doc, "a confirmed answer carries the holder's head too: " + JSON.stringify(same).slice(0, 300));
+    assert.equal(item(again.doc, "c2").opacity, 0.4, "with the edits still waiting");
+    assert.equal(item(again.doc, "c1").name, "the holder's");
   } finally {
     await local.close();
     for (const p of procs) if (p.exitCode === null) p.kill("SIGKILL");
