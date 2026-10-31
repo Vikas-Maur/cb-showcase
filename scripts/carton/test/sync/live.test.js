@@ -4,9 +4,9 @@
 // ../patches.test.js); without them the tests skip.
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js
 // One scenario, in order (each step needs the one before): share with history, invite, join in the other library,
-// concurrent edits, presence, media, offline and rejoin, cb on the shared project with the app open, then with the
-// app closed in cb's cloud mode (a headless helper syncs; H13), another program's save and an offline restore with the
-// app closed, and a host too old for the app (the panel says why).
+// concurrent edits, presence, media, media shared again (one host client per project), offline and rejoin, cb on the
+// shared project with the app open, then with the app closed in cb's cloud mode (a headless helper syncs; H13), another
+// program's save and an offline restore with the app closed, and a host too old for the app (the panel says why).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path");
@@ -122,6 +122,31 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
   } finally {
     await m.close();
   }
+});
+
+test("media shared again: the first re-share checks every part of the stream it reuses; the next, through the same host client, asks about none", t, async () => {
+  // Media remembers a stream it found whole per host client object for 10 minutes (media fd87449); the worker keeps one
+  // client per project (sync/media.js storeFor), so the memory carries from one share to the next.
+  const first = (await alice.call("carton.liveShareMedia", { projectId: id })).find((x) => x.proxy?.stream && x.proxy.size > 0);
+  const { mediaId, proxy: { stream } } = first;
+  const endFile = path.join(S.TMP, "host", "blobs", "objects", "projects", id, "media", "ps", stream, "end~b");
+  const end = JSON.parse(fs.readFileSync(endFile, "utf8"));
+  const parts = new Set(end.parts ?? []);
+  assert.ok(parts.size >= 2, "the stream's end lists its parts: " + JSON.stringify(end).slice(0, 300));
+  // The stream's parts the host was asked about (HEAD) since the last call.
+  const asked = async (tag) => {
+    host.send({ heads: tag });
+    const { heads } = await host.next((x) => x.tag === tag);
+    return [...new Set(heads.map((k) => /(?:^|\/)m\/([0-9a-f]{64})$/.exec(k)?.[1]).filter((h) => h && parts.has(h)))].sort();
+  };
+  await asked("before");
+  const again = async () => (await alice.call("carton.liveShareMedia", { projectId: id, mediaIds: [mediaId], force: true }))[0];
+  const second = await again();
+  assert.equal(second.proxy?.stream, stream, "the clip keeps its stream: " + JSON.stringify(second));
+  assert.deepEqual(await asked("second"), [...parts].sort(), "the first re-share checks every part");
+  const third = await again();
+  assert.equal(third.proxy?.stream, stream, "the clip keeps its stream: " + JSON.stringify(third));
+  assert.deepEqual(await asked("third"), [], "the next re-share asks the host about none of its parts");
 });
 
 test("media before its upload finishes: Bob plays Alice's new clip from its first segments, and a tool follows it live", t, async () => {

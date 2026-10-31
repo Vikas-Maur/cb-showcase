@@ -232,10 +232,11 @@ async function commitShared(lc, { doc, base, author, intent }) {
     if (r.status === "pending") return { ...r, rebased: rebasedFrom((await lc.carton.head()).doc) };
     return r;
   }
-  // Anyone else hands the commit to the holder. A pending answer (the holder offline, or the server slow) carries the
-  // holder's head (contract(local) `head`): this handle reads the confirmed rows only, which hold neither this edit nor
-  // the holder's other pending ones, so the state to write is the holder's (round 2 #2: the caller's document could
-  // land in project.json after the holder's, dropping what it had merged in, with no confirmation to repair it).
+  // Anyone else hands the commit to the holder. Every answer that saved carries the holder's head (contract(local)
+  // `head`): this handle reads the confirmed rows only, which hold neither this edit while it waits nor the holder's
+  // other pending ones, so the state to write is the holder's (round 2 #2: the caller's document could land in
+  // project.json after the holder's, dropping what it had merged in, with no confirmation to repair it). A confirmed
+  // answer too (round 4 #1): a save that changed nothing confirms at once while the holder's own edits still wait.
   // To this handle's cut, named: the holder's current cut could change before it answers (and `head` is that cut's).
   const w = await lc.write({ kind: "commit", cut: lc.carton.cut, doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}), head: true }, { actor: author });
   if (w.status === "error") throw new Error(w.error);
@@ -243,7 +244,6 @@ async function commitShared(lc, { doc, base, author, intent }) {
   const head = w.head?.doc ? w.head : await lc.carton.head();
   // the holder's write kept the cards as a notice for the author already (local's cardsWrite, or core's late conflict)
   if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, kept: true, ref: head.ref, ...(w.head?.doc ? { head } : {}) };
-  // Confirmed: the holder wrote the confirmed rows before answering, so this handle's head is exact.
   const pending = w.status === "pending";
   return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...(w.head?.doc ? { head } : {}) };
 }
@@ -386,6 +386,8 @@ extend({
   person: ({ bundlePath, projectId }) => person(bundlePath, projectId),
   // R6
   materializeDoc: (next, o) => fillTeammateMedia(next, o),
+  // A folder Cardboard is done with: the host media clients of bundles in it go.
+  release: (dir, inside) => media.forget(inside),
   // R2: a commit on a shared cut. The worker's handle is the lease holder: commit there, a clash keeping head's value
   // (the rest lands; the cards go back as a conflicts result, which the facade keeps for the author). Anywhere else
   // (cb), hand it to the holder, or to a headless helper when the app is closed.

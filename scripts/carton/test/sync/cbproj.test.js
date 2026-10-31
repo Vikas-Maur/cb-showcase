@@ -4,7 +4,8 @@
 // clip, edits and saves one back with history; Alice, who edited meanwhile, opens it: their changes, Bob's versions and
 // his clip's file come in, hers stay, and a clash puts theirs in with hers on a conflict card `cb resolve --keep mine`
 // takes back. A crafted file's `.carton/` and view files never survive Open Project (Carton on or off); a file whose
-// history is another project's still brings its changes in. Carton off, or a file without Carton's entry, keeps 1.4.0's
+// history is another project's still brings its changes in; a clip's file a first copy lacked, or that this library
+// lost, comes in from Bob's file when it comes again. Carton off, or a file without Carton's entry, keeps 1.4.0's
 // import and its error. Cardboard's bundles are not in git: CARDBOARD_PRISTINE names them (see ../patches.test.js);
 // without them the tests skip.
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/sync/cbproj.test.js
@@ -309,6 +310,47 @@ test("A file whose history is another project's: refused (said once), their chan
   assert.equal((await text(alice)).textContent, "Alice's words");
   assert.equal(cbOk(alice, ["cut", "list", "Demo"]).json().cuts.filter((c) => c.tracking && !c.shallow).length, before, "no cut from the other project's history");
   assert.match(alice.worker().stderr(), /weren't brought in .*another project/);
+});
+
+// Round 4 #3: a fold that is up to date (all their versions are in) still brings in a clip's file an earlier copy of
+// the file lacked; project.json is written only then.
+test("Bob's file again, now with his clip's file that a first copy lacked: the clip comes in, though nothing else is new", t, async () => {
+  const pc = await S.computer("cbproj-frank", b);
+  try {
+    await pc.startWorker();
+    await pc.call("projects.openArchive", path.join(alice.home, "a1.cbproj"));
+    const full = path.join(bob.home, "b1.cbproj");
+    const member = zip(full).names.find((n) => n.startsWith("media/" + bobClip.mediaId));
+    assert.ok(member, "Bob's file carries his clip");
+    const lacking = path.join(pc.home, "b1-without-clip.cbproj");
+    remix(full, lacking, {}, [member]);
+    await pc.call("projects.openArchive", lacking);
+    assert.equal((await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId] ?? null, null, "no file came with the first copy");
+    await pc.call("projects.openArchive", full);
+    const got = (await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId];
+    assert.ok(got && fs.existsSync(got.nativePath), "the clip's file came in: " + JSON.stringify(got));
+    assert.ok((await S.projectOf(pc, (await pc.call("projects.list"))[0].id)).media.some((m) => m.id === bobClip.mediaId), "and the project lists it");
+  } finally {
+    pc.kill();
+  }
+});
+
+// Round 4 #4: a clip registered here whose file is gone doesn't keep a newer file's copy of it out.
+test("A clip whose file this library lost comes back from a newer file of Bob's", t, async () => {
+  const pc = await S.computer("cbproj-grace", b);
+  try {
+    await pc.startWorker();
+    await pc.call("projects.openArchive", path.join(alice.home, "a1.cbproj"));
+    await pc.call("projects.openArchive", path.join(bob.home, "b1.cbproj"));
+    const had = (await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId];
+    assert.ok(had && fs.existsSync(had.nativePath), "Bob's clip came with his first file");
+    fs.rmSync(had.nativePath);
+    await pc.call("projects.openArchive", path.join(bob.home, "b2.cbproj"));
+    const got = (await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId];
+    assert.ok(got && fs.existsSync(got.nativePath), "the clip's file is back: " + JSON.stringify(got));
+  } finally {
+    pc.kill();
+  }
 });
 
 test("Carton off, or a file without Carton's entry: 1.4.0's import and its error", t, async () => {

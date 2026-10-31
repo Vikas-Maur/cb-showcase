@@ -65,9 +65,10 @@ const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(pa
 
 // A folder Cardboard is done with: Open Project's staging folder (`.opening-<id>`), which it removes once the staged
 // project is copied into the library. Everything Carton holds under it is let go first: each Carton opened there is
-// closed (its carton.db and files), a pending review of a displaced file there is dropped, and the staging library's
-// store is forgotten. On Windows an open file can't be removed, so Cardboard's own clean-up failed with EBUSY (CI route
-// 35). Called whether the staged import worked or not.
+// closed (its carton.db and files), a pending review of a displaced file there is dropped, the staging library's
+// store is forgotten, and each extension's `release` hook lets go of its own (sync: host media clients). On Windows an
+// open file can't be removed, so Cardboard's own clean-up failed with EBUSY (CI route 35). Called whether the staged
+// import worked or not.
 const under = (dir, p) => {
   const rel = path.relative(path.resolve(dir), path.resolve(p));
   return rel === "" || (!!rel && !rel.startsWith("..") && !path.isAbsolute(rel));
@@ -85,6 +86,10 @@ async function release(dir) {
     closing.push(p.then((lc) => lc?.close()).catch((e) => warnOnce("close:" + bundlePath, `couldn't close the history of ${path.basename(bundlePath)}: ${errText(e)}`)));
   }
   await Promise.all(closing);
+  for (const e of extensions) {
+    if (typeof e.release !== "function") continue;
+    try { await e.release(dir, inside); } catch (err) { warnOnce("release:" + (e.name ?? "?"), "an extension's release failed: " + errText(err)); }
+  }
 }
 
 // ---------------------------------------------------------------- extensions
@@ -111,6 +116,8 @@ async function release(dir) {
 //                                               already a notice for the author. Foreign-save imports go through it too.
 //   materializeDoc(next, {bundlePath, projectId, current})
 //                                               fills in a record before head goes into project.json (R6)
+//   release(dir, inside)                        a folder Cardboard is done with (Open Project's staging folder): let go
+//                                               of what is kept for bundles in it (`inside(bundlePath)` says which)
 // An extension that throws is left out (logged once); Carton and the save path go on without it.
 const extensions = [], openers = new Set(), ready = new Map(); // ready: bundlePath → LocalCarton
 export function extend(ext) { extensions.push(ext); }
