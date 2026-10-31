@@ -312,9 +312,31 @@ test("A file whose history is another project's: refused (said once), their chan
   assert.match(alice.worker().stderr(), /weren't brought in .*another project/);
 });
 
+// A clip's entry in a library's project.json (`media`, the manifest Cardboard rebuilds its registry from on every read),
+// and whether its file is there. Round 5 #1: an adopted clip must be in it, or it is offline again after a restart.
+const savedClip = (pc, mediaId) => {
+  const bundle = path.join(pc.root, "Demo.cardboard");
+  const e = JSON.parse(fs.readFileSync(path.join(bundle, "project.json"), "utf8")).media?.find((m) => m.mediaId === mediaId);
+  const file = e && (path.isAbsolute(e.nativePath) ? e.nativePath : path.join(bundle, e.nativePath));
+  return e ? { ...e, there: fs.existsSync(file) } : null;
+};
+const located = async (pc, mediaId) => (await pc.call("media.locate", [mediaId]))?.[mediaId] ?? null;
+// Found now, saved in project.json, and found again by a worker started afresh.
+async function clipStays(pc, mediaId, what) {
+  const got = await located(pc, mediaId);
+  assert.ok(got && fs.existsSync(got.nativePath), `${what}: the clip's file is found: ${JSON.stringify(got)}`);
+  const saved = savedClip(pc, mediaId);
+  assert.ok(saved?.there, `${what}: project.json lists it, with its file: ${JSON.stringify(saved)}`);
+  await pc.stopWorker();
+  await pc.startWorker();
+  await pc.call("projects.list");
+  const again = await located(pc, mediaId);
+  assert.ok(again && fs.existsSync(again.nativePath), `${what}: found again after a restart: ${JSON.stringify(again)}`);
+}
+
 // Round 4 #3: a fold that is up to date (all their versions are in) still brings in a clip's file an earlier copy of
-// the file lacked; project.json is written only then.
-test("Bob's file again, now with his clip's file that a first copy lacked: the clip comes in, though nothing else is new", t, async () => {
+// the file lacked, and saves it in project.json (round 5 #1).
+test("Bob's file again, now with his clip's file that a first copy lacked: the clip comes in and stays, though nothing else is new", t, async () => {
   const pc = await S.computer("cbproj-frank", b);
   try {
     await pc.startWorker();
@@ -325,29 +347,37 @@ test("Bob's file again, now with his clip's file that a first copy lacked: the c
     const lacking = path.join(pc.home, "b1-without-clip.cbproj");
     remix(full, lacking, {}, [member]);
     await pc.call("projects.openArchive", lacking);
-    assert.equal((await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId] ?? null, null, "no file came with the first copy");
+    assert.equal(await located(pc, bobClip.mediaId), null, "no file came with the first copy");
     await pc.call("projects.openArchive", full);
-    const got = (await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId];
-    assert.ok(got && fs.existsSync(got.nativePath), "the clip's file came in: " + JSON.stringify(got));
+    await clipStays(pc, bobClip.mediaId, "the full file");
     assert.ok((await S.projectOf(pc, (await pc.call("projects.list"))[0].id)).media.some((m) => m.id === bobClip.mediaId), "and the project lists it");
   } finally {
     pc.kill();
   }
 });
 
-// Round 4 #4: a clip registered here whose file is gone doesn't keep a newer file's copy of it out.
-test("A clip whose file this library lost comes back from a newer file of Bob's", t, async () => {
+// Round 4 #4: a clip registered here whose file is gone doesn't keep a newer file's copy of it out. Round 5 #1: its
+// stale entry (here an outside path, as a clip relinked to a file since moved away) must not win at the next read, nor
+// take the new file with it.
+test("A clip whose file this library lost comes back from a newer file of Bob's, and stays", t, async () => {
   const pc = await S.computer("cbproj-grace", b);
   try {
     await pc.startWorker();
     await pc.call("projects.openArchive", path.join(alice.home, "a1.cbproj"));
     await pc.call("projects.openArchive", path.join(bob.home, "b1.cbproj"));
-    const had = (await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId];
+    const had = await located(pc, bobClip.mediaId);
     assert.ok(had && fs.existsSync(had.nativePath), "Bob's clip came with his first file");
+    // With the app closed, the clip's file goes, and its entry names a file elsewhere that is gone too.
+    await pc.stopWorker();
     fs.rmSync(had.nativePath);
+    const pj = path.join(pc.root, "Demo.cardboard", "project.json"), env = JSON.parse(fs.readFileSync(pj, "utf8"));
+    env.media = env.media.map((m) => (m.mediaId === bobClip.mediaId ? { ...m, nativePath: path.join(pc.home, "moved-away.mp4"), ownedByBundle: false } : m));
+    fs.writeFileSync(pj, JSON.stringify(env));
+    await pc.startWorker();
+    await pc.call("projects.list");
+    assert.equal(await located(pc, bobClip.mediaId), null, "offline before");
     await pc.call("projects.openArchive", path.join(bob.home, "b2.cbproj"));
-    const got = (await pc.call("media.locate", [bobClip.mediaId]))?.[bobClip.mediaId];
-    assert.ok(got && fs.existsSync(got.nativePath), "the clip's file is back: " + JSON.stringify(got));
+    await clipStays(pc, bobClip.mediaId, "Bob's newer file");
   } finally {
     pc.kill();
   }
