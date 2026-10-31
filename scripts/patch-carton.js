@@ -55,6 +55,7 @@ const STORE = {
     ],
     mirror: ["await Uh(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):Uh(this.mirrorPath(t),r,\"utf8\")))}"],
     archive: ["if(a&&(nS.has(i.name)||i.name===re)||", "if(__carton.skipInArchive(o,i.name,n)||a&&(nS.has(i.name)||i.name===re)||"],
+    agents: [['Nh=e=>typeof e=="string",jh="# This is a Cardboard project', 'Nh=e=>typeof e=="string",jh=__carton.agentsMd("# This is a Cardboard project'], ['",n2=async e=>{let t=await On(', '"),n2=async e=>{let t=await On(']],
   },
   worker: {
     who: "app",
@@ -83,6 +84,7 @@ const STORE = {
     ],
     mirror: ["await(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\")))}"],
     archive: ["if(o&&(rH.has(a.name)||a.name===Mt)||", "if(__carton.skipInArchive(i,a.name,n)||o&&(rH.has(a.name)||a.name===Mt)||"],
+    agents: [['OC=e=>typeof e=="string",$C="# This is a Cardboard project', 'OC=e=>typeof e=="string",$C=__carton.agentsMd("# This is a Cardboard project'], ['",HQ=async e=>{', '"),HQ=async e=>{']],
   },
 };
 
@@ -122,6 +124,9 @@ const patchStore = (replace, k) => {
   // H11: no .carton/ and none of Carton's view files in .scratch/views/ in a .cbproj (the store bridge's skipInArchive,
   // given the folder the walk reads, `n` in both copies, so it can tell Carton's files by their content).
   replace(...s.archive);
+  // H8 (item 4): AGENTS.md, the text Cardboard writes into each bundle for agents, gains Carton's view flow with Carton
+  // on (the store bridge's agentsMd); with Carton off it is Cardboard's text, byte for byte.
+  for (const [from, to] of s.agents) replace(from, to);
 };
 
 const [mode, ...files] = process.argv.slice(2);
@@ -157,6 +162,9 @@ if (mode === "--cli") {
     // H8: a `carton` namespace in the worker's RPC table, for main's carton:call; its events go to main as changes.
     replace('var IA=["projects","media","cache","transcripts","voiceovers","mattes","inspect","timeline","luts","downloads"];', 'var IA=["projects","media","cache","transcripts","voiceovers","mattes","inspect","timeline","luts","downloads","carton"];');
     replace('kte=e=>{let t="",r=()=>{', 'kte=e=>{e.carton=__carton.on?__carton.worker(e,c=>rc({kind:"change",change:c})):{};let t="",r=()=>{');
+    // H8: where the worker's Materializer runs for the bundle (sync/views.js), timeline.tsx is its own: a change of it
+    // goes to the Materializer (a foreign save is applied there, with its freeze and credit), not to Cardboard's apply.
+    replace("c=async g=>{let T=t.idForBundlePath(g);if(!T)return;", "c=async g=>{let T=t.idForBundlePath(g);if(!T)return;if(__carton.on&&__carton.timelineOwned(g))return void __carton.timelineEvent(g);");
     // A timeline.tsx the watcher applies was saved outside the app: an agent without Cardboard's hooks or an editor.
     replace("await t.read(T);let I=await r.apply(T,k);", "await t.read(T);let I=await r.apply(T,k,{cartonActor:\"external:timeline.tsx\"});");
     // The watcher reads project.json 150 ms after a change and tells the pages the project was removed if it's
@@ -183,13 +191,17 @@ if (mode === "--cli") {
     replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
     // H9: the Director's Bash hook names the turn and the subagent; Stop and SubagentStop return late conflicts.
     replace('PreToolUse:[{matcher:"Bash",hooks:[async v=>{', 'PreToolUse:[{matcher:"Bash",hooks:[__cartonMain.directorHook(e,async v=>{');
-    replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt}],...__cartonMain.stopHooks(e)}");
+    // H8: and its Read/Write/Edit calls reach the worker's Materializer (the shared timeline.tsx's freeze, credit).
+    replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt},...__cartonMain.fileHooks(e)],...__cartonMain.stopHooks(e)}");
     // H9: each Director turn's last version is named from the turn's prompt when the turn ends (as the chat's
     // checkpoints are); the label stays in the project's history.
     replace('n.turn={state:"running",id:s.id,text:s.text}', 'n.turn={state:"running",id:s.id,text:s.text},__cartonMain.turnStarted(n,t,i.project?.bundlePath,s,i.launch?.provider)');
     replace('closeTurn(t,r){t.turn.state==="running"&&', 'closeTurn(t,r){__cartonMain.turnEnded(t,r);t.turn.state==="running"&&');
     // H9: host Claude Code gets the same hooks through --settings.
     replace('"--append-system-prompt",ju(e),', '"--append-system-prompt",ju(e),...__cartonMain.hostSettings(),');
+    // H8 (item 4): every agent's appended system prompt (ju: the Director, host Claude Code, Codex, the others) gains
+    // Carton's view flow with Carton on; with Carton off the list is Cardboard's.
+    replace('Never write `project.json` directly.",', 'Never write `project.json` directly.",...__cartonMain.viewPrompt(e),');
   });
 
   // H4, H6, H7: the editor store (installErrorTelemetry-*.js). The bridge goes first; it waits for the store's handles.

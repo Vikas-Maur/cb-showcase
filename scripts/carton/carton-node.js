@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi } from "@carton/react";
 
@@ -89,6 +89,11 @@ async function release(dir) {
   const inside = (p) => under(dir, p) || (process.platform === "win32" && under(dir.toLowerCase(), p.toLowerCase()));
   for (const [file, s] of installs) if (inside(file)) { clearTimeout(s.timer); installs.delete(file); }
   for (let i = hosts.length - 1; i >= 0; i--) if (inside(hosts[i].root)) hosts.splice(i, 1);
+  // The extensions let go first: what they run on a handle (a View's Materializer and holder) stops while it is open.
+  for (const e of extensions) {
+    if (typeof e.release !== "function") continue;
+    try { await e.release(dir, inside); } catch (err) { warnOnce("release:" + (e.name ?? "?"), "an extension's release failed: " + errText(err)); }
+  }
   const closing = [];
   for (const [bundlePath, p] of opened) {
     if (!inside(bundlePath)) continue;
@@ -98,10 +103,6 @@ async function release(dir) {
     closing.push(p.then((lc) => lc?.close()).catch((e) => warnOnce("close:" + bundlePath, `couldn't close the history of ${path.basename(bundlePath)}: ${errText(e)}`)));
   }
   await Promise.all(closing);
-  for (const e of extensions) {
-    if (typeof e.release !== "function") continue;
-    try { await e.release(dir, inside); } catch (err) { warnOnce("release:" + (e.name ?? "?"), "an extension's release failed: " + errText(err)); }
-  }
 }
 
 // ---------------------------------------------------------------- extensions
@@ -129,10 +130,38 @@ async function release(dir) {
 //   materializeDoc(next, {bundlePath, projectId, current})
 //                                               fills in a record before head goes into project.json (R6)
 //   release(dir, inside)                        a folder Cardboard is done with (Open Project's staging folder): let go
-//                                               of what is kept for bundles in it (`inside(bundlePath)` says which)
+//                                               of what is kept for bundles in it (`inside(bundlePath)` says which),
+//                                               before the facade closes their handles
+//   ownsTimeline(bundlePath), timelineEvent(bundlePath)
+//                                               (worker) the bundle's timeline.tsx is the extension's (H8, views.js):
+//                                               the facade doesn't install Cardboard's print of it, and Cardboard's
+//                                               watcher hands its changes over instead of applying them
 // An extension that throws is left out (logged once); Carton and the save path go on without it.
 const extensions = [], openers = new Set(), ready = new Map(); // ready: bundlePath → LocalCarton
 export function extend(ext) { extensions.push(ext); }
+
+// H8: timeline.tsx is the library worker's Materializer's while one runs for the bundle (sync/views.js): Cardboard's
+// own regeneration of it (its mirror's write) and its watcher's apply hand over to it. In the worker an extension says
+// so; in any other process (cb), the worker holding the project's lease means one runs there (it prints the file from
+// head once cb's change lands, and keeps it frozen while an agent works).
+let inWorker = false;
+function timelineOwned(bundlePath) {
+  for (const e of extensions) {
+    if (typeof e.ownsTimeline !== "function") continue;
+    try { if (e.ownsTimeline(bundlePath)) return true; } catch (err) { warnOnce("owns:" + (e.name ?? "?"), "an extension's ownsTimeline failed: " + errText(err)); }
+  }
+  return false;
+}
+function timelineEvent(bundlePath) {
+  for (const e of extensions) {
+    if (typeof e.timelineEvent !== "function") continue;
+    try { e.timelineEvent(bundlePath); } catch (err) { warnOnce("tevent:" + (e.name ?? "?"), "an extension's timelineEvent failed: " + errText(err)); }
+  }
+}
+async function workerWritesTimeline(lc) {
+  if (inWorker) return false;
+  try { const row = await lc.lease.read(); return row?.kind === "worker" && row.expires > Date.now(); } catch { return false; }
+}
 async function extOpenOptions(o) {
   let out = {};
   for (const e of extensions) {
@@ -373,6 +402,8 @@ async function install(tmp, file, seenStamp) {
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   const lc = await open(bundle);
   if (!lc) return fs.promises.rename(tmp, file);
+  // H8: Cardboard's print of timeline.tsx isn't installed where the worker's Materializer writes it.
+  if (path.basename(file) === "timeline.tsx" && (timelineOwned(bundle) || (await workerWritesTimeline(lc)))) return fs.rmSync(tmp, { force: true }), true;
   let installed = true, recover = null;
   const done = await withInstallLock(bundle, async (mine) => {
     const bytes = fs.readFileSync(tmp);
@@ -554,6 +585,8 @@ export const cardboard14 = {
   },
   commit,
   install,
+  timelineOwned,
+  timelineEvent,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
   async sawDisk({ bundlePath, doc }) {
@@ -610,10 +643,20 @@ export const cardboard14 = {
   registerMcp(tool, { z, projectParam, open: target, result, after, skip }) {
     registerMcp(tool, { z, projectParam, result, skip, open: async (project) => context(await target(project), null, after) });
   },
+  // H8: host Claude Code's hooks also tell the project's lease holder (the worker's Materializer) what the agent does:
+  // a Read of timeline.tsx freezes it, a Write/Edit of it or project.json is credited to the agent, and a stop the
+  // late-conflict hook lets through lets go (@carton/local's runHook and sendHookEvent: carton.db read-only for the
+  // lease row, then the holder's socket; never a helper). carton.db is where the facade's handles open it.
   async hook({ event, input, env, bundlePath }) {
-    return runHook(event === "subagent-stop" ? "stop" : event, input, { env, openStore: async () => (bundlePath ? (await open(bundlePath))?.store ?? null : null) });
+    return runHook(event === "subagent-stop" ? "stop" : event, input, {
+      env,
+      openStore: async () => (bundlePath ? (await open(bundlePath))?.store ?? null : null),
+      projectDir: bundlePath ?? null,
+      ...(bundlePath ? { send: (e) => sendHookEvent({ projectDir: bundlePath, ...e }) } : {}),
+    });
   },
   worker({ library, emit }) {
+    inWorker = true;
     const bundleOf = (projectId) => library.projects.bundlePathFor?.(projectId) ?? null;
     const lcOf = async (projectId) => open(bundleOf(projectId), { projectId });
     const servers = new Map(); // client → serveUi
@@ -742,6 +785,8 @@ async function context(target, as, after) {
   });
   const project = {
     carton,
+    // the bundle: `source print --view` answers the view's file and status file as absolute paths
+    projectDir: target.bundlePath,
     async write(op, o) {
       for (const k of ["ref", "from"]) if (op && op[k] !== undefined) op = { ...op, [k]: await ref(op[k]) };
       // A write left pending (a shared cut: offline, or the server slow) changed the holder's head, which this handle

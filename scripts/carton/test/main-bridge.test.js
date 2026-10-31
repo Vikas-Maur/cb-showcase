@@ -23,6 +23,8 @@ test("off: everything passes through", async () => {
   assert.equal(m.directorHook({ chatId: "c1" }, inner), inner);
   assert.deepEqual(m.stopHooks({}), {});
   assert.deepEqual(m.hostSettings(), []);
+  assert.deepEqual(m.fileHooks({}), []);
+  assert.deepEqual(m.viewPrompt({ id: "p1" }), [], "Cardboard's prompt, unchanged");
   assert.equal(m.call("enabled", []), false);
   assert.throws(() => m.call("undo", []), /Carton is off/);
 });
@@ -57,7 +59,44 @@ test("Stop blocks once per conflict set with the actor's notices", async () => {
   const { Stop, SubagentStop } = m.stopHooks({ chatId: "c1", project: { bundlePath: "/b" } });
   assert.deepEqual(await Stop[0].hooks[0]({ hook_event_name: "Stop" }), { decision: "block", reason: "W2's size was changed by Bob meanwhile" });
   assert.deepEqual(await SubagentStop[0].hooks[0]({ hook_event_name: "SubagentStop", stop_hook_active: true }), {});
-  assert.deepEqual(asked, [["carton.notices", { bundlePath: "/b", actor: "director/c1", take: true }]]);
+  // H8: the blocked stop goes on with the turn (the agent keeps its hold on timeline.tsx); the one that goes through
+  // lets go of it in the worker's Materializer
+  assert.deepEqual(asked, [["carton.notices", { bundlePath: "/b", actor: "director/c1", take: true }], ["carton.agentHook", { bundlePath: "/b", actor: "director/c1", event: "stop", input: undefined }]]);
+});
+
+test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's end reach the worker's Materializer", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.notices" ? [] : { delivered: true }) });
+  const ctx = { chatId: "c1", project: { id: "p1", bundlePath: "/b" } };
+  m.directorEnv({}, ctx, () => "t7");
+  const [files] = m.fileHooks(ctx);
+  assert.equal(files.matcher, "Read|Write|Edit|MultiEdit");
+  const read = { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" }, agent_id: "a1", agent_type: "Explore" };
+  assert.deepEqual(await files.hooks[0](read), {}, "never a decision");
+  assert.deepEqual(asked.pop(), ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7/sub-Explore-a1", event: "pre-tool-use", input: { ...read, cwd: "/b" } }]);
+  // a Bash command that reads the shared file freezes it as a Read does; one that doesn't name it sends nothing
+  await m.directorHook(ctx, gate({}))({ hook_event_name: "PreToolUse", tool_input: { command: "cat timeline.tsx" } });
+  assert.deepEqual(asked.pop(), ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7", event: "pre-tool-use", input: { hook_event_name: "PreToolUse", tool_input: { file_path: "timeline.tsx" }, tool_name: "Read", cwd: "/b" } }]);
+  await m.directorHook(ctx, gate({}))({ hook_event_name: "PreToolUse", tool_input: { command: "cb history Demo" } });
+  assert.equal(asked.length, 0);
+  // an allowed Stop lets go; the turn's end lets go of the turn and its subagents (however it ended)
+  assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop" }), {});
+  assert.deepEqual(asked.splice(0), [["carton.notices", { bundlePath: "/b", actor: "director/c1/t7", take: true }], ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7", event: "stop", input: undefined }]]);
+  const chat = { chatId: "c1", turn: { id: "t7", state: "running", text: "Tighten it." } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "director");
+  m.turnEnded(chat);
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(asked.map(([method, a]) => [method, a.event ?? a.prompt]), [["carton.agentHook", "endTurn"], ["carton.nameTurn", "Tighten it."]]);
+  assert.equal(asked[0][1].actor, "director/c1/t7");
+});
+
+test("H8: every agent's appended prompt gains the view flow with Carton on", () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const [line] = m.viewPrompt({ id: "p1" });
+  assert.match(line, /`cb source print p1 --view <name>`/);
+  assert.match(line, /`timeline\.tsx` keeps showing the state your turn started from until your turn ends/);
+  assert.match(line, /`cb conflicts p1`/);
 });
 
 test("host Claude Code gets the hooks through --settings; carton:call forwards to the worker", async () => {
@@ -66,6 +105,8 @@ test("host Claude Code gets the hooks through --settings; carton:call forwards t
   assert.equal(flag, "--settings");
   const h = JSON.parse(json).hooks;
   assert.deepEqual([h.PreToolUse[0].matcher, h.PreToolUse[0].hooks[0].command, h.Stop[0].hooks[0].command, h.SubagentStop[0].hooks[0].command], ["Bash", "cb carton-hook pre-tool-use", "cb carton-hook stop", "cb carton-hook subagent-stop"]);
+  // H8: the file tools the holder's Materializer hears of
+  assert.deepEqual([h.PreToolUse[1].matcher, h.PreToolUse[1].hooks[0].command], ["Read|Write|Edit|MultiEdit", "cb carton-hook pre-tool-use"]);
   m.library({ call: async (method, ...args) => [method, ...args] });
   assert.deepEqual(await m.call("undo", [{ projectId: "p1" }]), ["carton.undo", { projectId: "p1" }]);
   assert.throws(() => m.call("../x", []), /Unknown Carton method/);
@@ -117,7 +158,8 @@ test("a Director turn's end asks the worker to name its last version; the prompt
     m.turnEnded(host, "result");
     await new Promise((r) => setImmediate(r));
   } finally { Object.assign(console, original); }
-  assert.deepEqual(asked, [["carton.nameTurn", { projectId: "p1", chat: "c1", turn: "t9", prompt: "Make the intro tighter, then add a title." }]]);
+  // (H8: first the turn lets go of the shared timeline.tsx; the prompt goes only to nameTurn)
+  assert.deepEqual(asked, [["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t9", event: "endTurn", input: undefined }], ["carton.nameTurn", { projectId: "p1", chat: "c1", turn: "t9", prompt: "Make the intro tighter, then add a title." }]]);
   assert.ok(!logged.some((l) => /intro|secret/.test(l)), logged.join("\n"));
   // Off: nothing is remembered or asked.
   const off = load({});

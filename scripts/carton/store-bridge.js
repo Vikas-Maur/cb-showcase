@@ -47,7 +47,21 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
   const skipInArchive = (dirRel, name, dir) => dirRel === ""
     ? folded(name) === ".carton"
     : folded(dirRel) === ".scratch/views" && cartonView(require("node:path").join(dir, name));
-  if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive, cartonView };
+  // H8 (item 4): AGENTS.md, which Cardboard writes into each bundle for agents, gains Carton's view flow with Carton on.
+  // With Carton off it is Cardboard's text, byte for byte.
+  const q = (x) => "\x60" + x + "\x60";
+  const VIEWS_MD = "\n## Others may edit while you work (Carton)\n\n" +
+    "- Every save is a version, and the person (or a teammate) may be editing this project at the same time.\n" +
+    "- Edit your own copy of the timeline: " + q("cb source print <project> --view <name>") + " prints it into " + q(".scratch/views/") + "\n" +
+    "  and answers with the file to edit and its status file. Save it as you would " + q("timeline.tsx") + "; each save is\n" +
+    "  applied as your change, and the status file says how it landed: " + q("confirmed") + ", " + q("conflicts") + " (someone else\n" +
+    "  changed the same thing: what is there was kept, and the cards say what) or " + q("rejected") + " (with why). Read it\n" +
+    "  after each save.\n" +
+    "- " + q("timeline.tsx") + " keeps showing the state you started from while you work, so it never changes under you; it\n" +
+    "  catches up once you are done.\n" +
+    "- " + q("cb conflicts <project>") + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person.\n";
+  const agentsMd = (text) => (process.env.CARDBOARD_CARTON === "1" ? text + VIEWS_MD : text);
+  if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive, cartonView, agentsMd };
   const path = require("node:path");
   let api;
   // carton-node.cjs is loaded on first use, so a cb command that never touches a project pays nothing for it. If it
@@ -72,6 +86,7 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     on: true,
     skipInArchive,
     cartonView,
+    agentsMd,
     // A read of project.json or timeline.tsx can find the name missing for a moment while Carton installs the file
     // (displace, then link; in CI's NTFS race about a quarter of a tight loop's reads did). 1.4.0's saves never left a
     // gap, and its readers take a missing project.json for a removed project: the watcher tells the pages so, and the
@@ -135,7 +150,13 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     },
     // H1, H3: displace-then-install in place of rename(tmp, file).
     install: (tmp, file, seenStamp) => (carton() ? carton().install(tmp, file, seenStamp) : require("node:fs/promises").rename(tmp, file)),
-    // H3: timeline.tsx is written the same way, from a temp file next to it.
+    // H8 (worker): the bundle's timeline.tsx is the Materializer's (sync/views.js): Cardboard's watcher hands a change
+    // of it over instead of applying it.
+    // (a facade without them never owns it: Cardboard's own apply runs)
+    timelineOwned: (dir) => { const c = carton(); return typeof c?.timelineOwned === "function" && !!c.timelineOwned(dir); },
+    timelineEvent: (dir) => carton()?.timelineEvent?.(dir),
+    // H3: timeline.tsx is written the same way, from a temp file next to it (not at all where the Materializer writes
+    // it: the facade's install drops it).
     async writeFile(file, text) {
       const fsp = require("node:fs/promises"), tmp = path.join(path.dirname(file), "." + path.basename(file) + "." + require("node:crypto").randomUUID() + ".tmp");
       if (!carton()) return fsp.writeFile(file, text, "utf8");
