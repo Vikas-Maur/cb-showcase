@@ -1,0 +1,8 @@
+{
+  // The CI probes (Node only). The .mjs helpers are plain JavaScript and are not type-checked.
+  "extends": "../tsconfig.node.json",
+  "compilerOptions": {
+    "noEmit": true
+  },
+  "include": ["probes"]
+}
