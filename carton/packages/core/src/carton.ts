@@ -1061,11 +1061,13 @@ class CartonImpl implements Carton {
     const liveIds = new Set(live.map((p) => p.id));
     for (const r of stored) if (!liveIds.has(r.value.id)) writes.push({ table: T.pending, key: r.key, value: undefined });
     live.forEach((p, order) => writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
-    // late conflicts (an edit that came back with cards after its writer moved on) are kept for the writer (§6.2)
+    // a pending change that came back with cards after its write had returned (a late conflict, §6.2), or that the
+    // server refused: a notice for its author, in the same batch, returned at the start of that actor's next cb/MCP
+    // result and by the Stop hook
     const notices: Notice[] = [];
-    const authorOf = (id: string) => stored.find((r) => r.value.id === id)?.value.author ?? this.#actor();
-    if (e.type === "absorbed" && e.cards.length) notices.push({ to: actorKey(authorOf(e.id)), kind: "late-conflict", text: `your change came back with ${e.cards.length} card${e.cards.length === 1 ? "" : "s"}: someone else's edit kept its value`, change: e.id, cards: e.cards });
-    if (e.type === "confirmed" && e.lateCards.length) notices.push({ to: actorKey(authorOf(e.id)), kind: "late-conflict", text: `your change was confirmed with ${e.lateCards.length} card${e.lateCards.length === 1 ? "" : "s"}`, change: e.id, cards: e.lateCards });
+    const authorOf = (id: string) => stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
+    const late = e.type === "confirmed" ? e.lateCards : e.type === "absorbed" ? e.cards : [];
+    if (late.length && (e.type === "confirmed" || e.type === "absorbed")) notices.push({ to: actorKey(authorOf(e.id)), kind: "late-conflict", text: `Your change ${e.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: e.id, cards: late });
     if (e.type === "rejected") notices.push({ to: actorKey(authorOf(e.id)), kind: "rejected", text: `the server refused a change: ${e.reason}`, change: e.id });
     const at = this.#opts.clock?.() ?? Date.now();
     notices.forEach((n, i) => writes.push({ table: T.notices, key: [n.to, at, i, randomHex(4)], value: { ...n, at } }));
@@ -1114,15 +1116,15 @@ class CartonImpl implements Carton {
     return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
   }
   /** Keep what `#enqueue` did: the pending row (in queue order), or the spent id of an empty write. */
-  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = []): Promise<CommitResult> {
+  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = []): Promise<CommitResult> {
     if (r.status === "confirmed") {
-      await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }], [{ table: T.meta, key: ["noop", id], expect: "absent" }, { table: T.ids, key: [id], expect: "absent" }]);
+      await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }, ...extra], [{ table: T.meta, key: ["noop", id], expect: "absent" }, { table: T.ids, key: [id], expect: "absent" }]);
       return r;
     }
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
     const writes: StoreWrite[] = [];
     sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
-    if (writes.length) await this.store.write(writes);
+    if (writes.length || extra.length) await this.store.write([...writes, ...extra]);
     if (!wait) return r;
     const o = await sc.waitFor(id, wait);
     // a confirmation is answered once History holds the row (the result carries the change)
@@ -1135,6 +1137,8 @@ class CartonImpl implements Carton {
     // from here to the enqueue, nothing awaits: the optimistic state the ops are made on is the one they join
     const opt = sc.queue.optimistic(cut).doc;
     let ops: Op[];
+    // the cards `choices` decided merging a stale base onto the optimistic head (written with the queued row)
+    let resolved: ConflictCard[] = [];
     if (input.base === undefined) ops = input.ops ?? E.diff(opt, input.doc!, this.schema);
     else {
       // a stale base (an agent's header): merge it onto the optimistic state here, as a local cut's commit would
@@ -1147,10 +1151,13 @@ class CartonImpl implements Carton {
         const unseen = input.unchosen === "prefer" ? [] : unseenCards(m.conflicts, input.choices);
         if (m.conflicts.length && (!input.choices || unseen.length)) return { status: "conflicts", cards: m.conflicts, ref: this.#sharedRef(cut), merge: m, ...(input.choices ? { unseen: unseen.map((c) => c.path) } : {}) };
         ops = E.diff(opt, m.conflicts.length ? E.resolve(m, input.choices!) : m.doc, this.schema);
+        if (m.conflicts.length) resolved = m.conflicts;
       }
     }
     const r = this.#enqueue(sc, cut, id, author, ops, input);
-    return this.#persistEnqueued(sc, cut, id, r, input.wait);
+    const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
+    const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites);
+    return resolved.length && (out.status === "pending" || out.status === "confirmed") ? { ...out, resolved } : out;
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };

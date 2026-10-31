@@ -501,7 +501,7 @@ export interface UndoEntry {
  */
 export type CommitResult =
   | { status: "confirmed"; seq: number; ref: StateRef; change: ConfirmedChange | null; rebased: number; notices: Notice[]; empty?: boolean; warnings?: SoftWarning[]; /** cards `choices` decided (the proposals that didn't land) */ resolved?: ConflictCard[] }
-  | { status: "pending"; id: ChangeId; ref: StateRef; notices: Notice[] }
+  | { status: "pending"; id: ChangeId; ref: StateRef; notices: Notice[]; /** cards `choices` decided merging a stale base */ resolved?: ConflictCard[] }
   | { status: "conflicts"; cards: ConflictCard[]; ref: StateRef; merge?: MergeResult; unseen?: PathKey[] }
   | { status: "rejected"; reason: string; invalid?: { path?: PathKey; error: string } };
 
