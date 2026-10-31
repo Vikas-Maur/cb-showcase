@@ -14,15 +14,18 @@
 // - A 1.4.0 timestamp rev resolves only through the mapping written at migration (`recordLegacyRev`).
 import { StateUnknown, actorKey } from "@carton/core";
 import type { Actor, Carton, Doc, Notice, NoticeKind, StateRef, ConflictCard } from "@carton/core";
-import { revBody, type Rev } from "../header.ts";
+import { branchToken, revBody, type CartonRev, type Rev } from "../header.ts";
 import type { HeldBase, MaterializerEngine, SaveResult } from "./materializer.ts";
 
 const VIEWS = "views";
 /** The ref token core prints (`<cut name>@<seq>~<hash8>`), from a pin's header (`… b:<branch8> p:… by …`). */
 const tokenOf = (header: string): string => {
+  const m = /^(.+@\d+~[0-9a-f]{8}) b:/.exec(header); // a cut name may hold " b:" itself
+  if (m) return m[1]!;
   const i = header.indexOf(" b:");
   return i < 0 ? header : header.slice(0, i);
 };
+const STATE_TOKEN = /^(.+)@(\d+)~([0-9a-f]{8})$/;
 /** The notices row holding a save's cards for its author (`@carton/local` writes.ts `cardsKey`). */
 const cardsKey = (author: Actor, change: string) => [actorKey(author), 0, 0, `req:${change}`];
 interface PinRecord {
@@ -47,6 +50,18 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     await store.write([{ table: VIEWS, key, value }]);
   };
   const toHeld = (r: { doc: Doc; seq: number; causal: string[] }): HeldBase => ({ baseDoc: r.doc, baseSeq: r.seq, causal: r.causal });
+  /**
+   * A printed header's state as core reads it: the cut whose `branchToken` the header's `b:` is, so any cut id round
+   * trips (core's own lookup only matches an id that starts with those 8 characters). Two cuts with one token: the
+   * one with the header's cut name. None found: the header as text, for core's own lookup and error.
+   */
+  const refOf = async (rev: CartonRev): Promise<StateRef | string> => {
+    const m = STATE_TOKEN.exec(rev.ref);
+    if (!m || !rev.branch8) return revBody(rev);
+    const same = (await carton.cuts()).filter((c) => branchToken(c.id) === rev.branch8);
+    const named = same.length > 1 ? same.filter((c) => c.name === m[1]) : same;
+    return named.length === 1 ? { branchId: named[0]!.id, seq: Number(m[2]), hash8: m[3]! } : revBody(rev);
+  };
   const pinKey = (r: StateRef) => `${r.branchId}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`;
   const pinsByOwner = new Map<string, number>();
   /** The author's cards row for a save (`@carton/local`'s `cardsRow`). */
@@ -69,14 +84,16 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       return (await carton.head(cut())).doc;
     },
     async pin({ owner, doc, seq, causal, ttlMs }) {
-      const p = await carton.pin({ owner, cut: cut(), ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
+      // the cut is read once: the pin's store refresh may find a cut another process switched to (review 11 #1)
+      const on = cut();
+      const p = await carton.pin({ owner, cut: on, ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
       const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
       await store.write([{ table: VIEWS, key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord }]);
       // now and then, per owner: long-lived owners (the shared file's prints) keep pinning new states
       const n = (pinsByOwner.get(owner) ?? 0) + 1;
       pinsByOwner.set(owner, n);
       if (n % 64 === 0) await prune(owner);
-      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)) };
+      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on };
     },
     async release(owner) {
       const rows = await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] });
@@ -89,10 +106,10 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
         if (!ref) throw new StateUnknown(String(rev.rev), "a 1.4.0 timestamp rev from before Carton, of another state");
         return toHeld(await carton.resolve(ref));
       }
-      return toHeld(await carton.resolve(revBody(rev)));
+      return toHeld(await carton.resolve(await refOf(rev)));
     },
     async commit({ doc, base, author, id }) {
-      const b = "baseDoc" in base ? base : base.kind === "carton" ? revBody(base) : ((await getMeta<string>(["legacy", String(base.rev)])) ?? String(base.rev));
+      const b = "baseDoc" in base ? base : base.kind === "carton" ? await refOf(base) : ((await getMeta<string>(["legacy", String(base.rev)])) ?? String(base.rev));
       const withId = id ? { id } : {};
       let r = await carton.commit({ doc, base: b, author, cut: cut(), ...withId });
       let cards: ConflictCard[] = [];

@@ -45,6 +45,8 @@ export interface HeldBase {
   baseDoc: Doc;
   baseSeq: number;
   causal: string[];
+  /** The cut this state was pinned on, when known: a freeze view belongs to it (B6). */
+  cut?: string;
 }
 
 export interface SaveResult {
@@ -62,6 +64,8 @@ export interface Pinned {
   branchId: string;
   seq: number;
   doc: Doc;
+  /** The cut pinned on (`MaterializerEngine.cut` when the pin was asked for). */
+  cut?: string;
 }
 
 /** What the materializer needs from the engine. `cartonMaterializerEngine` implements it over `Carton`. */
@@ -110,6 +114,11 @@ export interface MaterializerHost {
   toProject(doc: Doc, current: Project | null): Project;
   /** Three-way merge of docs; used to gather agents' saves into the freeze view (R8-01). */
   merge3(base: Doc, ours: Doc, theirs: Doc): Doc;
+  /**
+   * The changes from one doc to another, each as a comparable string (the same edit made from either side gives the
+   * same string). Finds a save that took in part of what the freeze hides; without it, such a save is merged as any.
+   */
+  changes?(from: Doc, to: Doc): string[];
   /** Hard and soft findings for the status sidecar, as 1.4.0's `// diagnostics:` lists them. */
   diagnose(saved: Doc, head: Doc): string[];
 }
@@ -301,6 +310,8 @@ export class Materializer {
   readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
+  /** The cut `sharedRef` was pinned on. */
+  private sharedCut: string | undefined = undefined;
   private lastRemoteRewrite = -Infinity;
   private remoteTimer: unknown = null;
   private localTimer: unknown = null;
@@ -512,11 +523,36 @@ export class Materializer {
   private async freezeOnCurrentCut(moved = false, pinned?: HeldBase): Promise<void> {
     const cut = this.engine.cut?.() ?? null;
     if (!this.freeze.active || (!moved && cut === this.freeze.cut)) return;
-    const h = pinned ?? (await this.pinnedHead("shared-file"));
+    this.restartFreeze(await this.currentHead(pinned));
+  }
+  /** The freeze view restarts from `h`; it belongs to the cut `h` was pinned on (review 11 #1). */
+  private restartFreeze(h: HeldBase): void {
     this.freeze.view = h.baseDoc;
     this.freeze.baseSeq = h.baseSeq;
-    this.freeze.causal = [];
-    this.freeze.cut = cut;
+    this.freeze.causal = [...h.causal];
+    this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
+  }
+  /** What the freeze hides now: the changes from the freeze view to its cut's head (null: unknown, or the cut moved). */
+  private async hiddenChanges(): Promise<Set<string> | null> {
+    const on = this.engine.cut?.() ?? null;
+    if (!this.host.changes || on !== this.freeze.cut) return null;
+    const head = await this.engine.head();
+    const view = this.freeze.view;
+    return view && (this.engine.cut?.() ?? null) === on ? new Set(this.host.changes(view, head)) : null;
+  }
+  /** Whether `h` was pinned on the current cut (or the engine has no cuts). */
+  private onCurrentCut(h: HeldBase): boolean {
+    return h.cut === undefined || h.cut === this.engine.cut?.();
+  }
+  /**
+   * Head pinned for the shared file on the cut that is current once pinned (`pinned`, if it is): a pin refreshes from
+   * the store and can find a cut another process switched to, so the head it returns is the old cut's (review 11 #1).
+   * Re-pinned a few times; a pin still behind is labelled with its own cut, so the next check restarts the freeze.
+   */
+  private async currentHead(pinned?: HeldBase): Promise<HeldBase> {
+    let h = pinned ?? (await this.pinnedHead("shared-file"));
+    for (let i = 0; i < 3 && !this.onCurrentCut(h); i++) h = await this.pinnedHead("shared-file");
+    return h;
   }
 
   /** Any `cb` call: windowless agents count as active for a while after it. */
@@ -605,13 +641,11 @@ export class Materializer {
     const f = this.frozenNow();
     if (f && !this.freeze.active) {
       // the freeze starts from what the shared file shows, and remembers the seq that state was derived from
-      const shown = this.sharedRef ? await this.resolveOrNull(this.sharedRef) : null;
-      const start = shown ?? (await this.pinnedHead("shared-file"));
+      // (only if it shows the current cut: a cut switched without telling this materializer starts from its head)
+      const cut = this.engine.cut?.();
+      const shown = this.sharedRef && this.sharedCut === cut ? await this.resolveOrNull(this.sharedRef) : null;
       this.freeze.active = true;
-      this.freeze.view = start.baseDoc;
-      this.freeze.baseSeq = start.baseSeq;
-      this.freeze.causal = [...start.causal];
-      this.freeze.cut = this.engine.cut?.() ?? null;
+      this.restartFreeze(shown ? { ...shown, ...(cut !== undefined ? { cut } : {}) } : await this.currentHead());
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
       this.freeze.view = null;
@@ -639,7 +673,7 @@ export class Materializer {
   /** Head, pinned for `owner`, as a held state with its seq. */
   private async pinnedHead(owner: string): Promise<HeldBase> {
     const p = await this.engine.pin({ owner, ttlMs: 7 * DAY });
-    return { baseDoc: p.doc, baseSeq: p.seq, causal: [] };
+    return { baseDoc: p.doc, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) };
   }
 
   // ------------------------------------------------------------------ Carton's writes
@@ -647,12 +681,7 @@ export class Materializer {
   /** `cb source print` with the app open: the shared file shows head; a freeze view restarts from it. */
   printShared(): Promise<string> {
     return this.run(async () => {
-      if (this.freeze.active) {
-        const h = await this.pinnedHead("shared-file");
-        this.freeze.view = h.baseDoc;
-        this.freeze.baseSeq = h.baseSeq;
-        this.freeze.causal = [];
-      }
+      if (this.freeze.active) this.restartFreeze(await this.currentHead());
       await this.writeSharedNow("print", true);
       return this.sharedRef!;
     });
@@ -690,7 +719,9 @@ export class Materializer {
   private async writeSharedNow(cause: string, force = false): Promise<void> {
     await this.importUnseen(TIMELINE_FILE);
     await this.freezeOnCurrentCut();
-    const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, seq: this.freeze.baseSeq, causal: this.freeze.causal, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
+    // the freeze view only on the cut it belongs to (if the cut moved since, head until the next check restarts it)
+    const view = this.freeze.active && this.freeze.cut === (this.engine.cut?.() ?? null) ? this.freeze.view : null;
+    const pinned = view ? await this.engine.pin({ owner: "shared-view", doc: view, seq: this.freeze.baseSeq, causal: this.freeze.causal, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
     if (cause === "remote") this.lastRemoteRewrite = this.clock.now();
     const body = refBodyOf(pinned);
     const cur = await this.readFile(TIMELINE_FILE);
@@ -699,6 +730,7 @@ export class Materializer {
     const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
     await this.install(TIMELINE_FILE, text);
     this.sharedRef = body; // only once installed: a failed rewrite must not read as done
+    this.sharedCut = pinned.cut;
 
     this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
   }
@@ -760,10 +792,12 @@ export class Materializer {
     // project.json has one base: Carton's latest materialization of it. Only that state stays pinned for it (the
     // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
     // unpatched tools, rare, and get the latest view as their base).
+    const on = this.engine.cut?.();
     const head = await this.engine.head();
     const onDisk = await this.readEnvelope();
     const same = (x: unknown) => onDisk !== null && JSON.stringify(x) === JSON.stringify(onDisk);
-    if (!fresh && this.projectPin && cur && same({ ...env, project: this.host.toProject(head, cur) })) return;
+    // (not when the head read found a cut switch: that head is the old cut's, review 12 #1's class)
+    if (!fresh && this.projectPin && cur && on === this.engine.cut?.() && same({ ...env, project: this.host.toProject(head, cur) })) return;
     await this.engine.release("project-file");
     const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     const body = refBodyOf(p);
@@ -1256,8 +1290,16 @@ export class Materializer {
     const asBase = !name && !resumed && sameDoc(saved, baseDoc);
     // during a freeze, head is pinned once: the save is compared with, and the freeze restarted from, the same state
     // (a commit from another process landing in between must stay hidden, R8-01)
-    const frozenHead = !name && !resumed && !asBase && rel === TIMELINE_FILE && this.freeze.active ? await this.pinnedHead("shared-file") : null;
-    const asHead = !name && !resumed && !asBase && sameDoc(saved, frozenHead ? frozenHead.baseDoc : await this.engine.head());
+    const frozenHead = !name && !resumed && !asBase && rel === TIMELINE_FILE && this.freeze.active ? await this.currentHead() : null;
+    // a head-equal save is a no-op only against the current cut's head: if the cut is found switched while head is
+    // read (a pin or a read refreshes from the store; `currentHead` gave up re-pinning), the save is committed on the
+    // cut it lands on, as when the switch is seen a moment earlier (review 12 #1)
+    let asHead = false;
+    if (!name && !resumed && !asBase) {
+      const on = this.engine.cut?.();
+      const head = frozenHead ? frozenHead.baseDoc : await this.engine.head();
+      asHead = (frozenHead ? this.onCurrentCut(frozenHead) : on === this.engine.cut?.()) && sameDoc(saved, head);
+    }
     if (asBase || asHead) {
       // nothing to version: the file shows the state its header names, or head itself (another materializer's install
       // of carton.db's state, a takeover helper's while it held the lease, B11/B3; or a save that changed nothing). No
@@ -1291,6 +1333,8 @@ export class Materializer {
       slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
       await this.engine.putMeta(attemptKey, slot);
     }
+    // what the freeze hides just before this save lands (its own change isn't in head yet)
+    const hidden = !slot.result && this.freeze.active && this.freeze.view && rel !== PROJECT_FILE ? await this.hiddenChanges() : null;
     const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
     if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res });
     const settle = async () => {
@@ -1327,8 +1371,15 @@ export class Materializer {
       const cut = this.freeze.cut;
       await this.freezeOnCurrentCut();
       if (cut === this.freeze.cut) {
-        this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
-        if (res.id && !this.freeze.causal.includes(res.id)) this.freeze.causal.push(res.id);
+        if (hidden?.size && this.host.changes!(baseDoc, saved).some((c) => hidden.has(c))) {
+          // the save made an edit the freeze hides (an agent saving the ripple a remote made, alone or with edits of
+          // its own): merged in, the view would hold it without its change's id, and core would map later saves
+          // through it again. The freeze restarts from head, with head's causal past (round 13; review 9 #1 in general)
+          this.restartFreeze(await this.currentHead());
+        } else {
+          this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
+          if (res.id && !this.freeze.causal.includes(res.id)) this.freeze.causal.push(res.id);
+        }
       }
     }
     if (rel === TIMELINE_FILE || (name && this.freeze.active)) {
