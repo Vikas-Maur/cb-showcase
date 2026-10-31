@@ -117,11 +117,12 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
       throw unwritable(e);
     }
   }
-  let src: DatabaseSync;
+  let src: DatabaseSync | undefined;
   try {
     src = new DatabaseSync(other, { timeout: 3 });
     src.prepare("SELECT count(*) AS n FROM sqlite_schema").get();
   } catch (e) {
+    src?.close(); // opened but unreadable: never left open (on Windows it would block the next rename or delete)
     throw unwritable(e);
   }
   let cleanUp = false;

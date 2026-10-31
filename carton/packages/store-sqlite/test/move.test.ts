@@ -742,3 +742,30 @@ test("an old copy that moved on is never deleted because a backup of the file it
   assert.equal(changes(p.inBundle), 2, "the bundle file, with the later change, is kept");
   assert.equal(changes(p.inAppData), 1, "and the backup is left as it was");
 });
+
+test("a source that opens but can't be read is closed before the refusal (never left open to block a rename)", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  p.startSyncing();
+  const proto = DatabaseSync.prototype as unknown as { prepare(sql: string): unknown };
+  const prepare = proto.prepare;
+  let conn: DatabaseSync | undefined;
+  proto.prepare = function (this: DatabaseSync, sql: string) {
+    if (sql === "SELECT count(*) AS n FROM sqlite_schema" && !conn) {
+      conn = this;
+      throw Object.assign(new Error("disk I/O error"), { code: "ERR_SQLITE_ERROR", errcode: 266 });
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+  } finally {
+    proto.prepare = prepare;
+  }
+  assert.equal(conn?.isOpen, false);
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1], "and the next open moves it as usual");
+  await b.store.close();
+});

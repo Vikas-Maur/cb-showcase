@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { openSqliteStore, openProjectStore, BusyError, DatabaseHeldError, FORMAT_VERSION } from "../src/index.ts";
-import { Db, OPEN_RETRY_MS, openRetrying } from "../src/db.ts";
+import { Db, OPEN_RETRY_MS, openRetrying, openPlatform } from "../src/db.ts";
 import { scratch } from "./scratch.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -17,6 +17,7 @@ const root = scratch("store");
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 let n = 0;
 const fresh = () => path.join(root, `s${++n}`, ".carton", "carton.db");
+const sleepMs = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const pragma = (file: string, name: string) => {
   const db = new DatabaseSync(file, { readOnly: true });
   try {
@@ -381,11 +382,11 @@ test("a caller that never yields still gets checkpoints: the WAL stays bounded t
   await s.close();
 });
 
-// verify-ci #22: on Windows a carton.db reopened right after another process's handle went away failed its first read
-// with "disk I/O error" (something still held the file or its -wal/-shm). The Windows path is tested here with
-// injected errors (any OS) and, on Windows, with a sidecar really held.
+// On Windows something else (an antivirus, the indexer, a backup tool, a process being terminated) can briefly hold
+// carton.db or its -wal/-shm: an open retries for a moment, then reports DatabaseHeldError. Tested with injected
+// errors (any OS) and, on Windows, with a sidecar really held.
 const sqliteError = (errcode: number, message: string) => Object.assign(new Error(message), { code: "ERR_SQLITE_ERROR", errcode });
-const ioerr = () => sqliteError(10 | (13 << 8), "disk I/O error"); // SQLITE_IOERR_SHMOPEN
+const ioerr = () => sqliteError(10 | (13 << 8), "disk I/O error"); // SQLITE_IOERR_ACCESS (3338)
 
 test("Windows: a held carton.db is retried on a fresh connection with backoff, without blocking the loop", async () => {
   const file = fresh();
@@ -416,7 +417,7 @@ test("Windows: still held after the retry window, the open fails with DatabaseHe
     assert.ok(e instanceof DatabaseHeldError);
     assert.equal(e.code, "CARTON_DB_HELD");
     assert.equal(e.path, "C:\\p\\carton.db");
-    assert.match(e.message, /is held by another process .*errcode 3338/);
+    assert.match(e.message, /may still be holding it .*check its permissions .*errcode 3338/);
     assert.equal((e.cause as { errcode: number }).errcode, 3338);
     return true;
   });
@@ -432,7 +433,15 @@ test("other failures, and I/O errors off Windows, are reported at once (an I/O e
   await assert.rejects(openRetrying("x", failWith(sqliteError(1, "SQL logic error")), "win32"), /^Error: SQL logic error$/);
   await assert.rejects(openRetrying("x", failWith(ioerr()), "linux"), /^Error: disk I\/O error \(SQLite errcode 3338\)$/);
   await assert.rejects(openRetrying("x", failWith(sqliteError(14, "unable to open database file")), "darwin"), /^Error: unable to open database file$/);
-  assert.equal(attempts, 4);
+  // on Windows "unable to open" is retried only for a file that exists: a missing one (or folder) is lasting
+  await assert.rejects(openRetrying(path.join(root, "missing", "carton.db"), failWith(sqliteError(14, "unable to open database file")), "win32"), /^Error: unable to open database file$/);
+  await assert.rejects(openRetrying("x", failWith(sqliteError(11, "database disk image is malformed")), "win32"), /malformed$/);
+  await assert.rejects(openRetrying("x", failWith(sqliteError(26, "file is not a database")), "win32"), /not a database$/);
+  // what a failing disk, memory or file system looks like is never retried: plain, READ, SHORT_READ, WRITE, FSYNC,
+  // TRUNCATE, NOMEM, CORRUPTFS; nor "unable to open" for a directory (CANTOPEN_ISDIR), though the path exists
+  for (const code of [10, 266, 522, 778, 1034, 1546, 3082, 8458]) await assert.rejects(openRetrying("x", failWith(sqliteError(code, "disk I/O error")), "win32"), new RegExp(`errcode ${code}\\)$`));
+  await assert.rejects(openRetrying(root, failWith(sqliteError(526, "unable to open database file")), "win32"), /^Error: unable to open database file$/);
+  assert.equal(attempts, 16);
 });
 
 test("Windows: a -wal or -shm held exclusively by another process gives DatabaseHeldError, and opens once let go", { skip: process.platform !== "win32" ? "Windows sharing modes" : false }, async () => {
@@ -443,21 +452,125 @@ test("Windows: a -wal or -shm held exclusively by another process gives Database
     await s.close();
     // Another process opens the sidecar with no sharing at all (as a scanner can), by path from the environment.
     const ps = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    const holder = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", "$f = [IO.File]::Open($env:CARTON_HOLD, 'OpenOrCreate', 'ReadWrite', 'None'); [Console]::Out.WriteLine('held'); [void][Console]::In.ReadLine(); $f.Close()"], { env: { ...process.env, CARTON_HOLD: file + side }, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
-    const exited = new Promise((r) => holder.once("close", r));
+    const holder = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference = 'Stop'; $f = [IO.File]::Open($env:CARTON_HOLD, 'OpenOrCreate', 'ReadWrite', 'None'); [Console]::Out.WriteLine('held'); [void][Console]::In.ReadLine(); $f.Close()"], { env: { ...process.env, CARTON_HOLD: file + side }, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+    const closed = new Promise<void>((r) => holder.once("close", () => r()));
+    holder.stdin!.on("error", () => {}); // a holder that already died: its exit is what the test reports
+    const within = <T>(p: Promise<T>, ms: number, what: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms); })]).finally(() => clearTimeout(timer));
+    };
     try {
-      await new Promise<void>((resolve, reject) => {
-        holder.stdout!.on("data", (d) => String(d).includes("held") && resolve());
+      let out = "";
+      await within(new Promise<void>((resolve, reject) => {
+        holder.stdout!.on("data", (d) => { out += d; if (/^held\r?$/m.test(out)) resolve(); });
         holder.once("error", reject);
         holder.once("close", (c) => reject(new Error(`the holder ended (${c}) before holding ${side}`)));
-      });
+      }), 30_000, `holding ${side}`);
       await assert.rejects(openSqliteStore(file), DatabaseHeldError, `held ${side}`);
     } finally {
       holder.stdin!.end("\n");
-      await exited;
+      try {
+        await within(closed, 10_000, "the holder letting go");
+      } catch {
+        holder.kill();
+        await within(closed, 10_000, "the holder being killed");
+      }
     }
     const again = await openSqliteStore(file);
     assert.deepEqual((await again.range("changes")).map((r) => r.value), [{ id: "a" }], `opens once ${side} is let go`);
     await again.close();
   }
+});
+
+test("Windows: an I/O error after the connection is up (marking a new file) is retried too, on a fresh connection, the failed one closed", async () => {
+  const file = fresh();
+  const proto = DatabaseSync.prototype as unknown as { prepare(sql: string): unknown };
+  const prepare = proto.prepare;
+  const conns: DatabaseSync[] = [];
+  let failures = 2;
+  proto.prepare = function (this: DatabaseSync, sql: string) {
+    if (!conns.includes(this)) conns.push(this);
+    if (failures > 0 && sql.startsWith("INSERT INTO") && sql.includes("_carton")) {
+      failures--;
+      throw ioerr();
+    }
+    return prepare.call(this, sql);
+  };
+  openPlatform.override = "win32";
+  let store;
+  try {
+    store = await openSqliteStore(file);
+  } finally {
+    proto.prepare = prepare;
+    delete openPlatform.override;
+  }
+  try {
+    assert.equal(failures, 0, "both injected failures happened in init, after Db.open");
+    assert.equal(conns.length, 3, "three attempts, each on its own connection");
+    assert.deepEqual(conns.map((c) => c.isOpen), [false, false, true], "the failed ones are closed");
+    assert.equal(pragma(file, "application_id"), 0x4352544e, "and the file is marked once, normally");
+  } finally {
+    await store.close();
+  }
+});
+
+test("Windows: a missing file opened read-only is reported at once, not as held", async () => {
+  openPlatform.override = "win32";
+  const t0 = Date.now();
+  try {
+    await assert.rejects(openSqliteStore(path.join(root, "nowhere", "carton.db"), { readOnly: true }), (e: Error) => !(e instanceof DatabaseHeldError) && /unable to open/.test(e.message));
+  } finally {
+    delete openPlatform.override;
+  }
+  assert.ok(Date.now() - t0 < OPEN_RETRY_MS, "no retry window");
+});
+
+test("Windows: the retry window is a deadline: an attempt that runs past it is the last, and the bound is configurable", async () => {
+  let attempts = 0;
+  const t0 = performance.now();
+  // an attempt as slow as SQLite's own synchronous retries inside one call: no second attempt starts after it
+  await assert.rejects(openRetrying("x", async () => { attempts++; await sleepMs(OPEN_RETRY_MS + 50); throw ioerr(); }, "win32"), DatabaseHeldError);
+  assert.equal(attempts, 1);
+  assert.ok(performance.now() - t0 < OPEN_RETRY_MS + 500);
+  attempts = 0;
+  const t1 = performance.now();
+  await assert.rejects(openRetrying("x", async () => { attempts++; throw ioerr(); }, "win32", 30), (e: Error) => /within 30 ms/.test(e.message));
+  const took = performance.now() - t1;
+  assert.ok(took >= 30 && took < 30 + 200, `${took} ms for a 30 ms bound`);
+  assert.ok(attempts >= 2 && attempts <= 4, `${attempts} attempts`);
+});
+
+test("a connection whose setup fails while constructing is closed, not left open", async () => {
+  const file = fresh();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const proto = DatabaseSync.prototype as unknown as { prepare(sql: string): unknown };
+  const prepare = proto.prepare;
+  let conn: DatabaseSync | undefined;
+  proto.prepare = function (this: DatabaseSync, sql: string) {
+    if (sql === "COMMIT") {
+      conn = this;
+      throw sqliteError(7, "out of memory");
+    }
+    return prepare.call(this, sql);
+  };
+  try {
+    await assert.rejects(Db.open(file), /out of memory/);
+  } finally {
+    proto.prepare = prepare;
+  }
+  assert.equal(conn?.isOpen, false);
+});
+
+test("openRetryMs must be finite and not negative (NaN or Infinity would retry forever)", async () => {
+  let attempts = 0;
+  for (const bad of [NaN, Infinity, -1]) {
+    await assert.rejects(openRetrying("x", async () => { attempts++; throw ioerr(); }, "win32", bad), TypeError);
+    const file = fresh();
+    await assert.rejects(openSqliteStore(file, { openRetryMs: bad }), /openRetryMs must be a finite number/);
+    assert.ok(!fs.existsSync(path.dirname(path.dirname(file))), "refused before any folder was made");
+  }
+  assert.equal(attempts, 0, "refused before any attempt");
+  let zero = 0;
+  await assert.rejects(openRetrying("x", async () => { zero++; throw ioerr(); }, "win32", 0), DatabaseHeldError);
+  assert.equal(zero, 1, "0 means one attempt, no retry");
 });

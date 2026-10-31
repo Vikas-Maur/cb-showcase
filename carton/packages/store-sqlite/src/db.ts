@@ -30,6 +30,12 @@ export interface DbOptions {
    */
   durability?: "normal" | "full";
   readOnly?: boolean;
+  /**
+   * Windows only: how long an open retries a file another program holds for a moment (an antivirus scan, the
+   * indexer, a backup tool), in ms, before DatabaseHeldError. Default 250; must be finite and >= 0. SQLite's own
+   * synchronous waits inside an attempt come on top (see openRetrying).
+   */
+  openRetryMs?: number;
 }
 
 const SQLITE_BUSY = 5;
@@ -43,45 +49,72 @@ export function isBusy(e: unknown): boolean {
 
 const SQLITE_IOERR = 10;
 const SQLITE_CANTOPEN = 14;
-/** How long an open on Windows retries an I/O error before DatabaseHeldError (see openRetrying). */
-export const OPEN_RETRY_MS = 500;
+/** Default for `openRetryMs`: how long an open on Windows retries a held file before DatabaseHeldError. */
+export const OPEN_RETRY_MS = 250;
 
-/** carton.db couldn't be opened on Windows because something still held it or its -wal/-shm (see openRetrying). */
+/**
+ * carton.db couldn't be opened on Windows within `openRetryMs`: most likely something still held it or its -wal/-shm
+ * (an antivirus scan, the indexer, a backup tool, a process being terminated); a lasting cause (permissions, a
+ * network share going away) can look the same to SQLite, so the message says both. `.cause` is SQLite's error.
+ */
 export class DatabaseHeldError extends Error {
   readonly code = "CARTON_DB_HELD";
   readonly path: string;
-  constructor(path: string, cause: unknown) {
+  constructor(path: string, cause: unknown, ms: number) {
     const c = cause as { message?: string; errcode?: number };
-    super(`${path} is held by another process (or a program such as an antivirus scanner) and couldn't be opened for ${OPEN_RETRY_MS} ms; try again (SQLite: ${c?.message ?? cause}${typeof c?.errcode === "number" ? `, errcode ${c.errcode}` : ""})`, { cause });
+    super(`${path} couldn't be opened within ${ms} ms: another process or program (an antivirus scan, the indexer, a backup tool) may still be holding it or its -wal/-shm, so try again; if it keeps failing, check its permissions (SQLite: ${c?.message ?? cause}${typeof c?.errcode === "number" ? `, errcode ${c.errcode}` : ""})`, { cause });
     this.path = path;
   }
 }
 
-// I/O errors, and "unable to open" (CreateFile on a file whose deletion is pending fails like a missing one).
-function isTransientOnWindows(e: unknown): boolean {
-  const code = ((e as { errcode?: number } | null)?.errcode ?? 0) & 0xff;
-  return code === SQLITE_IOERR || code === SQLITE_CANTOPEN;
+/** Test seam: the platform openRetrying behaves as (the Windows path is tested on every OS). */
+export const openPlatform: { override?: NodeJS.Platform } = {};
+
+// What a file held by another program can produce in SQLite's Windows VFS (os_win.c), by extended code. SQLite's own
+// error codes name the operation, not the cause, so this is an allowlist of operations a holder can make fail:
+// opening (CANTOPEN: the main file, -wal or -shm; plain only, not ISDIR/FULLPATH/CONVPATH/SYMLINK...), checking or
+// deleting a file (IOERR_ACCESS, IOERR_DELETE), byte-range locks (IOERR_LOCK, RDLOCK, UNLOCK, CHECKRESERVEDLOCK), and
+// shared memory (IOERR_SHMOPEN, SHMSIZE, SHMLOCK, SHMMAP). Never retried: a plain I/O error or a failed read, write,
+// fsync or truncate (a failing disk looks just like that), a short read, out of memory, a corrupt file system, and
+// SQLITE_CORRUPT/NOTADB (other primary codes). "Unable to open" counts only for a file that exists: a missing file or
+// folder is lasting.
+const HELD_IOERR = new Set([3338 /* ACCESS */, 2570 /* DELETE */, 3850 /* LOCK */, 2314 /* RDLOCK */, 2058 /* UNLOCK */, 3594 /* CHECKRESERVEDLOCK */, 4618 /* SHMOPEN */, 4874 /* SHMSIZE */, 5130 /* SHMLOCK */, 5386 /* SHMMAP */]);
+function isHeldOnWindows(e: unknown, path: string): boolean {
+  const code = (e as { errcode?: number } | null)?.errcode;
+  if (typeof code !== "number") return false;
+  return HELD_IOERR.has(code) || (code === SQLITE_CANTOPEN && fs.existsSync(path));
 }
 
 /**
- * Run an open (`attempt`: a fresh connection each time, which writes nothing until its first reads pass).
+ * Run an open (`attempt`): a fresh connection each time, closed by the attempt when it fails, whose steps are all safe
+ * to repeat (setup pragmas, and marks written in one transaction only when missing).
  *
- * On Windows a file closed or deleted a moment ago can still be held: an antivirus or the indexer scanning it, or a
- * process being terminated whose handles aren't closed yet. SQLite's first reads then fail with "disk I/O error" or
- * "unable to open" (verify-ci #22: a carton.db reopened right after another process's -wal/-shm went away). Such
- * failures are retried there, asynchronously with backoff, for up to OPEN_RETRY_MS, then reported as
- * DatabaseHeldError. Elsewhere these errors aren't transient: reported at once, an I/O error with SQLite's extended
- * code (the message is the same for every I/O step).
+ * Defence in depth for real Windows machines: an antivirus, the search indexer or a backup tool can hold a file (or
+ * its -wal/-shm) for a moment, as can a process being terminated whose handles aren't closed yet. SQLite then fails
+ * with "unable to open" or an I/O error. (verify-ci #22 looked like this, but its cause was a test reopening while a
+ * killed helper's handle was still open, fixed in that test.) Such failures (isHeldOnWindows) are retried there,
+ * asynchronously with backoff, until `retryMs` after the first attempt started (a monotonic deadline: every attempt
+ * and sleep counts, and no attempt starts past it), then reported as DatabaseHeldError. Elsewhere nothing is retried;
+ * an I/O error gets SQLite's extended code (its message is the same for every I/O step).
+ *
+ * The bound is on this loop, not on SQLite: inside one attempt, SQLite's Windows VFS itself waits synchronously on a
+ * sharing violation (winRetryIoerr: by its source, up to 25 ms x (1 + ... + 10) = 1,375 ms per failing call; not
+ * measured), which no JavaScript deadline can cut short. A thread that must stay responsive (answering lease pings)
+ * should open carton.db elsewhere.
  */
-export async function openRetrying<T>(path: string, attempt: () => Promise<T>, platform: NodeJS.Platform = process.platform): Promise<T> {
-  const t0 = Date.now();
+export async function openRetrying<T>(path: string, attempt: () => Promise<T>, platform: NodeJS.Platform = openPlatform.override ?? process.platform, retryMs = OPEN_RETRY_MS): Promise<T> {
+  // A bad value (NaN from a parsed setting, Infinity, a negative) would turn the deadline off: refused, on every OS.
+  if (!Number.isFinite(retryMs) || retryMs < 0) throw new TypeError(`openRetryMs must be a finite number of ms >= 0, not ${retryMs}`);
+  const deadline = performance.now() + retryMs;
   for (let n = 0; ; n++) {
     try {
       return await attempt();
     } catch (e) {
-      if (platform !== "win32" || !isTransientOnWindows(e)) throw withCode(e);
-      if (Date.now() - t0 >= OPEN_RETRY_MS) throw new DatabaseHeldError(path, e);
-      await sleep(Math.min(100, 10 << Math.min(n, 4))); // 10, 20, 40, 80, 100… ms
+      if (platform !== "win32" || !isHeldOnWindows(e, path)) throw withCode(e);
+      const left = deadline - performance.now();
+      if (left <= 0) throw new DatabaseHeldError(path, e, retryMs);
+      await sleep(Math.max(1, Math.min(left, 100, 10 << Math.min(n, 4)))); // 10, 20, 40, 80, 100… ms, never past the deadline
+      if (performance.now() >= deadline) throw new DatabaseHeldError(path, e, retryMs);
     }
   }
 }
@@ -135,10 +168,6 @@ export class Db {
    * runs first, before anything is written, so a file that isn't ours is refused untouched.
    */
   static async open(path: string, opts: DbOptions = {}, verify?: (raw: DatabaseSync) => void): Promise<Db> {
-    return openRetrying(path, () => Db.#open(path, opts, verify));
-  }
-
-  static async #open(path: string, opts: DbOptions, verify?: (raw: DatabaseSync) => void): Promise<Db> {
     const db = new Db(path, opts);
     try {
       if (verify) await db.read(() => verify(db.raw));
@@ -176,9 +205,14 @@ export class Db {
     this.path = path;
     this.#busyTimeoutMs = opts.busyTimeoutMs ?? 5000;
     this.raw = new DatabaseSync(path, { timeout: opts.syncBusyMs ?? 3, readOnly: opts.readOnly ?? false });
-    this.#begin = this.raw.prepare("BEGIN IMMEDIATE");
-    this.#commit = this.raw.prepare("COMMIT");
-    this.#rollbackStmt = this.raw.prepare("ROLLBACK");
+    try {
+      this.#begin = this.raw.prepare("BEGIN IMMEDIATE");
+      this.#commit = this.raw.prepare("COMMIT");
+      this.#rollbackStmt = this.raw.prepare("ROLLBACK");
+    } catch (e) {
+      this.raw.close(); // a failed construction must not leave the file open (on Windows it blocks renames)
+      throw e;
+    }
   }
 
   /** A cached prepared statement. */
