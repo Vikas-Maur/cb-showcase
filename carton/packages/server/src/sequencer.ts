@@ -601,8 +601,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const forkCut = rec.forkOf.slice(0, i);
     const source = typeof rec.source === "string" ? rec.source : forkCut;
     // core names a version by the cut it was made on, so a source with no edits of its own when published has its
-    // parent's version as the fork point: the publication is then the source at its root (SF1-9)
-    if (source !== forkCut) return { branchId: source, at: tables.branch(source)?.root ?? 0 };
+    // parent's version as the fork point, the same one the source forked from: the publication is then the source's
+    // version 0 (SF1-9). Not the source's storage root, which a later shallow share moves (stage review round 3).
+    if (source !== forkCut && tables.branch(source)?.rec.forkOf === rec.forkOf) return { branchId: source, at: 0 };
     return { branchId: source, at };
   }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
@@ -858,15 +859,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (!t?.tracking) continue;
         const nodes = t.nodes ?? [];
         const entry: sync.ClosureEntry = { branchId: id, rec: t.rec, nodes: s === 0 ? nodes : [], states: [] };
-        if (s === 0) {
-          if (t.authors?.length) entry.authors = t.authors;
-          const head = sync.jsonBytesBound({ rec: t.rec, nodes, authors: entry.authors ?? null }, Infinity);
-          if (lineage.length && head > budget) {
-            lineageNext = { entry: e, state: 0 };
-            break;
-          }
-          budget -= head;
+        if (s === 0 && t.authors?.length) entry.authors = t.authors;
+        // every page an entry is on carries its record (and the first, its nodes and authors): charged each time
+        // (stage review round 3); a page's first entry goes whatever its size, so every page makes progress
+        const head = sync.jsonBytesBound({ branchId: id, rec: t.rec, nodes: entry.nodes, authors: entry.authors ?? null }, Infinity);
+        if (lineage.length && head > budget) {
+          lineageNext = { entry: e, state: s };
+          break;
         }
+        budget -= head;
         for (let i = s; i < nodes.length; i++) {
           const k = tables.keyframeAt(id, nodes[i]!.seq);
           if (!k) continue;

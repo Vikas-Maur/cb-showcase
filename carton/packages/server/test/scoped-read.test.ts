@@ -125,3 +125,15 @@ test("a Published cut of an unedited variant counts the variant's edits since it
   await seq.handle(viewer, hello(PUB));
   assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 1 }, "one variant edit since the publication");
 });
+
+test("an unedited variant's publication stays at the variant's version 0 after a later shallow share moves its root (stage review round 3)", async () => {
+  const d0 = doc([clip("c0", 0, 5)]);
+  const { seq } = await world(d0);
+  const rec = (id: string, o: object) => ({ id, name: id, owner: "alice", kind: "variant", sequencer: { kind: "server", since: 0 } as const, ...o });
+  await seq.createBranch(rec(PUB, { forkOf: `${BRANCH}@0`, source: "variant", kind: "published" }) as never, { doc0: d0 as never, stateHash: "h0" });
+  // the variant reaches the server later, shallow: its root is its head then (2), after two edits made since publishing
+  await seq.createBranch(rec("variant", { forkOf: `${BRANCH}@0` }) as never, { doc0: d0 as never, stateHash: "h2", rootSeq: 2 });
+  const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
+  await seq.handle(viewer, hello(PUB));
+  assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 2 }, "both edits since the publication count");
+});
