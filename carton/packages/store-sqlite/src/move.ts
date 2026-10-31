@@ -143,7 +143,9 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
     if (moved) {
       // Done before. If the copy has since vanished (deleted by hand), the history is still here: copy again.
       if (!t) {
-        await copyAndMark(src, other, target, hooks);
+        // Under the mark's own token: a crash after this copy is published (before the mark is rewritten) then
+        // leaves a copy that the mark already vouches for, not one that conflicts with it forever.
+        await copyAndMark(src, other, target, hooks, moved.token);
         cleanUp = true;
         return;
       }
@@ -170,7 +172,9 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
       const sourceId = readMeta<string>(src, DB_ID);
       // `other` has no mark, so a copy of this very file at the target is a move that never got confirmed.
       const interrupted = t.copyOf !== undefined && same(t.copyOf.path, other) && sourceId !== undefined && t.copyOf.dbId === sourceId;
-      const stale = t.movedTo !== undefined && same(t.movedTo.path, other);
+      // `target` is an old copy whose history moved here, to `other`: only if `other` is the very copy its mark
+      // vouches for. Anything else now at `other` (an unrelated history put there) leaves `target` the history.
+      const stale = t.movedTo !== undefined && same(t.movedTo.path, other) && isCopyOf({ copyOf: readMeta<Mark>(src, COPY_OF) }, target, t.movedTo.token);
       if (!interrupted && !stale) throw new PlacementConflictError(target, other);
       removeUnused(target); // an unconfirmed copy, or the old copy we're moving back over
     }
@@ -256,10 +260,9 @@ async function begin(db: DatabaseSync, file: string, waitMs: number): Promise<vo
 
 // Steps 2-4 of the protocol; `src` holds the write lock on `from`, so the copy (made on a second connection, which
 // reads the last committed state) is exactly what the mark will vouch for.
-async function copyAndMark(src: DatabaseSync, from: string, to: string, hooks: MoveHooks): Promise<void> {
+async function copyAndMark(src: DatabaseSync, from: string, to: string, hooks: MoveHooks, token = randomBytes(8).toString("hex")): Promise<void> {
   // Step 4 must be possible before step 2 starts: a source that can't take the mark can't be fenced.
   assertWritable(src, from);
-  const token = randomBytes(8).toString("hex");
   // copyInto leaves nothing behind when it fails, publication included.
   await copyInto(from, to, { path: path.resolve(from), token, ...(readMeta<string>(src, DB_ID) ? { dbId: readMeta<string>(src, DB_ID) } : {}) }, hooks);
   try {

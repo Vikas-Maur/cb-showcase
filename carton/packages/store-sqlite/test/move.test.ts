@@ -668,3 +668,39 @@ test("a read-only moved history whose new copy was replaced is refused, not sile
     fs.chmodSync(p.inBundle, 0o644);
   }
 });
+
+test("moving back over an old copy is refused when what is at the history's place isn't the copy that old file's mark vouches for", async () => {
+  const p = project();
+  await movedThenReplaced(p, async (t) => {
+    const other = await openSqliteStore(t);
+    await other.write(put(9));
+    await other.close();
+  });
+  p.stopSyncing(); // back to the bundle, where the old file (whose history moved) still is
+  await assert.rejects(openProjectStore(p), PlacementConflictError);
+  const count = (file: string) => {
+    const raw = new DatabaseSync(file, { readOnly: true });
+    try {
+      return (raw.prepare("SELECT group_concat(v) AS v FROM changes").get() as { v: string }).v;
+    } finally {
+      raw.close();
+    }
+  };
+  assert.equal(count(p.inBundle), JSON.stringify({ id: "r.1" }), "the old file, now the only copy of the history, is untouched");
+  assert.equal(count(p.inAppData), JSON.stringify({ id: "r.9" }), "and the unrelated history is left as it was");
+});
+
+test("a crash while recopying a moved history whose copy vanished: the next open accepts that copy", async () => {
+  const p = project();
+  await movedThenReplaced(p, () => {}); // the copy vanished; the old file's mark still names it
+  const src = new URL("../src/index.ts", import.meta.url).href;
+  const code = `import { openProjectStore } from ${JSON.stringify(src)}; await openProjectStore(${JSON.stringify({ bundleDir: p.bundleDir, appDataDir: p.appDataDir, projectId: p.projectId })}, { afterPublish: () => process.exit(0) });`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "inherit"] });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+  assert.ok(fs.existsSync(p.inAppData), "the copy was published before the crash");
+  const b = await openProjectStore(p);
+  assert.equal(b.store.path, p.inAppData);
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+  assert.ok(!fs.existsSync(p.inBundle), "and the old file went away");
+});
