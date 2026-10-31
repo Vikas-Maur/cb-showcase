@@ -156,6 +156,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
             : summaryFor(r),
       ...(kind === "turn" ? { turn: { label: TURNS[Math.floor(r() * TURNS.length)]!, edits: 2 + Math.floor(r() * 18) } } : {}),
     };
+    if (kind === "fold" && r() < 0.5) return { ...base, summary: "Folded in some of '30s Instagram cut' (2 left out)", foldRest: true, ...over };
     return { ...base, ...over };
   };
 
@@ -355,6 +356,15 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     },
     async resolve(id, _choice: ConflictChoice) {
       set("conflicts", () => (conflicts = conflicts.filter((c) => c.id !== id)));
+    },
+    async foldRest(versionId) {
+      const p = pos.get(versionId);
+      if (p == null || !all[p]!.foldRest) return { ok: false, error: "Nothing left to fold in" };
+      const { foldRest: _f, ...v } = all[p]!;
+      all[p] = v;
+      revision++;
+      addVersion({ author: people.alice, kind: "fold", summary: "Folded in the rest of '30s Instagram cut'" });
+      return { ok: true };
     },
     async restore(ref) {
       const v = all.find((x) => x.ref === ref);

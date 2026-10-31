@@ -210,10 +210,15 @@ test("sync words and presence from the sync client's events", async () => {
 test("late conflicts addressed to you become cards; picking your side commits it", async () => {
   const { carton, ui, emit } = await open();
   await carton.commit({ ops: [set("a", "name", "Head")], author: bob });
-  emit({ type: "notice", notice: { to: "human/alice", kind: "late-conflict", text: "", by: bob, cards: [{ kind: "field", path: "items/a/name", base: "A", ours: "Mine", theirs: "Head" }] } });
+  // Core's convention (merge3(base, head, mine)): ours is the head on screen, theirs is your edit that lost.
+  emit({ type: "notice", notice: { to: "human/alice", kind: "late-conflict", text: "", by: bob, cards: [{ kind: "field", path: "items/a/name", base: "A", ours: "Head", theirs: "Mine" }] } });
   assert.equal(ui.conflicts().length, 1);
-  assert.equal(ui.conflicts()[0]!.provisional, "theirs");
-  await ui.resolve("items/a/name", "mine");
+  const card = ui.conflicts()[0]!;
+  assert.equal(card.provisional, "theirs");
+  assert.equal(card.mine.summary, "“Mine”");
+  assert.equal(card.theirs.summary, "“Head”");
+  assert.equal(card.theirs.author.name, "Bob");
+  await ui.resolve(card.id, "mine");
   assert.equal(ui.conflicts().length, 0);
   assert.equal(((await carton.head()).doc.items as Rec[]).find((i) => i.id === "a")!.name, "Mine");
   ui.dispose();

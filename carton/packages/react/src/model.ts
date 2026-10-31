@@ -51,6 +51,11 @@ export interface Version {
   readonly provisional?: boolean;
   /** This version is the published cut. */
   readonly published?: boolean;
+  /**
+   * A partial fold's inverse (§5.3 R2-14: "fold in some of it"): the changes left out can still be folded in, with
+   * CartonUi.foldRest().
+   */
+  readonly foldRest?: boolean;
 }
 
 /** Which rows History shows. */
@@ -74,6 +79,11 @@ export interface HistorySource {
   all?(): readonly Version[];
   /** Ask for the summaries of these versions now (the rows a remote list shows). */
   want?(ids: readonly string[]): void;
+  /**
+   * The lowest index (oldest first) that may differ from what all() returned at `revision`; all().length when nothing
+   * did. Lets the bridge re-read only the tail after an append instead of the whole History.
+   */
+  firstChangedSince?(revision: number): number;
 }
 
 export interface Cut {
@@ -224,6 +234,8 @@ export interface FoldChange {
   readonly summary: string;
   readonly author: Actor;
   readonly at: number;
+  /** Can't be left out on its own (a project-level field): it is folded in with the rest. */
+  readonly locked?: boolean;
 }
 
 export interface FoldPlan {
@@ -306,10 +318,13 @@ export interface CartonUi {
 
   switchCut(cutId: string): Promise<void>;
   newCut(name: string, fromRef: string): Promise<Cut>;
-  renameCut(cutId: string, name: string): Promise<void>;
+  /** Absent when the engine can't rename cuts yet: the Cuts menu then doesn't offer it. */
+  renameCut?(cutId: string, name: string): Promise<void>;
   /** Fold `from` into `into`, leaving out the changes in `leaveOut` (partial accept). */
   fold(fromCutId: string, intoCutId: string, opts: { leaveOut: readonly string[]; choices: Readonly<Record<string, ConflictChoice>>; allCards?: boolean }): Promise<FoldResult>;
   resolve(conflictId: string, choice: ConflictChoice): Promise<void>;
+  /** "Fold in the rest" of a partial fold: the changes its inverse version left out. */
+  foldRest(versionId: string): Promise<FoldResult>;
   restore(ref: string): Promise<void>;
   nameVersion(versionId: string, name: string): Promise<void>;
   undo(turnId: string): Promise<FoldResult>;

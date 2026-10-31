@@ -84,7 +84,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
                       "span",
                       { className: "carton-fold-bulk" },
                       h(Button, { variant: "ghost", onClick: () => setLeft(new Set()), disabled: left.size === 0 }, words.selectAll),
-                      h(Button, { variant: "ghost", onClick: () => setLeft(new Set(plan.changes.map((c) => c.id))), disabled: left.size === total }, words.selectNone),
+                      h(Button, { variant: "ghost", onClick: () => setLeft(new Set(plan.changes.filter((c) => !c.locked).map((c) => c.id))), disabled: left.size === plan.changes.filter((c) => !c.locked).length }, words.selectNone),
                     )
                   : null,
               ),
@@ -98,7 +98,12 @@ export function FoldInDialog(p: FoldInDialogProps) {
                     h(
                       "label",
                       null,
-                      canSplit ? h("input", { type: "checkbox", className: "carton-check", checked: !left.has(c.id), onChange: () => toggle(c.id) }) : h("span", { "aria-hidden": true }),
+                      !canSplit
+                        ? h("span", { "aria-hidden": true })
+                        : c.locked
+                          ? // A project-level change comes with the rest (core's partial accept inverts records only).
+                            h("input", { type: "checkbox", className: "carton-check", checked: true, disabled: true, title: words.foldLocked, "aria-label": words.foldLocked })
+                          : h("input", { type: "checkbox", className: "carton-check", checked: !left.has(c.id), onChange: () => toggle(c.id) }),
                       h("span", { className: "carton-fold-text" }, c.summary),
                       h(
                         "span",

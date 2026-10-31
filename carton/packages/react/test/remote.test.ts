@@ -87,7 +87,7 @@ test("calls round-trip, and errors come back as errors", async () => {
   served.renameCut = async () => {
     throw new Error("Renaming a cut isn't available yet");
   };
-  await assert.rejects(client.ui.renameCut("cut-main", "x"), /isn't available yet/);
+  await assert.rejects(client.ui.renameCut!("cut-main", "x"), /isn't available yet/);
   client.ui.openPreview("main@3", "Sent to client, Monday");
   await tick();
   assert.equal(client.ui.preview()?.label, "Sent to client, Monday");

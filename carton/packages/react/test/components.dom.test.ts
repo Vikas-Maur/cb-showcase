@@ -66,6 +66,8 @@ test(name("History: keyboard moves the active row and Enter opens a read-only pr
   const ui = createMockUi({ versions: 50 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 }), h(PreviewBanner)));
   const list = $(m.container, "[role=listbox]")!;
+  // The two newest versions are still waiting to sync: the third is the Director's checkpoint.
+  await key(list, "ArrowDown");
   await key(list, "ArrowDown");
   await key(list, "ArrowDown");
   const active = $$(m.container, "[role=option][aria-selected=true]");
@@ -82,7 +84,7 @@ test(name("History: keyboard moves the active row and Enter opens a read-only pr
 test(name("History: name a version in place"), async () => {
   const ui = createMockUi({ versions: 30 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
-  const row = $$(m.container, "[role=option]").find((r) => r.dataset.named === undefined && r.dataset.kind === "edit")!;
+  const row = $$(m.container, "[role=option]").find((r) => r.dataset.named === undefined && r.dataset.kind === "edit" && r.dataset.provisional === undefined)!;
   await click(row.querySelector(".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", "Name this version"));
   const input = $(m.container, "input.carton-input");
@@ -263,4 +265,74 @@ test(name("watch the changes: aligned strips, change count, next, A/B toggle and
   assert.ok(frames.length > 0 && frames.at(-1)![0] === "a");
   await m.unmount();
   assert.equal(ui.preview(), null, "closing Watch the changes closes the preview");
+});
+
+// ---------------------------------------------------------------- review round 1 (reviews/ui.md)
+
+test(name("R1-13: switching Watch the changes to the current side closes its preview"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const head = ui.cuts().find((c) => c.current)!.head;
+  const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: head })));
+  await flush();
+  const root = $(m.container, ".carton-watch")!;
+  assert.equal(ui.preview(), null, "After is the current head: no preview");
+  await click(byText(root, "[role=radio]", "Before"));
+  assert.equal(ui.preview()?.ref, "main@3");
+  await click(byText(root, "[role=radio]", "After"));
+  assert.equal(ui.preview(), null, "back on the current side: the preview is closed");
+  await m.unmount();
+});
+
+test(name("R1-14: Enter and arrows typed in the naming field belong to the field, not the list"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const row = $$(m.container, "[role=option]").find((r) => r.dataset.provisional === undefined && r.dataset.named === undefined)!;
+  await click(row.querySelector(".carton-version-more"));
+  await click(byText(m.container, "[role=menuitem]", "Name this version"));
+  const input = $(m.container, "input.carton-input")!;
+  const ev = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  await act(() => void input.dispatchEvent(ev));
+  assert.equal(ev.defaultPrevented, false, "the list doesn't swallow Enter, so the form submits");
+  assert.equal(ui.preview(), null, "and no preview opened");
+  const arrow = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+  await act(() => void input.dispatchEvent(arrow));
+  assert.equal(arrow.defaultPrevented, false);
+  await m.unmount();
+});
+
+test(name("R1-15: the context-menu key opens the active version's actions; still-syncing rows can't be opened"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const list = $(m.container, "[role=listbox]")!;
+  await key(list, "ArrowDown"); // the newest: still waiting to sync
+  await key(list, "Enter");
+  assert.equal(ui.preview(), null, "nothing to preview yet");
+  await key(list, "ContextMenu");
+  const menu = $(m.container, "[role=menu]");
+  assert.ok(menu, "actions menu open");
+  assert.equal(byText(menu!, "[role=menuitem]", "Restore")?.getAttribute("aria-disabled"), "true");
+  assert.equal(document.activeElement?.closest("[role=menu]"), menu, "focus moved into the menu");
+  await m.unmount();
+});
+
+test(name("R1-18: the Cuts menu offers Rename only when the engine can rename"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  delete (ui as { renameCut?: unknown }).renameCut;
+  const m = await render(wrap(ui, h(CutsMenu, {})));
+  await click($(m.container, ".carton-menu-trigger"));
+  assert.equal(byText(m.container, "[role=menuitem]", "Rename cut"), null);
+  assert.ok(byText(m.container, "[role=menuitem]", "New cut from here"));
+  await m.unmount();
+});
+
+test(name("R1-18: a failed switch says so next to the menu"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  ui.switchCut = async () => {
+    throw new Error("That cut isn't available offline");
+  };
+  const m = await render(wrap(ui, h(CutsMenu, {})));
+  await click($(m.container, ".carton-menu-trigger"));
+  await click(byText(m.container, "[role=menuitemradio]", "30s Instagram cut"));
+  assert.match($(m.container, "[role=alert]")?.textContent ?? "", /isn't available offline/);
+  await m.unmount();
 });

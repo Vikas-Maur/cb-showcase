@@ -36,6 +36,8 @@ export interface VirtualListProps {
   onActiveChange?: (index: number) => void;
   /** Enter on the active row. */
   onActivate?: (index: number) => void;
+  /** The context-menu key or Shift+F10 on the active row: its actions, for keyboard users. */
+  onMenu?: (index: number) => void;
   /** New rows arrive at the top (History is newest first): keep the reader's place when they do. */
   newestFirst?: boolean;
   className?: string;
@@ -93,6 +95,9 @@ export function VirtualList(p: VirtualListProps) {
   }, [p.active, p.rowHeight]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
+    // Keys typed in a field inside a row (naming a version) belong to the field, not to the list.
+    const t = e.target as HTMLElement;
+    if (t !== e.currentTarget && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || t.tagName === "BUTTON" || t.isContentEditable)) return;
     if (!p.onActiveChange || !p.count) return;
     const page = Math.max(1, Math.floor(viewport / p.rowHeight) - 1);
     const cur = p.active ?? -1;
@@ -106,6 +111,10 @@ export function VirtualList(p: VirtualListProps) {
     else if (e.key === "Enter" && cur >= 0) {
       e.preventDefault();
       p.onActivate?.(cur);
+      return;
+    } else if ((e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) && cur >= 0 && p.onMenu) {
+      e.preventDefault();
+      p.onMenu(cur);
       return;
     } else return;
     e.preventDefault();

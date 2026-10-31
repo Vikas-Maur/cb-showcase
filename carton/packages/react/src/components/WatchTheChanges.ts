@@ -209,11 +209,23 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
   // The side on screen is a read-only preview, unless it is the current head (§9, R2-16).
   const shownRef = st.side === "a" ? props.a : props.b;
   const shownLabel = st.side === "a" ? diff.aLabel : diff.bLabel;
+  // Switching to the current side closes the preview this player opened; closing the player closes it too.
+  const opened = useRef<string | null>(null);
   useEffect(() => {
-    if (current && shownRef === current.head) return;
+    if (current && shownRef === current.head) {
+      if (opened.current && ui.preview()?.ref === opened.current) ui.openPreview(null);
+      opened.current = null;
+      return;
+    }
+    opened.current = shownRef;
     ui.openPreview(shownRef, shownLabel);
   }, [ui, shownRef, shownLabel, current?.head]);
-  useEffect(() => () => ui.openPreview(null), [ui]);
+  useEffect(
+    () => () => {
+      if (opened.current && ui.preview()?.ref === opened.current) ui.openPreview(null);
+    },
+    [ui],
+  );
 
   const n = player.changeRows.length;
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {

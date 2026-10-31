@@ -174,12 +174,26 @@ interface Row {
   turnKey: string | null;
 }
 
+/** A conflict card the person has to pick on, with where it applies and which of core's sides is theirs. */
+interface CardEntry {
+  card: ConflictCard;
+  /** The cut it applies to: resolving commits there, whatever cut is current then. */
+  cut: string;
+  /** Core's side holding the person's own edit. Commits, rebases and undo put head in `ours` (merge3(base, head, mine)). */
+  mineSide: "ours" | "theirs";
+  conflict: Conflict;
+}
+
+const sameCore = (a: CoreVersion, b: CoreVersion) =>
+  a.ref.branchId === b.ref.branchId && a.ref.seq === b.ref.seq && a.change === b.change && a.name === b.name && a.kind === b.kind && a.at === b.at && actorKey(a.author) === actorKey(b.author);
+
 export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHandle {
   const hub = new TopicHub<Topic>();
   const clock = opts.clock ?? Date.now;
   const engine = opts.engine ?? { shots: engineShots, lcs, describe };
   const myGroup = opts.group ?? groupOf(opts.me);
   const schema = carton.schema;
+  const describeCard = opts.describeCard ?? defaultDescribeCard;
   const actors = new Map<string, Actor>();
   const ui = (a: CoreActor | null | undefined): Actor => {
     const x = toUiActor(a, opts.me, myGroup);
@@ -191,34 +205,51 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     return x;
   };
   const me = ui(opts.me);
+  const someone: Actor = { key: "system/someone", kind: "human", name: "Someone" };
 
   // ------------------------------------------------------------ history
   let cutId = carton.cut;
-  let rows: Row[] = []; // oldest first
-  let named: number[] = [], turns: number[] = [];
+  // Oldest first, changed in place. The indexes are kept incrementally, so an append costs O(rows after it), not
+  // O(History): a burst of confirmations on a 100k History stays cheap.
+  const rows: Row[] = [];
+  const named: number[] = [], turns: number[] = [];
   const pos = new Map<string, number>();
   let revision = 0;
   let disposed = false;
-
-  const reindex = () => {
-    named = [];
-    turns = [];
-    pos.clear();
-    rows.forEach((r, i) => {
-      pos.set(r.v.id, i);
-      if (r.v.name) named.push(i);
-      if (r.v.kind === "turn") turns.push(i);
-    });
+  let loadGen = 0;
+  // Where rows changed at recent revisions, so the bridge re-reads only from there (firstChangedSince).
+  const changeLog: { rev: number; from: number }[] = [];
+  const changed = (from: number) => {
     revision++;
+    changeLog.push({ rev: revision, from });
+    if (changeLog.length > 128) changeLog.shift();
+  };
+  /** Re-index rows[start..] after they changed (removed rows' ids must already be out of `pos`). */
+  const reindexFrom = (start: number, changedFrom = start) => {
+    start = Math.max(0, Math.min(start, rows.length));
+    while (named.length && named[named.length - 1]! >= start) named.pop();
+    while (turns.length && turns[turns.length - 1]! >= start) turns.pop();
+    for (let i = start; i < rows.length; i++) {
+      const v = rows[i]!.v;
+      pos.set(v.id, i);
+      if (v.name) named.push(i);
+      if (v.kind === "turn") turns.push(i);
+    }
+    changed(Math.min(changedFrom, rows.length));
   };
 
   const turnKeyOf = (a: CoreActor | null | undefined) => (a && a.kind !== "human" && a.turn ? `${a.chat ?? ""}/${a.turn}` : null);
+  // Summaries survive object replacement (a turn row growing, a rename).
+  const byId = new Map<string, { summary: string; details?: readonly string[] }>();
+  // Partial folds whose rest was folded in (this session; see foldRest).
+  const restDone = new Set<string>();
 
   const toVersion = (c: CoreVersion, kindOverride?: VersionKind, turnEdits?: number): Version => {
     const id = c.change ?? `${c.ref.branchId}@${c.ref.seq}`;
     const prev = byId.get(id);
     const kind = kindOverride ?? KIND[c.kind] ?? "edit";
-    const v: Version = {
+    const rest = c.kind === "partial-revert" && !!c.change && !restDone.has(c.change) && c.ref.branchId === cutId;
+    return {
       id,
       seq: c.ref.seq,
       ref: `${c.ref.branchId}@${c.ref.seq}`,
@@ -229,35 +260,63 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       ...(prev?.details ? { details: prev.details } : {}),
       ...(c.name ? { name: c.name } : {}),
       ...(kind === "turn" ? { turn: { label: c.name ?? "", edits: turnEdits ?? 1 } } : {}),
+      ...(rest ? { foldRest: true } : {}),
     };
-    return v;
   };
-  // Summaries survive object replacement (a turn row growing, a rename).
-  const byId = new Map<string, { summary: string; details?: readonly string[] }>();
+  const sameShape = (v: Version, kind: VersionKind, edits: number) => v.kind === kind && (kind !== "turn" || v.turn?.edits === edits);
 
-  /** Rebuild the turn grouping of the newest rows after an append: only the last turn can change. */
-  const regroupTail = () => {
+  /** Group the confirmed rows of the newest turn after an append. Returns the lowest index it changed. */
+  const regroupTail = (): number => {
     let i = rows.length - 1;
     while (i >= 0 && rows[i]!.v.provisional) i--;
-    if (i < 0) return;
+    if (i < 0) return rows.length;
     const key = rows[i]!.turnKey;
     let j = i;
     if (key) while (j > 0 && rows[j - 1]!.turnKey === key) j--;
-    for (let k = j; k <= i; k++) {
+    // The row before the turn may have been the previous checkpoint of an earlier append of this same turn.
+    let low = rows.length;
+    for (let k = Math.max(0, j - 1); k <= i; k++) {
       const r = rows[k]!;
       if (!r.core) continue;
-      const want: VersionKind = key && k === i ? "turn" : KIND[r.core.kind] ?? "edit";
+      const inTurn = k >= j && !!key;
+      const want: VersionKind = inTurn && k === i ? "turn" : !inTurn && r.turnKey && r.turnKey !== key && k === j - 1 ? r.v.kind : KIND[r.core.kind] ?? "edit";
       const edits = i - j + 1;
-      if (r.v.kind !== want || (want === "turn" && r.v.turn?.edits !== edits)) r.v = toVersion(r.core, want, edits);
+      if (!sameShape(r.v, want, edits)) {
+        r.v = toVersion(r.core, want, edits);
+        low = Math.min(low, k);
+      }
     }
+    return low;
+  };
+
+  const group = (all: readonly CoreVersion[], reuse: Map<string, Row>): Row[] => {
+    const next: Row[] = [];
+    let i = 0;
+    while (i < all.length) {
+      const key = turnKeyOf(all[i]!.author);
+      let j = i;
+      if (key) while (j + 1 < all.length && turnKeyOf(all[j + 1]!.author) === key) j++;
+      for (let k = i; k <= j; k++) {
+        const c = all[k]!;
+        const kind: VersionKind = key && k === j ? "turn" : KIND[c.kind] ?? "edit";
+        const old = reuse.get(c.change ?? `${c.ref.branchId}@${c.ref.seq}`);
+        // An unchanged version keeps its object, so a refresh re-renders nothing and the bridge sends nothing.
+        if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1) && !!old.v.foldRest === (c.kind === "partial-revert" && !!c.change && !restDone.has(c.change) && c.ref.branchId === cutId)) next.push(old);
+        else next.push({ core: c, turnKey: key, v: toVersion(c, kind, j - i + 1) });
+      }
+      i = j + 1;
+    }
+    return next;
   };
 
   const loadHistory = async () => {
+    const gen = ++loadGen;
+    const cut = cutId;
     const page = opts.pageSize ?? 2000;
     const all: CoreVersion[] = [];
     let before: number | undefined;
     for (;;) {
-      const got = await carton.log({ cut: cutId, limit: page, ...(before !== undefined ? { before } : {}) });
+      const got = await carton.log({ cut, limit: page, ...(before !== undefined ? { before } : {}) });
       all.push(...got);
       if (got.length < page) break;
       before = got[got.length - 1]!.ref.seq;
@@ -271,7 +330,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     } catch {
       recs = [];
     }
-    let fork = recs.find((c) => c.id === cutId)?.forkOf ?? null;
+    let fork = recs.find((c) => c.id === cut)?.forkOf ?? null;
     for (let depth = 0; fork && depth < 8; depth++) {
       const at = fork.lastIndexOf("@");
       const parent = fork.slice(0, at), seq = Number(fork.slice(at + 1));
@@ -279,36 +338,55 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       all.push(...(await carton.log({ cut: parent, before: seq + 1 })));
       fork = recs.find((c) => c.id === parent)?.forkOf ?? null;
     }
+    // A newer load, a cut switch or dispose happened while this one waited: its result is stale.
+    if (gen !== loadGen || cut !== cutId || disposed) return;
     all.reverse();
-    const next: Row[] = [];
-    let i = 0;
-    while (i < all.length) {
-      const key = turnKeyOf(all[i]!.author);
-      let j = i;
-      if (key) while (j + 1 < all.length && turnKeyOf(all[j + 1]!.author) === key) j++;
-      for (let k = i; k <= j; k++) {
-        const c = all[k]!;
-        next.push({ core: c, turnKey: key, v: toVersion(c, key && k === j ? "turn" : undefined, j - i + 1) });
-      }
-      i = j + 1;
-    }
-    // Keep provisional rows still waiting.
-    rows = [...next, ...rows.filter((r) => r.v.provisional && !next.some((n) => n.v.id === r.v.id))];
-    reindex();
+    // Versions that arrived by event while this load waited are newer than what it read: keep them.
+    const top = all.length ? all[all.length - 1]!.ref.seq : -1;
+    for (const r of rows) if (r.core && r.core.ref.branchId === cut && r.core.ref.seq > top) all.push(r.core);
+    const reuse = new Map<string, Row>();
+    for (const r of rows) reuse.set(r.v.id, r);
+    const next = group(all, reuse);
+    // Provisional rows still waiting stay at the end.
+    const confirmed = new Set(next.map((r) => r.v.id));
+    for (const r of rows) if (r.v.provisional && !confirmed.has(r.v.id)) next.push(r);
+    let first = 0;
+    while (first < next.length && first < rows.length && next[first] === rows[first]) first++;
+    if (first === next.length && next.length === rows.length) return; // nothing changed
+    rows.length = 0;
+    rows.push(...next);
+    pos.clear();
+    named.length = 0;
+    turns.length = 0;
+    reindexFrom(0, first);
     hub.notify("history");
   };
 
   const appendConfirmed = (c: CoreVersion) => {
     const id = c.change ?? `${c.ref.branchId}@${c.ref.seq}`;
-    if (rows.some((r) => r.core && r.v.id === id && r.core.ref.seq === c.ref.seq)) return;
-    // A provisional row with this id becomes the confirmed one, in its confirmed place.
-    rows = rows.filter((r) => !(r.v.provisional && r.v.id === id));
-    const firstPending = rows.findIndex((r) => r.v.provisional);
-    const row: Row = { core: c, turnKey: turnKeyOf(c.author), v: toVersion(c) };
-    if (firstPending < 0) rows.push(row);
-    else rows.splice(firstPending, 0, row);
-    regroupTail();
-    reindex();
+    const at0 = pos.get(id);
+    if (at0 !== undefined && rows[at0]!.core && rows[at0]!.core!.ref.seq === c.ref.seq && rows[at0]!.core!.ref.branchId === c.ref.branchId) return;
+    let from = rows.length;
+    // A provisional row with this id becomes the confirmed one, in its confirmed place; the id (row key) stays.
+    if (at0 !== undefined && rows[at0]!.v.provisional) {
+      rows.splice(at0, 1);
+      pos.delete(id);
+      from = at0;
+    }
+    let at = rows.length;
+    while (at > 0 && rows[at - 1]!.v.provisional) at--;
+    rows.splice(at, 0, { core: c, turnKey: turnKeyOf(c.author), v: toVersion(c) });
+    from = Math.min(from, at, regroupTail());
+    reindexFrom(from);
+    hub.notify("history");
+  };
+
+  const dropProvisional = (id: string) => {
+    const i = pos.get(id);
+    if (i === undefined || !rows[i]!.v.provisional) return;
+    rows.splice(i, 1);
+    pos.delete(id);
+    reindexFrom(i);
     hub.notify("history");
   };
 
@@ -347,21 +425,32 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const summary = lines[0] ?? (r.v.kind === "fold" ? "Folded in" : r.v.kind === "undo" ? "Undid a change" : r.v.kind === "restore" ? "Restored a version" : "No visible change");
     byId.set(id, { summary, details: lines.slice(1) });
     const j = pos.get(id);
-    if (j === undefined) return;
+    if (j === undefined || disposed) return;
     const row = rows[j]!;
     row.v = { ...row.v, summary, ...(lines.length > 1 ? { details: lines.slice(1) } : {}) };
-    revision++;
+    changed(j);
     hub.notify("history");
   };
 
   const view = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
+  let allCache: { rev: number; list: Version[] } | null = null;
   const history: HistorySource = {
-    all: () => rows.map((r) => r.v),
+    all: () => {
+      if (allCache?.rev !== revision) allCache = { rev: revision, list: rows.map((r) => r.v) };
+      return allCache.list;
+    },
     want: (ids) => {
       for (const id of ids) {
         const i = pos.get(id);
         if (i !== undefined) wantSummary(rows[i]!.v);
       }
+    },
+    firstChangedSince: (rev) => {
+      if (rev >= revision) return rows.length;
+      if (!changeLog.length || changeLog[0]!.rev > rev + 1) return 0;
+      let m = rows.length;
+      for (const c of changeLog) if (c.rev > rev) m = Math.min(m, c.from);
+      return m;
     },
     revision: () => revision,
     count: (f) => (f === "all" ? rows.length : view(f)!.length),
@@ -435,7 +524,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const at = p.forkOf!.lastIndexOf("@");
       const src = p.forkOf!.slice(0, at), seq = Number(p.forkOf!.slice(at + 1));
       const srcCut = records.find((c) => c.id === src);
-      const versionName = rows.find((r) => r.core?.ref.branchId === src && r.core.ref.seq === seq)?.v.name;
+      const i = pos.get(rows.find((r) => r.core?.ref.branchId === src && r.core.ref.seq === seq)?.v.id ?? "");
+      const versionName = i === undefined ? undefined : rows[i]!.v.name;
       const url = opts.shareUrl?.(p);
       next = { cutId: src, cutName: srcCut?.name ?? p.name, ref: p.forkOf!, at: p.at ?? 0, newerEdits: Math.max(0, (heads.get(src) ?? seq) - seq), ...(versionName ? { versionName } : {}), ...(url ? { url } : {}) };
     }
@@ -472,8 +562,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const peerMap = new Map<string, { peer: Peer; seen: number; ghosts: Ghost[] }>();
   let peers: readonly Peer[] = [];
   let ghosts: readonly Ghost[] = [];
+  // Cards of every cut; the topic shows the current cut's. Each resolves on its own cut.
+  const cardEntries = new Map<string, CardEntry>();
   let conflicts: readonly Conflict[] = [];
-  const cards = new Map<string, ConflictCard>();
+  let cardSeq = 0;
+  const publishConflicts = () => {
+    const next = [...cardEntries.values()].filter((e) => e.cut === cutId).map((e) => e.conflict).reverse();
+    if (next.length !== conflicts.length || next.some((c, i) => c !== conflicts[i])) {
+      conflicts = next;
+      hub.notify("conflicts");
+    }
+  };
   let preview: Preview | null = null;
 
   const publishPeers = () => {
@@ -489,43 +588,59 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
   const idleTimer = setInterval(() => {
     const now = clock();
-    let changed = false;
+    let any = false;
     for (const x of peerMap.values()) {
       const idle = now - x.seen > IDLE_MS;
       if (idle !== x.peer.idle) {
         x.peer = { ...x.peer, idle };
-        changed = true;
+        any = true;
       }
     }
-    if (changed) publishPeers();
+    if (any) publishPeers();
   }, 5_000);
   (idleTimer as { unref?: () => void }).unref?.();
 
-  const addCards = (list: readonly ConflictCard[], by?: CoreActor) => {
-    const describeCard = opts.describeCard ?? defaultDescribeCard;
-    const next = [...conflicts];
+  /**
+   * Cards from commits, rebases (late conflicts) and undo: core merges `merge3(base, head, mine)`, so `ours` is the head
+   * on screen and `theirs` is the person's own edit. Identical cards (same cut, path and values) are shown once;
+   * a second conflict on the same field with other values is its own card.
+   */
+  const addCards = (list: readonly ConflictCard[], by: CoreActor | undefined, cut = cutId) => {
+    const key = (c: ConflictCard) => `${cut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
+    const seen = new Set([...cardEntries.values()].map((e) => key(e.card)));
     for (const card of list) {
-      if (cards.has(card.path)) continue;
-      cards.set(card.path, card);
+      if (seen.has(key(card))) continue;
+      seen.add(key(card));
       const w = describeCard(card, schema);
-      next.unshift({
-        id: card.path,
-        title: w.title,
-        mine: { author: me, summary: w.mine },
-        theirs: { author: by ? ui(by) : { key: "system/someone", kind: "human", name: "Someone" }, summary: w.theirs },
-        canKeepBoth: !!opts.keepBoth?.(card),
-        ...(w.reason ? { reason: w.reason } : {}),
-        provisional: opts.provisional ?? "theirs",
+      const id = `${cut}|${card.path}|${++cardSeq}`;
+      cardEntries.set(id, {
+        card,
+        cut,
+        mineSide: "theirs",
+        conflict: {
+          id,
+          title: w.title,
+          // describeCard words ours/theirs from core's point of view; here the person's edit is core's theirs.
+          mine: { author: me, summary: w.theirs },
+          theirs: { author: by ? ui(by) : someone, summary: w.mine },
+          canKeepBoth: !!opts.keepBoth?.(card),
+          ...(w.reason ? { reason: w.reason } : {}),
+          provisional: "theirs",
+        },
       });
     }
-    if (next.length !== conflicts.length) {
-      conflicts = next;
-      hub.notify("conflicts");
-    }
+    publishConflicts();
   };
 
   const onEvent = (e: CartonEvent) => {
     if (disposed) return;
+    // Events core may add before the contract lists them ("absorbed": a pending change a rebase emptied).
+    const ext = e as unknown as { type: string; branchId?: string; id?: string; cards?: ConflictCard[] };
+    if (ext.type === "absorbed") {
+      if (ext.id) dropProvisional(ext.id);
+      if (ext.cards?.length) addCards(ext.cards, undefined, ext.branchId ?? cutId);
+      return;
+    }
     switch (e.type) {
       case "change": {
         if (e.branchId !== cutId) {
@@ -534,6 +649,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         }
         const c = e.change;
         appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
+        // Folding in the rest of a partial fold reverts its inverse: that version no longer offers it.
+        const rev = Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : [];
+        for (const id of rev) markRestDone(id);
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
@@ -541,7 +659,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       case "pending": {
         if (e.branchId !== cutId || pos.has(e.id)) break;
         rows.push({ core: null, turnKey: null, v: { id: e.id, seq: null, ref: `${PENDING_PREFIX}${e.id}`, at: clock(), author: me, kind: "edit", summary: "Your edit", provisional: true } });
-        reindex();
+        reindexFrom(rows.length - 1);
         hub.notify("history");
         break;
       }
@@ -585,6 +703,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
   const off = carton.on(onEvent);
 
+  const markRestDone = (changeId: string) => {
+    if (restDone.has(changeId)) return;
+    restDone.add(changeId);
+    const i = pos.get(changeId);
+    if (i === undefined || !rows[i]!.core) return;
+    const r = rows[i]!;
+    const { foldRest: _f, ...rest } = r.v;
+    r.v = rest;
+    changed(i);
+    hub.notify("history");
+  };
+
   // Refreshing cuts and undo after a burst of changes: once, after it settles.
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleRefresh = () => {
@@ -597,7 +727,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
 
   const refresh = async () => {
-    if (carton.cut !== cutId) cutId = carton.cut;
+    if (carton.cut !== cutId) {
+      cutId = carton.cut;
+      publishConflicts();
+    }
     await loadHistory();
     await refreshCuts();
     await refreshUndo();
@@ -607,7 +740,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   (poll as { unref?: () => void } | null)?.unref?.();
 
   // ------------------------------------------------------------ reads
-  const versionAt = (ref: string) => rows.find((r) => r.v.ref === ref)?.v;
+  const versionAt = (ref: string) => {
+    for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.v.ref === ref) return rows[i]!.v;
+    return undefined;
+  };
   const diffCache = new Map<string, Promise<ShotDiff>>();
   const shotDiff = (a: string, b: string): Promise<ShotDiff> => {
     const key = `${a}|${b}`;
@@ -618,10 +754,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const intern = new Map<string, number>();
         const A = engine.shots(da, schema, intern), B = engine.shots(db, schema, intern);
         const matches = engine.lcs(A.map((s) => s.sig), B.map((s) => s.sig));
-        const label = (doc: Doc) => (s: CoreShot): Shot => ({ start: s.start, end: s.end, sig: s.sig, ...(topLabel(doc, s) ? { label: topLabel(doc, s)! } : {}) });
+        const la = shotLabels(da, A, schema), lb = shotLabels(db, B, schema);
+        const shot = (labels: (string | undefined)[]) => (s: CoreShot, i: number): Shot => ({ start: s.start, end: s.end, sig: s.sig, ...(labels[i] ? { label: labels[i]! } : {}) });
         return {
-          a: A.map(label(da)),
-          b: B.map(label(db)),
+          a: A.map(shot(la)),
+          b: B.map(shot(lb)),
           matches,
           aLabel: versionAt(a)?.name ?? a,
           bLabel: versionAt(b)?.name ?? (cuts.find((c) => c.head === b) ? "Current" : b),
@@ -634,17 +771,15 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     }
     return p;
   };
-  // The name of the topmost clip that starts at or before the shot's start: what an editor calls the shot.
-  const topLabel = (doc: Doc, s: CoreShot): string | undefined => {
-    const tl = schema.timeline;
-    if (!tl) return undefined;
-    const items = (doc[tl.collection] as Rec[] | undefined) ?? [];
-    let best: Rec | undefined;
-    for (const it of items) {
-      const st = Number(it[tl.start]), en = Number(it[tl.end]);
-      if (st <= s.start + 1e-6 && en >= s.end - 1e-6) best = it;
-    }
-    return best ? (schema.label?.(tl.collection, best) ?? (typeof best.name === "string" ? best.name : undefined)) : undefined;
+
+  // Cards of the last fold plan, by path: the fold's choices and "Keep both" read the real cards, not placeholders.
+  const planCards = new Map<string, ConflictCard>();
+  const planKey = (from: string, into: string) => `${from}>${into}`;
+  let planFor = "";
+
+  const toFoldConflict = (card: ConflictCard, theirs: Actor): Conflict => {
+    const w = describeCard(card, schema);
+    return { id: card.path, title: w.title, mine: { author: me, summary: w.mine }, theirs: { author: theirs, summary: w.theirs }, canKeepBoth: !!opts.keepBoth?.(card), ...(w.reason ? { reason: w.reason } : {}), provisional: "mine" };
   };
 
   const handle: CartonUiHandle = {
@@ -692,25 +827,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     async planFold(fromId, intoId, o) {
       const from = cuts.find((c) => c.id === fromId) ?? fallbackCut(fromId), into = cuts.find((c) => c.id === intoId) ?? fallbackCut(intoId);
       const r = await carton.fold(fromId, { into: intoId, check: true, ...(o?.allCards ? { missingBase: "all-cards" as const } : {}) });
+      planCards.clear();
+      planFor = planKey(fromId, intoId);
       const base = { from, into, changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
       if (r.status === "up-to-date") return base;
       if (r.status === "missing-base") return { ...base, missingBase: r.dialog.text };
       if (r.status === "rejected") throw new Error(r.reason);
       const cardList: ConflictCard[] = r.status === "conflicts" || r.status === "compare" ? r.cards : [];
-      const describeCard = opts.describeCard ?? defaultDescribeCard;
+      for (const c of cardList) planCards.set(c.path, c);
       const fromHead = (await carton.log({ cut: fromId, limit: 1 }))[0];
-      const cardsOut: Conflict[] = cardList.map((card) => {
-        const w = describeCard(card, schema);
-        return {
-          id: card.path,
-          title: w.title,
-          mine: { author: me, summary: w.mine },
-          theirs: { author: ui(fromHead?.author), summary: w.theirs },
-          canKeepBoth: !!opts.keepBoth?.(card),
-          ...(w.reason ? { reason: w.reason } : {}),
-          provisional: "mine",
-        };
-      });
+      const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author)));
+      // §13 "every difference shown as a card": the cards are the whole plan, there is nothing else to leave out.
+      if (r.status === "compare") return { ...base, conflicts: cardsOut, partial: false };
       const preview = r.preview;
       if (!preview) return { ...base, conflicts: cardsOut, partial: false };
       // One row per record the fold touches, so leaving one out (partial accept) is keyed by its record path.
@@ -727,8 +855,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const changes: FoldChange[] = [];
       for (const [key, ops] of groups) {
         const words = engine.describe(ops, intoDoc, schema);
-        const who = schema.collections[splitPathKey(key)[0]!] ? await carton.credits(splitPathKey(key), { cut: fromId }) : fromHead?.author ?? null;
-        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who), at: fromHead?.at ?? clock() });
+        const record = !!schema.collections[splitPathKey(key)[0]!];
+        const who = record ? await carton.credits(splitPathKey(key), { cut: fromId }) : fromHead?.author ?? null;
+        // Core's partial accept inverts records; a project-level field can only come with the rest.
+        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who), at: fromHead?.at ?? clock(), ...(record ? {} : { locked: true }) });
       }
       // A remap (ripple) can't be left out on its own: it moves many records at once.
       const hasRemap = preview.ops.some((op) => op.op === "remap");
@@ -744,8 +874,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     async switchCut(id) {
       await carton.switchTo(id);
       cutId = id;
-      rows = [];
-      reindex();
+      rows.length = 0;
+      pos.clear();
+      named.length = 0;
+      turns.length = 0;
+      reindexFrom(0);
+      publishConflicts();
       hub.notify("history");
       await refresh();
     },
@@ -754,44 +888,89 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       await handle.switchCut(rec.id);
       return cuts.find((c) => c.id === rec.id) ?? fallbackCut(rec.id);
     },
-    async renameCut(id, name) {
-      // Not in core's contract yet: use it when the handle has it.
-      const rename = (carton as unknown as { renameCut?: (cut: string, name: string) => Promise<void> }).renameCut;
-      if (!rename) throw new Error("Renaming a cut isn't available yet");
-      await rename.call(carton, id, name);
-      await refreshCuts();
-    },
     async fold(fromId, intoId, o) {
-      const choices: Record<string, Choice> = {};
-      for (const [path, ch] of Object.entries(o.choices)) choices[path] = ch === "mine" ? "ours" : ch === "theirs" ? "theirs" : opts.keepBoth?.(cardsFor(path)) ?? "ours";
-      const common = { into: intoId, choices, ...(o.allCards ? { missingBase: "all-cards" as const } : {}) };
-      const r = o.leaveOut.length ? await carton.foldSome(fromId, { ...common, reject: [...o.leaveOut] }) : await carton.fold(fromId, common);
+      if (planFor !== planKey(fromId, intoId)) await handle.planFold(fromId, intoId, o.allCards ? { allCards: true } : undefined);
+      const choiceFor = (path: string): Choice | undefined => {
+        const ch = o.choices[path];
+        if (!ch) return undefined;
+        if (ch === "mine") return "ours";
+        if (ch === "theirs") return "theirs";
+        const card = planCards.get(path);
+        return (card && opts.keepBoth?.(card)) || undefined;
+      };
+      if (o.allCards) {
+        // §13 missing base: no merge to record; take each difference the person picked from the copy, keep the rest.
+        const ops: Op[] = [];
+        for (const card of planCards.values()) if (choiceFor(card.path) === "theirs") ops.push(...(card.ops ?? []));
+        if (!ops.length) return { ok: true };
+        const r = await carton.commit({ cut: intoId, ops, author: opts.me });
+        await refresh();
+        return r.status === "rejected" ? { ok: false, error: r.reason } : r.status === "conflicts" ? { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone)) } : { ok: true };
+      }
+      // Never let core pick a side: a card the person didn't see (someone edited since the plan) aborts the fold,
+      // and its cards come back to pick on.
+      const fresh: ConflictCard[] = [];
+      const choices = planCards.size
+        ? (card: ConflictCard): Choice => {
+            const c = choiceFor(card.path);
+            if (c) return c;
+            fresh.push(card);
+            throw new NewCards();
+          }
+        : undefined;
+      const common = { into: intoId, ...(choices ? { choices } : {}) };
+      let r;
+      try {
+        // Partial accept takes record paths as segments: ids may contain "/" (core splits strings on it).
+        r = o.leaveOut.length ? await carton.foldSome(fromId, { ...common, reject: o.leaveOut.map(splitPathKey) as unknown as string[] }) : await carton.fold(fromId, common);
+      } catch (e) {
+        if (!(e instanceof NewCards) && !fresh.length) throw e;
+        await handle.planFold(fromId, intoId);
+        return { ok: false, conflicts: [...planCards.values()].filter((c) => !o.choices[c.path]).map((c) => toFoldConflict(c, someone)) };
+      }
+      planFor = "";
       await refresh();
       if (r.status === "confirmed" || r.status === "pending" || r.status === "up-to-date") return { ok: true };
       if (r.status === "rejected") return { ok: false, error: r.reason };
       if (r.status === "missing-base") return { ok: false, error: r.dialog.text };
-      // New cards (someone folded or edited meanwhile): show them, nothing is decided for the person.
-      const describeCard = opts.describeCard ?? defaultDescribeCard;
-      const fresh: Conflict[] = r.cards.map((card) => {
-        const w = describeCard(card, schema);
-        return { id: card.path, title: w.title, mine: { author: me, summary: w.mine }, theirs: { author: me, summary: w.theirs }, canKeepBoth: !!opts.keepBoth?.(card), ...(w.reason ? { reason: w.reason } : {}), provisional: "mine" };
-      });
-      return { ok: false, conflicts: fresh };
+      return { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone)) };
     },
     async resolve(id, choice) {
-      const card = cards.get(id);
-      const shown = conflicts.find((c) => c.id === id)?.provisional ?? "theirs";
-      if (card && choice !== shown) {
-        const value = choice === "mine" ? card.ours : choice === "theirs" ? card.theirs : opts.keepBoth?.(card);
-        const v = typeof value === "object" && value && "value" in (value as object) && choice === "both" ? (value as { value: unknown }).value : value;
-        const r = await carton.commit({ ops: cardOps(card, v), author: opts.me });
+      const entry = cardEntries.get(id);
+      if (!entry) return;
+      // The other side is already on screen (head); only the person's own side needs a commit.
+      if (choice !== "theirs") {
+        const card = entry.card;
+        let value: unknown = choice === "mine" ? card[entry.mineSide] : undefined;
+        if (choice === "both") {
+          const both = opts.keepBoth?.(card);
+          if (!both) throw new Error("Keep both isn't possible for this card");
+          value = typeof both === "object" && both && "value" in both ? both.value : card[entry.mineSide];
+        }
+        const r = await carton.commit({ cut: entry.cut, ops: cardOps(card, value), author: opts.me });
         if (r.status === "rejected") throw new Error(r.reason);
+        if (r.status === "conflicts") addCards(r.cards, undefined, entry.cut);
       }
-      cards.delete(id);
-      conflicts = conflicts.filter((c) => c.id !== id);
-      hub.notify("conflicts");
+      cardEntries.delete(id);
+      publishConflicts();
+    },
+    async foldRest(versionId) {
+      const i = pos.get(versionId);
+      const r = i === undefined ? undefined : rows[i];
+      if (!r?.core?.change || !r.v.foldRest) return { ok: false, error: "Nothing left to fold in" };
+      const res = await carton.revert(r.core.change, { author: opts.me, cut: r.core.ref.branchId });
+      if (res.status === "confirmed" || res.status === "pending") {
+        markRestDone(r.core.change);
+        return { ok: true };
+      }
+      if (res.status === "conflicts") {
+        addCards(res.cards, undefined, r.core.ref.branchId);
+        return { ok: false, conflicts };
+      }
+      return { ok: false, error: res.status === "rejected" ? res.reason : "Couldn't fold in the rest" };
     },
     async restore(ref) {
+      if (ref.startsWith(PENDING_PREFIX)) throw new Error("This version is still waiting to sync");
       await carton.restore(ref, { author: opts.me });
     },
     async nameVersion(id, name) {
@@ -799,9 +978,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const r = i === undefined ? undefined : rows[i];
       if (!r?.core) return;
       await carton.name(r.v.ref, name);
-      r.core = { ...r.core, name };
-      r.v = { ...r.v, name, ...(r.v.turn ? { turn: { ...r.v.turn, label: name } } : {}) };
-      reindex();
+      const j = pos.get(id);
+      if (j === undefined) return;
+      const row = rows[j]!;
+      row.core = { ...row.core!, name };
+      row.v = { ...row.v, name, ...(row.v.turn ? { turn: { ...row.v.turn, label: name } } : {}) };
+      reindexFrom(j);
       hub.notify("history");
     },
     async undo(turnId) {
@@ -810,7 +992,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       await refreshUndo();
       if (r.status === "confirmed" || r.status === "pending") return { ok: true };
       if (r.status === "conflicts") {
-        addCards(r.cards);
+        addCards(r.cards, undefined);
         return { ok: false, conflicts };
       }
       return { ok: false, error: r.status === "rejected" ? r.reason : "Couldn't undo" };
@@ -821,13 +1003,24 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       await refreshCuts();
     },
     openPreview(ref, label) {
+      // A provisional version has no state to rebuild yet (L5): there is nothing to preview.
+      if (ref?.startsWith(PENDING_PREFIX)) return;
       preview = ref ? { ref, label: label ?? ref } : null;
       hub.notify("preview");
       if (!opts.onPreview) return;
       if (!ref) opts.onPreview(null);
-      else void carton.preview(ref).then((p) => preview?.ref === ref && opts.onPreview!({ ref, label: label ?? ref, doc: p.doc }));
+      else
+        carton.preview(ref).then(
+          (p) => preview?.ref === ref && opts.onPreview!({ ref, label: label ?? ref, doc: p.doc }),
+          () => {
+            // The state can't be rebuilt (expired pin, unknown ref): close the preview rather than show a wrong one.
+            if (preview?.ref !== ref) return;
+            preview = null;
+            hub.notify("preview");
+            opts.onPreview!(null);
+          },
+        );
     },
-
     blockEdit() {
       if (!preview || preview.blockedEdit) return;
       preview = { ...preview, blockedEdit: true };
@@ -844,10 +1037,84 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (refreshTimer) clearTimeout(refreshTimer);
     },
   };
+  // Renaming cuts isn't in core's contract yet: offer it only when the handle can.
+  const rename = (carton as unknown as { renameCut?: (cut: string, name: string) => Promise<void> }).renameCut;
+  if (rename)
+    handle.renameCut = async (id, name) => {
+      await rename.call(carton, id, name);
+      await refreshCuts();
+    };
 
-  const cardsFor = (path: string): ConflictCard => cards.get(path) ?? { kind: "field", path, base: undefined, ours: undefined, theirs: undefined };
   const fallbackCut = (id: string): Cut => ({ id, name: id, label: id, current: id === carton.cut, readOnly: false, kind: "cut", head: `${id}@0`, updatedAt: 0 });
   return handle;
+}
+
+/** Thrown inside core's fold when a card the person didn't pick on appears: aborts it before anything is committed. */
+class NewCards extends Error {
+  constructor() {
+    super("new conflict cards");
+  }
+}
+
+const canonicalish = (v: unknown): string => {
+  try {
+    return JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x)) ?? "undefined";
+  } catch {
+    return String(v);
+  }
+};
+
+/**
+ * Each shot's name: the topmost clip covering the whole shot (the last in document order), found in one sweep over
+ * clips and shots sorted by start, with a heap of the clips that have started (O((clips + shots) log clips)).
+ */
+export function shotLabels(doc: Doc, shots: readonly { start: number; end: number }[], schema: Schema): (string | undefined)[] {
+  const tl = schema.timeline;
+  const out: (string | undefined)[] = new Array(shots.length).fill(undefined);
+  if (!tl) return out;
+  const items = (doc[tl.collection] as Rec[] | undefined) ?? [];
+  const order = items.map((it, i) => ({ i, s: Number(it[tl.start]), e: Number(it[tl.end]) })).sort((a, b) => a.s - b.s);
+  const shotOrder = shots.map((s, i) => ({ i, s: s.start, e: s.end })).sort((a, b) => a.s - b.s);
+  // Max-heap by document index; a clip that ends before a shot's end can't cover any later shot either (shots are
+  // contiguous and increasing), so it is dropped for good when it reaches the top.
+  const heap: { i: number; e: number }[] = [];
+  const up = (k: number) => {
+    while (k > 0) {
+      const p = (k - 1) >> 1;
+      if (heap[p]!.i >= heap[k]!.i) break;
+      [heap[p], heap[k]] = [heap[k]!, heap[p]!];
+      k = p;
+    }
+  };
+  const down = (k: number) => {
+    for (;;) {
+      const l = 2 * k + 1, r = l + 1;
+      let m = k;
+      if (l < heap.length && heap[l]!.i > heap[m]!.i) m = l;
+      if (r < heap.length && heap[r]!.i > heap[m]!.i) m = r;
+      if (m === k) break;
+      [heap[m], heap[k]] = [heap[k]!, heap[m]!];
+      k = m;
+    }
+  };
+  let c = 0;
+  for (const s of shotOrder) {
+    while (c < order.length && order[c]!.s <= s.s + 1e-6) {
+      heap.push({ i: order[c]!.i, e: order[c]!.e });
+      up(heap.length - 1);
+      c++;
+    }
+    while (heap.length && heap[0]!.e < s.e - 1e-6) {
+      heap[0] = heap[heap.length - 1]!;
+      heap.pop();
+      if (heap.length) down(0);
+    }
+    if (heap.length) {
+      const it = items[heap[0]!.i]!;
+      out[s.i] = schema.label?.(tl.collection, it) ?? (typeof it.name === "string" ? it.name : undefined);
+    }
+  }
+  return out;
 }
 
 function mapSync(status: string, waiting: number): SyncStatus {
