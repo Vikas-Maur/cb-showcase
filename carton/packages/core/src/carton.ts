@@ -166,6 +166,11 @@ export interface Carton {
   pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number; causal?: ChangeId[] }): Promise<Pin>;
   /** M4: did `author` create element `id` of the sequence at `seqKey`? For host conversions (`HostAdapter.fromHost`'s `own`). */
   own(author: Actor): OwnFn;
+  /**
+   * A fresh change id of this replica (`<rid>.<n>`), for a caller that must record it before committing so a retry
+   * commits with the same id and gets the original confirmation back (dedup by id) instead of a second change.
+   */
+  newChangeId(): ChangeId;
   release(ref: StateRef, owner: string): Promise<void>;
 
   cuts(): Promise<CutRecord[]>;
@@ -609,6 +614,9 @@ class CartonImpl implements Carton {
   }
   own(author: Actor): OwnFn {
     return this.#h.own(author);
+  }
+  newChangeId(): ChangeId {
+    return `${this.#rid}.${++this.#n}`;
   }
   async pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number; causal?: ChangeId[] }): Promise<Pin> {
     const cut = opts.cut ?? this.#h.current;
