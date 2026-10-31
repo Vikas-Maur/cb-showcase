@@ -153,7 +153,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    3. `unlink(tmp)`.
 
    The stamp `writeNow` read from the temp file stays valid, because a hard link keeps the inode. A displaced file
-   that isn't Carton's last view is imported as an `external:project.json` change.
+   that isn't Carton's last view is imported as an `external:project.json` change. On Windows a step that finds the
+   file busy (another process has it open) is tried again on a timer for up to 5 s, never by blocking the worker's
+   thread; every step is awaited, so one that still fails fails the save, as a failed rename did in 1.4.0.
 3. **`read(id)`**: a document Carton never materialized is imported at once. The worker's watcher reads every outside
    save, so a foreign write is attributed when it lands, not when the next edit commits on top of it.
 4. **Files follow commit order.** Two processes install `project.json` and `timeline.tsx` one at a time per bundle (a
