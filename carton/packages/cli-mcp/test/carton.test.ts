@@ -26,7 +26,8 @@ test("real Carton: history, credits down to the subagent, compare, activity", as
     const h = await cb(local, ["history", "--json", "--stats"]);
     assert.equal(h.code, 0, h.err);
     const v = h.json().versions;
-    assert.deepEqual(v.map((x: any) => x.version), ["main@2", "main@1", "main@0"]);
+    assert.deepEqual(v.map((x: any) => x.version), ["main@3", "main@2", "main@1", "main@0"], "the starting state is main@1, the import");
+    assert.equal(v[2].by.id, "import");
     assert.equal(v[0].by.agentType, "editor");
     assert.deepEqual([v[0].tracks, v[0].items, v[0].duration], [2, 5, 30]);
     assert.match((await cb(local, ["credits", "c2"])).out, /^c2: last changed by Director › editor \(turn t1\) \(subagent editor a1, chat c1\)$/);
@@ -34,7 +35,7 @@ test("real Carton: history, credits down to the subagent, compare, activity", as
     const cmp = await cb(local, ["compare", "main@0", "--json"]);
     assert.ok(cmp.json().changes.length >= 2, cmp.out);
     const act = await cb(local, ["activity", "--json"]);
-    assert.deepEqual(act.json().activity.map((g: any) => [g.by.id, g.changes]), [["director/c1/t1/sub-editor-a1", 1], ["director/c1/t1", 1]]);
+    assert.deepEqual(act.json().activity.map((g: any) => [g.by.id, g.changes]), [["director/c1/t1/sub-editor-a1", 1], ["director/c1/t1", 1], ["import", 1]]);
   } finally {
     await local.close();
   }
@@ -48,7 +49,7 @@ test("real Carton: cuts, fold --check, fold in some of it, publish", async () =>
     await local.write({ kind: "commit", ops: [set("c0", "name", "main-0")] });
     const chk = await cb(local, ["fold", "Short", "--check"]);
     assert.equal(chk.out, "Would fold in cleanly (no cards)");
-    assert.equal((await local.carton.head()).ref.seq, 1, "the dry run saved nothing");
+    assert.equal((await local.carton.head()).ref.seq, 2, "the dry run saved nothing (main@1 is the import, main@2 the edit)");
     const f = await cb(local, ["merge", "Short", "--reject", "timelineItems/c3", "--json"]);
     assert.equal(f.json().status, "confirmed", f.out);
     const head = (await local.carton.head()).doc.timelineItems as Rec[];
@@ -79,7 +80,7 @@ test("real Carton: undo by actor group; undo --turn as one change keeps the pers
     assert.equal(u.json().status, "confirmed", u.out);
     assert.deepEqual(await items(), { c0: "c0", c1: "c1", c2: "c2", c3: "c3", m1: "Song" });
     assert.equal((await local.carton.log()).length, before + 1, "one undo change for the whole turn (Director and subagent)");
-    const r = await cb(local, ["restore", "main@5"]);
+    const r = await cb(local, ["restore", "main@6"]); // main@1 is the import
     assert.equal(r.code, 0, r.err);
     assert.deepEqual(await items(), { c0: "c0", c1: "A", c2: "B", c3: "c3", m1: "Song" });
     assert.equal((await local.carton.log())[0].author?.id, "human:me", "the restore is credited to the caller");

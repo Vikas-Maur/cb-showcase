@@ -39,8 +39,12 @@ export interface LocalOptions {
   actor?: Actor | IdentitySource;
   /** The host adapter (default: `@carton/cardboard`'s). */
   adapter?: HostAdapter;
-  /** A new project's first state (`main@1`, one insert-all change, §16 Migration). */
-  init?: { doc: unknown; cutName?: string };
+  /**
+   * A new project's first state. By default it is `main@1`, one insert-all change in history (§16 Migration: the
+   * project's state when Carton started keeping its history, credited to core's import actor), so `cb history` and
+   * credits show where it came from. `asChange: false` makes it the root state at `main@0` instead, with no change.
+   */
+  init?: { doc: unknown; cutName?: string; asChange?: boolean };
   /**
    * The engine factory a helper should run. A helper opens carton.db with its factory's adapter, which must be this
    * process's (the same rows hash differently under another schema; core refuses it at open). Default: the factory the
@@ -117,7 +121,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   const name = replicaName(opts.name, actor);
   let carton: Carton;
   try {
-    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, name, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
+    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, name, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName, asChange: opts.init.asChange ?? true } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
   } catch (e) {
     await store.close();
     throw e;
