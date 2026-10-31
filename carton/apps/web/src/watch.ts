@@ -68,7 +68,7 @@ async function main(): Promise<void> {
     return;
   }
   const baseUrl = location.origin;
-  const session = (await Session.resume({ baseUrl, projectId: link.projectId, keys, slot: "watch" })) ?? (await Session.join({ baseUrl, projectId: link.projectId, invite: link.invite, account: "viewer", keys, slot: "watch" }));
+  const session = (await Session.resume({ baseUrl, projectId: link.projectId, keys, slot: `watch.${link.cut}` })) ?? (await Session.join({ baseUrl, projectId: link.projectId, invite: link.invite, account: "viewer", keys, slot: `watch.${link.cut}` }));
   const descriptor = await readDescriptor(session);
   const images = new ImageCache((key) => readBlob(session, key));
   const media = await startMedia({ baseUrl, projectId: link.projectId, token: () => session.token() });

@@ -149,3 +149,11 @@ test("conflict cards in an editor's words: the clip's name, what each side did t
   assert.equal(c.title, "Caption “Saturday, 7 am” text");
   assert.equal(c.mine, "“Hello”");
 });
+
+test("built files' URLs use / on every OS (the Service Worker's precache list, modulepreload links) (review R2-4)", async () => {
+  const { posix, win32 } = await import("node:path");
+  const { assetUrl } = await import("../scripts/asset-url.ts");
+  assert.equal(assetUrl("/home/u/carton/apps/web/dist", "/home/u/carton/apps/web/dist/chunks/boot-AB12.js", posix), "/chunks/boot-AB12.js");
+  assert.equal(assetUrl("C:\\Users\\u\\carton\\apps\\web\\dist", "C:\\Users\\u\\carton\\apps\\web\\dist\\chunks\\boot-AB12.js", win32), "/chunks/boot-AB12.js");
+  assert.equal(assetUrl("C:\\Users\\u\\carton\\apps\\web\\dist", "C:/Users/u/carton/apps/web/dist/app.js", win32), "/app.js", "esbuild's forward slashes too");
+});

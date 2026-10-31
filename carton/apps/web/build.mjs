@@ -8,6 +8,7 @@ import { cpSync, mkdirSync, readFileSync, rmSync, writeFileSync, existsSync } fr
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
+import { assetUrl } from "./scripts/asset-url.ts";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const args = process.argv.slice(2);
@@ -38,7 +39,7 @@ cpSync(join(here, "public"), out, { recursive: true });
 // modulepreload every chunk a page loads (static and dynamic imports), so the browser fetches them in parallel with
 // the entry instead of discovering them one level at a time
 const outputs = pages.metafile.outputs;
-const rel = (f) => "/" + f.slice(f.indexOf(out.split("/").pop() + "/") + out.split("/").pop().length + 1);
+const rel = (f) => assetUrl(out, f);
 function closure(file, seen = new Set()) {
   for (const i of outputs[file]?.imports ?? []) if (!seen.has(i.path)) (seen.add(i.path), closure(i.path, seen));
   return seen;
