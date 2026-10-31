@@ -542,6 +542,9 @@ class CartonImpl implements Carton {
     const r = await this.#mutate(
       input.id ? undefined : cut, // an explicit id: look for it on every cut (dedup by id)
       (): CommitResult => {
+        // each attempt starts clean: an attempt that lost the append race must not leave its cards for a later one
+        // (a duplicate of a change another copy of this request already confirmed writes no cards at all)
+        last = null;
         const dup = input.id ? this.#h.findChange(input.id) : null;
         if (dup) return { status: "confirmed", seq: dup.seq, ref: { branchId: dup.branchId, seq: dup.seq, pending: [] }, change: dup, rebased: 0, notices: [] };
         base ??= { branchId: cut, seq: this.#h.headSeq(cut), pending: [] };
