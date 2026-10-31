@@ -31,6 +31,20 @@ export const PROJECT_HEADER = "x-carton-project";
 // 24 MiB [E] (MAX_ENVELOPE_BYTES; measurement listed in the hosts-plugins notes). Bigger messages travel on Node.
 export const DEFAULT_MAX_ENVELOPE = 24 << 20;
 export const maxEnvelopeOf = (env: Env) => Number(env.MAX_ENVELOPE_BYTES ?? DEFAULT_MAX_ENVELOPE);
+
+// Is this string's UTF-8 encoding over `cap` bytes? Counted without encoding it (a copy the cap exists to avoid),
+// and only when the UTF-16 length doesn't settle it: each unit is 1 to 3 bytes, a surrogate pair 4 for 2 units.
+export function utf8Over(s: string, cap: number): boolean {
+  if (s.length > cap) return true;
+  if (s.length * 3 <= cap) return false;
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c >= 0xd800 && c <= 0xdbff ? (i++, 4) : 3;
+    if (n > cap) return true;
+  }
+  return false;
+}
 const ALARM_RETRY_MS = 60_000;
 
 interface Attachment {
@@ -161,8 +175,10 @@ export class ProjectRoom {
     const conn = this.#conns.get(ws);
     if (!conn) return ws.close(1011, "unknown socket");
     if (conn.auth.expires < Date.now()) return ws.close(4001, "token expired");
+    // the cap is in UTF-8 bytes, checked before anything is decoded or parsed
+    const cap = maxEnvelopeOf(this.#env);
+    if (typeof data === "string" ? utf8Over(data, cap) : data.byteLength > cap) return ws.close(1009, "message too large");
     const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-    if (text.length > maxEnvelopeOf(this.#env)) return ws.close(1009, "message too large");
     let msg: sync.ClientMessage;
     try {
       msg = JSON.parse(text);
