@@ -151,7 +151,9 @@ function shapeError(ch: Pushed): string | null {
  * What the sequencer can check of a change without holding the document (§6.3; review findings 8 and 9):
  * - a timeline record is replaced only by remove + insert, never by a record-level set or unset (the engine never
  *   emits one; it would bypass the span check and the records history);
- * - an inserted item is a valid clip (finite times, start ≥ 0, end > start, trimEnd > trimStart when both are set);
+ * - an inserted item is a valid clip: all four times finite, start ≥ 0, end > start, trim start ≥ 0, trim end > trim
+ *   start (the hard validator's rules; round 2 finding 4);
+ * - a time a change sets is finite, and a start or trim start it sets is ≥ 0;
  * - a change that sets both edges of an item (or both trims) keeps them in order.
  * Invariants that need the record's other fields (an end moved alone below the start) are the clients' merge and the
  * local sequencer's to enforce, as the plan has it: the server keeps no document state.
@@ -169,12 +171,13 @@ function invalidValues(ch: Pushed, tl: TimelineConfig): string | null {
       const s0 = v[tl.start], e0 = v[tl.end];
       if (!num(s0) || !num(e0) || (s0 as number) < 0 || !((e0 as number) > (s0 as number))) return `${coll}/${String(op.path[1])}: bad times`;
       const ts = v[tl.source], te = v[tl.sourceEnd];
-      if (ts !== undefined && te !== undefined && !(num(ts) && num(te) && (te as number) > (ts as number))) return `${coll}/${String(op.path[1])}: bad trims`;
+      if (!num(ts) || !num(te) || (ts as number) < 0 || !((te as number) > (ts as number))) return `${coll}/${String(op.path[1])}: bad trims`;
       if (typeof v[tl.lane] !== "string") return `${coll}/${String(op.path[1])}: no track`;
     } else if (op.path.length === 3 && op.op === "set") {
       const f = String(op.path[2]);
       if (f === tl.start || f === tl.end || f === tl.source || f === tl.sourceEnd) {
         if (!num(op.value)) return `${coll}/${String(op.path[1])}/${f}: not a number`;
+        if ((f === tl.start || f === tl.source) && (op.value as number) < 0) return `${coll}/${String(op.path[1])}/${f}: negative`;
         const id = String(op.path[1]);
         (edges.get(id) ?? edges.set(id, {}).get(id)!)[f] = op.value;
       }

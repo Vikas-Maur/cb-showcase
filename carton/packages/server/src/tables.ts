@@ -103,8 +103,21 @@ export class Tables {
     this.sql.exec(q, ...p);
     this.meter.rowsWritten++;
   }
+  /**
+   * Run `fn` in one SQL transaction. If it throws, the rows roll back and so does every cache: anything read inside it
+   * may have been uncommitted (a rid bound by a rolled-back adoption, round 2 finding 3), so all are rebuilt from the
+   * tables on demand.
+   */
   transaction<T>(fn: () => T): T {
-    return this.sql.transaction(fn);
+    try {
+      return this.sql.transaction(fn);
+    } catch (e) {
+      this.heads.clear();
+      this.branches.clear();
+      this.decl.clear();
+      this.ridCache.clear();
+      throw e;
+    }
   }
 
   // ---------------------------------------------------------------- branches
