@@ -324,3 +324,29 @@ test("a part waiting to retry doesn't go up again once a sibling found the uploa
   await new Promise((r) => setTimeout(r, 300)); // past part 1's backoff
   assert.equal(attempts.get(1), 1, "part 1 was not sent again into the dead upload");
 });
+
+test("a repair whose completion answer was lost still clears the damage report (S5 review round, finding 9)", async () => {
+  const store = new CountingMemoryStore();
+  const good = xorshiftBytes(2 * LEAF_SIZE + 1, 41);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const key = mediaKey(manifest.hash);
+  await store.put(key, new Uint8Array(good.length).fill(4));
+  await store.put(damagedKey(manifest.hash), new Uint8Array([1]));
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k: string) => {
+    const u = await create(k);
+    return {
+      ...u,
+      complete: async (parts: { partNumber: number; etag: string }[]) => {
+        await u.complete(parts);
+        throw Object.assign(new Error("NoSuchUpload: the answer to a completion that went through"), { code: "NoSuchUpload" });
+      },
+    };
+  };
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good), partSize: LEAF_SIZE, retries: 0 };
+  await uploadMedia(o);
+  assert.ok(equalBytes((await store.get(key))!, good));
+  assert.equal(store.objects.has(damagedKey(manifest.hash)), false);
+  const again = await uploadMedia(o);
+  assert.equal(again.bytesSent, 0, "deduped now");
+});
