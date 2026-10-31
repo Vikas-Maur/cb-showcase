@@ -935,6 +935,67 @@
           ]
         }
       ]
+    },
+    {
+      "id": "core-s8",
+      "agent": "foundation-core",
+      "claim": "S8 again after foundation's append turn (4fbc336): Carton on carton.db, three real processes committing back to back (stores' TIGHT=1 test), 20 runs; before: 1 of 20 failed with 'the store changed under this write'",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "store-sqlite test/import.test.ts 'three processes committing', TIGHT=1, 20 runs (a failure counts only with core's 'store changed under this write'; any other failure fails the measurement)",
+          "cwd": "packages/store-sqlite",
+          "env": {
+            "TIGHT": "1"
+          },
+          "repeat": 20,
+          "failPattern": "Carton: the store changed under this write",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-name-pattern=three processes committing",
+            "test/import.test.ts"
+          ],
+          "stdoutTo": "{results}/s8.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "s8.log",
+          "kind": "repeat"
+        }
+      ]
+    },
+    {
+      "id": "core-open",
+      "agent": "foundation-core",
+      "claim": "open-time scaling (Stage F4, §5.4): Carton.open + head() from the newest keyframe vs replaying every row, alternated per run, N = 1,000 / 10,000 / 30,000 changes on store-sqlite (bench/core/open.ts, RUNS=5)",
+      "timeout": 60,
+      "steps": [
+        {
+          "label": "bench/core/open.ts 1000 10000 30000, RUNS=5",
+          "env": {
+            "RUNS": "5",
+            "OUT": "{results}/open.json",
+            "CARTON_BENCH_SCRATCH": "{tmp}/core-bench",
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/core/open.ts",
+            "1000",
+            "10000",
+            "30000"
+          ],
+          "stdoutTo": "{results}/open.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "open.json",
+          "kind": "json"
+        }
+      ]
     }
   ]
 }
