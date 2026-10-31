@@ -32,11 +32,16 @@ export function who(a: Actor | null | undefined): string {
   return a.turn && !base.includes("turn") ? `${base} (turn ${a.turn})` : base;
 }
 
-/** One line per card: where, and both sides. */
-export function cardLine(c: ConflictCard, i?: number): string {
+/**
+ * One line per card: where, and both sides. A card of your own save (a rebase) holds what is there now as `ours` and
+ * your edit as `theirs`: "yours" / "theirs" by default. A fold's card holds the cut folded into as `ours` and the cut
+ * folded in as `theirs`: pass `sides` to name them (the cuts' names), so `--keep mine|theirs` reads the right way.
+ */
+export function cardLine(c: ConflictCard, i?: number, sides?: { ours: string; theirs: string }): string {
   const v = (x: unknown) => (x === undefined ? "deleted" : typeof x === "string" ? JSON.stringify(x) : JSON.stringify(x) ?? String(x));
   const head = i === undefined ? "" : `#${i + 1} `;
-  return `${head}${c.path} (${c.kind}${c.reason ? `: ${c.reason}` : ""}) — yours: ${v(c.theirs)} · theirs: ${v(c.ours)}`;
+  const both = sides ? `${sides.ours}: ${v(c.ours)} · ${sides.theirs}: ${v(c.theirs)}` : `yours: ${v(c.theirs)} · theirs: ${v(c.ours)}`;
+  return `${head}${c.path} (${c.kind}${c.reason ? `: ${c.reason}` : ""}) — ${both}`;
 }
 
 export function noticeLines(notices: readonly Notice[]): string[] {
