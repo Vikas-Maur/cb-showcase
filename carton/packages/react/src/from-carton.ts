@@ -770,7 +770,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (r.status === "confirmed" || r.status === "pending" || r.status === "up-to-date") return { ok: true };
       if (r.status === "rejected") return { ok: false, error: r.reason };
       if (r.status === "missing-base") return { ok: false, error: r.dialog.text };
-      return { ok: false, conflicts: [] };
+      // New cards (someone folded or edited meanwhile): show them, nothing is decided for the person.
+      const describeCard = opts.describeCard ?? defaultDescribeCard;
+      const fresh: Conflict[] = r.cards.map((card) => {
+        const w = describeCard(card, schema);
+        return { id: card.path, title: w.title, mine: { author: me, summary: w.mine }, theirs: { author: me, summary: w.theirs }, canKeepBoth: !!opts.keepBoth?.(card), ...(w.reason ? { reason: w.reason } : {}), provisional: "mine" };
+      });
+      return { ok: false, conflicts: fresh };
     },
     async resolve(id, choice) {
       const card = cards.get(id);

@@ -14,6 +14,7 @@ export interface FoldInDialogProps {
   fromCutId: string;
   intoCutId: string;
   onClose: () => void;
+  /** Called after a successful fold (default: onClose). */
   onDone?: (r: FoldResult) => void;
   /** Use this plan instead of asking the view model (gallery). */
   plan?: FoldPlan;
@@ -36,7 +37,8 @@ export function FoldInDialog(p: FoldInDialogProps) {
   const [fold, busy] = useAction(async () => {
     const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices, ...(allCards ? { allCards } : {}) });
     setResult(r);
-    if (r.ok) p.onDone?.(r);
+    // Done: hand the result to the host, or just close.
+    if (r.ok) (p.onDone ?? p.onClose)(r);
     return r;
   });
 
