@@ -10,6 +10,7 @@ under `wrangler dev`, locally only), and TCP links that really drop. The project
 |---|---|
 | `test/s1-project.test.ts` | a real project: GUI save, a Director turn with two parallel subagents × three dependent edits through views (R2-03), `cb history`, `credits`, `undo --turn`, `restore`, the `timeline.tsx` header contract |
 | `test/s1-mcp.test.ts` | the MCP tools over stdio on the same kind of project |
+| `test/s1-real-codec.test.ts` | an agent's JSX edit of its view through Cardboard 1.4.0's own printer and parser (skipped without the 1.4.0 CLI) |
 | `test/s1-takeover-views.test.ts` | B3: a view print while the app's engine thread is briefly busy |
 | `test/s2-cuts.test.ts` | cuts: `cut new`, edits on both, `fold --check`, a fold with cards, a partial fold and the rest, `cb conflicts` / `resolve`, `cut switch` |
 | `test/s3-cbproj.test.ts` | `.cbproj` collaboration with no server: export, a teammate edits, "Bring in their changes" ×2, a third merge, H11 |
