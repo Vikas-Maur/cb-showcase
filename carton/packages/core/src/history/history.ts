@@ -12,6 +12,7 @@ import type {
   ChangeKind,
   Choices,
   CommitResult,
+  ConflictCard,
   ConfirmedChange,
   CutKind,
   CutRecord,
@@ -492,7 +493,11 @@ export class History {
       });
       let merged = m.doc;
       if (m.conflicts.length) {
-        if (!o.choices) return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(cutId, br.log.length), merge: m, retry: (choices: Choices) => this.commit(cutId, { ...o, choices }) };
+        // a card the caller's choices don't name (it reviewed an earlier plan) comes back as a card, never decided
+        // silently, unless the caller opted into its prefer side
+        const unseen = o.unchosen === "prefer" ? [] : unseenCards(m.conflicts, o.choices);
+        if (!o.choices || unseen.length)
+          return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(cutId, br.log.length), merge: m, ...(o.choices ? { unseen: unseen.map((c) => c.path) } : {}), retry: (choices: Choices) => this.commit(cutId, { ...o, choices }) };
         merged = E.resolve(m, o.choices);
       }
       if (!isEmptyMap(change.intent?.maps)) change.intent = { ...change.intent, maps: m.edges.ours };
@@ -678,8 +683,16 @@ export class History {
         lca: base.missing,
       };
       if (missingBase !== "all-cards") return { status: "missing-base", dialog };
-      const cmp = E.compare2(this.stateOf(x)!, this.stateOf(y)!, this.schema);
-      return { status: "compare", dialog, cards: cmp.conflicts };
+      const theirs = this.stateOf(y);
+      if (!theirs) return { status: "missing-base", dialog };
+      const cmp = E.compare2(this.stateOf(x)!, theirs, this.schema);
+      const unseen = opts.unchosen === "prefer" ? [] : unseenCards(cmp.conflicts, choices);
+      if (!choices || unseen.length || opts.check) return { status: "compare", dialog, cards: cmp.conflicts };
+      // every difference decided: record it as a fold of `from`, so the next fold finds this merge as its base
+      const r = this.commit(into, { doc: cmp.resolve(choices), author, kind: "merge", extra: { mergeOf: parseNode(y), mergeEdges: { first: {}, second: {} }, mergeBase: [] } });
+      this.#anc.clear();
+      if (r.status === "confirmed" && r.change) this.#mergeAuthors(r.change, y);
+      return r;
     }
     const baseNode = base.node ?? base.nodes![0]!;
     const Mo = this.pathRemap(baseNode, x, { prefer: remapPath }),
@@ -691,8 +704,9 @@ export class History {
       prefer,
       remaps: { ours: isEmptyMap(Mo) ? undefined : { maps: Mo }, theirs: isEmptyMap(Mt) ? undefined : { maps: Mt } },
     });
-    if (m.conflicts.length && !choices)
-      return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(into, this.headSeq(into)), merge: m, base, retry: (ch: Choices) => this.fold(into, from, { ...opts, choices: ch }) };
+    const unseen = opts.unchosen === "prefer" ? [] : unseenCards(m.conflicts, choices);
+    if (m.conflicts.length && (!choices || unseen.length))
+      return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(into, this.headSeq(into)), merge: m, base, ...(choices ? { unseen: unseen.map((c) => c.path) } : {}), retry: (ch: Choices) => this.fold(into, from, { ...opts, choices: ch }) };
     const doc = m.conflicts.length ? E.resolve(m, choices!) : m.doc;
     if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m, base, doc };
     const r = this.commit(into, {
@@ -783,14 +797,9 @@ export class History {
     for (let i = br.log.length - 1; i >= 0; i--) {
       const c = br.log[i]!;
       if (c.kind === "undo" || undone.has(c.id) || groupOf(c.author) !== group) continue;
-      out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: this.#undoLabel(c), author: c.author, at: c.at });
+      out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: undoLabel(c), author: c.author, at: c.at });
     }
     return out;
-  }
-  #undoLabel(c: ConfirmedChange): string {
-    const who = c.author.kind === "human" ? "" : `${c.author.name ?? c.author.agentType ?? c.author.id}${c.author.kind === "external" ? " (terminal)" : ""}: `;
-    const what = c.name ?? E.describe(c.ops, this.stateOf(nodeId(c.branchId, c.seq - 1)) ?? {}, this.schema, c.intent)[0] ?? "change";
-    return `Undo ${who}${what}`;
   }
   /**
    * ⌘Z for an actor group: invert the newest entry of its stack at the head. An agent turn (entries sharing
@@ -822,23 +831,29 @@ export class History {
   // ------------------------------------------------------------ credits (blame)
   /** Who last changed a record, down to the subagent (`[coll, id]` or its path key). */
   credits(cutId: string, record: PathKey | readonly string[], at: number = this.headSeq(cutId)): Actor | null {
+    return this.creditsDetail(cutId, record, at)?.actor ?? null;
+  }
+  /**
+   * Credits with when and in which change. A record a fold brought in names the fold's change and time with the
+   * author the other cut recorded; a record from an imported `.cbproj` has only its author (`at`, `change` null).
+   */
+  creditsDetail(cutId: string, record: PathKey | readonly string[], at: number = this.headSeq(cutId)): { actor: Actor; at: number | null; change: ChangeId | null } | null {
     const key = typeof record === "string" ? record : E.pathKey(record);
     const br = this.#mustCut(cutId);
-    const id = key.split("/")[1];
+    const id = unkey(key)[1];
     for (let s = at; s > 0; s--) {
       const c = br.log[s - 1]!;
       if (!touches(c, key, id)) continue;
-      if (c.kind === "merge" && c.lastAuthors?.[key]) return c.lastAuthors[key]!;
-      return c.author;
+      return { actor: (c.kind === "merge" && c.lastAuthors?.[key]) || c.author, at: c.at, change: c.id };
     }
     return br.rec.forkOf ? this.#creditsAt(br.rec.forkOf, key) : null;
   }
-  #creditsAt(node: NodeId, key: PathKey): Actor | null {
+  #creditsAt(node: NodeId, key: PathKey): { actor: Actor; at: number | null; change: ChangeId | null } | null {
     node = this.canon(node);
     const imp = this.#importedAuthors.get(node);
-    if (imp) return imp[key] ?? null;
+    if (imp) return imp[key] ? { actor: imp[key]!, at: null, change: null } : null;
     const { branchId: b, seq: s } = parseNode(node);
-    return this.#cuts.get(b)?.rec.shallow ? null : this.#cuts.has(b) ? this.credits(b, key, s) : null;
+    return this.#cuts.get(b)?.rec.shallow ? null : this.#cuts.has(b) ? this.creditsDetail(b, key, s) : null;
   }
   #mergeAuthors(change: ConfirmedChange, from: NodeId): void {
     const out: Record<PathKey, Actor> = {};
@@ -846,13 +861,13 @@ export class History {
       if (op.op === "remap") {
         for (const id of op.ids ?? []) {
           const key = E.pathKey([this.schema.timeline!.collection, id]);
-          if (!(key in out)) out[key] = this.#creditsAt(from, key) ?? change.author;
+          if (!(key in out)) out[key] = this.#creditsAt(from, key)?.actor ?? change.author;
         }
         continue;
       }
       const key = E.pathKey(op.path.slice(0, 2));
       if (key in out) continue;
-      out[key] = this.#creditsAt(from, key) ?? change.author;
+      out[key] = this.#creditsAt(from, key)?.actor ?? change.author;
     }
     change.lastAuthors = out;
   }
@@ -1079,6 +1094,12 @@ export class History {
 
 // ------------------------------------------------------------------ helpers
 
+/** "Undo Director: tighter intro": who (agents only) and what (default: the change's name, intent or kind). */
+export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {
+  const who = c.author.kind === "human" ? "" : `${c.author.name ?? c.author.agentType ?? c.author.id}${c.author.kind === "external" ? " (terminal)" : ""}: `;
+  return `Undo ${who}${what}`;
+}
+
 const touchesTimeline = (schema: Schema, ops: readonly Op[]): boolean => !!schema.timeline && ops.some((op) => op.op === "remap" || op.path[0] === schema.timeline!.collection);
 /**
  * §4.1: every replica runs the soft validators incrementally on what a confirmed change touched, so two plain trims
@@ -1112,11 +1133,23 @@ function inverseOps(schema: Schema, pre: Doc, post: Doc, reject: readonly (PathK
     const path = typeof p === "string" ? unkey(p) : [...p];
     const a = E.getIn(post, path, schema),
       b = E.getIn(pre, path, schema);
-    if (a === undefined && b !== undefined) ops.push({ op: "insert", path, value: b });
-    else if (b === undefined && a !== undefined) ops.push({ op: "remove", path });
-    else if (a !== b) ops.push(...E.diff({ [path[0]!]: [a] }, { [path[0]!]: [b] }, schema));
+    if (E.deepEqual(a, b)) continue;
+    // a whole record goes back as an insert, a remove, or its field ops; anything else (a root field such as the
+    // project name, a nested field) is set back to its value, or unset
+    const record = path.length === 2 && !!schema.collections[path[0]!];
+    if (record && a === undefined) ops.push({ op: "insert", path, value: b });
+    else if (record && b === undefined) ops.push({ op: "remove", path });
+    else if (record) ops.push(...E.diff({ [path[0]!]: [a] }, { [path[0]!]: [b] }, schema));
+    else ops.push(b === undefined ? { op: "unset", path } : { op: "set", path, value: b });
   }
   return ops;
+}
+
+/** Cards a list or map of choices doesn't decide (a function decides every card). */
+export function unseenCards(cards: readonly ConflictCard[], choices: Choices | undefined): ConflictCard[] {
+  if (!choices || typeof choices === "function") return [];
+  if (Array.isArray(choices)) return cards.filter((_, i) => choices[i] === undefined);
+  return cards.filter((c) => !(c.path in choices));
 }
 
 /** Does change `c` touch the record with path key `key` (id `id`)? A remap op touches the items it moved. */
