@@ -16,6 +16,9 @@
       ],
       "@carton/cardboard": [
         "../cardboard/dist/index.d.ts"
+      ],
+      "@carton/store-sqlite": [
+        "../store-sqlite/dist/index.d.ts"
       ]
     }
   },
