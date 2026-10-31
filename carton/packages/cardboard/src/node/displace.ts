@@ -8,9 +8,16 @@
 //
 // Every displaced file is then reviewed by the caller (`DisplacedFiles`): one that isn't Carton's own last install is
 // a foreign write and is imported. Carton never replaces a name, so the only cost is a short window in which the path
-// is missing; Cardboard's readers (which we hook) and Carton's own (`retryMissing`) retry on ENOENT, and agents' file
-// tools see a transient error. The window is tens of microseconds on ext4 (P10) and longer on NTFS (bench/race
-// measures it on each file system).
+// is missing, on every OS: tens of microseconds on ext4 (P10), longer on NTFS (bench/race measures it on each file
+// system). It matters beyond Windows: stock 1.4.0 takes an unreadable project.json for a removed project (dropped from
+// the index and the rescan, the watcher says `removed`). So:
+//   - the caller holds the bundle's install lock (`.carton/install.lock/`, `withInstallLock`, shared with the app's
+//     facade) around the whole install, from step 1 to step 3, and passes its `mine()`: a holder that stalled long
+//     enough to be taken over stops before step 1 instead of installing its older file over the successor's;
+//   - readers wait on ENOENT while the lock is held: the app's store bridge up to 6 s (50 ms without the lock), Carton's
+//     own through `retryMissing` (6 s, 100 ms without); agents' file tools see a transient error;
+//   - an install that fails between 1 and 2 (a link error other than EEXIST, or a busy file past its budget) puts the
+//     file it displaced back before returning, still under the lock, so a failure never leaves the path missing.
 //
 // Windows has no atomic "replace only if unchanged" (nor an exchange), so an install that never leaves the path missing
 // (check the stamp, then rename over it; MoveFileEx replaces atomically) destroys a foreign save that lands after the
@@ -165,6 +172,12 @@ export interface InstallOptions extends BusyOptions {
   lastStamp?: string | null;
   /** How many foreign files one install displaces before it gives up (`InstallGaveUp`), default 50. */
   maxDisplaced?: number;
+  /**
+   * The install lock's `mine()`: checked before each displacing rename. False means another process took the lock over
+   * (this one stalled for a minute) and may have installed newer state since: this install stops (`InstallLockLost`)
+   * instead of putting its older file in place.
+   */
+  mine?: () => boolean;
 }
 
 /**
@@ -181,6 +194,16 @@ export class InstallGaveUp extends Error {
   }
 }
 
+/** The install lock was taken over while this install waited: it installed nothing (`displaced`: what it moved aside). */
+export class InstallLockLost extends Error {
+  readonly displaced: string[];
+  constructor(target: string, displaced: string[]) {
+    super(`${target}: another process took the install lock over; this install stopped (its content may be older)`);
+    this.name = "InstallLockLost";
+    this.displaced = displaced;
+  }
+}
+
 const hr = (): bigint => process.hrtime.bigint();
 
 /**
@@ -193,6 +216,7 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
   let eexist = 0;
   let first: bigint | null = null;
   for (;;) {
+    if (opts.mine && !opts.mine()) throw new InstallLockLost(target, displaced);
     const slot = nextSlot();
     const t0 = hr();
     first ??= t0;
@@ -209,7 +233,10 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
       const busy = atOnce(() => fs.linkSync(tmp, target), opts);
       if (busy) await busy;
     } catch (e) {
-      if (errCode(e) !== "EEXIST") throw e;
+      if (errCode(e) !== "EEXIST") {
+        if (displaced.at(-1) === slot && (await putBack(slot, target, opts))) displaced.pop();
+        throw e;
+      }
       eexist++;
       if (displaced.length >= (opts.maxDisplaced ?? 50)) throw new InstallGaveUp(target, displaced);
       continue;
@@ -221,6 +248,25 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
   }
 }
 
+/**
+ * After a failed install: the file displaced last goes back to `target` if the name is still free (link: never over a
+ * foreign write that landed meanwhile; that one keeps the path, and the displaced file stays held). True if it went back.
+ */
+async function putBack(slot: string, target: string, opts: BusyOptions): Promise<boolean> {
+  try {
+    await retryBusy(() => fs.linkSync(slot, target), opts);
+  } catch {
+    return false; // EEXIST: a foreign write holds the path; or links fail too: the caller holds the file
+  }
+  try {
+    await retryBusy(() => fs.unlinkSync(slot), opts);
+  } catch {
+    // the slot stays as a second name of the file now at the target: reviewed as Carton's own or a foreign write
+    return false;
+  }
+  return true;
+}
+
 // FAT and exFAT have no hard links. There the best available is: if the target isn't what Carton last installed,
 // displace it first; then rename the temp over the target. A foreign write that lands between the check and the
 // rename is overwritten: a window of microseconds, stated as L13.
@@ -228,6 +274,7 @@ async function installWithoutLinks(target: string, tmp: string, nextSlot: () => 
   const displaced: string[] = [];
   const t0 = hr();
   const stamp = await statStamp(target, opts);
+  if (opts.mine && !opts.mine()) throw new InstallLockLost(target, displaced);
   if (stamp !== null && stamp !== opts.lastStamp) {
     const slot = nextSlot();
     try {
@@ -239,7 +286,14 @@ async function installWithoutLinks(target: string, tmp: string, nextSlot: () => 
   }
   const t1 = hr();
   opts.between?.();
-  await retryBusy(() => fs.renameSync(tmp, target), opts);
+  try {
+    await retryBusy(() => fs.renameSync(tmp, target), opts);
+  } catch (e) {
+    // put the displaced file back (rename: no links here; the same L13 window as the install itself)
+    const slot = displaced.at(-1);
+    if (slot && (await statStamp(target, opts).catch(() => "?")) === null) await retryBusy(() => fs.renameSync(slot, target), opts).catch(() => undefined);
+    throw e;
+  }
   const t2 = hr();
   return { displaced, eexist: 0, gapNs: Number(t2 - t1), gapTotalNs: Number(t2 - t0) };
 }

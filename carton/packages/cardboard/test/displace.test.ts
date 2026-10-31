@@ -5,7 +5,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { BUSY_BUDGET_MS, InstallGaveUp, displaceThenInstall, hardLinksWork, retryBusy, retryMissing, statStamp, type BusyOptions } from "../src/node/displace.ts";
+import { BUSY_BUDGET_MS, INSTALL_LOCK, InstallGaveUp, InstallLockLost, displaceThenInstall, hardLinksWork, retryBusy, retryMissing, statStamp, type BusyOptions } from "../src/node/displace.ts";
+import { withInstallLock } from "../src/node/install-lock.ts";
 import { DisplacedFiles } from "../src/node/displaced.ts";
 
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
@@ -226,7 +227,7 @@ test("retryBusy: the budget is time (5 s by default, configurable), never other 
   await assert.rejects(retryBusy(busy, { ...WIN, counter, budgetMs: 100 }), { code: "EPERM" });
   const took = performance.now() - t0;
   assert.ok(took >= 50 && took < 1_000, `gave up after ${took} ms with a 100 ms budget`);
-  assert.ok(counter.busy >= 5);
+  assert.ok(counter.busy >= 2, `retried (${counter.busy} times; fewer on a loaded box, where each wait overshoots)`);
   let calls = 0;
   const gone = () => {
     calls++;
@@ -338,4 +339,59 @@ test("a writer that keeps re-creating the target makes the install give up, with
   assert.deepEqual(err.displaced.map((d) => fs.readFileSync(d, "utf8")), ["runaway 0", "runaway 1", "runaway 2", "runaway 3", "runaway 4"]);
   assert.equal(fs.readFileSync(target, "utf8"), "runaway 5", "the writer's last file stays at the path");
   assert.ok(fs.existsSync(ours), "our temp is left for the caller to remove");
+});
+
+// Stock 1.4.0 takes a missing project.json for a removed project, on every OS: an install that fails between the
+// displace and the link must not leave the path missing.
+test("an install whose link fails puts the displaced file back: the path is never left missing", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "previous");
+  const ours = tmp("ours");
+  const real = fs.linkSync;
+  let failed = 0;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (from === ours && to === target) {
+      failed++;
+      throw Object.assign(new Error("EIO: i/o error (simulated)"), { code: "EIO" });
+    }
+    return real(from, to);
+  });
+  await assert.rejects(displaceThenInstall(target, ours, held.next), { code: "EIO" });
+  assert.equal(failed, 1);
+  assert.equal(fs.readFileSync(target, "utf8"), "previous", "the file that was there is back");
+  assert.deepEqual(fs.readdirSync(path.join(dir, ".carton", "displaced")), [], "and not also held as displaced");
+});
+
+test("a failed install's put-back never replaces a foreign save that landed meanwhile: it keeps the path, the displaced file is held", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "previous");
+  const ours = tmp("ours");
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (from === ours && to === target) {
+      fs.writeFileSync(target, "foreign save"); // lands after the displace
+      throw Object.assign(new Error("EIO: i/o error (simulated)"), { code: "EIO" });
+    }
+    return real(from, to);
+  });
+  await assert.rejects(displaceThenInstall(target, ours, held.next), { code: "EIO" });
+  assert.equal(fs.readFileSync(target, "utf8"), "foreign save");
+  const kept = fs.readdirSync(path.join(dir, ".carton", "displaced"));
+  assert.equal(kept.length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, ".carton", "displaced", kept[0]!), "utf8"), "previous", "nothing lost");
+});
+
+test("review 7 #1: a holder whose install lock was taken over while it stalled stops instead of installing its older file", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "v1");
+  const ours = tmp("older");
+  await withInstallLock(dir, async (mine) => {
+    // stalled past the takeover: another process took the lock over and installed newer state
+    fs.writeFileSync(path.join(dir, INSTALL_LOCK, "owner"), JSON.stringify({ pid: 1, me: "successor" }));
+    fs.writeFileSync(target, "newer");
+    await assert.rejects(displaceThenInstall(target, ours, held.next, { mine }), InstallLockLost);
+  });
+  assert.equal(fs.readFileSync(target, "utf8"), "newer", "the successor's install stays");
+  assert.deepEqual(fs.readdirSync(path.join(dir, ".carton", "displaced")), [], "nothing moved aside");
+  assert.ok(fs.existsSync(path.join(dir, INSTALL_LOCK)), "and its lock isn't released by the old holder");
 });

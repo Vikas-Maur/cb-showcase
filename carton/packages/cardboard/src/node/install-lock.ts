@@ -7,7 +7,9 @@
 //    freed, so wait too.
 //  - holding it: touch `owner` every second.
 //  - taking over: from a holder silent for 10 s whose pid no longer runs, or silent for 60 s (pids are reused on
-//    Windows). The folder is renamed aside first, so only one taker wins.
+//    Windows). The folder is renamed aside first, so only one taker wins. A taker that stalled between its look and
+//    its rename may move a lock taken afresh meanwhile: it checks what it moved (folder identity and owner) and puts a
+//    live lock back.
 //  - giving up: a waiter that can't take it within 30 s throws `InstallLockBusy`; the next install tries again.
 import fs from "node:fs";
 import path from "node:path";
@@ -41,9 +43,27 @@ const running = (pid: number): boolean => {
   }
 };
 
+/** Which lock a folder holds: the folder itself (inode and birth time) and its holder's `me`. */
+function identity(dir: string): string | null {
+  try {
+    const st = fs.statSync(dir, { bigint: true });
+    let me = "";
+    try {
+      me = String((JSON.parse(fs.readFileSync(path.join(dir, "owner"), "utf8")) as { me?: string }).me ?? "");
+    } catch {
+      // taken, owner not written yet
+    }
+    return `${st.ino}:${st.birthtimeNs}:${me}`;
+  } catch {
+    return null;
+  }
+}
+
 /** Moves an abandoned lock aside (one rename: one winner) so it can be taken. */
 function takeOverIfAbandoned(dir: string, now: number, alive: (pid: number) => boolean): void {
   const owner = path.join(dir, "owner");
+  const seen = identity(dir);
+  if (!seen) return; // released meanwhile
   let pid: number | null = null;
   let beat: number;
   try {
@@ -61,9 +81,24 @@ function takeOverIfAbandoned(dir: string, now: number, alive: (pid: number) => b
   const aside = `${dir}.abandoned.${process.pid}.${randomBytes(4).toString("hex")}`;
   try {
     fs.renameSync(dir, aside);
+  } catch {
+    return; // another taker won, or the holder released it
+  }
+  if (identity(aside) !== seen) {
+    // not the lock judged abandoned: it was released and taken afresh between the look and the rename. Put it back
+    // (if a third process took the free name in the instant between, the moved lock's holder finds its owner file
+    // gone: `mine()` is false and it never releases the newcomer's lock)
+    try {
+      fs.renameSync(aside, dir);
+      return;
+    } catch {
+      // taken again meanwhile
+    }
+  }
+  try {
     fs.rmSync(aside, { recursive: true, force: true });
   } catch {
-    // another taker won, or the holder released it
+    // best effort (Windows: a file in it still open); a leftover `.abandoned.*` folder holds nothing
   }
 }
 
