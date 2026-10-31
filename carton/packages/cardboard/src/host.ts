@@ -102,8 +102,14 @@ export function fromHost(host: Readonly<Record<string, unknown>>, base: Doc | nu
     out[MEDIA] = h.media.map((m) => {
       let r = stripEphemeral(m, S.collections[MEDIA]!.record);
       const b = bm.get(m.id);
-      // Carton's own fields: an entry without them (Cardboard never writes them) keeps the base's
-      if (b) for (const f of CARTON_MEDIA_FIELDS) if (r[f] === undefined && b[f] !== undefined) r = { ...r, [f]: b[f] };
+      // Fields 1.4.0's project store strips (its media schema drops unknown keys: contentHash, shared, and data.content
+      // on media types that don't declare it): an entry without them keeps the base's, so a GUI save never unsets them
+      if (b) {
+        for (const f of CARTON_MEDIA_FIELDS) if (r[f] === undefined && b[f] !== undefined) r = { ...r, [f]: b[f] };
+        const bc = (b.data as Rec | undefined)?.content;
+        const rd = r.data as Rec | undefined;
+        if (bc !== undefined && rd && typeof rd === "object" && rd.content === undefined) r = { ...r, data: { ...rd, content: bc } };
+      }
       return b && deepEqual(b, r) ? b : r;
     });
   }

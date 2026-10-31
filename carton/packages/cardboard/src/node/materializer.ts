@@ -13,7 +13,9 @@
 //                             path it came from, so a restart finds and finishes what an earlier process held.
 //
 // Every Carton write to a watched path goes through `displaceThenInstall`, so Carton never destroys a file it hasn't
-// seen. A foreign save is read on every watch event and applied at once when it parses; content that doesn't parse
+// seen, under the bundle's install lock (`.carton/install.lock/`, shared with the app's facade): the path is missing for
+// a moment between the displace and the link on every OS, and stock 1.4.0 takes a missing project.json for a removed
+// project, so the app's readers wait while the lock is held (see ./displace.ts). A foreign save is read on every watch event and applied at once when it parses; content that doesn't parse
 // yet (an in-place writer mid-write) waits for 150 ms of quiet, and a file that never parses is kept and reported.
 // A displaced save is deleted only once its change is stored; one that can't be applied stays in `.carton/displaced`.
 //

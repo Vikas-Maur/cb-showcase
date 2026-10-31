@@ -204,3 +204,11 @@ test("S5-G3: a GUI save whose media entry lacks Carton's fields (Cardboard never
 test("S5-G3: the schema version moved with the versioned slice", () => {
   assert.equal(createCardboardAdapter().schemaVersion, 2);
 });
+
+test("S5-G2: data.content that 1.4.0's store strips (media types without it) is kept from the base, not unset", () => {
+  const b = doc([], { media: [{ id: "m", createdAt: "t", data: { type: "video", fileName: "a.mp4", content: "notes" } }] });
+  const stripped = fromHost({ ...toHost(b), media: [{ id: "m", createdAt: "t", data: { type: "video", fileName: "a.mp4" } }] }, b);
+  assert.deepEqual(diff(b, stripped, S), [], "nothing unset");
+  const edited = fromHost({ ...toHost(b), media: [{ id: "m", createdAt: "t", data: { type: "video", fileName: "a.mp4", content: "new" } }] }, b);
+  assert.deepEqual(diff(b, edited, S).map((o) => o.path.join("/")), ["media/m/data/content"], "an edit still lands");
+});

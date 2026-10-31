@@ -776,19 +776,33 @@ test("review 5 #3: if removing a finished save's attempt fails, the save is stil
   assert.equal(s.engine.commits.length, 1, "applied once");
 });
 
-test("an install holds the bundle's install lock (the app's readers wait on it) and releases it after", async (t) => {
+test("every install of project.json and timeline.tsx holds the bundle's install lock across its whole missing window, and releases it after", async (t) => {
+  // stock 1.4.0 takes a missing project.json for a removed project: its readers (the app's store bridge) wait while
+  // `.carton/install.lock/` exists, so the lock must cover the gap from the displacing rename to the link
   const s = await setup(t, [clip("a", 0, 5)], { start: false });
   const lock = path.join(s.bundle, ".carton", "install.lock");
-  const seen: boolean[] = [];
-  const real = fs.linkSync;
+  const watched = new Set([s.abs(TIMELINE_FILE), s.abs(PROJECT_FILE)]);
+  const seen: { step: string; file: string; locked: boolean }[] = [];
+  const realLink = fs.linkSync;
+  const realRename = fs.renameSync;
+  t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (watched.has(String(from))) seen.push({ step: "displace", file: path.basename(String(from)), locked: fs.existsSync(lock) });
+    return realRename(from, to);
+  });
   t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
-    if (to === s.abs(TIMELINE_FILE) || to === s.abs(PROJECT_FILE)) seen.push(fs.existsSync(lock));
-    return real(from, to);
+    if (watched.has(String(to))) seen.push({ step: "link", file: path.basename(String(to)), locked: fs.existsSync(lock) });
+    return realLink(from, to);
   });
   await s.mz.start();
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "gui"));
+  s.mz.onHeadChange("gui"); // both files follow head
+  await s.tick(50);
+  s.writeAtomic(TIMELINE_FILE, s.edited(s.read(), (its) => (its[0]!.name = "agent")));
+  await s.event(); // a foreign save: applied, then the files rewritten
+  await s.tick(50);
   t.mock.restoreAll();
-  assert.ok(seen.length >= 1, "start installed the files");
-  assert.ok(seen.every(Boolean), "each link ran under the lock");
+  for (const file of ["project.json", "timeline.tsx"]) for (const step of ["displace", "link"]) assert.ok(seen.some((x) => x.file === file && x.step === step), `${file}: ${step} seen`);
+  assert.deepEqual(seen.filter((x) => !x.locked), [], "every displace and link ran under the lock");
   assert.equal(fs.existsSync(lock), false, "released");
 });
 

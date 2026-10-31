@@ -339,3 +339,43 @@ test("a writer that keeps re-creating the target makes the install give up, with
   assert.equal(fs.readFileSync(target, "utf8"), "runaway 5", "the writer's last file stays at the path");
   assert.ok(fs.existsSync(ours), "our temp is left for the caller to remove");
 });
+
+// Stock 1.4.0 takes a missing project.json for a removed project, on every OS: an install that fails between the
+// displace and the link must not leave the path missing.
+test("an install whose link fails puts the displaced file back: the path is never left missing", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "previous");
+  const ours = tmp("ours");
+  const real = fs.linkSync;
+  let failed = 0;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (from === ours && to === target) {
+      failed++;
+      throw Object.assign(new Error("EIO: i/o error (simulated)"), { code: "EIO" });
+    }
+    return real(from, to);
+  });
+  await assert.rejects(displaceThenInstall(target, ours, held.next), { code: "EIO" });
+  assert.equal(failed, 1);
+  assert.equal(fs.readFileSync(target, "utf8"), "previous", "the file that was there is back");
+  assert.deepEqual(fs.readdirSync(path.join(dir, ".carton", "displaced")), [], "and not also held as displaced");
+});
+
+test("a failed install's put-back never replaces a foreign save that landed meanwhile: it keeps the path, the displaced file is held", async (t) => {
+  const { target, held, tmp, dir } = setup(t);
+  fs.writeFileSync(target, "previous");
+  const ours = tmp("ours");
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (from === ours && to === target) {
+      fs.writeFileSync(target, "foreign save"); // lands after the displace
+      throw Object.assign(new Error("EIO: i/o error (simulated)"), { code: "EIO" });
+    }
+    return real(from, to);
+  });
+  await assert.rejects(displaceThenInstall(target, ours, held.next), { code: "EIO" });
+  assert.equal(fs.readFileSync(target, "utf8"), "foreign save");
+  const kept = fs.readdirSync(path.join(dir, ".carton", "displaced"));
+  assert.equal(kept.length, 1);
+  assert.equal(fs.readFileSync(path.join(dir, ".carton", "displaced", kept[0]!), "utf8"), "previous", "nothing lost");
+});

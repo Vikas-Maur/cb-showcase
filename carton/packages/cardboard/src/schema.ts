@@ -268,8 +268,9 @@ const MEDIA_LABELS: Record<string, string> = {
 /** The T1 kinds of PLAN §11 (`@carton/media`'s `T1_KINDS`): poster, filmstrip, peaks, transcript, analysis, LUT, .context, recipe. */
 export const SHARED_T1_KINDS = ["poster", "filmstrip", "peaks", "transcript", "analysis", "lut", "context", "recipe"] as const;
 /**
- * A media entry's fields that are Carton's, not Cardboard's (Cardboard never writes them): `contentHash` and `shared`. A
- * host entry without them keeps the base's (a GUI save doesn't remove what it never knew); Carton's own writes set them.
+ * A media entry's fields that are Carton's, not Cardboard's: `contentHash` and `shared`. 1.4.0's project store strips
+ * them (windows-sync checked it through the real worker), so a host entry without them keeps the base's (a GUI save
+ * doesn't remove what it can't store); Carton's own writes set them. `data.content` is kept the same way (`fromHost`).
  */
 export const CARTON_MEDIA_FIELDS = ["contentHash", "shared"] as const;
 /**
