@@ -147,3 +147,23 @@ test(".cbproj: the opt-in full history is its own entry, written by the store's 
   assert.equal(await extractFullHistory(out, back), true);
   assert.deepEqual(fs.readFileSync(back), history);
 });
+
+// Review 1 #8: names that 1.4.0's extraction resolves into an excluded folder (`./.carton/…`, `.scratch/./views/…`),
+// unsafe names, and a second member landing on a path already taken are all ignored.
+test(".cbproj: aliases of excluded paths, unsafe names and colliding members are ignored", async (t) => {
+  const project = { id: "proj-5", name: "Film", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(1) };
+  const dir = bundle(t, "alias", project);
+  const out = path.join(dir, "..", `alias-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  const manifest = JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] });
+  const names = ["./.carton/carton.db", ".scratch/./views/x.tsx", "media//a.mp4", "media/a.mp4", "../escape.txt", "./.carton-export/shallow.json", "notes.md"];
+  try {
+    execFileSync("python3", ["-c", "import sys,zipfile,json\nz=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED)\nz.writestr('project.json',sys.argv[2])\nfor n in json.loads(sys.argv[3]): z.writestr(n,'x')\nz.close()", out, manifest, JSON.stringify(names)]);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return t.skip("no python3");
+    throw e;
+  }
+  const c = await readCbproj(out);
+  assert.deepEqual(c.files, ["media//a.mp4", "notes.md"], "only one member per extracted path, and nothing excluded");
+  assert.deepEqual(c.ignored.sort(), ["../escape.txt", "./.carton-export/shallow.json", "./.carton/carton.db", ".scratch/./views/x.tsx", "media/a.mp4"].sort());
+});

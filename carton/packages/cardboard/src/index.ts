@@ -5,7 +5,7 @@
 // The file-system side (materializer, .cbproj) is `@carton/cardboard/node`. Owner: cardboard-adapter.
 import { merge3 } from "@carton/core";
 import type { Doc } from "@carton/core";
-import type { HostAdapter } from "@carton/core/plugins";
+import type { HostAdapter, OwnFn } from "@carton/core/plugins";
 import { cardboardSchema, diagnose } from "./schema.ts";
 import { fromHost, toHost, projectGuiSave, projectDoc, materializeProject, type CardboardProject, type ItemProjection } from "./host.ts";
 import { identityProjection } from "./projection.ts";
@@ -37,7 +37,7 @@ export const cardboardAdapter: HostAdapter<CardboardProject> = createCardboardAd
 
 /** The document conversions the materializer (`@carton/cardboard/node`) needs, for Cardboard. */
 export const cardboardFilesHost = {
-  fromProject: (project: Record<string, unknown>, base: Doc | null): Doc => fromHost(project, base),
+  fromProject: (project: Record<string, unknown>, base: Doc | null, own?: OwnFn): Doc => fromHost(project, base, own),
   toProject: (doc: Doc, current: Record<string, unknown> | null): Record<string, unknown> => materializeProject(doc, current),
   merge3: (base: Doc, ours: Doc, theirs: Doc): Doc => merge3(base, ours, theirs, cardboardSchema).doc,
   diagnose,
@@ -48,6 +48,7 @@ export { fromHost, toHost, projectGuiSave, projectDoc, sliceOf, materializeProje
 export type { CardboardProject, ItemProjection } from "./host.ts";
 export { identityProjection, standInProjection } from "./projection.ts";
 export { inferRipple } from "./ripple.ts";
+export { nameTurn, turnName, type TurnRef } from "./turns.ts";
 export { parseActor, subagentActorId, cardboardIdentity } from "./identity.ts";
 export * from "./header.ts";
 export * from "./codec.ts";

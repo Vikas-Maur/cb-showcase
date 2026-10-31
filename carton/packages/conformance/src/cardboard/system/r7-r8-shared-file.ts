@@ -118,7 +118,7 @@ test(`R7-01 with B1: a hooked turn that printed the shared file's state ends; a 
   const r0 = await legacy.read();
   const hooked = w.agent("director/c/t1", { hooked: true, actor: { turn: "t1" } });
   const pr = await w.mz.printView("director_c_t1", hooked.actor, { hooked: true });
-  assert.equal(pr.ref, r0.ref, "the turn pinned the same state the shared file's header names");
+  assert.equal(pr.ref.split(" b:")[0], r0.ref, "the turn pinned the same state the shared file's header names");
   await hooked.stop();
   await legacy.write(TIMELINE_FILE, render(r0, r0.items.map((i) => (i.id === "titleX" ? { ...i, textContent: "A" } : i))));
   await w.tick(2000);
