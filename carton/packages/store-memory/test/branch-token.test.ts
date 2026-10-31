@@ -41,7 +41,7 @@ test("a header for a cut id core didn't make (a dot, a dash, non-ASCII) reads ba
   await c.close();
 });
 
-test("two cuts with one token are told apart by the header's cut name, then by its state", async () => {
+test("two cuts with one token are told apart by the header's state, then by its cut name", async () => {
   const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() } });
   // one token, "0123abcd", as a renamed copy shares its original's
   const one = "0123abcd-one",
@@ -62,5 +62,25 @@ test("two cuts with one token are told apart by the header's cut name, then by i
     const { header } = await c.pin({ owner: "t", cut: id });
     assert.equal(nameOf((await c.resolve(header)).doc, "a"), want, `by state: ${header}`);
   }
+  await c.close();
+});
+
+test("a header printed on a cut renamed since reads back from that cut, not from one now under the printed name (cardboard-adapter 0760ef2)", async () => {
+  const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() } });
+  const one = "0123abcd-one",
+    two = "0123abcd-two";
+  await c.fork("One", { id: one });
+  await c.fork("Two", { id: two });
+  await c.commit({ cut: one, ops: [set("a", "name", "from one")] });
+  await c.commit({ cut: two, ops: [set("a", "name", "from two")] });
+  const { header } = await c.pin({ owner: "t", cut: one });
+  // a held state on `one` (a freeze view): only its pin has it
+  const d = (await c.head(one)).doc;
+  const held = { ...d, items: (d.items as Rec[]).map((x) => (x.id === "b" ? { ...x, name: "held on one" } : x)) };
+  const { header: heldHeader } = await c.pin({ owner: "t", cut: one, doc: held });
+  await c.renameCut(one, "Moved");
+  await c.renameCut(two, "One");
+  assert.equal(nameOf((await c.resolve(header)).doc, "a"), "from one", `the cut with the printed state: ${header}`);
+  assert.equal(nameOf((await c.resolve(heldHeader)).doc, "b"), "held on one", `a pinned state counts: ${heldHeader}`);
   await c.close();
 });

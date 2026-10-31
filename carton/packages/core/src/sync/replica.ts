@@ -243,6 +243,10 @@ export class SharedCut {
     this.refreshState();
     return this.client.whenCaughtUp(timeoutMs);
   }
+  /** Send this replica's person on the live connection (`SyncClient.identify`). */
+  identify(): void {
+    this.client?.identify();
+  }
   /** History this replica doesn't hold, from the server (`SyncClient.history`): fails while not connected. */
   history(after: number, upTo: number, opts: { lineage?: boolean } = {}): ReturnType<SyncClient["history"]> {
     if (!this.client) return Promise.reject(new Error("history request: not connected"));
