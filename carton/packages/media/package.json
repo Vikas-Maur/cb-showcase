@@ -1,17 +1,40 @@
 {
   "name": "@carton/media",
   "version": "0.1.0",
-  "description": "Carton media: content ids, lazy hashing, tiers, resumable uploads, verified range reads, collab proxies",
+  "description": "Media: 1 MiB-leaf SHA-256 manifests, lazy hashing, tiers T0-T3, resumable multipart uploads, play first and verify after, the range cache, the collab proxy encoder chain, the loopback range server.",
   "type": "module",
   "license": "UNLICENSED",
-  "private": true,
   "exports": {
     ".": "./src/index.ts",
-    "./node": "./src/node/index.ts"
+    "./node": "./src/node/index.ts",
+    "./testing": "./src/testing.ts"
   },
-  "files": ["src", "dist"],
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./node": {
+        "types": "./dist/node/index.d.ts",
+        "default": "./dist/node/index.js"
+      },
+      "./testing": {
+        "types": "./dist/testing.d.ts",
+        "default": "./dist/testing.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
   "scripts": {
     "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.node.json --noEmit && tsc -p test/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0"
   }
 }

@@ -1,0 +1,36 @@
+{
+  "name": "carton",
+  "private": true,
+  "description": "Carton: git for video, plus live collaboration, for Cardboard. npm workspace root.",
+  "type": "module",
+  "engines": { "node": ">=24" },
+  "workspaces": [
+    "packages/core",
+    "packages/store-memory",
+    "packages/store-sqlite",
+    "packages/store-idb",
+    "packages/blob-memory",
+    "packages/blob-fs",
+    "packages/blob-s3",
+    "packages/server",
+    "packages/server-node",
+    "packages/server-cloudflare",
+    "packages/media",
+    "packages/cardboard",
+    "packages/local",
+    "packages/cli-mcp",
+    "packages/react",
+    "packages/conformance"
+  ],
+  "scripts": {
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "build": "node scripts/build.mjs",
+    "size": "node scripts/size.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

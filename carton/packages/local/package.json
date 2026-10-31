@@ -1,0 +1,32 @@
+{
+  "name": "@carton/local",
+  "version": "0.1.0",
+  "description": "Carton on one machine: carton.db lifecycle, the engine thread, the sync lease and headless helper, the materializer (displace, then install), per-agent view files and the status sidecar, .cbproj export and import.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0",
+    "@carton/store-sqlite": "0.1.0",
+    "@carton/cardboard": "0.1.0"
+  }
+}

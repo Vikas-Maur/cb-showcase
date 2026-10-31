@@ -1,0 +1,30 @@
+{
+  "name": "@carton/cardboard",
+  "version": "0.1.0",
+  "description": "HostAdapter for Cardboard 1.4.0: its schema (time group, sequences, blobRefs), the fm∘sv GUI projection, host <-> engine conversion, and the hard and soft validators.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0"
+  }
+}

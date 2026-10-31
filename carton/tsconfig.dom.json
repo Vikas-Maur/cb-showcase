@@ -1,0 +1,7 @@
+{
+  // Packages that run in a browser page (react, store-idb).
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  }
+}
