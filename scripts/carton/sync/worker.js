@@ -15,7 +15,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { extend, cardboard14 } from "../carton-node.js";
+import { extend, cardboard14, headScope } from "../carton-node.js";
 import { Carton, hashDoc } from "@carton/core";
 import { cardboardAdapter, materializeProject } from "@carton/cardboard";
 import { CartonHolderEngine, localGroup, nodeHasher, openLocal } from "@carton/local";
@@ -26,7 +26,6 @@ import * as host from "./host.js";
 import * as store from "./store.js";
 import { Live, caughtUp } from "./live.js";
 import * as media from "./media.js";
-import { headScope } from "./scope.js";
 import "./cbproj.js";
 
 const errText = (e) => (e && e.message) || String(e);

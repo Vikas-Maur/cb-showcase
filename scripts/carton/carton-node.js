@@ -46,7 +46,9 @@ function open(bundlePath, { projectId, doc } = {}) {
       const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db"));
       // A project without history yet starts from its document on disk (§16, main@1).
       const first = exists ? null : doc ?? readProject(bundlePath);
-      const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined });
+      // R1: extensions add openLocal options (live sync: the worker's handle gets the project's sync connection, the
+      // person's actor and the replica's name; cb gets the helper that syncs headlessly).
+      const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined, ...(await extOpenOptions({ bundlePath, projectId: id })) });
       if (first) await setRev(lc, first.stateUpdatedAt, (await lc.carton.head()).ref);
       return lc;
     })().catch((e) => (warnOnce("open:" + bundlePath, `history is off for ${path.basename(bundlePath)}: ${errText(e)}`), opened.delete(bundlePath), null));
@@ -75,9 +77,25 @@ const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(pa
 //                           returns a function that stops it
 //   materialize(projectId)  head into project.json, and the pages adopt it
 //   actorOf(id)             an actor id ("person", "director/<chat>/<turn>", "external:project.json") as an Actor
+// Hooks an extension may also have (each optional; one that throws is skipped, logged once):
+//   openOptions({bundlePath, projectId})        more openLocal options for the project's handle (R1)
+//   commitShared(lc, {doc, base, author, intent, gui})
+//                                               a commit on a shared cut, in place of Carton.commit (R2): a CommitResult,
+//                                               `pending` counting as a confirmation (`rebased` too), and `head`
+//                                               ({ref, doc}) the state to write when the handle can't read it itself
+//   materializeDoc(next, {bundlePath, projectId, current})
+//                                               fills in a record before head goes into project.json (R6)
 // An extension that throws is left out (logged once); Carton and the save path go on without it.
 const extensions = [], openers = new Set(), ready = new Map(); // ready: bundlePath → LocalCarton
 export function extend(ext) { extensions.push(ext); }
+async function extOpenOptions(o) {
+  let out = {};
+  for (const e of extensions) {
+    if (typeof e.openOptions !== "function") continue;
+    try { out = { ...out, ...((await e.openOptions(o)) ?? {}) }; } catch (err) { warnOnce("openOptions:" + (e.name ?? "?"), "an extension's openOptions failed: " + errText(err)); }
+  }
+  return out;
+}
 function tell(f, bundlePath, lc) {
   try { Promise.resolve(f(bundlePath, lc)).catch((e) => warnOnce("onOpen:" + bundlePath, "an extension failed on open: " + errText(e))); }
   catch (e) { warnOnce("onOpen:" + bundlePath, "an extension failed on open: " + errText(e)); }
@@ -161,12 +179,20 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   const baseDoc = baseRef ? await c.checkout(baseRef) : (await c.head()).doc;
   const mine = meta?.base !== undefined && baseRef ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
   const intent = meta?.intents?.length ? { gui: meta.intents } : undefined;
-  const r = await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });
+  // R2: a shared cut's commit goes through the extension that syncs it (the lease holder commits; anyone else hands it to
+  // the holder), never straight into this handle (a non-holder's pending row is lost at the holder's next settle).
+  const ext = extensions.find((e) => typeof e.commitShared === "function");
+  const shared = ext && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind !== "local";
+  const r = shared
+    ? await ext.commitShared(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef })
+    : await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });
   if (r.status === "rejected") throw new Error("Carton rejected the change: " + r.reason);
   const gui = meta?.base !== undefined && baseRef;
   if (r.status === "confirmed" && r.empty && !gui) return { ...r, doc, merged: false };
-  const head = await c.head();
-  if (r.status === "confirmed" && !r.rebased) {
+  // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's
+  // `head` is the holder's state when this handle can't read it (cb's handle has the confirmed rows only).
+  const head = r.head?.doc ? r.head : await c.head();
+  if ((r.status === "confirmed" || r.status === "pending") && !r.rebased) {
     // Nothing else was merged in. An agent's or the CLI's document is head as it stands. A GUI save is not: the
     // editor rounds times and drops fields it can't show, which Carton kept (B10), so the file gets head, under the
     // editor's own rev (its save's echo then only moves its base).
@@ -458,6 +484,7 @@ const hosts = [];
 const hostOf = (bundlePath) => hosts.find((h) => path.resolve(bundlePath).toLowerCase().startsWith(path.resolve(h.root).toLowerCase()));
 
 export const cardboard14 = {
+  headScope,
   attach({ root, store, mirror }) {
     hosts.push({ root, store, mirror });
   },
@@ -660,11 +687,35 @@ async function context(target, as, after) {
   return { project, actor: as ? identify({ declared: as }) : identify() };
 }
 
+// How head goes into project.json through Cardboard 1.4.0's own store (`projects.updateScoped`), without committing it
+// again (`carton.materialize`). R4: its scoped merge takes root fields from `ownedFields` but never `media`: a media
+// record comes in only through `ownedMediaIds` (added or replaced whole) and goes only through `removedMediaIds`. So a
+// teammate's new clip, a removed clip, or a record Carton changed needs those, computed against the document head was
+// materialized from (`current`). The store applies the scope to the newest document in its chain, so a clip added
+// after `current` was read is never removed.
+export const HEAD_FIELDS = ["tracks", "timelineItems", "aspectRatio", "name", "description"];
+export function headScope(current, next) {
+  const had = new Map((current?.media ?? []).map((m) => [m.id, JSON.stringify(m)]));
+  const keep = new Set((next?.media ?? []).map((m) => m.id));
+  return {
+    ownedFields: HEAD_FIELDS,
+    ownedMediaIds: (next?.media ?? []).filter((m) => had.get(m.id) !== JSON.stringify(m)).map((m) => m.id),
+    removedMediaIds: [...had.keys()].filter((id) => !keep.has(id)),
+    carton: { materialize: true },
+  };
+}
+
 // Head into project.json through the worker's store (the store bridge writes without committing a second change).
 async function materializeIn(library, projectId) {
   const current = await library.projects.read(projectId);
-  const next = await headProject(library.projects.bundlePathFor(projectId), current);
+  const bundlePath = library.projects.bundlePathFor(projectId);
+  let next = await headProject(bundlePath, current);
   if (!next) return false;
-  await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name"], carton: { materialize: true } });
+  // R6: extensions fill in what only they know first (a teammate's new clip: where it plays from, its size, duration).
+  for (const e of extensions) {
+    if (typeof e.materializeDoc !== "function") continue;
+    try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
+  }
+  await library.projects.updateScoped(next, headScope(current, next));
   return true;
 }

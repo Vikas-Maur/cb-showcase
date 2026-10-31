@@ -1,4 +1,4 @@
-// Test-only (CARTON_TEST_FREEZE=1, shim.js bundles it into carton-node.cjs): every document Carton's handle returns
+// Test-only (CARTON_TEST_FREEZE=1: support.js has build.js bundle it into carton-node.cjs, ahead of the facade): every document Carton's handle returns
 // (head, checkout, resolve) comes back deep-frozen, as core will return them (foundation-core, after fd07cc8). The E2E
 // then runs Cardboard's real store over them: a place that hands Cardboard Carton's records without a copy loses
 // Cardboard's in-place edits (sloppy code) or throws (strict code). Frozen copies, so core's own states are untouched.

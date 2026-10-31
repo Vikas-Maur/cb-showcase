@@ -18,7 +18,8 @@ const ROOT = path.join(__dirname, "..", "..");
 const CARTON = path.join(ROOT, "carton");
 const esbuild = require(require.resolve("esbuild", { paths: [CARTON] }));
 
-const build = async (resources, assets) => {
+// `prelude` (tests only): a module bundled into carton-node.cjs ahead of the facade (scripts/carton/test/sync/freeze.js).
+const build = async (resources, assets, { prelude } = {}) => {
   const out = path.join(resources, "carton");
   fs.rmSync(out, { recursive: true, force: true });
   const node = {
@@ -36,10 +37,10 @@ const build = async (resources, assets) => {
   };
   // The facade, with the sync half's worker part when there is one.
   const sync = path.join(__dirname, "sync"), has = (f) => fs.existsSync(path.join(sync, f));
-  const entry = (main, extra) => (has(extra)
-    ? { stdin: { contents: `export * from ${JSON.stringify("./" + main)};\nimport ${JSON.stringify("./sync/" + extra)};\n`, resolveDir: __dirname, sourcefile: "carton-entry.js", loader: "js" } }
+  const entry = (main, extra, first) => (has(extra) || first
+    ? { stdin: { contents: `${first ? `import ${JSON.stringify(first)};\n` : ""}export * from ${JSON.stringify("./" + main)};\n${has(extra) ? `import ${JSON.stringify("./sync/" + extra)};\n` : ""}`, resolveDir: __dirname, sourcefile: "carton-entry.js", loader: "js" } }
     : { entryPoints: [path.join(__dirname, main)] });
-  await esbuild.build({ ...node, ...entry("carton-node.js", "worker.js"), outfile: path.join(out, "carton-node.cjs") });
+  await esbuild.build({ ...node, ...entry("carton-node.js", "worker.js", prelude), outfile: path.join(out, "carton-node.cjs") });
   // The rest of the sync folder as it is: not its tests, nor the two files bundled here.
   if (fs.existsSync(sync)) fs.cpSync(sync, path.join(out, "sync"), { recursive: true, filter: (f) => !["test", "worker.js", "ui.js"].includes(path.relative(sync, f).split(path.sep)[0]) });
   // These two wait at the top level, so they are ES modules: the folder's package.json says .js is ESM there
