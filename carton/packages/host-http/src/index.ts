@@ -5,7 +5,7 @@
 //
 //   POST /api/projects/:p/join               {invite, account, installKey} → session
 //   POST /api/projects/:p/refresh            {token, installKey}           → session (same credential)
-//   POST /api/projects/:p/invites            {role, ttlMs?}   owner        → {invite}
+//   POST /api/projects/:p/invites            {role, ttlMs?, branches?}  owner  → {invite}
 //   POST /api/admin/projects/:p/invites      {role}  Bearer ADMIN_TOKEN    → {invite}   (bootstrap; off without one)
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
@@ -134,9 +134,10 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     if (rest === "/ws") return await deps.upgrade(req, ctx, projectId);
     if (req.method === "POST" && rest === "/invites") {
       if (!canInvite(ctx)) return err(403, "only the owner invites");
-      const b = await body<{ role?: string; ttlMs?: number }>(req);
+      const b = await body<{ role?: string; ttlMs?: number; branches?: string[] }>(req);
       if (!ROLES.has(String(b.role))) return err(400, "bad role");
-      return json({ invite: await invites().createInvite(projectId, b.role as AuthContext["role"], b.ttlMs) });
+      // `branches`: the cuts its sessions are scoped to (a Published cut's watch link reads that cut only)
+      return json({ invite: await invites().createInvite(projectId, b.role as AuthContext["role"], b.ttlMs, b.branches) });
     }
     const store = deps.blobsFor(projectId);
     if (rest.startsWith("/blobs/") || rest.startsWith("/uploads")) {
