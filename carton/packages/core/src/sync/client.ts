@@ -345,6 +345,8 @@ export class SyncClient {
     const b = this.branchId;
     switch (m.type) {
       case "status": {
+        // the limit, before the hand-off's upload (round 3 finding 6)
+        if (m.maxMessageBytes && this.o.blobs) this.serverLimit = m.maxMessageBytes;
         if (this.queue.branch(b).sequencer.kind !== "handingOff") return;
         if (m.adopted && m.adoptKey === this.adoptKey()) return this.becomeServer(m.since ?? 0);
         if (!m.adopted) return this.upload();
@@ -355,7 +357,7 @@ export class SyncClient {
         return this.becomeServer(m.since);
       case "hello":
       case "changes":
-        if (m.type === "hello" && m.maxMessageBytes) this.serverLimit = m.maxMessageBytes;
+        if (m.type === "hello" && m.maxMessageBytes && this.o.blobs) this.serverLimit = m.maxMessageBytes;
         this.fenced(() => {
           if (m.branchId !== b) return;
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
@@ -526,6 +528,9 @@ export class SyncClient {
     const pend = this.queue.pending(b);
     if (this.o.pipeline === false && pend.some((p) => !this.queue.isEmpty(p) && this.inFlight(p))) return;
     const limit = this.messageLimit();
+    // the server reads whole messages: the push around the changes counts too (round 3 finding 1)
+    const wrapper = { type: "push" as const, branchId: b, epoch: this.epoch, changes: [] as Change[] };
+    const wrap = jsonBytesBound(wrapper, Infinity);
     const out: Change[] = [];
     const sizes: number[] = [];
     let tooLarge: string | null = null;
@@ -556,7 +561,7 @@ export class SyncClient {
       // a change bigger than one message the server reads can never be confirmed: rejected here rather than sent and
       // stranded; the changes after it wait for the rebase without it (round 2 finding 2)
       const n = jsonBytesBound(ch, limit);
-      if (n > limit && oversized(ch, limit)) {
+      if (wrap + n > limit && oversized({ ...wrapper, changes: [ch] }, limit)) {
         tooLarge = p.id;
         break;
       }
@@ -571,21 +576,24 @@ export class SyncClient {
     if (out.length) {
       this.stats.changesSent += out.length;
       this.emit({ type: "push", ids: out.map((c) => c.id), epoch: this.epoch });
-      // changes over the limit together go in several messages, in order, in the same epoch
-      let from = 0, size = 0;
+      // changes over the limit together go in several messages, in order, in the same epoch; each message's size is
+      // its wrapper plus its changes and their commas (a change alone was checked to fit above)
+      let from = 0, size = wrap;
       for (let i = 0; i <= out.length; i++) {
-        if (i === out.length || (i > from && size + sizes[i]! > limit)) {
+        if (i === out.length || (i > from && size + sizes[i]! + 1 > limit)) {
           this.stats.pushMsgs++;
           this.send({ type: "push", branchId: b, epoch: this.epoch, changes: out.slice(from, i) });
           from = i;
-          size = 0;
+          size = wrap;
         }
-        if (i < out.length) size += sizes[i]!;
+        if (i < out.length) size += sizes[i]! + 1;
       }
     }
     if (tooLarge) {
+      // sent before (a copy may still be confirmed): withdrawn first, reported once the server answers (round 3
+      // finding 2); never sent: rejected at once
       this.emit({ type: "reject", id: tooLarge, reason: "too large", epoch: this.epoch });
-      this.queue.rejectPending(b, tooLarge, "too large");
+      this.queue.rejectLocally(b, tooLarge, "too large");
       this.defer(() => this.pump(), 1);
     }
   }

@@ -55,8 +55,11 @@ export function sqliteStorage(path = ":memory:"): SequencerStorage & { db: Datab
   };
 }
 
-/** A Map-backed BlobStore with the calls the sequencer uses; counts gets and records the most bytes one get returned. */
-export function memoryBlobs(): BlobStore & { map: Map<string, Uint8Array>; gets: number; maxGet: number } {
+/**
+ * A Map-backed BlobStore with the calls the sequencer uses; counts gets, records the most bytes one get returned, and
+ * counts every byte handed out (`read`: by get, or by a stream, 16 KiB at a time as a network read would).
+ */
+export function memoryBlobs(): BlobStore & { map: Map<string, Uint8Array>; gets: number; maxGet: number; read: number } {
   const map = new Map<string, Uint8Array>();
   const info = (key: string, d: Uint8Array): BlobInfo => ({ key, size: d.length });
   const store = {
@@ -64,6 +67,7 @@ export function memoryBlobs(): BlobStore & { map: Map<string, Uint8Array>; gets:
     map,
     gets: 0,
     maxGet: 0,
+    read: 0,
     async put(key: string, data: Uint8Array, o?: { ifAbsent?: boolean }) {
       if (o?.ifAbsent && map.has(key)) return info(key, map.get(key)!);
       map.set(key, data.slice());
@@ -75,7 +79,22 @@ export function memoryBlobs(): BlobStore & { map: Map<string, Uint8Array>; gets:
       if (!d) return null;
       const out = range ? d.slice(range.offset, range.length === undefined ? undefined : range.offset + range.length) : d.slice();
       store.maxGet = Math.max(store.maxGet, out.byteLength);
+      store.read += out.byteLength;
       return out;
+    },
+    async getStream(key: string) {
+      const d = map.get(key);
+      if (!d) return null;
+      let at = 0;
+      return new ReadableStream<Uint8Array>({
+        pull(ctl) {
+          if (at >= d.length) return ctl.close();
+          const chunk = d.slice(at, at + 16 * 1024);
+          at += chunk.length;
+          store.read += chunk.length;
+          ctl.enqueue(chunk);
+        },
+      });
     },
     async head(key: string) {
       const d = map.get(key);

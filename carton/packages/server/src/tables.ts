@@ -271,13 +271,16 @@ export class Tables {
   /**
    * At most how many bytes of reply JSON each of the next `limit` rows after `after` takes, without reading their
    * bodies (SQLite keeps a BLOB's length in its record header): a catch-up page stops at its byte budget before it
-   * loads a row (§6.3). Text columns count 3 bytes a character (UTF-8, and spans grow from `[t, lo, hi]` to objects); a
-   * body in the blob store isn't counted here (the caller measures it once fetched).
+   * loads a row (§6.3). Every column is counted in bytes (`length(CAST(… AS BLOB))`: a text's `length` counts characters
+   * and stops at a NUL, round 3 finding 5). The JSON columns go back out as they are stored, spans grow from
+   * `[t, lo, hi]` to objects (at most 3×), and the raw strings (`id`, `hash`, `policy`) are escaped (at most 6×). A body in
+   * the blob store isn't counted here (the caller measures it once fetched).
    */
   rowSizes(branch: string, after: number, limit: number): number[] {
-    const fixed = 256 + 3 * branch.length; // the keys, the defaults toRow adds, branchId
+    const fixed = 256 + 6 * new TextEncoder().encode(branch).byteLength; // the keys, the defaults toRow adds, branchId
+    const b = (col: string) => `coalesce(length(CAST(${col} AS BLOB)), 0)`;
     return this.all<{ n: number }>(
-      "SELECT coalesce(length(ops), 0) + 3 * (length(id) + coalesce(length(hash), 0) + length(author) + length(base) + length(paths) + length(reads) + coalesce(length(spans), 0) + coalesce(length(policy), 0)) AS n FROM changes WHERE branch = ? AND seq > ? ORDER BY seq LIMIT ?",
+      `SELECT coalesce(length(ops), 0) + ${b("author")} + ${b("base")} + ${b("paths")} + ${b("reads")} + 3 * ${b("spans")} + 6 * (${b("id")} + ${b("hash")} + ${b("policy")}) AS n FROM changes WHERE branch = ? AND seq > ? ORDER BY seq LIMIT ?`,
       branch,
       after,
       limit,
