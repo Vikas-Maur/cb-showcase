@@ -6,15 +6,16 @@
 // your library". If carton-node.cjs can't load, the hooks also fall back to 1.4.0's behaviour. One step runs with
 // Carton off too (round 2 #1, kept by the orchestrator): removing what Carton itself wrote from a staged bundle, its
 // `.carton/` folder and its view files in `.scratch/views/` (told by Carton's header or status format: the store
-// bridge's cartonView), never anything else. It only acts on archives that contain Carton's data, so a stock .cbproj
+// bridge's cartonView), never anything else. It only acts on projects that contain Carton's data, so a stock .cbproj
 // opens exactly as before, and a person's or an agent's own files in `.scratch/views/` stay. It stops someone else's
 // carton.db and views from landing silently in a Carton-off library and surfacing as foreign history if Carton is
-// switched on later. The archive itself is untouched, so nothing is lost. README "Saves on Windows" lists every
-// Carton-off difference.
+// switched on later. The archive itself is untouched, so nothing is lost. Opening a project folder goes through the
+// same prepare (Cardboard's import options are shared), so its staged copy is scrubbed and seeded the same way and the
+// folder itself is untouched. README "Saves on Windows" lists every Carton-off difference.
 //   Save As     the entry list Cardboard's own walk made gains `.carton-export/shallow.json` (and loses any old one),
 //               and `.carton-export/history.db` with "Include history" (CARTON_CBPROJ_HISTORY=1), a copy in `.carton/tmp/`
 //               removed once the zip is written (or failed to be).
-//   Open        a staged project from a .cbproj loses any `.carton/` and Carton view files the file put in it
+//   Open        a staged project from a .cbproj (or a project folder) loses any `.carton/` and Carton view files in it
 //               (Carton on or off: Cardboard's extractor takes every member, and a crafted carton.db could carry a
 //               shared cut and a helper recipe naming a module a later cb run would load); with Carton on its history
 //               then starts from the sender's (prepare runs first on it); whatever Carton opened in the staged

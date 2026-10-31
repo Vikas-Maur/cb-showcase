@@ -325,19 +325,38 @@ onto the packages' APIs, so a package API change touches only the facade.
 
 ## 6. State on 2026-10-31
 
-- **Working, tested on Linux** with Cardboard's real bundles (`scripts/carton/test/`, 28 tests):
-  - Carton off: `cb`'s output and files equal our Windows build's; the real library worker runs patched.
-  - Carton on, for real (`@carton/local` and `carton.db`): history with authors down to the subagent, credits, a cut
-    with `project.json` following the switch, fold, `undo --turn` raising a card, and 4 concurrent `cb` writers losing
-    no edit (B1).
-  - The rev map: 1.4.0's numeric header and `cb undo <rev>` name Carton versions.
-  - The pages' bridge and main's bridge, on stand-ins, and the live-sync half's seams.
+- **Working, tested on Linux** with Cardboard's real bundles:
+  - `scripts/carton/test/` (33 tests): Carton off, `cb`'s output and files equal our Windows build's, and the real
+    library worker runs patched. Carton on, for real (`@carton/local` and `carton.db`): history with authors down to
+    the subagent, credits, a cut with `project.json` following the switch, fold, `undo --turn` raising a card, and 4
+    concurrent `cb` writers losing no edit (B1). The rev map: 1.4.0's numeric header and `cb undo <rev>` name Carton
+    versions. A read that catches an install's gap waits. The staging folder's removal retry. The pages' bridge and
+    main's bridge, on stand-ins.
+  - `scripts/carton/test/sync/` (two libraries, each with its own app data and its own real library worker, syncing
+    through a real host on 127.0.0.1): H8's share, invite and join, live edits both ways, presence, offline and
+    rejoin, the Share panel's words; H10 for shared projects (hashing, the collab proxy, play by range and while it
+    uploads, tools over the loopback range server); H11 `.cbproj` Save As and Open with history, "Bring in their
+    changes", Carton's files never carried or kept; H13 `cb`'s cloud mode through a headless helper; the facade's
+    save merges.
 - **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
   save projection, cut out at build time) and `carton-ui.js`.
-- **Not wired yet:** the Materializer's per-agent views and the shared `timeline.tsx` freeze (H8; the worker still
-  regenerates `timeline.tsx` as 1.4.0 does, through displace-then-install), Carton's merge3 in `rn`'s shape in the
-  apply's preview (the commit that follows merges with Carton), H1b, H10, H11's "Bring in their changes", H12, H13,
-  the engine thread in the worker (the worker commits on its own thread for now), the prompt's per-agent view flow.
+- **Wired, tested on stand-ins only:** the editor's pages (H4–H7, the History tab, the Share panel) and main (H9: the
+  actor environment, the Director's hooks, Stop and SubagentStop, host Claude Code's `--settings`, `carton:call`).
+  They need the Windows run.
+- **Not wired yet:**
+  - H8's per-agent views (`.scratch/views/<name>.tsx` and `<name>.status`) and the shared `timeline.tsx` freeze
+    during an agent's turn. The app doesn't use the adapter's Materializer: the worker still regenerates
+    `timeline.tsx` as 1.4.0 does, through displace-then-install, and holds the sync lease (so `cb`'s writes go
+    through it) only for shared projects.
+  - H9's next step: the prompt's per-agent view flow.
+  - H3: Carton's merge3 in the apply's preview. `rn` still makes the preview; the commit that follows merges with
+    Carton. The "print it again" error is wired but has no test.
+  - The engine thread: `engine-thread-main.js` is built but not used; the worker commits on its own thread.
+  - H1b has no hook of its own. Open Project, of a `.cbproj` or of a project folder (both go through the same staged
+    `prepare`), scrubs and seeds the staged copy (H11). A shared project's cloud pull is H13's. Cardboard's own cloud
+    pull of an unshared project writes `project.json`, which the read path imports as an outside change (not tested
+    for the cloud pull).
+  - H12 is for the kit only: the service is dormant on desktop, so nothing is patched there.
 - **Windows only:** the editor's pages (H4–H7, the History tab), gates G1 and G2, the NTFS displace/install race. See
   the README, "Carton" → "Testing Carton".
 

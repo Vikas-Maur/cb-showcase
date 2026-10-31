@@ -344,14 +344,15 @@ it was already retried; the removal now retries the same way (adding `ENOTEMPTY`
 **With Carton off** (see "Carton" below), every Carton hook runs Cardboard's own code, except for three changes that
 apply whether Carton is on or off:
 - The staging folder's removal retries on Windows, as above.
-- Open Project of a `.cbproj` removes only what Carton itself wrote from the staged copy, before Cardboard reads it:
-  the `.carton\` folder, where Carton keeps a project's history, and Carton's view files in `.scratch\views\`. A view
-  file is Carton's when its name is a view's and its content is Carton's: a `.tsx` whose `// cardboard:rev` line has
-  the form only Carton writes (`main@3~5e1f0c2a b:…`; Cardboard's own is a bare number), or a `.status` file in
-  Carton's format. Anything else under `.scratch\views\`, a person's or an agent's own files, stays. It only acts on
-  archives that contain Carton's data, so a stock `.cbproj` opens exactly as before. It stops someone else's
-  `carton.db` and views from landing silently in a Carton-off library and surfacing as foreign history if Carton is
-  switched on later. The archive itself is untouched, so nothing is lost. (`scripts\carton\sync\patches\cbproj.js`)
+- Open Project, of a `.cbproj` or of a project folder, removes only what Carton itself wrote from the staged copy,
+  before Cardboard reads it: the `.carton\` folder, where Carton keeps a project's history, and Carton's view files in
+  `.scratch\views\`. A view file is Carton's when its name is a view's and its content is Carton's: a `.tsx` whose
+  `// cardboard:rev` line has the form only Carton writes (`main@3~5e1f0c2a b:…`; Cardboard's own is a bare number), or
+  a `.status` file in Carton's format. Anything else under `.scratch\views\`, a person's or an agent's own files,
+  stays. It only acts on projects that contain Carton's data, so a stock `.cbproj` or folder opens exactly as before.
+  It stops someone else's `carton.db` and views from landing silently in a Carton-off library and surfacing as foreign
+  history if Carton is switched on later. The `.cbproj` or folder itself is untouched, so nothing is lost.
+  (`scripts\carton\sync\patches\cbproj.js`)
 - Save As of a `.cbproj` leaves the same files out, so a file never carries this computer's history database (local
   paths, this device's pins) or Carton's view files. Everything else in `.scratch\views\` goes in, as in Cardboard
   1.4.0. (`scripts\carton\store-bridge.js`)
@@ -464,9 +465,16 @@ The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases
 | Undo turn | revert by author |
 
 **Where it's still incomplete (2026-10-31).** History, cuts, fold, credits and `undo --turn` work in `cb` on real
-Carton (tested on Linux with Cardboard's own bundles). Not wired yet: per-agent view files, the shared
-`timeline.tsx` freeze during an agent's turn, and "Bring in their changes" for a `.cbproj`. The editor's side and the
-History tab have only been tested on stand-ins: they need the Windows run below.
+Carton. Live sync and sharing, media for shared projects, `cb`'s cloud mode and `.cbproj` with "Bring in their
+changes" work in the app's real library worker. All of it is tested on Linux with Cardboard's own bundles. Not wired
+yet:
+- per-agent view files and their `.status`, the shared `timeline.tsx` freeze during an agent's turn, and the agent
+  prompt that describes them;
+- Carton's merge in an apply's preview (the preview is Cardboard's own; the commit that follows merges with Carton);
+- the engine thread (the worker commits on its own thread).
+
+The editor's side, the History tab and main's agent hooks have only been tested on stand-ins: they need the Windows
+run below.
 
 `scripts\patch-carton.js` (after the Windows patches; `scripts\carton\` holds what it injects):
 1. The project store, both copies (the app's library worker and the CLI's own): one Carton change per edit, against
@@ -503,8 +511,8 @@ They check that with Carton off `cb`'s output and files equal this build's witho
 `.carton\` and Carton's view files and keeps the rest of `.scratch\views\`, that with Carton on every hook reaches
 Carton with the right arguments (a recording stand-in), that the real library worker runs patched (on Node, standing
 in for Electron's port), and the editor's and main's bridges on stand-ins, with the methods each answers itself, and
-that a read catching `project.json` in the middle of an install waits for it instead of reporting the project removed.
-28 tests.
+that a read catching `project.json` in the middle of an install waits for it instead of reporting the project removed,
+and that the staging folder's removal is retried. 33 tests.
 
 On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
 
