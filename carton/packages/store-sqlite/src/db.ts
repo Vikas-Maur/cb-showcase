@@ -32,8 +32,8 @@ export interface DbOptions {
   readOnly?: boolean;
   /**
    * Windows only: how long an open retries a file another program holds for a moment (an antivirus scan, the
-   * indexer, a backup tool), in ms, before DatabaseHeldError. Default 250. SQLite's own synchronous waits inside an
-   * attempt come on top (see openRetrying).
+   * indexer, a backup tool), in ms, before DatabaseHeldError. Default 250; must be finite and >= 0. SQLite's own
+   * synchronous waits inside an attempt come on top (see openRetrying).
    */
   openRetryMs?: number;
 }
@@ -103,6 +103,8 @@ function isHeldOnWindows(e: unknown, path: string): boolean {
  * should open carton.db elsewhere.
  */
 export async function openRetrying<T>(path: string, attempt: () => Promise<T>, platform: NodeJS.Platform = openPlatform.override ?? process.platform, retryMs = OPEN_RETRY_MS): Promise<T> {
+  // A bad value (NaN from a parsed setting, Infinity, a negative) would turn the deadline off: refused, on every OS.
+  if (!Number.isFinite(retryMs) || retryMs < 0) throw new TypeError(`openRetryMs must be a finite number of ms >= 0, not ${retryMs}`);
   const deadline = performance.now() + retryMs;
   for (let n = 0; ; n++) {
     try {

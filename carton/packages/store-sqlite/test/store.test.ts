@@ -560,3 +560,15 @@ test("a connection whose setup fails while constructing is closed, not left open
   }
   assert.equal(conn?.isOpen, false);
 });
+
+test("openRetryMs must be finite and not negative (NaN or Infinity would retry forever)", async () => {
+  let attempts = 0;
+  for (const bad of [NaN, Infinity, -1]) {
+    await assert.rejects(openRetrying("x", async () => { attempts++; throw ioerr(); }, "win32", bad), TypeError);
+    await assert.rejects(openSqliteStore(fresh(), { openRetryMs: bad }), /openRetryMs must be a finite number/);
+  }
+  assert.equal(attempts, 0, "refused before any attempt");
+  let zero = 0;
+  await assert.rejects(openRetrying("x", async () => { zero++; throw ioerr(); }, "win32", 0), DatabaseHeldError);
+  assert.equal(zero, 1, "0 means one attempt, no retry");
+});
