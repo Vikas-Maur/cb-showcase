@@ -152,3 +152,24 @@ test("abort stops a read", async () => {
     for await (const p of reader.read(hash, 0, 6 * MiB, ac.signal)) if ((n += p.length) > MiB) ac.abort();
   }, { name: "AbortError" });
 });
+
+test("toolSource hands out verified leaves only: a corrupted leaf is repaired, never streamed", async () => {
+  const { data, hash, mem } = await shared(4 * MiB + 9, 12);
+  const events: ReaderEvent[] = [];
+  const store = new FaultyStore(mem, { streamChunk: 64 * 1024, corruptAt: { key: mediaKey(hash), offset: 2 * MiB + 1, times: 1 } });
+  const tools = new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache(), onEvent: (e) => events.push(e) }).toolSource();
+  const pieces: Uint8Array[] = [];
+  for await (const p of tools.read(hash, 100, data.length)) pieces.push(p.slice());
+  assert.ok(equalBytes(concatBytes(pieces), data.subarray(100)));
+  assert.equal(pieces[0].length, MiB - 100, "the first piece is the rest of a whole, verified leaf");
+  assert.deepEqual(events.map((e) => [e.type, e.leaf, e.handedOut]), [["mismatch", 2, false], ["repaired", 2, undefined]]);
+});
+
+test("play-first mismatch events say whether bytes of the bad leaf already went out", async () => {
+  const { hash, mem } = await shared(2 * MiB, 13);
+  const events: ReaderEvent[] = [];
+  const store = new FaultyStore(mem, { streamChunk: 64 * 1024, corruptAt: { key: mediaKey(hash), offset: 10, times: 1 } });
+  const reader = new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache(), onEvent: (e) => events.push(e) });
+  await assert.rejects(collect(reader.read(hash, 0, 2 * MiB)), LeafMismatchError);
+  assert.equal(events[0].handedOut, true);
+});

@@ -2,9 +2,14 @@
 //
 // - Bytes are handed to the player as they arrive. Each 1 MiB leaf is checked against the manifest when its last byte
 //   lands; verified leaves go into the range cache.
-// - A leaf that fails after some of its bytes were handed out ends the read with LeafMismatchError (playback stops),
-//   and the repair path has already fetched it again by then, so the player's retry is served from the cache. A leaf
-//   that fails before any of its bytes were handed out is repaired silently.
+// - A leaf that fails after some of its bytes were handed out ends the read with LeafMismatchError, and the repair path
+//   has already fetched it again by then, so a retry is served from the cache. A leaf that fails before any of its
+//   bytes were handed out is repaired silently.
+// - Breaking a response does NOT make a client drop bytes it already has: Chromium re-requests from the break offset
+//   and keeps playing the bad bytes, and ffmpeg with -reconnect does the same (range-server helper's experiments,
+//   2026-10-31). So the player must be told: hosts forward the "mismatch" event (`handedOut: true`) to the renderer,
+//   which reloads the element at its current time. Tools gain little from play first, so `toolSource()` verifies every
+//   leaf before handing it out; the loopback range server for ffmpeg-based tools serves that.
 // - Requests start small and grow (1, 2, 4 … leaves), so the first frame waits for one leaf, not a big window, and a
 //   long read needs few round trips. The next request starts once the current one is flowing.
 // - Whatever the cache holds is served from it, including when the link is down.
@@ -21,7 +26,18 @@ export class MediaMissingError extends Error {
   override name = "MediaMissingError";
 }
 
-export type ReaderEvent = { type: "mismatch" | "repaired" | "repair-failed"; hash: string; leaf: number };
+export type ReaderEvent = {
+  type: "mismatch" | "repaired" | "repair-failed";
+  hash: string;
+  leaf: number;
+  /** For "mismatch": some of the bad leaf's bytes already went to a reader (the player must reload from them). */
+  handedOut?: boolean;
+};
+
+export interface ReadOptions {
+  /** Hand out each leaf only once it is verified (tools). Default: play first. */
+  verifyFirst?: boolean;
+}
 
 export interface MediaReaderOptions {
   store: BlobStore;
@@ -109,7 +125,15 @@ export class MediaReader implements RangeSource {
     return { size: m.size, contentType: this.#o.contentType?.(hash) };
   }
 
-  async *read(hash: string, offset: number, length: number, signal?: AbortSignal): AsyncGenerator<Uint8Array> {
+  /** A RangeSource that hands out verified bytes only: for tools, and the loopback range server they read through. */
+  toolSource(): RangeSource {
+    return {
+      stat: (hash, signal) => this.stat(hash, signal),
+      read: (hash, offset, length, signal) => this.read(hash, offset, length, signal, { verifyFirst: true }),
+    };
+  }
+
+  async *read(hash: string, offset: number, length: number, signal?: AbortSignal, opts: ReadOptions = {}): AsyncGenerator<Uint8Array> {
     const m = await this.manifest(hash, signal);
     const end = Math.min(m.size, offset + length);
     let pos = Math.max(0, offset);
@@ -146,7 +170,7 @@ export class MediaReader implements RangeSource {
           if (ahead || run.end > lastLeaf) return;
           ahead = this.#open(m, run.end, Math.min(lastLeaf + 1, run.end + window), signal);
         };
-        for await (const piece of this.#consume(m, run, pos, end, startAhead, signal)) {
+        for await (const piece of this.#consume(m, run, pos, end, startAhead, signal, opts.verifyFirst === true)) {
           pos += piece.length;
           yield piece;
         }
@@ -207,7 +231,7 @@ export class MediaReader implements RangeSource {
         return bytes;
       }
       mismatched = true;
-      this.#o.onEvent?.({ type: "mismatch", hash, leaf: i });
+      this.#o.onEvent?.({ type: "mismatch", hash, leaf: i, handedOut: false });
     }
     this.#o.onEvent?.({ type: "repair-failed", hash, leaf: i });
     throw new LeafMismatchError(hash, i);
@@ -253,7 +277,7 @@ export class MediaReader implements RangeSource {
   }
 
   /** Yields the bytes of `run` inside [pos, end), verifying each leaf as it completes. */
-  async *#consume(m: Manifest, run: Run, pos: number, end: number, startAhead: () => void, signal?: AbortSignal): AsyncGenerator<Uint8Array> {
+  async *#consume(m: Manifest, run: Run, pos: number, end: number, startAhead: () => void, signal: AbortSignal | undefined, verifyFirst: boolean): AsyncGenerator<Uint8Array> {
     let body: ReadableStream<Uint8Array> | Uint8Array | null | undefined;
     try {
       body = await run.body;
@@ -272,7 +296,7 @@ export class MediaReader implements RangeSource {
           const at = span.offset - run.first * LEAF_SIZE;
           let bytes = body.subarray(at, at + span.length);
           if (bytes.length !== span.length || !(await this.#verify(m, leaf, bytes))) {
-            if (bytes.length === span.length) this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf });
+            if (bytes.length === span.length) this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut: false });
             bytes = await this.#repair(m.hash, leaf);
           } else {
             await this.#o.cache?.putLeaf(m.hash, leaf, bytes);
@@ -287,7 +311,7 @@ export class MediaReader implements RangeSource {
       }
       if (body) {
         // Returns early when the response ends short (a dropped link); the fallback below fetches the rest.
-        yield* this.#stream(m, run, body, pos, end, startAhead, signal, (l, p) => {
+        yield* this.#stream(m, run, body, pos, end, startAhead, signal, verifyFirst, (l, p) => {
           leaf = l;
           pos = p;
         });
@@ -314,6 +338,7 @@ export class MediaReader implements RangeSource {
     end: number,
     startAhead: () => void,
     signal: AbortSignal | undefined,
+    verifyFirst: boolean,
     progress: (leaf: number, pos: number) => void,
   ): AsyncGenerator<Uint8Array> {
     const reader = body.getReader();
@@ -336,7 +361,7 @@ export class MediaReader implements RangeSource {
         for (let at = 0; at < value.length && leaf < run.end; ) {
           const n = Math.min(value.length - at, span.length - filled);
           buf.set(value.subarray(at, at + n), filled);
-          const piece = slice(value.subarray(at, at + n), span.offset + filled, pos, end);
+          const piece = verifyFirst ? null : slice(value.subarray(at, at + n), span.offset + filled, pos, end);
           filled += n;
           at += n;
           if (piece) {
@@ -346,17 +371,20 @@ export class MediaReader implements RangeSource {
             yield piece;
           }
           if (filled < span.length) continue;
+          let ready: Uint8Array | null = null; // a verified leaf whose wanted bytes haven't gone out yet
           if (await this.#verify(m, leaf, buf)) {
             await this.#o.cache?.putLeaf(m.hash, leaf, buf);
+            if (verifyFirst) ready = buf;
           } else {
-            this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf });
+            this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut });
             const good = await this.#repair(m.hash, leaf);
             if (handedOut) throw new LeafMismatchError(m.hash, leaf);
-            const p = slice(good, span.offset, pos, end);
-            if (p) {
-              pos += p.length;
-              yield p;
-            }
+            ready = good;
+          }
+          const p = ready && slice(ready, span.offset, pos, end);
+          if (p) {
+            pos += p.length;
+            yield p;
           }
           if (leaf === run.first) startAhead();
           leaf++;
@@ -373,7 +401,7 @@ export class MediaReader implements RangeSource {
         // The response ended inside a leaf. Fetch the whole leaf (verified); what already went out of it must match.
         const good = await this.leaf(m.hash, leaf, signal);
         if (handedOut && !equalBytes(good.subarray(0, filled), buf.subarray(0, filled))) {
-          this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf });
+          this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut });
           throw new LeafMismatchError(m.hash, leaf);
         }
         const p = slice(good, span.offset, pos, end);

@@ -21,8 +21,14 @@ export async function serveMedia(source: RangeSource, hash: string, request: Req
     "accept-ranges": "bytes",
     "content-type": stat.contentType ?? opts.contentType ?? "application/octet-stream",
     "cache-control": "no-store",
+    // Content-addressed, so the hash is a strong validator.
+    etag: `"${hash}"`,
   });
-  const span = parseRange(request.headers.get("range") ?? undefined, size);
+  // As the loopback server: Range applies to GET only, If-Range with another validator means "send it all", and an
+  // empty body is a 200 with nothing (what players cope with), not a 416.
+  const ifRange = request.headers.get("if-range");
+  const ignoreRange = request.method === "HEAD" || size === 0 || (ifRange !== null && ifRange !== headers.get("etag"));
+  const span = ignoreRange ? null : parseRange(request.headers.get("range") ?? undefined, size);
   if (span === "unsatisfiable") {
     headers.set("content-range", `bytes */${size}`);
     return new Response(null, { status: 416, headers });

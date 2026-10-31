@@ -40,8 +40,10 @@ test("serves whole bodies, ranges, HEAD, and 416 like an HTTP server", async () 
   const tail = await serveMedia(reader, hash, req("bytes=-4"));
   assert.ok(equalBytes(new Uint8Array(await tail.arrayBuffer()), data.subarray(data.length - 4)));
   const head = await serveMedia(reader, hash, req("bytes=0-0", "HEAD"));
-  assert.equal(head.status, 206);
+  assert.equal(head.status, 200, "Range applies to GET only");
+  assert.equal(head.headers.get("content-length"), String(data.length));
   assert.equal(head.body, null);
+  assert.equal(head.headers.get("etag"), `"${hash}"`);
   const bad = await serveMedia(reader, hash, req(`bytes=${data.length}-`));
   assert.equal(bad.status, 416);
   assert.equal(bad.headers.get("content-range"), `bytes */${data.length}`);
