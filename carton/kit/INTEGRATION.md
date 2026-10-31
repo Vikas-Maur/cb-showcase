@@ -34,6 +34,9 @@ own functions use them by role (`projectStore.latest(id)`), and say so.
 - **Documents are values.** Never change a record of a document Carton gave you in place: copy the record you change
   (`{ ...clip, endTime: 4 }`). Carton shares unchanged records between versions (that is what makes it fast), so an
   in-place edit would also change the version you started from, and the commit would see no difference.
+- **One schema per project.** Every process that opens a project (the app, its library worker, the helper, `cb`)
+  must use the same adapter. Carton stores the schema's fingerprint with the project and refuses, at open, a process
+  whose schema differs at the same schema version: its states would hash and merge differently.
 - **Files are views of head.** Carton writes `project.json` and `timeline.tsx` with **displace-then-install**: it moves
   whatever is at the path aside, then links its new file in. A write Carton didn't make is never overwritten; it is
   imported as an attributed change (`external:project.json`), §6.4.
@@ -459,6 +462,8 @@ support.
   `serveMedia(reader, hash, request)` answers `protocol.handle("cardboard-media", …)` with ranges.
   `startRangeServer({ source: reader.toolSource() })` serves verified bytes to ffmpeg-based tools on 127.0.0.1.
 - Collab proxies: Cardboard's own proxy when it fits, else NVENC → QSV → AMF → libx264 (`encodeProxy`).
+  `shareMedia` (`@carton/media/node`) shares it as a segmented stream: a teammate plays the segments while the upload
+  runs. `proxyStreams: false` keeps the older whole-object proxy.
 
 **Invariants.** Footage stays local unless shared (C8). A leaf that doesn't match its hash is never served as verified.
 

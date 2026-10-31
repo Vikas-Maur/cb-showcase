@@ -99,8 +99,9 @@ anything.
 
 - **Exports without originals are proxy quality (L3).** `carton.media` is not wired on the Carton handle: call
   `@carton/media` directly (INTEGRATION.md, H10).
-- **A teammate can play a proxy only once its upload finishes.** Multipart objects are invisible on R2 and S3 until
-  complete. The uploader plays it locally at once.
+- **Whole-object proxies play only once their upload finishes.** Multipart objects are invisible on R2 and S3 until
+  complete. Streamed proxies (`shareMedia`'s default) play segment by segment while they upload; the whole-object
+  path (`proxyStreams: false`) doesn't. The uploader plays either locally at once.
 - **The GPU proxy encoders (NVENC, QSV, AMF)** have not run: they need their GPUs. libx264 runs.
 
 ## What hasn't run where
