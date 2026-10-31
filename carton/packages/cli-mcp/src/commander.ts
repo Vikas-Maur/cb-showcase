@@ -66,6 +66,8 @@ export function register(program: any, deps: RegisterDeps): void {
         if (deps.extend === false) continue;
         // keep the command object (help text order, aliases) and swap in Carton's options and action
         for (const o of spec.options) if (!old.options?.some((x: any) => x.long === `--${o.name}`)) old.option(flag(o), o.description);
+        // as on every Carton command: who you are, for agents without hooks
+        if (!old.options?.some((x: any) => x.long === "--as")) old.option("--as <agent>", "who you are, for agents without hooks (Codex, Gemini): e.g. codex/fix-captions");
         old.description(spec.summary);
         old.action(action(spec, deps));
         continue;

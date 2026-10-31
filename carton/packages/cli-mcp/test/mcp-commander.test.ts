@@ -73,6 +73,7 @@ test("commander: commands next to 1.4.0's; history/undo extended in place; git w
   for (const n of ["history", "cut", "fold", "credits", "restore", "undo", "compare", "publish", "conflicts", "resolve", "activity", "branch", "merge", "log", "blame", "revert"]) assert.ok(names.includes(n), n);
   assert.equal(names.filter((n) => n === "history").length, 1, "1.4.0's history is extended, not duplicated");
   assert.ok(oldHistory.options.some((o) => o.long === "--cut"), "it gained --cut");
+  assert.ok(oldHistory.options.some((o) => o.long === "--as"), "and --as, as every Carton command has");
   const cut = program.commands.find((c) => c.name() === "cut")!;
   assert.deepEqual(cut.commands.map((c) => c.name()), ["list", "new", "switch"]);
   assert.deepEqual(cut.commands[1].args, ["<project>", "<name>"]);
