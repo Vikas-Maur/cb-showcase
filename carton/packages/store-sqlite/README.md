@@ -20,15 +20,17 @@ const { carton } = await importProject({ bundleDir, projectId, appDataDir, adapt
 |---|---|---|
 | `busyTimeoutMs` | 5000 | How long a read or write waits for another process's lock before `BusyError`. The wait is asynchronous: the event loop keeps running (P3b). |
 | `syncBusyMs` | 3 | SQLite's own (blocking) busy wait per attempt. |
-| `durability` | `"normal"` | `"normal"`: WAL + `synchronous=NORMAL`. A crash of the app or the OS loses nothing committed; a power cut can lose the last commits, never half of one. The ≤ 5 ms write-lock target (§6.2) is for this mode. `"full"`: every commit is fsynced, **and the write lock is held across that fsync, so lock time depends on the disk** (above 5 ms in 5 of 14 runs on a GitHub runner, verify-ci S3). That is inherent: a commit must be on disk before the lock is released. |
+| `durability` | `"normal"` | `"normal"`: WAL + `synchronous=NORMAL`. A crash of the app loses nothing committed; a crash of the OS or a power cut can lose the last commits, never half of one, and never corrupts the file (SQLite's contract). The ≤ 5 ms write-lock target (§6.2) is for this mode. `"full"`: every commit is fsynced, **and the write lock is held across that fsync, so lock time depends on the disk** (a commit took over 5 ms in 5 of 14 runs on a GitHub runner, verify-ci S3). That is inherent: a commit must be on disk before the lock is released. Choose `"full"` when a commit must survive an OS crash or power cut. |
 | `readOnly` | `false` | Read without ever writing (no placement move either). |
 | `appDataDir` | per-OS local app data | Where carton.db goes when it can't live in the bundle, and the project's placement lock. **Every process opening a project must pass the same value.** |
 
-With the default durability, WAL checkpoints never run inside a commit: SQLite's automatic one is off, and a passive
-checkpoint runs on its own turn of the event loop (after 1,000 writes, every 30 s, and at open). It costs the calling
-thread a few ms to tens of ms now and then, never the write lock. With `durability: "full"` SQLite's automatic
-checkpoint stays on: every commit already fsyncs under the lock, and moving the checkpoint out only made each commit
-slower there (verify-ci S3c).
+With the default durability, WAL checkpoints never run inside a commit. SQLite's automatic one (which runs inside
+COMMIT, after the write lock is released) made about one commit in 1,000 take tens of ms to return; it is off, and a
+passive checkpoint runs on its own turn of the event loop (after 1,000 writes, every 30 s, and at open; inline before
+a write if the caller never yields). It costs the calling thread a few ms to tens of ms now and then, never other
+writers. A reader that keeps an old snapshot open stops the WAL from being reused until it lets go. With
+`durability: "full"` SQLite's automatic checkpoint stays on: every commit already fsyncs under the lock, and moving the
+checkpoint out only made each commit slower there (verify-ci S3c).
 
 ## Errors a host should handle
 

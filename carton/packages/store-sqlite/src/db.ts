@@ -17,16 +17,16 @@ export interface DbOptions {
   /** SQLite's own busy wait per attempt, in ms. It blocks the thread, so it stays short. Default 3. */
   syncBusyMs?: number;
   /**
-   * "normal" (default): WAL with synchronous=NORMAL. An app or OS crash never corrupts the database or loses a
-   * committed change; a power cut can lose the last commits (they are then missing, never half-written, and a ref to
-   * them fails loudly with "state unknown: re-print", §4.4). This is no weaker than Cardboard 1.4.0, which never
-   * fsyncs its project saves. §6.2's write-lock target (≤ 5 ms) is for this mode.
+   * "normal" (default): WAL with synchronous=NORMAL. A crash of the app never loses a committed change; a crash of
+   * the OS or a power cut can lose the last commits (SQLite's contract: they are then missing, never half-written,
+   * the database never corrupt, and a ref to them fails loudly with "state unknown: re-print", §4.4). This is no
+   * weaker than Cardboard 1.4.0, which never fsyncs its project saves.
    *
-   * "full" fsyncs every commit, and SQLite does that inside COMMIT: the write lock is held across the fsync, so how
-   * long it is held depends on the disk, and other processes' writes wait that long. On a GitHub runner it exceeded
-   * 5 ms in 5 of 14 benchmark runs (verify-ci, VERIFIED.md S3). It can't be otherwise: a commit has to be on disk
-   * before the lock is let go. "full" also keeps SQLite's own WAL checkpoint inside the commit that crosses 1,000
-   * frames (the default moves it out of the lock; for "full" that only made every commit slower).
+   * "full" fsyncs every commit, and SQLite does that inside COMMIT while it still holds the write lock, so how long
+   * the lock is held depends on the disk, and other processes' writes wait that long. On a GitHub runner a commit
+   * took over 5 ms in 5 of 14 benchmark runs (verify-ci, VERIFIED.md S3). It can't be otherwise: a commit has to be
+   * on disk before the lock is let go. "full" also keeps SQLite's automatic WAL checkpoint in COMMIT (see
+   * #watchWal; the default moves it out, which for "full" only made every commit slower).
    */
   durability?: "normal" | "full";
   readOnly?: boolean;
@@ -65,7 +65,11 @@ export class Db {
   #closed = false;
   /** Busy retries so far (writes and reads), for tests and benchmarks. */
   busyRetries = 0;
-  /** How long the last write held the write lock, BEGIN IMMEDIATE to COMMIT, in ms (§6.2's target is ≤ 5). */
+  /**
+   * The last write's time from BEGIN IMMEDIATE to COMMIT's return, in ms (§6.2's lock target is ≤ 5). The write lock
+   * is held for all of it except, where SQLite's automatic checkpoint is on ("full"), that checkpoint: SQLite runs it
+   * inside COMMIT but after releasing the lock.
+   */
   lastLockMs = 0;
   /** WAL checkpoints this connection ran, and the longest (ms; it holds this thread, never the write lock). */
   checkpoints = 0;
@@ -142,6 +146,10 @@ export class Db {
 
   /** One attempt of `write`: throws SQLite's busy error instead of waiting. */
   writeNow<T>(fn: () => T): T {
+    // A caller that never yields (a tight loop of awaited writes: each resolves without a macrotask) never lets the
+    // deferred checkpoint run. Past twice the budget it runs here, before the write lock is taken, so the WAL stays
+    // bounded through the Store API alone.
+    if (this.#deferCheckpoints && this.#writesSinceCheckpoint >= 2 * CHECKPOINT_EVERY_WRITES) this.checkpoint();
     this.#begin.run();
     const t0 = performance.now();
     let out: T;
@@ -158,15 +166,17 @@ export class Db {
     return out;
   }
 
-  // With the default durability, checkpoints never run inside a commit. SQLite's automatic one would: the commit that takes the WAL past 1,000
-  // frames copies them all into the database (and fsyncs it) while still holding the write lock, which every other
-  // process waits on (verified: about once per 1,000 commits a ~30 ms hold). It is off (wal_autocheckpoint=0), and a
-  // PASSIVE checkpoint, which takes only the checkpointer lock, runs on its own turn of the event loop: after
-  // CHECKPOINT_EVERY_WRITES of this connection's writes, every CHECKPOINT_EVERY_MS on an idle timer (for frames that
-  // short `cb` processes add), and once at open (for a WAL a crash left behind). A PASSIVE checkpoint with nothing new
-  // to copy does no I/O, so the timer is cheap. The WAL is bounded by the larger of those: it can't grow without limit
-  // while any store has the file open. (The WAL file's size is no guide: after a checkpoint SQLite reuses it from the
-  // start without shrinking it.)
+  // With the default durability, checkpoints never run inside a commit. SQLite's automatic one runs inside COMMIT
+  // (from its WAL hook, once the WAL passes 1,000 frames): after the write lock is released, so other writers don't
+  // wait for it, but the committing call does: about once per 1,000 commits a commit took ~30 ms to return (verified,
+  // VERIFIED.md S3; S3c: p99 -14%, worst -80% with this change). It is off (wal_autocheckpoint=0), and a PASSIVE
+  // checkpoint (what the automatic one is too) runs on its own turn of the event loop: after CHECKPOINT_EVERY_WRITES
+  // of this connection's writes, every CHECKPOINT_EVERY_MS on an idle timer (for frames that short `cb` processes
+  // add), and once at open (for a WAL a crash left behind); a caller that never yields gets it inline before its next
+  // write past twice the budget (writeNow). A PASSIVE checkpoint with nothing new to copy does no I/O, so the timer is
+  // cheap. While any store has the file open the WAL is bounded by those, except that a reader keeping an old
+  // snapshot open stops the WAL from being reused until it lets go (true of SQLite's own checkpoint too). (The WAL
+  // file's size is no guide: after a checkpoint SQLite reuses it from the start without shrinking it.)
   #watchWal(): void {
     this.#queueCheckpoint();
     this.#walTimer = setInterval(() => this.#queueCheckpoint(), CHECKPOINT_EVERY_MS);

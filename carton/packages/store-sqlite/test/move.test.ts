@@ -548,3 +548,51 @@ test("a copy that can't be published (the rename fails) leaves no partial file a
   assert.deepEqual(await seqs(b.store), [1]);
   await b.store.close();
 });
+
+test("a read-only carton.db from another machine at the other place never blocks this machine's history", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  p.startSyncing();
+  const here = await openProjectStore(p); // this machine's history lives in app data
+  await here.store.write(put(1));
+  await here.store.close();
+  // A synced-in carton.db made on another machine, read-only, in the bundle.
+  const theirs = await openSqliteStore(p.inBundle);
+  await theirs.write(put(7));
+  theirs.db.raw.prepare(`UPDATE "_carton" SET v = ? WHERE k = 'machine'`).run(JSON.stringify({ id: "0".repeat(32), host: "fedcba9876543210" }));
+  await theirs.close();
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    const b = await openProjectStore(p);
+    assert.equal(b.store.path, p.inAppData);
+    assert.deepEqual(await seqs(b.store), [1], "this machine's history opens");
+    await b.store.close();
+    assert.deepEqual(fs.readdirSync(path.dirname(p.inBundle)).filter((f) => f.startsWith("carton.db")), ["carton.db"], "nothing made beside theirs");
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+  const check = await openSqliteStore(p.inBundle, { readOnly: true });
+  assert.deepEqual(await seqs(check), [7], "theirs untouched");
+  await check.close();
+});
+
+test("a read-only carton.db with a pending -wal is refused even if it looks foreign: the -wal could say otherwise", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  const raw = new DatabaseSync(p.inBundle);
+  raw.prepare(`UPDATE "_carton" SET v = ? WHERE k = 'machine'`).run(JSON.stringify({ id: "0".repeat(32), host: "fedcba9876543210" }));
+  raw.close();
+  const key = new URL("../src/key.ts", import.meta.url).href;
+  const code = `import { DatabaseSync } from "node:sqlite"; import { encodeKey } from ${JSON.stringify(key)}; const d = new DatabaseSync(${JSON.stringify(p.inBundle)}); d.exec("PRAGMA wal_autocheckpoint=0"); d.prepare("INSERT INTO changes(k, v) VALUES (?, ?)").run(encodeKey(["main", 2]), JSON.stringify({ id: "r.2" })); process.exit(0);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "inherit"] });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    p.startSyncing();
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assertNothingPublished(p);
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+});
