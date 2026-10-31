@@ -1223,6 +1223,13 @@ export function conformanceTests(S: Schema, opts: ConformanceOptions = {}): void
     assert.deepEqual(E.diff(d, changed, S), [], "changing local-only state is not a change");
   });
 
+  test("§4.1 incremental soft validation: a confirmed local change that extends a clip into an unchanged neighbour warns (review R2-4)", () => {
+    const r = History.create(S, doc(["T"], [clip("a", "T", 0, 5), clip("b", "T", 5, 10)]));
+    const res = r.commit(r.current, { ops: [set(["timelineItems", "a", "endTime"], 7), set(["timelineItems", "a", "trimEnd"], 7)], author: HUMAN });
+    assert.equal(res.status, "confirmed");
+    assert.deepEqual(res.status === "confirmed" && res.warnings, [{ kind: "overlap", items: ["a", "b"] }]);
+  });
+
   test("§4.1 soft validators: an overlap that only the merge creates is a warning on the merge, not a card", () => {
     const b = doc(["V"], [clip("a", "V", 0, 5), clip("b", "V", 10, 15)]);
     // ours: a [0, 9] (no overlap with b at [10, 15]); theirs: b moved to [8, 13] (no overlap with a at [0, 5])

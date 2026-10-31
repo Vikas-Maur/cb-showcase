@@ -96,11 +96,20 @@ export interface CollectionDef {
   groups?: FieldGroup[];
   /** Only declared fields are versioned. */
   only?: boolean;
+  /** What one record is called in descriptions ("clip"); default "item" ("track" for the timeline's lanes). */
+  noun?: string;
+  /**
+   * Editors' words for fields in descriptions, by their dotted path in the record with keyed-array element keys left
+   * out: `{"colorGrade.saturation": "saturation", "effects": "effect"}`. Unlabelled fields print their path.
+   */
+  labels?: Record<string, string>;
 }
 
 /** A collection after `defineSchema`: groups indexed by field and the record spec built. */
 export interface CollectionSpec extends Required<Pick<CollectionDef, "key">> {
   readonly fields?: Record<string, FieldSpec>;
+  readonly noun?: string;
+  readonly labels?: Readonly<Record<string, string>>;
   readonly parent?: { field: string; collection: string };
   readonly seq?: boolean;
   readonly only?: boolean;
@@ -176,6 +185,8 @@ export interface SchemaDef {
   soft?: SoftValidator | null;
   /** A human label for a record in descriptions and cards ("'Intro'"). */
   label?: ((collection: string, record: Rec | undefined) => string) | null;
+  /** Editors' words for root fields in descriptions (`{aspectRatio: "aspect ratio"}`). */
+  labels?: Record<string, string> | null;
 }
 
 export interface Schema {
@@ -185,10 +196,11 @@ export interface Schema {
   readonly hard: HardValidator | null;
   readonly soft: SoftValidator | null;
   readonly label: ((collection: string, record: Rec | undefined) => string) | null;
+  readonly labels: Readonly<Record<string, string>> | null;
 }
 
 /** Builds a schema: indexes field groups and the record spec of every collection. Undeclared fields are atomic. */
-export function defineSchema({ root = {}, collections = {}, timeline = null, hard = null, soft = null, label = null }: SchemaDef): Schema {
+export function defineSchema({ root = {}, collections = {}, timeline = null, hard = null, soft = null, label = null, labels = null }: SchemaDef): Schema {
   const colls: Record<string, CollectionSpec> = {};
   for (const [name, c] of Object.entries(collections)) {
     const groups = (c.groups ?? []).map((g) => ({ ...g, set: new Set(g.fields) }));
@@ -197,5 +209,5 @@ export function defineSchema({ root = {}, collections = {}, timeline = null, har
     const key = c.key ?? "id";
     colls[name] = { ...c, key, groups, groupOf, record: { kind: "object", fields: { [key]: scalar, ...(c.fields ?? {}) }, deep: false, only: !!c.only } };
   }
-  return { root: { kind: "object", fields: root, deep: false, only: false }, collections: colls, timeline, hard, soft, label };
+  return { root: { kind: "object", fields: root, deep: false, only: false }, collections: colls, timeline, hard, soft, label, labels };
 }

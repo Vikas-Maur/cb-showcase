@@ -701,10 +701,11 @@ class CartonImpl implements Carton {
     // refresh every cut: the one folded in may have grown in another process
     const r = await this.#mutate(undefined, () => this.#h.fold(into, this.#foldable(from), { ...opts, author }), { idempotent: true });
     const { retry: _r, merge, base: _b, doc: _d, ...out } = r as FoldResult & { retry?: unknown; merge?: MergeResult; base?: unknown; doc?: unknown };
-    // a dry run tells what the fold would bring in (the Fold in dialog, `cb fold --check`)
+    // a dry run tells what the fold would bring in (the Fold in dialog, `cb fold --check`): with choices, the resolved
+    // state; without, every card on its provisional side
     if (opts.check && merge) {
       const ours = this.#h.stateOf(this.#h.head(into))!;
-      const ops = merge.ops;
+      const ops = (r as { doc?: Doc }).doc ? E.diff(ours, (r as { doc: Doc }).doc, this.schema) : merge.ops;
       return { ...(out as FoldResult), preview: { ops, describe: E.describe(ops, ours, this.schema), warnings: merge.warnings } };
     }
     return out as FoldResult;
@@ -728,9 +729,9 @@ class CartonImpl implements Carton {
   }
   async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    // History resolves headers and StateRefs itself, pins included, so a held state is restored as held
-    const target = typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref;
-    return this.#mutate(cut, () => this.#h.restore(cut, target, { author: this.#actor(opts.author) }), { idempotent: false });
+    // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
+    // its head as of now (inside the mutation, after the refresh), never a cached one
+    return this.#mutate(undefined, () => this.#h.restore(cut, typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref, { author: this.#actor(opts.author) }), { idempotent: false });
   }
   async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
