@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryBlobStore } from "@carton/blob-memory";
 import { mediaHash, manifestKey, mediaKey, webCryptoHasher, LEAF_SIZE } from "@carton/media";
-import { projectMediaStore, isTeamMediaStore } from "../src/team.ts";
+import { projectMediaStore, isTeamMediaStore, mediaLockScope } from "../src/team.ts";
 
 const fill = (n: number, seed: number) => new Uint8Array(n).map((_, i) => (i * 31 + seed) & 0xff);
 
@@ -141,4 +141,14 @@ test("a write that found no object is create-only: a teammate's copy written mea
   await slow;
   // compared whole, not with deepEqual: its diff of two 2 MiB arrays takes minutes
   assert.equal(Buffer.compare((await inner.get(`teams/t1/media/${key}`))!, bytes), 0, "the sound copy was overwritten");
+});
+
+test("the media lock's scope is the physical path: two adapters over one bucket share it (a fresh R2 adapter per request)", () => {
+  const bucket = createMemoryBlobStore();
+  const adapter = () => new Proxy(bucket, {}); // as server-cloudflare's mediaBlobs() wraps env.BLOBS anew per call
+  const scope = (projectId: string, team?: string) => mediaLockScope(projectMediaStore(adapter(), projectId, team), projectId);
+  assert.equal(scope("a"), scope("a"), "one project, two adapters: one lock");
+  assert.notEqual(scope("a"), scope("b"), "two projects apart: two locks");
+  assert.equal(scope("a", "t1"), scope("b", "t1"), "one team: one lock");
+  assert.notEqual(scope("a", "t1"), scope("a", "t2"));
 });
