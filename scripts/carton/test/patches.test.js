@@ -178,6 +178,27 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   `], { env: env(), encoding: "utf8", timeout: 60_000 });
   assert.equal(JSON.parse(named.stdout.trim().split("\n").pop()).status, "named", named.stderr);
   assert.equal(json(null, "history", "Demo").versions.find((v) => v.by?.id === "director/chat1/turn1")?.name, "Make the intro tighter");
+  // The live-sync half's seam: an extension's services join the worker's namespace beside Carton's own (never replacing
+  // one), it gets each project's open Carton and hears of every Carton opened, and one that throws is left out.
+  const ext = spawnSync(process.execPath, ["-e", `
+    const path = require("path");
+    const { cardboard14, extend } = require(${JSON.stringify(path.join(out, "carton", "carton-node.cjs"))});
+    const heard = [];
+    let api;
+    extend({ worker: (a) => ({ hello: async () => ((await a.carton("p"))?.carton ? "open" : "none"), ping: async () => "replaced", "bad-name": async () => 1 }) });
+    extend({ worker: (a) => { api = a; a.onOpen((b) => heard.push("live:" + path.basename(b))); return {}; } });
+    extend({ worker: () => { throw new Error("broken"); } });
+    const w = cardboard14.worker({ library: { projects: { bundlePathFor: () => ${JSON.stringify(b)} } }, emit() {} });
+    (async () => {
+      const r = { hello: await w.hello(), ping: await w.ping(), bad: "bad-name" in w };
+      await new Promise((r) => setTimeout(r, 50));
+      api.onOpen((b) => heard.push("late:" + path.basename(b)));
+      await new Promise((r) => setTimeout(r, 50));
+      console.log(JSON.stringify({ ...r, heard }));
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `], { env: env(), encoding: "utf8", timeout: 60_000 });
+  assert.deepEqual(JSON.parse(ext.stdout.trim().split("\n").pop()), { hello: "open", ping: "pong", bad: false, heard: ["live:Demo.cardboard", "late:Demo.cardboard"] }, ext.stderr);
+  assert.match(ext.stderr, /an extension failed to start: broken/);
   // History: every version, with who made it down to the subagent.
   const by = json(null, "history", "Demo").versions.map((v) => v.by?.id ?? null);
   assert.deepEqual(by.slice(0, 2), ["director/chat1/turn2/sub-Explore-a1", "director/chat1/turn1"]);

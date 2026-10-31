@@ -51,10 +51,54 @@ function open(bundlePath, { projectId, doc } = {}) {
       return lc;
     })().catch((e) => (warnOnce("open:" + bundlePath, `history is off for ${path.basename(bundlePath)}: ${errText(e)}`), opened.delete(bundlePath), null));
     opened.set(bundlePath, p);
+    p.then((lc) => {
+      if (!lc) return;
+      ready.set(bundlePath, lc);
+      for (const f of openers) tell(f, bundlePath, lc);
+    });
   }
   return p;
 }
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
+
+// ---------------------------------------------------------------- extensions
+// The live-sync and sharing half (scripts/carton/sync, windows-sync) is bundled into this file by build.js and
+// registers here with `extend({worker(api)})`. In the library worker, worker(api) returns services that join the
+// worker's `carton` namespace beside the facade's own (never replacing one): main's carton:call and the pages reach
+// them as carton.<name> (letters only). api:
+//   library, emit(change)   the worker's library, and its channel to main and the pages ({kind: "carton", …} changes)
+//   bundleOf(projectId)     the project's bundle folder
+//   open(bundlePath), carton(projectId)
+//                           the project's LocalCarton ({carton, store, …}), opened on first use; null when history is off
+//                           for it
+//   onOpen(fn)              fn(bundlePath, lc) for each Carton this process opens, the ones open already included;
+//                           returns a function that stops it
+//   materialize(projectId)  head into project.json, and the pages adopt it
+//   actorOf(id)             an actor id ("person", "director/<chat>/<turn>", "external:project.json") as an Actor
+// An extension that throws is left out (logged once); Carton and the save path go on without it.
+const extensions = [], openers = new Set(), ready = new Map(); // ready: bundlePath → LocalCarton
+export function extend(ext) { extensions.push(ext); }
+function tell(f, bundlePath, lc) {
+  try { Promise.resolve(f(bundlePath, lc)).catch((e) => warnOnce("onOpen:" + bundlePath, "an extension failed on open: " + errText(e))); }
+  catch (e) { warnOnce("onOpen:" + bundlePath, "an extension failed on open: " + errText(e)); }
+}
+function onOpen(f) {
+  openers.add(f);
+  for (const [bundlePath, lc] of ready) tell(f, bundlePath, lc);
+  return () => openers.delete(f);
+}
+function extensionServices(api, own) {
+  const out = {};
+  for (const ext of extensions) {
+    let more;
+    try { more = ext.worker?.(api) ?? {}; } catch (e) { warnOnce("ext:" + (ext.name ?? "?"), "an extension failed to start: " + errText(e)); continue; }
+    for (const [name, f] of Object.entries(more)) {
+      if (name in own || name in out || !/^[a-zA-Z]+$/.test(name) || typeof f !== "function") warnOnce("ext:" + name, `an extension's service ${name} was left out (taken, or not a function with a letters-only name)`);
+      else out[name] = f;
+    }
+  }
+  return out;
+}
 
 // The rev map (carton.db's local `views` table): ["rev", ms] → ref; ["ref", branch, seq] → ms.
 const REVS = "views";
@@ -441,6 +485,11 @@ export const cardboard14 = {
     const bundleOf = (projectId) => library.projects.bundlePathFor?.(projectId) ?? null;
     const lcOf = async (projectId) => open(bundleOf(projectId), { projectId });
     const servers = new Map(); // client → serveUi
+    const own = cardboard14.workerServices({ library, emit, bundleOf, lcOf, servers });
+    const materialize = async (projectId) => { if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) }); };
+    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf }, own) };
+  },
+  workerServices({ library, emit, bundleOf, lcOf, servers }) {
     return {
       ping: async () => "pong",
       head: async ({ projectId }) => library.projects.read(projectId),
