@@ -22,10 +22,18 @@
   "sideEffects": false,
   "scripts": {
     "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
-    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "dev": "wrangler dev --persist-to .wrangler/state"
   },
   "dependencies": {
     "@carton/core": "0.1.0",
-    "@carton/server": "0.1.0"
+    "@carton/server": "0.1.0",
+    "@carton/blob-memory": "0.1.0",
+    "@carton/host-http": "0.1.0"
+  },
+  "devDependencies": {
+    "wrangler": "4.156.0",
+    "@carton/conformance": "0.1.0",
+    "@carton/server-node": "0.1.0"
   }
 }

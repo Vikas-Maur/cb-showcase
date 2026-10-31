@@ -1,0 +1,36 @@
+# Carton on Cloudflare: LOCAL DEVELOPMENT ONLY (`npm run dev`, which is `wrangler dev`). Never `wrangler deploy`
+# without the user's go-ahead (PLAN §17). Secrets go in `.dev.vars` locally (AUTH_SECRET, optional ADMIN_TOKEN);
+# never in this file.
+name = "carton-dev"
+main = "src/worker.ts"
+compatibility_date = "2026-10-23"
+
+# The static web client. The Worker answers /api/* and /blob/* first; everything else is a file from here.
+[assets]
+directory = "./public"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/blob/*"]
+
+[[durable_objects.bindings]]
+name = "PROJECT_ROOM"
+class_name = "ProjectRoom"
+
+# The DO-blob fallback (L11). Used only when BLOBS (R2) is not bound.
+[[durable_objects.bindings]]
+name = "BLOB_VAULT"
+class_name = "BlobVault"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProjectRoom", "BlobVault"]
+
+# Media, keyframes and archived change segments. Remove this block to run on the DO-blob fallback.
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "carton-dev"
+
+[vars]
+# §18: archive rows older than the newest 10,000 per branch, in segments of 10,000, checked hourly
+ARCHIVE_KEEP = "10000"
+ARCHIVE_SEGMENT = "10000"
+ARCHIVE_EVERY_MS = "3600000"

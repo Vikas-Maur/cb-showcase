@@ -20,6 +20,9 @@ export interface BlobSuiteOptions {
   fetch?: typeof fetch;
   // How long to wait for a 1 s signed URL to expire; 0 skips that (slow) check.
   expiryWaitMs?: number;
+  // false when the backend can't hold an object at `a` beside objects under `a/` (POSIX-backed S3 servers such as
+  // VersityGW and MinIO refuse it). Carton's own keys never need it; the check then skips with this reason.
+  objectsBesideFolders?: false | { reason: string };
 }
 
 const bytes = (n: number, seed: number): Uint8Array => {
@@ -147,12 +150,13 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
       await assert.rejects(store.get(k("rng2"), { offset: -1, length: 2 }));
       await assert.rejects(store.get(k("rng2"), { offset: 1.5 }));
       await assert.rejects(store.put("", text("x")));
+      // segments that a URL or a file system would resolve to another key
+      for (const bad of ["a/../b", "a/./b", "..", ".", "a//b", "/a", "a/", "a\0b"]) await assert.rejects(store.put(k(bad), text("x")), JSON.stringify(bad));
       await assert.rejects(store.put(k("x".repeat(1100)), text("x")));
     });
 
-    test("keys are opaque: case, unicode, spaces, reserved characters, and an object beside a folder", async () => {
-      const keys = ["Clip.MP4", "clip.mp4", "dir/Ünïcødé 名前.mov", "a b+c%20d?e#f&g=h", "CON", "nul.txt", "x/", "trailing.", "a", "a/b", "a/b/c", "~tilde~b", ".hidden", "..."];
-      const valid = keys.filter((x) => !x.endsWith("/"));
+    test("keys are opaque: case, unicode, spaces, reserved characters", async () => {
+      const valid = ["Clip.MP4", "clip.mp4", "dir/Ünïcødé 名前.mov", "a b+c%20d?e#f&g=h", "CON", "nul.txt", "trailing.", "~tilde~b", ".hidden", "...", "deep/b/c"];
       for (const [i, key] of valid.entries()) await store.put(k(key), text(`v${i}:${key}`));
       for (const [i, key] of valid.entries()) eq(await store.get(k(key)), text(`v${i}:${key}`), key);
       const listed = new Set<string>();
@@ -163,11 +167,22 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
         cursor = page.cursor;
       } while (cursor);
       for (const key of valid) assert.ok(listed.has(k(key)), `list misses ${key}`);
-      // a 1024-byte key is legal
-      const long = k("L".repeat(1024 - k("").length));
+      // a 1024-byte key is legal (in segments of at most 200 bytes: POSIX-backed S3 servers cap a segment at 255)
+      let tail = "";
+      while (k(tail).length < 1024) tail += (tail.length % 201 === 200 ? "/" : "L");
+      const long = k(tail.slice(0, 1024 - k("").length).replace(/\/$/, "L"));
+      assert.equal(new TextEncoder().encode(long).byteLength, 1024);
       await store.put(long, text("long"));
       eq(await store.get(long), text("long"));
       await store.delete(long);
+    });
+
+    test("an object beside a folder of the same name (`f` and `f/g`)", async (t) => {
+      if (opts.objectsBesideFolders) return t.skip(opts.objectsBesideFolders.reason);
+      await store.put(k("f"), text("file"));
+      await store.put(k("f/g"), text("nested"));
+      eq(await store.get(k("f")), text("file"));
+      eq(await store.get(k("f/g")), text("nested"));
     });
 
     test("list: prefix, order, and paging with a cursor visit every key once", async () => {
