@@ -344,6 +344,24 @@ export const storeCases: readonly StoreCase[] = [
     },
   },
   {
+    name: "a watch listener that throws never turns a committed write into a failed one",
+    async run({ store }) {
+      if (!store.watch) return;
+      const stop = store.watch(() => {
+        throw new Error("listener bug");
+      });
+      const quiet = console.error;
+      console.error = () => {};
+      try {
+        eq(await store.write([put("t", ["k"], 1)]), true);
+      } finally {
+        console.error = quiet;
+        stop();
+      }
+      eq(await store.get("t", ["k"]), 1);
+    },
+  },
+  {
     name: "a persistent store keeps every resolved write across close and reopen",
     async run(f) {
       if (!f.store.info.persistent) return;

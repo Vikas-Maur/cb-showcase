@@ -18,3 +18,4 @@ export {
   type LocationProbe,
 } from "./location.ts";
 export { openProjectStore, type ProjectStoreOptions } from "./project.ts";
+export { importProject, importChangeId, IMPORT_AUTHOR, type ImportProjectOptions, type ImportedProject } from "./import.ts";
