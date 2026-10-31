@@ -49,6 +49,29 @@ export interface StreamEnd {
   parts?: string[];
 }
 
+/**
+ * Waits for a damage report to settle (its errors ignored: reports are best effort) unless `signal` aborts first. The
+ * report itself goes on: cancelling a read stops waiting for it, not the report.
+ */
+async function whileNotAborted(report: Promise<unknown>, signal?: AbortSignal): Promise<void> {
+  const settled = report.then(
+    () => {},
+    () => {},
+  );
+  if (!signal) return settled;
+  if (signal.aborted) return;
+  let onAbort!: () => void;
+  const aborted = new Promise<void>((resolve) => {
+    onAbort = resolve;
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([settled, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** A new stream id: 32 random bytes as hex (the same shape as a media hash, so URLs and keys check it the same way). */
 export function newStreamId(): string {
   return toHex(globalThis.crypto.getRandomValues(new Uint8Array(32)));
@@ -312,18 +335,25 @@ export class ProxyStreamReader {
   }
 
   /**
-   * A part of this stream failed verification where it was read as a plain object (a tool following the playlist's
-   * segment URLs): report the stream, so the next share makes a new one. Ignored, returning false, for a hash that
+   * A part of this stream failed verification (`"mismatch"`) or is gone (`"missing"`) where it was read as a plain
+   * object (a tool following the playlist's segment URLs): report the stream, so the next share makes a new one. A
+   * finished stream's parts never go away by design, so a missing one is damage too: a host that found the part damaged
+   * removes it (team mode, S5-3), and the read after that sees no object rather than bad bytes. "missing" is checked
+   * with a HEAD first, so a part that is back (or never left) isn't reported. Ignored, returning false, for a hash that
    * isn't one of its parts.
    */
-  async reportPartDamage(hash: string): Promise<boolean> {
+  async reportPartDamage(hash: string, why: "mismatch" | "missing" = "mismatch"): Promise<boolean> {
     // Parts already read first: a tool reports a segment it got from this reader's playlist, so it is almost always
     // known, and the report mustn't hang on fetching entries (one more request that may fail).
     const isPart = (p: StreamPart | null) => p?.hash === hash;
     let mine = isPart(this.#init) || this.#segments.some(isPart);
     if (!mine) mine = isPart(await this.initPart().catch(() => null)) || (await this.known().catch(() => this.#segments.slice())).some(isPart);
-    if (mine) await this.#reportDamage({ hash });
-    return mine;
+    if (!mine) return false;
+    if (why === "missing") {
+      if ((await this.#o.store.head(mediaKey(hash))) !== null) return false;
+      await this.#reportDamage({ hash, missing: true });
+    } else await this.#reportDamage({ hash });
+    return true;
   }
 
   async #reportDamage(what: Record<string, unknown>): Promise<void> {
@@ -335,7 +365,10 @@ export class ProxyStreamReader {
     try {
       return await this.#o.media.readVerified(part.hash, 0, part.size, signal);
     } catch (e) {
-      if ((e as Error)?.name === "LeafMismatchError") await this.#reportDamage({ hash: part.hash });
+      const name = (e as Error)?.name;
+      if (name === "LeafMismatchError") await whileNotAborted(this.#reportDamage({ hash: part.hash }), signal);
+      else if (name === "MediaMissingError") await whileNotAborted(this.reportPartDamage(part.hash, "missing"), signal);
+      signal?.throwIfAborted();
       throw e;
     }
   }
@@ -434,7 +467,10 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
           try {
             yield* opts.media.read(p.hash, from - at, to - from, signal);
           } catch (e) {
-            if ((e as Error)?.name === "LeafMismatchError") await r.reportPartDamage(p.hash).catch(() => false);
+            const name = (e as Error)?.name;
+            if (name === "LeafMismatchError") await whileNotAborted(r.reportPartDamage(p.hash), signal);
+            else if (name === "MediaMissingError") await whileNotAborted(r.reportPartDamage(p.hash, "missing"), signal);
+            signal?.throwIfAborted();
             throw e;
           }
         }
@@ -551,7 +587,16 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
   // A damaged part is reported against its stream wherever it is read as part of one (play, the playlist's segment
   // URLs, a whole-stream read): one HEAD, no listing, so the check works through any store (e2e S5-7).
   if (await isDamaged(store, p.stream)) return true;
-  if ((await store.head(streamEndKey(p.stream))) !== null) return false;
+  const endBytes = await store.get(streamEndKey(p.stream));
+  if (endBytes !== null) {
+    // Finished. A report covers damage someone read; a part that is gone is caught here, whoever removed it (a host
+    // that found it damaged removes it, and a reader that then saw it missing may not have reported it): one HEAD per
+    // part, so the check still needs no listing. What's wrong is reported, so later checks stop at the report.
+    const wrong = await finishedWrong(store, p.stream, endBytes);
+    if (wrong === null) return false;
+    await reportDamage(store, p.stream, wrong);
+    return true;
+  }
   // Live if anything happened lately: the newest entry, or the claim itself.
   const newest = await newestEntry(store, p.stream);
   let latest = p.at;
@@ -560,6 +605,46 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     if (v && isCount(v.at)) latest = Math.max(latest, v.at);
   }
   return now - latest > staleMs;
+}
+
+/** Why a finished stream can't be reused (its end unreadable, an entry or a part gone, sizes that don't add up), or null. */
+async function finishedWrong(store: BlobStore, stream: string, endBytes: Uint8Array): Promise<Record<string, unknown> | null> {
+  const end = asEnd(parseJson(endBytes));
+  if (end === null) return { end: "unreadable" };
+  let parts = end.parts;
+  if (parts === undefined) {
+    // An end written before it listed its parts: the entries say what they are.
+    const init = asPart(await getJson(store, streamInitKey(stream)));
+    if (init === null) return { entry: "init" };
+    const segs = await inBatches(Array.from({ length: end.segments }, (_, i) => i), async (i) => asSegment(await getJson(store, streamSegmentKey(stream, i)), i));
+    const gap = segs.findIndex((s) => s === null);
+    if (gap >= 0) return { entry: gap };
+    parts = [init.hash, ...segs.map((s) => s!.hash)];
+  }
+  const unique = [...new Set(parts)];
+  const sizes = new Map<string, number>();
+  const heads = await inBatches(unique, (h) => store.head(mediaKey(h)));
+  for (let i = 0; i < unique.length; i++) {
+    const head = heads[i];
+    if (head === null || head === undefined) return { hash: unique[i], missing: true };
+    sizes.set(unique[i]!, head.size);
+  }
+  const total = parts.reduce((n, h) => n + sizes.get(h)!, 0);
+  return total === end.size ? null : { size: total, expected: end.size };
+}
+
+/** `f` over `items`, at most 8 at a time, results in order. */
+async function inBatches<T, R>(items: readonly T[], f: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let next = 0;
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await f(items[i]!);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(8, items.length) }, worker));
+  return out;
 }
 
 /**
