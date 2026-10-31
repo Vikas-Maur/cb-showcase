@@ -124,7 +124,8 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
   // The record's proxy counts only while it is the shared one and still usable. One replaced since (its stream was
   // abandoned, or a part reported damaged) becomes the replacement, in the record's own profile; one with nothing
   // usable in its place is planned again (or dropped, without the original here). Checked by whoever shares, with the
-  // original or not. A store that can't answer leaves the record as it is: the steps below find out for themselves.
+  // original or not. A store that can't answer leaves the record as it is, unless its proxy was reported damaged: the
+  // steps below find out for themselves.
   if (record.proxy && record.hash !== undefined) {
     const was = record.proxy;
     try {
@@ -133,6 +134,8 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
       else if ("stream" in p ? p.stream !== was.stream : p.hash !== was.hash) record.proxy = await proxyOf(o, p, was.profile, hasher);
     } catch {
       o.signal?.throwIfAborted();
+      // Still drop one reported damaged: kept, it would plan no proxy work at all.
+      if (await reported(was.stream ?? was.hash)) delete record.proxy;
     }
   }
   // T1 files: sizes first, so files the policy leaves out (a .context over its cap) are never read; then a hash of

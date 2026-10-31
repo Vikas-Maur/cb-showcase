@@ -156,7 +156,7 @@ async function storedMatches(store: BlobStore, key: string, m: Manifest, hasher:
   for (let i = 0, at = 0; at < m.size; i++, at += LEAF_SIZE) {
     signal?.throwIfAborted();
     const length = Math.min(LEAF_SIZE, m.size - at);
-    const bytes = await store.get(key, { offset: at, length });
+    const bytes = await untilAborted(store.get(key, { offset: at, length }), signal);
     if (!bytes || bytes.length !== length || !equalBytes(await hasher.sha256(bytes), leafDigest(m, i))) return false;
   }
   return true;
@@ -365,7 +365,13 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     if (h === null || h.size !== m.size) return false;
     // Replacing a damaged object: the old one has the right size too. Only a new ETag says someone replaced it.
     if (!damaged || (h.etag !== undefined && head?.etag !== undefined && h.etag !== head.etag)) return true;
-    return thorough && (await storedMatches(store, key, m, o.hasher, o.signal).catch(() => false));
+    if (!thorough) return false;
+    try {
+      return await storedMatches(store, key, m, o.hasher, o.signal);
+    } catch (e) {
+      if (isAbort(e)) throw e;
+      return false;
+    }
   };
   try {
     if (bad) throw bad.reason;
@@ -400,9 +406,12 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     // The upload may be gone, or completion refused: either another caller completed the object (success), or the
     // store dropped the upload (forget it, so the next attempt starts over instead of failing again).
     if (await finished(true)) {
+      // Ours may still hold parts (a part failed, and the object turned out fine): don't leave them stored and
+      // forgotten. An upload that completed or is gone just refuses.
+      if (!uploadGone(e)) await upload.abort().catch(() => {});
       await states.delete(key);
       result.deduped = true;
-      // When replacing a damaged object, finished() saw a new ETag: it is replaced (by us or another caller).
+      // A damaged object replaced (a new ETag), or read back and verified: the report can go.
       return repaired(result);
     }
     if (uploadGone(e)) await states.delete(key);

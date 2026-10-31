@@ -408,10 +408,34 @@ export async function usableProxy(
   profileId: string,
   opts: { staleMs?: number; now?: () => number } = {},
 ): Promise<ProxyPointer | null> {
-  const there = await findProxy(store, sourceHash, profileId);
-  if (!there) return null;
-  return (await replaceable(store, there, opts.staleMs ?? STALE_MS, (opts.now ?? Date.now)())) ? null : there;
+  const { there, usable } = await check(store, sourceHash, profileId, opts.staleMs ?? STALE_MS, opts.now ?? Date.now);
+  return usable ? there : null;
 }
+
+/**
+ * The pointer and whether it is usable. A takeover writes the new pointer, then deletes the old stream's report: a
+ * check that read the old pointer just before may find the report gone. So a pointer found usable is read again, and
+ * a changed one checked anew (a few times; a pointer that keeps changing is judged as last read).
+ */
+async function check(
+  store: BlobStore,
+  sourceHash: string,
+  profileId: string,
+  staleMs: number,
+  now: () => number,
+): Promise<{ there: ProxyPointer | null; usable: boolean }> {
+  let there = await findProxy(store, sourceHash, profileId);
+  for (let round = 0; ; round++) {
+    if (!there) return { there, usable: false };
+    if (await replaceable(store, there, staleMs, now())) return { there, usable: false };
+    const again = await findProxy(store, sourceHash, profileId);
+    if (round >= 3 || samePointer(again, there)) return { there, usable: true };
+    there = again;
+  }
+}
+
+const samePointer = (a: ProxyPointer | null, b: ProxyPointer | null): boolean =>
+  a === null || b === null ? a === b : "stream" in a ? "stream" in b && a.stream === b.stream : "hash" in b && a.hash === b.hash;
 
 const STALE_MS = 10 * 60_000;
 
@@ -438,9 +462,9 @@ export async function claimProxyStream(
   const mine: ProxyPointer = { stream: opts.id ?? newStreamId(), encoder, at: now() };
   const body = utf8.encode(JSON.stringify(mine));
   await store.put(key, body, { contentType: "application/json", ifAbsent: true });
-  const there = await findProxy(store, sourceHash, profileId);
+  const { there, usable } = await check(store, sourceHash, profileId, opts.staleMs ?? STALE_MS, now);
   if (there && "stream" in there && there.stream === (mine as { stream: string }).stream) return { claimed: true, pointer: mine };
-  if (there && !(await replaceable(store, there, opts.staleMs ?? STALE_MS, now()))) return { claimed: false, pointer: there };
+  if (there && usable) return { claimed: false, pointer: there };
   // Unreadable, abandoned or damaged: take it over. Two takers at once both write; the last one's pointer wins and the
   // other one's stream is simply never pointed at.
   await store.put(key, body, { contentType: "application/json" });
@@ -456,9 +480,11 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     return (await store.head(mediaKey(p.hash)))?.size !== p.size;
   }
   if ((await store.head(damagedKey(p.stream))) !== null) return true;
-  // Finished: kept unless a part was reported. Damage a player finds in a live stream it reports as bad/<stream>.
+  // Finished: kept unless a part was reported (its end lists them).
   const end = await getJson(store, streamEndKey(p.stream));
   if (end !== null) return partDamaged(store, p.stream, asEnd(end));
+  // Live: a tool reading its segments through the playlist reports bad/<hash> too (its entries are read only then).
+  if (await partDamaged(store, p.stream, null)) return true;
   // Live if anything happened lately: the newest entry, or the claim itself.
   let latest = p.at;
   // Entry keys sort in segment order; stores list a page at a time.
@@ -491,7 +517,7 @@ async function partDamaged(store: BlobStore, stream: string, end: StreamEnd | nu
   } while (cursor);
   if (bad.size === 0) return false;
   if (end?.parts) return end.parts.some((h) => bad.has(h));
-  // An end written before it listed its parts: read the entries.
+  // A live stream, or an end written before it listed its parts: read the entries.
   const init = await getJson(store, streamInitKey(stream));
   if (init && bad.has(init.hash as string)) return true;
   cursor = undefined;
