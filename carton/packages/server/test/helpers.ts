@@ -55,22 +55,27 @@ export function sqliteStorage(path = ":memory:"): SequencerStorage & { db: Datab
   };
 }
 
-/** A Map-backed BlobStore with the calls the sequencer uses; counts gets. */
-export function memoryBlobs(): BlobStore & { map: Map<string, Uint8Array>; gets: number } {
+/** A Map-backed BlobStore with the calls the sequencer uses; counts gets and records the most bytes one get returned. */
+export function memoryBlobs(): BlobStore & { map: Map<string, Uint8Array>; gets: number; maxGet: number } {
   const map = new Map<string, Uint8Array>();
   const info = (key: string, d: Uint8Array): BlobInfo => ({ key, size: d.length });
   const store = {
     kind: "test-memory",
     map,
     gets: 0,
+    maxGet: 0,
     async put(key: string, data: Uint8Array, o?: { ifAbsent?: boolean }) {
       if (o?.ifAbsent && map.has(key)) return info(key, map.get(key)!);
       map.set(key, data.slice());
       return info(key, data);
     },
-    async get(key: string) {
+    async get(key: string, range?: { offset: number; length?: number }) {
       store.gets++;
-      return map.get(key)?.slice() ?? null;
+      const d = map.get(key);
+      if (!d) return null;
+      const out = range ? d.slice(range.offset, range.length === undefined ? undefined : range.offset + range.length) : d.slice();
+      store.maxGet = Math.max(store.maxGet, out.byteLength);
+      return out;
     },
     async head(key: string) {
       const d = map.get(key);
