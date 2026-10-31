@@ -69,7 +69,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
 - **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
   sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
-  cut's ancestry closure (`history` request) and loads it as read-only lineage.
+  cut's ancestry closure (`history` request) and loads it as read-only lineage. The client asks for it in pages
+  (`lineageFrom`, from `{entry: 0, state: 0}`) and follows each reply's `lineageNext` to the end; a server that doesn't
+  page sends it whole in one reply.
 - **Shared cuts** (`sequencer.kind !== "local"`) go through `SharedCut` (sync-sequencer's queue and client): `commit`,
   `fold`, `foldSome`, `undo`, `revert` and `restore` all queue an ordinary change with its intent, kind and `reverts`
   under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the

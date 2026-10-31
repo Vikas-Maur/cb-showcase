@@ -95,6 +95,27 @@ let CONN = 0;
 /** Refusals about the connection (its token, its branch), not the change: the same on every message it sends. */
 const CONNECTION_REASONS: ReadonlySet<string> = new Set(["forbidden", "read-only branch", "unknown branch", "foreign id"]);
 
+/**
+ * One page of a branch's lineage added to what came before (SF1-8): an entry split across pages comes again with the
+ * same branchId and rec, its later states only (`nodes` and `authors` with its first page), so entries concatenate by
+ * branchId, in closure order.
+ */
+function mergeLineage(have: ClosureEntry[], page: readonly ClosureEntry[]): ClosureEntry[] {
+  const out = have.slice();
+  for (const e of page) {
+    const i = out.findIndex((x) => x.branchId === e.branchId);
+    if (i < 0) {
+      out.push({ ...e, nodes: [...e.nodes], ...(e.states ? { states: [...e.states] } : {}), ...(e.authors ? { authors: [...e.authors] } : {}) });
+      continue;
+    }
+    const x = out[i]!;
+    const states = [...(x.states ?? []), ...(e.states ?? [])];
+    const authors = [...(x.authors ?? []), ...(e.authors ?? [])];
+    out[i] = { ...x, nodes: [...x.nodes, ...e.nodes], ...(states.length ? { states } : {}), ...(authors.length ? { authors } : {}) };
+  }
+  return out;
+}
+
 export class SyncClient {
   readonly queue: ReplicaQueue;
   readonly branchId: string;
@@ -289,7 +310,9 @@ export class SyncClient {
   history(after: number, upTo: number, { lineage = false }: { lineage?: boolean } = {}): Promise<{ rows: ConfirmedChange[]; lineage?: ClosureEntry[] }> {
     if (!this.conn || this.stopped) return Promise.reject(new Error("history request: offline"));
     return new Promise((resolve, reject) => {
-      const m: HistoryMsg = { type: "history", branchId: this.branchId, req: ++this.reqN, after, upTo, ...(lineage ? { lineage: true } : {}) };
+      // the lineage paged by the server's byte budget (SF1-8); a server from before paging ignores the cursor and sends
+      // it whole in one reply, with no `lineageNext`
+      const m: HistoryMsg = { type: "history", branchId: this.branchId, req: ++this.reqN, after, upTo, ...(lineage ? { lineage: true, lineageFrom: { entry: 0, state: 0 } } : {}) };
       this.requests.set(m.req, { m, rows: [], resolve, reject });
       this.send(m);
     });
@@ -500,9 +523,19 @@ export class SyncClient {
           return r.reject(new Error(m.error));
         }
         r.rows.push(...m.rows);
-        if (m.lineage) r.lineage = m.lineage;
-        // the next page starts after the last row; a page with no row can't make progress, so it ends the request
-        if (m.more && m.rows.length) return this.send((r.m = { ...r.m, after: m.rows[m.rows.length - 1]!.seq, lineage: false }));
+        if (m.lineage) r.lineage = mergeLineage(r.lineage ?? [], m.lineage);
+        // rows and lineage page independently: the next rows start after the last one (a page with no row can't make
+        // progress, so it ends them); the next lineage at the reply's cursor (SF1-8)
+        const rowsLeft = !!m.more && m.rows.length > 0;
+        const from = r.m.lineageFrom,
+          next = m.lineageNext;
+        // a cursor that doesn't move would ask for the same page forever: what came is the answer
+        const lineageLeft = !!r.m.lineage && next !== undefined && !(from && next.entry === from.entry && next.state === from.state);
+        if (rowsLeft || lineageLeft) {
+          const { lineage: _l, lineageFrom: _f, ...base } = r.m;
+          const after = rowsLeft ? m.rows[m.rows.length - 1]!.seq : r.m.upTo;
+          return this.send((r.m = { ...base, after, ...(lineageLeft ? { lineage: true, lineageFrom: m.lineageNext! } : {}) }));
+        }
         this.requests.delete(m.req);
         return r.resolve({ rows: r.rows, ...(r.lineage ? { lineage: r.lineage } : {}) });
       }
