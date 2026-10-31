@@ -142,7 +142,14 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
     const t = fs.existsSync(target) ? inspect(target) : null;
     if (moved) {
       // Done before. If the copy has since vanished (deleted by hand), the history is still here: copy again.
-      if (!t) await copyAndMark(src, other, target, hooks);
+      if (!t) {
+        await copyAndMark(src, other, target, hooks);
+        cleanUp = true;
+        return;
+      }
+      // Only the very copy this mark vouches for makes the old file deletable: something else at the target (an
+      // empty file, another history) means the history is still only here, so it is kept and the open refused.
+      if (!isCopyOf(t, other, moved.token)) throw new PlacementConflictError(target, other, "This project's history moved, but what is at its new place isn't that copy");
       cleanUp = true;
       return;
     }
@@ -209,7 +216,8 @@ function notOursToMove(file: string, target: string): boolean {
     if (id.a !== APPLICATION_ID) return true; // empty, or another program's file: not a history
     if (!isThisMachine(readMeta(raw, MACHINE))) return true; // another machine's, synced here
     const moved = readMeta<Mark>(raw, MOVED_TO);
-    return !!moved && same(moved.path, target) && fs.existsSync(target); // its history already lives at the target
+    // Its history already lives at the target, provided the target is that very copy.
+    return !!moved && same(moved.path, target) && fs.existsSync(target) && isCopyOf(inspect(target), file, moved.token);
   } catch {
     return false;
   } finally {
@@ -335,14 +343,25 @@ async function copyInto(from: string, to: string, copyOf: Mark, hooks: MoveHooks
   }
 }
 
+// A carton.db's own marks. A file that can't be read as one (empty, damaged, not SQLite) has none.
 function inspect(file: string): { copyOf?: Mark; movedTo?: Mark; machine?: MachineMark } {
-  const raw = new DatabaseSync(file, { readOnly: true, timeout: 2000 });
+  let raw: DatabaseSync;
+  try {
+    raw = new DatabaseSync(file, { readOnly: true, timeout: 2000 });
+  } catch {
+    return {};
+  }
   try {
     return { copyOf: readMeta<Mark>(raw, COPY_OF), movedTo: readMeta<Mark>(raw, MOVED_TO), machine: readMeta<MachineMark>(raw, MACHINE) };
+  } catch {
+    return {};
   } finally {
     raw.close();
   }
 }
+
+// Whether `t` is the copy a move of `source` with this token published.
+const isCopyOf = (t: { copyOf?: Mark }, source: string, token: string) => t.copyOf !== undefined && same(t.copyOf.path, source) && t.copyOf.token === token;
 
 // A carton.db at the chosen placement that another machine made is not this machine's replica: move it aside (with
 // its WAL) under a name that says whose it was, so the project opens with its own history and the host can offer the

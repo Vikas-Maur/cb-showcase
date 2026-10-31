@@ -442,9 +442,14 @@ test("Windows: a carton.db whose ACL denies writing is refused the same way", { 
   await a.store.write(put(1));
   await a.store.close();
   const user = `${process.env.USERDOMAIN ? process.env.USERDOMAIN + "\\" : ""}${os.userInfo().username}`;
-  execFileSync("icacls", [p.inBundle, "/deny", `${user}:(W)`], { stdio: "ignore", windowsHide: true });
+  // Deny writing the data only (WD: write data, AD: append data). icacls' "(W)" is FILE_GENERIC_WRITE, which also
+  // holds SYNCHRONIZE and READ_CONTROL: denying those makes every open fail, reads included (verify-ci #17).
+  execFileSync("icacls", [p.inBundle, "/deny", `${user}:(WD,AD)`], { stdio: "ignore", windowsHide: true });
   try {
     // Readable but not writable: the case only the write probe catches (access() doesn't read ACLs on Windows).
+    // The setup is checked step by step, so a failure says whether the file or SQLite's read-only open broke.
+    assert.ok(fs.readFileSync(p.inBundle).length > 0, "the ACL still lets the file be read");
+    assert.throws(() => fs.appendFileSync(p.inBundle, ""), "and refuses writing it");
     const reader = new DatabaseSync(p.inBundle, { readOnly: true });
     assert.equal((reader.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n, 1);
     reader.close();
@@ -592,6 +597,52 @@ test("a read-only carton.db with a pending -wal is refused even if it looks fore
     p.startSyncing();
     await assert.rejects(openProjectStore(p), UnwritableHistoryError);
     assertNothingPublished(p);
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+});
+
+// A move whose old file survived (a handle kept it from being deleted), then something else put at the new place.
+async function movedThenReplaced(p: ReturnType<typeof project>, replace: (target: string) => Promise<void> | void) {
+  const early = await openProjectStore(p);
+  await early.store.write(put(1));
+  p.startSyncing();
+  const moved = await openProjectStore(p);
+  await moved.store.close();
+  await early.store.close();
+  assert.ok(fs.existsSync(p.inBundle), "the old file outlived the move (it was open)");
+  for (const f of [p.inAppData, `${p.inAppData}-wal`, `${p.inAppData}-shm`]) fs.rmSync(f, { force: true });
+  await replace(p.inAppData);
+}
+
+test("a moved history whose new copy was replaced by an empty file is kept and the open refused, never hidden or deleted", async () => {
+  const p = project();
+  await movedThenReplaced(p, (t) => fs.writeFileSync(t, ""));
+  await assert.rejects(openProjectStore(p), PlacementConflictError);
+  assert.ok(fs.existsSync(p.inBundle), "the only copy of the history is still there");
+  const check = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.equal((check.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n, 1);
+  check.close();
+});
+
+test("a moved history whose new copy was replaced by an unrelated history is kept and the open refused", async () => {
+  const p = project();
+  await movedThenReplaced(p, async (t) => {
+    const other = await openSqliteStore(t);
+    await other.write(put(9));
+    await other.close();
+  });
+  await assert.rejects(openProjectStore(p), PlacementConflictError);
+  assert.ok(fs.existsSync(p.inBundle));
+});
+
+test("a read-only moved history whose new copy was replaced is refused, not silently skipped", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  await movedThenReplaced(p, (t) => fs.writeFileSync(t, ""));
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assert.equal(fs.statSync(p.inAppData).size, 0, "nothing written over what is at the new place");
   } finally {
     fs.chmodSync(p.inBundle, 0o644);
   }
