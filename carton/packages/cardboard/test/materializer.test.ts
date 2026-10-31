@@ -502,3 +502,106 @@ test("Carton's own displaced installs leave no origin behind once deleted", asyn
   await s.tick(1000);
   assert.deepEqual(s.mz.stats(), { held: 0, origins: 0, partials: 0, kept: 0 });
 });
+
+// ------------------------------------------------------------------ review round 2 regressions
+
+test("review 2 #2: if storing a foreign project.json's unversioned fields fails, its displaced file is retried, never deleted first", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const realPut = s.engine.putMeta.bind(s.engine);
+  let fail = true;
+  s.engine.putMeta = async (k, v) => {
+    if (fail && k[2] === "overlay" && v !== undefined) {
+      fail = false;
+      throw new Error("disk full");
+    }
+    return realPut(k, v);
+  };
+  const env = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  env.project.cast = [{ id: "voice-1" }];
+  fs.writeFileSync(s.abs(PROJECT_FILE), JSON.stringify(env)); // no event: displaced by the next install
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "gui"));
+  s.mz.onHeadChange("gui");
+  await s.tick(2000);
+  s.mz.onHeadChange("gui");
+  await s.tick(2000);
+  const out = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  assert.deepEqual(out.project.cast, [{ id: "voice-1" }], "the unversioned field survived the failure");
+});
+
+test("review 2 #3: a project.json write clears only the overlay it consumed; one applied during its install is kept for the next write", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  // overlay A: a foreign envelope applied whose project.json write hasn't happened yet (no install in this process)
+  const envA = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  envA.project.cast = [{ id: "A" }];
+  await s.engine.putMeta(["file", PROJECT_FILE, "overlay"], { id: "overlay-A", envelope: envA, mtimeNs: "1" });
+  // B lands between the write's unread-save check and its install, so the install moves it aside and its review
+  // applies it (a new overlay) before the write finishes
+  const envB = { ...envA, project: { ...envA.project, cast: [{ id: "B" }], lastOpenedAt: "B was here" } };
+  const realRelease = s.engine.release.bind(s.engine);
+  let raced = false;
+  s.engine.release = async (owner) => {
+    if (owner === "project-file" && !raced) {
+      raced = true;
+      fs.writeFileSync(s.abs(PROJECT_FILE), JSON.stringify(envB));
+    }
+    return realRelease(owner);
+  };
+  // a fresh process that hasn't installed project.json yet: the file B is moved aside is reviewed inside that install
+  await s.mz.close();
+  const mz2 = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => mz2.close());
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "gui"));
+  mz2.onHeadChange("gui");
+  await s.clock.advance(3000, () => mz2.idle());
+  assert.deepEqual(mz2.log.errors, []);
+  assert.ok(raced);
+  const out = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  assert.deepEqual([out.project.cast, out.project.lastOpenedAt], [[{ id: "B" }], "B was here"], "B's unversioned fields reach the file");
+  assert.equal(out.project.timelineItems[0].name, "gui");
+});
+
+test("review 2 #3: an older envelope reviewed late never replaces a newer one's unversioned fields", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const env = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  await s.engine.putMeta(["file", PROJECT_FILE, "overlay"], { id: "newer", envelope: { ...env, project: { ...env.project, cast: [{ id: "newer" }] } }, mtimeNs: String(BigInt(Date.now() + 3_600_000) * 1_000_000n) });
+  fs.writeFileSync(s.abs(PROJECT_FILE), JSON.stringify({ ...env, project: { ...env.project, cast: [{ id: "older" }] } }));
+  s.mz.onFsEvent(PROJECT_FILE);
+  await s.tick(3000);
+  const out = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  assert.deepEqual(out.project.cast, [{ id: "newer" }]);
+});
+
+test("review 2 #5: a transient failure resolving a displaced save's base is retried, not a permanent refusal", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const realResolve = s.engine.resolve.bind(s.engine);
+  let fail = true;
+  s.engine.resolve = async (rev) => {
+    if (fail) {
+      fail = false;
+      throw new Error("database is locked");
+    }
+    return realResolve(rev);
+  };
+  fs.writeFileSync(s.abs(TIMELINE_FILE), s.edited(s.read(), (its) => (its[0]!.name = "retried"))); // no event
+  await s.mz.printShared().catch(() => undefined);
+  await s.mz.printShared().catch(() => undefined);
+  await s.tick(1000);
+  assert.equal(s.find(await s.head(), "a").name, "retried");
+  assert.equal(s.mz.stats().kept, 0, "not refused");
+});
+
+test("review 2 #6: a view save that never parses refuses the view, so a late update for the previous save is stale", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("v", agent, { hooked: true });
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[0]!.name = "A")));
+  await s.event(rel);
+  const first = s.engine.commits.at(-1)!.id;
+  s.writeInPlace(rel, "// cardboard:rev main@0~00000000 by y\n{broken");
+  await s.event(rel);
+  await s.tick(400);
+  const status = () => JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8"));
+  assert.equal(status().status, "error");
+  await s.mz.onChangeUpdate(name, first, { status: "confirmed", seq: 9 });
+  assert.equal(status().status, "error", "the older save's confirmation is stale");
+});

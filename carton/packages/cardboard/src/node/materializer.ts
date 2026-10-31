@@ -67,9 +67,10 @@ export interface MaterializerEngine {
   head(): Promise<Doc>;
   /**
    * Pins the head, or `doc` (a state not in the log: the freeze view) for `owner`. `seq` is the confirmed seq `doc`
-   * was derived from, so a commit on it is checked against everything confirmed since (default: head).
+   * was derived from, so a commit on it is checked against everything confirmed since (default: head); `causal`: the
+   * changes after `seq` that `doc` already holds (agent saves merged into a freeze view), never met again.
    */
-  pin(opts: { owner: string; doc?: Doc; seq?: number; ttlMs: number }): Promise<Pinned>;
+  pin(opts: { owner: string; doc?: Doc; seq?: number; causal?: string[]; ttlMs: number }): Promise<Pinned>;
   /** Releases every pin `owner` holds (a turn ended). */
   release(owner: string): Promise<void>;
   /** A printed ref -> its exact state and causal past. Throws "state unknown: re-print" when it can't (§4.4). */
@@ -115,6 +116,8 @@ const realClock: Clock = {
 
 /** Cards a save raised (head's value kept): data for the human's conflict cards, and stored under `["cards", id]`. */
 export interface SaveCards {
+  /** This save's cards' own id (stored at `["cards", batch]`), whether or not the save made a change. */
+  batch: string;
   change: string | null;
   file: string;
   actor: Actor;
@@ -192,6 +195,8 @@ const KEEP_WRITTEN = 8;
 const KEEP_STAMPS = 32;
 
 type Record_ = { t: number; path: string; [k: string]: unknown };
+/** A foreign project.json's envelope, kept for its unversioned fields until Carton's next write consumes it. */
+type Overlay = { id: string; envelope: Record<string, unknown>; mtimeNs?: string };
 type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null };
 
 const sha = (b: Uint8Array | string): string => createHash("sha256").update(b).digest("hex");
@@ -202,6 +207,8 @@ const push = <T>(list: T[], x: T, keep: number): void => {
 /** The ref string core resolves (`<cut>@<seq>~<hash8> b:<branch8>`) for a pin. */
 const refBodyOf = (p: { ref: string; branchId: string }): string => renderRev({ ref: p.ref, branchId: p.branchId }).slice(REV_PREFIX.length);
 const revOf = (body: string): Rev | null => findRev(REV_PREFIX + body)?.rev ?? null;
+/** Core's `StateUnknown` (code STATE_UNKNOWN), or the materializer's own "no exact base" refusals. */
+const isStateUnknown = (e: unknown): boolean => (e as { code?: string })?.code === "STATE_UNKNOWN" || /state unknown/i.test((e as Error)?.message ?? "");
 
 export class Materializer {
   readonly bundle: string;
@@ -237,8 +244,9 @@ export class Materializer {
   private closed = false;
 
   // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active. `baseSeq` is
-  // the confirmed seq the freeze view was derived from: its pin carries it, so a save from it meets every change since.
-  readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, timer: null as unknown };
+  // the confirmed seq the freeze view was derived from and `causal` the agent saves merged into it since: its pin
+  // carries both, so a save from it meets every other change since, and never those saves a second time.
+  readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], timer: null as unknown };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
   private lastRemoteRewrite = -Infinity;
@@ -447,6 +455,7 @@ export class Materializer {
       this.freeze.active = true;
       this.freeze.view = start.baseDoc;
       this.freeze.baseSeq = start.baseSeq;
+      this.freeze.causal = [...start.causal];
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
       this.freeze.view = null;
@@ -486,6 +495,7 @@ export class Materializer {
         const h = await this.pinnedHead("shared-file");
         this.freeze.view = h.baseDoc;
         this.freeze.baseSeq = h.baseSeq;
+        this.freeze.causal = [];
       }
       await this.writeSharedNow("print", true);
       return this.sharedRef!;
@@ -522,7 +532,7 @@ export class Materializer {
 
   private async writeSharedNow(cause: string, force = false): Promise<void> {
     await this.importUnseen(TIMELINE_FILE);
-    const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, seq: this.freeze.baseSeq, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
+    const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, seq: this.freeze.baseSeq, causal: this.freeze.causal, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
     if (cause === "remote") this.lastRemoteRewrite = this.clock.now();
     const body = refBodyOf(pinned);
     const cur = this.readFile(TIMELINE_FILE);
@@ -553,16 +563,16 @@ export class Materializer {
     return env;
   }
   private async currentProject(): Promise<Project | null> {
-    const overlay = await this.engine.getMeta<Record<string, unknown>>(["file", PROJECT_FILE, "overlay"]);
-    return ((overlay ?? this.readEnvelope())?.project as Project | undefined) ?? null;
+    const overlay = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
+    return ((overlay?.envelope ?? this.readEnvelope())?.project as Project | undefined) ?? null;
   }
 
   private async writeProjectNow(cause: string): Promise<void> {
     await this.importUnseen(PROJECT_FILE);
     // A foreign project.json applied since the last write (from the path, or moved aside by an install) is the source
     // of the unversioned fields: Cardboard's own data lives there, not in the engine (§6.4's ephemeral side).
-    const overlay = await this.engine.getMeta<Record<string, unknown>>(["file", PROJECT_FILE, "overlay"]);
-    const env = overlay ?? this.readEnvelope() ?? { format: "cardboard-project", version: 1, media: [] };
+    const overlay = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
+    const env = overlay?.envelope ?? this.readEnvelope() ?? { format: "cardboard-project", version: 1, media: [] };
     const cur = (env.project as Project | undefined) ?? null;
     // project.json has one base: Carton's latest materialization of it. Only that state stays pinned for it (the
     // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
@@ -585,7 +595,8 @@ export class Materializer {
     await this.install(PROJECT_FILE, JSON.stringify({ ...env, project }, null, 2));
     this.projectPin = body;
     await this.engine.putMeta(["file", PROJECT_FILE, "pin"], body);
-    if (overlay) await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], undefined);
+    // clear only the overlay this write consumed: the install's review may have applied a newer one meanwhile
+    if (overlay && (await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]))?.id === overlay.id) await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], undefined);
     this.log.rewrites.push({ t: now, path: PROJECT_FILE, cause, ref: body });
   }
 
@@ -734,6 +745,7 @@ export class Materializer {
           await this.setLast(rel, f.hash); // reported once; the file stays where its writer put it
           this.log.unparsed.push({ t: this.clock.now(), path: rel });
           await this.engine.notice(await this.actorOf(rel), { kind: "error", text: `${rel} doesn't parse; kept, not applied` });
+          await this.refuseView(rel, `${rel} doesn't parse; kept, not applied`);
         });
       }, this.opts.quietMs),
     );
@@ -923,6 +935,8 @@ export class Materializer {
         held = await this.engine.resolve(rev);
       }
     } catch (e) {
+      // only "state unknown" refuses the save; a store or engine failure is thrown, and the caller retries the file
+      if (!isStateUnknown(e)) throw e;
       const msg = (e as Error).message;
       await this.engine.notice(actor, { kind: "error", text: msg });
       if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
@@ -937,7 +951,9 @@ export class Materializer {
       saved = this.host.fromProject(parsed, baseDoc, this.engine.own?.(actor));
     } catch (e) {
       this.log.unparsed.push({ t: this.clock.now(), path: rel });
-      await this.engine.notice(actor, { kind: "error", text: `${rel} doesn't parse; kept, not applied: ${(e as Error).message}` });
+      const msg = `${rel} doesn't parse; kept, not applied: ${(e as Error).message}`;
+      await this.engine.notice(actor, { kind: "error", text: msg });
+      if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
     const res = await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) } });
@@ -946,21 +962,30 @@ export class Materializer {
       if (name && row) await this.failView(name, row, { status: "rejected", error: res.reason ?? "rejected", ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
-    // stored: before the regeneration below reads the path again
+    if (rel === PROJECT_FILE) {
+      // the file's unversioned fields (Cardboard's own data) are the source for the next project.json Carton writes;
+      // stored before the receipt below, so a failure in between retries this save instead of deleting its file
+      // An older file (a displaced save reviewed late) never replaces a newer one's fields: overlays keep write order.
+      const mtimeNs = stamp ? (stamp.split(":")[2] ?? "0") : "0";
+      const cur = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
+      if (!cur || BigInt(cur.mtimeNs ?? "0") <= BigInt(mtimeNs)) {
+        const ov: Overlay = { id: randomBytes(6).toString("hex"), envelope: JSON.parse(text) as Record<string, unknown>, mtimeNs };
+        await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], ov);
+      }
+    }
+    // the receipt: stored. Written before the regeneration below reads the path again
     if (!o.fromDisplaced) ps.last = hash;
     if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
     await this.saveState(rel);
-    if (rel === PROJECT_FILE) {
-      // the file's unversioned fields (Cardboard's own data) are the source for the next project.json Carton writes
-      await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], JSON.parse(text));
-    }
     const cards = res.cards ?? [];
     this.log.applied.push({ t: this.clock.now(), path: rel, id: res.id ?? null, status: res.status, cards: cards.length, actor: actor.id, hash });
-    if (cards.length) await this.reportCards({ change: res.id ?? null, file: rel, actor, cards, at: this.clock.now() }, !name);
+    // a save whose every edit carded makes no change: its cards still get an id of their own
+    if (cards.length) await this.reportCards({ batch: res.id ?? `save-${hash.slice(0, 12)}-${this.clock.now()}`, change: res.id ?? null, file: rel, actor, cards, at: this.clock.now() }, !name);
     if (this.freeze.active && this.freeze.view && rel !== PROJECT_FILE) {
       // R8-01: the freeze view gathers every local agent's applied saves (shared file and views), each merged with
       // that save's own base
       this.freeze.view = this.host.merge3(baseDoc, this.freeze.view, saved);
+      if (res.id) this.freeze.causal.push(res.id);
     }
     if (rel === TIMELINE_FILE || (name && this.freeze.active)) {
       // R7-01: regenerate after every applied save, so the base of any later save is that save's own header ref
@@ -983,7 +1008,7 @@ export class Materializer {
   /** Cards are data: stored, given to the human, and told to the actor when it has no sidecar to read them in. */
   private async reportCards(c: SaveCards, notifyActor: boolean): Promise<void> {
     this.log.cards.push(c);
-    if (c.change) await this.engine.putMeta(["cards", c.change], c);
+    await this.engine.putMeta(["cards", c.batch], c);
     this.onCards?.(c);
     if (notifyActor)
       await this.engine.notice(c.actor, {
@@ -991,6 +1016,13 @@ export class Materializer {
         text: `Your save of ${c.file} conflicted with changes made since you read it; the newer values were kept, yours are in the cards: ${c.cards.map((x) => x.path).join(", ")}`,
         ...(c.change ? { change: c.change } : {}),
       });
+  }
+
+  /** A view file's content was refused before any save was attempted (it never parsed). */
+  private async refuseView(rel: string, error: string): Promise<void> {
+    const name = viewName(rel);
+    const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
+    if (name && row) await this.failView(name, row, { status: "error", error });
   }
 
   /** A refused view save: its sidecar says so, and late updates for any earlier save no longer reach it. */

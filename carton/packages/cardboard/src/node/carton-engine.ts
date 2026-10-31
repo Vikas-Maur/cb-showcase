@@ -42,7 +42,7 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
   };
   const toHeld = (r: { doc: Doc; seq: number; causal: string[] }): HeldBase => ({ baseDoc: r.doc, baseSeq: r.seq, causal: r.causal });
   const pinKey = (r: StateRef) => `${r.branchId}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`;
-  let pins = 0;
+  const pinsByOwner = new Map<string, number>();
 
   /** Drops this owner's records whose pin has expired (core has released those pins itself). */
   const prune = async (owner: string): Promise<void> => {
@@ -55,11 +55,14 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     async head() {
       return (await carton.head(cut())).doc;
     },
-    async pin({ owner, doc, seq, ttlMs }) {
-      const p = await carton.pin({ owner, cut: cut(), ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}) });
+    async pin({ owner, doc, seq, causal, ttlMs }) {
+      const p = await carton.pin({ owner, cut: cut(), ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
       const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
       await store.write([{ table: VIEWS, key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord }]);
-      if (++pins % 64 === 0) await prune(owner); // now and then: long-lived owners keep printing
+      // now and then, per owner: long-lived owners (the shared file's prints) keep pinning new states
+      const n = (pinsByOwner.get(owner) ?? 0) + 1;
+      pinsByOwner.set(owner, n);
+      if (n % 64 === 0) await prune(owner);
       return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)) };
     },
     async release(owner) {

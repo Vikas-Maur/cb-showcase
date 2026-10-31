@@ -116,12 +116,12 @@ export class FakeEngine implements MaterializerEngine {
     fn(d);
     this.log.push({ doc: d, id, causal: [] });
   }
-  async pin({ owner, doc, seq }: { owner: string; doc?: Doc; seq?: number; ttlMs: number }) {
+  async pin({ owner, doc, seq, causal }: { owner: string; doc?: Doc; seq?: number; causal?: string[]; ttlMs: number }) {
     const d = doc ? clone(doc) : await this.head();
     const h8 = hash8(JSON.stringify(d));
     const at = seq ?? this.headSeq;
     const ref = `main@${at}~${h8}`;
-    const p = this.pins.get(ref) ?? { doc: d, seq: at, owners: new Set<string>(), causal: this.log.slice(1, at + 1).map((x) => x.id) };
+    const p = this.pins.get(ref) ?? { doc: d, seq: at, owners: new Set<string>(), causal: [...this.log.slice(1, at + 1).map((x) => x.id), ...(causal ?? [])] };
     p.owners.add(owner);
     this.pins.set(ref, p);
     return { ref, branchId: "b7e1c2d3-0000-4000-8000-000000000000", seq: at, doc: clone(d) };
@@ -153,7 +153,8 @@ export class FakeEngine implements MaterializerEngine {
     return v === undefined ? undefined : (clone(v) as T);
   }
   async putMeta(key: readonly string[], value: unknown): Promise<void> {
-    this.meta.set(JSON.stringify(key), clone(value));
+    if (value === undefined) this.meta.delete(JSON.stringify(key)); // as the Store: undefined deletes the key
+    else this.meta.set(JSON.stringify(key), clone(value));
   }
   shared(): boolean {
     return this.isShared;
