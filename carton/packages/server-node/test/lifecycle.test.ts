@@ -60,6 +60,36 @@ test("a room whose last socket left closes only after its sequencer work has dra
   d.close();
 });
 
+test("host close waits for sequencer work still writing, however long, before it closes storage", async () => {
+  const inner = createMemoryBlobStore();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let blocked = 0;
+  const slow = new Proxy(inner, {
+    get(t, prop) {
+      if (prop === "put")
+        return async (...a: Parameters<BlobStore["put"]>) => {
+          blocked++;
+          await gate;
+          return t.put(...a);
+        };
+      const v = Reflect.get(t, prop);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as BlobStore;
+  const h = await startNodeHost({ dataDir: join(scratch("close-drain"), "d"), auth, secret: SECRET, blobs: slow, durability: "normal" });
+  const c = await webSocketTransport({ keepaliveMs: 0 }).connect(h.urlFor("p"), { token: await tokenFor("o", "p") });
+  c.send(adoptMsg("b1", { tracks: [{ id: "V1" }], timelineItems: [] }));
+  await until(() => blocked > 0, "the keyframe write started");
+  let closed = false;
+  const closing = h.close().then(() => (closed = true));
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(closed, false, "close resolved while the sequencer was still writing");
+  release();
+  await closing;
+  assert.ok(closed);
+});
+
 test("an expired subscriber gets nothing more and is closed with 4001, even while silent", async () => {
   const h = await startNodeHost({ dataDir: join(scratch("expiry"), "d"), auth, secret: SECRET, durability: "normal" });
   hosts.push(h);

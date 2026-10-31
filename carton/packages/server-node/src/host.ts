@@ -81,7 +81,6 @@ interface Room {
 }
 
 const MAX_MESSAGE = 32 << 20;
-const DRAIN_ON_CLOSE_MS = 10_000;
 const WS_PATH = /^\/api\/projects\/([A-Za-z0-9._~-]{1,128})\/ws$/;
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".wasm": "application/wasm", ".ico": "image/x-icon", ".mp4": "video/mp4", ".webm": "video/webm" };
 
@@ -302,15 +301,21 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
         server.closeAllConnections();
       });
       // sockets that ignore the close frame are dropped by the WebSocket layer's close timeout; don't wait on them
-      for (const room of [...rooms.values()]) for (const ws of room.conns.keys()) ws.terminate();
-      // let sequencer work in flight finish on its database (bounded), then close every room
-      const all = [...rooms.values()].flatMap((r) => [...r.pending]);
-      await Promise.race([Promise.allSettled(all), new Promise((ok) => setTimeout(ok, DRAIN_ON_CLOSE_MS).unref())]);
       for (const room of [...rooms.values()]) {
-        room.pending.clear();
+        if (room.archive) clearInterval(room.archive);
+        room.archive = null;
+        for (const ws of room.conns.keys()) ws.terminate();
         room.conns.clear();
-        closeRoom(room);
       }
+      // Sequencer work in flight finishes on its own database first, however long its blob store takes: closing the
+      // database under it, or resolving while it still writes, would let a host restarted on the same data be
+      // overwritten by the old write. No new work can start: sockets and timers are gone.
+      for (;;) {
+        const all = [...rooms.values()].flatMap((r) => [...r.pending]);
+        if (all.length === 0) break;
+        await Promise.allSettled(all);
+      }
+      for (const room of [...rooms.values()]) closeRoom(room);
     },
   };
 }
