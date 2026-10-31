@@ -19,6 +19,7 @@ import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi } from "@carton/react";
+import { viewCards, canon, sameCard } from "./sync/view-cards.js";
 
 const warned = new Set();
 const warnOnce = (key, msg) => {
@@ -119,6 +120,8 @@ async function release(dir) {
 //                           returns a function that stops it
 //   materialize(projectId)  head into project.json, and the pages adopt it
 //   actorOf(id)             an actor id ("person", "director/<chat>/<turn>", "external:project.json") as an Actor
+//   agentCards(bundlePath, saveCards)
+//                           the Materializer's onCards: an agent's view-save cards go to the person's History panels
 // Hooks an extension may also have (each optional; one that throws is skipped, logged once):
 //   openOptions({bundlePath, projectId})        more openLocal options for the project's handle (R1)
 //   commitShared(lc, {doc, base, author, intent, gui})
@@ -217,12 +220,10 @@ const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group:
 
 // The History panels open in this process, per bundle (fromCarton handles): a person's GUI save's cards show in them at
 // once. Cards go to @carton/react as core returns them: core merges merge3(base, head, mine), so `ours` is head and
-// `theirs` the person's edit, which fromCarton shows as "mine". It shows identical cards (same field and values) once,
-// so resolving a card removes every kept card identical to it, and no other.
+// `theirs` the person's edit, which fromCarton shows as "mine". It shows identical cards (same field and values, as
+// `sameCard` tells them apart) once, so resolving a card removes every kept card identical to it, and no other. An
+// agent's view-save cards are the other way round; sync/view-cards.js shows them to the person (`agentCards`).
 const panels = new Map();
-// As fromCarton tells cards apart: keys in order, and a missing value is not null.
-const canon = (v) => (v === undefined ? "undefined" : JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x)));
-const sameCard = (a, b) => a.path === b.path && canon(a.ours) === canon(b.ours) && canon(a.theirs) === canon(b.theirs);
 
 // Cards a commit raised, as a notice for its author in carton.db's notices table, where `cb conflicts`, the Stop hook
 // and the History panel read them (core keeps notices only for confirmed and pending commits).
@@ -231,6 +232,20 @@ async function keepCards(lc, author, cards) {
   const to = keyOf(author), at = Date.now(), rand = () => Math.random().toString(16).slice(2, 10);
   const text = `${cards.length} of your edits clashed with a change made meanwhile; the other change was kept. Choose with cb conflicts / cb resolve, or in History.`;
   await lc.store.write([{ table: "notices", key: [to, at, 0, rand()], value: { to, kind: "late-conflict", text, cards, at } }]);
+}
+
+// An agent's view save that clashed with the person's edit (the Materializer's onCards, which the sync half wires in the
+// library worker): its cards are kept for the person and shown at once in the project's open History panels, the
+// person's way round. The agent's own card is the engine's (cb conflicts, the .status sidecar); a pick on either side
+// closes both (sync/view-cards.js).
+const views = viewCards({ actorOf, keyOf, me: actorOf("person") });
+export async function agentCards(bundlePath, saveCards) {
+  const lc = await open(bundlePath);
+  if (!lc) return { status: "off" };
+  if (!saveCards?.cards?.length) return { status: "none" };
+  const { by, cards, person } = await views.keep(lc, saveCards);
+  for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(cards, by);
+  return { status: person ? "shown" : "kept", cards: cards.length };
 }
 
 // A Director turn's name in History, from the user's prompt: its first sentence, at most six words ("tighter intro").
@@ -676,7 +691,7 @@ export const cardboard14 = {
     const servers = new Map(); // client → serveUi
     const own = cardboard14.workerServices({ library, emit, bundleOf, lcOf, servers });
     const materialize = async (projectId) => { if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) }); };
-    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf }, own) };
+    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf, agentCards }, own) };
   },
   workerServices({ library, emit, bundleOf, lcOf, servers }) {
     return {
@@ -710,7 +725,14 @@ export const cardboard14 = {
         }
         return { status: "none" };
       },
-      notices: async ({ bundlePath, actor, take }) => ((await open(bundlePath))?.carton.notices(actorOf(actor), { take }) ?? []),
+      notices: async ({ bundlePath, actor, take }) => {
+        const lc = await open(bundlePath);
+        if (!lc) return [];
+        // The Director's Stop hook takes its notices as its turn ends: what it left of its view saves' cards stays the
+        // person's (R3-09).
+        if (take) await views.detach(lc, actorOf(actor));
+        return lc.carton.notices(actorOf(actor), { take });
+      },
       // The History panel: @carton/react's view model, served to each page that asks (remoteUi there).
       ui: async ({ projectId, client, message }) => {
         let s = servers.get(client);
@@ -726,17 +748,22 @@ export const cardboard14 = {
           const person = keyOf(actorOf("person"));
           const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
           handle.reportConflicts((await kept()).flatMap((x) => x.value.cards));
+          // And agents' view-save cards still open, shown the person's way round (before the methods are wrapped).
+          views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []);
+          for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
           // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
           for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
             const f = ui[m];
             if (typeof f === "function") ui[m] = async (...a) => {
               // The card behind a conflict, as reported (fromCarton forgets it once resolved).
               const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
-              const r = await f.apply(ui, a);
+              // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
+              const agents = views.isAgent(card);
+              const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
               if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
               // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
               // resolved them first, they are already gone.
-              if (card) for (const x of await kept()) {
+              if (card && !agents) for (const x of await kept()) {
                 const cards = x.value.cards.filter((c) => !sameCard(c, card));
                 if (cards.length < x.value.cards.length) await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
               }

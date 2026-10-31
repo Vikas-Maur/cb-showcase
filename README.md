@@ -447,7 +447,9 @@ What changes with it on:
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
 - **History tab** in the editor's left rail: versions, compare, restore, cuts, fold in. Opening an old version shows
-  it read-only until "Return to current".
+  it read-only until "Return to current". Conflict cards wait there: your own edits that clashed, and an agent's view
+  edit that clashed with yours (see "An agent's edit and yours at once" below). On an agent's card your value is the
+  one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back).
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
   `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
 
@@ -594,6 +596,13 @@ with Carton off none of it runs at all.
   connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
   cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper
   catches up and the newest state goes into `project.json`) and is never PUT as a whole file afterwards.
+- **An agent's edit and yours at once**: an agent edits its own view of the timeline (`.scratch\views\`). When its
+  save clashes with an edit you made meanwhile, your value is kept, the rest of its edit goes in, and you both get a
+  conflict card. The agent's is in `cb conflicts` (and its view's `.status`). Yours is in History, open now or opened
+  later, naming the agent: "Keep yours" changes nothing; "Keep Director's" makes the agent's value a version of yours.
+  Choosing on either side closes the card on both: your choice removes the agent's, and the agent's `cb resolve`
+  removes yours (a pick you make before it goes still holds). Whatever the agent leaves unresolved when its turn ends
+  stays in History for you.
 - **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their versions
   in instead of 1.4.0's "This project ID already exists". Where you both changed the same thing, theirs goes in and
   yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History panel).
@@ -620,12 +629,13 @@ range, by URL and through the agent's `grab_frame`, media while it uploads, offl
 (from a print one version behind), and with it closed in cloud mode, another program's save and an offline restore
 with the app closed, a host too old for the app; `.cbproj` Save As, Open and "Bring in their changes" in both copies,
 with history, and saved offline (`cbproj-offline.test.js`); which files in `.scratch\views\` are Carton's, against
-the files Carton's own materializer writes (`views.test.js`); the save path's merges (`facade.test.js`); and the
-panel's words when sync fails (`ui.test.js`).
+the files Carton's own materializer writes (`views.test.js`); the save path's merges (`facade.test.js`); an agent's
+view-save cards on both sides, through the worker's History panel (`view-cards.test.js`, needs no Cardboard bundles);
+and the panel's words when sync fails (`ui.test.js`).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/ui.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js
 ```
 
 Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview
