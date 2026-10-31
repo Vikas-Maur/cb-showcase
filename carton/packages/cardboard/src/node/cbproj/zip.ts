@@ -17,6 +17,7 @@ import fsp from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import zlib from "node:zlib";
+import { retryBusy } from "../displace.ts";
 
 const SIG_LOCAL = 0x04034b50;
 const SIG_CENTRAL = 0x02014b50;
@@ -160,23 +161,9 @@ async function copyChunks(
 }
 
 // Windows reports a file that another process holds open (an antivirus scan, the search indexer) as busy, and rename
-// fails with EPERM, EBUSY or EACCES until the holder lets go. Like the app's rename-retry helper, wait and retry
-// (≈ 5 s in all). This is the async twin of `retryBusy` in ../files/displace.ts, which blocks its thread. On Linux and
-// macOS these codes mean a real permission error, so they fail at once.
-const BUSY = new Set(["EPERM", "EBUSY", "EACCES"]);
-
-async function renameRetry(from: string, to: string): Promise<void> {
-  for (let i = 0; ; i++) {
-    try {
-      await fsp.rename(from, to);
-      return;
-    } catch (e) {
-      const code = (e as NodeJS.ErrnoException).code;
-      if (process.platform !== "win32" || !code || !BUSY.has(code) || i >= 50) throw e;
-      await new Promise((resolve) => setTimeout(resolve, Math.min(10 * (i + 1), 100)));
-    }
-  }
-}
+// fails with EPERM, EBUSY or EACCES until the holder lets go: `retryBusy` waits that out on timers (5 s in all, Windows
+// only; on Linux and macOS these codes mean a real permission error and fail at once).
+const renameRetry = (from: string, to: string): Promise<void> => retryBusy(() => fsp.rename(from, to));
 
 // -------------------------------------------------------------------------------------------------------- writer
 
