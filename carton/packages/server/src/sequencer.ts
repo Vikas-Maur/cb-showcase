@@ -835,6 +835,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const lineage: sync.ClosureEntry[] = [];
     if (m.lineage)
       for (const id of b.closure ?? []) {
+        // a session scoped to some cuts (a Published cut's watch link) reads no ancestor outside them: a private
+        // variant partly folded into the cut carries states that were never published (web-demo review R3-1)
+        if (c.auth.branches && !c.auth.branches.includes(id)) continue;
         const t = tables.branch(id);
         if (!t?.tracking) continue;
         const states: NonNullable<sync.ClosureEntry["states"]> = [];

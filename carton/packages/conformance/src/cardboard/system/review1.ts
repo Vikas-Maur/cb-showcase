@@ -27,7 +27,8 @@ test("review 1 #1: a remote edit hidden by the freeze view is never overwritten 
   assert.equal(find(head, "clip9").name, "remote edit", "head's (the remote) value kept: the clash is a card, not a silent overwrite");
   assert.ok(w.mz.log.cards.some((c) => c.cards.some((x) => x.path.startsWith("timelineItems/clip9"))), "a card on clip9 for the human");
   const notices = await w.carton.notices(A.actor);
-  assert.ok(notices.some((n) => /conflicted/.test(n.text)), "the agent is told");
+  // told once, with the card it can pick (`cb conflicts` / `cb resolve`, B5)
+  assert.ok(notices.some((n) => n.kind === "late-conflict" && n.cards?.some((c) => c.path.startsWith("timelineItems/clip9"))), "the agent is told, with the card");
   await A.stop();
 });
 

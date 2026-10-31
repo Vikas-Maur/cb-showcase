@@ -7,7 +7,7 @@
 // - tracks and keyed arrays carry a `#pos` key; track `order` is materialized from it (B12);
 // - local-only fields (Cardboard's own list in `$`: annotations, autoReframeSegmentationStatus, borderDrawProgress)
 //   and the media fields outside the versioned subset are not versioned.
-import { defineSchema, object, keyed, atomic, text, ephemeral, blobRef, timeAlgebra, getIn } from "@carton/core";
+import { defineSchema, object, keyed, atomic, scalar, text, ephemeral, blobRef, timeAlgebra, getIn } from "@carton/core";
 import type { Doc, Rec, Schema, SoftWarning, FieldSpec, TimelineConfig } from "@carton/core";
 
 export const ITEMS = "timelineItems";
@@ -251,7 +251,55 @@ const ITEM_LABELS: Record<string, string> = {
   autoReframe: "auto reframe",
   zoomScale: "zoom",
 };
-const MEDIA_LABELS: Record<string, string> = { "data.fileName": "file name", "data.content": "text", "data.code.source": "code", "data.type": "kind", contentHash: "content" };
+const MEDIA_LABELS: Record<string, string> = {
+  "data.fileName": "file name",
+  "data.content": "text",
+  "data.code.source": "code",
+  "data.type": "kind",
+  contentHash: "content",
+  shared: "shared media",
+  "shared.size": "size",
+  "shared.durationSec": "duration",
+  "shared.proxy": "proxy",
+  "shared.original": "original",
+  "shared.t1": "small files",
+};
+
+/** The T1 kinds of PLAN §11 (`@carton/media`'s `T1_KINDS`): poster, filmstrip, peaks, transcript, analysis, LUT, .context, recipe. */
+export const SHARED_T1_KINDS = ["poster", "filmstrip", "peaks", "transcript", "analysis", "lut", "context", "recipe"] as const;
+/**
+ * A media entry's fields that are Carton's, not Cardboard's: `contentHash` and `shared`. 1.4.0's project store strips
+ * them (windows-sync checked it through the real worker), so a host entry without them keeps the base's (a GUI save
+ * doesn't remove what it can't store); Carton's own writes set them. `data.content` is kept the same way (`fromHost`).
+ */
+export const CARTON_MEDIA_FIELDS = ["contentHash", "shared"] as const;
+/**
+ * The rest of the shared media record (PLAN §11 T0, `@carton/media`'s `MediaRecord` beyond the id, file name and content
+ * id that Cardboard's entry and `contentHash` already carry), so a teammate finds the proxy, the T1 files and the facts
+ * `probe_media` answers from the project itself (S5-G3). Each fact is its own leaf, so two machines adding different
+ * facts merge; a proxy ref and each T1 file are one unit (replaced whole, never half of one and half of another).
+ */
+const sharedMedia = object(
+  {
+    kind: scalar,
+    size: scalar,
+    mime: scalar,
+    durationSec: scalar,
+    width: scalar,
+    height: scalar,
+    fps: scalar,
+    codec: scalar,
+    bitrate: scalar,
+    hasAudio: scalar,
+    /** T3: "local-only" | "shared". */
+    original: scalar,
+    /** T2: {profile, encoder, stream, size?} or {profile, encoder, hash, size}. */
+    proxy: atomic,
+    /** T1: {hash, size} per kind. */
+    t1: object(Object.fromEntries(SHARED_T1_KINDS.map((k) => [k, atomic])), { only: true }),
+  },
+  { only: true },
+);
 
 export const cardboardSchema: Schema = defineSchema({
   root: {}, // name, description, aspectRatio: scalars (undeclared root fields are leaves)
@@ -274,11 +322,12 @@ export const cardboardSchema: Schema = defineSchema({
     },
     [MEDIA]: {
       key: "id",
-      only: true, // the versioned subset: data.code.source (text), data.content, data.fileName, data.type, contentHash
+      only: true, // the versioned subset: data.code.source (text), data.content, data.fileName, data.type, contentHash, shared
       noun: "media",
       labels: MEDIA_LABELS,
       fields: {
         contentHash: { kind: "leaf" },
+        shared: sharedMedia,
         data: object({ code: object({ source: text }, { only: true }), content: { kind: "leaf" }, fileName: { kind: "leaf" }, type: { kind: "leaf" } }, { only: true }),
       },
     },

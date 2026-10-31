@@ -34,6 +34,21 @@ test("a project.json caught while Carton installs it is waited for", async () =>
   assert.equal(await c.readFile(f), '{"project":{"id":"p"}}');
 });
 
+test("a read that fails just as the install ends reads again before giving up", async () => {
+  const c = load(true), b = bundle("late", { tracked: true, installing: true }), f = path.join(b, "project.json");
+  const fsp = require("fs/promises"), real = fsp.readFile;
+  let calls = 0;
+  // The first read fails late: by the time its error arrives, the file is in place and the lock is gone.
+  fsp.readFile = async (...a) => {
+    if (calls++ > 0) return real(...a);
+    await new Promise((r) => setTimeout(r, 80));
+    fs.writeFileSync(f, "{}");
+    fs.rmSync(path.join(b, ".carton", "install.lock"), { recursive: true });
+    throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+  };
+  try { assert.equal(await c.readFile(f), "{}"); } finally { fsp.readFile = real; }
+});
+
 test("a file that stays missing fails as before: at once outside Carton's bundles, after a moment in them", async () => {
   const c = load(true);
   await assert.rejects(c.readFile(path.join(bundle("untracked"), "project.json")), { code: "ENOENT" });

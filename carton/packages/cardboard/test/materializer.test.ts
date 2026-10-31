@@ -776,19 +776,33 @@ test("review 5 #3: if removing a finished save's attempt fails, the save is stil
   assert.equal(s.engine.commits.length, 1, "applied once");
 });
 
-test("an install holds the bundle's install lock (the app's readers wait on it) and releases it after", async (t) => {
+test("every install of project.json and timeline.tsx holds the bundle's install lock across its whole missing window, and releases it after", async (t) => {
+  // stock 1.4.0 takes a missing project.json for a removed project: its readers (the app's store bridge) wait while
+  // `.carton/install.lock/` exists, so the lock must cover the gap from the displacing rename to the link
   const s = await setup(t, [clip("a", 0, 5)], { start: false });
   const lock = path.join(s.bundle, ".carton", "install.lock");
-  const seen: boolean[] = [];
-  const real = fs.linkSync;
+  const watched = new Set([s.abs(TIMELINE_FILE), s.abs(PROJECT_FILE)]);
+  const seen: { step: string; file: string; locked: boolean }[] = [];
+  const realLink = fs.linkSync;
+  const realRename = fs.renameSync;
+  t.mock.method(fs, "renameSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (watched.has(String(from))) seen.push({ step: "displace", file: path.basename(String(from)), locked: fs.existsSync(lock) });
+    return realRename(from, to);
+  });
   t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
-    if (to === s.abs(TIMELINE_FILE) || to === s.abs(PROJECT_FILE)) seen.push(fs.existsSync(lock));
-    return real(from, to);
+    if (watched.has(String(to))) seen.push({ step: "link", file: path.basename(String(to)), locked: fs.existsSync(lock) });
+    return realLink(from, to);
   });
   await s.mz.start();
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "gui"));
+  s.mz.onHeadChange("gui"); // both files follow head
+  await s.tick(50);
+  s.writeAtomic(TIMELINE_FILE, s.edited(s.read(), (its) => (its[0]!.name = "agent")));
+  await s.event(); // a foreign save: applied, then the files rewritten
+  await s.tick(50);
   t.mock.restoreAll();
-  assert.ok(seen.length >= 1, "start installed the files");
-  assert.ok(seen.every(Boolean), "each link ran under the lock");
+  for (const file of ["project.json", "timeline.tsx"]) for (const step of ["displace", "link"]) assert.ok(seen.some((x) => x.file === file && x.step === step), `${file}: ${step} seen`);
+  assert.deepEqual(seen.filter((x) => !x.locked), [], "every displace and link ran under the lock");
   assert.equal(fs.existsSync(lock), false, "released");
 });
 
@@ -813,4 +827,155 @@ test("B8: a view save written while the app was down is applied at the next star
   t.after(() => again.close());
   await again.start();
   assert.equal(s.engine.commits.length, commits, "applied once: the next start finds it current");
+});
+
+test("B6: a save is stored and its sidecar written even if regenerating the shared file after it fails", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  await s.mz.onCb(); // frozen: a view save regenerates the shared file (R7-01)
+  t.mock.method(jsonTimelineCodec, "print", () => {
+    throw new Error("printer failed");
+  });
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+  await s.event(rel);
+  t.mock.restoreAll();
+  assert.equal(s.find(await s.head(), "Y").name, "renamed");
+  const status = JSON.parse(fs.readFileSync(s.abs(statusPath("director_c_t1")), "utf8"));
+  assert.equal(status.status, "confirmed");
+  assert.ok(s.mz.log.errors.some((e) => /regenerate after a save: printer failed/.test(String(e.error))), JSON.stringify(s.mz.log.errors));
+});
+
+for (const step of ["view row", "sidecar"] as const) {
+  test(`review 6: a view save that failed after its receipt (at its ${step}) is finished by the retry and by the next start, applied once`, async (t) => {
+    const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+    const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+    const { path: rel, name } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+    // fails after the commit and the receipt: storing the view row, or pinning its sidecar's ref (the row is stored)
+    let failing = true;
+    const realPut = s.engine.putMeta.bind(s.engine);
+    const realPin = s.engine.pin.bind(s.engine);
+    s.engine.putMeta = async (k, v) => {
+      if (failing && step === "view row" && k[0] === "view" && s.engine.commits.length) throw new Error("database is locked");
+      return realPut(k, v);
+    };
+    s.engine.pin = async (o) => {
+      if (failing && step === "sidecar" && s.engine.commits.length && o.owner !== "shared-file") throw new Error("database is locked");
+      return realPin(o);
+    };
+    s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+    await s.event(rel);
+    assert.equal(s.engine.commits.length, 1, "stored");
+    assert.equal(fs.existsSync(s.abs(statusPath(name))), false, "its sidecar not yet");
+    // the app dies before its retry; the next start finishes the save
+    await s.mz.close();
+    failing = false;
+    const mz = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+    t.after(() => mz.close());
+    await mz.start();
+    const status = JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8"));
+    assert.equal(status.status, "confirmed", JSON.stringify(status));
+    assert.equal(status.change, s.engine.commits[0]!.id, "its own change");
+    assert.equal((await s.engine.getMeta<ViewRow>(["view", name]))?.last?.held.causal.filter((c) => c === s.engine.commits[0]!.id).length, 1, "the view's causal past has its change once");
+    assert.equal(s.engine.commits.length, 1, "applied once");
+    assert.equal(await s.engine.getMeta(["attempt", rel]), undefined, "settled");
+  });
+}
+
+test("review 6: a failed view save's tail is finished by its own retry while the app runs", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  let fail = 1;
+  const realPin = s.engine.pin.bind(s.engine);
+  s.engine.pin = async (o) => {
+    if (fail && s.engine.commits.length && o.owner !== "shared-file") {
+      fail--;
+      throw new Error("database is locked");
+    }
+    return realPin(o);
+  };
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+  await s.event(rel);
+  await s.tick(5000);
+  assert.equal(JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8")).status, "confirmed");
+  assert.equal(s.engine.commits.length, 1, "applied once");
+});
+
+test("review 6: a view left half-written while the app was down is refused at the next start once quiet: its sidecar says why", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  await s.mz.close();
+  const full = s.edited(s.read(rel), (its) => (its[0]!.name = "renamed"));
+  s.writeInPlace(rel, full.slice(0, full.length - 20)); // the agent died mid-write
+  const mz = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => mz.close());
+  await mz.start();
+  await s.clock.advance(1000, () => mz.idle());
+  const status = JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8"));
+  assert.equal(status.status, "error", JSON.stringify(status));
+  assert.match(status.error, /doesn't parse/);
+  assert.equal(s.engine.commits.length, 0);
+});
+
+// B11: carton.db's head moved in another process (a `cb` committed in its own process, a takeover helper); the
+// materializer hears of it only through `onExternalHeadChange`, which local's store follower and the worker call.
+test("B11: an external head change reaches project.json and timeline.tsx, under the install lock; asked again, nothing happens", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const lock = path.join(s.bundle, ".carton", "install.lock");
+  const linked: boolean[] = [];
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (to === s.abs(TIMELINE_FILE) || to === s.abs(PROJECT_FILE)) linked.push(fs.existsSync(lock));
+    return real(from, to);
+  });
+  assert.equal(await s.mz.onExternalHeadChange(), "unchanged", "nothing moved since start");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "by cb, elsewhere")); // no onHeadChange: another process
+  assert.equal(await s.mz.onExternalHeadChange(), "head");
+  await s.tick(50);
+  assert.equal(s.read().items[0]!.name, "by cb, elsewhere", "timeline.tsx follows");
+  assert.equal(JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8")).project.timelineItems[0].name, "by cb, elsewhere", "project.json follows");
+  assert.ok(linked.length >= 2 && linked.every(Boolean), "both installs under the lock");
+  let pinCalls = 0;
+  const realPin = s.engine.pin.bind(s.engine);
+  s.engine.pin = async (o) => (pinCalls++, realPin(o));
+  const rewrites = s.mz.log.rewrites.length, n = linked.length;
+  for (let i = 0; i < 5; i++) assert.equal(await s.mz.onExternalHeadChange(), "unchanged");
+  await s.tick(50);
+  assert.deepEqual([pinCalls, s.mz.log.rewrites.length, linked.length], [0, rewrites, n], "idempotent and cheap: no pin, no rewrite, no install");
+});
+
+test("B11/B3: two materializers on one bundle (the app and a takeover helper) don't answer each other's installs: no commit, no ping-pong", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5), clip("b", 5, 10)]);
+  const other = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => other.close());
+  await other.start();
+  const both = [s.mz, other];
+  const watch = async () => {
+    for (const m of both) for (const rel of [PROJECT_FILE, TIMELINE_FILE]) m.onFsEvent(rel);
+    await s.clock.advance(300, async () => {
+      for (const m of both) await m.idle();
+    });
+  };
+  s.engine.external((d) => ((d.timelineItems as Item[])[1]!.name = "moved"));
+  await other.onExternalHeadChange(); // the helper materializes first
+  for (let i = 0; i < 3; i++) await watch();
+  const settled = s.mz.log.rewrites.length + other.log.rewrites.length;
+  for (let i = 0; i < 6; i++) await watch();
+  assert.equal(s.mz.log.rewrites.length + other.log.rewrites.length, settled, "no install answers another");
+  assert.equal(s.engine.commits.length, 0, "nothing committed: each saw the other's files as the states they name");
+  assert.equal(s.read().items[1]!.name, "moved");
+});
+
+test("a save of timeline.tsx that changes nothing (the state its header names) commits nothing and isn't regenerated", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const r = s.read();
+  const rewrites = s.mz.log.rewrites.length;
+  s.writeAtomic(TIMELINE_FILE, s.edited(r, () => undefined));
+  await s.event();
+  await s.tick(50);
+  assert.equal(s.engine.commits.length, 0);
+  assert.equal(s.mz.log.rewrites.length, rewrites, "not answered with a rewrite");
+  assert.ok(s.mz.log.applied.some((a) => a.status === "unchanged"));
 });

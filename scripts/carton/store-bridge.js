@@ -44,10 +44,17 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     async readFile(file) {
       const fs = require("node:fs"), fsp = require("node:fs/promises");
       const dir = path.join(path.dirname(file), ".carton"), t0 = Date.now();
+      let last = false;
       for (let i = 0; ; i++) {
         try { return await fsp.readFile(file, "utf8"); } catch (e) {
           if (e?.code !== "ENOENT" || !fs.existsSync(dir)) throw e;
-          if (Date.now() - t0 > (fs.existsSync(path.join(dir, "install.lock")) ? 6000 : 50)) throw e;
+          if (Date.now() - t0 > (fs.existsSync(path.join(dir, "install.lock")) ? 6000 : 50)) {
+            // Past the wait. The install may have ended while this read was failing: read once more before giving up.
+            if (last) throw e;
+            last = true;
+            continue;
+          }
+          last = false;
           await new Promise((r) => setTimeout(r, Math.min(1 + i, 10)));
         }
       }

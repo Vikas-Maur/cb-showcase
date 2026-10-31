@@ -10,8 +10,8 @@ import { cardboardSchema, diagnose } from "./schema.ts";
 import { fromHost, toHost, projectGuiSave, projectDoc, materializeProject, type CardboardProject, type ItemProjection } from "./host.ts";
 import { identityProjection } from "./projection.ts";
 
-/** Bumped when the versioned slice changes; sent in hello. */
-export const CARDBOARD_SCHEMA_VERSION = 1;
+/** Bumped when the versioned slice changes; sent in hello. 2: media entries version the shared media record (`shared`). */
+export const CARDBOARD_SCHEMA_VERSION = 2;
 
 export interface CardboardAdapterOptions {
   /** The GUI's lossy projection P (1.4.0's `fm∘sv` item function, from its renderer). Default: none (identity). */
@@ -43,7 +43,7 @@ export const cardboardFilesHost = {
   diagnose,
 };
 
-export { cardboardSchema, hard, soft, diagnose, itemOf, ITEMS, TRACKS, MEDIA, TIME_FIELDS, ITEM_TYPES, TRACK_TYPES, ASPECT_RATIOS, LOCAL_ONLY } from "./schema.ts";
+export { cardboardSchema, hard, soft, diagnose, itemOf, ITEMS, TRACKS, MEDIA, TIME_FIELDS, ITEM_TYPES, TRACK_TYPES, ASPECT_RATIOS, LOCAL_ONLY, CARTON_MEDIA_FIELDS, SHARED_T1_KINDS } from "./schema.ts";
 export { fromHost, toHost, projectGuiSave, projectDoc, sliceOf, materializeProject, SEQ_FIELDS, ROOT_FIELDS } from "./host.ts";
 export type { CardboardProject, ItemProjection } from "./host.ts";
 export { identityProjection, standInProjection } from "./projection.ts";
