@@ -49,5 +49,12 @@ test("a Director turn's last version is named with the turn's label; the other t
   assert.equal(log.find((x) => x.ref.seq === v!.ref.seq)?.name, "tighter intro");
   assert.equal(log.find((x) => x.author?.turn === "t2")?.name, undefined);
   assert.equal(await nameTurn(w.carton, { chat: "c1", turn: "nope" }, "x"), null);
+  // review 3 #5: turn ids are only unique within a chat
+  const other: Actor = { kind: "agent", id: "director/c2/t1", name: "Director", chat: "c2", turn: "t1" };
+  await edit(other, "b", "other chat");
+  const again = await nameTurn(w.carton, { chat: "c1", turn: "t1" }, "chat one");
+  assert.equal(again?.author?.chat, "c1", "chat c1's turn, not the newer c2/t1");
+  assert.equal((await w.carton.log()).find((x) => x.author?.chat === "c2")?.name, undefined);
+  assert.equal(await nameTurn(w.carton, { turn: "t1" } as never, "no chat"), null, "no chat: refused, never a guess");
   assert.equal(turnName("x".repeat(200)).length, 120);
 });

@@ -605,3 +605,82 @@ test("review 2 #6: a view save that never parses refuses the view, so a late upd
   await s.mz.onChangeUpdate(name, first, { status: "confirmed", seq: 9 });
   assert.equal(status().status, "error", "the older save's confirmation is stale");
 });
+
+// ------------------------------------------------------------------ review round 3 regressions
+
+test("review 3 #1: an older project.json applied after a newer one was consumed can't bring back its older fields", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const env = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  s.writeAtomic(PROJECT_FILE, JSON.stringify({ ...env, project: { ...env.project, cast: [{ id: "newer" }] } }));
+  await s.event(PROJECT_FILE);
+  await s.tick(1000); // B applied and consumed by Carton's next project.json write
+  // an older save (mtime an hour back) reaches Carton late, with no event: the next write imports it first
+  fs.writeFileSync(s.abs(PROJECT_FILE), JSON.stringify({ ...env, project: { ...env.project, cast: [{ id: "older" }], timelineItems: [{ ...env.project.timelineItems[0], opacity: 0.4 }] } }));
+  const old = new Date(Date.now() - 3_600_000);
+  fs.utimesSync(s.abs(PROJECT_FILE), old, old);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "gui"));
+  s.mz.onHeadChange("gui");
+  await s.tick(1000);
+  const out = JSON.parse(fs.readFileSync(s.abs(PROJECT_FILE), "utf8"));
+  assert.deepEqual(out.project.cast, [{ id: "newer" }], "the newer unversioned fields stay");
+  assert.equal(out.project.timelineItems[0].opacity, 0.4, "the older save's versioned edit still merged in");
+});
+
+test("review 3 #2: if storing a save's cards fails, the save is retried, never marked stored without its cards", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const r0 = s.read();
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "theirs"));
+  const realPut = s.engine.putMeta.bind(s.engine);
+  let fail = true;
+  s.engine.putMeta = async (k, v) => {
+    if (fail && k[0] === "cards") {
+      fail = false;
+      throw new Error("disk full");
+    }
+    return realPut(k, v);
+  };
+  fs.writeFileSync(s.abs(TIMELINE_FILE), s.edited(r0, (its) => (its[0]!.name = "mine"))); // conflicts with "theirs"
+  await s.mz.printShared().catch(() => undefined); // the unread save's import fails storing its cards
+  await s.mz.printShared();
+  await s.tick(500);
+  assert.ok([...s.engine.meta.keys()].some((k) => k.startsWith('["cards"')), "the cards are stored on the retry");
+});
+
+test("review 3 #3: a watched save whose engine call fails is retried by itself, with no other event or print", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel } = await s.mz.printView("v", agent, { hooked: true });
+  const realResolve = s.engine.resolve.bind(s.engine);
+  let fail = true;
+  s.engine.resolve = async (rev) => {
+    if (fail) {
+      fail = false;
+      throw new Error("database is locked");
+    }
+    return realResolve(rev);
+  };
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[0]!.name = "eventually")));
+  await s.event(rel);
+  assert.equal(s.find(await s.head(), "a").name, "a", "the first try failed");
+  await s.tick(2000);
+  assert.equal(s.find(await s.head(), "a").name, "eventually", "retried on its own");
+});
+
+test("review 3 #4: a displaced view file that doesn't parse, of the current print, refuses the view (late updates stale)", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("v", agent, { hooked: true });
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[0]!.name = "A")));
+  await s.event(rel);
+  const first = s.engine.commits.at(-1)!.id;
+  // a corrupted save of this print, found in .carton/displaced (left by a print whose install failed half-way)
+  fs.writeFileSync(path.join(s.bundle, ".carton", "displaced", `x-1@@${encodeURIComponent(rel)}`), "// cardboard:rev main@0~00000000 by y\n{broken");
+  const mz2 = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock, writeProject: false });
+  t.after(() => mz2.close());
+  await mz2.start();
+  await s.clock.advance(500, () => mz2.idle());
+  const status = () => JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8"));
+  assert.equal(status().status, "error");
+  await mz2.onChangeUpdate(name, first, { status: "confirmed", seq: 9 });
+  assert.equal(status().status, "error", "the older save's confirmation is stale");
+});

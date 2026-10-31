@@ -158,6 +158,8 @@ export interface ViewRow {
   header: string;
   nonce: string;
   printedAt: number;
+  /** Counts this view's prints: a displaced view file remembers the print it belonged to. */
+  printGen?: number;
   /** The last applied save of this print: its parsed state, the base of the next save with the same nonce. */
   last?: { contentHash: string; nonce: string; held: HeldBase } | null;
   /** The change behind the sidecar now; a later update for another change (or after a print or an error) is stale. */
@@ -197,7 +199,8 @@ const KEEP_STAMPS = 32;
 type Record_ = { t: number; path: string; [k: string]: unknown };
 /** A foreign project.json's envelope, kept for its unversioned fields until Carton's next write consumes it. */
 type Overlay = { id: string; envelope: Record<string, unknown>; mtimeNs?: string };
-type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null };
+type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null; viewGen?: number };
+type Origin = { rel: string; mtimeNs: bigint; viewGen?: number };
 
 const sha = (b: Uint8Array | string): string => createHash("sha256").update(b).digest("hex");
 const push = <T>(list: T[], x: T, keep: number): void => {
@@ -229,7 +232,7 @@ export class Materializer {
   private readonly state = new Map<string, PathState>();
   private readonly lastInstall = new Map<string, OwnInstall & { hash: string }>();
   /** Displaced foreign files that don't parse (yet): re-read when their stamp changes. */
-  private readonly partials = new Map<string, { rel: string; stamp: string | null; mtimeNs: bigint }>();
+  private readonly partials = new Map<string, { rel: string; stamp: string | null; mtimeNs: bigint; viewGen?: number }>();
   /** Half-written displaced files already reported to their writer. */
   private readonly reportedPartials = new Set<string>();
   /** Displaced files kept because their save was refused (state unknown, never printed, rejected). */
@@ -237,8 +240,9 @@ export class Materializer {
   /** Writes hooked agents announced, per path, oldest first (see `hookWrite`). */
   private readonly announced = new Map<string, { actor: Actor; at: number }[]>();
   /** Where each held displaced file came from. */
-  private readonly origin = new Map<string, { rel: string; mtimeNs: bigint }>();
+  private readonly origin = new Map<string, Origin>();
   private readonly quietTimers = new Map<string, unknown>();
+  private readonly retryTimers = new Map<string, unknown>();
   private reviewTimer: unknown = null;
   private watchers: fs.FSWatcher[] = [];
   private closed = false;
@@ -339,7 +343,7 @@ export class Materializer {
     this.watchers = [];
     await this.run(() => this.reviewDisplaced()).catch(() => undefined);
     this.closed = true;
-    for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, this.freeze.timer, ...this.quietTimers.values()]) if (t) this.clock.clearTimeout(t);
+    for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, this.freeze.timer, ...this.quietTimers.values(), ...this.retryTimers.values()]) if (t) this.clock.clearTimeout(t);
     await this.queue;
   }
 
@@ -518,13 +522,14 @@ export class Materializer {
       const rel = viewPath(view);
       await this.importUnseen(rel);
       const pinOwner = opts.hooked ? turnOwner(owner) : `view:${view}`;
+      const prev = await this.engine.getMeta<ViewRow>(["view", view]);
       const p = await this.engine.pin({ owner: pinOwner, ttlMs: 7 * DAY });
       const nonce = printNonce();
       const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
       const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
-      await this.install(rel, text);
+      await this.install(rel, text, prev?.printGen ?? 0);
       // a print starts a new generation: late updates for an earlier save never reach this print's sidecar
-      const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), last: null, lastChange: null };
+      const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), printGen: (prev?.printGen ?? 0) + 1, last: null, lastChange: null };
       await this.engine.putMeta(["view", view], row);
       return { name: view, path: rel, ref: refBodyOf(p) };
     });
@@ -563,45 +568,65 @@ export class Materializer {
     return env;
   }
   private async currentProject(): Promise<Project | null> {
-    const overlay = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
-    return ((overlay?.envelope ?? this.readEnvelope())?.project as Project | undefined) ?? null;
+    return ((await this.projectSource()).env?.project as Project | undefined) ?? null;
+  }
+
+  /**
+   * Where the unversioned fields of the next project.json come from (§6.4's ephemeral side: Cardboard's own data,
+   * which the engine doesn't version). The overlay is the newest foreign envelope applied, by its file's mtime (an
+   * older one never replaces it), and each Carton install records which overlay it was built from. The overlay is the
+   * source while Carton hasn't consumed it yet, and whenever the file on disk is a foreign one older than it (a late
+   * save that must not bring back older fields); otherwise the file on disk is.
+   */
+  private async projectSource(): Promise<{ env: Record<string, unknown> | null; overlay: Overlay | null }> {
+    const overlay = (await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"])) ?? null;
+    const fileEnv = this.readEnvelope();
+    if (!overlay) return { env: fileEnv, overlay: null };
+    const consumed = await this.engine.getMeta<string>(["file", PROJECT_FILE, "consumed"]);
+    if (consumed !== overlay.id) return { env: overlay.envelope, overlay };
+    const f = this.readFile(PROJECT_FILE);
+    const ps = await this.pathState(PROJECT_FILE);
+    const own = !!f && ps.written.some((w) => w.hash === f.hash && w.stamp === f.stamp);
+    if (f && !own && BigInt(f.stamp.split(":")[2] ?? "0") < BigInt(overlay.mtimeNs ?? "0")) return { env: overlay.envelope, overlay };
+    return { env: fileEnv ?? overlay.envelope, overlay };
   }
 
   private async writeProjectNow(cause: string): Promise<void> {
     await this.importUnseen(PROJECT_FILE);
-    // A foreign project.json applied since the last write (from the path, or moved aside by an install) is the source
-    // of the unversioned fields: Cardboard's own data lives there, not in the engine (§6.4's ephemeral side).
-    const overlay = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
-    const env = overlay?.envelope ?? this.readEnvelope() ?? { format: "cardboard-project", version: 1, media: [] };
+    const { env: source, overlay } = await this.projectSource();
+    const env = source ?? { format: "cardboard-project", version: 1, media: [] };
+    const fresh = !!overlay && (await this.engine.getMeta<string>(["file", PROJECT_FILE, "consumed"])) !== overlay.id;
     const cur = (env.project as Project | undefined) ?? null;
     // project.json has one base: Carton's latest materialization of it. Only that state stays pinned for it (the
     // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
     // unpatched tools, rare, and get the latest view as their base).
     const head = await this.engine.head();
-    if (!overlay && this.projectPin && cur && JSON.stringify(this.host.toProject(head, cur)) === JSON.stringify(cur)) return;
+    const onDisk = this.readEnvelope();
+    const same = (x: unknown) => onDisk !== null && JSON.stringify(x) === JSON.stringify(onDisk);
+    if (!fresh && this.projectPin && cur && same({ ...env, project: this.host.toProject(head, cur) })) return;
     await this.engine.release("project-file");
     const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     const body = refBodyOf(p);
     const next = this.host.toProject(p.doc, cur);
-    if (!overlay && cur && JSON.stringify(next) === JSON.stringify(cur)) {
+    if (!fresh && cur && same({ ...env, project: next })) {
       this.projectPin = body;
       await this.engine.putMeta(["file", PROJECT_FILE, "pin"], body);
       return;
     }
     // 1.4.0's rev: stateUpdatedAt is forced monotonic, max(now, prev + 1) (writeTimeline)
-    const prev = typeof cur?.stateUpdatedAt === "number" ? cur.stateUpdatedAt : 0;
+    const prevRev = Math.max(typeof cur?.stateUpdatedAt === "number" ? cur.stateUpdatedAt : 0, typeof (onDisk?.project as Project | undefined)?.stateUpdatedAt === "number" ? ((onDisk!.project as Project).stateUpdatedAt as number) : 0);
     const now = this.clock.now();
-    const project = { ...next, stateUpdatedAt: Math.max(now, prev + 1), updatedAt: new Date(now).toISOString() };
+    const project = { ...next, stateUpdatedAt: Math.max(now, prevRev + 1), updatedAt: new Date(now).toISOString() };
     await this.install(PROJECT_FILE, JSON.stringify({ ...env, project }, null, 2));
     this.projectPin = body;
     await this.engine.putMeta(["file", PROJECT_FILE, "pin"], body);
-    // clear only the overlay this write consumed: the install's review may have applied a newer one meanwhile
-    if (overlay && (await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]))?.id === overlay.id) await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], undefined);
+    // this install holds that overlay's fields; one applied during the install (newer) stays unconsumed for the next
+    if (overlay) await this.engine.putMeta(["file", PROJECT_FILE, "consumed"], overlay.id);
     this.log.rewrites.push({ t: now, path: PROJECT_FILE, cause, ref: body });
   }
 
   /** Displace, then install: never replaces a name, so a foreign save at `rel` is moved aside and imported. */
-  private async install(rel: string, content: string): Promise<void> {
+  private async install(rel: string, content: string, viewGen?: number): Promise<void> {
     const target = this.abs(rel);
     const bytes = Buffer.from(content, "utf8");
     const hash = sha(bytes);
@@ -628,7 +653,7 @@ export class Materializer {
       } catch {
         // already gone: reviewed by an earlier round
       }
-      this.origin.set(d, { rel, mtimeNs });
+      this.origin.set(d, { rel, mtimeNs, ...(viewGen !== undefined ? { viewGen } : {}) });
     }
     this.held.hold(r.displaced, this.lastInstall.get(rel) ?? null);
     if (r.eexist) this.log.eexist += r.eexist;
@@ -671,7 +696,28 @@ export class Materializer {
   onFsEvent(name: string): void {
     const rel = this.watched(name);
     if (this.closed || !rel) return;
-    this.fire(() => this.readEvent(rel));
+    this.fire(() => this.readWithRetry(rel));
+  }
+
+  /**
+   * Reads and applies the save at `rel`; if the engine fails (a locked database), retries with a growing delay until
+   * it is applied, refused, or replaced, so a valid save never waits for another event or print.
+   */
+  private async readWithRetry(rel: string, attempt = 0): Promise<void> {
+    try {
+      await this.readEvent(rel);
+      this.retryTimers.delete(rel);
+    } catch (e) {
+      if (!this.closed && !this.retryTimers.has(rel) && attempt < 12)
+        this.retryTimers.set(
+          rel,
+          this.clock.setTimeout(() => {
+            this.retryTimers.delete(rel);
+            this.fire(() => this.readWithRetry(rel, attempt + 1));
+          }, Math.min(30_000, 250 * 2 ** attempt)),
+        );
+      throw e;
+    }
   }
 
   /** The canonical relative path of a watched file, or null. */
@@ -741,7 +787,7 @@ export class Materializer {
           const f = this.readFile(rel);
           if (!f || (await this.isCurrent(rel, f.hash))) return;
           if (f.stamp !== stamp) return this.waitForQuiet(rel, f.stamp);
-          if (await this.parses(rel, f.bytes)) return void (await this.applySave(rel, f.bytes, f.hash, f.stamp));
+          if (await this.parses(rel, f.bytes)) return void (await this.readWithRetry(rel));
           await this.setLast(rel, f.hash); // reported once; the file stays where its writer put it
           this.log.unparsed.push({ t: this.clock.now(), path: rel });
           await this.engine.notice(await this.actorOf(rel), { kind: "error", text: `${rel} doesn't parse; kept, not applied` });
@@ -812,14 +858,14 @@ export class Materializer {
     for (const p of r.retired) this.origin.delete(p);
     const found: Found[] = r.foreign.map((d) => {
       const o = this.origin.get(d.path);
-      return { path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n, stamp: statStamp(d.path) };
+      return { path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n, stamp: statStamp(d.path), ...(o?.viewGen !== undefined ? { viewGen: o.viewGen } : {}) };
     });
     for (const [p, q] of this.partials) {
       const stamp = statStamp(p);
       if (stamp === null) this.partials.delete(p);
       else if (stamp !== q.stamp) {
         this.partials.delete(p);
-        found.push({ path: p, bytes: retryBusy(() => fs.readFileSync(p), this.busy), rel: q.rel, mtimeNs: q.mtimeNs, stamp });
+        found.push({ path: p, bytes: retryBusy(() => fs.readFileSync(p), this.busy), rel: q.rel, mtimeNs: q.mtimeNs, stamp, ...(q.viewGen !== undefined ? { viewGen: q.viewGen } : {}) });
       }
     }
     found.sort((a, b) => (a.mtimeNs < b.mtimeNs ? -1 : a.mtimeNs > b.mtimeNs ? 1 : 0));
@@ -829,7 +875,7 @@ export class Materializer {
         await this.reviewOne(d);
       } catch (e) {
         for (const rest of found.slice(i)) {
-          this.origin.set(rest.path, { rel: rest.rel, mtimeNs: rest.mtimeNs });
+          this.origin.set(rest.path, { rel: rest.rel, mtimeNs: rest.mtimeNs, ...(rest.viewGen !== undefined ? { viewGen: rest.viewGen } : {}) });
           this.held.holdForeign(rest.path);
         }
         this.log.errors.push({ t: this.clock.now(), path: d.rel, error: e instanceof Error ? e.message : String(e) });
@@ -862,11 +908,17 @@ export class Materializer {
     if (!(await this.parses(d.rel, d.bytes))) {
       // the in-place writer's half-written file: kept on disk; its writer is told once; imported if it completes
       this.origin.delete(d.path);
-      this.partials.set(d.path, { rel: d.rel, stamp: d.stamp, mtimeNs: d.mtimeNs });
+      this.partials.set(d.path, { rel: d.rel, stamp: d.stamp, mtimeNs: d.mtimeNs, ...(d.viewGen !== undefined ? { viewGen: d.viewGen } : {}) });
       if (!this.reportedPartials.has(d.path)) {
         this.reportedPartials.add(d.path);
         this.log.unparsed.push({ t: this.clock.now(), path: d.rel, displaced: true });
-        await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text: `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied` });
+        const text = `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied`;
+        await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text });
+        // a view's latest save that doesn't parse refuses the view, unless a newer print has already started over
+        // (a file from an unknown print, recovered after a restart, counts as the latest)
+        const name = viewName(d.rel);
+        const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
+        if (name && row && (d.viewGen === undefined || d.viewGen === (row.printGen ?? 0))) await this.failView(name, row, { status: "error", error: text });
       }
       return;
     }
@@ -965,7 +1017,8 @@ export class Materializer {
     if (rel === PROJECT_FILE) {
       // the file's unversioned fields (Cardboard's own data) are the source for the next project.json Carton writes;
       // stored before the receipt below, so a failure in between retries this save instead of deleting its file
-      // An older file (a displaced save reviewed late) never replaces a newer one's fields: overlays keep write order.
+      // An older file (a displaced save reviewed late) never replaces a newer one's fields: overlays keep write order,
+      // and the overlay is never deleted, so it is also the watermark.
       const mtimeNs = stamp ? (stamp.split(":")[2] ?? "0") : "0";
       const cur = await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"]);
       if (!cur || BigInt(cur.mtimeNs ?? "0") <= BigInt(mtimeNs)) {
@@ -973,14 +1026,17 @@ export class Materializer {
         await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], ov);
       }
     }
+    // Cards are data too: stored before the receipt, so a failure in between retries this file instead of deleting the
+    // only copy of a save whose every edit carded. The id is stable for the same file, so a retry rewrites the same key.
+    const cards = res.cards ?? [];
+    const batch = cards.length ? { batch: res.id ?? `save-${sha(`${rel}\n${stamp ?? ""}\n${hash}`).slice(0, 20)}`, change: res.id ?? null, file: rel, actor, cards, at: this.clock.now() } : null;
+    if (batch) await this.engine.putMeta(["cards", batch.batch], batch);
     // the receipt: stored. Written before the regeneration below reads the path again
     if (!o.fromDisplaced) ps.last = hash;
     if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
     await this.saveState(rel);
-    const cards = res.cards ?? [];
     this.log.applied.push({ t: this.clock.now(), path: rel, id: res.id ?? null, status: res.status, cards: cards.length, actor: actor.id, hash });
-    // a save whose every edit carded makes no change: its cards still get an id of their own
-    if (cards.length) await this.reportCards({ batch: res.id ?? `save-${hash.slice(0, 12)}-${this.clock.now()}`, change: res.id ?? null, file: rel, actor, cards, at: this.clock.now() }, !name);
+    if (batch) await this.reportCards(batch, !name);
     if (this.freeze.active && this.freeze.view && rel !== PROJECT_FILE) {
       // R8-01: the freeze view gathers every local agent's applied saves (shared file and views), each merged with
       // that save's own base
@@ -1007,8 +1063,7 @@ export class Materializer {
 
   /** Cards are data: stored, given to the human, and told to the actor when it has no sidecar to read them in. */
   private async reportCards(c: SaveCards, notifyActor: boolean): Promise<void> {
-    this.log.cards.push(c);
-    await this.engine.putMeta(["cards", c.batch], c);
+    this.log.cards.push(c); // already stored under ["cards", c.batch]
     this.onCards?.(c);
     if (notifyActor)
       await this.engine.notice(c.actor, {

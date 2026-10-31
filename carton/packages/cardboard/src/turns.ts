@@ -6,10 +6,10 @@
 import type { Carton, Version } from "@carton/core";
 
 export interface TurnRef {
-  /** The turn id (the `<turn>` of `director/<chat>/<turn>`). */
+  /** The chat it belongs to (the `<chat>` of `director/<chat>/<turn>`): turn ids are only unique within a chat. */
+  chat: string;
+  /** The turn id. */
   turn: string;
-  /** The chat it belongs to, when known: turn ids are only unique within a chat. */
-  chat?: string;
 }
 
 /** A version name from a free-text label: one line, trimmed, at most 120 characters. */
@@ -20,13 +20,15 @@ export function turnName(label: string): string {
 
 /**
  * Names the newest version a turn made (the agent's or any of its subagents' changes) on `cut` (default: current) with
- * `label`. Returns that version, or null when the turn made none among the latest `scan` versions.
+ * `label`. Returns that version, or null when the turn made none among the latest `scan` versions (or no chat is given).
  */
 export async function nameTurn(carton: Pick<Carton, "log" | "name">, turn: TurnRef, label: string, opts: { cut?: string; scan?: number } = {}): Promise<Version | null> {
   const name = turnName(label);
   if (!name) return null;
+  // a turn id is only unique within its chat: without the chat (a JS caller), refuse rather than name another chat's turn
+  if (typeof turn.chat !== "string" || !turn.chat) return null;
   const versions = await carton.log({ ...(opts.cut ? { cut: opts.cut } : {}), limit: opts.scan ?? 500 });
-  const last = versions.find((v) => v.change && v.author?.turn === turn.turn && (turn.chat === undefined || v.author.chat === turn.chat));
+  const last = versions.find((v) => v.change && v.author?.turn === turn.turn && v.author.chat === turn.chat);
   if (!last) return null;
   await carton.name(last.ref, name);
   return { ...last, name };
