@@ -170,12 +170,23 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   const { store, manifest: m } = o;
   if (o.source.size !== m.size) throw new SourceChangedError(`file is ${o.source.size} bytes, manifest says ${m.size}`);
   const key = mediaKey(m.hash);
-  const partSize = o.partSize ? Math.max(LEAF_SIZE, Math.floor(o.partSize / LEAF_SIZE) * LEAF_SIZE) : choosePartSize(m.size, o.bytesPerSecond);
+  const states = o.state ?? new MemoryUploadStateStore();
+  let state = await states.load(key);
+  const forced = o.partSize ? Math.max(LEAF_SIZE, Math.floor(o.partSize / LEAF_SIZE) * LEAF_SIZE) : undefined;
+  // A resumed upload keeps the part size it started with: the link may measure differently today, and changing the
+  // size would throw away every part already sent.
+  const resumable = state && state.hash === m.hash && state.size === m.size && (forced === undefined || forced === state.partSize);
+  const partSize = forced ?? (resumable ? state!.partSize : choosePartSize(m.size, o.bytesPerSecond));
   const result: UploadResult = { hash: m.hash, size: m.size, deduped: false, partSize, resumedParts: 0, partsSent: 0, bytesSent: 0 };
 
   const head = await withRetries(o, () => store.head(key));
   if (head && head.size === m.size) {
     await ensureManifest(o);
+    if (state) {
+      // Someone else completed the same object meanwhile: our open upload is no longer needed.
+      await abortQuietly(store, key, state.uploadId);
+      await states.delete(key);
+    }
     result.deduped = true;
     o.onProgress?.({ done: m.size, total: m.size, sent: 0 });
     return result;
@@ -183,7 +194,7 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   // A different size at a content-addressed key means a broken object; the upload below replaces it.
   await ensureManifest(o);
 
-  if (m.size <= partSize) {
+  if (m.size <= partSize && !resumable) {
     const bytes = await readVerified(o, 0, m.size);
     await withRetries(o, () => store.put(key, bytes, { contentType: o.contentType }));
     result.partsSent = 1;
@@ -192,12 +203,10 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
     return result;
   }
 
-  const states = o.state ?? new MemoryUploadStateStore();
   const partCount = Math.ceil(m.size / partSize);
   const partLength = (n: number) => Math.min(partSize, m.size - (n - 1) * partSize);
-  let state = await states.load(key);
   let up: MultipartUpload | null = null;
-  if (state && (state.hash !== m.hash || state.size !== m.size || state.partSize !== partSize)) {
+  if (state && !resumable) {
     // Another part size or another file under the same key: start over, but don't leave the old upload open.
     await abortQuietly(store, key, state.uploadId);
     await states.delete(key);

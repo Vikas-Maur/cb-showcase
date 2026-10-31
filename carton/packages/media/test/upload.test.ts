@@ -142,3 +142,28 @@ test("an upload the store forgot (expired) is started again instead of failing f
   assert.equal(r.resumedParts, 0);
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
 });
+
+test("a resume keeps the part size it started with, even when the link now measures faster", async () => {
+  const { manifest, source, data } = await setup(40 * MiB, 10);
+  const mem = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  const store = new FaultyStore(mem, { dropUploadAfterBytes: 20 * MiB });
+  await assert.rejects(uploadMedia({ store, hasher: nodeHasher, source, manifest, state, bytesPerSecond: 1e6, concurrency: 1, retries: 0 }));
+  const r = await uploadMedia({ store, hasher: nodeHasher, source, manifest, state, bytesPerSecond: 100e6, concurrency: 1 });
+  assert.equal(r.partSize, 8 * MiB);
+  assert.equal(r.resumedParts, 2);
+  assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+});
+
+test("an open upload is dropped when someone else completed the same object", async () => {
+  const { manifest, source } = await setup(8 * MiB, 11);
+  const mem = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  await assert.rejects(uploadMedia({ store: new FaultyStore(mem, { dropUploadAfterBytes: 3 * MiB }), hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 }));
+  await uploadMedia({ store: mem, hasher: nodeHasher, source, manifest, partSize: 2 * MiB }); // a teammate, no shared state
+  assert.equal(mem.uploads.size, 1);
+  const r = await uploadMedia({ store: mem, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB });
+  assert.equal(r.deduped, true);
+  assert.equal(mem.uploads.size, 0);
+  assert.equal(await state.load(mediaKey(manifest.hash)), null);
+});
