@@ -24,12 +24,17 @@ export function FoldInDialog(p: FoldInDialogProps) {
   const words = useWords();
   const locale = useLocale();
   const now = useNow();
-  const loaded = useAsync(() => (p.plan ? Promise.resolve(p.plan) : ui.planFold(p.fromCutId, p.intoCutId)), [ui, p.fromCutId, p.intoCutId, p.plan]);
+  // §13: after "bring it in with every difference shown as a card", the plan and the fold use the 2-way compare.
+  const [allCards, setAllCards] = useState(false);
+  const loaded = useAsync(
+    () => (p.plan ? Promise.resolve(p.plan) : ui.planFold(p.fromCutId, p.intoCutId, allCards ? { allCards } : undefined)),
+    [ui, p.fromCutId, p.intoCutId, p.plan, allCards],
+  );
   const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
   const [choices, setChoices] = useState<Readonly<Record<string, ConflictChoice>>>({});
   const [result, setResult] = useState<FoldResult | null>(null);
   const [fold, busy] = useAction(async () => {
-    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices });
+    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices, ...(allCards ? { allCards } : {}) });
     setResult(r);
     if (r.ok) p.onDone?.(r);
     return r;
@@ -55,7 +60,13 @@ export function FoldInDialog(p: FoldInDialogProps) {
     return null;
   }, [loaded.status, words]);
 
-  const content = plan
+  const canSplit = plan?.partial !== false;
+  const content = plan?.missingBase
+    ? [
+        h("p", { key: "mb", className: "carton-fold-missing", role: "alert" }, plan.missingBase),
+        h("div", { key: "mba", className: "carton-card-actions" }, h(Button, { onClick: () => setAllCards(true) }, words.foldAllCards)),
+      ]
+    : plan
     ? [
         total === 0 && !plan.conflicts.length
           ? h("p", { key: "none", className: "carton-empty" }, words.foldNothing)
@@ -66,7 +77,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
                 "legend",
                 { className: "carton-fold-legend" },
                 h("span", null, words.foldChanges(total)),
-                total > 1
+                !canSplit ? h("span", { className: "carton-fold-bulk" }, words.foldAllOrNothing) : total > 1
                   ? h(
                       "span",
                       { className: "carton-fold-bulk" },
@@ -85,7 +96,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
                     h(
                       "label",
                       null,
-                      h("input", { type: "checkbox", className: "carton-check", checked: !left.has(c.id), onChange: () => toggle(c.id) }),
+                      canSplit ? h("input", { type: "checkbox", className: "carton-check", checked: !left.has(c.id), onChange: () => toggle(c.id) }) : h("span", { "aria-hidden": true }),
                       h("span", { className: "carton-fold-text" }, c.summary),
                       h(
                         "span",
@@ -137,7 +148,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
           variant: "primary",
           icon: "fold",
           busy,
-          disabled: !plan || (taking === 0 && !plan.conflicts.length) || unpicked > 0,
+          disabled: !plan || !!plan.missingBase || (taking === 0 && !plan.conflicts.length) || unpicked > 0,
           title: unpicked > 0 ? words.foldConflicts(unpicked) : undefined,
           onClick: () => void fold(),
         },

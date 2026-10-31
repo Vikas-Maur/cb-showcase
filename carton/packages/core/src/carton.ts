@@ -16,7 +16,7 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, ProxyEncoder, Stor
 import type { Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldResult, type HeldBase } from "./history/common.ts";
+import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import type {
@@ -33,6 +33,7 @@ import type {
   Doc,
   EditKinds,
   Intent,
+  MergeResult,
   NodeId,
   Notice,
   Op,
@@ -145,7 +146,8 @@ export interface Carton {
   fork(name: string, opts?: { from?: StateRef | string; kind?: CutKind }): Promise<CutRecord>;
   switchTo(cut: string): Promise<void>;
   /** Fold `from` (a cut id or a ref) into `into` (default: current cut). */
-  fold(from: string | StateRef, opts?: FoldOptions & { into?: string }): Promise<FoldResult>;
+  /** With `check: true`, nothing is committed and `preview` tells what the fold would bring in. */
+  fold(from: string | StateRef, opts?: FoldOptions & { into?: string }): Promise<FoldResult & { preview?: FoldPreview }>;
   /** Fold in some of it: everything except the rejected record paths, which an inverse change lists. */
   foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult>;
 
@@ -535,12 +537,18 @@ class CartonImpl implements Carton {
     this.#meta = { ...this.#meta, current: cut };
     await this.store.write([{ table: T.meta, key: PROJECT, value: this.#meta }]);
   }
-  async fold(from: string | StateRef, opts: FoldOptions & { into?: string } = {}): Promise<FoldResult> {
+  async fold(from: string | StateRef, opts: FoldOptions & { into?: string } = {}): Promise<FoldResult & { preview?: FoldPreview }> {
     const into = opts.into ?? this.#h.current;
     const author = this.#actor(opts.author);
     // refresh every cut: the one folded in may have grown in another process
     const r = await this.#mutate(undefined, () => this.#h.fold(into, this.#node(from), { ...opts, author }), { idempotent: true });
-    const { retry: _r, merge: _m, base: _b, ...out } = r as FoldResult & { retry?: unknown; merge?: unknown; base?: unknown };
+    const { retry: _r, merge, base: _b, ...out } = r as FoldResult & { retry?: unknown; merge?: MergeResult; base?: unknown };
+    // A dry run tells what the fold would bring in (Fold in dialog, `cb fold --check`).
+    if (opts.check && merge) {
+      const ours = this.#h.stateOf(this.#h.head(into))!;
+      const ops = merge.ops;
+      return { ...(out as FoldResult), preview: { ops, describe: E.describe(ops, ours, this.schema), warnings: merge.warnings } };
+    }
     return out as FoldResult;
   }
   async foldSome(from: string | StateRef, opts: FoldOptions & { into?: string; reject: PathKey[] }): Promise<FoldResult> {

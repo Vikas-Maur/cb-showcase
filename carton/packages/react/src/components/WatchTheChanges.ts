@@ -43,7 +43,7 @@ export interface Box {
   readonly b: readonly [number, number];
 }
 
-const MIN_SHOT = 22, MIN_CHANGE = 44, FOLD = 72;
+const MIN_SHOT = 22, MIN_CHANGE = 44, FOLD = 88;
 
 function sideRange(shots: readonly Shot[], i0: number, i1: number): [number, number] {
   if (i0 < i1) return [shots[i0]!.start, shots[i1 - 1]!.end];
@@ -155,7 +155,8 @@ function Strip({ d, boxes, side, onSeek, onExpand, label }: { d: ShotDiff; boxes
           },
         },
         empty
-          ? h("span", { className: "carton-strip-empty" }, side === "a" ? words.added : words.removed)
+          ? // A narrow cell shows + or − and keeps the word for the tooltip and screen readers.
+            h("span", { className: "carton-strip-empty", title: side === "a" ? words.added : words.removed, "aria-label": side === "a" ? words.added : words.removed }, bx.w >= 64 ? (side === "a" ? words.added : words.removed) : side === "a" ? "+" : "−")
           : ShotCells({ shots, i0, i1, from: t0, span, w: bx.w }),
       );
     }),

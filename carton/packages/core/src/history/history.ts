@@ -678,7 +678,7 @@ export class History {
     });
     if (m.conflicts.length && !choices)
       return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(into, this.headSeq(into)), merge: m, base, retry: (ch: Choices) => this.fold(into, from, { ...opts, choices: ch }) };
-    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true };
+    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m };
     const doc = m.conflicts.length ? E.resolve(m, choices!) : m.doc;
     const r = this.commit(into, {
       doc,

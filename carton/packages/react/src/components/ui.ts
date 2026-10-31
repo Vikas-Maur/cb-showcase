@@ -62,10 +62,12 @@ export function Avatar({ actor, size = 22, title }: { actor: Actor; size?: numbe
   const words = useWords();
   const color = actorColor(actor, ui.actor.bind(ui));
   const label = title ?? actorLabel(actor, ui.actor.bind(ui), words.you);
-  const style: CSSProperties = { width: size, height: size, ["--carton-actor" as string]: color };
+  // Two letters need about 20 px; smaller avatars (history rows, card headers) show one.
+  const letters = (s: string) => (size < 20 ? Array.from(s)[0] ?? "?" : s);
+  const style: CSSProperties = { width: size, height: size, fontSize: Math.max(7, Math.round(size * (size < 20 ? 0.5 : 0.4))), ["--carton-actor" as string]: color };
   const glyph =
     actor.kind === "human"
-      ? h("span", { className: "carton-avatar-initials" }, initials(actor.name))
+      ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.name)))
       : actor.kind === "subagent"
         ? h("span", { className: "carton-avatar-initials" }, initials(actor.subagentType ?? actor.name).slice(0, 1))
         : h(Icon, { name: "sparkle", size: Math.round(size * 0.62) });
@@ -76,7 +78,9 @@ export function Avatar({ actor, size = 22, title }: { actor: Actor; size?: numbe
 export function ActorName({ actor }: { actor: Actor }) {
   const ui = useCartonUi();
   const words = useWords();
-  return h("span", { className: "carton-actor-name", "data-kind": actor.kind }, actorLabel(actor, ui.actor.bind(ui), words.you));
+  const label = actorLabel(actor, ui.actor.bind(ui), words.you);
+  // A native title: long chains ("Director › caption-fixer") are cut with an ellipsis in narrow places.
+  return h("span", { className: "carton-actor-name", "data-kind": actor.kind, title: label }, label);
 }
 
 // ---------------------------------------------------------------- menus

@@ -45,18 +45,22 @@ export function PublishedStatus({ className, onOpen }: { className?: string; onO
     h(
       "div",
       { className: "carton-published-text" },
-      h("span", { className: "carton-published-name" }, words.publishedAs(pub.versionName ? `${pub.cutName} · ${pub.versionName}` : pub.cutName)),
       h(
         "span",
         { className: "carton-published-meta" },
-        stale
-          ? h("span", { className: "carton-badge", "data-tone": "warning", "data-carton-tip": words.newerEditsCount(pub.newerEdits) }, words.newerEdits)
-          : h("span", null, words.upToDatePublished),
+        h("span", null, words.publishedCut),
+        stale ? h("span", { className: "carton-badge", "data-tone": "warning", "data-carton-tip": words.newerEditsCount(pub.newerEdits) }, words.newerEdits) : null,
         h("time", { dateTime: new Date(pub.at).toISOString(), "data-carton-tip": exactTime(pub.at, locale) }, when(pub.at, now, locale, words.justNow)),
       ),
+      h("span", { className: "carton-published-name", title: pub.versionName ? `${pub.cutName} · ${pub.versionName}` : pub.cutName }, pub.versionName ? `${pub.cutName} · ${pub.versionName}` : pub.cutName),
+      stale ? null : h("span", { className: "carton-published-meta" }, words.upToDatePublished),
     ),
-    pub.url && onOpen ? h(Button, { variant: "ghost", icon: "eye", label: words.openShareLink, title: words.openShareLink, onClick: () => onOpen(pub.url!) }) : null,
-    stale ? h(Button, { variant: "primary", busy, onClick: () => void publish() }, words.publishAgain) : null,
+    h(
+      "div",
+      { className: "carton-published-actions" },
+      pub.url && onOpen ? h(Button, { variant: "ghost", icon: "eye", onClick: () => onOpen(pub.url!) }, words.openShareLink) : null,
+      stale ? h(Button, { variant: "primary", busy, onClick: () => void publish() }, words.publishAgain) : null,
+    ),
   );
 }
 
@@ -78,7 +82,7 @@ export function UndoTurnButton({ className }: { className?: string }) {
   return h(
     "span",
     { className: cx("carton-undo-wrap", className) },
-    h(Button, { className: "carton-undo", icon: "restore", busy, onClick: () => void undo(), title: words.turnEdits(turn.edits) }, label),
+    h(Button, { className: "carton-undo", icon: "restore", busy, onClick: () => void undo(), title: turn.edits != null ? words.turnEdits(turn.edits) : undefined }, label),
     note ? h("span", { className: "carton-undo-note", role: "alert" }, note) : null,
   );
 }
@@ -122,7 +126,9 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
                   { key: i, className: "carton-credit" },
                   h("span", { className: "carton-credit-what" }, l.what),
                   h("span", { className: "carton-credit-who" }, h(Avatar, { actor: l.author, size: 16 }), h(ActorName, { actor: l.author })),
-                  h("time", { className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), "data-carton-tip": exactTime(l.at, locale) }, when(l.at, now, locale, words.justNow)),
+                  l.at != null
+                    ? h("time", { className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), "data-carton-tip": exactTime(l.at, locale) }, when(l.at, now, locale, words.justNow))
+                    : h("span", { className: "carton-credit-when" }),
                 ),
               ),
             ),

@@ -53,7 +53,6 @@ export const people = {
 };
 
 const CLIPS = ["Intro", "Interview A", "B-roll city", "Product close-up", "Interview B", "Drone shot", "Team at work", "Logo sting", "CTA", "Outro", "Street crowd", "Hands typing"];
-const TRACKS = ["V1", "V2", "Captions", "Music", "Titles"];
 const TURNS = [
   "tighter intro",
   "add captions to the interview",
@@ -70,13 +69,13 @@ const fmt = (x: number) => `${Math.floor(x / 60)}:${(x % 60).toFixed(1).padStart
 
 function summaryFor(r: () => number): string {
   const c = CLIPS[Math.floor(r() * CLIPS.length)]!;
-  const t = TRACKS[Math.floor(r() * TRACKS.length)]!;
+  const t = ["V1", "V2"][Math.floor(r() * 2)]!;
   const a = Math.round(r() * 600) / 10, b = Math.round((a + (r() - 0.5) * 4) * 10) / 10;
   switch (Math.floor(r() * 9)) {
     case 0: return `Trimmed '${c}' end ${(r() * 8 + 2).toFixed(1)} s → ${(r() * 8 + 1).toFixed(1)} s`;
     case 1: return `Moved '${c}' ${fmt(a)} → ${fmt(Math.max(0, b))}`;
     case 2: return `Added caption '${["we cut editing time", "in half", "meet the team", "built for speed"][Math.floor(r() * 4)]}' on 'Captions' at ${fmt(a)}`;
-    case 3: return `Changed '${c}' colorGrade.saturation 1.1 → ${(1 + r() * 0.5).toFixed(1)}`;
+    case 3: return `Changed '${c}' saturation 1.1 → ${(1 + r() * 0.5).toFixed(1)}`;
     case 4: return `Deleted video '${c}'`;
     case 5: return `Removed ${(r() * 3 + 0.5).toFixed(1)} s from '${t}' at ${fmt(a)} (later items pulled left)`;
     case 6: return `Slipped '${c}' source in ${(r() * 4).toFixed(1)} s → ${(r() * 4 + 1).toFixed(1)} s`;
@@ -106,8 +105,6 @@ export interface MockUi extends CartonUi {
   setConflicts(c: readonly Conflict[]): void;
   setPublished(p: Published | null): void;
   setUndo(u: UndoTurn | null): void;
-  /** Mark that an edit was tried in the preview (shows the "Return to current" note). */
-  blockEdit(): void;
   /** Drive it like a busy shared project. Returns a stop function. */
   live(opts?: { versionsPerSecond?: number; ghostHz?: number; presenceHz?: number; burst?: number }): () => void;
   /** Make the shot diff bigger (benchmarks). */
@@ -180,6 +177,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
 
   const viewOf = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
   const history: HistorySource = {
+    all: () => all,
     revision: () => revision,
     count: (f) => (f === "all" ? all.length : viewOf(f)!.length),
     at: (f, i) => {
@@ -223,7 +221,10 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     { actor: people.bobsDirector, cutId: "cut-main", idle: false, activity: "Adding captions" },
     { actor: people.priya, cutId: "cut-main", idle: true },
   ];
-  let ghosts: readonly Ghost[] = [{ actorKey: people.bob.key, itemId: "item-broll", trackId: "V1", start: 12.5, end: 16.5, label: "B-roll city" }];
+  let ghosts: readonly Ghost[] = [
+    { actorKey: people.bob.key, itemId: "item-broll", trackId: "V1", start: 12.5, end: 16.5, label: "B-roll city" },
+    { actorKey: people.bobsDirector.key, itemId: "item-cap", trackId: "Captions", start: 19, end: 22.5, label: "built for speed" },
+  ];
   let conflicts: readonly Conflict[] = [
     {
       id: "items/intro/#time",
@@ -323,7 +324,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
           { id: "items/cap-12", summary: "Added caption 'built for speed' on 'Captions' at 0:21.5", author: people.captions, at: now0 - 3_200_000 },
           { id: "tracks/music", summary: "Changed 'Music' volume 100 → 70", author: people.alice, at: now0 - 3_000_000 },
           { id: "items/logo", summary: "Deleted video 'Logo sting'", author: people.alice, at: now0 - 2_900_000 },
-          { id: "root/aspectRatio", summary: "Changed aspectRatio \"16:9\" → \"9:16\"", author: people.alice, at: now0 - 2_800_000 },
+          { id: "root/aspectRatio", summary: "Changed the aspect ratio 16:9 → 9:16", author: people.alice, at: now0 - 2_800_000 },
         ],
         conflicts: [conflicts[0] ?? defaultCard(now0)],
         warnings: ["'B-roll city' overlaps 'Interview A' by 0.4 s on 'V1'", "The font 'Denton' isn't on this computer, so the title may look different"],
