@@ -7,6 +7,7 @@ import { useAction, useCartonUi, useConflicts, useLocale, useNow, useWords } fro
 import type { Conflict, ConflictChoice, ConflictSide } from "../model.ts";
 import { ActorName, Avatar, Button, cx } from "./ui.ts";
 import { Icon } from "../icons.ts";
+import type { Words } from "../words.ts";
 
 export interface ConflictCardProps {
   conflict: Conflict;
@@ -30,10 +31,17 @@ function SideView({ side, which, showing }: { side: ConflictSide; which: "mine" 
       h(Avatar, { actor: side.author, size: 16 }),
       h(ActorName, { actor: side.author }),
       side.at != null ? h("time", { dateTime: new Date(side.at).toISOString() }, when(side.at, now, locale, words.justNow)) : null,
+      side.where ? h("span", { className: "carton-conflict-where" }, side.where) : null,
       showing ? h("span", { className: "carton-badge", "data-tone": "muted" }, words.showingNow) : null,
     ),
     h("p", { className: "carton-conflict-what" }, side.summary),
   );
+}
+
+/** "Keep yours (Main cut)", "Keep Director's (30s Instagram cut)": who, and where when the sides are on two cuts. */
+function keepLabel(side: ConflictSide, words: Words): string {
+  const a = side.author;
+  return a.isYou && a.kind === "human" ? words.keepYours(side.where) : words.keepOf(a.name, side.where);
 }
 
 export const ConflictCard = memo(function ConflictCard(p: ConflictCardProps) {
@@ -63,8 +71,8 @@ export const ConflictCard = memo(function ConflictCard(p: ConflictCardProps) {
     h(
       "div",
       { className: "carton-card-actions" },
-      btn("mine", words.keepMine),
-      btn("theirs", words.keepTheirs),
+      btn("mine", keepLabel(c.mine, words)),
+      btn("theirs", keepLabel(c.theirs, words)),
       c.canKeepBoth ? btn("both", words.keepBoth) : null,
     ),
   );

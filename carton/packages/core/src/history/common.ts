@@ -82,6 +82,8 @@ export interface HistoryCommit {
   id?: ChangeId;
   /** Cards that `choices` (a list or map) doesn't name: "card" (default) returns them as conflicts; "prefer" decides them. */
   unchosen?: "card" | "prefer";
+  /** The one change a Published cut takes: the held state it publishes (internal: Carton.publish). */
+  publish?: boolean;
   /** Unused (the prototype's flag): an empty commit is confirmed empty; an empty fold or undo is always recorded. */
   allowEmpty?: boolean;
   name?: string;

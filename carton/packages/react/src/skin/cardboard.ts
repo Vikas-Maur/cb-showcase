@@ -109,6 +109,7 @@ export const cardboardSkin = `
   background:transparent;display:grid;place-content:center;cursor:pointer;transition:background-color var(--cb-fast)}
 :where(${S}) :where(.carton-check:checked){background:var(--cb-primary);border-color:var(--cb-primary)}
 :where(${S}) :where(.carton-check:checked)::after{content:"";width:8px;height:4px;margin-top:-2px;border:solid var(--cb-primary-fg);border-width:0 0 1.6px 1.6px;transform:rotate(-45deg)}
+:where(${S}) :where(.carton-check:disabled){opacity:.45;cursor:not-allowed}
 :where(${S}) :where(.carton-check:focus-visible){box-shadow:0 0 0 3px color-mix(in srgb, var(--cb-ring) 50%, transparent);outline:none}
 
 /* ---------------------------------------------------------------- badges and text */
@@ -153,6 +154,9 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-cuts-trigger:focus-visible){box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
 :where(${S}) :where(.carton-cuts-trigger .carton-icon){color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-cuts-name){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-cuts){display:inline-flex;align-items:center;gap:8px}
+:where(${S}) :where(.carton-cuts-error){font-size:12px;color:var(--cb-danger)}
+:where(${S}) :where(.carton-menu-form .carton-error){padding:4px 0 0}
 
 /* ---------------------------------------------------------------- panel and History */
 :where(${S}) :where(.carton-history){height:100%;background:var(--cb-panel);color:var(--cb-fg)}
@@ -237,6 +241,8 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-conflict-side[data-showing])::before{background:var(--cb-fg-2)}
 :where(${S}) :where(.carton-conflict-who){display:flex;align-items:center;gap:6px;font-size:12px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-conflict-who time){color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-conflict-where){height:18px;padding:0 6px;border-radius:4px;background:#ffffff0d;color:var(--cb-fg-2);font-size:10.5px;font-weight:500;line-height:18px;
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}
 :where(${S}) :where(.carton-conflict-who .carton-badge){margin-left:auto}
 :where(${S}) :where(.carton-conflict-what){margin-top:4px;font-size:13px;line-height:18px;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-conflicts){display:flex;flex-direction:column;gap:8px}

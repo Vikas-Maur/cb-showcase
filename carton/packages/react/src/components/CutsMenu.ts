@@ -23,6 +23,15 @@ export function CutsMenu(p: CutsMenuProps) {
   const current = useCurrentCut();
   const preview = usePreview();
   const [mode, setMode] = useState<"menu" | "new" | "rename">("menu");
+  // A failed switch, new cut or rename says so next to the menu; nothing fails silently.
+  const [error, setError] = useState<string | null>(null);
+  const attempt = (run: () => Promise<unknown>, after?: () => void) => {
+    setError(null);
+    run().then(
+      () => after?.(),
+      (e: unknown) => setError(e instanceof Error && e.message ? e.message : words.failed),
+    );
+  };
   const main = cuts.find((c) => c.kind === "main" && !c.readOnly);
   const writable = cuts.filter((c) => !c.readOnly);
   const readOnly = cuts.filter((c) => c.readOnly);
@@ -38,13 +47,13 @@ export function CutsMenu(p: CutsMenuProps) {
         hint: c.readOnly ? h(Icon, { name: "lock", size: 12 }) : c.shared ? h(Icon, { name: "users", size: 12 }) : null,
         onSelect: () => {
           close();
-          if (!c.current) void ui.switchCut(c.id);
+          if (!c.current) attempt(() => ui.switchCut(c.id));
         },
       },
       c.label,
     );
 
-  return h(MenuButton, {
+  const menu = h(MenuButton, {
     label: words.cuts,
     title: words.cuts,
     triggerClassName: cx("carton-cuts-trigger", p.className),
@@ -68,14 +77,12 @@ export function CutsMenu(p: CutsMenuProps) {
             placeholder: words.newCutPlaceholder,
             label: words.newCutName,
             saveLabel: words.create,
-            onSave: (name) => {
-              done();
-              void ui.newCut(name, fromRef);
-            },
+            onSave: (name) => attempt(() => ui.newCut(name, fromRef), done),
             onCancel: () => setMode("menu"),
           }),
         );
-      if (mode === "rename" && current)
+      const rename = ui.renameCut;
+      if (mode === "rename" && current && rename)
         return h(
           "div",
           { className: "carton-menu-form" },
@@ -84,10 +91,7 @@ export function CutsMenu(p: CutsMenuProps) {
             initial: current.name,
             label: words.renameCut,
             saveLabel: words.save,
-            onSave: (name) => {
-              done();
-              void ui.renameCut(current.id, name);
-            },
+            onSave: (name) => attempt(() => rename.call(ui, current.id, name), done),
             onCancel: () => setMode("menu"),
           }),
         );
@@ -98,11 +102,18 @@ export function CutsMenu(p: CutsMenuProps) {
         ...readOnly.map((c) => item(c, close)),
         h(MenuSeparator, { key: "s1" }),
         h(MenuItem, { key: "new", icon: "plus", disabled: !fromRef, onSelect: () => setMode("new") }, words.newCutFromHere),
-        h(MenuItem, { key: "ren", icon: "pencil", disabled: !current || current.readOnly, onSelect: () => setMode("rename") }, words.renameCut),
+        // Offered only when the engine can rename cuts.
+        rename ? h(MenuItem, { key: "ren", icon: "pencil", disabled: !current || current.readOnly, onSelect: () => setMode("rename") }, words.renameCut) : null,
         main && current && current.id !== main.id && p.onFoldIn
           ? h(MenuItem, { key: "fold", icon: "fold", onSelect: () => (close(), p.onFoldIn!(current, main)) }, words.foldInto(main.label))
           : null,
       ];
     },
   });
+  return h(
+    "span",
+    { className: "carton-cuts" },
+    menu,
+    error ? h("span", { className: "carton-cuts-error", role: "alert" }, error) : null,
+  );
 }

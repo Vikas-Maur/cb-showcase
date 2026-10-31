@@ -3,7 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { defineSchema } from "../../src/schema.ts";
-import { timeAlgebra } from "../../src/engine/index.ts";
+import { timeAlgebra, hashDoc } from "../../src/engine/index.ts";
 import { ReplicaQueue, policyFor, type QueueEvent } from "../../src/sync/index.ts";
 import type { ConfirmedChange, Doc, Op } from "../../src/types.ts";
 
@@ -87,9 +87,11 @@ test("L5: a pending change's version id is provisional (head + its place in the 
   assert.equal(q.versionId(B, "nope.1"), null);
 });
 
-test("a keyframe jump makes placeholders; a state inside the jumped stretch is unknown, never guessed", () => {
+test("a keyframe jump checks the keyframe's hash, makes placeholders; a state inside the jumped stretch is unknown, never guessed", () => {
   const q = queue();
-  assert.ok(q.jumpTo(B, { seq: 10, stateHash: "x", doc: d0 }));
+  assert.throws(() => q.jumpTo(B, { seq: 10, stateHash: "not-its-hash", doc: d0 }), /doesn't match its state hash/, "a keyframe must hash to what it claims (review finding 14)");
+  assert.equal(q.headSeq(B), 0, "and nothing was installed");
+  assert.ok(q.jumpTo(B, { seq: 10, stateHash: hashDoc(d0, schema), doc: d0 }));
   assert.equal(q.headSeq(B), 10);
   assert.ok(q.rows(B)[4]!.placeholder);
   assert.throws(() => q.confirmedState(B, 5), /state unknown/);

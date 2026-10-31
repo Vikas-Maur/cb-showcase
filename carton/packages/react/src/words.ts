@@ -63,6 +63,9 @@ export const words = {
   foldAllOrNothing: "These changes can only be folded in together.",
   foldAllCards: "Bring it in with every difference shown as a card",
   foldRestLater: "You can fold in the rest later.",
+  foldRest: "Fold in the rest",
+  foldChangedSince: "Something changed since you looked. Pick on the cards below, then fold in.",
+  foldLocked: "Comes with the rest: it can't be left out on its own.",
   foldChanges: (n: number) => plural(n, "change", "changes"),
   foldConflicts: (n: number) => `${plural(n, "conflict card", "conflict cards")} to pick`,
   foldWarnings: "Check after folding in",
@@ -74,8 +77,10 @@ export const words = {
   // Conflict cards
   conflictCard: "Conflict card",
   conflictLead: "Both edits kept; you pick.",
-  keepMine: "Keep mine",
-  keepTheirs: "Keep theirs",
+  // Each choice says whose edit and, in a fold, which cut, so "mine" never has to be guessed: the cut I'm in, or the
+  // clip's author? (PLAN §2.6 "Keep mine/theirs/both", made explicit.)
+  keepYours: (where?: string) => (where ? `Keep yours (${where})` : "Keep yours"),
+  keepOf: (name: string, where?: string) => `Keep ${name}'s${where ? ` (${where})` : ""}`,
   keepBoth: "Keep both",
   showingNow: "Showing now",
   conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,
