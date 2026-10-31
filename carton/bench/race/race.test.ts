@@ -10,6 +10,7 @@ import { endTurn, takeTurn, trial } from "./race.ts";
 
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
 const err = (code: string) => Object.assign(new Error(code), { code });
+const WIN = { windows: true }; // act out Windows: busy errors are retried only there
 /** A mkdir/rmdir that fails with each listed code in turn, then succeeds. */
 const failing = (codes: string[]) => {
   const calls: string[] = [];
@@ -25,7 +26,7 @@ test("turn lock: a folder still being deleted (EPERM, EACCES) is waited out, not
   for (const code of ["EPERM", "EACCES"]) {
     const m = failing([code, code]);
     const counter = { busy: 0 };
-    assert.equal(takeTurn("ctl/lock", () => false, counter, { mkdir: m.fn }), true);
+    assert.equal(takeTurn("ctl/lock", () => false, counter, { ...WIN, mkdir: m.fn }), true);
     assert.equal(m.calls.length, 3);
     assert.equal(counter.busy, 2, "the retries are counted as busy retries");
   }
@@ -34,7 +35,7 @@ test("turn lock: a folder still being deleted (EPERM, EACCES) is waited out, not
 test("turn lock: after the delete completes another writer may take the turn first (EEXIST), and we wait for it", () => {
   const m = failing(["EPERM", "EEXIST", "EEXIST", "EACCES"]);
   const counter = { busy: 0 };
-  assert.equal(takeTurn("ctl/lock", () => false, counter, { mkdir: m.fn }), true);
+  assert.equal(takeTurn("ctl/lock", () => false, counter, { ...WIN, mkdir: m.fn }), true);
   assert.equal(m.calls.length, 5);
   assert.equal(counter.busy, 2);
 });
@@ -46,20 +47,29 @@ test("turn lock: the trial ending while another writer holds the turn returns fa
   assert.equal(m.calls.length, 3);
 });
 
-test("turn lock: EPERM that outlasts the backoff, and any other error, ends the writer", () => {
+test("turn lock: EPERM that outlasts the budget, and any other error, ends the writer", () => {
   const forever = () => {
     throw err("EPERM");
   };
-  assert.throws(() => takeTurn("ctl/lock", () => false, {}, { mkdir: forever, attempts: 3 }), { code: "EPERM" });
+  const t0 = performance.now();
+  assert.throws(() => takeTurn("ctl/lock", () => false, {}, { ...WIN, mkdir: forever, budgetMs: 30 }), { code: "EPERM" });
+  const took = performance.now() - t0;
+  assert.ok(took < 1_000, `gave up after ${took} ms with a 30 ms budget`);
   const gone = failing(["ENOENT"]);
-  assert.throws(() => takeTurn("ctl/lock", () => false, {}, { mkdir: gone.fn }), { code: "ENOENT" });
+  assert.throws(() => takeTurn("ctl/lock", () => false, {}, { ...WIN, mkdir: gone.fn }), { code: "ENOENT" });
   assert.equal(gone.calls.length, 1, "not retried");
+});
+
+test("turn lock: on Linux and macOS EPERM is a real permission error and fails at once", () => {
+  const m = failing(["EPERM"]);
+  assert.throws(() => takeTurn("ctl/lock", () => false, {}, { windows: false, mkdir: m.fn }), { code: "EPERM" });
+  assert.equal(m.calls.length, 1);
 });
 
 test("turn lock: releasing retries while another process has the folder open (EBUSY, EPERM)", () => {
   const m = failing(["EBUSY", "EPERM"]);
   const counter = { busy: 0 };
-  endTurn("ctl/lock", counter, { rmdir: m.fn });
+  endTurn("ctl/lock", counter, { ...WIN, rmdir: m.fn });
   assert.equal(m.calls.length, 3);
   assert.equal(counter.busy, 2);
 });
