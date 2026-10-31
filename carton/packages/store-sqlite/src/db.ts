@@ -41,6 +41,24 @@ export function isBusy(e: unknown): boolean {
   return typeof code === "number" && ((code & 0xff) === SQLITE_BUSY || (code & 0xff) === SQLITE_LOCKED);
 }
 
+const SQLITE_IOERR = 10;
+const SQLITE_CANTOPEN = 14;
+/** How long Db.open keeps retrying an I/O error on its first reads (see Db.open). */
+export const OPEN_RETRY_MS = 2000;
+
+// I/O errors, and on Windows also "unable to open" (a file whose deletion is still pending can't be opened).
+// SQLITE_CANTOPEN elsewhere is a missing folder or a permission: lasting, so reported at once.
+function isTransientOpenError(e: unknown): boolean {
+  const code = ((e as { errcode?: number } | null)?.errcode ?? 0) & 0xff;
+  return code === SQLITE_IOERR || (code === SQLITE_CANTOPEN && process.platform === "win32");
+}
+
+function withCode(e: unknown): unknown {
+  const err = e as Error & { errcode?: number };
+  if (err instanceof Error && typeof err.errcode === "number" && !err.message.includes("errcode")) err.message += ` (SQLite errcode ${err.errcode}, after retrying for ${OPEN_RETRY_MS} ms)`;
+  return err;
+}
+
 /** A checkpoint after this many of a connection's own writes (each adds at least one WAL frame; SQLite's own
  *  automatic checkpoint runs at 1,000 frames). */
 export const CHECKPOINT_EVERY_WRITES = 1000;
@@ -84,6 +102,24 @@ export class Db {
    * runs first, before anything is written, so a file that isn't ours is refused untouched.
    */
   static async open(path: string, opts: DbOptions = {}, verify?: (raw: DatabaseSync) => void): Promise<Db> {
+    // The first reads of a file can fail for a moment with an I/O error that isn't the disk's: on Windows a handle
+    // another program (an antivirus or indexer scanning the file just written) or a process being terminated still
+    // has on the file or its -wal/-shm, which SQLite's own short retries don't outlast (verify-ci #22, Windows only).
+    // Nothing is written until these steps pass, so they are retried on a fresh connection, asynchronously, for up
+    // to OPEN_RETRY_MS; a failure that lasts is reported with SQLite's extended code.
+    const t0 = Date.now();
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await Db.#open(path, opts, verify);
+      } catch (e) {
+        if (!isTransientOpenError(e)) throw e;
+        if (Date.now() - t0 >= OPEN_RETRY_MS) throw withCode(e);
+        await sleep(Math.min(100, 5 << Math.min(attempt, 5)));
+      }
+    }
+  }
+
+  static async #open(path: string, opts: DbOptions, verify?: (raw: DatabaseSync) => void): Promise<Db> {
     const db = new Db(path, opts);
     try {
       if (verify) await db.read(() => verify(db.raw));
