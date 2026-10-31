@@ -48,12 +48,12 @@ export class IdbStore implements Store {
     this.#durability = durability;
     // Another tab upgrading or deleting the database waits for every connection to close; never make it wait.
     db.onversionchange = () => void this.close();
+    // The browser closed it (storage cleared, disk error): later calls say so instead of failing obscurely.
+    db.onclose = () => void this.close();
     // Every handle announces its writes, whether or not it watches; listeners hear the other tabs'.
     if (typeof BroadcastChannel !== "undefined") {
       this.#channel = new BroadcastChannel(name);
-      this.#channel.onmessage = (ev: MessageEvent<{ tables: string[] }>) => {
-        for (const l of this.#listeners) l(ev.data.tables);
-      };
+      this.#channel.onmessage = (ev: MessageEvent<{ tables: string[] }>) => notify(this.#listeners, ev.data.tables);
       // In Node (a fake IndexedDB in tests) an open channel would keep the process alive.
       (this.#channel as { unref?: () => void }).unref?.();
     }
@@ -121,7 +121,7 @@ export class IdbStore implements Store {
     );
     if (ok) {
       const tables = [...new Set(writes.map((w) => w.table))];
-      for (const l of this.#listeners) l(tables);
+      notify(this.#listeners, tables);
       this.#channel?.postMessage({ tables });
     }
     return ok;
@@ -206,6 +206,17 @@ function holds(found: unknown, expect: StoreCondition["expect"]): boolean {
   if (expect === "absent") return found === undefined;
   if (expect === "present") return found !== undefined;
   return found !== undefined && canonical(JSON.parse(found as string)) === canonical(expect.equals);
+}
+
+// The batch is committed whatever a listener does: a throwing listener is reported, never turned into a failed write.
+function notify(listeners: Set<(tables: readonly string[]) => void>, tables: readonly string[]): void {
+  for (const l of listeners) {
+    try {
+      l(tables);
+    } catch (e) {
+      (globalThis as { reportError?: (e: unknown) => void }).reportError?.(e) ?? console.error("carton store: a watch listener threw", e);
+    }
+  }
 }
 
 function json(v: unknown): string {

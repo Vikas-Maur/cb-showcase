@@ -114,10 +114,7 @@ export class SqliteStore implements Store {
       }
       return true;
     });
-    if (ok && this.#listeners.size) {
-      const tables = [...new Set(writes.map((w) => w.table))];
-      for (const l of this.#listeners) l(tables);
-    }
+    if (ok && this.#listeners.size) notify(this.#listeners, [...new Set(writes.map((w) => w.table))]);
     return ok;
   }
 
@@ -175,7 +172,7 @@ export class SqliteStore implements Store {
       throw e;
     }
     src.close();
-    fs.renameSync(tmp, toPath);
+    await renameRetry(tmp, toPath);
   }
 
   /** Give the pages freed by deletes (pruned keyframes, released pins) back to the file system. */
@@ -206,6 +203,32 @@ export class SqliteStore implements Store {
 }
 
 const EXPORT_BATCH = 2000;
+
+// The batch is committed whatever a listener does: a throwing listener is reported, never turned into a failed write.
+function notify(listeners: Set<(tables: readonly string[]) => void>, tables: string[]): void {
+  for (const l of listeners) {
+    try {
+      l(tables);
+    } catch (e) {
+      console.error("carton store: a watch listener threw", e);
+    }
+  }
+}
+
+// On Windows a file that was just written is often held for a moment by an antivirus scanner or the search indexer,
+// and renaming it fails with EPERM, EBUSY or EACCES until they let go (the build's rename-retry helper does the same).
+async function renameRetry(from: string, to: string): Promise<void> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (process.platform !== "win32" || attempt >= 40 || !(code === "EPERM" || code === "EBUSY" || code === "EACCES")) throw e;
+      await new Promise((r) => setTimeout(r, Math.min(250, 10 * (attempt + 1))));
+    }
+  }
+}
 
 /** Open (creating if needed) the store at a carton.db path. */
 export function openSqliteStore(file: string, opts: SqliteStoreOptions = {}): Promise<SqliteStore> {
