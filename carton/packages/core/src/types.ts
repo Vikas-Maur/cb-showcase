@@ -360,7 +360,7 @@ export interface Version {
   summary?: string;
 }
 
-export type LineageKind = "head" | "root" | "fork" | "merge" | "export";
+export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";
 
 /**
  * A node of the lineage graph carried by shallow `.cbproj` exports (§13): fork, merge, export, root and head nodes.

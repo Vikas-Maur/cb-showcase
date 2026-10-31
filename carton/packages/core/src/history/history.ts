@@ -1095,9 +1095,9 @@ export class History {
 
   // ------------------------------------------------------------ shallow .cbproj export / import (§13)
   /**
-   * The lineage graph: the head, roots, fork, merge and export nodes, and imported lineage nodes. Each lineage edge
-   * carries the composition of the recorded remaps along it (merge edges use the merge's per-parent edge map). States
-   * of fork, merge and export nodes are carried (R5-02), delta-encoded against the head.
+   * The lineage graph: the head, roots, fork, merge, export and import nodes, and imported lineage nodes. Each lineage
+   * edge carries the composition of the recorded remaps along it (merge edges use the merge's per-parent edge map).
+   * States of fork, merge, export and import nodes are carried (R5-02), delta-encoded against the head.
    */
   exportShallow(cutId: string, { to = "someone", carry = "fork-merge-export", encoding = "delta" }: { to?: string; carry?: "fork-merge-export" | "export-only" | "head-only"; encoding?: "delta" | "full" } = {}): ShallowExport {
     const head = this.head(cutId);
@@ -1107,7 +1107,7 @@ export class History {
     const nodes = this.#walkLineage([head], head);
     // carry: "fork-merge-export" (v6+), "export-only" (v5, for the R5-02 ablation), "head-only" (v4)
     const carried = (n: DagNode) =>
-      n.kinds.includes("head") || (carry !== "head-only" && (n.kinds.includes("export") || (carry !== "export-only" && (n.kinds.includes("fork") || n.kinds.includes("merge")))));
+      n.kinds.includes("head") || (carry !== "head-only" && (n.kinds.includes("export") || n.kinds.includes("import") || (carry !== "export-only" && (n.kinds.includes("fork") || n.kinds.includes("merge")))));
     const headDoc = this.stateOf(head)!;
     const states: ShallowExport["states"] = {};
     for (const n of nodes.values()) {
@@ -1135,26 +1135,30 @@ export class History {
     };
   }
   /**
-   * The lineage nodes reachable from `starts`, each edge compressed to the nearest fork, merge, export, root or known
-   * lineage node (a shallow export's graph, §13, and a hand-off's closure, §5.3). Nodes of `skip` (the cut a closure
+   * The lineage nodes reachable from `starts`, each edge compressed to the nearest fork, merge, export, import, root or
+   * known lineage node (a shallow export's graph, §13, and a hand-off's closure, §5.3). Nodes of `skip` (the cut a closure
    * is for: its rows go up in full) end the walk and are left out.
    */
   #walkLineage(starts: readonly NodeId[], head?: NodeId, skip?: string): Map<NodeId, DagNode> {
     const forkNodes = new Set<NodeId>();
     for (const b of this.#cuts.values()) if (b.rec.forkOf) forkNodes.add(this.canon(b.rec.forkOf));
     const nodes = new Map<NodeId, DagNode>();
+    // the §16 import (`init.asChange`: the project as it was, over the empty root) is a lineage point like an export,
+    // so a shallow export carries it and two copies of the project fold from it, not from nothing (S3-4, request 8)
+    const imported = (id: NodeId) => this.changeAt(id)?.kind === "import";
     const kindsOf = (id: NodeId): LineageKind[] => {
       const k: LineageKind[] = [];
       if (id === head) k.push("head");
       const ln = this.#lineage.get(id);
       if (ln) k.push(...ln.kinds.filter((x) => x !== "head"));
       if (this.#exportsMade.has(id)) k.push("export");
+      if (imported(id)) k.push("import");
       if (this.changeAt(id)?.mergeOf) k.push("merge");
       if (forkNodes.has(id)) k.push("fork");
       if (!this.parents(id).length) k.push("root");
       return [...new Set(k)];
     };
-    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || this.parents(id).length !== 1 || forkNodes.has(id);
+    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || imported(id) || this.parents(id).length !== 1 || forkNodes.has(id);
     const queue = [...starts];
     while (queue.length) {
       const id = queue.pop()!;
@@ -1292,6 +1296,7 @@ export class History {
         out.set(n.branchId, (e = { branchId: n.branchId, rec, nodes: [], states: [] }));
       }
       e.nodes.push(n);
+      // an import's state isn't carried here: a closure starts at fork points and merges, which are past it
       const d = n.kinds.some((k) => k === "fork" || k === "merge" || k === "export") ? this.stateOf(n.id) : null;
       if (d) e.states!.push({ seq: n.seq, hash: n.hash, doc: JSON.parse(E.snapshot(d, this.schema)) });
     }

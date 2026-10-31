@@ -75,11 +75,15 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   edit to the split clip meets the split (the source record is part of its declaration) and reaches every piece,
   whichever lands first, on local and shared cuts.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
-  this machine doesn't have.
+  this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
+  (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the
+  import on the next open with `asChange`.
 - **A `.cbproj` from a copy of your project folder** (the same cut ids): the sender's versions on a cut you hold that
   aren't yours come in as a separate cut `<cut>.<hash8 of their first such version>`, named "<name> (<sender>)", linked
   to the versions you share; the fold brings them in. A version compaction squashed keeps its state hash, so your own
-  versions are still recognized in their copy.
+  versions are still recognized in their copy. The import change (`asChange`) is a lineage point like an export
+  (lineage kind `"import"`, its state carried, delta-encoded), so two copies of an imported project fold from it,
+  not from the empty root. A hand-off closure lists it without its state.
 - **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
   file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
   in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
