@@ -47,6 +47,24 @@ export { LeafMismatchError, type MediaStat, type RangeSource } from "./range-sou
 export { serveMedia, type ServeMediaOptions } from "./fetch-handler.ts";
 export { parseRange, type ByteSpan } from "./http-range.ts";
 export {
+  COLLAB_PROXY_720P,
+  collabProfile,
+  encodeProxy,
+  moovBeforeMdat,
+  pickEncoder,
+  ProxyChainError,
+  ProxyDeclinedError,
+  REUSE_MAX_KBPS,
+  REUSE_MAX_LONG_EDGE,
+  reusableProxy,
+  type CollabProfile,
+  type EncodeProxyOptions,
+  type EncodeProxyOutcome,
+  type ProxyAttempt,
+  type ProxyFacts,
+  type ReuseDecision,
+} from "./proxy.ts";
+export {
   CONTEXT_CAP_BYTES,
   planShare,
   sourceFor,
