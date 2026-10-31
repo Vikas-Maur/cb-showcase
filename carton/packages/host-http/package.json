@@ -1,0 +1,35 @@
+{
+  "name": "@carton/host-http",
+  "version": "0.1.0",
+  "description": "The HTTP API every Carton host serves (join, invites, signed media URLs, resumable uploads), on web-standard Request/Response.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/blob-memory": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/conformance": "0.1.0"
+  }
+}

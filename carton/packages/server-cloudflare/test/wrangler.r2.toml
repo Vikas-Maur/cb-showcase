@@ -1,0 +1,8 @@
+# Test-only config: just the R2 binding, for the BlobStore suite through wrangler's getPlatformProxy (local R2
+# simulator in workerd). Never deployed.
+name = "carton-r2-test"
+compatibility_date = "2026-10-23"
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "carton-r2-test"

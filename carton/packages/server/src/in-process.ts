@@ -57,7 +57,8 @@ export function createInProcessHost(
   }
 
   const transport: Transport = {
-    async connect(target, { token }) {
+    async connect(target, { token, signal }) {
+      if (signal?.aborted) throw signal.reason ?? new Error("aborted");
       if (closed || target !== url) throw new Error(`no host at ${target}`);
       const auth = await opts.auth.verify(token);
       if (!auth) throw new Error("unauthorized");
