@@ -12,7 +12,8 @@
 //   CARTON_BENCH_S3_BUCKET     created if missing (default carton-bench)
 //   CARTON_BENCH_RUNS          runs per mode (default 3)
 //   CARTON_BENCH_REPEAT        uploads and downloads of the clip per run (default 5)
-//   CARTON_BENCH_LOCK          a lock file each run holds with flock (a shared box's CPU lock); unset: no lock
+//   CARTON_BENCH_LOCK          a lock file each run holds with flock (a shared box's CPU lock); unset: no lock.
+//                              Each run prints `uptime` once it holds the lock.
 //   CARTON_BENCH_OUT           also append the raw output there
 import { execFileSync, spawnSync } from "node:child_process";
 import { appendFileSync, readFileSync } from "node:fs";
@@ -56,6 +57,10 @@ async function run(mode: "fetch" | "node", tag: string, endpoint: string, keys: 
 
 if (process.argv[2] === "--run") {
   const [, , , mode, tag, endpoint, accessKeyId, secretAccessKey] = process.argv;
+  // the load as the run starts, inside CARTON_BENCH_LOCK when one is set
+  try {
+    console.log(`uptime: ${execFileSync("uptime", { encoding: "utf8" }).trim()}`);
+  } catch {}
   await run(mode as "fetch" | "node", tag!, endpoint!, { accessKeyId: accessKeyId!, secretAccessKey: secretAccessKey! });
 } else {
   if (!env.CARTON_BENCH_CLIP) throw new Error("set CARTON_BENCH_CLIP to the clip to move");
@@ -78,17 +83,13 @@ if (process.argv[2] === "--run") {
   });
   const runs = Number(env.CARTON_BENCH_RUNS ?? 3);
   const results: { mode: string; uploadMBps: number; downloadMBps: number }[] = [];
-  out(`# blob-s3 transport bench ${new Date().toISOString()} node ${process.version} clip ${env.CARTON_BENCH_CLIP} endpoint ${endpoint}\n`);
+  out(`# blob-s3 transport bench ${new Date().toISOString()} node ${process.version} clip ${env.CARTON_BENCH_CLIP} endpoint ${endpoint} lock ${env.CARTON_BENCH_LOCK ?? "none"}\n`);
   try {
     for (let i = 0; i < 2 * runs; i++) {
       const mode = i % 2 === 0 ? "fetch" : "node";
-      let load = "";
-      try {
-        load = execFileSync("uptime", { encoding: "utf8" }).trim();
-      } catch {}
       const args = [process.execPath, import.meta.filename, "--run", mode, `r${i + 1}-${mode}-${Date.now().toString(36)}`, endpoint, keys.accessKeyId, keys.secretAccessKey];
       const r = env.CARTON_BENCH_LOCK ? spawnSync("flock", [env.CARTON_BENCH_LOCK, ...args], { encoding: "utf8" }) : spawnSync(args[0]!, args.slice(1), { encoding: "utf8" });
-      out(`## run ${i + 1} ${mode}\nuptime: ${load}\n${r.stdout}${r.stderr}`);
+      out(`## run ${i + 1} ${mode}\n${r.stdout}${r.stderr}`);
       if (r.status !== 0) throw new Error(`run ${i + 1} failed`);
       results.push(JSON.parse(r.stdout.trim().split("\n").pop()!));
     }
