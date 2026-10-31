@@ -8,7 +8,14 @@
 // - Stop/SubagentStop: late conflicts for this actor (a pending change that came back rejected after its turn) block
 //   the stop **once** with the conflict text, so the agent resolves them before it ends ("Prevents the subagent from
 //   stopping"). On `stop_hook_active` it never blocks again: whatever is left becomes a card for the human (R3-09).
-import { safePart, subagentSuffix } from "./identity.ts";
+// - Hook events for the holder's materializer (§6.4, H8): `hookEventFor` turns a Read of the shared timeline.tsx, a
+//   Write/Edit/MultiEdit of timeline.tsx or project.json, and an allowed Stop/SubagentStop into a `hook` write
+//   (`HookOp`), which `cb` hands to the lease holder like any write; the holder calls the materializer's
+//   hookRead / hookWrite / hookStop (the freeze of the shared file, credits for a hooked agent's save, the turn's pins).
+//   This file loads no engine: the PreToolUse hook runs before every tool call.
+import { isAbsolute, relative, resolve } from "node:path";
+import type { Actor } from "@carton/core";
+import { parseActorId, safePart, subagentSuffix } from "./identity.ts";
 import type { HookInput } from "./identity.ts";
 
 /** A command mentions the CLI as a word (start, after a separator or `$(`/backtick, or a path ending in /cb). */
@@ -117,4 +124,53 @@ export function stopHook(input: HookInput, box: NoticeBox, turn?: DirectorTurn |
 /** Claude Code's Stop/SubagentStop hook output. */
 export function stopOutput(d: StopDecision): object {
   return d.decision === "block" ? { decision: "block", reason: d.reason } : {};
+}
+
+// ---------------------------------------------------------------- hook events for the holder's materializer
+
+/**
+ * The `hook` write (WriteOp): an agent's hook event, for the lease holder's materializer. The actor is the request's.
+ * - `read`: about to read the shared `timeline.tsx` (PreToolUse on Read): the freeze starts (`hookRead`).
+ * - `write`: about to write `file`, project-relative with `/` (PreToolUse on Write/Edit/MultiEdit): the next foreign save
+ *   of it is credited to the agent, down to the subagent (`hookWrite`); a write of the shared file also freezes it.
+ * - `stop`: its turn ended (Stop/SubagentStop the late-conflict hook allowed): its pins go, the freeze may end
+ *   (`hookStop`).
+ */
+export type HookEventKind = "read" | "write" | "stop";
+export interface HookOp { kind: "hook"; event: HookEventKind; file?: string }
+/** A hook event to send: who, and the write. */
+export interface HookSend { actor: Actor; op: HookOp }
+
+/** The shared file (a hooked agent reading it starts the freeze) and the files whose foreign saves a hook credits. */
+export const SHARED_FILE = "timeline.tsx";
+const CREDITED = new Set([SHARED_FILE, "project.json"]);
+const WRITE_TOOLS = new Set(["Write", "Edit", "MultiEdit"]);
+/** Case-insensitive file systems (Windows, macOS): `Timeline.tsx` is the shared file there. */
+const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
+
+/** `file` (absolute, or relative to the hook's cwd) as a project-relative `/` path; null outside the project. */
+export function projectRel(projectDir: string, file: string, cwd?: string): string | null {
+  const rel = relative(resolve(projectDir), resolve(cwd ?? projectDir, file));
+  if (!rel || rel === ".." || rel.startsWith("../") || rel.startsWith("..\\") || isAbsolute(rel)) return null;
+  return rel.replace(/\\/g, "/");
+}
+
+/**
+ * The hook event a Claude Code hook call means for the holder's materializer, or null (most tool calls). The actor is
+ * the one the PreToolUse prefixer exports for the agent's `cb` calls (`actorIdForHook`), so the freeze, the credit and
+ * the turn's pins are the same agent's, down to the subagent. `stop` is for a stop the late-conflict hook allowed: a
+ * blocked stop goes on with the turn.
+ */
+export function hookEventFor(event: "pre-tool-use" | "stop", input: HookInput, o: { projectDir?: string | null; turn?: DirectorTurn | null; foldCase?: boolean } = {}): HookSend | null {
+  const actor = parseActorId(actorIdForHook(input, o.turn));
+  if (!actor) return null;
+  if (event === "stop") return { actor, op: { kind: "hook", event: "stop" } };
+  const tool = String(input.tool_name ?? "");
+  const file = input.tool_input?.file_path;
+  if (!o.projectDir || typeof file !== "string" || !file || (tool !== "Read" && !WRITE_TOOLS.has(tool))) return null;
+  const rel = projectRel(o.projectDir, file, typeof input.cwd === "string" ? input.cwd : undefined);
+  if (!rel) return null;
+  const key = o.foldCase ?? FOLD_CASE ? rel.toLowerCase() : rel;
+  if (tool === "Read") return key === SHARED_FILE ? { actor, op: { kind: "hook", event: "read", file: SHARED_FILE } } : null;
+  return CREDITED.has(key) ? { actor, op: { kind: "hook", event: "write", file: key } } : null;
 }

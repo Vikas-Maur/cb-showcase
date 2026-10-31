@@ -4,6 +4,9 @@
 //
 // 1.4.0 already has `history` and `undo`. With `extend` (default) their actions are replaced by the Carton ones, which
 // keep the 1.4.0 forms (`history <project>`, `undo <project> [rev]`) and add `--cut`, `--stats`, `--turn`.
+// 1.4.0's `source print` gains `--view <name>` (your own view, through the holder's materializer, H8); without it the
+// command is 1.4.0's own, run by its own action (commander keeps it as `_actionHandler`; a program without one is left
+// as it is, with no `--view`).
 import { COMMANDS, GIT_ALIASES } from "./commands.ts";
 import type { CbContext, CommandSpec, Output } from "./commands.ts";
 import { UsageError } from "./refs.ts";
@@ -29,19 +32,28 @@ function configure(cmd: any, spec: CommandSpec): any {
   return cmd;
 }
 
+/** commander's options for a spec (camelCase keys) as the spec's named values. */
+function optionValues(spec: CommandSpec, opts: Record<string, any>): Record<string, any> {
+  const a: Record<string, any> = {};
+  for (const o of spec.options) {
+    const key = o.name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
+    const v = opts[key];
+    if (v === undefined) continue;
+    a[o.name] = o.type === "number" ? Number(v) : v;
+  }
+  return a;
+}
+const optsOf = (params: any[]): Record<string, any> => {
+  const cmd = params.at(-1);
+  return typeof cmd?.opts === "function" ? cmd.opts() : params.at(-2) ?? {};
+};
+
 function action(spec: CommandSpec, deps: RegisterDeps) {
   return async (...params: any[]) => {
-    const cmd = params.at(-1);
-    const opts = typeof cmd?.opts === "function" ? cmd.opts() : params.at(-2) ?? {};
+    const opts = optsOf(params);
     const [project, ...pos] = params.slice(0, 1 + spec.args.length);
-    const a: Record<string, any> = {};
+    const a: Record<string, any> = optionValues(spec, opts);
     spec.args.forEach((s, i) => { if (pos[i] !== undefined) a[s.name] = pos[i]; });
-    for (const o of spec.options) {
-      const key = o.name.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-      const v = opts[key];
-      if (v === undefined) continue;
-      a[o.name] = o.type === "number" ? Number(v) : v;
-    }
     const ctx = await deps.open(project, { as: opts.as ?? null });
     let o: Output;
     try {
@@ -55,6 +67,28 @@ function action(spec: CommandSpec, deps: RegisterDeps) {
   };
 }
 
+/**
+ * A command the host already has: keep the command object (help text order, aliases) and add Carton's options. Carton's
+ * action replaces the host's, or (a spec with `only`) runs when `only.when` holds and hands the call to the host's own
+ * action otherwise.
+ */
+function extendIn(old: any, spec: CommandSpec, deps: RegisterDeps): void {
+  if (deps.extend === false) return;
+  const own = old._actionHandler;
+  if (spec.only && typeof own !== "function") return; // nothing to hand a plain call to: the host's command stays as it is
+  for (const o of spec.options) if (!old.options?.some((x: any) => x.long === `--${o.name}`)) old.option(flag(o), o.description);
+  // as on every Carton command: who you are, for agents without hooks
+  if (!old.options?.some((x: any) => x.long === "--as")) old.option("--as <agent>", "who you are, for agents without hooks (Codex, Gemini): e.g. codex/fix-captions");
+  if (!spec.only) {
+    old.description(spec.summary);
+    old.action(action(spec, deps));
+    return;
+  }
+  const carton = action(spec, deps);
+  // commander calls the handler with the parsed positionals; its action wrapper adds the options and the command
+  old.action(async (...params: any[]) => (spec.only!.when(optionValues(spec, optsOf(params))) ? carton(...params) : own.call(old, params.slice(0, -2))));
+}
+
 /** Add the Carton commands to Cardboard's commander program. */
 export function register(program: any, deps: RegisterDeps): void {
   const existing = (name: string) => program.commands?.find((c: any) => c.name() === name);
@@ -62,21 +96,14 @@ export function register(program: any, deps: RegisterDeps): void {
   for (const spec of COMMANDS) {
     if (spec.path.length === 1) {
       const old = existing(spec.path[0]);
-      if (old) {
-        if (deps.extend === false) continue;
-        // keep the command object (help text order, aliases) and swap in Carton's options and action
-        for (const o of spec.options) if (!old.options?.some((x: any) => x.long === `--${o.name}`)) old.option(flag(o), o.description);
-        // as on every Carton command: who you are, for agents without hooks
-        if (!old.options?.some((x: any) => x.long === "--as")) old.option("--as <agent>", "who you are, for agents without hooks (Codex, Gemini): e.g. codex/fix-captions");
-        old.description(spec.summary);
-        old.action(action(spec, deps));
-        continue;
-      }
+      if (old) { extendIn(old, spec, deps); continue; }
       configure(program.command(spec.path[0]), spec).action(action(spec, deps));
     } else {
       const [p, sub] = spec.path;
       let parent = parents.get(p) ?? existing(p);
       if (!parent) { parent = program.command(p).description(p === "cut" ? "Cuts: separate lines of the edit (git branches)" : p); parents.set(p, parent); }
+      const old = parent.commands?.find((c: any) => c.name() === sub);
+      if (old) { extendIn(old, spec, deps); continue; }
       configure(parent.command(sub), spec).action(action(spec, deps));
     }
   }
