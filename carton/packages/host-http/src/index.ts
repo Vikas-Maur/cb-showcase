@@ -16,7 +16,13 @@
 //   POST /api/projects/:p/uploads/:id/complete?key=  {parts}       editor   → BlobInfo
 //   DELETE /api/projects/:p/uploads/:id?key=                       editor   → {}
 //   GET|HEAD|PUT /blob/:p/<key>?exp=…&sig=…  a signed URL (ranges)         → bytes
+//   PUT  /api/projects/:p/messages/<key>     an oversized message, editor  → {}   (key messages/c/<hour>/<sha>-<nonce>)
+//   GET  /api/projects/:p/messages/<key>     the server's oversized message → bytes (key messages/s/<hour>/<sha>)
 //   GET  /api/health
+//
+// The two message routes carry the sync protocol's envelopes (core/src/sync/envelope.ts): a message over 1 MiB
+// travels through the sequencer's own blob scope, and these routes reach exactly the two envelope key patterns of
+// that scope, nothing else in it (keyframes, segments).
 
 import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins";
 import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "@carton/server";
@@ -32,11 +38,18 @@ export interface HttpDeps {
   // signs blob URLs (derived under its own label, so it can be the auth secret)
   secret: string | Uint8Array;
   blobsFor(projectId: string): BlobStore | undefined;
+  // the sequencer's blob scope, for the envelope routes (only its messages/ keys are ever reachable)
+  sequencerBlobsFor?(projectId: string): BlobStore | undefined;
   // the host's WebSocket upgrade, called with the verified context
   upgrade(req: Request, auth: AuthContext, projectId: string): Promise<Response>;
   adminToken?: string;
   // the largest part or signed PUT body accepted (Workers' request limit is 100 MB on the Free plan)
   maxBodyBytes?: number;
+  // the largest envelope upload accepted: the sequencer's maxEnvelopeBytes (default 64 MiB; a Durable Object host
+  // sets it lower, for its 128 MB of memory)
+  maxEnvelopeBytes?: number;
+  // after an envelope upload: a host whose sequencer sweeps on a schedule makes sure the sweep will run
+  onEnvelope?(projectId: string): Promise<void> | void;
 }
 
 const PROJECT = /^\/(?:api\/(?:admin\/)?projects|blob)\/([A-Za-z0-9._~-]{1,128})(\/.*)?$/;
@@ -138,6 +151,7 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
       if (!ROLES.has(String(b.role))) return err(400, "bad role");
       return json({ invite: await invites().createInvite(projectId, b.role as AuthContext["role"], b.ttlMs) });
     }
+    if (rest.startsWith("/messages/")) return await messageRoutes(req, rest.slice("/messages/".length), ctx, deps, projectId);
     const store = deps.blobsFor(projectId);
     if (rest.startsWith("/blobs/") || rest.startsWith("/uploads")) {
       if (!store) return err(404, "this host has no blob store");
@@ -149,6 +163,42 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     if (e instanceof BlobError) return json({ error: e.message, code: e.code }, e.code === "NoSuchUpload" ? 404 : 400);
     throw e;
   }
+}
+
+// A client's envelope upload and the server's envelopes it reads: exactly the keys core's envelope code makes.
+const CLIENT_ENVELOPE = /^messages\/c\/\d{1,12}\/([0-9a-f]{64})-[0-9a-f]{8,64}$/;
+const SERVER_ENVELOPE = /^messages\/s\/\d{1,12}\/[0-9a-f]{64}$/;
+// The sequencer reads at most 64 MiB from one client envelope by default (createSequencer's maxEnvelopeBytes).
+const MAX_ENVELOPE = 64 << 20;
+
+async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: HttpDeps, projectId: string): Promise<Response> {
+  const store = deps.sequencerBlobsFor?.(projectId);
+  if (!store) return err(404, "this host carries no oversized messages");
+  if (req.method === "PUT") {
+    const m = CLIENT_ENVELOPE.exec(key);
+    if (!m) return err(404, "not a client envelope key");
+    // only writers send messages big enough to need one (pushes, adoptions, keyframes)
+    if (!canPush(ctx)) return err(403, "read-only role");
+    let data: Uint8Array;
+    try {
+      data = await readBody(req, deps.maxEnvelopeBytes ?? MAX_ENVELOPE);
+    } catch (e) {
+      if (e instanceof BodyTooLarge) return err(413, "envelope too large");
+      throw e;
+    }
+    // the key names the message's SHA-256; a store that verifies (R2) refuses bytes that don't match, and the
+    // sequencer checks the digest again when it reads the envelope
+    await store.put(key, data, { contentType: "application/json", sha256: m[1]!, ifAbsent: true });
+    await deps.onEnvelope?.(projectId);
+    return json({});
+  }
+  if (req.method === "GET") {
+    if (!SERVER_ENVELOPE.test(key)) return err(404, "not a server envelope key");
+    const body = store.getStream ? await store.getStream(key) : await store.get(key);
+    if (body === null) return err(404, "no such envelope");
+    return new Response(body as ConstructorParameters<typeof Response>[0], { headers: { "content-type": "application/json", "cache-control": "no-store" } });
+  }
+  return err(405, "PUT or GET");
 }
 
 async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext, store: BlobStore, deps: HttpDeps, projectId: string): Promise<Response> {
