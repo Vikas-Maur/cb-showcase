@@ -681,10 +681,22 @@ test("onRequest waits for the source's cleanup; close() doesn't wait for a sourc
 
 test("a client that leaves with part of the body queued is reported as aborted (CI fix #9 review)", async () => {
   const data = xorshiftBytes(8 * MiB, 10);
+  // The whole body goes to the socket in one write, so `info.bytes` reaches its length at once: the case the removed
+  // "every byte written is not an abort" rule got wrong. Whether the OS then takes all of it into its buffers is up to
+  // the OS (Windows' loopback buffers can hold all 8 MiB; Linux's can't), so the source's cleanup waits until its read
+  // is aborted, i.e. until the client has left: the server can't finish this response before that on any system.
   const source: RangeSource = {
     stat: async () => ({ size: data.length }),
-    async *read(_h, offset, length) {
-      yield data.subarray(offset, offset + length); // the whole body in one write: counted at once, delivered later
+    async *read(_h, offset, length, signal) {
+      try {
+        yield data.subarray(offset, offset + length);
+      } finally {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) return resolve();
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+          setTimeout(resolve, 10_000).unref(); // never hang the suite if the abort doesn't come
+        });
+      }
     },
   };
   const infos: RangeRequestInfo[] = [];
@@ -701,7 +713,8 @@ test("a client that leaves with part of the body queued is reported as aborted (
       req.end();
     });
     await until(() => infos.length === 1);
-    assert.equal(infos[0].aborted, true);
+    assert.equal(infos[0].bytes, data.length, "every byte had been handed to the socket");
+    assert.equal(infos[0].aborted, true, "and still the client left before the response was over");
   } finally {
     await srv.close();
   }

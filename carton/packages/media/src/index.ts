@@ -24,7 +24,24 @@ export {
 } from "./manifest.ts";
 export { blobSource, bytesSource, hashSource, webCryptoHasher, type ByteSource, type HashOptions } from "./hash.ts";
 export { HashScheduler, MemoryManifestCache, type HashJobOptions, type HashPriority, type HashSchedulerOptions, type HashTarget, type ManifestCache } from "./scheduler.ts";
-export { manifestKey, mediaKey, proxyPointerKey, type ProxyPointer } from "./keys.ts";
+export { damagedKey, manifestKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
+export {
+  claimProxyStream,
+  usableProxy,
+  findProxy,
+  newStreamId,
+  ProxyStreamReader,
+  ProxyStreamWriter,
+  streamRangeSource,
+  StreamDamagedError,
+  type ClaimResult,
+  type PlayedPart,
+  type ProxyStreamReaderOptions,
+  type ProxyStreamWriterOptions,
+  type StreamEnd,
+  type StreamPart,
+  type StreamSegment,
+} from "./stream.ts";
 export {
   cancelUpload,
   choosePartSize,
