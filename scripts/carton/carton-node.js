@@ -237,6 +237,7 @@ async function install(tmp, file, seenStamp) {
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   const lc = await open(bundle);
   if (!lc) return fs.promises.rename(tmp, file);
+  let installed = true, recover = null;
   const done = await withInstallLock(bundle, async (mine) => {
     const bytes = fs.readFileSync(tmp);
     // A writer whose state is no longer head (another process committed and installed after it) doesn't install: the
@@ -251,23 +252,14 @@ async function install(tmp, file, seenStamp) {
       s = { files: new DisplacedFiles(path.join(bundle, ".carton", "displaced")), own: null, noLinks: !hardLinksWork(bundle), timer: null, mine: new Set() };
       installs.set(file, s);
     }
-    let installed = true;
     const journal = readJournal(bundle);
     sweep(file, s, journal);
     // Taken over while waiting (this process was stalled): the new holder installs.
     if (!mine()) return fs.rmSync(tmp, { force: true }), false;
     let r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null, ...(testHooks.between ? { between: testHooks.between } : {}) });
-    if (!mine()) {
-      // Taken over while installing: the last file displaced is the successor's. If its state is newer than ours, it
-      // goes back (ours is displaced and held like any other), and the store reads the disk again.
-      const theirs = r.displaced.at(-1), back = theirs && (await refOf(lc, revIn(file, fs.readFileSync(theirs))));
-      if (back && ref && (back.branchId !== ref.branchId || back.seq > ref.seq)) {
-        const tmp2 = theirs + ".back";
-        fs.copyFileSync(theirs, tmp2);
-        r = { displaced: [...r.displaced, ...displaceThenInstall(file, tmp2, s.files.next, { noLinks: s.noLinks }).displaced] };
-        installed = false;
-      }
-    }
+    // Taken over while installing (stalled for a minute): the last file displaced may be the successor's, newer than
+    // ours. It is put back below, under the lock taken again, only if it is still newer than what is on disk then.
+    if (!mine()) recover = r.displaced.at(-1) ?? null, installed = false;
     markSeen(file, sha(bytes));
     // What was at the path is held, never deleted at once: the file the writer read (its stamp unchanged) or one
     // Carton wrote goes only if its bytes and stamp are still the same after the hold. An in-place writer that opened
@@ -296,10 +288,34 @@ async function install(tmp, file, seenStamp) {
     if (!foreign) s.timer.unref?.();
     return installed;
   });
+  if (recover) await putBack(lc, file, recover);
   if (done !== LOCK_BUSY) return done;
   warnOnce("busy:" + bundle, "another process kept the install lock of " + path.basename(bundle) + "; its file catches up at the next save");
   fs.rmSync(tmp, { force: true });
   return false;
+}
+
+// After losing the lock in the middle of an install: with the lock held again, the displaced file goes back only if its
+// state is on head's cut and newer than the state on disk now (a third writer may have installed since).
+async function putBack(lc, file, from) {
+  const bundle = path.dirname(file);
+  await withInstallLock(bundle, async (mine) => {
+    let back, now;
+    try { back = await refOf(lc, revIn(file, fs.readFileSync(from))); } catch { return; }
+    try { now = await refOf(lc, revIn(file, fs.readFileSync(file))); } catch {}
+    const head = (await lc.carton.head()).ref;
+    if (!back || back.branchId !== head.branchId || (now && now.branchId === head.branchId && now.seq >= back.seq) || !mine()) return;
+    const tmp = from + ".back";
+    fs.copyFileSync(from, tmp);
+    const s = installs.get(file), r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks });
+    const journal = readJournal(bundle);
+    for (const p of r.displaced) {
+      s.mine.add(p);
+      journal[path.basename(p)] = { at: Date.now(), stamp: statStamp(p) };
+      s.files.hold([p], { bytes: fs.readFileSync(p), stamp: statStamp(p) });
+    }
+    writeJournal(bundle, journal);
+  });
 }
 
 // When each displaced file was moved aside and its stamp then (.carton/displaced.json), written under the install
@@ -477,7 +493,17 @@ export const cardboard14 = {
           panels.get(bundlePath).add(panel);
           // Cards kept from earlier GUI saves are shown too, until resolved (the earliest first for each field).
           const person = keyOf(actorOf("person"));
-          const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
+          // Cards kept before cards had ids get one when read, so they can be resolved like the rest.
+          const kept = async () => {
+            const rows = (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
+            const old = rows.filter((x) => x.value.cards.some((c) => !c.cid));
+            if (old.length) {
+              // Derived from the notice and the card's place in it, so two panels opening at once agree.
+              for (const x of old) x.value = { ...x.value, cards: x.value.cards.map((c, i) => (c.cid ? c : { ...c, cid: "k" + sha(JSON.stringify(x.key) + ":" + i).slice(0, 16) })) };
+              await lc.store.write(old.map((x) => ({ table: "notices", key: x.key, value: x.value })));
+            }
+            return rows;
+          };
           show(panel, (await kept()).flatMap((x) => x.value.cards));
           // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
           for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
@@ -495,7 +521,8 @@ export const cardboard14 = {
                   const cards = x.value.cards.filter((c) => c.cid !== cid);
                   await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
                 }
-                for (const other of panels.get(bundlePath)) if (other !== panel && other.shown.get(at) === cid) other.shown.delete(at);
+                // Another panel showing the same card keeps tracking it: it still shows it, and a later card for the
+                // field isn't shown there until that one is resolved.
                 const next = (await kept()).flatMap((x) => x.value.cards).find((c) => c.path === at);
                 if (next) show(panel, [next]);
               }
@@ -513,7 +540,14 @@ export const cardboard14 = {
 };
 
 // For the tests (scripts/carton/test): the install lock, the sweep and its journal.
-export const internals = { testHooks, withInstallLock, sweep, readJournal, writeJournal, install, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
+export const internals = {
+  testHooks,
+  // A notice as an earlier build wrote it (cards without ids).
+  writeNotice: async (bundlePath, actorId, cards) => {
+    const lc = await open(bundlePath), to = keyOf(actorOf(actorId));
+    await lc.store.write([{ table: "notices", key: [to, Date.now(), 0, "old"], value: { to, kind: "late-conflict", text: "kept", cards, at: Date.now() } }]);
+  },
+  withInstallLock, sweep, readJournal, writeJournal, install, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {

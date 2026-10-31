@@ -142,7 +142,17 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    that isn't Carton's last view is imported as an `external:project.json` change.
 3. **`read(id)`**: a document Carton never materialized is imported at once. The worker's watcher reads every outside
    save, so a foreign write is attributed when it lands, not when the next edit commits on top of it.
-4. **If a commit fails** (a Carton bug, a full disk), the write still happens, as in 1.4.0, and the failure is logged.
+4. **Files follow commit order.** Two processes install `project.json` and `timeline.tsx` one at a time per bundle (a
+   lock folder in `.carton/`, with its holder's pid and a heartbeat; a holder that is gone, or silent for a minute, is
+   taken over by one rename). A file whose version is no longer head isn't installed, and its writer's store reads the
+   disk again, so an older state never lands after a newer one. What the install moves aside is held in
+   `.carton/displaced/` and journaled (`displaced.json`: when, and its stamp then); Carton's own files go once unchanged
+   after the hold, a foreign `project.json` is imported and a foreign `timeline.tsx` applied through the mirror, and
+   anything that can't be is kept and reported.
+5. **Conflicts stay data.** A clash keeps head's value and the writer's side becomes a card, kept as a notice for its
+   author (`cb conflicts`, the Stop hook). The person's own cards also show in the History panel, which resolves exactly
+   the card it shows.
+6. **If a commit fails** (a Carton bug, a full disk), the write still happens, as in 1.4.0, and the failure is logged.
    The next commit imports that file as an outside change. A Carton failure never stops the person from saving.
 
 **Tests:**

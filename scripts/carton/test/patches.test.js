@@ -232,7 +232,8 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   assert.deepEqual(on.keptAfter, [180], JSON.stringify(on));
   assert.deepEqual(on.shownNext, ["180"], JSON.stringify(on));
   // A second panel resolving the card already resolved leaves the next one kept; an agent's card stays the agent's.
-  assert.deepEqual(on.keptAfterOther, [180], JSON.stringify(on));
+  assert.deepEqual(on.keptAfterOther, [180, 175], JSON.stringify(on));
+  assert.deepEqual([on.legacyShown, on.legacyGone], [true, true], JSON.stringify(on));
   assert.deepEqual([on.agentCards > 0, on.panelHasAgent], [true, false], JSON.stringify(on));
   assert.equal(on.guiSave, 150);
   // A stale GUI save's clash keeps head (160) and a card for the person; ⌘Z then reaches project.json and the pages.
@@ -282,16 +283,29 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       await I.setRevFor(bundle, theirsRev, { branchId: head.branchId, seq: head.seq + 1 });
       const ours = path.join(bundle, ".ours.tmp");
       fs.writeFileSync(ours, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: oursRev } }));
-      let fired = false;
-      I.testHooks.between = () => {
-        if (fired) return;
-        fired = true;
-        I.testHooks.between = null;
-        fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: process.pid, me: "successor" }));
-        fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: theirsRev } }));
+      // The successor installs (B) and frees the lock a moment later; with a third writer (C, newer still), C
+      // installs before that. B goes back only if it is still the newest on disk.
+      const takeover = async (third) => {
+        let fired = false;
+        fs.writeFileSync(ours, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: oursRev } }));
+        I.testHooks.between = () => {
+          if (fired) return;
+          fired = true;
+          I.testHooks.between = null;
+          fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: process.pid, me: "successor" }));
+          fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: theirsRev } }));
+          setTimeout(() => {
+            if (third) fs.rmSync(pj, { force: true }), fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: thirdRev } }));
+            fs.rmSync(dir, { recursive: true, force: true });
+          }, 200);
+        };
+        const res = await I.install(ours, pj);
+        return [res, JSON.parse(fs.readFileSync(pj, "utf8")).project.stateUpdatedAt];
       };
-      const res = await I.install(ours, pj);
-      out.putBack = res === false && JSON.parse(fs.readFileSync(pj, "utf8")).project.stateUpdatedAt === theirsRev;
+      const thirdRev = 1700000000203;
+      await I.setRevFor(bundle, thirdRev, { branchId: head.branchId, seq: head.seq + 2 });
+      const [r1, on1] = await takeover(false), [r2, on2] = await takeover(true);
+      out.putBack = r1 === false && on1 === theirsRev && r2 === false && on2 === thirdRev;
       fs.rmSync(dir, { recursive: true, force: true });
       fs.writeFileSync(pj, JSON.stringify(cur));
       console.log(JSON.stringify(out));
