@@ -96,7 +96,7 @@ export function liveSyncSuite(name: string, make: () => Promise<HostFixture>): v
       assert.equal(c0?.name, "after restart");
     });
 
-    test("a change over 32 MiB travels as envelopes, up to the host and down to the other replica", async (t) => {
+    test("a big change (33 MiB unless the host caps lower) travels as envelopes, up to the host and down to the other replica", async (t) => {
       const f = fx ?? (fx = await make());
       if (!f.clientBlobs) return t.skip("the host gives clients no blob store for envelopes");
       const branch = `big-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -104,8 +104,9 @@ export function liveSyncSuite(name: string, make: () => Promise<HostFixture>): v
       const a = await makeReplica(f, branch, "alice", clients), b = await makeReplica(f, branch, "bob", clients);
       const dump = () => JSON.stringify({ a: { head: a.q.headSeq(branch), pending: a.q.pending(branch).length, ev: a.events.slice(-8) }, b: { head: b.q.headSeq(branch), ev: b.events.slice(-8) } }).slice(0, 2000);
       await until(() => a.client.online && b.client.online, "both online", dump);
-      // every WebSocket host refuses a message over 32 MiB (Cloudflare's own cap): this one only fits as an envelope
-      const notes = "envelope ".repeat(Math.ceil((33 << 20) / 9));
+      // over 32 MiB, Cloudflare's own WebSocket cap, it only fits as an envelope; a host that caps messages lower for
+      // memory (a Durable Object) says how big it carries, still far over the 1 MiB envelope threshold
+      const notes = "envelope ".repeat(Math.ceil((f.bigMessageBytes ?? 33 << 20) / 9));
       a.commit([{ op: "set", path: ["timelineItems", "c2", "notes"], value: notes }]);
       await until(() => a.settled() && b.q.headSeq(branch) === a.q.headSeq(branch) && a.q.headSeq(branch) >= 1, "the 33 MiB change confirmed and fanned out", dump, 180_000);
       const got = (b.q.confirmedState(branch, b.q.headSeq(branch)) as unknown as { timelineItems: { id: string; notes?: string }[] }).timelineItems.find((c) => c.id === "c2");

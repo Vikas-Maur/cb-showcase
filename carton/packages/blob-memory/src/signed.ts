@@ -107,6 +107,22 @@ export async function readBody(req: Request, max: number): Promise<Uint8Array> {
   if (declared > max) throw new BodyTooLarge(max);
   if (!req.body) return new Uint8Array(0);
   const reader = req.body.getReader();
+  // with a declared length, the bytes go straight into one buffer of that size, so a body is never held twice
+  if (Number.isSafeInteger(declared) && declared >= 0) {
+    const out = new Uint8Array(declared);
+    let at = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (at + value.byteLength > declared) {
+        await reader.cancel().catch(() => {});
+        throw new BodyTooLarge(declared);
+      }
+      out.set(value, at);
+      at += value.byteLength;
+    }
+    return at === declared ? out : out.subarray(0, at);
+  }
   const chunks: Uint8Array[] = [];
   let n = 0;
   for (;;) {
