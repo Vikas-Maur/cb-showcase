@@ -32,6 +32,16 @@ function within<T>(ms: number, p: Promise<T>, what: string): Promise<T> {
   return Promise.race([p, new Promise<T>((_, no) => (t = setTimeout(() => no(new Error(`timed out waiting for ${what}`)), ms)))]).finally(() => clearTimeout(t));
 }
 const req = (n: number) => ({ todo: `foundation-core request ${n} (local-cli notes)`, timeout: 30_000 });
+/**
+ * Cleanup that runs even when a test times out (node:test doesn't run a timed-out test's `finally`): open every gate,
+ * then close the handles, each close bounded, so nothing waits on a gated write after the test.
+ */
+function cleanupAfter(t: { after(fn: () => Promise<void>): void }, g: { restore(): void }, handles: () => (Carton | null)[]) {
+  t.after(async () => {
+    g.restore();
+    for (const h of handles()) if (h) await within(5000, h.close(), "closing a handle").catch(() => {});
+  });
+}
 
 function world() {
   const tokens = new Map<string, AuthContext>();
@@ -64,22 +74,23 @@ function gated(store: Store) {
 }
 const pendingOf = (id: string) => (w: Parameters<Store["write"]>[0]) => w.some((x) => x.table === "pending" && (x.value as { id?: string } | undefined)?.id === id);
 
-test("a settle never removes a pending row still being written, though its write started after the settle did", req(1), async () => {
+test("a settle never removes a pending row still being written, though its write started after the settle did", req(1), async (t) => {
   const w = world();
   const store = createMemoryStore();
   const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
   const g = gated(store);
-  try {
+  cleanupAfter(t, g, () => [c]);
+  {
     await c.share();
     assert.ok(await c.sync!.connect({ nonce: "n" }));
     await until(async () => (await c.cuts()).find((x) => x.id === c.cut)!.sequencer.kind === "server", 5000, "the hand-off");
     const one = g.gate(pendingOf("sf2.one"));
     const two = g.gate(pendingOf("sf2.two"));
     const p1 = c.commit({ id: "sf2.one", ops: [set("c1", "name", "one")] });
-    await one.reached;
+    await within(5000, one.reached, "sf2.one's pending row write");
     await until(() => c.sync!.state().status === "up-to-date", 5000, "sf2.one confirmed by the server");
     const p2 = c.commit({ id: "sf2.two", ops: [set("c2", "name", "two")] });
-    await two.reached;
+    await within(5000, two.reached, "sf2.two's pending row write");
     await until(() => c.sync!.state().status === "up-to-date", 5000, "sf2.two confirmed by the server");
     one.release();
     await within(5000, p1, "sf2.one's commit");
@@ -90,9 +101,6 @@ test("a settle never removes a pending row still being written, though its write
     await until(async () => (await store.get("ids", ["sf2.two"])) !== undefined, 5000, "sf2.two recorded");
     await c.head();
     for (const id of ["sf2.one", "sf2.two"]) assert.equal(await store.get("pending", [c.cut, id]), undefined, `${id} is not left pending`);
-  } finally {
-    g.restore();
-    await c.close();
   }
 });
 
@@ -125,7 +133,7 @@ test("a handle fenced off, then connected again under the new nonce, pushes what
   }
 });
 
-test("an empty shared save whose holder was replaced mid-write answers with the store's outcome, never a no-op beside a change", req(3), async () => {
+test("an empty shared save whose holder was replaced mid-write answers with the store's outcome, never a no-op beside a change", req(3), async (t) => {
   const w = world();
   const store = createMemoryStore();
   const lease = new Lease(store);
@@ -133,14 +141,15 @@ test("an empty shared save whose holder was replaced mid-write answers with the 
   const a = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
   const g = gated(store);
   let b: Carton | null = null;
-  try {
+  cleanupAfter(t, g, () => [b, a]);
+  {
     await a.share();
     assert.ok(await a.sync!.connect({ nonce: old.nonce, fence: () => true, conditions: [fence(old.nonce)] }));
     await until(async () => (await a.cuts()).find((x) => x.id === a.cut)!.sequencer.kind === "server", 5000, "the hand-off");
     const hold = g.gate((wr) => wr.some((x) => x.table === "meta" && x.key[0] === "noop" && x.key[1] === "sf2.empty"));
     const req = { id: "sf2.empty", actor: agent, op: { kind: "commit" as const, ops: [set("c1", "name", "c1")] } };
     const first = runWrite(a, structuredClone(req));
-    await hold.reached;
+    await within(5000, hold.reached, "the no-op record's write");
     // the lease moves; the replacement sees someone rename c1, then gets the retry: unanswered, so it applies
     const newer = (await lease.take(old.nonce, { pid: 2, socketPath: "/new", kind: "worker" }))!;
     b = await Carton.open({ adapter, store, actor: agent, sync: w.sync("bob") });
@@ -156,27 +165,24 @@ test("an empty shared save whose holder was replaced mid-write answers with the 
     assert.ok(!late.empty && late.id === req.id, `the replaced holder answers with the change the store holds: ${JSON.stringify(late)}`);
     assert.equal(await store.get("meta", ["noop", req.id]), undefined, "no no-op recorded beside the change");
     assert.equal(await nameOf(b, "c1"), "c1");
-  } finally {
-    g.restore();
-    await b?.close();
-    await a.close();
   }
 });
 
-test("an empty shared save names the same version on retry, even when the queue was ahead of the log", req(4), async () => {
+test("an empty shared save names the same version on retry, even when the queue was ahead of the log", req(4), async (t) => {
   const w = world();
   const store = createMemoryStore();
   const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
   const g = gated(store);
-  try {
+  cleanupAfter(t, g, () => [c]);
+  {
     await c.share();
     assert.ok(await c.sync!.connect({ nonce: "n" }));
     await until(async () => (await c.cuts()).find((x) => x.id === c.cut)!.sequencer.kind === "server", 5000, "the hand-off");
     // a pin's write holds the handle's queue, so the next confirmation is in the queue but not yet in the log
     const pins = g.gate((wr) => wr.some((x) => x.table === "pins"));
     const pin = c.pin({ owner: "hold" });
-    await pins.reached;
-    const r = await c.commit({ id: "sf2.ahead", ops: [set("c1", "name", "new")] });
+    await within(5000, pins.reached, "the pin's write");
+    const r = await within(5000, c.commit({ id: "sf2.ahead", ops: [set("c1", "name", "new")] }), "the shared commit");
     assert.equal(r.status, "pending");
     await until(() => c.sync!.state().status === "up-to-date", 5000, "the change confirmed by the server");
     const first = await within(5000, c.commit({ id: "sf2.noop", ops: [] }), "the empty commit");
@@ -187,9 +193,6 @@ test("an empty shared save names the same version on retry, even when the queue 
     await within(5000, pin, "the pin");
     const retry = await within(5000, c.commit({ id: "sf2.noop", ops: [] }), "the retried empty commit");
     assert.deepEqual([retry.status, retry.status === "confirmed" && retry.seq], ["confirmed", first.seq]);
-  } finally {
-    g.restore();
-    await c.close();
   }
 });
 
@@ -215,8 +218,9 @@ test("notices: a delivery that fails gives none away; two copies of one request 
   try {
     await store.write(["old.1", "old.2"].map((change, i) => ({ table: "notices", key: [actorKey(agent), i, 0], value: { to: actorKey(agent), kind: "rejected", text: change, change } })));
     const original = store.write.bind(store);
+    // the write that marks old.2 fails: one batch gives neither away (row by row, old.1 would be gone already)
     (store as { write: Store["write"] }).write = async (wr, conds) => {
-      if (wr.some((x) => x.table === "notices" && (x.value as { deliveredAt?: number } | undefined)?.deliveredAt)) throw new Error("disk unavailable");
+      if (wr.some((x) => x.table === "notices" && (x.value as { change?: string; deliveredAt?: number } | undefined)?.deliveredAt && (x.value as { change?: string }).change === "old.2")) throw new Error("disk unavailable");
       return original(wr, conds);
     };
     await assert.rejects(runWrite(c, { id: "sf2.failed", actor: agent, op: { kind: "printView" } }, view), /disk unavailable/);

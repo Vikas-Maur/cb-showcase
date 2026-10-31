@@ -190,8 +190,12 @@ export async function deliverNotices(carton: Carton, actor: Actor, opts: { reque
       if (value.change !== opts.answered) out.push(delivered);
     }
     if (!writes.length || (await store.write(writes, conds))) return out;
+    // other writers (hook marks, resolves) kept changing these rows: let them through before reading again
+    if (attempt >= 2) await new Promise((r) => setTimeout(r, 2 + Math.random() * 8 * attempt));
   }
-  return []; // contended throughout: they stay undelivered, for the next call
+  // never answer without them: a retry's replay or this call's own outcome would be lost. The write is run again
+  // (deduplicated by its id), delivery with it
+  throw new Error("Carton: the store changed under this write (its notices kept changing while being delivered)");
 }
 
 export const SKIP = Symbol("skip");
@@ -408,8 +412,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
  */
 async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Actor, cut?: string): Promise<CommitResult> {
   const head = await carton.head(cut);
-  // a retry: answer as the first time (an undo, or nothing to undo), before looking at what the turn holds now
-  if (await answeredBefore(carton, id, cut)) return carton.commit({ id, doc: head.doc, base: head.ref, author, cut });
+  // a retry: answer as the first time (an undo, or nothing to undo), before looking at what the turn holds now, on the
+  // cut that answer is on (the current cut may have changed since the first try)
+  const answeredOn = await answeredBefore(carton, id);
+  if (answeredOn) {
+    const h = answeredOn === (cut ?? carton.cut) ? head : await carton.head(answeredOn);
+    return carton.commit({ id, doc: h.doc, base: h.ref, author, cut: answeredOn });
+  }
   const versions = await carton.log({ cut, limit: 5000 });
   const undone = new Set<string>();
   for (const v of versions) if (v.kind === "undo" && v.change) for (const x of (await revertsOf(carton, v.change))) undone.add(x);
@@ -429,11 +438,17 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   return carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) });
 }
 
-/** Whether core already holds an answer for this id: a confirmed change, a no-op, or (shared cut) a pending edit. */
-async function answeredBefore(carton: Carton, id: ChangeId, cut?: string): Promise<boolean> {
+/**
+ * The cut on which core already holds an answer for this id: a confirmed change (`ids`), a no-op (`meta ["noop"]`),
+ * or a pending edit on a shared cut, whichever cut it went to; null when there is none.
+ */
+async function answeredBefore(carton: Carton, id: ChangeId): Promise<string | null> {
   const store = storeOf(carton);
-  if (!store) return false;
-  return (await store.get("ids", [id])) !== undefined || (await store.get("meta", ["noop", id])) !== undefined || (await store.get("pending", [cut ?? carton.cut, id])) !== undefined;
+  if (!store) return null;
+  const at = (await store.get<[string, number]>("ids", [id])) ?? (await store.get<[string, number]>("meta", ["noop", id]));
+  if (at) return at[0];
+  for (const c of await carton.cuts()) if (c.sequencer.kind !== "local" && (await store.get("pending", [c.id, id])) !== undefined) return c.id;
+  return null;
 }
 
 /**
