@@ -445,8 +445,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     rootSeq?: number;
     stateHash?: string;
     forkOf?: { branchId: string; seq: number };
-    /** An adoption's ancestry closure: shallow read-only tracking branches (§5.3, R4-07); existing ones are kept. */
-    closure?: readonly { branchId: string; rec: CutRecord; nodes: sync.AdoptMsg["closure"][number]["nodes"] }[];
+    /**
+     * An adoption's ancestry closure: shallow read-only tracking branches (§5.3, R4-07). A tracking branch another
+     * adoption made gains the new nodes and authors (lineage is immutable, so a union is safe); a real branch is kept.
+     */
+    closure?: readonly sync.ClosureEntry[];
   }
   /**
    * Create a branch atomically: the branch row, its root keyframe, its records, its rows and an adoption's ancestry
@@ -460,14 +463,18 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     let seq = root;
     for (const row of rows) if (row?.seq !== ++seq) throw new Error(`rows must be ${root + 1}..${root + rows.length} in order (got ${row?.seq} for ${seq})`);
     const where = init.doc0 !== null ? placeKeyframe(rec.id, root, init.doc0) : null;
-    if (where instanceof Promise) return where.then((w) => writeBranch(rec, init, rows, adoptKey, w, rids));
-    writeBranch(rec, init, rows, adoptKey, where, rids);
+    // the closure's carried states are keyframes of their tracking branches, placed (uploaded) before the transaction
+    const placed = (init.closure ?? []).flatMap((t) => (t.states ?? []).map((st) => ({ branch: t.branchId, seq: st.seq, hash: st.hash, where: placeKeyframe(t.branchId, st.seq, st.doc) })));
+    if (where instanceof Promise || placed.some((p) => p.where instanceof Promise))
+      return Promise.all([where, ...placed.map((p) => p.where)]).then(([w, ...ws]) => writeBranch(rec, init, rows, adoptKey, w ?? null, rids, placed.map((p, i) => ({ ...p, where: ws[i]! }))));
+    writeBranch(rec, init, rows, adoptKey, where, rids, placed as ClosureKeyframe[]);
   }
-  function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string): void {
+  type ClosureKeyframe = { branch: string; seq: number; hash: string; where: { blob: string } | { inline: string } };
+  function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string, closureKfs: readonly ClosureKeyframe[] = []): void {
     const root = init.rootSeq ?? 0;
     try {
       tables.transaction(() => {
-        tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey });
+        tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey, ...(init.closure?.length ? { closure: init.closure.map((t) => t.branchId) } : {}) });
         if (kf) tables.putKeyframe(rec.id, root, init.stateHash ?? "", kf);
         const doc = init.doc0 as Record<string, unknown> | null;
         if (doc) for (const coll of collections) for (const r of (doc[coll] as Rec[] | undefined) ?? []) {
@@ -481,9 +488,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) tables.bindRid(ridOf(row.id), rids);
         }
         for (const t of init.closure ?? []) {
-          if (tables.branch(t.branchId)) continue;
-          tables.insertBranch({ id: t.branchId, rec: t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: t.nodes });
+          const had = tables.branch(t.branchId);
+          if (had && !had.tracking) continue;
+          const nodes = new Map((had?.nodes ?? []).map((n) => [n.id, n]));
+          for (const n of t.nodes) if (!nodes.has(n.id)) nodes.set(n.id, n);
+          const authors = new Map(had?.authors ?? []);
+          for (const [n, a] of t.authors ?? []) if (!authors.has(n)) authors.set(n, a);
+          const b: StoredBranch = { id: t.branchId, rec: had?.rec ?? t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: [...nodes.values()], ...(authors.size ? { authors: [...authors] } : {}) };
+          if (had) tables.putBranch(b);
+          else tables.insertBranch(b);
         }
+        for (const k of closureKfs) tables.putKeyframe(k.branch, k.seq, k.hash, k.where);
       });
     } catch (e) {
       tables.forget(rec.id);
@@ -729,6 +744,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const closure = Array.isArray(m.closure) ? m.closure : [];
     if (!mayWrite(c, m.branchId) || closure.some((t) => !mayWrite(c, t?.branchId))) return fail("forbidden"); // finding 4
     if (closure.some((t) => !t?.rec || t.rec.id !== t.branchId)) return fail("closure rec.id must be its branchId");
+    if (closure.some((t) => !Array.isArray(t.nodes) || (t.states !== undefined && (!Array.isArray(t.states) || t.states.some((st) => !Number.isInteger(st?.seq) || st.seq < 0 || typeof st.hash !== "string" || !SHA256.test(st.hash)))) || (t.authors !== undefined && !Array.isArray(t.authors))))
+      return fail("closure: bad nodes, states or authors");
     const key = `${m.branchId}|${m.n}|${m.stateHash}`;
     const b = tables.branch(m.branchId);
     if (b) {
@@ -753,6 +770,36 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     stats.adopts++;
     emit({ type: "adopt", branchId: m.branchId, n: m.n, repeat: false });
     send(c, { type: "adopted", branchId: m.branchId, since: m.n });
+  }
+
+  /**
+   * History a replica doesn't hold (Stage F): rows `(after, upTo]` paged like catch-up, and with `lineage` the
+   * branch's ancestry closure (its tracking branches with their carried states), for a joiner's log and credits.
+   */
+  async function onHistory(c: HostConnection, m: sync.HistoryMsg) {
+    const reply = (r: Pick<sync.HistoryReplyMsg, "rows" | "more" | "lineage" | "error">) => send(c, { type: "history", branchId: m.branchId, req: m.req, ...r });
+    const b = typeof m.branchId === "string" ? tables.branch(m.branchId) : null;
+    if (!b) return reply({ rows: [], error: "unknown branch" });
+    if (c.auth.branches && !c.auth.branches.includes(m.branchId)) return reply({ rows: [], error: "forbidden" });
+    const after = Math.max(b.root, Number.isInteger(m.after) ? m.after : 0);
+    const upTo = Math.min(tables.head(m.branchId), Number.isInteger(m.upTo) ? m.upTo : 0);
+    const rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+    const last = rows.length ? rows[rows.length - 1]!.seq : after;
+    const lineage: sync.ClosureEntry[] = [];
+    if (m.lineage)
+      for (const id of b.closure ?? []) {
+        const t = tables.branch(id);
+        if (!t?.tracking) continue;
+        const states: NonNullable<sync.ClosureEntry["states"]> = [];
+        for (const n of t.nodes ?? []) {
+          const k = tables.keyframeAt(id, n.seq);
+          if (!k) continue;
+          const { keyframe } = await loadKeyframe(id, k);
+          states.push({ seq: n.seq, hash: keyframe.stateHash, doc: keyframe.doc });
+        }
+        lineage.push({ branchId: id, rec: t.rec, nodes: t.nodes ?? [], states, ...(t.authors?.length ? { authors: t.authors } : {}) });
+      }
+    reply({ rows, ...(last < upTo && rows.length ? { more: true } : {}), ...(m.lineage ? { lineage } : {}) });
   }
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
@@ -837,6 +884,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return onKeyframe(c, msg);
       case "presence":
         return onPresence(c, msg);
+      case "history":
+        return onHistory(c, msg);
       default:
         return send(c, { type: "error", reason: `unknown message type ${(msg as { type?: unknown })?.type}` });
     }

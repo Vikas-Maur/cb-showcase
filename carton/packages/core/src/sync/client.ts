@@ -18,7 +18,7 @@
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
-import type { AdoptMsg, ClientMessage, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
+import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
 import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, jsonBytesBound, oversized, seal, unseal } from "./envelope.ts";
@@ -126,6 +126,9 @@ export class SyncClient {
   readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0, envelopesSent: 0, envelopesReceived: 0 };
 
   private unsubscribe: (() => void) | null = null;
+  /** `history` requests waiting for their answer on the current connection, by `req`. */
+  private requests = new Map<number, { m: HistoryMsg; rows: ConfirmedChange[]; lineage?: ClosureEntry[]; resolve: (r: { rows: ConfirmedChange[]; lineage?: ClosureEntry[] }) => void; reject: (e: Error) => void }>();
+  private reqN = 0;
 
   constructor(opts: SyncClientOptions) {
     this.o = opts;
@@ -177,6 +180,7 @@ export class SyncClient {
     const c = this.conn;
     this.conn = null;
     c?.close();
+    this.failRequests(why);
     this.setStatus("stopped");
     this.emit({ type: "stopped", why });
     for (const w of this.waiters.splice(0)) w(false);
@@ -264,10 +268,27 @@ export class SyncClient {
   private onClose(id: number, why: string): void {
     if (id !== this.connId || !this.conn) return;
     this.conn = null;
+    this.failRequests(why);
     this.caughtUp = false;
     this.setStatus("offline");
     this.emit({ type: "offline", why });
     if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.o.backoffMs ?? 500);
+  }
+  private failRequests(why: string): void {
+    for (const r of this.requests.values()) r.reject(new Error(`history request lost: ${why}`));
+    this.requests.clear();
+  }
+  /**
+   * History this replica doesn't hold (Stage F): the rows `(after, upTo]` of this branch, paged like catch-up, and with
+   * `lineage` its ancestry closure. Fails if offline or if the connection drops before the last page.
+   */
+  history(after: number, upTo: number, { lineage = false }: { lineage?: boolean } = {}): Promise<{ rows: ConfirmedChange[]; lineage?: ClosureEntry[] }> {
+    if (!this.conn || this.stopped) return Promise.reject(new Error("history request: offline"));
+    return new Promise((resolve, reject) => {
+      const m: HistoryMsg = { type: "history", branchId: this.branchId, req: ++this.reqN, after, upTo, ...(lineage ? { lineage: true } : {}) };
+      this.requests.set(m.req, { m, rows: [], resolve, reject });
+      this.send(m);
+    });
   }
   /** Drop connection `id` (a lost message: the server couldn't read an envelope, or we couldn't): reconnect, catch up. */
   private drop(id: number, why: string): void {
@@ -456,6 +477,20 @@ export class SyncClient {
           this.defer(() => this.pump(), Math.max(1, n)); // the rebase holds the pusher, then the resubmission
         });
         return;
+      }
+      case "history": {
+        const r = this.requests.get(m.req);
+        if (!r || m.branchId !== b) return;
+        if (m.error) {
+          this.requests.delete(m.req);
+          return r.reject(new Error(m.error));
+        }
+        r.rows.push(...m.rows);
+        if (m.lineage) r.lineage = m.lineage;
+        // the next page starts after the last row; a page with no row can't make progress, so it ends the request
+        if (m.more && m.rows.length) return this.send((r.m = { ...r.m, after: m.rows[m.rows.length - 1]!.seq, lineage: false }));
+        this.requests.delete(m.req);
+        return r.resolve({ rows: r.rows, ...(r.lineage ? { lineage: r.lineage } : {}) });
       }
       case "overwritten":
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
