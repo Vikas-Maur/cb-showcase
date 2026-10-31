@@ -9,6 +9,7 @@ that the `displace` protocol now calls the shipped code: `displaceThenInstall`, 
 | protocol | steps | where a foreign write can be destroyed |
 |---|---|---|
 | naive (control) | write tmp; stat the view; import it if its stamp isn't ours; rename tmp over it | between the stat and the rename |
+| replace (evaluated for Windows) | naive, but a busy rename (a writer has the view open, Windows) backs off and checks again: no missing window | between the check and the rename |
 | hardlink (control) | link the view to `prev/k`; rename tmp over it; import `prev/k` if it isn't ours | between the link and the rename |
 | **displace** (shipped) | loop { rename the view to `displaced/n`; link tmp to the view; on EEXIST loop }; unlink tmp; review every displaced file | none: the engine never replaces a name |
 
@@ -46,6 +47,12 @@ node race.ts trial --protocol displace --writers 4 --mode free --rounds 5000 --o
   losses with plain displacement; the shipped settle-2 rule left about 1 in 12,000 rounds in one harness and 0 in
   about 26,000 in the verifier's (L19).
 - **The missing-path gap** rows (`--writers 0 --pace 2`) time how long the path is absent per install, with sync and
-  async `fs` calls. The shipped code is synchronous because the async gap is several times longer.
+  async `fs` calls. The shipped code is synchronous because the async gap is several times longer. Histograms have
+  1 µs buckets to 2 ms, then 100 µs buckets to 100 ms (NTFS reaches milliseconds); quantiles print in µs.
+- **The `retry` reader** (`--reader retry`, a paced row of the matrix) reads through the shipped `retryMissing`, as
+  Carton's own readers do: `failed after retry` must be 0, and `retry wait` is what a reader pays in the window.
+- **`replace`** is the install proposed for Windows to remove the missing window. It is not shipped: a foreign save
+  that lands between its check and its rename is destroyed (the test "Windows decision" in
+  `packages/cardboard/test/displace.test.ts` shows the interleaving on any OS); this row measures how often on NTFS.
 
 Every number this harness prints is unverified until a separate verifier re-runs it (AGENTS.md rule 6).

@@ -775,3 +775,19 @@ test("review 5 #3: if removing a finished save's attempt fails, the save is stil
   assert.ok((await s.engine.getMeta<ViewRow>(["view", name]))?.last, "the view's base was recorded");
   assert.equal(s.engine.commits.length, 1, "applied once");
 });
+
+test("an install holds the bundle's install lock (the app's readers wait on it) and releases it after", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)], { start: false });
+  const lock = path.join(s.bundle, ".carton", "install.lock");
+  const seen: boolean[] = [];
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (to === s.abs(TIMELINE_FILE) || to === s.abs(PROJECT_FILE)) seen.push(fs.existsSync(lock));
+    return real(from, to);
+  });
+  await s.mz.start();
+  t.mock.restoreAll();
+  assert.ok(seen.length >= 1, "start installed the files");
+  assert.ok(seen.every(Boolean), "each link ran under the lock");
+  assert.equal(fs.existsSync(lock), false, "released");
+});

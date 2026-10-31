@@ -24,6 +24,7 @@ import { createHash, randomBytes } from "node:crypto";
 import type { Actor, ConflictCard, Doc } from "@carton/core";
 import type { OwnFn } from "@carton/core/plugins";
 import { BUSY_BUDGET_MS, displaceThenInstall, hardLinksWork, retryBusy, stampOf, statStamp, type BusyOptions } from "./displace.ts";
+import { withInstallLock } from "./install-lock.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
 import { findRev, renderRev, printNonce, REV_TAG, type Rev } from "../header.ts";
 import type { Project, TimelineCodec } from "../codec.ts";
@@ -658,7 +659,8 @@ export class Materializer {
     fs.writeFileSync(tmp, bytes, { flag: "wx" });
     let r;
     try {
-      r = await displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null });
+      // under the bundle's install lock, shared with the app's facade: the app's readers wait while it is held
+      r = await withInstallLock(this.bundle, () => displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null }), this.busy);
     } catch (e) {
       // a rename may have moved a file aside before the failure: hold whatever is in the folder unreviewed
       await this.recoverDisplaced();
