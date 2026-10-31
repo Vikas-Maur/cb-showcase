@@ -141,26 +141,110 @@ test("H-SV: server-cloudflare's room accepts Cardboard's schema version unset an
 });
 
 /**
- * The SCHEMA_VERSION values a wrangler.toml pins for the Worker: in `[vars]` and in each `[env.<name>.vars]`, as keys or
- * inline (`vars = { SCHEMA_VERSION = "2" }`). Enough TOML for a config: tables, comments, quoted or bare values.
+ * The SCHEMA_VERSION values a wrangler.toml pins for the Worker: every key whose full path is `vars.SCHEMA_VERSION` or
+ * `env.<name>.vars.SCHEMA_VERSION`, however TOML spells it: under a table header, as a dotted key, inside an inline table,
+ * with bare, "basic" or 'literal' key parts (round 16 #3: a quoted key). Enough TOML for a config: one key per line,
+ * comments, string or bare values, arrays and multi-line strings skipped.
  */
 export function pinnedSchemaVersions(toml: string): { table: string; value: string }[] {
   const out: { table: string; value: string }[] = [];
-  const VALUE = String.raw`(?:"([^"]*)"|'([^']*)'|([^\s#,}]+))`;
-  const key = new RegExp(String.raw`^\s*SCHEMA_VERSION\s*=\s*${VALUE}`);
-  const inline = new RegExp(String.raw`^\s*vars\s*=\s*\{[^}]*\bSCHEMA_VERSION\s*=\s*${VALUE}`);
-  const isVars = (table: string) => table === "vars" || /^env\.[^.]+\.vars$/.test(table);
-  let table = "";
+  const found = (path: string[], value: string) => {
+    const t = path.slice(0, -1);
+    if (path[path.length - 1] !== "SCHEMA_VERSION") return;
+    if ((t.length === 1 && t[0] === "vars") || (t.length === 3 && t[0] === "env" && t[2] === "vars")) out.push({ table: t.join("."), value });
+  };
+  let table: string[] = [];
+  let multi: string | null = null; // inside a multi-line string: its closing delimiter
   for (const line of toml.split(/\r?\n/)) {
-    const header = /^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(?:#.*)?$/.exec(line);
-    if (header) {
-      table = header[1]!.replace(/\s*\.\s*/g, ".").replace(/"/g, "");
+    if (multi) {
+      if (line.includes(multi)) multi = null;
       continue;
     }
-    const k = isVars(table) ? key.exec(line) : null;
-    const i = !k && (table === "" || /^env\.[^.]+$/.test(table)) ? inline.exec(line) : null;
-    const m = k ?? i;
-    if (m) out.push({ table: i ? (table ? `${table}.vars` : "vars") : table, value: m[1] ?? m[2] ?? m[3]! });
+    let i = 0;
+    const ws = () => {
+      while (line[i] === " " || line[i] === "\t") i++;
+    };
+    const str = (): string | null => {
+      const q = line[i];
+      if (q === "'") {
+        const j = line.indexOf("'", i + 1);
+        if (j < 0) return null;
+        const s = line.slice(i + 1, j);
+        i = j + 1;
+        return s;
+      }
+      if (q !== '"') return null;
+      let s = "";
+      for (i++; i < line.length && line[i] !== '"'; i++) {
+        if (line[i] !== "\\") s += line[i];
+        else if (line[i + 1] === "u" || line[i + 1] === "U") {
+          const n = line[i + 1] === "u" ? 4 : 8;
+          s += String.fromCodePoint(parseInt(line.slice(i + 2, i + 2 + n), 16));
+          i += 1 + n;
+        } else s += ({ n: "\n", t: "\t", r: "\r", b: "\b", f: "\f" } as Record<string, string>)[line[i + 1]!] ?? line[++i];
+      }
+      if (line[i] !== '"') return null;
+      i++;
+      return s;
+    };
+    const key = (): string[] | null => {
+      const parts: string[] = [];
+      for (;;) {
+        ws();
+        let part: string | null = null;
+        if (line[i] === '"' || line[i] === "'") part = str();
+        else {
+          const m = /^[A-Za-z0-9_-]+/.exec(line.slice(i));
+          if (m) [part, i] = [m[0], i + m[0].length];
+        }
+        if (part === null) return null;
+        parts.push(part);
+        ws();
+        if (line[i] !== ".") return parts;
+        i++;
+      }
+    };
+    const value = (path: string[]): boolean => {
+      ws();
+      if (line[i] === "{") {
+        i++;
+        for (;;) {
+          ws();
+          if (line[i] === "}") return (i++, true);
+          const k = key();
+          if (!k || (ws(), line[i] !== "=")) return false;
+          i++;
+          if (!value([...path, ...k])) return false;
+          ws();
+          if (line[i] === ",") i++;
+          else if (line[i] !== "}") return false;
+        }
+      }
+      for (const q of ['"""', "'''"]) {
+        if (!line.startsWith(q, i)) continue;
+        if (line.indexOf(q, i + 3) < 0) multi = q;
+        return false; // never a schema version
+      }
+      if (line[i] === '"' || line[i] === "'") {
+        const s = str();
+        return s !== null && (found(path, s), true);
+      }
+      const m = /^[^\s,}#[\]]+/.exec(line.slice(i)); // a number, boolean or date; an array is skipped
+      return !!m && ((i += m[0].length), found(path, m[0]), true);
+    };
+    ws();
+    if (line[i] === "[") {
+      const array = line[i + 1] === "[";
+      i += array ? 2 : 1;
+      const k = key();
+      if (k && line[i] === "]") table = k;
+      continue;
+    }
+    const k = key();
+    if (k && (ws(), line[i] === "=")) {
+      i++;
+      value([...table, ...k]);
+    }
   }
   return out;
 }
@@ -187,4 +271,33 @@ test("H-SV: wrangler.toml's SCHEMA_VERSION is read from [vars] and each [env.<na
     { table: "env.prod.vars", value: "4" },
   ]);
   assert.deepEqual(pinnedSchemaVersions("[vars]\n# SCHEMA_VERSION = \"1\"\n"), [], "commented out: unset");
+});
+
+test("H-SV: wrangler.toml's SCHEMA_VERSION however TOML spells its key: quoted, dotted, inline, under a quoted table (round 16 #3)", () => {
+  const pins = (lines: string[]) => pinnedSchemaVersions(lines.join("\n"));
+  assert.deepEqual(pins(["[vars]", '"SCHEMA_VERSION" = "1"']), [{ table: "vars", value: "1" }], "a basic-quoted key");
+  assert.deepEqual(pins(["[ vars ] # spaced", "'SCHEMA_VERSION' = '1'"]), [{ table: "vars", value: "1" }], "a literal-quoted key");
+  assert.deepEqual(pins(['"SCHEMA\\u005FVERSION" = "8"', "[vars]", '"SCHEMA\\u005FVERSION" = "1"']), [{ table: "vars", value: "1" }], "an escaped key, and only under [vars]");
+  assert.deepEqual(pins(['name = "carton"', 'vars.SCHEMA_VERSION = "1"', "[env.qa]", "vars . \"SCHEMA_VERSION\" = 2"]), [
+    { table: "vars", value: "1" },
+    { table: "env.qa.vars", value: "2" },
+  ], "dotted keys");
+  assert.deepEqual(pins(['[env."my env".vars]', 'SCHEMA_VERSION = "3"', "[env]", "x.vars.SCHEMA_VERSION = '4'"]), [
+    { table: "env.my env.vars", value: "3" },
+    { table: "env.x.vars", value: "4" },
+  ], "a quoted table name, and a dotted key under [env]");
+  assert.deepEqual(pins(['env = { dev = { vars = { "SCHEMA_VERSION" = "5", OTHER = "}" } } }']), [{ table: "env.dev.vars", value: "5" }], "nested inline tables");
+  assert.deepEqual(pins([
+    "[vars]",
+    'NOTE = """',
+    'SCHEMA_VERSION = "0"',
+    '"""',
+    'ROUTES = [ { SCHEMA_VERSION = "0" } ]',
+    "[vars.nested]",
+    'SCHEMA_VERSION = "0"',
+    "[durable_objects]",
+    'vars.SCHEMA_VERSION = "0"',
+    "[env.a.b.vars]",
+    'SCHEMA_VERSION = "0"',
+  ]), [], "never a multi-line string's text, an array, or another table's key");
 });

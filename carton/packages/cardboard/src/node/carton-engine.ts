@@ -154,7 +154,11 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       } else if (kept && (r.status === "conflicts" || r.status === "rejected")) {
         await store.write([{ table: "notices", key: cardsKey(author, id!), value: undefined }]); // the save didn't land
       }
-      const out = (s: SaveResult): SaveResult => (cards.length ? { ...s, status: "conflicts", cards, cut: on } : { ...s, cut: on });
+      // the cut the change is on, as core answers it: a retry answered by id (dedup spans every cut) gets the original
+      // confirmation, on the cut the first attempt went to, even if the current cut has changed since (round 16 #1). An
+      // answer without a ref (an engine that leaves it out) is on the cut asked for
+      const at = (r.status === "confirmed" || r.status === "pending" ? r.ref?.branchId : undefined) ?? on;
+      const out = (s: SaveResult): SaveResult => (cards.length ? { ...s, status: "conflicts", cards, cut: at } : { ...s, cut: at });
       switch (r.status) {
         case "confirmed":
           return out({ status: "confirmed", seq: r.seq, ...(r.change ? { id: r.change.id } : {}) });
