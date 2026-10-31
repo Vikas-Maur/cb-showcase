@@ -22,7 +22,7 @@ if (process.argv.includes("--measure")) {
   for (const x of ids ?? []) if (!config.measurements.some((m) => m.id === x)) throw new Error(`no measurement "${x}" in measure.json`);
   for (const x of agents ?? []) if (!config.measurements.some((m) => m.agent === x)) throw new Error(`no measurement of agent "${x}" in measure.json`);
   for (const m of config.measurements)
-    if ((!ids || ids.has(m.id)) && (!agents || agents.has(m.agent))) include.push({ id: m.id, agent: m.agent, needs: (m.needs ?? []).join(" "), timeout: m.timeout ?? 60 });
+    if ((!ids || ids.has(m.id)) && (!agents || agents.has(m.agent))) include.push({ id: m.id, agent: m.agent, runner: m.runner ?? "ubuntu-latest", needs: (m.needs ?? []).join(" "), timeout: m.timeout ?? 60 });
 } else {
   const config = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "groups.json"), "utf8"));
   const tag = tagOf("carton-ci");

@@ -80,21 +80,24 @@ const parseJsonLines = (f) => readLines(f).flatMap((l) => {
   }
 });
 
-function cellsReport(rep, rows) {
+// `groupBy` keys may be dotted paths into a row (`link.name`); `where` keeps only rows whose fields equal its values.
+const at = (o, k) => k.split(".").reduce((x, p) => (x == null ? undefined : x[p]), o);
+function cellsReport(rep, allRows) {
   const ignored = (k) => (rep.ignore ?? []).some((i) => k === i || k.startsWith(i + "."));
+  const rows = allRows.filter((r) => Object.entries(rep.where ?? {}).every(([k, v]) => at(r, k) === v));
   const groups = new Map();
   for (const r of rows) {
-    const g = (rep.groupBy ?? []).map((k) => (r[k] === undefined ? null : `${k}=${r[k]}`)).filter(Boolean).join(" ");
+    const g = (rep.groupBy ?? []).map((k) => (at(r, k) === undefined ? null : `${k}=${at(r, k)}`)).filter(Boolean).join(" ");
     if (!groups.has(g)) groups.set(g, []);
     groups.get(g).push(r);
   }
   const cells = [];
   for (const [g, rs] of groups) {
     const metrics = {};
-    for (const r of rs) for (const [k, v] of Object.entries(flatten(r))) if (!ignored(k) && !(rep.groupBy ?? []).includes(k)) (metrics[k] ??= []).push(v);
+    for (const r of rs) for (const [k, v] of Object.entries(flatten(r))) if (!ignored(k) && !(rep.groupBy ?? []).includes(k) && !Object.hasOwn(rep.where ?? {}, k)) (metrics[k] ??= []).push(v);
     cells.push({ cell: g, runs: rs.length, metrics: Object.fromEntries(Object.entries(metrics).map(([k, xs]) => [k, { median: median(xs), runs: xs }])) });
   }
-  return { file: rep.file, kind: "cells", cells };
+  return { file: rep.file, kind: "cells", rows: rows.length, cells };
 }
 
 function report(rep) {

@@ -324,6 +324,357 @@
           ]
         }
       ]
+    },
+    {
+      "id": "media-hash",
+      "agent": "media",
+      "claim": "media: hashing throughput per method, all methods giving the same hash (notes 1); the universal entry's size (notes 6)",
+      "timeout": 45,
+      "needs": [
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "bundle size of @carton/media's universal entry (esbuild minify, ESM, browser, gzip -9)",
+          "run": [
+            "{node}",
+            "-e",
+            "const {buildSync}=require('esbuild');const r=buildSync({entryPoints:['packages/media/src/index.ts'],bundle:true,minify:true,format:'esm',platform:'browser',write:false,logLevel:'silent'});const b=r.outputFiles[0].contents;console.log(JSON.stringify({entry:'packages/media/src/index.ts',min:b.length,gz:require('zlib').gzipSync(b,{level:9}).length,esbuild:require('esbuild').version}))"
+          ],
+          "stdoutTo": "{results}/media-size.json"
+        },
+        {
+          "label": "make a 256 MiB input (bench/media/hash-throughput.ts make)",
+          "run": [
+            "{node}",
+            "bench/media/hash-throughput.ts",
+            "make",
+            "{tmp}/r256.bin",
+            "256"
+          ]
+        },
+        {
+          "label": "every method, round-robin, 3 rounds (bench/media/hash-throughput.ts run)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/hash-throughput.ts",
+            "run",
+            "{tmp}/r256.bin",
+            "3",
+            "{results}/hash-throughput.jsonl"
+          ],
+          "stdoutTo": "{results}/hash-summary.json"
+        }
+      ],
+      "reports": [
+        {
+          "file": "media-size.json",
+          "kind": "json"
+        },
+        {
+          "file": "hash-throughput.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at",
+            "size"
+          ]
+        },
+        {
+          "file": "hash-summary.json",
+          "kind": "json"
+        }
+      ]
+    },
+    {
+      "id": "media-resume",
+      "agent": "media",
+      "claim": "media: resumable upload overhead, 64 MiB over a 4 MB/s, 60 ms link, cuts at 23/37/51/68/85% (notes 2)",
+      "timeout": 60,
+      "steps": [
+        {
+          "label": "clean / resume / restart, 5 rounds (bench/media/resume-overhead.ts run 5 … 64 4 60)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/resume-overhead.ts",
+            "run",
+            "5",
+            "{results}/resume-overhead.jsonl",
+            "64",
+            "4",
+            "60"
+          ],
+          "stdoutTo": "{results}/resume-summary.json"
+        }
+      ],
+      "reports": [
+        {
+          "file": "resume-overhead.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at"
+          ]
+        },
+        {
+          "file": "resume-summary.json",
+          "kind": "json"
+        }
+      ]
+    },
+    {
+      "id": "media-first-frame",
+      "agent": "media",
+      "claim": "media: time to the first frame, file source and through MediaReader (play-first, verified), Chrome and ffmpeg, faststart and moov-at-end, three links (notes 3, 4)",
+      "timeout": 75,
+      "needs": [
+        "ffmpeg",
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "first frame, file source (bench/media/first-frame.ts --rounds 3)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/first-frame.ts",
+            "--rounds",
+            "3",
+            "--out",
+            "{results}/first-frame.jsonl"
+          ],
+          "stdoutTo": "{results}/first-frame.log"
+        },
+        {
+          "label": "first frame through MediaReader, play-first (bench/media/first-frame-reader.ts)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/first-frame-reader.ts",
+            "--mode",
+            "play-first",
+            "--rounds",
+            "3",
+            "--out",
+            "{results}/ffr-play.jsonl"
+          ],
+          "stdoutTo": "{results}/ffr-play.log"
+        },
+        {
+          "label": "first frame through MediaReader, verified (bench/media/first-frame-reader.ts)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/first-frame-reader.ts",
+            "--mode",
+            "verified",
+            "--rounds",
+            "3",
+            "--out",
+            "{results}/ffr-verified.jsonl"
+          ],
+          "stdoutTo": "{results}/ffr-verified.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "first-frame.jsonl",
+          "where": {
+            "type": "run"
+          },
+          "groupBy": [
+            "tool",
+            "clip",
+            "link.name"
+          ],
+          "ignore": [
+            "round",
+            "clipBytes",
+            "link",
+            "load",
+            "requests"
+          ]
+        },
+        {
+          "file": "ffr-play.jsonl",
+          "where": {
+            "type": "run"
+          },
+          "groupBy": [
+            "tool",
+            "clip",
+            "link.name"
+          ],
+          "ignore": [
+            "round",
+            "clipBytes",
+            "link",
+            "load",
+            "requests"
+          ]
+        },
+        {
+          "file": "ffr-verified.jsonl",
+          "where": {
+            "type": "run"
+          },
+          "groupBy": [
+            "tool",
+            "clip",
+            "link.name"
+          ],
+          "ignore": [
+            "round",
+            "clipBytes",
+            "link",
+            "load",
+            "requests"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cardboard-race-linux",
+      "agent": "cardboard-adapter",
+      "claim": "P10 on Linux, the full matrix on the shipped code: free mode with the inotify oracle, turn mode, in-place writers, the missing-path gap (notes 1)",
+      "timeout": 120,
+      "steps": [
+        {
+          "label": "bench/race/run-linux.sh, 3 trials x 3000 rounds, ext4",
+          "cwd": "bench/race",
+          "run": [
+            "bash",
+            "run-linux.sh",
+            "{results}/race-linux.jsonl",
+            "3",
+            "3000",
+            "ext4:{tmp}/race-run"
+          ],
+          "stdoutTo": "{results}/race-linux-summary.md"
+        }
+      ],
+      "reports": [
+        {
+          "file": "race-linux.jsonl",
+          "groupBy": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "ignore": [
+            "round",
+            "trial",
+            "rounds",
+            "ms",
+            "at",
+            "base",
+            "fsLabel",
+            "oracle",
+            "keep",
+            "size",
+            "jitter",
+            "pace"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cardboard-race-macos",
+      "agent": "cardboard-adapter",
+      "runner": "macos-latest",
+      "claim": "P10 on APFS (macOS), the portable matrix on the shipped code (notes 2: 'APFS: node race.ts on a Mac')",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "bench/race/race.ts, 3 trials x 3000 rounds, APFS",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "race.ts",
+            "--dir",
+            "{tmp}/carton-race",
+            "--fs",
+            "macos-APFS",
+            "--trials",
+            "3",
+            "--rounds",
+            "3000",
+            "--out",
+            "{results}/race-macos.jsonl"
+          ],
+          "stdoutTo": "{results}/race-macos.log"
+        },
+        {
+          "label": "bench/race/summarize.ts",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "summarize.ts",
+            "{results}/race-macos.jsonl"
+          ],
+          "stdoutTo": "{results}/race-macos-summary.md"
+        }
+      ],
+      "reports": [
+        {
+          "file": "race-macos.jsonl",
+          "groupBy": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "ignore": [
+            "round",
+            "trial",
+            "rounds",
+            "ms",
+            "at",
+            "base",
+            "fsLabel",
+            "oracle",
+            "keep",
+            "size",
+            "jitter",
+            "pace"
+          ]
+        }
+      ]
     }
   ]
 }
