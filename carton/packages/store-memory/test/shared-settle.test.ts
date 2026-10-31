@@ -132,3 +132,25 @@ test("finding 9: a live absorption (another replica saved the identical edit fir
   await b.close();
   w.host.close();
 });
+
+test("F5: a process without the sync lease queues a shared-cut write in carton.db; the next holder to start pushes it", async () => {
+  const w = world();
+  const store = createMemoryStore();
+  const h = await shared(w, store, alice, undefined, { nonce: "h1" });
+  // another process on the same carton.db (a cb call that committed itself instead of handing the write to the
+  // holder): it never connects, so its write waits in the store
+  const n = await Carton.open({ adapter, store, actor: agent, sync: w.sync("alice", false) });
+  const r = await n.commit({ ops: [set("a", "name", "from another process")] });
+  const id = r.status === "pending" ? r.id : assert.fail(r.status);
+  assert.ok(await store.get("pending", [n.cut, id]), "kept in carton.db");
+  await sleep(100);
+  assert.equal(await store.get("ids", [id]), undefined, "the running holder doesn't push another process's queue");
+  await h.close();
+  const h2 = await Carton.open({ adapter, store, actor: alice, sync: w.sync("alice", false) });
+  assert.ok(await h2.sync!.connect({ nonce: "h2" }));
+  await until(async () => (await store.get("ids", [id])) !== undefined, 5000, "the next holder to push it");
+  await until(async () => (await n.log()).some((v) => v.change === id), 5000, "the writer to see it confirmed");
+  assert.equal(item((await h2.head()).doc, "a")!.name, "from another process");
+  for (const c of [n, h2]) await c.close();
+  w.host.close();
+});
