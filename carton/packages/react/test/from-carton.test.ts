@@ -190,20 +190,24 @@ test("credits and the published cut", async () => {
 });
 
 test("sync words and presence from the sync client's events", async () => {
-  const { ui, emit } = await open();
+  const { carton, ui, emit } = await open();
+  const branchId = carton.cut;
   assert.equal(ui.sync().kind, "local");
   emit({ type: "sync", status: "offline", waiting: 3 });
   assert.deepEqual(ui.sync(), { kind: "offline", waiting: 3 });
   emit({ type: "sync", status: "up-to-date", waiting: 0 });
   assert.deepEqual(ui.sync(), { kind: "upToDate" });
-  emit({ type: "presence", actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 1, end: 6 }] } });
+  emit({ type: "presence", branchId, actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 1, end: 6 }] } });
   assert.equal(ui.peers().length, 1);
   assert.equal(ui.ghosts()[0]!.itemId, "a");
   const peersBefore = ui.peers();
-  emit({ type: "presence", actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 2, end: 7 }] } });
+  emit({ type: "presence", branchId, actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 2, end: 7 }] } });
   assert.equal(ui.peers(), peersBefore, "a ghost moving doesn't change the peers list");
   assert.equal(ui.ghosts()[0]!.start, 2);
-  emit({ type: "presence", actor: bob, state: null });
+  emit({ type: "presence", branchId: "elsewhere", actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 2, end: 7 }] } });
+  assert.equal(ui.ghosts().length, 0, "drags on another cut aren't ghosts over this timeline");
+  assert.equal(ui.peers()[0]!.cutId, "elsewhere");
+  emit({ type: "presence", branchId, actor: bob, state: null });
   assert.equal(ui.peers().length, 0);
   assert.equal(ui.ghosts().length, 0);
   ui.dispose();

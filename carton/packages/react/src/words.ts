@@ -64,6 +64,7 @@ export const words = {
   foldAllCards: "Bring it in with every difference shown as a card",
   foldRestLater: "You can fold in the rest later.",
   foldRest: "Fold in the rest",
+  foldChangedSince: "Something changed since you looked. Pick on the cards below, then fold in.",
   foldLocked: "Comes with the rest: it can't be left out on its own.",
   foldChanges: (n: number) => plural(n, "change", "changes"),
   foldConflicts: (n: number) => `${plural(n, "conflict card", "conflict cards")} to pick`,

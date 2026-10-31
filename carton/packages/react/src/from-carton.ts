@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, describe, groupOf, lcs, pathKey, shots as engineShots } from "@carton/core";
+import { actorKey, deepEqual, describe, getIn, groupOf, lcs, pathKey, shots as engineShots } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -241,14 +241,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const turnKeyOf = (a: CoreActor | null | undefined) => (a && a.kind !== "human" && a.turn ? `${a.chat ?? ""}/${a.turn}` : null);
   // Summaries survive object replacement (a turn row growing, a rename).
   const byId = new Map<string, { summary: string; details?: readonly string[] }>();
-  // Partial folds whose rest was folded in (this session; see foldRest).
+  // Partial folds whose left-out changes are still left out (checked against the head, so it survives a restart), and
+  // the ones folded in since.
+  const restLeft = new Set<string>();
   const restDone = new Set<string>();
 
   const toVersion = (c: CoreVersion, kindOverride?: VersionKind, turnEdits?: number): Version => {
     const id = c.change ?? `${c.ref.branchId}@${c.ref.seq}`;
     const prev = byId.get(id);
     const kind = kindOverride ?? KIND[c.kind] ?? "edit";
-    const rest = c.kind === "partial-revert" && !!c.change && !restDone.has(c.change) && c.ref.branchId === cutId;
+    // A partial fold's inverse offers "Fold in the rest" once checkRest() found its left-out changes still left out.
+    const rest = c.kind === "partial-revert" && !!c.change && restLeft.has(c.change) && !restDone.has(c.change);
     return {
       id,
       seq: c.ref.seq,
@@ -265,7 +268,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
   const sameShape = (v: Version, kind: VersionKind, edits: number) => v.kind === kind && (kind !== "turn" || v.turn?.edits === edits);
 
-  /** Group the confirmed rows of the newest turn after an append. Returns the lowest index it changed. */
+  /**
+   * Group the confirmed rows of the newest turn after an append. Returns the lowest index it changed. Only the newest
+   * group can change: an earlier turn's checkpoint and its edit count stay as they are (R2-7).
+   */
   const regroupTail = (): number => {
     let i = rows.length - 1;
     while (i >= 0 && rows[i]!.v.provisional) i--;
@@ -273,13 +279,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const key = rows[i]!.turnKey;
     let j = i;
     if (key) while (j > 0 && rows[j - 1]!.turnKey === key) j--;
-    // The row before the turn may have been the previous checkpoint of an earlier append of this same turn.
     let low = rows.length;
-    for (let k = Math.max(0, j - 1); k <= i; k++) {
+    for (let k = j; k <= i; k++) {
       const r = rows[k]!;
       if (!r.core) continue;
-      const inTurn = k >= j && !!key;
-      const want: VersionKind = inTurn && k === i ? "turn" : !inTurn && r.turnKey && r.turnKey !== key && k === j - 1 ? r.v.kind : KIND[r.core.kind] ?? "edit";
+      const want: VersionKind = key && k === i ? "turn" : KIND[r.core.kind] ?? "edit";
       const edits = i - j + 1;
       if (!sameShape(r.v, want, edits)) {
         r.v = toVersion(r.core, want, edits);
@@ -301,7 +305,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const kind: VersionKind = key && k === j ? "turn" : KIND[c.kind] ?? "edit";
         const old = reuse.get(c.change ?? `${c.ref.branchId}@${c.ref.seq}`);
         // An unchanged version keeps its object, so a refresh re-renders nothing and the bridge sends nothing.
-        if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1) && !!old.v.foldRest === (c.kind === "partial-revert" && !!c.change && !restDone.has(c.change) && c.ref.branchId === cutId)) next.push(old);
+        if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1) && !!old.v.foldRest === (c.kind === "partial-revert" && !!c.change && restLeft.has(c.change) && !restDone.has(c.change))) next.push(old);
         else next.push({ core: c, turnKey: key, v: toVersion(c, kind, j - i + 1) });
       }
       i = j + 1;
@@ -416,28 +420,31 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const r = i === undefined ? undefined : rows[i];
     if (!r?.core || disposed) return;
     const seq = r.core.ref.seq;
-    let lines: string[] = [];
+    // Core describes the change against the state just before it (log({summary})): no whole-doc diff here.
+    let line: string | undefined;
     try {
-      if (seq > 0) lines = (await carton.diff(`${r.core.ref.branchId}@${seq - 1}`, `${r.core.ref.branchId}@${seq}`)).describe;
+      if (seq > 0) line = (await carton.log({ cut: r.core.ref.branchId, before: seq + 1, limit: 1, summary: true }))[0]?.summary;
     } catch {
-      lines = [];
+      line = undefined;
     }
-    const summary = lines[0] ?? (r.v.kind === "fold" ? "Folded in" : r.v.kind === "undo" ? "Undid a change" : r.v.kind === "restore" ? "Restored a version" : "No visible change");
-    byId.set(id, { summary, details: lines.slice(1) });
+    const summary = line ?? (r.v.kind === "fold" ? "Folded in" : r.v.kind === "undo" ? "Undid a change" : r.v.kind === "restore" ? "Restored a version" : "No visible change");
+    byId.set(id, { summary });
     const j = pos.get(id);
     if (j === undefined || disposed) return;
     const row = rows[j]!;
-    row.v = { ...row.v, summary, ...(lines.length > 1 ? { details: lines.slice(1) } : {}) };
+    row.v = { ...row.v, summary };
     changed(j);
     hub.notify("history");
   };
 
   const view = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
-  let allCache: { rev: number; list: Version[] } | null = null;
   const history: HistorySource = {
-    all: () => {
-      if (allCache?.rev !== revision) allCache = { rev: revision, list: rows.map((r) => r.v) };
-      return allCache.list;
+    all: () => rows.map((r) => r.v),
+    // The bridge reads only the rows from the first change on (R2-8): an append copies the tail, not History.
+    slice: (from) => {
+      const out: Version[] = [];
+      for (let i = Math.max(0, from); i < rows.length; i++) out.push(rows[i]!.v);
+      return out;
     },
     want: (ids) => {
       for (const id of ids) {
@@ -516,18 +523,19 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       cuts = out;
       hub.notify("cuts");
     }
-    // Published cut: the newest cut of kind "published"; newer edits = versions on its source since.
-    const pubs = records.filter((c) => c.kind === "published" && c.forkOf).sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
+    // The published cut: the newest publication; "newer edits" comes from core (and counts them when the source's
+    // head is known).
+    const pubs = (await carton.publications()).sort((a, b) => (b.cut.at ?? 0) - (a.cut.at ?? 0));
     const p = pubs[0];
     let next: Published | null = null;
     if (p) {
-      const at = p.forkOf!.lastIndexOf("@");
-      const src = p.forkOf!.slice(0, at), seq = Number(p.forkOf!.slice(at + 1));
-      const srcCut = records.find((c) => c.id === src);
-      const i = pos.get(rows.find((r) => r.core?.ref.branchId === src && r.core.ref.seq === seq)?.v.id ?? "");
+      const seq = Number(p.from.slice(p.from.lastIndexOf("@") + 1));
+      const srcCut = records.find((c) => c.id === p.source);
+      const i = pos.get(rows.find((r) => r.core?.ref.branchId === p.source && r.core.ref.seq === seq)?.v.id ?? "");
       const versionName = i === undefined ? undefined : rows[i]!.v.name;
-      const url = opts.shareUrl?.(p);
-      next = { cutId: src, cutName: srcCut?.name ?? p.name, ref: p.forkOf!, at: p.at ?? 0, newerEdits: Math.max(0, (heads.get(src) ?? seq) - seq), ...(versionName ? { versionName } : {}), ...(url ? { url } : {}) };
+      const url = opts.shareUrl?.(p.cut);
+      const newerEdits = !p.newer ? 0 : Math.max(1, (heads.get(p.source) ?? seq) - seq);
+      next = { cutId: p.source, cutName: srcCut?.name ?? p.cut.name, ref: p.from, at: p.cut.at ?? 0, newerEdits, ...(versionName ? { versionName } : {}), ...(url ? { url } : {}) };
     }
     if (!samePublished(published, next)) {
       published = next;
@@ -606,11 +614,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
    * a second conflict on the same field with other values is its own card.
    */
   const addCards = (list: readonly ConflictCard[], by: CoreActor | undefined, cut = cutId) => {
-    const key = (c: ConflictCard) => `${cut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
-    const seen = new Set([...cardEntries.values()].map((e) => key(e.card)));
+    const key = (onCut: string, c: ConflictCard) => `${onCut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
+    const seen = new Set([...cardEntries.values()].map((e) => key(e.cut, e.card)));
     for (const card of list) {
-      if (seen.has(key(card))) continue;
-      seen.add(key(card));
+      if (seen.has(key(cut, card))) continue;
+      seen.add(key(cut, card));
       const w = describeCard(card, schema);
       const id = `${cut}|${card.path}|${++cardSeq}`;
       cardEntries.set(id, {
@@ -685,8 +693,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const prev = peerMap.get(key);
         const actor = ui(e.actor);
         const activity = typeof state.activity === "string" ? state.activity : undefined;
-        const peer = prev && prev.peer.actor === actor && !prev.peer.idle && prev.peer.activity === activity ? prev.peer : { actor, cutId, idle: false, ...(activity ? { activity } : {}) };
-        const g = (state.ghosts ?? []).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(x.label ? { label: x.label } : {}) }));
+        // Presence says which cut the peer is on; their drags are ghosts only over that cut's timeline.
+        const on = e.branchId;
+        const peer = prev && prev.peer.actor === actor && !prev.peer.idle && prev.peer.activity === activity && prev.peer.cutId === on ? prev.peer : { actor, cutId: on, idle: false, ...(activity ? { activity } : {}) };
+        const g = on !== cutId ? [] : (state.ghosts ?? []).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(x.label ? { label: x.label } : {}) }));
         peerMap.set(key, { peer, seen: clock(), ghosts: g });
         if (peer !== prev?.peer) publishPeers();
         if (g.length || prev?.ghosts.length) publishGhosts();
@@ -715,6 +725,36 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     hub.notify("history");
   };
 
+  /**
+   * Is a partial fold's left-out part still left out? Its inverse set the rejected records back; if the head still
+   * holds the inverse's values for any of them, the rest can be folded in. Derived from state, so it holds after a
+   * restart, and foldRest() checks it again right before acting.
+   */
+  const leftOut = async (c: CoreVersion): Promise<boolean> => {
+    const cut = c.ref.branchId, seq = c.ref.seq;
+    const [inv, head, d] = await Promise.all([carton.checkout(`${cut}@${seq}`), carton.head(cut), carton.diff(`${cut}@${seq - 1}`, `${cut}@${seq}`)]);
+    return d.ops.some((op) => op.op !== "remap" && deepEqual(getIn(head.doc, op.path, schema), getIn(inv, op.path, schema)));
+  };
+  const checkRest = async () => {
+    for (const r of [...rows]) {
+      const c = r.core;
+      if (!c?.change || c.kind !== "partial-revert" || restDone.has(c.change) || restLeft.has(c.change) || c.ref.branchId !== cutId) continue;
+      let left = false;
+      try {
+        left = await leftOut(c);
+      } catch {
+        left = false;
+      }
+      if (!left || disposed) continue;
+      restLeft.add(c.change);
+      const i = pos.get(c.change);
+      if (i === undefined) continue;
+      rows[i]!.v = { ...rows[i]!.v, foldRest: true };
+      changed(i);
+      hub.notify("history");
+    }
+  };
+
   // Refreshing cuts and undo after a burst of changes: once, after it settles.
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
   const scheduleRefresh = () => {
@@ -723,6 +763,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       refreshTimer = null;
       void refreshCuts();
       void refreshUndo();
+      void checkRest();
     }, 50);
   };
 
@@ -734,6 +775,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     await loadHistory();
     await refreshCuts();
     await refreshUndo();
+    await checkRest();
   };
   const ready = refresh();
   const poll = opts.pollMs ? setInterval(() => void refresh(), opts.pollMs) : null;
@@ -826,8 +868,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const parts = opts.creditParts?.(itemId, schema) ?? [{ what: "Last change", path: [tl?.collection ?? "items", itemId] }];
       const lines = [];
       for (const p of parts) {
-        const a = await carton.credits(p.path);
-        if (a) lines.push({ what: p.what, author: ui(a) });
+        const d = await carton.credits(p.path, { detail: true });
+        if (d) lines.push({ what: p.what, author: ui(d.actor), ...(d.at != null ? { at: d.at } : {}), ...(d.change ? { versionId: d.change } : {}) });
       }
       const c: Credits = { clip: opts.clipName?.(itemId) ?? itemId, lines };
       return c;
@@ -867,9 +909,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       for (const [key, ops] of groups) {
         const words = engine.describe(ops, intoDoc, schema);
         const record = !!schema.collections[splitPathKey(key)[0]!];
-        const who = record ? await carton.credits(splitPathKey(key), { cut: fromId }) : fromHead?.author ?? null;
-        // Core's partial accept inverts records; a project-level field can only come with the rest.
-        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who), at: fromHead?.at ?? clock(), ...(record ? {} : { locked: true }) });
+        const who = record ? await carton.credits(splitPathKey(key), { cut: fromId, detail: true }) : null;
+        changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock() });
       }
       // A remap (ripple) can't be left out on its own: it moves many records at once.
       const hasRemap = preview.ops.some((op) => op.op === "remap");
@@ -909,42 +950,48 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const card = planCards.get(path);
         return (card && opts.keepBoth?.(card)) || undefined;
       };
-      if (o.allCards) {
-        // §13 missing base: no merge to record; take each difference the person picked from the copy, keep the rest.
-        const ops: Op[] = [];
-        for (const card of planCards.values()) if (choiceFor(card.path) === "theirs") ops.push(...(card.ops ?? []));
-        if (!ops.length) return { ok: true };
-        const r = await carton.commit({ cut: intoId, ops, author: opts.me });
-        await refresh();
-        return r.status === "rejected" ? { ok: false, error: r.reason } : r.status === "conflicts" ? { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone, intoId, fromId)) } : { ok: true };
-      }
-      // Never let core pick a side: a card the person didn't see (someone edited since the plan) aborts the fold,
-      // and its cards come back to pick on.
-      const fresh: ConflictCard[] = [];
+      // Core never decides a card the person didn't pick on (unseen cards come back as conflicts). A card whose
+      // values changed since the plan (someone edited the same field again) is not the card that was reviewed: that
+      // too stops the fold, before anything is committed, and comes back to pick on (R2-2).
+      const seen = (card: ConflictCard) => {
+        const was = planCards.get(card.path);
+        return !!was && canonicalish(was.ours) === canonicalish(card.ours) && canonicalish(was.theirs) === canonicalish(card.theirs);
+      };
+      let stale = false;
       const choices = planCards.size
         ? (card: ConflictCard): Choice => {
             const c = choiceFor(card.path);
-            if (c) return c;
-            fresh.push(card);
+            if (c && seen(card)) return c;
+            stale = true;
             throw new NewCards();
           }
         : undefined;
-      const common = { into: intoId, ...(choices ? { choices } : {}) };
+      const common = { into: intoId, ...(choices ? { choices } : {}), ...(o.allCards ? { missingBase: "all-cards" as const } : {}) };
       let r;
       try {
-        // Partial accept takes record paths as segments: ids may contain "/" (core splits strings on it).
-        r = o.leaveOut.length ? await carton.foldSome(fromId, { ...common, reject: o.leaveOut.map(splitPathKey) as unknown as string[] }) : await carton.fold(fromId, common);
+        r = o.leaveOut.length ? await carton.foldSome(fromId, { ...common, reject: [...o.leaveOut] }) : await carton.fold(fromId, common);
       } catch (e) {
-        if (!(e instanceof NewCards) && !fresh.length) throw e;
-        await handle.planFold(fromId, intoId);
-        return { ok: false, conflicts: [...planCards.values()].filter((c) => !o.choices[c.path]).map((c) => toFoldConflict(c, someone, intoId, fromId)) };
+        if (!(e instanceof NewCards) && !stale) throw e;
+        r = null;
+      }
+      if (!r || r.status === "conflicts" || r.status === "compare") {
+        // Show the plan as it is now: the dialog reloads it. The cards to pick on are those nobody picked, and those
+        // whose values changed since they were picked (the pick was for another edit).
+        const reviewed = new Map(planCards);
+        const fresh = r && (r.status === "conflicts" || r.status === "compare") ? r.cards : null;
+        await handle.planFold(fromId, intoId, o.allCards ? { allCards: true } : undefined);
+        const cardsNow = fresh ?? [...planCards.values()];
+        const unpicked = (c: ConflictCard) => {
+          const was = reviewed.get(c.path);
+          return !o.choices[c.path] || !was || canonicalish(was.ours) !== canonicalish(c.ours) || canonicalish(was.theirs) !== canonicalish(c.theirs);
+        };
+        return { ok: false, conflicts: cardsNow.filter(unpicked).map((c) => toFoldConflict(c, someone, intoId, fromId)) };
       }
       planFor = "";
       await refresh();
       if (r.status === "confirmed" || r.status === "pending" || r.status === "up-to-date") return { ok: true };
       if (r.status === "rejected") return { ok: false, error: r.reason };
-      if (r.status === "missing-base") return { ok: false, error: r.dialog.text };
-      return { ok: false, conflicts: r.cards.map((c) => toFoldConflict(c, someone, intoId, fromId)) };
+      return { ok: false, error: r.dialog.text };
     },
     async resolve(id, choice) {
       const entry = cardEntries.get(id);
@@ -999,18 +1046,20 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     },
     async undo(turnId) {
       if (undo?.id !== turnId) return { ok: false, error: "Something changed. Try again." };
-      const r = await carton.undo(myGroup);
+      const onCut = cutId;
+      const r = await carton.undo(myGroup, { cut: onCut });
       await refreshUndo();
       if (r.status === "confirmed" || r.status === "pending") return { ok: true };
       if (r.status === "conflicts") {
-        addCards(r.cards, undefined);
+        // The cards belong to the cut the undo ran on, even if the person switched cuts meanwhile (R2-1).
+        addCards(r.cards, undefined, r.ref.branchId ?? onCut);
         return { ok: false, conflicts };
       }
       return { ok: false, error: r.status === "rejected" ? r.reason : "Couldn't undo" };
     },
     async publish(id) {
       const src = cuts.find((c) => c.id === id);
-      await carton.fork(`${src?.name ?? "Cut"} (published)`, { from: src?.head ?? id, kind: "published" });
+      await carton.publish({ from: src?.head ?? id, name: `${src?.name ?? "Cut"} (published)` });
       await refreshCuts();
     },
     openPreview(ref, label) {
@@ -1048,13 +1097,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (refreshTimer) clearTimeout(refreshTimer);
     },
   };
-  // Renaming cuts isn't in core's contract yet: offer it only when the handle can.
-  const rename = (carton as unknown as { renameCut?: (cut: string, name: string) => Promise<void> }).renameCut;
-  if (rename)
-    handle.renameCut = async (id, name) => {
-      await rename.call(carton, id, name);
-      await refreshCuts();
-    };
+  handle.renameCut = async (id, name) => {
+    await carton.renameCut(id, name);
+    await refreshCuts();
+  };
 
   const fallbackCut = (id: string): Cut => ({ id, name: id, label: id, current: id === carton.cut, readOnly: false, kind: "cut", head: `${id}@0`, updatedAt: 0 });
   return handle;

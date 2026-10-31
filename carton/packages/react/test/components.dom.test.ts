@@ -341,3 +341,30 @@ test(name("R1-18: a failed switch says so next to the menu"), async () => {
   assert.match($(m.container, "[role=alert]")?.textContent ?? "", /isn't available offline/);
   await m.unmount();
 });
+
+// ---------------------------------------------------------------- review round 2
+
+test(name("R2-5: when a fold comes back with new cards, the dialog shows the plan as it is now, with the new card"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const planFold = ui.planFold.bind(ui);
+  let raced = false;
+  const late = { id: "items/logo/name", title: "'Logo' name", mine: { author: people.alice, summary: "“Logo”" }, theirs: { author: people.bob, summary: "“New logo”" }, canKeepBoth: false };
+  ui.planFold = async (f, i, o) => {
+    const p = await planFold(f, i, o);
+    return raced ? { ...p, conflicts: [...p.conflicts, late] } : p;
+  };
+  ui.fold = async () => {
+    raced = true;
+    return { ok: false, conflicts: [late] };
+  };
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
+  await flush();
+  const dialog = $(m.container, "[role=dialog]")!;
+  await click(byText(dialog, "button", "Keep yours (Main cut)"));
+  await click($$(dialog, ".carton-dialog-foot button").at(-1));
+  await flush();
+  assert.match(dialog.textContent ?? "", /Something changed since you looked/);
+  assert.ok(byText(dialog, ".carton-card-title", "'Logo' name"), "the new card is there to pick on");
+  assert.equal(($$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement).disabled, true, "can't fold until it's picked");
+  await m.unmount();
+});

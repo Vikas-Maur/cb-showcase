@@ -190,6 +190,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
   const viewOf = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
   const history: HistorySource = {
     all: () => all,
+    slice: (from) => all.slice(Math.max(0, from)),
     revision: () => revision,
     count: (f) => (f === "all" ? all.length : viewOf(f)!.length),
     at: (f, i) => {

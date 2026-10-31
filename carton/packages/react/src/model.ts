@@ -84,6 +84,8 @@ export interface HistorySource {
    * did. Lets the bridge re-read only the tail after an append instead of the whole History.
    */
   firstChangedSince?(revision: number): number;
+  /** The versions from index `from` on (oldest first), without side effects: the bridge reads the changed tail only. */
+  slice?(from: number): readonly Version[];
 }
 
 export interface Cut {

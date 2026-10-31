@@ -39,6 +39,8 @@ export function FoldInDialog(p: FoldInDialogProps) {
     setResult(r);
     // Done: hand the result to the host, or just close.
     if (r.ok) (p.onDone ?? p.onClose)(r);
+    // New cards (someone edited since the plan was shown): show the plan as it is now, with its cards (R2-5).
+    else if (r.conflicts?.length) loaded.reload();
     return r;
   });
 
@@ -135,7 +137,9 @@ export function FoldInDialog(p: FoldInDialogProps) {
               h("ul", null, ...plan.warnings.map((w, i) => h("li", { key: i }, w))),
             )
           : null,
-        result && !result.ok ? h("p", { key: "err", className: "carton-error", role: "alert" }, result.error ?? words.failed) : null,
+        result && !result.ok
+          ? h("p", { key: "err", className: "carton-error", role: "alert" }, result.conflicts?.length ? words.foldChangedSince : (result.error ?? words.failed))
+          : null,
       ]
     : body;
 

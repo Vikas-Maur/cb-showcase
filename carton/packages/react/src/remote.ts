@@ -97,16 +97,22 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
   let sentRev = -1;
   const pushHistory = () => {
     const h = ui.history();
-    const now = snapshot();
-    const from = h.firstChangedSince && sentRev >= 0 ? Math.min(h.firstChangedSince(sentRev), now.length, sent.length) : 0;
+    const length = h.count("all");
+    let from = 0;
+    let tail: readonly Version[];
+    if (h.firstChangedSince && h.slice && sentRev >= 0) {
+      // Read only from the first row that can have changed: an append copies the tail, never the whole History.
+      from = Math.min(h.firstChangedSince(sentRev), length, sent.length);
+      tail = h.slice(from);
+    } else tail = snapshot();
     sentRev = h.revision();
     const rows: [number, Version][] = [];
-    for (let i = from; i < now.length; i++) if (now[i] !== sent[i]) rows.push([i, now[i]!]);
-    if (!rows.length && now.length === sent.length) return;
+    for (let k = 0; k < tail.length; k++) if (tail[k] !== sent[from + k]) rows.push([from + k, tail[k]!]);
+    if (!rows.length && length === sent.length) return;
     for (const [i, v] of rows) sent[i] = v;
-    sent.length = now.length;
+    sent.length = length;
     const actors = newActors(rows.map((r) => r[1]));
-    send({ t: "history", length: now.length, rows, ...(actors ? { actors } : {}) });
+    send({ t: "history", length, rows, ...(actors ? { actors } : {}) });
   };
 
   const start = () => {
@@ -234,6 +240,7 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
       return -1;
     },
     want: (ids) => send({ t: "want", ids: [...ids] }),
+    slice: (from) => rows.slice(Math.max(0, from)),
   };
 
   const call = <T>(method: Method, ...args: unknown[]): Promise<T> =>

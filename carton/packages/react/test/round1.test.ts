@@ -89,14 +89,17 @@ test("R1-2: Keep both reads the real card, not a placeholder", async () => {
   ui.dispose();
 });
 
-test("R1-3: a project-level change can't be left out on its own", async () => {
+test("R1-3 (core fixed in 3cb8140): a project-level change can be left out like a clip", async () => {
   const { carton, ui } = await open();
   const v = await carton.fork("alt");
   await carton.commit({ cut: v.id, ops: [{ op: "set", path: ["name"], value: "Film 2" }, set("b", "name", "B2")], author: bob });
   await ui.refresh();
   const plan = await ui.planFold(v.id, carton.cut);
-  assert.equal(plan.changes.find((c) => c.id === "name")?.locked, true);
-  assert.equal(plan.changes.find((c) => c.id === "items/b")?.locked, undefined);
+  assert.equal(plan.changes.find((c) => c.id === "name")?.locked, undefined);
+  assert.equal((await ui.fold(v.id, carton.cut, { leaveOut: ["name"], choices: {} })).ok, true);
+  const head = (await carton.head()).doc;
+  assert.equal(head.name, "Film", "left out, and still a plain value");
+  assert.equal((await item(carton, "b")).name, "B2");
   ui.dispose();
 });
 
@@ -201,23 +204,36 @@ test("R1-9: fold in the rest of a partial fold, once", async () => {
   ui.dispose();
 });
 
-test("R1-10: 'every difference shown as a card' finishes: the picked differences are applied", async () => {
-  const { carton, ui } = await open();
+test("R1-10, R2-3, R2-6: 'every difference shown as a card' folds through core with the picks, Keep both included", async () => {
+  const { carton, ui } = await open({ keepBoth: (card: ConflictCard) => ({ value: { name: `${(card.ours as Rec).name} + ${(card.theirs as Rec).name}` } }) });
   const main = carton.cut;
   const v = await carton.fork("alt");
-  // store-memory can't make a missing base; play core's compare result for it.
+  // store-memory can't make a missing base: play core's answers, and check what the adapter asks core to do.
+  const cards: ConflictCard[] = [
+    { kind: "compare", path: "items/a", base: null, ours: { name: "A" }, theirs: { name: "Theirs" }, ops: [] },
+    { kind: "compare", path: "items/b", base: null, ours: { name: "B" }, theirs: { name: "B2" }, ops: [] },
+    { kind: "compare", path: "items/d", base: null, ours: { name: "D" }, theirs: { name: "D2" }, ops: [] },
+  ];
+  const calls: { choices?: unknown; missingBase?: string }[] = [];
   const realFold = carton.fold.bind(carton);
-  (carton as { fold: typeof carton.fold }).fold = async (from, o) =>
-    o?.missingBase === "all-cards"
-      ? { status: "compare", dialog: { text: "", options: ["ask", "all-cards"], lca: null }, cards: [{ kind: "compare", path: "items/a", base: null, ours: { name: "A" }, theirs: { name: "Theirs" }, ops: [set("a", "name", "Theirs")] }, { kind: "compare", path: "items/b", base: null, ours: { name: "B" }, theirs: { name: "B2" }, ops: [set("b", "name", "B2")] }] }
-      : realFold(from, o);
+  (carton as { fold: typeof carton.fold }).fold = async (from, o) => {
+    if (o?.missingBase !== "all-cards") return realFold(from, o);
+    calls.push({ choices: o.choices, missingBase: o.missingBase });
+    if (o.check || !o.choices) return { status: "compare", dialog: { text: "", options: ["ask", "all-cards"], lca: null }, cards };
+    return { status: "confirmed", seq: 1, ref: { branchId: main, seq: 1, pending: [] }, change: null, rebased: 0, notices: [] };
+  };
   const plan = await ui.planFold(v.id, main, { allCards: true });
-  assert.equal(plan.conflicts.length, 2);
+  assert.equal(plan.conflicts.length, 3);
   assert.equal(plan.partial, false);
-  const r = await ui.fold(v.id, main, { leaveOut: [], choices: { "items/a": "theirs", "items/b": "mine" }, allCards: true });
+  const r = await ui.fold(v.id, main, { leaveOut: [], choices: { "items/a": "theirs", "items/b": "mine", "items/d": "both" }, allCards: true });
   assert.equal(r.ok, true);
-  assert.equal((await item(carton, "a")).name, "Theirs");
-  assert.equal((await item(carton, "b")).name, "B");
+  const last = calls.at(-1)!;
+  assert.equal(last.missingBase, "all-cards", "core makes the all-cards fold (with its base and its merge record)");
+  const pick = last.choices as (c: ConflictCard, i: number) => unknown;
+  assert.equal(pick(cards[0]!, 0), "theirs");
+  assert.equal(pick(cards[1]!, 1), "ours");
+  assert.deepEqual(pick(cards[2]!, 2), { value: { name: "D + D2" } }, "Keep both goes to core as the host's value");
+  assert.throws(() => pick({ ...cards[0]!, theirs: { name: "Changed since" } }, 0), "a card whose values changed is not the one reviewed");
   ui.dispose();
 });
 
@@ -267,9 +283,12 @@ test("R1-16 and R1-17: an append changes only the tail; a refresh with nothing n
   ui.dispose();
 });
 
-test("R1-18: rename is offered only when the engine can rename cuts", async () => {
-  const { ui } = await open();
-  assert.equal(ui.renameCut, undefined);
+test("R1-18 (core added renameCut): rename a cut", async () => {
+  const { carton, ui } = await open();
+  const v = await carton.fork("alt");
+  await ui.refresh();
+  await ui.renameCut!(v.id, "30s Instagram cut");
+  assert.equal(ui.cuts().find((c) => c.id === v.id)?.name, "30s Instagram cut");
   ui.dispose();
 });
 
