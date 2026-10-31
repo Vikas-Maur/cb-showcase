@@ -205,3 +205,31 @@ test("real Carton: a fold with cards names both cuts, saves nothing, and is deci
     await local.close();
   }
 });
+
+test("real Carton: undo --turn undoes what it can and raises cards for what was changed again since; the cards are listed and resolved", async () => {
+  const { local, reopen } = await realProject("cli-real-undo-cards", human);
+  try {
+    const agent = await reopen(director("t5"));
+    // the turn renames c1 and trims c3; the person then trims c3 differently
+    await agent.write({ kind: "commit", ops: [set("c1", "name", "turn name")] });
+    await agent.write({ kind: "commit", ops: [set("c3", "endTime", 19), set("c3", "trimEnd", 4)] });
+    await local.write({ kind: "commit", ops: [set("c3", "endTime", 19.4), set("c3", "trimEnd", 4.4)] });
+    const item = async (id: string) => ((await local.carton.head()).doc.timelineItems as Rec[]).find((i) => i.id === id)!;
+    const before = (await local.carton.log()).length;
+    const u = await cb(agent, ["undo", "--turn", "t5"], director("t5"));
+    assert.match(u.out, /^Undid turn t5: conflicts \(1 card; nothing else was lost\)\n  #1 timelineItems\/c3\/#time/, u.out);
+    assert.equal((await item("c1")).name, "c1", "the rest of the turn is undone");
+    assert.deepEqual([(await item("c3")).endTime, (await item("c3")).trimEnd], [19.4, 4.4], "the clash keeps the person's newer trim");
+    assert.equal((await local.carton.log()).length, before + 1, "one undo change");
+    // the card is the agent's, listed and resolvable as a stale save's
+    const c = await cb(agent, ["conflicts", "--json"], director("t5"));
+    assert.deepEqual(c.json().cards.map((x: any) => x.path), ["timelineItems/c3/#time"], c.out);
+    const res = await cb(agent, ["resolve", "1", "--keep", "mine"], director("t5"));
+    assert.equal(res.code, 0, res.out + res.err);
+    assert.deepEqual([(await item("c3")).endTime, (await item("c3")).trimEnd], [20, 5], "keeping the undo's side puts c3 back as before the turn");
+    assert.deepEqual((await cb(agent, ["conflicts", "--json"], director("t5"))).json().cards, []);
+    await agent.close();
+  } finally {
+    await local.close();
+  }
+});

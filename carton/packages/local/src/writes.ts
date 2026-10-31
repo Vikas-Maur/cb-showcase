@@ -351,7 +351,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
     case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author, id: req.id }); break;
-    case "undoTurn": r = await undoTurn(carton, req.id, op.turn, author, op.cut); break;
+    case "undoTurn": {
+      // what the turn changed that was changed again since stays at its newer value, as a card; the rest is undone
+      const u = await undoTurn(carton, req.id, op.turn, author, op.cut);
+      r = u.r;
+      kept = u.cards;
+      break;
+    }
     case "fork": { const cut = await carton.fork(op.name, { from: op.from, kind: op.cutKind as any, author, id: req.id }); return { status: "confirmed", seq: 0, ref: null, notices, cut }; }
     case "switch": {
       await carton.switchTo(op.cut);
@@ -412,14 +418,22 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
  * apply cleanly becomes a card instead of being overwritten. It commits under the request's id: a retried call is
  * deduplicated, never a second undo. Changes this turn already undid (and undo changes themselves) are skipped.
  */
-async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Actor, cut?: string): Promise<CommitResult> {
+/**
+ * Undo an agent turn (§8): every change of the turn not undone yet, inverted onto head. What a later change changed
+ * again keeps that newer value and becomes a card (base: the turn's value, ours: head's, theirs: the value before the
+ * turn), stored for the author as a stale save's are, so `cb conflicts` lists them and `cb resolve` picks; the rest is
+ * undone. The cards are written (under the request's id) before the undo commits, so a retry finds them with it.
+ */
+async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Actor, cut?: string): Promise<{ r: CommitResult; cards: ConflictCard[] }> {
   const head = await carton.head(cut);
+  const store = storeOf(carton);
   // a retry: answer as the first time (an undo, or nothing to undo), before looking at what the turn holds now, on the
-  // cut that answer is on (the current cut may have changed since the first try)
+  // cut that answer is on (the current cut may have changed since the first try), with the cards it raised
   const answeredOn = await answeredBefore(carton, id);
   if (answeredOn) {
     const h = answeredOn === (cut ?? carton.cut) ? head : await carton.head(answeredOn);
-    return carton.commit({ id, doc: h.doc, base: h.ref, author, cut: answeredOn });
+    const cards = (store ? await store.get<ConflictCard[]>("notices", undoCardsKey(id)) : undefined) ?? [];
+    return { r: await carton.commit({ id, doc: h.doc, base: h.ref, author, cut: answeredOn }), cards };
   }
   const versions = await carton.log({ cut, limit: 5000 });
   const undone = new Set<string>();
@@ -427,18 +441,21 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   const mine = versions.filter((v) => v.author?.turn === turn && v.change && v.kind !== "undo" && !undone.has(v.change));
   // nothing (left) to undo: head itself, under the request's id. A retry of an undo that landed gets its answer back;
   // a first one changes nothing and is recorded as a no-op, so its retry never undoes work that reached the turn since
-  if (!mine.length) return carton.commit({ id, doc: head.doc, base: head.ref, author, cut });
+  if (!mine.length) return { r: await carton.commit({ id, doc: head.doc, base: head.ref, author, cut }), cards: [] };
   let doc: Doc = head.doc;
   const cards: ConflictCard[] = [];
   for (const v of mine) {
     const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - 1 }), carton.checkout(v.ref)]);
+    // base: the turn's change; ours: head (a clash keeps head's newer value); theirs: before the change
     const m = merge3(after, doc, before, carton.schema, { infer: false });
     doc = m.doc;
     cards.push(...m.conflicts);
   }
-  if (cards.length) return { status: "conflicts", cards, ref: head.ref };
-  return carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) });
+  if (cards.length && store) await store.write([cardsRow(author, id, id, cards), { table: "notices", key: undoCardsKey(id), value: cards }]);
+  return { r: await carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) }), cards };
 }
+/** The cards an `undo --turn` request raised (local `notices` table, no actor reads it): its retry answers with them. */
+const undoCardsKey = (id: ChangeId) => ["@undo-cards", id];
 
 /**
  * The cut on which core already holds an answer for this id: a confirmed change (`ids`), a no-op (`meta ["noop"]`),
