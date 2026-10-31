@@ -6,9 +6,11 @@
 //   read that throws, one HEAD tells "absent" (null) from "past the end" (empty) — no extra request otherwise.
 // - The binding has no ListParts, which resuming an upload after a cut link needs. Each upload keeps small records
 //   under `.carton-uploads/<uploadId>/`: `meta` (its key), `p<n>` per part (etag and size) and `l<n>`, a per-part
-//   lock (see uploadPart). Per part that is 3 Class A operations besides the part itself (lock, record, release;
-//   deletes are free): about $0.03 a month for §18's 90 GB of proxies in 64 MiB parts [E], and inside R2's free
-//   million Class A operations a month for the demo. The records go when the upload completes or aborts.
+//   lock (see uploadPart). Besides the part itself, a fresh part costs 3 Class A operations (lock, record, release)
+//   and 1 Class B (the upload check); sending a part again, which finds its released lock, costs 4 Class A and 2
+//   Class B (a refused create-only put is billed too); deletes are free. That is about $0.03 a month for §18's 90 GB
+//   of proxies in 64 MiB parts [E], and inside R2's free million Class A operations a month for the demo. The
+//   records go when the upload completes or aborts.
 // - What is guaranteed: listParts names the bytes R2 holds whenever uploads of one part don't overlap, and the lock
 //   refuses an overlap while its holder is alive. R2 can't stop a holder whose lock expired (30 minutes) from still
 //   writing, so a record is created only if absent, and a writer that finds one clears it and fails: the part is
@@ -229,10 +231,16 @@ export class R2BlobStore implements BlobStore {
         // aborted, completed or unknown upload itself, 10024.)
         const n = String(partNumber).padStart(5, "0");
         const lock = await store.#lockPart(uploadId, n);
+        let terminal = false;
         try {
           const marker = `${UPLOADS}${uploadId}/p${n}`;
           await b.delete(marker);
-          const part = await b.resumeMultipartUpload(key, uploadId).uploadPart(partNumber, data).catch(translate);
+          const part = await b.resumeMultipartUpload(key, uploadId).uploadPart(partNumber, data).catch((e) => {
+            // the upload completed or aborted while this request waited: it may have just made this part's lock
+            // after the cleanup ran, so clean up again, once our lock is released
+            if (r2Code(e) === 10024) terminal = true;
+            return translate(e);
+          });
           const made = await b.put(marker, null, {
             onlyIf: { etagDoesNotMatch: "*" },
             customMetadata: { partNumber: String(partNumber), etag: part.etag, size: String(data.byteLength) },
@@ -244,6 +252,7 @@ export class R2BlobStore implements BlobStore {
           return { partNumber, etag: part.etag };
         } finally {
           await store.#unlockPart(uploadId, n, lock);
+          if (terminal) await store.#cleanup(uploadId);
         }
       },
       async listParts() {

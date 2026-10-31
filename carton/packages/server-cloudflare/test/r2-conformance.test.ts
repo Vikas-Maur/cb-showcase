@@ -145,7 +145,11 @@ test("a holder that outlived its lock can neither release the new holder's lock 
   await until(bRec.engaged);
   aRec.release(); // A's late record: there is none yet (B removed it), so A's is created...
   const ra = await a.then((x) => x, (e: Error) => e);
-  bRec.release(); // ...and B then finds it: B clears it and fails
+  // A lost its lock: its release changed nothing, so B still holds it and another uploader is refused
+  const mid = await proxy.env.BLOBS.head(`.carton-uploads/${up.uploadId}/l00001`);
+  assert.equal(mid?.customMetadata?.state, "held", "A released the lock B holds");
+  await assert.rejects(up.uploadPart(1, new Uint8Array(R2_MIN_PART_SIZE).fill(9)), /being uploaded/);
+  bRec.release(); // ...and B then finds A's record: B clears it and fails
   const rb = await b.then((x) => x, (e: Error) => e);
   assert.ok(rb instanceof Error && /same time/.test(rb.message), `B: ${String(rb)}`);
   const lock = await proxy.env.BLOBS.head(`.carton-uploads/${up.uploadId}/l00001`);
@@ -159,6 +163,23 @@ test("a holder that outlived its lock can neither release the new holder's lock 
   assert.deepEqual([...(await store.get("fault/outlived", { offset: 0, length: 2 }))!], [3, 3]);
   await store.delete("fault/outlived");
 });
+
+for (const end of ["complete", "abort"] as const)
+  test(`an uploadPart that resumes after the upload's ${end} leaves no record behind`, async () => {
+    const { bucket, hold } = holdable(proxy.env.BLOBS);
+    const store = r2BlobStore(bucket);
+    const up = await store.createMultipart(`fault/late-${end}`);
+    const p1 = await up.uploadPart(1, new Uint8Array(10));
+    const late = hold((k, o) => /\/l00002$/.test(k) && !o?.onlyIf?.etagMatches); // passed the upload check; waits to lock part 2
+    const p = up.uploadPart(2, new Uint8Array(10));
+    await until(late.engaged);
+    if (end === "complete") await up.complete([p1]);
+    else await up.abort();
+    late.release();
+    await assert.rejects(p, /NoSuchUpload|no multipart upload/);
+    assert.deepEqual((await proxy.env.BLOBS.list({ prefix: `.carton-uploads/${up.uploadId}/` })).objects.map((o) => o.key), []);
+    await store.delete(`fault/late-${end}`);
+  });
 
 test("a lock left by a request that died is taken over after its TTL", async () => {
   const store = r2BlobStore(proxy.env.BLOBS);
