@@ -142,8 +142,9 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
     actor,
     async write(op, o = {}) {
       const req: WriteRequest = { id: o.id ?? nextChangeId(), actor: o.actor ?? actor, op, waitMs: o.waitMs ?? WAIT_MS };
-      // a caller with no helper setup of its own starts what the app recorded (its materializer, its sync server: B3, B7)
-      const recipe = opts.helperFactory || opts.helperConfig ? null : await readHelperRecipe(store).catch(() => null);
+      // a caller with no factory of its own starts what the app recorded (its materializer, its sync server: B3, B7);
+      // its own helperConfig (`carton --server`) goes over the recipe's config
+      const recipe = opts.helperFactory ? null : await readHelperRecipe(store).catch(() => null);
       // a helper runs this process's factory, never one with another adapter (R2-03): without a factory of its own or a
       // recorded one, only a process on Cardboard's adapter may start local's default
       const helperOk = !!(opts.helperFactory || recipe) || adapter.name === DEFAULT_ADAPTER;

@@ -214,3 +214,25 @@ test("undo --turn: cards before anything was saved say nothing was undone; late 
   const late = await cb(ctx, ["undo", "--turn", "t9"]);
   assert.match(late.out, /^Undid turn t9: conflicts \(1 card; nothing else was lost\)/);
 });
+
+test("cb share: shares the current cut (or the one named) through the lease holder; --server belongs to the carton command", async () => {
+  const cuts = [{ id: "main0000-0000", name: "Main cut", kind: "main", sequencer: { kind: "local" } }, { id: "alt00000-0000", name: "Short", kind: "variant", sequencer: { kind: "local" } }];
+  const seen: unknown[] = [];
+  let answer: any = { status: "confirmed", seq: 0, ref: null, notices: [], cut: { id: "main0000-0000", sequencer: { kind: "handingOff" } } };
+  const ctx = () => ({ project: { carton: { cut: "main0000-0000", cuts: async () => cuts }, write: async (op: unknown) => (seen.push(op), answer) }, actor: human }) as unknown as CbContext;
+  const r = await cb(ctx, ["share"]);
+  assert.equal(r.code, 0, r.err);
+  assert.deepEqual(seen.at(-1), { kind: "share", cut: "main0000-0000" });
+  assert.match(r.out, /^Sharing "Main cut": its history is going up to the team's server/);
+  answer = { status: "confirmed", seq: 0, ref: null, notices: [], cut: { id: "alt00000-0000", sequencer: { kind: "server" } } };
+  const named = await cb(ctx, ["share", "Short", "--json"]);
+  assert.deepEqual(seen.at(-1), { kind: "share", cut: "alt00000-0000" });
+  assert.equal(named.json().cut.sequencer.kind, "server");
+  const withServer = await cb(ctx, ["share", "--server", "wss://carton.example"]);
+  assert.equal(withServer.code, 2, withServer.out + withServer.err);
+  assert.match(withServer.err, /--server goes to the `carton` command/);
+  answer = { status: "error", error: "a helper would open this project with Cardboard's adapter", notices: [], code: "NO_HELPER" };
+  const failed = await cb(ctx, ["share"]);
+  assert.equal(failed.code, 1);
+  assert.match(failed.out, /Error: a helper would open/);
+});

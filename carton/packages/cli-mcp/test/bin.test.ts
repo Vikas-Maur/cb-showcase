@@ -71,3 +71,39 @@ test("carton mcp: initialize and tools/list over stdio", async () => {
 
 import { createRequire } from "node:module";
 const require_ = createRequire(import.meta.url);
+
+test("carton --server <url> --token-file <file> share: a helper shares the cut with a real sync server", { timeout: 120_000 }, async (t) => {
+  const { cpSync, readFileSync } = await import("node:fs");
+  const { readProjectForImport } = await import("@carton/cardboard/node");
+  const { openLocal } = await import("@carton/local");
+  // a real Cardboard project (the sample bundle), opened once so carton.db exists
+  const dir = mkdtempSync(join(scratch(), "bin-share-"));
+  cpSync(fileURLToPath(new URL("../../conformance/src/cardboard/fixtures/sample/project.json", import.meta.url)), join(dir, "project.json"));
+  const imp = readProjectForImport(dir);
+  const first = await openLocal({ projectDir: dir, init: { doc: imp.doc }, actor: { kind: "human", id: "human:alice", name: "Alice" } });
+  const cut = first.carton.cut;
+  await first.close();
+  // the team's server (server-node), its token for alice in a file
+  const host = spawn(process.execPath, [fileURLToPath(new URL("../../local/test/support/host.ts", import.meta.url)), dir, imp.projectId], { stdio: ["pipe", "pipe", "inherit"] });
+  let helperPid: number | null = null;
+  t.after(() => { if (helperPid) try { process.kill(helperPid, "SIGKILL"); } catch {} host.kill("SIGKILL"); });
+  await new Promise<void>((r) => host.stdout!.once("data", () => r()));
+  const { url } = JSON.parse(readFileSync(join(dir, "host.json"), "utf8"));
+  const r = spawnSync(process.execPath, [BIN, "--project", dir, "--server", url, "--token-file", join(dir, "token-alice"), "share", "--json"], { encoding: "utf8", env: { ...process.env, CARDBOARD_ACTOR: "" }, timeout: 60_000 });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(JSON.parse(r.stdout).cut.id, cut);
+  // the helper uploads the history and the server adopts the cut
+  const lc = await openLocal({ projectDir: dir, actor: { kind: "human", id: "human:alice" } });
+  try {
+    helperPid = (await lc.lease.read())?.pid ?? null;
+    let kind = "";
+    for (const end = Date.now() + 30_000; Date.now() < end && kind !== "server"; await new Promise((res) => setTimeout(res, 100))) kind = (await lc.carton.cuts()).find((c) => c.id === cut)!.sequencer.kind;
+    assert.equal(kind, "server", "the server sequences the cut");
+  } finally {
+    await lc.close();
+  }
+  // without a token file, --server says what it needs
+  const bad = spawnSync(process.execPath, [BIN, "--project", dir, "--server", url, "history"], { encoding: "utf8", env: { ...process.env, CARDBOARD_ACTOR: "", CARTON_TOKEN_FILE: "" } });
+  assert.notEqual(bad.status, 0);
+  assert.match(bad.stdout + bad.stderr, /--server needs --token-file/);
+});
