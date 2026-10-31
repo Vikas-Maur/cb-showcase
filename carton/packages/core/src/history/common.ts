@@ -80,6 +80,8 @@ export interface HistoryCommit {
   policy?: Policy;
   choices?: Choices;
   id?: ChangeId;
+  /** Cards that `choices` (a list or map) doesn't name: "card" (default) returns them as conflicts; "prefer" decides them. */
+  unchosen?: "card" | "prefer";
   /** Unused (the prototype's flag): an empty commit is confirmed empty; an empty fold or undo is always recorded. */
   allowEmpty?: boolean;
   name?: string;
@@ -106,6 +108,11 @@ export interface FoldOptions {
   missingBase?: "dialog" | "all-cards";
   /** Dry run (`cb fold --check`): report cards without committing. */
   check?: boolean;
+  /**
+   * Cards a list or map of `choices` doesn't name (new since the caller reviewed the plan): "card" (default) returns
+   * them as conflicts; "prefer" decides them by `prefer`. A function decides every card itself.
+   */
+  unchosen?: "card" | "prefer";
 }
 
 /**
