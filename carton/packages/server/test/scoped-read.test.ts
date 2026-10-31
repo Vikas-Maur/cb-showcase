@@ -47,3 +47,18 @@ test("an invite's cut scope is carried into the sessions it makes, and refreshes
   const plain = await auth.join(await auth.createInvite("p1", "editor"), "bob", "install-key-number-2");
   assert.equal(plain.context.branches, undefined, "an invite without a scope makes unscoped sessions");
 });
+
+test("a scoped reader's branchStatus for another cut is refused: not its existence, adoption key or head (Stage F round 5)", async () => {
+  const d0 = doc([clip("c0", 0, 5)]);
+  const { seq } = await world(d0);
+  await seq.createBranch({ id: PUB, name: "Main cut (published)", forkOf: `${BRANCH}@0`, owner: "alice", kind: "published", source: BRANCH, sequencer: { kind: "server", since: 0 } }, { doc0: d0 as never, stateHash: "h0" });
+  const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
+  await seq.handle(viewer, { type: "branchStatus", branchId: BRANCH });
+  assert.equal(viewer.last("status"), undefined);
+  assert.equal(viewer.last("error")?.reason, `this token can't read ${BRANCH}`);
+  await seq.handle(viewer, { type: "branchStatus", branchId: PUB });
+  assert.equal(viewer.last("status")?.adopted, true, "its own cut answers");
+  const teammate = fakeConn("t/k", "viewer");
+  await seq.handle(teammate, { type: "branchStatus", branchId: BRANCH });
+  assert.equal(teammate.last("status")?.adopted, true, "an unscoped reader still asks of any cut");
+});

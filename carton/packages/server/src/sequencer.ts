@@ -853,6 +853,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
+    // a reader scoped to some cuts learns nothing of others: not their existence, adoption key or head
+    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(m.branchId)) return send(c, { type: "error", reason: `this token can't read ${m.branchId}` });
     const b = tables.branch(m.branchId);
     const msg: sync.StatusMsg = { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 };
     // a hand-off uploads right after this answer: it must know the largest message read before it (round 3 finding 6)
@@ -1098,7 +1100,7 @@ const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
 /** A state digest (`hashDoc`: SHA-256, hex). */
 const SHA256 = /^[0-9a-f]{64}$/;
 /** Server messages that can be over the envelope threshold; the rest (acks, statuses, errors…) are never sized. */
-const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject"]);
+const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject", "history"]);
 
 /** History fields a change may carry into its row (fold-ins, undo, partial accept, names): stored in the body. */
 const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "structural"] as const;

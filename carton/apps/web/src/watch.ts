@@ -2,12 +2,13 @@
 // says so when the cut it came from has newer edits since. Joins with the link's viewer invite: viewers can read and
 // can never push (the sequencer checks the role). Holds no project store: two read-only followers (follow.ts).
 
+import { problemWords } from "./host-errors.ts";
 import { createElement as h, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Doc } from "@carton/core";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 import { cardboardAdapter } from "@carton/cardboard";
-import { webSocketTransport } from "./ws-transport.ts";
+import { webSocketTransport } from "@carton/server-node/transport";
 import { parseWatchDescriptor, parseWatchHash, watchKey, type WatchDescriptor } from "./descriptor.ts";
 import { Follower } from "./follow.ts";
 import { ImageCache } from "./images.ts";
@@ -82,7 +83,7 @@ async function main(): Promise<void> {
   const state: State = { doc: null, newer: 0, error: null };
   const render = () => root.render(h(WatchPage, { descriptor, state: { ...state }, images, mediaUrl }));
   media.ready.then(() => ((mediaReady = true), render()), () => {});
-  const common = { transport: webSocketTransport(), url: session.wsUrl, token: () => session.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion, onError: (why: string) => ((state.error = why), render()) };
+  const common = { transport: webSocketTransport(), url: session.wsUrl, token: () => session.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion, onError: (why: string) => ((state.error = problemWords(why)), render()) };
   // The Published cut, and the count of newer edits in the cut it came from. A host whose welcome on a Published cut
   // carries `source` (requested of sync-sequencer, REQ-2) gives the count with it, and then a link's token needs to read
   // nothing else. Without it, the source cut is followed for its rows after the publishing point (no document).

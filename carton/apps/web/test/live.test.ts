@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { parseNode, type Carton, type CartonEvent, type Rec } from "@carton/core";
 import { cardboardAdapter } from "@carton/cardboard";
 import { createMemoryStore } from "@carton/store-memory";
-import { webSocketTransport } from "../src/ws-transport.ts";
+import { webSocketTransport } from "@carton/server-node/transport";
 import { serveDemo, type DemoNodeHost } from "../scripts/serve-node.ts";
 import { seedDemo, type SeedResult } from "../scripts/seed.ts";
 import { Director } from "../scripts/director.ts";
@@ -121,8 +121,8 @@ test("the §17 story over a real host: join, live edits with an agent, undo its 
   const at = parseNode(pub.forkOf!).seq;
   const src = publishedSource(pub)!;
   assert.deepEqual(src, { branchId: alice.carton.cut, at }, "what publishing writes into the cut's watch.json");
-  // the watch page as it runs on today's hosts: a viewer follows the Published cut, and the source's rows after the
-  // publishing point for the newer-edits count (the scoped link is requested: REQ-4, the todo test below)
+  // the watch page's fallback for a host whose welcome carries no `source`: a project viewer follows the Published cut
+  // and the source's rows after the publishing point (the scoped link, the test below, reads the Published cut alone)
   const viewer = await Session.join({ baseUrl: host.url, projectId: j.projectId, invite: await alice.session.invite("viewer"), account: "viewer", keys: memoryKeys() });
   assert.equal(viewer.role, "viewer");
   let watched: { doc: unknown; head: number } | null = null;
@@ -174,7 +174,7 @@ test("an edit made from what was on screen carries that state as its base: a tea
   await bob.carton.close();
 });
 
-test("REQ-4/REQ-5: a watch link's invite reads its Published cut and nothing else: not Main, not the project descriptor (review R1-1, R2-1)", { todo: "hosts-plugins: invites with a cut scope, scoped blob reads; sync-sequencer: scoped hello, welcome.source" }, async () => {
+test("a watch link's invite reads its Published cut and nothing else: not Main, not the project descriptor; its welcome counts newer edits (review R1-1, R2-1)", async () => {
   const s3 = await seedDemo({ baseUrl: host.url, adminToken: host.adminToken, media: { given: fakeMedia } });
   const alice = await person(s3.alice, "alice");
   const j = parseJoinHash(new URL(s3.alice).hash)!;

@@ -14,7 +14,7 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createMemoryStore } from "@carton/store-memory";
 import { parseActor } from "@carton/cardboard";
-import { webSocketTransport } from "../src/ws-transport.ts";
+import { webSocketTransport } from "@carton/server-node/transport";
 import type { Actor, Carton, Op, Rec } from "@carton/core";
 import { ITEMS } from "../src/demo-doc.ts";
 import { parseJoinHash } from "../src/descriptor.ts";

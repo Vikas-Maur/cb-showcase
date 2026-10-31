@@ -12,7 +12,7 @@ import { execFileSync } from "node:child_process";
 import { appendFileSync, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createMemoryStore } from "@carton/store-memory";
-import { webSocketTransport } from "../src/ws-transport.ts";
+import { webSocketTransport } from "@carton/server-node/transport";
 import { buildClient, joinAs, launchChromium, newPerson, startHost } from "../../../e2e/web/harness.ts";
 import { seedDemo } from "../scripts/seed.ts";
 import { parseJoinHash } from "../src/descriptor.ts";
