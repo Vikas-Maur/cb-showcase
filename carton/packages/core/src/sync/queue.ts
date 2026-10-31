@@ -77,6 +77,8 @@ export interface QueuedChange {
   sentBases: number[];
   /** A withdraw was sent for it on this connection and epoch (H1). */
   withdrawSent: { conn: number; epoch: number } | null;
+  /** Refused here (too large to send) after a copy was sent: emptied, withdrawn, then reported rejected with this. */
+  rejecting?: string;
   meta: Record<string, unknown>;
   history?: HistoryFields;
 }
@@ -496,7 +498,7 @@ export class ReplicaQueue {
   // ---------------------------------------------------------------- leaving the queue
   /** The change's latest version is empty: it changes nothing now. */
   isEmpty(p: QueuedChange): boolean {
-    return last(p.versions).ops.length === 0 && !keepsWhenEmpty(p.history);
+    return last(p.versions).ops.length === 0 && (p.rejecting !== undefined || !keepsWhenEmpty(p.history));
   }
   /**
    * Absorb a change that was never sent: no copy can exist anywhere, so it just leaves the queue. A change any copy
@@ -516,6 +518,8 @@ export class ReplicaQueue {
       this.queues.set(b, queue.filter((x) => x !== p));
       this.invalidate(b);
     }
+    // a change refused here whose withdraw is now answered: rejected, with the reason it was refused for
+    if (p.rejecting !== undefined) return this.emit({ type: "rejected", branchId: b, change: p, reason: p.rejecting });
     const cards = p.versions.slice(1).flatMap((v) => v.cards);
     this.emit({ type: "absorbed", branchId: b, change: p, cards, withdrawn });
   }
@@ -528,6 +532,35 @@ export class ReplicaQueue {
     this.rebaseAll(b);
     this.emit({ type: "rejected", branchId: b, change: p, reason });
     return p;
+  }
+  /**
+   * Refuse a pending change here (too large to send). Never sent: rejected at once. Sent before, a copy may still be
+   * confirmed (H1): it is emptied but kept, so the pusher withdraws its id, and it is reported rejected only once the
+   * withdraw is answered, or confirmed if an earlier copy was confirmed after all (round 3 finding 2). Either way the
+   * changes after it are rebased without it.
+   */
+  rejectLocally(b: string, id: string, reason: string): void {
+    const p = this.queues.get(b)!.find((x) => x.id === id);
+    if (!p) return;
+    if (!p.sentBases.length) {
+      this.rejectPending(b, id, reason);
+      return;
+    }
+    const v = last(p.versions);
+    const nv: QueueVersion = {
+      ...v,
+      k: v.k + 1,
+      ops: [],
+      intent: null,
+      hash: hashOps([], null),
+      decl: declare(this.schema, v.baseDoc, [], null),
+      supersedes: [...v.supersedes, `${p.id}#${v.k}`],
+      cards: [],
+    };
+    p.versions.push(nv);
+    this.versions.get(p.id)?.push(nv);
+    p.rejecting = reason;
+    this.rebaseAll(b);
   }
   /** "lww on structure" (H2): the change goes through merge3 from now on. */
   toMerge(b: string, id: string): boolean {

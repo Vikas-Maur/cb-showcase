@@ -1152,7 +1152,7 @@ export function conformanceTests(S: Schema, opts: ConformanceOptions = {}): void
 
   // ------------------------------------------------------------------ R5-03 / R6-02 the .cbproj zip
 
-  test("R5-03/R6-02 .cbproj zip: no .takes/ and no .scratch/views/ entry; the rest of .scratch/ is kept; the shallow export is its own entry; imported view files are never applied", async () => {
+  test("R5-03/R6-02 .cbproj zip: no .carton/ and no .scratch/views/ entry; the rest of .scratch/ is kept; the shallow export is its own entry; imported view files are never applied", async () => {
     // port: Takes is Carton (PLAN v14 §0.1): the store folder is `.carton/` (`.carton/carton.db`), the shallow entry
     // `carton-shallow.json` and its format `carton-shallow/1`
     const root = tmpRoot(opts.tmpDir);
@@ -1179,7 +1179,7 @@ export function conformanceTests(S: Schema, opts: ConformanceOptions = {}): void
       // an independent zip reader agrees (Python's zipfile, CRCs checked)
       try {
         const py = execFileSync("python3", ["-c", "import sys,zipfile;z=zipfile.ZipFile(sys.argv[1]);assert z.testzip() is None;print('\\n'.join(z.namelist()))", out], { encoding: "utf8" });
-        assert.deepEqual(py.trim().split("\n").sort(), [...names].sort());
+        assert.deepEqual(py.trim().split(/\r?\n/).sort(), [...names].sort());
       } catch (e) {
         if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
       }

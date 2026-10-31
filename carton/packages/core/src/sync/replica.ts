@@ -224,6 +224,11 @@ export class SharedCut {
     this.refreshState();
     return this.client.whenCaughtUp(timeoutMs);
   }
+  /** History this replica doesn't hold, from the server (`SyncClient.history`): fails while not connected. */
+  history(after: number, upTo: number, opts: { lineage?: boolean } = {}): ReturnType<SyncClient["history"]> {
+    if (!this.client) return Promise.reject(new Error("history request: not connected"));
+    return this.client.history(after, upTo, opts);
+  }
   /**
    * Stop syncing. With `drain`, push nothing new and wait (up to `timeoutMs`) until every in-flight push and withdraw
    * has been answered, as a lease handover requires (§6.2: the helper finishes its in-flight push, then releases).
