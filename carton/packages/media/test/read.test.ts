@@ -277,3 +277,23 @@ test("abort between the body arriving and the reader taking it still ends the re
     assert.equal(outcome, "AbortError", `abort ${depth} microtasks after the body`);
   }
 });
+
+test("stat's wait on a store that never answers ends with the caller's abort (CI fix #9 review)", async () => {
+  const { hash, mem } = await shared(MiB, 18);
+  const never: BlobStore = {
+    kind: "never",
+    head: () => new Promise(() => {}),
+    get: (k, r) => mem.get(k, r),
+    list: (p) => mem.list(p),
+    put: (k, d, o) => mem.put(k, d, o),
+    delete: (k) => mem.delete(k),
+    createMultipart: (k) => mem.createMultipart(k),
+    resumeMultipart: (k, u) => mem.resumeMultipart(k, u),
+  };
+  const reader = new MediaReader({ store: never, hasher: nodeHasher, cache: new MemoryLeafCache() });
+  const ac = new AbortController();
+  const p = reader.toolSource().stat(hash, ac.signal);
+  setTimeout(() => ac.abort(), 20);
+  const outcome = await Promise.race([p.then(() => "resolved", (e) => (e as Error).name), new Promise((r) => setTimeout(() => r("hung"), 3000))]);
+  assert.equal(outcome, "AbortError");
+});
