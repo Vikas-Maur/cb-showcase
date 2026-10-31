@@ -1331,7 +1331,7 @@
     {
       "id": "media-reuse-check",
       "agent": "media",
-      "claim": "reuse check of a finished 2,000-part stream proxy (bench/media/reuse-check.ts, fd87449) vs before (d9f9a5f): the first check is faster through the host and on blob-fs with request delay; a repeat check on the same store object is far faster; plain blob-fs with no delay is slightly slower on the first check",
+      "claim": "reuse check of a finished 2,000-part stream proxy (bench/media/reuse-check.ts, 4fa7f80: the reuse check uses the host's batch heads) vs before (d9f9a5f): the first check is faster through the host and on blob-fs with request delay; a repeat check on the same store object is far faster; plain blob-fs with no delay is slightly slower on the first check (media raw: reuse-check-4fa7f80.jsonl)",
       "timeout": 45,
       "steps": [
         {
