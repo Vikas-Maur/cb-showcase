@@ -8,6 +8,7 @@
 
 import { EMPTY_SHA256, UNSIGNED_PAYLOAD, encodeRfc3986, presignUrl, sha256Hex, signRequest } from "./sigv4.ts";
 import type { Credentials } from "./sigv4.ts";
+import { nodeFetch } from "./node-fetch.ts";
 import {
   buildCompleteMultipartUpload,
   parseCompleteMultipartUpload,
@@ -282,8 +283,10 @@ export class S3Client {
     this.basePath = endpoint.pathname.replace(/\/+$/, "");
     this.forcePathStyle = options.forcePathStyle ?? true;
     this.signPayload = (options.payload ?? "unsigned") === "signed";
-    // Wrapped rather than stored bare: browsers and Workers throw "Illegal invocation" for a detached fetch.
-    this.fetchFn = options.fetch ?? ((url, init) => globalThis.fetch(url, init));
+    // On Node, node:http(s) (node-fetch.ts: undici behind fetch can crash the process on a connection dropped while a
+    // body is paused, CI #29). Elsewhere fetch, wrapped rather than stored bare: browsers and Workers throw "Illegal
+    // invocation" for a detached fetch.
+    this.fetchFn = options.fetch ?? nodeFetch() ?? ((url, init) => globalThis.fetch(url, init));
     this.retries = retries;
     this.retryBaseDelayMs = options.retryBaseDelayMs ?? 100;
   }
