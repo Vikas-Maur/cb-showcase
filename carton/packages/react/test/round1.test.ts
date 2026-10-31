@@ -204,7 +204,7 @@ test("R1-9: fold in the rest of a partial fold, once", async () => {
   ui.dispose();
 });
 
-test("R1-10, R2-3, R2-6: 'every difference shown as a card' folds through core with the picks, Keep both included", async () => {
+test("R1-10, R2-3, R3-3: 'every difference shown as a card' folds through core with the picks; no Keep both on compare cards", async () => {
   const { carton, ui } = await open({ keepBoth: (card: ConflictCard) => ({ value: { name: `${(card.ours as Rec).name} + ${(card.theirs as Rec).name}` } }) });
   const main = carton.cut;
   const v = await carton.fork("alt");
@@ -225,6 +225,8 @@ test("R1-10, R2-3, R2-6: 'every difference shown as a card' folds through core w
   const plan = await ui.planFold(v.id, main, { allCards: true });
   assert.equal(plan.conflicts.length, 3);
   assert.equal(plan.partial, false);
+  // R3-3: a compare card resolves to one side only (core's compare2), so Keep both isn't offered on it.
+  assert.ok(plan.conflicts.every((c) => !c.canKeepBoth));
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: { "items/a": "theirs", "items/b": "mine", "items/d": "both" }, allCards: true });
   assert.equal(r.ok, true);
   const last = calls.at(-1)!;

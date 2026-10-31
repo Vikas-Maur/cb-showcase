@@ -245,13 +245,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   // the ones folded in since.
   const restLeft = new Set<string>();
   const restDone = new Set<string>();
+  // Checked and found folded in (or changed since): never checked again, so refreshes don't redo historical diffs.
+  const restNo = new Set<string>();
+  // Only the current cut's own partial folds offer the rest: an inherited one (History shows the cut a fork came
+  // from) would fold into that other cut (R3-2).
+  const offersRest = (c: CoreVersion) => c.kind === "partial-revert" && !!c.change && c.ref.branchId === cutId && restLeft.has(c.change) && !restDone.has(c.change);
 
   const toVersion = (c: CoreVersion, kindOverride?: VersionKind, turnEdits?: number): Version => {
     const id = c.change ?? `${c.ref.branchId}@${c.ref.seq}`;
     const prev = byId.get(id);
     const kind = kindOverride ?? KIND[c.kind] ?? "edit";
     // A partial fold's inverse offers "Fold in the rest" once checkRest() found its left-out changes still left out.
-    const rest = c.kind === "partial-revert" && !!c.change && restLeft.has(c.change) && !restDone.has(c.change);
+    const rest = offersRest(c);
     return {
       id,
       seq: c.ref.seq,
@@ -305,7 +310,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const kind: VersionKind = key && k === j ? "turn" : KIND[c.kind] ?? "edit";
         const old = reuse.get(c.change ?? `${c.ref.branchId}@${c.ref.seq}`);
         // An unchanged version keeps its object, so a refresh re-renders nothing and the bridge sends nothing.
-        if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1) && !!old.v.foldRest === (c.kind === "partial-revert" && !!c.change && restLeft.has(c.change) && !restDone.has(c.change))) next.push(old);
+        if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1) && !!old.v.foldRest === offersRest(c)) next.push(old);
         else next.push({ core: c, turnKey: key, v: toVersion(c, kind, j - i + 1) });
       }
       i = j + 1;
@@ -567,7 +572,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   // ------------------------------------------------------------ sync, presence, conflicts, preview
   let sync: SyncStatus = carton.sync ? mapSync(carton.sync.status, 0) : { kind: "local" };
-  const peerMap = new Map<string, { peer: Peer; seen: number; ghosts: Ghost[] }>();
+  const peerMap = new Map<string, { peer: Peer; seen: number; ghosts: Ghost[]; on: string }>();
   let peers: readonly Peer[] = [];
   let ghosts: readonly Ghost[] = [];
   // Cards of every cut; the topic shows the current cut's. Each resolves on its own cut.
@@ -590,8 +595,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       hub.notify("peers");
     }
   };
+  // A peer's drags are ghosts only over the cut they are on; switching cuts recomputes them (R3-4).
   const publishGhosts = () => {
-    ghosts = [...peerMap.values()].flatMap((x) => x.ghosts);
+    const next = [...peerMap.values()].flatMap((x) => (x.on === cutId ? x.ghosts : []));
+    if (!next.length && !ghosts.length) return;
+    ghosts = next;
     hub.notify("ghosts");
   };
   const idleTimer = setInterval(() => {
@@ -696,10 +704,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         // Presence says which cut the peer is on; their drags are ghosts only over that cut's timeline.
         const on = e.branchId;
         const peer = prev && prev.peer.actor === actor && !prev.peer.idle && prev.peer.activity === activity && prev.peer.cutId === on ? prev.peer : { actor, cutId: on, idle: false, ...(activity ? { activity } : {}) };
-        const g = on !== cutId ? [] : (state.ghosts ?? []).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(x.label ? { label: x.label } : {}) }));
-        peerMap.set(key, { peer, seen: clock(), ghosts: g });
+        const g = (state.ghosts ?? []).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(x.label ? { label: x.label } : {}) }));
+        peerMap.set(key, { peer, seen: clock(), ghosts: g, on });
         if (peer !== prev?.peer) publishPeers();
-        if (g.length || prev?.ghosts.length) publishGhosts();
+        if ((on === cutId && g.length) || (prev?.on === cutId && prev.ghosts.length)) publishGhosts();
         break;
       }
       case "notice": {
@@ -736,19 +744,27 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     return d.ops.some((op) => op.op !== "remap" && deepEqual(getIn(head.doc, op.path, schema), getIn(inv, op.path, schema)));
   };
   const checkRest = async () => {
-    for (const r of [...rows]) {
+    // Only this cut's partial folds not decided yet: usually none, so a refresh costs nothing here (R3-5).
+    const todo: CoreVersion[] = [];
+    for (const r of rows) {
       const c = r.core;
-      if (!c?.change || c.kind !== "partial-revert" || restDone.has(c.change) || restLeft.has(c.change) || c.ref.branchId !== cutId) continue;
+      if (c?.change && c.kind === "partial-revert" && c.ref.branchId === cutId && !restDone.has(c.change) && !restLeft.has(c.change) && !restNo.has(c.change)) todo.push(c);
+    }
+    for (const c of todo) {
       let left = false;
       try {
         left = await leftOut(c);
       } catch {
         left = false;
       }
-      if (!left || disposed) continue;
-      restLeft.add(c.change);
-      const i = pos.get(c.change);
-      if (i === undefined) continue;
+      if (disposed) return;
+      if (!left) {
+        restNo.add(c.change!);
+        continue;
+      }
+      restLeft.add(c.change!);
+      const i = pos.get(c.change!);
+      if (i === undefined || !offersRest(rows[i]!.core!)) continue;
       rows[i]!.v = { ...rows[i]!.v, foldRest: true };
       changed(i);
       hub.notify("history");
@@ -771,6 +787,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     if (carton.cut !== cutId) {
       cutId = carton.cut;
       publishConflicts();
+      publishGhosts();
     }
     await loadHistory();
     await refreshCuts();
@@ -829,7 +846,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       title: w.title,
       mine: { author: me, summary: w.mine, ...(mineWhere ? { where: mineWhere } : {}) },
       theirs: { author: theirs, summary: w.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
-      canKeepBoth: !!opts.keepBoth?.(card),
+      // A §13 compare card resolves to one side only (core's compare2 takes "theirs" or keeps yours): no Keep both.
+      canKeepBoth: card.kind !== "compare" && !!opts.keepBoth?.(card),
       ...(w.reason ? { reason: w.reason } : {}),
       provisional: "mine",
     };
@@ -932,6 +950,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       turns.length = 0;
       reindexFrom(0);
       publishConflicts();
+      publishGhosts();
       hub.notify("history");
       await refresh();
     },

@@ -368,3 +368,31 @@ test(name("R2-5: when a fold comes back with new cards, the dialog shows the pla
   assert.equal(($$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement).disabled, true, "can't fold until it's picked");
   await m.unmount();
 });
+
+test(name("R3-1: a card that comes back after a fold has no pick: it must be picked again"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const planFold = ui.planFold.bind(ui);
+  let raced = false;
+  ui.planFold = async (f, i, o) => {
+    const p = await planFold(f, i, o);
+    // The same card (same id), its source edited again since it was picked.
+    return raced ? { ...p, conflicts: p.conflicts.map((c) => ({ ...c, theirs: { ...c.theirs, summary: "Moved it to start at 0:03.0" } })) } : p;
+  };
+  ui.fold = async () => {
+    raced = true;
+    const p = await ui.planFold("cut-ig", "cut-main");
+    return { ok: false, conflicts: p.conflicts };
+  };
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
+  await flush();
+  const dialog = $(m.container, "[role=dialog]")!;
+  await click(byText(dialog, "button", "Keep Director's (30s Instagram cut)"));
+  const go = () => $$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement;
+  assert.equal(go().disabled, false);
+  await click(go());
+  await flush();
+  assert.match(dialog.textContent ?? "", /Moved it to start at 0:03\.0/, "the card as it is now");
+  assert.equal(go().disabled, true, "its old pick is gone: Fold in waits for a new one");
+  assert.equal($$(dialog, ".carton-conflict [aria-pressed=true]").length, 0);
+  await m.unmount();
+});

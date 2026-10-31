@@ -194,3 +194,67 @@ test("core APIs: credits say when, publications say newer edits", async () => {
   assert.equal(ui.published()?.newerEdits, 1);
   ui.dispose();
 });
+
+// ---------------------------------------------------------------- review round 3
+
+test("R3-2: a cut made after a partial fold doesn't offer the rest of the fold it inherited", async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const v = await carton.fork("alt");
+  await carton.commit({ cut: v.id, ops: [set("b", "color", "blue"), set("d", "color", "blue")], author: bob });
+  await ui.refresh();
+  await ui.planFold(v.id, main);
+  assert.equal((await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} })).ok, true);
+  await settle();
+  const inv = ui.history().at("all", 0)!;
+  assert.equal(inv.foldRest, true, "offered on Main");
+  const working = await ui.newCut("working", ui.cuts().find((c) => c.current)!.head);
+  await settle();
+  const inherited = ui.history().at("all", ui.history().indexOf("all", inv.id))!;
+  assert.equal(inherited.foldRest, undefined, "not offered on the new cut");
+  assert.equal((await ui.foldRest(inv.id)).ok, false);
+  assert.equal((await item(carton, "d", main)).color, "red", "Main untouched");
+  assert.equal(carton.cut, working.id);
+  ui.dispose();
+});
+
+test("R3-4: ghosts follow the cut: a drag on Main isn't shown over another cut, and comes back with Main", async () => {
+  const { carton, ui, emit } = await open();
+  const main = carton.cut;
+  emit({ type: "presence", branchId: main, actor: bob, state: { ghosts: [{ item: "a", track: "t1", start: 1, end: 3 }] } });
+  assert.equal(ui.ghosts().length, 1);
+  const other = await carton.fork("alt");
+  await ui.switchCut(other.id);
+  assert.equal(ui.ghosts().length, 0, "cleared on switch");
+  await ui.switchCut(main);
+  assert.equal(ui.ghosts().length, 1, "back on Main");
+  ui.dispose();
+});
+
+test("R3-5: a decided partial fold is not diffed again on later refreshes", async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const v = await carton.fork("alt");
+  await carton.commit({ cut: v.id, ops: [set("b", "color", "blue"), set("d", "color", "blue")], author: bob });
+  await ui.refresh();
+  await ui.planFold(v.id, main);
+  await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} });
+  await settle();
+  await ui.foldRest(ui.history().at("all", 0)!.id);
+  await settle();
+  let diffs = 0;
+  const realDiff = carton.diff.bind(carton);
+  (carton as { diff: typeof carton.diff }).diff = (...a) => (diffs++, realDiff(...a));
+  const again = fromCarton(carton, { me: alice });
+  await again.ready;
+  await settle();
+  const first = diffs;
+  assert.ok(first <= 1, "checked once");
+  await again.refresh();
+  await carton.commit({ ops: [set("a", "color", "x")] });
+  await settle();
+  await again.refresh();
+  assert.equal(diffs, first, "not checked again");
+  again.dispose();
+  ui.dispose();
+});

@@ -39,8 +39,13 @@ export function FoldInDialog(p: FoldInDialogProps) {
     setResult(r);
     // Done: hand the result to the host, or just close.
     if (r.ok) (p.onDone ?? p.onClose)(r);
-    // New cards (someone edited since the plan was shown): show the plan as it is now, with its cards (R2-5).
-    else if (r.conflicts?.length) loaded.reload();
+    // New cards (someone edited since the plan was shown): show the plan as it is now, with its cards (R2-5). A card
+    // that came back was not the one picked on (new, or its values changed), so its old pick goes too (R3-1).
+    else if (r.conflicts?.length) {
+      const back = new Set(r.conflicts.map((c) => c.id));
+      setChoices((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !back.has(id))));
+      loaded.reload();
+    }
     return r;
   });
 
