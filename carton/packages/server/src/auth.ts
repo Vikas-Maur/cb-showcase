@@ -57,9 +57,7 @@ export function createHmacAuth({ secret, clock = Date.now }: { secret: string | 
       if (dot <= 0 || dot !== token.lastIndexOf(".")) return null;
       const body = token.slice(0, dot);
       const sig = unb64url(token.slice(dot + 1));
-      // canonical only: a last character that differs in its unused bits decodes to the same MAC, but it is not the
-      // token that was issued (the AuthProvider suite's tamper check)
-      if (!sig || sig.length !== 32 || b64url(sig) !== token.slice(dot + 1)) return null;
+      if (!sig || sig.length !== 32) return null;
       // WebCrypto's verify compares in constant time
       if (!(await crypto.subtle.verify("HMAC", await key, sig as Uint8Array<ArrayBuffer>, enc.encode(body)))) return null;
       const bytes = unb64url(body);
