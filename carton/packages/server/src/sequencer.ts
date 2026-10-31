@@ -588,6 +588,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         from = k.seq;
       } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
+    budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
     const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
@@ -945,21 +946,31 @@ function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8A
   const bytes = (k: string) => (r[k] === null || r[k] === undefined ? 0 : enc.encode(String(r[k])).byteLength);
   return ROW_FIXED + 6 * enc.encode(branchId).byteLength + (body?.byteLength ?? 0) + bytes("author") + bytes("base") + bytes("paths") + bytes("reads") + 3 * bytes("spans") + 6 * (bytes("id") + bytes("hash") + bytes("policy"));
 }
+/** A blob read as a stream of ranged gets, `chunk` bytes at a time, fetched only as the reader pulls. */
+function rangedStream(blobs: BlobStore, key: string, chunk: number): ReadableStream<Uint8Array> {
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(ctl) {
+      const part = await blobs.get(key, { offset, length: chunk });
+      if (!part) return ctl.error(new Error(`segment ${key} is missing from the blob store`));
+      if (part.byteLength) ctl.enqueue(part);
+      offset += part.byteLength;
+      if (part.byteLength < chunk) ctl.close();
+    },
+  });
+}
 /** A reply row's keys, numbers and the defaults `Tables.toRow` adds (the rest is sized from its columns). */
 const ROW_FIXED = 256;
 
 /**
  * The rows of an archived segment (a gzip-compressed JSON array of row objects), one at a time, read as a stream: only
  * one row's text is held at once, so a page that stops early never decompresses or parses the rest (round 3 finding
- * 3). Uses the store's `getStream` when it has one.
+ * 3). Uses the store's `getStream` when it has one, else ranged gets of 64 KiB (round 4 finding 3: a whole-object get
+ * loads the segment before the page can stop it).
  */
 async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Record<string, string | number | null>> {
   let stream: ReadableStream<Uint8Array> | null = blobs.getStream ? await blobs.getStream(key) : null;
-  if (!stream) {
-    const stored = await blobs.get(key);
-    if (!stored) throw new Error(`segment ${key} is missing from the blob store`);
-    stream = new Blob([stored as Uint8Array<ArrayBuffer>]).stream();
-  }
+  if (!stream) stream = rangedStream(blobs, key, 64 * 1024);
   // (the lib types give these transforms a BufferSource writable side: a Uint8Array stream is one)
   if (key.endsWith(".gz")) stream = stream.pipeThrough(new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>);
   const reader = stream.pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>).getReader();

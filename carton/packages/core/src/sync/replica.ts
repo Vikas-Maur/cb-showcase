@@ -193,7 +193,10 @@ export class SharedCut {
     if (!v || v.provisional) return null;
     const seq = Number(v.id.slice(v.id.lastIndexOf("@") + 1));
     const row = this.queue.rows(this.branchId)[seq - 1];
-    return row && !row.placeholder && row.withdrawn ? { status: "absorbed", id, seq } : { status: "confirmed", id, seq };
+    if (!row || row.placeholder || !row.withdrawn) return { status: "confirmed", id, seq };
+    // a withdraw row: refused here (its reason kept by the queue, round 4 finding 4), else absorbed
+    const reason = this.queue.refusedReason(this.branchId, id);
+    return reason !== undefined ? { status: "rejected", id, reason } : { status: "absorbed", id, seq };
   }
 
   // ---------------------------------------------------------------- the lease holder's controls
