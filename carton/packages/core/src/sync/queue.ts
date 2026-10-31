@@ -77,6 +77,10 @@ export interface QueuedChange {
   sentBases: number[];
   /** A withdraw was sent for it on this connection and epoch (H1). */
   withdrawSent: { conn: number; epoch: number } | null;
+  /** Refused here (too large to send) after a copy was sent: emptied, withdrawn, then reported rejected with this. */
+  rejecting?: string;
+  /** The connection that refused its withdraw (its token or branch): not withdrawn again on it. */
+  withdrawRefused?: number;
   meta: Record<string, unknown>;
   history?: HistoryFields;
 }
@@ -146,6 +150,8 @@ export class ReplicaQueue {
   readonly statesByVersion = new Map<number, Doc>();
   /** Ids confirmed through a server list inside a stretch held only as placeholders: branch → id → seq (finding 18). */
   private readonly listed = new Map<string, Map<string, number>>();
+  /** `branch\0id` → why: changes refused here whose ids a withdraw spent (rare: kept for the queue's life). */
+  private readonly refused = new Map<string, string>();
   /** The highest placeholder seq per branch: rows above it are all held, so the client can check them itself. */
   private readonly placeholderTop = new Map<string, number>();
   /** Every replica id (process) that committed here; claimed in `hello` (R10-02). */
@@ -433,7 +439,9 @@ export class ReplicaQueue {
     const log = this.logs.get(b)!;
     if (kf.seq <= log.length) return false;
     // a keyframe becomes confirmed state: it must hash to what it claims (review finding 14)
-    if (kf.stateHash && hashDoc(kf.doc, this.schema) !== kf.stateHash) throw new KeyframeMismatch(b, kf.seq);
+    // a keyframe without a real digest is refused like a wrong one: nothing unchecked becomes confirmed state (round 2
+    // finding 8)
+    if (typeof kf.stateHash !== "string" || !/^[0-9a-f]{64}$/.test(kf.stateHash) || hashDoc(kf.doc, this.schema) !== kf.stateHash) throw new KeyframeMismatch(b, kf.seq);
     this.placeholderTop.set(b, kf.seq);
     for (let s = log.length + 1; s <= kf.seq; s++) log.push({ seq: s, id: null, ops: [], placeholder: true });
     this.kf.get(b)!.set(kf.seq, kf.doc);
@@ -494,7 +502,7 @@ export class ReplicaQueue {
   // ---------------------------------------------------------------- leaving the queue
   /** The change's latest version is empty: it changes nothing now. */
   isEmpty(p: QueuedChange): boolean {
-    return last(p.versions).ops.length === 0 && !keepsWhenEmpty(p.history);
+    return last(p.versions).ops.length === 0 && (p.rejecting !== undefined || !keepsWhenEmpty(p.history));
   }
   /**
    * Absorb a change that was never sent: no copy can exist anywhere, so it just leaves the queue. A change any copy
@@ -514,6 +522,12 @@ export class ReplicaQueue {
       this.queues.set(b, queue.filter((x) => x !== p));
       this.invalidate(b);
     }
+    // a change refused here whose withdraw is now answered: rejected, with the reason it was refused for, and
+    // remembered, so its withdraw row is never read as an absorption later (round 4 finding 4)
+    if (p.rejecting !== undefined) {
+      this.refused.set(`${b}\u0000${p.id}`, p.rejecting);
+      return this.emit({ type: "rejected", branchId: b, change: p, reason: p.rejecting });
+    }
     const cards = p.versions.slice(1).flatMap((v) => v.cards);
     this.emit({ type: "absorbed", branchId: b, change: p, cards, withdrawn });
   }
@@ -526,6 +540,39 @@ export class ReplicaQueue {
     this.rebaseAll(b);
     this.emit({ type: "rejected", branchId: b, change: p, reason });
     return p;
+  }
+  /** Why a change whose withdraw row is in the log was refused here, if it was (it was never absorbed). */
+  refusedReason(b: string, id: string): string | undefined {
+    return this.refused.get(`${b}\u0000${id}`);
+  }
+  /**
+   * Refuse a pending change here (too large to send). Never sent: rejected at once. Sent before, a copy may still be
+   * confirmed (H1): it is emptied but kept, so the pusher withdraws its id, and it is reported rejected only once the
+   * withdraw is answered, or confirmed if an earlier copy was confirmed after all (round 3 finding 2). Either way the
+   * changes after it are rebased without it.
+   */
+  rejectLocally(b: string, id: string, reason: string): void {
+    const p = this.queues.get(b)!.find((x) => x.id === id);
+    if (!p) return;
+    if (!p.sentBases.length) {
+      this.rejectPending(b, id, reason);
+      return;
+    }
+    const v = last(p.versions);
+    const nv: QueueVersion = {
+      ...v,
+      k: v.k + 1,
+      ops: [],
+      intent: null,
+      hash: hashOps([], null),
+      decl: declare(this.schema, v.baseDoc, [], null),
+      supersedes: [...v.supersedes, `${p.id}#${v.k}`],
+      cards: [],
+    };
+    p.versions.push(nv);
+    this.versions.get(p.id)?.push(nv);
+    p.rejecting = reason;
+    this.rebaseAll(b);
   }
   /** "lww on structure" (H2): the change goes through merge3 from now on. */
   toMerge(b: string, id: string): boolean {
