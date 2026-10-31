@@ -16,14 +16,20 @@ const RANK: Record<Update["status"], number> = { confirmed: 0, conflicts: 1, rej
 /** Answers kept for views that haven't named their change yet: the newest ones, for this long. */
 const KEEP = 512;
 const UNCLAIMED_MS = 60_000;
+const RETRIES = 5;
+const RETRY_MS = 500;
 
-/** Forward the server's answers to the views' sidecars; returns the unsubscribe. */
-export function forwardSettles(carton: Carton, store: Store, onChangeUpdate: NonNullable<ViewPrinter["onChangeUpdate"]>): () => void {
+/** Forward the server's answers to the views' sidecars; returns the stop (it resolves once the forwarding in
+ * progress has finished; nothing is forwarded after it). */
+export function forwardSettles(carton: Carton, store: Store, onChangeUpdate: NonNullable<ViewPrinter["onChangeUpdate"]>): () => Promise<void> {
   const answers = new Map<string, { s: Update; at: number }>();
   /** What each view's sidecar was last told: `<change id> <status>`. */
   const told = new Map<string, string>();
+  /** Deliveries that failed, by `<change id> <status>`: how many times. */
+  const failures = new Map<string, number>();
+  let closed = false;
   let chain: Promise<void> = Promise.resolve();
-  const enqueue = (f: () => Promise<void>) => { chain = chain.then(f).catch(() => {}); };
+  const enqueue = (f: () => Promise<void>) => { if (!closed) chain = chain.then(() => (closed ? undefined : f())).catch(() => {}); };
 
   const deliver = async () => {
     const now = Date.now();
@@ -36,8 +42,17 @@ export function forwardSettles(carton: Carton, store: Store, onChangeUpdate: Non
       const view = String(r.key[1]);
       const mark = `${id} ${a.s.status}`;
       if (told.get(view) === mark) continue;
-      told.set(view, mark);
-      await onChangeUpdate(view, id, a.s);
+      try {
+        await onChangeUpdate(view, id, a.s);
+        told.set(view, mark);
+        failures.delete(mark);
+      } catch {
+        // not told (the sidecar's install failed): the next views write or answer tries again, and so does a timer, a
+        // few times
+        const n = (failures.get(mark) ?? 0) + 1;
+        failures.set(mark, n);
+        if (n <= RETRIES && !closed) { const t = setTimeout(() => enqueue(deliver), RETRY_MS * n); t.unref?.(); }
+      }
     }
   };
 
@@ -61,5 +76,10 @@ export function forwardSettles(carton: Carton, store: Store, onChangeUpdate: Non
   });
   // a save recorded as a view's last change after its answer came: it gets that answer now
   const unwatch = store.watch?.((tables) => { if (answers.size && tables.includes("views")) enqueue(deliver); });
-  return () => { off(); unwatch?.(); };
+  return async () => {
+    closed = true;
+    off();
+    unwatch?.();
+    await chain;
+  };
 }
