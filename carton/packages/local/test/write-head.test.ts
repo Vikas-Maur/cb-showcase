@@ -112,3 +112,40 @@ test("the cost: the head shares the holder's frozen records, so an answer copies
     await c.close();
   }
 });
+
+test("a retry answered from its receipt gets the head of the cut the change went to, though the cut switched mid-write", async () => {
+  // windows-sync's 3977f66 records the receipt's cut from the current cut, read before an await; core picks its own
+  // when it commits. A switch in between (another process's `cb cut switch`, served while this write waits) put the
+  // change on the new cut and the receipt on the old one, so the retry's head was of a cut that doesn't have it.
+  const c = await opened();
+  try {
+    const main = c.cut;
+    const other = (await c.fork("Other")).id;
+    // the write is made on Other's base; Other's c1 changes since (the stale clash: a card, the rest lands)
+    const base = (await c.head(other)).ref;
+    assert.equal((await write(c, { kind: "commit", cut: other, ops: [set("c1", "name", "newer")] })).status, "confirmed");
+    // the switch lands while the write reads the cut list (after it noted the current cut, before core commits)
+    const cuts = c.cuts.bind(c);
+    let armed = true;
+    (c as unknown as { cuts: typeof c.cuts }).cuts = async () => {
+      const x = await cuts();
+      if (armed) { armed = false; await c.switchTo(other); }
+      return x;
+    };
+    const req = { id: "wh.moved", actor: me, op: { kind: "commit" as const, base, ops: [set("c1", "name", "stale"), set("c3", "name", "mine")], head: true } };
+    const first = await runWrite(c, structuredClone(req) as never);
+    assert.ok(!armed, "the switch happened mid-write");
+    assert.equal(first.status, "conflicts", JSON.stringify(first));
+    assert.equal(headOf(first)?.ref.branchId, other, "core committed on the cut it found current");
+    assert.equal(rec(headOf(first)!.doc, "c3").name, "mine");
+
+    await c.switchTo(main);
+    const again = await runWrite(c, structuredClone(req) as never);
+    assert.equal(again.status, "conflicts", JSON.stringify(again));
+    assert.equal(headOf(again)?.ref.branchId, other, "the receipt names the cut the change went to");
+    assert.equal(rec(headOf(again)!.doc, "c3").name, "mine");
+    assert.notEqual(rec((await c.head(main)).doc, "c3").name, "mine", "main never had it");
+  } finally {
+    await c.close();
+  }
+});

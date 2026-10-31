@@ -248,7 +248,8 @@ const receiptKey = (requestId: ChangeId) => ["@request", requestId];
 /**
  * `shared`: written with a shared cut's pending row; it holds the cards, and core says whether the change landed.
  * `cut`: the cut the request went to, so a retry's WriteOp `head` is of that cut even after a switch (older receipts
- * have none: the op's cut, else the current one).
+ * have none: the op's cut, else the current one). The landed change's own cut: core picks the current cut when it
+ * commits, after this write read it, so a switch in between moves the change; with nothing landed, the cut read.
  */
 interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number; shared?: boolean; cut?: string }
 
@@ -346,7 +347,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
           ? {
               cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [
                 cardsRow(author, req.id, change?.id ?? null, cards),
-                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), cut: cutId, ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
+                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), cut: change?.branchId ?? cutId, ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
               ],
             }
           : {}),
