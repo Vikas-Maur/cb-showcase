@@ -546,7 +546,15 @@ with Carton off none of it runs at all.
   cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper
   catches up and the newest state goes into `project.json`) and is never PUT as a whole file afterwards.
 - **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their
-  versions in instead of 1.4.0's "This project ID already exists".
+  versions in instead of 1.4.0's "This project ID already exists". Where you both changed the same thing, theirs goes
+  in and yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History
+  panel). Clips they added come with their files. Opening one of a project you don't have starts its history from
+  theirs. A `.carton\` or `.scratch\views\` folder inside a `.cbproj` is never kept: Open Project removes them, even with
+  Carton off. **Include history**: Cardboard's Save As dialog has no switch for it, so set `CARTON_CBPROJ_HISTORY=1`
+  in the environment of the app or of `cb` before saving. The file then also carries every version, with its author
+  and name, and whoever opens it sees them on a read-only cut. History never includes your local data (pins, notices,
+  sync settings). Saved while edits to a shared project are still waiting to sync (offline), the file has no Carton
+  history at all, only what you see (as in 1.4.0), and the log says so. Save again once synced.
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
