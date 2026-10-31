@@ -18,4 +18,5 @@ export {
   type FfmpegProxyEncoder,
 } from "./ffmpeg-encoder.ts";
 export { hostProxyEncoder, probeProxyFile, type HostProxyDecision, type HostProxyEncoder, type HostProxyOptions } from "./host-proxy.ts";
-export { shareMedia, type ShareEvent, type ShareMediaOptions, type ShareMediaResult } from "./share.ts";
+export { shareMedia, type Segmenter, type ShareEvent, type ShareMediaOptions, type ShareMediaResult } from "./share.ts";
+export { encodeSegments, parsePlaylist, segmentArgs, type EncodeSegmentsOptions, type SegmentInfo } from "./segment-encoder.ts";

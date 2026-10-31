@@ -4,7 +4,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { REAL_HOME, scratchRoot } from "./env.ts";
+import { scratchProfile, scratchRoot } from "./env.ts";
 import { createInterface } from "node:readline";
 
 export interface ProcOptions {
@@ -93,20 +93,8 @@ function cleanEnv(extra: Record<string, string | undefined> = {}): NodeJS.Proces
   for (const [k, v] of Object.entries(process.env)) if (!/^(CARDBOARD_|CARTON_AGENT|CLAUDECODE|CLAUDE_CODE|GEMINI_CLI|CODEX_|CURSOR_TRACE_ID)/.test(k)) env[k] = v;
   const t = shortTmp();
   if (t) env.TMPDIR = t;
-  // a scratch profile: nothing a child starts (Carton's app-data fallback, wrangler, ffmpeg) reads or writes the user's
-  // real one; what the children need from the real home is passed explicitly
-  const root = scratchRoot();
-  const home = join(root, "home");
-  mkdirSync(home, { recursive: true });
-  env.CARTON_E2E_TMP = root;
-  const cli = join(REAL_HOME, ".t3", "projects", "cardboard-showcase", "_inspect", "cardboard-1.4.0", "cli", "cardboard.mjs");
-  if (!env.CARTON_CARDBOARD_CLI && existsSync(cli)) env.CARTON_CARDBOARD_CLI = cli;
-  for (const k of ["HOME", "USERPROFILE"]) env[k] = home;
-  env.LOCALAPPDATA = join(home, "AppData", "Local");
-  env.APPDATA = join(home, "AppData", "Roaming");
-  env.XDG_DATA_HOME = join(home, ".local", "share");
-  env.XDG_CONFIG_HOME = join(home, ".config");
-  env.XDG_CACHE_HOME = join(home, ".cache");
+  // the run's scratch profile (env.ts), also when a caller's environment was set before it
+  Object.assign(env, scratchProfile());
   for (const [k, v] of Object.entries(extra)) if (v === undefined) delete env[k]; else env[k] = v;
   return env;
 }

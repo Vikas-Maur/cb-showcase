@@ -184,7 +184,7 @@ const cutSwitch: CommandSpec = {
 const fold: CommandSpec = {
   path: ["fold"],
   gitAlias: ["merge"],
-  summary: "Fold a cut into the current cut (or --into). --check reports cards without saving; --reject keeps parts out",
+  summary: "Fold a cut into the current cut (or --into). --check reports cards without saving; --reject keeps parts out (fold it again later to fold in the rest)",
   args: [{ name: "cut", description: "the cut (or version) to fold in", required: true }],
   options: [
     { name: "into", type: "string", description: "fold into this cut instead of the current one" },
@@ -233,7 +233,7 @@ const fold: CommandSpec = {
       const text = [...noticeLines(r.notices ?? []), `Folded in, but ${n} card${n === 1 ? "" : "s"} came back: the other side's value was kept.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i)}`), "See them with `cb conflicts <project>`, and pick with `cb resolve`."].join("\n");
       return { json: r, text, exitCode: exitCodeOf(r) };
     }
-    return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : "Folded in");
+    return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : (r as any).rest ? "Folded in the rest (what an earlier partial fold kept out)" : "Folded in");
   },
 };
 

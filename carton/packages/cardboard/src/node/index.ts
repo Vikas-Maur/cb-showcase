@@ -2,6 +2,7 @@
 // PLAN §6.4 (displace, then install; quiescence; per-agent views; the shared timeline.tsx) and §13 (.cbproj).
 export * from "./displace.ts";
 export * from "./displaced.ts";
+export * from "./install-lock.ts";
 export * from "./materializer.ts";
 export * from "./migrate.ts";
 export * from "./carton-engine.ts";

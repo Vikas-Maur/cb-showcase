@@ -470,3 +470,16 @@ test(name("U6/U7: versions arriving and ghosts moving re-render only History; av
   assert.match(published.textContent ?? "", /The share link shows the newest version/);
   await m.unmount();
 });
+
+test(name("F-5: Fold into Main hands the host the cuts as they are now, not the heads the menu last showed"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  await act(() => ui.switchCut("cut-ig"));
+  let got: { from: string; into: string } | null = null;
+  const m = await render(wrap(ui, h(CutsMenu, { onFoldIn: (from: { head: string }, into: { head: string }) => (got = { from: from.head, into: into.head }) })));
+  await act(() => void ui.addVersion({ author: people.bob })); // moves the current cut's head; the menu doesn't re-render
+  await flush();
+  await click($(m.container, ".carton-menu-trigger"));
+  await click(byText(m.container, "[role=menuitem]", "Fold into Main cut"));
+  assert.equal(got!.from, ui.cuts().find((c) => c.id === "cut-ig")!.head, "the source's head as it is now");
+  await m.unmount();
+});

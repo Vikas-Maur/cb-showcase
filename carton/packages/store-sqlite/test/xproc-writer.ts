@@ -16,6 +16,16 @@ const beat = setInterval(() => {
   last = now;
 }, 1);
 
+// Start together: say ready, then wait for the parent's "go" (sent once every writer is ready), so a slow process
+// start (Electron on Windows) can't let one writer finish before another begins.
+process.stdout.write("ready\n");
+await new Promise<void>((resolve) => {
+  process.stdin.setEncoding("utf8");
+  process.stdin.on("data", (d) => String(d).includes("go") && resolve());
+});
+process.stdin.pause();
+last = performance.now();
+
 let lostRaces = 0;
 for (let i = 0; i < count; i++) {
   const id = `${name}.${i}`;

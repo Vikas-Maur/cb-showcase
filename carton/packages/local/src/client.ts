@@ -9,7 +9,7 @@
 // A holder that dies while answering (ECONNRESET) is retried with the **same change id**: the next holder finds the
 // id already in carton.db's queue or log and never makes a second change (stable ids, R3-01).
 import { ControlClient, RpcError } from "./ipc.ts";
-import { liveHolder, probeHolder } from "./holder.ts";
+import { liveHolder, patientWithApp, probeHolder } from "./holder.ts";
 import type { Lease, LeaseRow } from "./lease.ts";
 
 export interface SubmitOptions {
@@ -18,6 +18,8 @@ export interface SubmitOptions {
   needsHelper: () => Promise<boolean>;
   /** Start a helper that takes over from the holder with nonce `seen` (null: none). Must not wait for it. */
   spawnHelper: (seen: string | null) => void;
+  /** Set when no helper may be started (it would open the project differently): the error answered instead. */
+  noHelper?: string;
   /** Retry on a holder that died mid-call, with the same id (default true). */
   retryOnReset?: boolean;
   /**
@@ -39,6 +41,8 @@ export type SubmitResult =
 
 /** A non-idempotent write whose holder died after receiving it: it may or may not have been saved. */
 export const UNKNOWN_OUTCOME = "UNKNOWN_OUTCOME";
+/** No helper could be started that opens the project as this process does (another adapter, no factory for it). */
+export const NO_HELPER = "NO_HELPER";
 
 const RETRYABLE = new Set(["ECONNRESET", "ECONNREFUSED", "ENOENT", "EPIPE"]);
 
@@ -47,11 +51,13 @@ export async function submit(method: string, params: object, opts: SubmitOptions
   const log = opts.log ?? (() => {});
   let lastError: { error: string; code?: string | number } = { error: "no lease holder" };
   for (let attempt = 1; attempt <= 6; attempt++) {
-    const { live: holder, seen, fresh } = await probeHolder(lease);
+    // the app's engine thread is waited for when it is merely slow (B3): a helper taking over has no materializer
+    const { live: holder, seen, fresh } = await probeHolder(lease, Date.now(), { patient: patientWithApp });
     if (!holder) {
       // in-process only when nobody holds the lease: a holder that beat recently but missed the ping is taken over
       // (§6.2), never bypassed, or the app's materializer and GUI wouldn't hear of the change
       if (!fresh && !(await opts.needsHelper())) return { via: "in-process" };
+      if (opts.noHelper) return { via: "error", error: opts.noHelper, code: NO_HELPER };
       const t0 = Date.now();
       opts.spawnHelper(seen);
       const got = await waitForHolder(lease, seen, helperStartMs);

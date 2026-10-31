@@ -427,3 +427,74 @@ test("Stage F: cards a host reports keep its own fields; cardFor maps a Conflict
   assert.equal((await carton.log()).length, 1, "nothing committed for keeping what shows");
   ui.dispose();
 });
+
+// ---------------------------------------------------------------- Stage F review round 1
+
+test("F-1: an action-time read can't overwrite a newer 'still left out' decision", async () => {
+  const store = createMemoryStore();
+  const { carton, ui } = await open({}, store);
+  const { invId, flag } = await partialFold(carton, ui);
+  assert.equal(flag(), true);
+  // Another handle turns the left-out clip green (this view model doesn't hear of it yet).
+  const other = await Carton.open({ adapter, store, actor: bob });
+  await other.commit({ ops: [set("d", "color", "green")] });
+  // Pause foldRest()'s own read (it sees green: nothing left out)…
+  let release!: () => void, entered!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const inRead = new Promise<void>((r) => (entered = r));
+  const realHead = carton.head.bind(carton);
+  let armed = true;
+  (carton as { head: typeof carton.head }).head = async (cut) => {
+    const h = await realHead(cut);
+    if (armed) {
+      armed = false;
+      entered();
+      await gate;
+    }
+    return h;
+  };
+  const p = ui.foldRest(invId);
+  await inRead;
+  // …while this handle puts it back to what the partial fold left: left out again, and a fresh check says so.
+  await carton.commit({ ops: [set("d", "color", "red")] });
+  await settle();
+  assert.equal(flag(), true, "the fresh check: left out");
+  release();
+  const r = await p;
+  assert.equal(r.ok, false);
+  await settle();
+  assert.equal(flag(), true, "the paused, older read didn't overwrite it");
+  ui.dispose();
+});
+
+test("F-2: a change this handle never saw, followed by one it did, still invalidates the decisions", async () => {
+  const store = createMemoryStore();
+  const { carton, ui } = await open({}, store);
+  const { flag } = await partialFold(carton, ui);
+  assert.equal(flag(), true);
+  const other = await Carton.open({ adapter, store, actor: bob });
+  await other.commit({ ops: [set("d", "color", "green")] }); // unseen here
+  await carton.commit({ ops: [set("a", "color", "x")] }); // seen, unrelated: its seq jumps past the unseen one
+  await settle();
+  assert.equal(flag(), undefined, "the gap made it check again: not left out any more");
+  ui.dispose();
+});
+
+test("F-3: settled() resolves when dispose() cancels a pending refresh", async () => {
+  const { carton, ui } = await open();
+  await carton.commit({ ops: [set("a", "color", "x")] }); // schedules a debounced refresh
+  const waiting = ui.settled();
+  ui.dispose();
+  const timeout = new Promise((_, reject) => setTimeout(() => reject(new Error("settled() hung after dispose")), 2000));
+  await Promise.race([waiting, timeout]);
+});
+
+test("F-4: settled() waits for the refresh a change on another cut starts", async () => {
+  const { carton, ui } = await open();
+  const other = await carton.fork("alt");
+  await ui.refresh();
+  await carton.commit({ cut: other.id, ops: [set("a", "color", "x")] });
+  await ui.settled();
+  assert.equal(ui.cuts().find((c) => c.id === other.id)?.head, `${other.id}@1`);
+  ui.dispose();
+});

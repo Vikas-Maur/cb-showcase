@@ -6,6 +6,9 @@ import { openLocal } from "../../src/open.ts";
 import { identify } from "../../src/identity.ts";
 import { liveHolder } from "../../src/holder.ts";
 import { adapter } from "./real.ts";
+import { fileURLToPath } from "node:url";
+
+const realFactory = fileURLToPath(new URL("./real-factory.ts", import.meta.url));
 import type { Rec } from "@carton/core";
 
 const [projectDir, projectId, X] = process.argv.slice(2);
@@ -20,7 +23,8 @@ const holders: (number | null)[] = [];
 const actor = identify();
 for (const s of steps) {
   // each step is its own short cb process in real life; here one process opens the project per step to match
-  const local = await openLocal({ projectDir, projectId, adapter, actor });
+  // a helper it starts (the holder looked stale) opens carton.db with this test adapter too, never Cardboard's (R2-03)
+  const local = await openLocal({ projectDir, projectId, adapter, actor, helperFactory: realFactory });
   try {
     for (let tries = 0; ; tries++) {
       const pin = await local.write({ kind: "pin", owner: `turn:${actor.turn}` });

@@ -35,3 +35,6 @@ SCHEMA_VERSION = "1"
 # how often the alarm runs the sequencer's maintenance (archiving old rows per §18, sweeping envelope blobs);
 # ARCHIVE_KEEP / ARCHIVE_SEGMENT override the sequencer's §18 defaults (10,000 / 10,000)
 ARCHIVE_EVERY_MS = "3600000"
+# media dedup within a team (§11, R2 only): a JSON object from project id to team id; unlisted projects keep their own
+# media scope
+# TEAMS = '{"film-a":"studio","film-b":"studio"}'

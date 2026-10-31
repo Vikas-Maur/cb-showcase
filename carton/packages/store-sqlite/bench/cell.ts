@@ -2,7 +2,10 @@
 //   open <file>                     open carton.db and read what opening a project needs: meta, cuts, the cut's head,
 //                                   its newest keyframe at or below head, and the changes after that keyframe
 //   commit <file> <n> <durability>  n local-sequencer commits: read head, then the conditional append of
-//                                   [changes, ids]; per-commit latency and write-lock hold (then the rows are removed).
+//                                   [changes, ids]; per-commit latency, and lock* = BEGIN IMMEDIATE to COMMIT's
+//                                   return (the write lock is held for all of it, except SQLite's automatic checkpoint,
+//                                   on with "full", which runs inside COMMIT after the lock is released). Then the rows
+//                                   are removed.
 //                                   Between commits the loop yields (untimed), as an engine thread serves other work,
 //                                   so the WAL checkpoint gets its own turn; its count and longest run are reported.
 //   readlog <file>                  the whole log of the cut in one range, and the newest 1000 changes

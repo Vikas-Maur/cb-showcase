@@ -16,14 +16,52 @@ test("P3: 4 processes x 500 CAS appends lose no write (sqlite-check)", async () 
   const file = path.join(dir, ".carton", "carton.db");
 
   const N = 4, COUNT = 500;
+  // Writers start together: each says "ready" once its store is open; "go" goes to all of them at once. A writer
+  // that dies before "ready", or a start that takes over a minute, fails the test at once, and every writer still
+  // running is stopped (a waiting writer would otherwise wait for "go" forever).
+  type Result = { code: number | null; report: { maxStallMs: number; busyRetries: number; lostRaces: number } };
+  let ready = 0;
+  const children: ReturnType<typeof spawn>[] = [];
+  const exited: Promise<unknown>[] = [];
   const kids = Array.from({ length: N }, (_, n) => {
-    const child = spawn(process.execPath, [path.join(here, "xproc-writer.ts"), file, `w${n}`, String(COUNT)], { stdio: ["ignore", "pipe", "inherit"], env: process.env });
+    const child = spawn(process.execPath, [path.join(here, "xproc-writer.ts"), file, `w${n}`, String(COUNT)], { stdio: ["pipe", "pipe", "inherit"], env: process.env });
+    children.push(child);
+    exited.push(new Promise((r) => child.once("close", r)));
     let out = "";
-    child.stdout.on("data", (d) => (out += d));
-    return new Promise<{ code: number | null; report: { maxStallMs: number; busyRetries: number; lostRaces: number } }>((resolve) =>
-      child.on("exit", (code) => resolve({ code, report: code === 0 ? JSON.parse(out) : null })));
+    let saidReady = false;
+    child.stdout!.on("data", (d) => {
+      out += d;
+      if (!saidReady && out.includes("ready\n")) {
+        saidReady = true;
+        if (++ready === N) for (const c of children) c.stdin!.end("go\n");
+      }
+    });
+    return new Promise<Result>((resolve, reject) => {
+      child.once("error", reject);
+      child.once("close", (code, signal) => {
+        if (!saidReady) return reject(new Error(`writer w${n} ended (${code ?? signal}) before it was ready`));
+        try {
+          resolve({ code, report: code === 0 ? JSON.parse(out.trim().split("\n").pop()!) : null });
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
   });
-  const results = await Promise.all(kids);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const tooSlow = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => ready < N && reject(new Error(`only ${ready} of ${N} writers were ready after 60 s`)), 60_000);
+  });
+  let results: Result[];
+  try {
+    results = await Promise.race([Promise.all(kids), tooSlow]);
+  } catch (e) {
+    for (const c of children) if (c.exitCode === null && c.signalCode === null) c.kill();
+    await Promise.all(exited);
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
 
   const store = await openSqliteStore(file);
   const rows = await store.range<{ id: string; author: string }>("changes", { prefix: ["main"] });

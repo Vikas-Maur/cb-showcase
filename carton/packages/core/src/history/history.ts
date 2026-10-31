@@ -41,7 +41,7 @@ import * as E from "../engine/index.ts";
 import { isEmptyMap } from "../engine/remap.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
-import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type Tail } from "./common.ts";
+import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
 
 // ------------------------------------------------------------------ ids and keys
 
@@ -1236,7 +1236,7 @@ export class History {
    * Import: lineage nodes become read-only tracking knowledge; carried states are checked against their hash. A
    * project you don't have forks a writable cut from the sender's head (§5.3).
    */
-  importShallow(pkg: ShallowExport): { status: "forked"; cut: string; head: NodeId } | { status: "imported"; head: NodeId } | { status: "other-project" } | { status: "no-shared-lineage"; newProjectId: string } {
+  importShallow(pkg: ShallowExport): ShallowImport {
     if (pkg.format !== "carton-shallow/1") throw new Error("not a shallow export");
     let fresh = false;
     if (!this.#projectId || this.#cuts.size === 0) {

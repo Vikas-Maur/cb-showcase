@@ -51,6 +51,12 @@ same header. `engine` is a `MaterializerEngine` over Carton and carton.db (`@car
   growing backoff, for 5 s in all by default (`busyBudgetMs`). The retries wait on timers, so the worker's thread keeps
   serving everything else; an install that needs none runs synchronously, so the path is missing for microseconds.
   On Linux and macOS these codes are real permission errors and fail at once.
+- **The missing window.** Between the displace and the link the path is missing: tens of microseconds on ext4, longer
+  on NTFS (bench/race measures it per file system). Windows has no atomic "replace only if unchanged", so an install
+  without the window (check the stamp, then rename over) would destroy a save that lands after the check; Carton
+  displaces on every OS and makes readers wait instead. Carton's own readers use `retryMissing` (ENOENT retried for up
+  to 100 ms), `.cbproj` export included; the app's readers wait while `.carton/install.lock` is held. A writer that
+  keeps re-creating the file stops an install after 50 displaced files (`InstallGaveUp`), with nothing lost.
 - **The shared `timeline.tsx`** keeps 1.4.0's header contract: `// cardboard:rev main@57~3f9a1c0e b:<branch> p:<nonce>
   by <actor>`, regenerated after every applied save. While a local agent is active it shows the freeze view, and while
   the cut is shared remote changes rewrite it at most every 30 s.

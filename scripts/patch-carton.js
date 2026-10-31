@@ -33,6 +33,7 @@ const STORE = {
     dir: `require("node:url").fileURLToPath(new URL("../../carton/", import.meta.url))`,
     slice: "Cr",
     updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
+    readBundle: ['try{t=await jm(Pe(e,re),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile(Pe(e,re)):jm(Pe(e,re),"utf8"))}catch{return null}'],
     install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp)===!1?null:await Qo(c):await Bx(l,c)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:a,document:c.project}),", "c.project"],
     attach: ["n.onWritten((h,y)=>f.afterWrite(h,y));", "n,f,t"],
@@ -60,6 +61,7 @@ const STORE = {
     dir: `require("node:path").join(__dirname, "..", "..", "carton")`,
     slice: "Zs",
     updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
+    readBundle: ['try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile((0,rt.join)(e,Mt)):(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8"))}catch{return null}'],
     install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
     attach: ["n.onWritten((y,x)=>m.afterWrite(y,x));", "n,m,t"],
@@ -98,6 +100,9 @@ const patchStore = (replace, k) => {
   around(replace, "applyMutation", "t,r,n", () => "__carton.applyMutation(this,t,r,n)");
   replace(...s.updateScoped);
   replace(...s.install);
+  // The bundle loader behind read() and the library's rescan: a project.json caught mid-install is waited for, not
+  // taken for a removed project.
+  replace(...s.readBundle);
   replace(s.read[0], `return __carton.on&&await __carton.sawDisk(this,t,${s.read[1]}),` + s.read[0].slice("return ".length));
   replace(s.attach[0], `${s.attach[0]}__carton.on&&__carton.attach(${s.attach[1]});`);
   // H2: the revision readers read Carton's history first. recordRevision keeps reading and pruning its own files.
@@ -152,6 +157,10 @@ if (mode === "--cli") {
     replace('kte=e=>{let t="",r=()=>{', 'kte=e=>{e.carton=__carton.on?__carton.worker(e,c=>rc({kind:"change",change:c})):{};let t="",r=()=>{');
     // A timeline.tsx the watcher applies was saved outside the app: an agent without Cardboard's hooks or an editor.
     replace("await t.read(T);let I=await r.apply(T,k);", "await t.read(T);let I=await r.apply(T,k,{cartonActor:\"external:timeline.tsx\"});");
+    // The watcher reads project.json 150 ms after a change and tells the pages the project was removed if it's
+    // missing; an apply from the file reads timeline.tsx. Both wait out an install's gap (the bridge's readFile).
+    replace('k=await(0,_d.readFile)((0,Vn.join)(g,Mt),"utf8")}catch{k=null}', 'k=await(__carton.on?__carton.readFile((0,Vn.join)(g,Mt)):(0,_d.readFile)((0,Vn.join)(g,Mt),"utf8"))}catch{k=null}');
+    replace('let $=await(0,Ar.readFile)(m.mirrorPath(N),"utf8");return m.apply(y,$,{..._,writeBack:!0})', 'let $=await(__carton.on?__carton.readFile(m.mirrorPath(N)):(0,Ar.readFile)(m.mirrorPath(N),"utf8"));return m.apply(y,$,{..._,writeBack:!0})');
     // The bundle has no banner line; the bridge goes first.
     prepend(require("./carton/store-bridge")(STORE.worker));
   });

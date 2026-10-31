@@ -13,6 +13,8 @@
 //
 // Engine protocols:
 //   naive     stat the view; if its stamp (ino:size:mtimeNs) isn't ours, import it; rename our temp over it
+//   replace   naive, with a busy rename (Windows: a writer has the view open) backing off and checking again: the
+//             no-missing-window install proposed for Windows, measured against displace (it is not shipped)
 //   hardlink  link the view to .carton/prev/<k>; rename our temp over it; if prev/<k> isn't ours, import it
 //   displace  rename the view to .carton/displaced/<n>; link our temp to the view, which fails with EEXIST if a
 //             foreign write landed in between (then displace again); unlink the temp; import every displaced
@@ -35,8 +37,9 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { BUSY_BUDGET_MS, displaceThenInstall, isBusy, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/node/displace.ts";
+import { BUSY_BUDGET_MS, displaceThenInstall, isBusy, retryMissing, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/node/displace.ts";
 import { DisplacedFiles } from "../../packages/cardboard/src/node/displaced.ts";
+import { hadd, hist, hmax, hmerge, hq, type Hist } from "./hist.ts";
 
 const SELF = fileURLToPath(import.meta.url);
 const VIEW = "view.json";
@@ -94,29 +97,6 @@ const noent = <T>(fn: () => T): T | undefined => {
   }
 };
 
-// 1 µs buckets up to 2 ms, then one overflow bucket; mergeable across trials.
-const H = 2000;
-type Hist = number[];
-const hist = (): Hist => new Array(H + 1).fill(0);
-const hadd = (h: Hist, ns: number): void => {
-  h[Math.min(H, Math.floor(ns / 1000))]!++;
-};
-function hq(h: Hist, q: number): number | string | null {
-  const n = h.reduce((a, b) => a + b, 0);
-  if (!n) return null;
-  const want = Math.ceil(q * n);
-  let c = 0;
-  for (let i = 0; i <= H; i++) {
-    c += h[i]!;
-    if (c >= want) return i === H ? `>${H}` : i;
-  }
-  return null;
-}
-const hmax = (h: Hist): number | string | null => {
-  for (let i = H; i >= 0; i--) if (h[i]) return i === H ? `>${H}` : i;
-  return null;
-};
-
 // ---------------------------------------------------------------- engine
 interface Opts {
   base: string;
@@ -125,14 +105,14 @@ interface Opts {
   size: number;
   mode: "turn" | "free";
   style: "rename" | "inplace";
-  protocol: "naive" | "hardlink" | "displace";
+  protocol: "naive" | "replace" | "hardlink" | "displace";
   engine: "sync" | "async";
   writers: number;
   rounds: number;
   widen: number;
   jitter: number;
   pace: number;
-  reader: "read" | "stat" | "both" | false | "";
+  reader: "read" | "stat" | "both" | "retry" | false | "";
   oracle: string | null;
   keep: boolean;
   settle?: number | boolean;
@@ -219,6 +199,29 @@ const PROTO: Record<string, Proto> = {
     }
     if (T.widen) spin(T.widen);
     retrySync(() => fs.renameSync(t.p, T.view), E);
+    E.lastStamp = t.stamp;
+  },
+  // The proposal for Windows: MoveFileEx replaces the view atomically (no missing window), and a writer holding it
+  // open makes the rename fail busy, so then back off and check again. A write that lands between the check and the
+  // rename is still replaced.
+  replace(T, E) {
+    const t = writeTmp(T, E);
+    for (let i = 0; ; i++) {
+      const s = noent(() => fs.statSync(T.view, { bigint: true }));
+      if (s && stampOf(s) !== E.lastStamp) {
+        const b = noent(() => retrySync(() => fs.readFileSync(T.view), E));
+        if (b) importFrom(E, b);
+      }
+      if (T.widen) spin(T.widen);
+      try {
+        fs.renameSync(t.p, T.view);
+        break;
+      } catch (e) {
+        if (!isBusy(e) || i >= 400) throw e;
+        E.busy = (E.busy ?? 0) + 1;
+        sleep(Math.min(1 + i, 25));
+      }
+    }
     E.lastStamp = t.stamp;
   },
   hardlink(T, E) {
@@ -407,9 +410,39 @@ function writer(cfg: ChildCfg): void {
   fs.writeFileSync(path.join(ctl, `w${w}.json`), JSON.stringify(out));
 }
 
+// kind "retry": readFile through the shipped `retryMissing`, as Carton's own readers do; counts reads that still
+// failed and the wait of those it retried.
 // kind "read": readFile in a loop, as the app's readers do; counts ENOENT and torn reads. A failed readFile
 // spends tens of µs building its Error, so its ENOENT streaks overstate the gap. kind "stat": stat with
 // throwIfNoEntry:false in a loop (no exception, a sample every few µs); its absent streaks time the gap.
+async function retryReader(cfg: ChildCfg): Promise<void> {
+  const { dir, size, ctl } = cfg;
+  const view = path.join(dir, VIEW);
+  const stop = path.join(ctl, "stop");
+  const go = path.join(ctl, "go");
+  const out = { reads: 0, failed: 0, retried: 0, torn: 0, other: {} as Record<string, number>, wait: hist() };
+  process.stdout.write("ready\n");
+  while (!exists(go)) sleep(1);
+  for (;;) {
+    if ((out.reads & 1023) === 0 && exists(stop)) break;
+    const t = now();
+    out.reads++;
+    const c: BusyCounter = {};
+    try {
+      if (!whole(await retryMissing(() => fs.readFileSync(view), { counter: c }), size)) out.torn++;
+      if (c.missing) {
+        out.retried++;
+        hadd(out.wait, Number(now() - t));
+      }
+    } catch (e) {
+      const k = code(e) ?? "?";
+      if (k === "ENOENT") out.failed++;
+      else out.other[k] = (out.other[k] ?? 0) + 1;
+    }
+  }
+  fs.writeFileSync(path.join(ctl, "reader-retry.json"), JSON.stringify(out));
+}
+
 function reader(cfg: ChildCfg): void {
   const { dir, size, ctl, kind } = cfg;
   const view = path.join(dir, VIEW);
@@ -525,7 +558,7 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
   const cfg: ChildCfg = { dir, size: o.size, ctl, mode: o.mode, style: o.style, jitter: o.jitter };
   const kids: Kid[] = [];
   for (let w = 1; w <= o.writers; w++) kids.push(child("writer", { ...cfg, w }));
-  const kinds = o.reader === "both" ? ["read", "stat"] : o.reader ? [o.reader === "stat" ? "stat" : "read"] : [];
+  const kinds = o.reader === "both" ? ["read", "stat"] : o.reader === "retry" ? ["retry"] : o.reader ? [o.reader === "stat" ? "stat" : "read"] : [];
   for (const kind of kinds) kids.push(child("reader", { ...cfg, kind }));
   await Promise.all(kids.map((k) => k.ready));
   fs.writeFileSync(path.join(ctl, "go"), "");
@@ -587,7 +620,8 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
   }
   for (const kind of kinds) {
     const r = JSON.parse(fs.readFileSync(path.join(ctl, `reader-${kind}.json`), "utf8"));
-    if (kind === "read") Object.assign(res, { reads: r.reads, enoent: r.enoent, torn: r.torn, readErr: r.other, streaks: r.streaks, streak: r.streak });
+    if (kind === "retry") Object.assign(res, { rreads: r.reads, rfailed: r.failed, rretried: r.retried, torn: r.torn, readErr: r.other, rwait: r.wait });
+    else if (kind === "read") Object.assign(res, { reads: r.reads, enoent: r.enoent, torn: r.torn, readErr: r.other, streaks: r.streaks, streak: r.streak });
     else Object.assign(res, { probes: r.reads, absent: r.enoent, pstreaks: r.streaks, pstreak: r.streak });
   }
   if (oracle) Object.assign(res, replay(fs.readFileSync(oracle.log, "utf8"), landed, final, E.recorded, unaccounted, o.mode));
@@ -698,7 +732,7 @@ export function table(results: Record<string, any>[]): string {
   const g = new Map<string, Record<string, any>>();
   for (const r of results) {
     const key = [r.fs, r.mode, r.style, (r.engine === "async" ? "displace(async)" : r.protocol) + (r.settle ? "+settle" + lvl(r.settle) : ""), r.writers, r.widen, r.pace, r.reader || "none"].join("|");
-    const a = g.get(key) ?? { key, trials: 0, rounds: 0, landed: 0, unaccounted: 0, superseded: 0, lostByEngine: null, eexist: 0, engineAfterImport: 0, oracleBad: 0, reads: 0, enoent: 0, torn: 0, probes: 0, absent: 0, busy: 0, gap: hist(), streak: hist(), pstreak: hist() };
+    const a = g.get(key) ?? { key, trials: 0, rounds: 0, landed: 0, unaccounted: 0, superseded: 0, lostByEngine: null, eexist: 0, engineAfterImport: 0, oracleBad: 0, reads: 0, enoent: 0, torn: 0, probes: 0, absent: 0, busy: 0, rreads: 0, rfailed: 0, rretried: 0, gap: hist(), streak: hist(), pstreak: hist(), rwait: hist() };
     a.trials++;
     a.rounds += r.rounds;
     a.landed += r.landed;
@@ -714,14 +748,17 @@ export function table(results: Record<string, any>[]): string {
     a.probes += r.probes ?? 0;
     a.absent += r.absent ?? 0;
     a.busy += r.busy ?? 0;
-    for (const k of ["gap", "streak", "pstreak"]) if (r[k]) (r[k] as Hist).forEach((v, i) => (a[k][i] += v));
+    a.rreads += r.rreads ?? 0;
+    a.rfailed += r.rfailed ?? 0;
+    a.rretried += r.rretried ?? 0;
+    for (const k of ["gap", "streak", "pstreak", "rwait"]) if (r[k]) hmerge(a[k], r[k] as Hist);
     g.set(key, a);
   }
-  const rows: unknown[][] = [["fs", "mode", "style", "protocol", "W", "widen µs", "pace ms", "readers", "trials", "rounds", "foreign writes", "unaccounted", "superseded by foreign", "LOST BY ENGINE", "imported then replaced", "EEXIST retries", "reads", "ENOENT", "torn", "engine gap µs p50/p99/max", "readFile ENOENT streak µs", "stat probes", "absent", "stat absent streak µs", "busy retries", "oracle bad"]];
+  const rows: unknown[][] = [["fs", "mode", "style", "protocol", "W", "widen µs", "pace ms", "readers", "trials", "rounds", "foreign writes", "unaccounted", "superseded by foreign", "LOST BY ENGINE", "imported then replaced", "EEXIST retries", "reads", "ENOENT", "torn", "engine gap µs p50/p99/max", "readFile ENOENT streak µs", "stat probes", "absent", "stat absent streak µs", "retrying reads", "failed after retry", "retried", "retry wait µs", "busy retries", "oracle bad"]];
   for (const a of g.values()) {
     const [fsl, mode, style, proto, w, widen, pace, rd] = (a.key as string).split("|");
     const q = (h: Hist) => (hq(h, 0.5) === null ? "" : `${hq(h, 0.5)}/${hq(h, 0.99)}/${hmax(h)}`);
-    rows.push([fsl, mode, style, proto, w, widen, pace, rd, a.trials, a.rounds, a.landed, a.unaccounted, a.superseded, a.lostByEngine ?? "n/a (no oracle)", a.engineAfterImport, a.eexist, a.reads, a.enoent, a.torn, q(a.gap), q(a.streak), a.probes, a.absent, q(a.pstreak), a.busy, a.oracleBad]);
+    rows.push([fsl, mode, style, proto, w, widen, pace, rd, a.trials, a.rounds, a.landed, a.unaccounted, a.superseded, a.lostByEngine ?? "n/a (no oracle)", a.engineAfterImport, a.eexist, a.reads, a.enoent, a.torn, q(a.gap), q(a.streak), a.probes, a.absent, q(a.pstreak), a.rreads, a.rfailed, a.rretried, q(a.rwait), a.busy, a.oracleBad]);
   }
   return rows
     .map((r) => "| " + r.join(" | ") + " |")
@@ -732,7 +769,10 @@ export function table(results: Record<string, any>[]): string {
 async function main(): Promise<void> {
   const [role, json] = process.argv.slice(2);
   if (role === "writer") return writer(JSON.parse(json!));
-  if (role === "reader") return reader(JSON.parse(json!));
+  if (role === "reader") {
+    const cfg = JSON.parse(json!) as ChildCfg;
+    return cfg.kind === "retry" ? retryReader(cfg) : reader(cfg);
+  }
   const a = args(process.argv.slice(2));
   const base = path.resolve(String(a.dir ?? path.join(os.tmpdir(), "carton-race")));
   fs.mkdirSync(base, { recursive: true });
@@ -765,7 +805,7 @@ async function main(): Promise<void> {
     for (let i = done; i < (a.trials ?? 1); i++) {
       const r = await trial(o);
       emit(r);
-      console.log(JSON.stringify({ ...r, gap: undefined, gapTotal: undefined, streak: undefined, pstreak: undefined }));
+      console.log(JSON.stringify({ ...r, gap: undefined, gapTotal: undefined, streak: undefined, pstreak: undefined, rwait: undefined }));
     }
     return;
   }
@@ -780,12 +820,14 @@ async function main(): Promise<void> {
   if (!links) console.log(`fs.link fails in ${base}: no hard links on this volume (FAT/exFAT?). Only "naive" can run; Carton falls back to stat-then-rename there (L13).`);
   const trials = a.trials ?? 3;
   const rounds = a.rounds ?? 3000;
-  const protos: Opts["protocol"][] = links ? ["naive", "hardlink", "displace"] : ["naive"];
+  const protos: Opts["protocol"][] = links ? ["naive", "replace", "hardlink", "displace"] : ["naive", "replace"];
   const plan: Partial<Opts>[] = [];
   for (const protocol of protos) for (const writers of [1, 4]) for (const widen of [0, 100]) plan.push({ protocol, writers, widen });
   for (const protocol of protos) plan.push({ protocol, writers: 1, style: "inplace" });
   if (links) for (const settle of [1, 2]) plan.push({ protocol: "displace", writers: 1, style: "inplace", settle });
   if (links) for (const engine of ["sync", "async"] as const) plan.push({ protocol: "displace", engine, writers: 0, pace: 2, rounds: 1000, reader: "both" });
+  // Carton's own readers through the window: no read may fail
+  if (links) plan.push({ protocol: "displace", writers: 0, pace: 2, rounds: 1000, reader: "retry" });
   const results: Record<string, any>[] = [];
   console.log(`${process.platform} ${os.release()}, node ${process.version}, dir ${base}; ${plan.length} configs x ${trials} trials`);
   for (const p of plan)
@@ -793,7 +835,7 @@ async function main(): Promise<void> {
       const r = await trial({ ...defaults, rounds, ...p });
       results.push(r);
       emit(r);
-      process.stdout.write(`${p.protocol}${p.engine === "async" ? "(async)" : ""}${p.settle ? "+settle" + p.settle : ""} ${p.style ?? "rename"} W=${p.writers} widen=${p.widen ?? 0}: writes ${r.landed} unaccounted ${r.unaccounted} eexist ${r.eexist} enoent ${r.enoent}/${r.reads}${r.busy ? " busy-retries " + r.busy : ""}\n`);
+      process.stdout.write(`${p.protocol}${p.engine === "async" ? "(async)" : ""}${p.settle ? "+settle" + p.settle : ""} ${p.style ?? "rename"} W=${p.writers} widen=${p.widen ?? 0}: writes ${r.landed} unaccounted ${r.unaccounted} eexist ${r.eexist} enoent ${r.enoent}/${r.reads}${r.rreads ? ` retry-reader failed ${r.rfailed}/${r.rreads}` : ""}${r.busy ? " busy-retries " + r.busy : ""}\n`);
     }
   console.log("\n" + table(results));
   console.log("\nIn turn mode every unaccounted foreign write was destroyed by the engine (writers never replace each other).");
@@ -805,6 +847,12 @@ async function main(): Promise<void> {
   for (const level of [1, 2]) {
     const st = results.filter((r) => lvl(r.settle) === level);
     if (st.length) console.log(`inplace displace+settle${level}: ${st.reduce((n, r) => n + r.unaccounted, 0)} of ${st.reduce((n, r) => n + r.landed, 0)} foreign writes lost by the engine`);
+  }
+  const rr = results.filter((r) => r.rreads);
+  if (rr.length) {
+    const w = hist();
+    for (const r of rr) hmerge(w, r.rwait);
+    console.log(`Carton's readers (retryMissing) during displace: ${rr.reduce((n, r) => n + r.rfailed, 0)} of ${rr.reduce((n, r) => n + r.rreads, 0)} reads failed; ${rr.reduce((n, r) => n + r.rretried, 0)} waited, µs p50/p99/max ${hq(w, 0.5)}/${hq(w, 0.99)}/${hmax(w)}`);
   }
 }
 
