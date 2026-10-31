@@ -232,3 +232,24 @@ test("helpers: path keys, actors and card ops", () => {
   ]);
   assert.deepEqual(cardOps({ kind: "record", path: "items/a", base: null, ours: null, theirs: null }, null), [{ op: "remove", path: ["items", "a"] }]);
 });
+
+test("over the bridge: the renderer's rows ask for their summaries, the worker describes only those", async () => {
+  const { remoteUi, serveUi } = await import("../src/remote.ts");
+  const { carton, ui } = await open();
+  for (let i = 0; i < 30; i++) await carton.commit({ ops: [set("a", "color", `c${i}`)] });
+  await settle();
+  let client!: ReturnType<typeof remoteUi>;
+  const server = serveUi(ui, (m) => setTimeout(() => client.receive(structuredClone(m)), 0));
+  client = remoteUi((m) => setTimeout(() => server.receive(structuredClone(m)), 0));
+  await client.ready;
+  const h = client.ui.history();
+  assert.equal(h.count("all"), 31);
+  assert.equal(h.at("all", 0)!.summary, "", "not described yet");
+  for (let i = 0; i < 3; i++) h.at("all", i);
+  await settle();
+  await settle();
+  assert.match(client.ui.history().at("all", 0)!.summary, /c29/);
+  assert.equal(client.ui.history().at("all", 20)!.summary, "", "rows nobody looked at stay undescribed");
+  server.close();
+  ui.dispose();
+});

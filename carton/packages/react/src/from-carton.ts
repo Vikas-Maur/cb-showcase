@@ -356,6 +356,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   const view = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
   const history: HistorySource = {
+    all: () => rows.map((r) => r.v),
+    want: (ids) => {
+      for (const id of ids) {
+        const i = pos.get(id);
+        if (i !== undefined) wantSummary(rows[i]!.v);
+      }
+    },
     revision: () => revision,
     count: (f) => (f === "all" ? rows.length : view(f)!.length),
     at: (f, i) => {
@@ -813,6 +820,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (!opts.onPreview) return;
       if (!ref) opts.onPreview(null);
       else void carton.preview(ref).then((p) => preview?.ref === ref && opts.onPreview!({ ref, label: label ?? ref, doc: p.doc }));
+    },
+
+    blockEdit() {
+      if (!preview || preview.blockedEdit) return;
+      preview = { ...preview, blockedEdit: true };
+      hub.notify("preview");
     },
 
     refresh,

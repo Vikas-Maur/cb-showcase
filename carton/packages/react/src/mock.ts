@@ -105,8 +105,6 @@ export interface MockUi extends CartonUi {
   setConflicts(c: readonly Conflict[]): void;
   setPublished(p: Published | null): void;
   setUndo(u: UndoTurn | null): void;
-  /** Mark that an edit was tried in the preview (shows the "Return to current" note). */
-  blockEdit(): void;
   /** Drive it like a busy shared project. Returns a stop function. */
   live(opts?: { versionsPerSecond?: number; ghostHz?: number; presenceHz?: number; burst?: number }): () => void;
   /** Make the shot diff bigger (benchmarks). */
@@ -179,6 +177,7 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
 
   const viewOf = (f: HistoryFilter) => (f === "named" ? named : f === "turns" ? turns : null);
   const history: HistorySource = {
+    all: () => all,
     revision: () => revision,
     count: (f) => (f === "all" ? all.length : viewOf(f)!.length),
     at: (f, i) => {

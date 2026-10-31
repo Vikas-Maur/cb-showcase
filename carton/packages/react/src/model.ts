@@ -67,6 +67,13 @@ export interface HistorySource {
   at(filter: HistoryFilter, index: number): Version | undefined;
   /** Index of a version under a filter, or -1. Used to keep the list's place when rows arrive above it. */
   indexOf(filter: HistoryFilter, id: string): number;
+  /**
+   * Every version, oldest first, without side effects (at() may start work, like describing the row). The bridge
+   * (remote.ts) diffs it by identity to send only what changed. Optional: without it the bridge reads at().
+   */
+  all?(): readonly Version[];
+  /** Ask for the summaries of these versions now (the rows a remote list shows). */
+  want?(ids: readonly string[]): void;
 }
 
 export interface Cut {
@@ -309,4 +316,6 @@ export interface CartonUi {
   publish(cutId: string): Promise<void>;
   /** Open a read-only preview of a ref, or close it with null. */
   openPreview(ref: string | null, label?: string): void;
+  /** The host saw an edit attempt during a preview: the banner then explains and offers "Return to current to edit". */
+  blockEdit(): void;
 }
