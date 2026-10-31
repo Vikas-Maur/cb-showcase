@@ -49,7 +49,7 @@ test("field edits clamp volume and opacity and skip unchanged values", () => {
 test("links round-trip; an incomplete watch link is refused", () => {
   assert.deepEqual(parseJoinHash(joinHash("demo-ab12", "ct1.x.y")), { projectId: "demo-ab12", invite: "ct1.x.y" });
   assert.equal(parseJoinHash("#join=nope"), null);
-  const w = { projectId: "p1", cut: "c1", source: "s1", at: 7, invite: "ct1.a.b" };
+  const w = { projectId: "p1", cut: "c1", invite: "ct1.a.b" };
   assert.deepEqual(parseWatchHash(watchHash(w)), w);
   assert.equal(parseWatchHash("#p=p1&c=c1"), null);
 });

@@ -4,7 +4,7 @@
 //
 // Links carry the host, project and invite in the URL fragment, so they never reach a server log:
 //   /#join=<projectId>.<invite>            Invite to edit (§0.1)
-//   /watch.html#p=<projectId>&c=<cutId>&src=<cutId>&at=<seq>&i=<viewer invite>   the Published cut's watch page
+//   /watch.html#p=<projectId>&c=<cutId>&i=<viewer invite scoped to that cut>   the Published cut's watch page
 
 import type { CutRecord, Doc } from "@carton/core";
 import type { SampleMedia } from "./demo-doc.ts";
@@ -42,17 +42,14 @@ export const joinHash = (projectId: string, invite: string) => `#join=${projectI
 
 export interface WatchLink {
   projectId: string;
-  /** The Published cut. */
+  /** The Published cut. Its viewer invite is scoped to it: the link can read nothing else (§14). */
   cut: string;
-  /** The cut it was published from, and the version (seq) published. */
-  source: string;
-  at: number;
   invite: string;
 }
 export function parseWatchHash(hash: string): WatchLink | null {
   const q = new URLSearchParams(hash.replace(/^#/, ""));
-  const projectId = q.get("p"), cut = q.get("c"), source = q.get("src"), at = Number(q.get("at")), invite = q.get("i");
-  if (!projectId || !cut || !source || !Number.isInteger(at) || !invite) return null;
-  return { projectId, cut, source, at, invite };
+  const projectId = q.get("p"), cut = q.get("c"), invite = q.get("i");
+  if (!projectId || !cut || !invite) return null;
+  return { projectId, cut, invite };
 }
-export const watchHash = (l: WatchLink) => `#${new URLSearchParams({ p: l.projectId, c: l.cut, src: l.source, at: String(l.at), i: l.invite })}`;
+export const watchHash = (l: WatchLink) => `#${new URLSearchParams({ p: l.projectId, c: l.cut, i: l.invite })}`;

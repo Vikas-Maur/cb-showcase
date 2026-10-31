@@ -271,7 +271,7 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await watch.getByTestId("player").waitFor();
       await shot(watch, `${kind}-8-watch-page`);
       await editCaption(bob, "cap-1", "An edit after publishing");
-      await watch.getByTestId("newer-edits").waitFor({ timeout: 10_000 });
+      await watch.getByTestId("newer-edits").waitFor({ timeout: 20_000 }); // the watch page asks every 5 s
       await alice.locator(".carton-published[data-stale]").waitFor({ timeout: 10_000 });
       await shot(watch, `${kind}-8-watch-page-newer`);
       assert.equal(await captionOf(alice, "cap-1"), "An edit after publishing");

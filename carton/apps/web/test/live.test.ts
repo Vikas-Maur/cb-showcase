@@ -119,20 +119,22 @@ test("the §17 story over a real host: join, live edits with an agent, undo its 
   await alice.carton.share(pub.id);
   await until(async () => (await alice.carton.cuts()).find((c) => c.id === pub.id)?.sequencer.kind === "server", 8000, "the published cut handed off");
   const at = parseNode(pub.forkOf!).seq;
-  const viewer = await Session.join({ baseUrl: host.url, projectId: j.projectId, invite: await alice.session.invite("viewer"), account: "viewer", keys: memoryKeys() });
+  // the watch link's invite is scoped to the Published cut (R1-1): its viewer reads that cut and nothing else
+  const viewer = await Session.join({ baseUrl: host.url, projectId: j.projectId, invite: await alice.session.invite("viewer", undefined, [pub.id]), account: "viewer", keys: memoryKeys() });
   assert.equal(viewer.role, "viewer");
-  let watched: { doc: unknown; head: number } | null = null;
-  let newer = 0;
+  let watched: { doc: unknown; head: number; source?: { at: number; head: number } } | null = null;
+  const refused: string[] = [];
   const common = { transport: webSocketTransport(), url: viewer.wsUrl, token: () => viewer.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion };
-  const f1 = new Follower({ ...common, branchId: pub.id, have: -1, onUpdate: (s) => (watched = s) }).start();
-  const f2 = new Follower({ ...common, branchId: alice.carton.cut, have: at, onUpdate: (s) => (newer = s.head - at) }).start();
+  const f1 = new Follower({ ...common, branchId: pub.id, have: -1, refreshMs: 200, onUpdate: (s) => (watched = s) }).start();
+  const f2 = new Follower({ ...common, branchId: alice.carton.cut, have: -1, onUpdate: () => refused.push("read Main!"), onError: (why) => refused.push(why) }).start();
   await until(() => watched?.doc != null, 5000, "the viewer reads the published version");
+  await until(() => refused.length > 0, 5000, "the source is refused");
+  assert.match(refused[0]!, /can't read/, "Main stays out of the watch link's reach");
   const pubCap = ((watched!.doc as { timelineItems: Rec[] }).timelineItems).find((r) => r.id === "cap-1")!;
   assert.equal(pubCap.captionText, "Bob was offline");
-  await until(() => f2 !== null && newer === 0, 3000, "no newer edits yet");
+  assert.deepEqual(watched!.source && { at: watched!.source.at, newer: watched!.source.head - watched!.source.at }, { at, newer: 0 }, "no newer edits yet");
   await bob.carton.commit({ ops: [{ op: "set", path: ["timelineItems", "cap-2", "captionText"], value: "after publishing" }], wait: 5000 });
-  await until(() => newer === 1, 5000, "the viewer is told there are newer edits");
-  // a viewer can't push (the sequencer checks the role)
+  await until(() => (watched?.source?.head ?? 0) - at === 1, 5000, "the viewer is told there are newer edits");
   const pubDoc = (watched!.doc as { timelineItems: Rec[] }).timelineItems.find((r) => r.id === "cap-2")!;
   assert.notEqual(pubDoc.captionText, "after publishing", "the published version doesn't move");
   f1.stop();

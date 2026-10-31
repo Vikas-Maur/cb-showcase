@@ -16,8 +16,13 @@ export interface FollowOptions {
   branchId: string;
   /** -1: from nothing (with the document). n ≥ 0: the rows after version n, no document. */
   have: number;
-  onUpdate: (s: { head: number; doc: Doc | null; rows: number }) => void;
+  onUpdate: (s: { head: number; doc: Doc | null; rows: number; source?: { branchId: string; at: number; head: number } }) => void;
   onError?: (why: string) => void;
+  /**
+   * Ask again every this many ms once caught up (a Published cut never moves, so the host fans nothing out to its
+   * watchers: this is how the "newer edits" count of its source stays current). 0: never.
+   */
+  refreshMs?: number;
 }
 
 export class Follower {
@@ -29,6 +34,8 @@ export class Follower {
   #rows = 0;
   #stopped = false;
   #retry: ReturnType<typeof setTimeout> | null = null;
+  #again: ReturnType<typeof setInterval> | null = null;
+  #source: { branchId: string; at: number; head: number } | undefined;
 
   constructor(o: FollowOptions) {
     this.#o = o;
@@ -41,6 +48,7 @@ export class Follower {
   stop(): void {
     this.#stopped = true;
     if (this.#retry) clearTimeout(this.#retry);
+    if (this.#again) clearInterval(this.#again);
     this.#conn?.close();
   }
 
@@ -55,6 +63,7 @@ export class Follower {
         if (!this.#stopped) this.#retry = setTimeout(() => void this.#connect(), 1500);
       });
       this.#hello();
+      if (this.#o.refreshMs && !this.#again) this.#again = setInterval(() => this.#hello(), this.#o.refreshMs);
     } catch (e) {
       this.#o.onError?.((e as Error).message);
       this.#retry = setTimeout(() => void this.#connect(), 3000);
@@ -75,13 +84,14 @@ export class Follower {
         this.#seq = m.keyframe.seq;
       }
       this.#head = Math.max(this.#head, m.head);
+      if (m.source) this.#source = m.source;
       this.#take(m.rows);
       if (m.more) return this.#hello();
     } else {
       this.#take(m.rows);
       this.#head = Math.max(this.#head, this.#seq);
     }
-    this.#o.onUpdate({ head: Math.max(this.#head, this.#seq), doc: this.#doc, rows: this.#rows });
+    this.#o.onUpdate({ head: Math.max(this.#head, this.#seq), doc: this.#doc, rows: this.#rows, ...(this.#source ? { source: this.#source } : {}) });
   }
   #take(rows: readonly ConfirmedChange[]): void {
     for (const r of rows) {

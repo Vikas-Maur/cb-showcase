@@ -148,8 +148,8 @@ export class Session {
     if (!r.ok) throw Object.assign(new Error(data?.error ?? `${r.status} ${r.statusText}`), { status: r.status });
     return data;
   }
-  /** An invite link's token (owners only, `canInvite`). */
-  async invite(role: AuthContext["role"], ttlMs?: number): Promise<string> {
-    return (await this.api<{ invite: string }>("/invites", { role, ...(ttlMs ? { ttlMs } : {}) })).invite;
+  /** An invite link's token (owners only, `canInvite`); `branches` scopes its sessions to those cuts. */
+  async invite(role: AuthContext["role"], ttlMs?: number, branches?: string[]): Promise<string> {
+    return (await this.api<{ invite: string }>("/invites", { role, ...(ttlMs ? { ttlMs } : {}), ...(branches ? { branches } : {}) })).invite;
   }
 }

@@ -76,8 +76,18 @@ async function main(): Promise<void> {
   const state: State = { doc: null, newer: 0, error: null };
   const render = () => root.render(h(WatchPage, { descriptor, state: { ...state }, images, mediaUrl: media.url }));
   const common = { transport: webSocketTransport(), url: session.wsUrl, token: () => session.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion, onError: (why: string) => ((state.error = why), render()) };
-  new Follower({ ...common, branchId: link.cut, have: -1, onUpdate: (s) => ((state.doc = s.doc), render()) }).start();
-  new Follower({ ...common, branchId: link.source, have: link.at, onUpdate: (s) => ((state.newer = Math.max(0, s.head - link.at)), render()) }).start();
+  // the Published cut alone (the link's token reads nothing else); its welcome counts the source's newer versions
+  new Follower({
+    ...common,
+    branchId: link.cut,
+    have: -1,
+    refreshMs: 5_000,
+    onUpdate: (s) => {
+      state.doc = s.doc;
+      if (s.source) state.newer = Math.max(0, s.source.head - s.source.at);
+      render();
+    },
+  }).start();
   Object.assign(window, { __watch: state });
   render();
 }

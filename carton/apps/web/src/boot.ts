@@ -3,7 +3,7 @@
 
 import { createElement as h } from "react";
 import type { Root } from "react-dom/client";
-import { parseNode, type Actor, type Carton, type CutRecord, type Doc } from "@carton/core";
+import type { Actor, Carton, CutRecord, Doc } from "@carton/core";
 import { fromCarton, CartonProvider } from "@carton/react";
 import { openIdbStore } from "@carton/store-idb";
 import { webSocketTransport } from "@carton/server-node/transport";
@@ -54,11 +54,11 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const links = new Map<string, string>();
   const watchLink = async (rec: CutRecord): Promise<string | undefined> => {
     if (!rec.forkOf || session.role !== "owner") return undefined;
-    const { branchId, seq } = parseNode(rec.forkOf);
     const saved = keys.get(`carton.watch.${rec.id}`);
     if (saved) return saved;
-    const invite = await session.invite("viewer", 30 * 24 * 3600_000);
-    const url = `${baseUrl}/watch.html${watchHash({ projectId: session.projectId, cut: rec.id, source: rec.source ?? branchId, at: seq, invite })}`;
+    // a viewer invite scoped to the Published cut: the link reads that cut and nothing else (§14)
+    const invite = await session.invite("viewer", 30 * 24 * 3600_000, [rec.id]);
+    const url = `${baseUrl}/watch.html${watchHash({ projectId: session.projectId, cut: rec.id, invite })}`;
     keys.set(`carton.watch.${rec.id}`, url);
     return url;
   };
