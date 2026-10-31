@@ -13,7 +13,7 @@
 // report, never another call's.
 import { merge3 } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
-import type { Store } from "@carton/core/plugins";
+import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
@@ -169,22 +169,29 @@ export async function deliverNotices(carton: Carton, actor: Actor, opts: { reque
   const store = storeOf(carton);
   if (!store) return carton.notices(actor, { take: false });
   const busy = running(carton);
-  const at = Date.now();
-  const out: Notice[] = [];
-  for (const { key, value } of await store.range<NoticeRow>("notices", { prefix: [actorKey(actor)] })) {
-    if (value.handedToHuman) continue;
-    if (value.deliveredAt) {
-      if (opts.request && value.deliveredTo === opts.request && value.change !== opts.answered) out.push(value);
-      continue;
+  // one batch, conditional on every row as read: all of them are marked or none (a failed write gives nothing away),
+  // and a card resolved, a hook's mark, or another copy of this request getting there first means read again
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const at = Date.now();
+    const out: Notice[] = [];
+    const writes: StoreWrite[] = [];
+    const conds: StoreCondition[] = [];
+    for (const { key, value } of await store.range<NoticeRow>("notices", { prefix: [actorKey(actor)] })) {
+      if (value.handedToHuman) continue;
+      if (value.deliveredAt) {
+        if (opts.request && value.deliveredTo === opts.request && value.change !== opts.answered) out.push(value);
+        continue;
+      }
+      // the outcome another running request waits for: it reports it
+      if (value.change && value.change !== opts.request && busy.has(value.change)) continue;
+      const delivered: NoticeRow = { ...value, deliveredAt: at, ...(opts.request ? { deliveredTo: opts.request } : {}) };
+      writes.push({ table: "notices", key, value: delivered });
+      conds.push({ table: "notices", key, expect: { equals: value } });
+      if (value.change !== opts.answered) out.push(delivered);
     }
-    // the outcome another running request waits for: it reports it
-    if (value.change && value.change !== opts.request && busy.has(value.change)) continue;
-    // conditional on the row as read: a card resolved (or a hook's mark written) meanwhile is never undone
-    let delivered: NoticeRow | null = null;
-    const ok = await casUpdate(store, "notices", key, (cur: NoticeRow) => (cur.deliveredAt || cur.handedToHuman ? SKIP : (delivered = { ...cur, deliveredAt: at, ...(opts.request ? { deliveredTo: opts.request } : {}) })), value);
-    if (ok && delivered && (delivered as NoticeRow).change !== opts.answered) out.push(delivered);
+    if (!writes.length || (await store.write(writes, conds))) return out;
   }
-  return out;
+  return []; // contended throughout: they stay undelivered, for the next call
 }
 
 export const SKIP = Symbol("skip");
@@ -374,6 +381,8 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
  */
 async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Actor, cut?: string): Promise<CommitResult> {
   const head = await carton.head(cut);
+  // a retry: answer as the first time (an undo, or nothing to undo), before looking at what the turn holds now
+  if (await answeredBefore(carton, id, cut)) return carton.commit({ id, doc: head.doc, base: head.ref, author, cut });
   const versions = await carton.log({ cut, limit: 5000 });
   const undone = new Set<string>();
   for (const v of versions) if (v.kind === "undo" && v.change) for (const x of (await revertsOf(carton, v.change))) undone.add(x);
@@ -391,6 +400,13 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   }
   if (cards.length) return { status: "conflicts", cards, ref: head.ref };
   return carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) });
+}
+
+/** Whether core already holds an answer for this id: a confirmed change, a no-op, or (shared cut) a pending edit. */
+async function answeredBefore(carton: Carton, id: ChangeId, cut?: string): Promise<boolean> {
+  const store = storeOf(carton);
+  if (!store) return false;
+  return (await store.get("ids", [id])) !== undefined || (await store.get("meta", ["noop", id])) !== undefined || (await store.get("pending", [cut ?? carton.cut, id])) !== undefined;
 }
 
 /** The change ids an undo change reverts (from the confirmed log in the Store; [] when unknown). */
