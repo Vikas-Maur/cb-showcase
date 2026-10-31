@@ -96,6 +96,19 @@ R2's binding, the DO-blob vault and `blob-fs` can't presign. They take a signer 
 with single HTTP ranges, so a `<video>` element or ffmpeg can seek, and also PUT. `blob-s3` presigns with SigV4
 instead.
 
+A signed PUT takes two optional headers, neither signed, since each can only narrow what the URL allows:
+`If-None-Match: *` makes it create-only, applied atomically by the store (`put`'s `ifAbsent`), and
+`X-Carton-Sha256: <64 hex>` is `put`'s `sha256`: `serveSignedBlob` refuses a body that doesn't hash to it (400)
+before writing, so every store gives the same guarantee (R2 checks it again), and the store keeps it for `head`.
+`hostMediaBlobs` sends both. A client of its own (a browser's) should too, rather than a `head` before the PUT.
+
+On Node, `blob-s3` and host-http's clients (`hostMediaBlobs`, `hostMessageBlobs`) send their requests through
+`@carton/http-node`, which uses `node:http` and `node:https` instead of the global `fetch`. When a server ended the
+connection while a reader had paused the body, Node's built-in undici either crashed the process with an uncaught
+`assert(!this.paused)` (CI #29) or left the read hanging forever; `node:http` rejects the read instead. A streamed
+upload is held to its declared length. Workers and browsers use `fetch`, and a `fetch` passed in the options is used
+as given. `packages/blob-s3/bench/transport.ts` compares the two transports' throughput (see its header to run it).
+
 ### One bucket, many projects
 
 Wrap a store with `scopedBlobStore(store, "projects/<id>/")` (`@carton/blob-memory/scoped`), so a project can't name
@@ -104,6 +117,9 @@ another project's keys. Both hosts go one step further and give each project two
 `projects/<id>/media/` for what the HTTP API signs and uploads. An editor can write media, but never a record the
 sequencer relies on, which may belong to a cut they may not write. A signed URL's MAC also covers its route
 (`/blob/<id>/`), so a URL for one project never opens the same key under another.
+
+S3 and R2 cap the whole key at 1,024 bytes, prefix included, so a scoped store takes keys up to 1,024 bytes less its
+prefix: about 1,000 in a project's media scope. It refuses a longer one with `InvalidKey`, naming that limit.
 
 ### Media dedup within a team
 
@@ -206,7 +222,10 @@ every host runs the same function. The host:
    **Signed URLs** are built from the request's origin, so build the `Request` with the address the client used. A
    URL carrying an internal address can't be reached from outside. server-node takes, in order: `publicOrigin`;
    `X-Forwarded-Host`/`-Proto`, only with `trustProxy` (a client could otherwise choose them); a well-formed `Host`
-   header; the listen address. A Worker's request URL already carries the client's host.
+   header; the listen address. A Worker's request URL already carries the client's host. So a Node host that clients
+   reach directly (as `localhost`, a LAN name or an IP) needs no setting; behind a reverse proxy or a tunnel that
+   rewrites `Host`, set `trustProxy` if the proxy sets `X-Forwarded-Host`, or else `publicOrigin` to the address
+   clients use.
 
 The two shipped hosts are short and worth reading first:
 

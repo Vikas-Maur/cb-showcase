@@ -154,7 +154,11 @@ export interface ServeOptions {
   aroundPut?<T>(key: string, write: () => Promise<T>): Promise<T>;
 }
 
-// Answers a request on a signed blob URL: GET/HEAD (with ranges) or PUT. 403 for a bad or expired signature.
+/** The header a signed PUT carries its body's SHA-256 in (lowercase hex), for the host to check and the store to keep. */
+export const SHA256_HEADER = "x-carton-sha256";
+
+// Answers a request on a signed blob URL: GET/HEAD (with ranges) or PUT. 403 for a bad or expired signature; on a PUT,
+// 400 for a body that doesn't match its SHA256_HEADER.
 export async function serveSignedBlob(req: Request, store: BlobStore, signer: BlobUrlSigner, opts: ServeOptions = {}): Promise<Response> {
   const url = new URL(req.url);
   const key = await signer.verify(url, req.method);
@@ -171,7 +175,19 @@ export async function serveSignedBlob(req: Request, store: BlobStore, signer: Bl
     // `If-None-Match: *` asks for create-only, applied by the store atomically (its `ifAbsent`). The header only ever
     // narrows what the signed URL allows, so it needs no signature of its own.
     const createOnly = req.headers.get("if-none-match")?.trim() === "*";
-    const write = () => store.put(key, body, { ...(ct ? { contentType: ct } : {}), ...(createOnly ? { ifAbsent: true } : {}) });
+    // `X-Carton-Sha256: <64 hex>` is the client's `sha256`: the body must hash to it. Checked here, before the write,
+    // so every store gives the same guarantee (R2 checks again), then passed on for the store to keep and `head` to
+    // report. It too only narrows what the URL allows.
+    const claimed = req.headers.get(SHA256_HEADER);
+    let sha256: string | undefined;
+    if (claimed !== null) {
+      sha256 = claimed.trim().toLowerCase();
+      if (!/^[0-9a-f]{64}$/.test(sha256)) return new Response(`${SHA256_HEADER} must be 64 hex digits`, { status: 400 });
+      const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", body as Uint8Array<ArrayBuffer>));
+      if (Array.from(digest, (x) => x.toString(16).padStart(2, "0")).join("") !== sha256)
+        return new Response(`the body does not match its ${SHA256_HEADER}`, { status: 400 });
+    }
+    const write = () => store.put(key, body, { ...(ct ? { contentType: ct } : {}), ...(sha256 ? { sha256 } : {}), ...(createOnly ? { ifAbsent: true } : {}) });
     const info = await (opts.aroundPut ? opts.aroundPut(key, write) : write());
     return new Response(null, { status: 200, headers: info.etag ? { etag: info.etag } : {} });
   }

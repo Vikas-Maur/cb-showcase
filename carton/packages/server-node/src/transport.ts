@@ -11,7 +11,8 @@
 // timeout, or the connection dropped before it opened), `unauthorized` (the host refused this session), `protocol`
 // (the host answered another subprotocol), `closed` (closed before it opened, with a code of its own). A browser's
 // WebSocket can't see the HTTP status of a refused handshake (both cases close with 1006), so on 1006 one request to
-// the host's HTTP API with the same token tells them apart (401 or 403: unauthorized).
+// the host's session route with the same token tells them apart (401 or 403: unauthorized), within what is left of
+// the connect deadline and under the caller's signal.
 
 import type { Transport, TransportConnection } from "@carton/core/plugins";
 import type { sync } from "@carton/core";
@@ -35,15 +36,15 @@ export interface TransportError extends Error {
 }
 export const transportError = (message: string, code: TransportErrorCode): TransportError => Object.assign(new Error(message), { code });
 
-/** The HTTP route the probe asks (`/api/projects/<p>/blobs/head`, which checks the session first), or null. */
+/** The HTTP route the probe asks (`/api/projects/<p>/session`: the session alone, as every valid one may), or null. */
 function probeUrl(wsUrl: string): string | null {
   try {
     const u = new URL(wsUrl);
     const m = /^(\/api\/projects\/[^/]+)\/ws$/.exec(u.pathname);
     if (!m || (u.protocol !== "ws:" && u.protocol !== "wss:")) return null;
     u.protocol = u.protocol === "wss:" ? "https:" : "http:";
-    u.pathname = `${m[1]}/blobs/head`;
-    u.search = "?key=carton-probe";
+    u.pathname = `${m[1]}/session`;
+    u.search = "";
     return u.toString();
   } catch {
     return null;
@@ -56,11 +57,11 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
   const connectTimeoutMs = opts.connectTimeoutMs ?? 10_000;
   const fetchImpl = opts.fetch ?? globalThis.fetch;
   // a handshake that closed 1006 before opening: refused (401, 403 to the same token over HTTP) or unreachable
-  async function why1006(url: string, token: string): Promise<TransportError> {
+  async function why1006(url: string, token: string, signal: AbortSignal): Promise<TransportError> {
     const probe = probeUrl(url);
     if (probe && fetchImpl) {
       try {
-        const r = await fetchImpl(probe, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(5000) });
+        const r = await fetchImpl(probe, { headers: { authorization: `Bearer ${token}` }, signal });
         if (r.status === 401 || r.status === 403) {
           const reason = ((await r.json().catch(() => null)) as { error?: unknown } | null)?.error;
           return transportError(`the host refused this session (${r.status}${typeof reason === "string" ? `: ${reason}` : ""})`, "unauthorized");
@@ -83,6 +84,7 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
         const closers: ((why: string) => void)[] = [];
         let open = false, closed = false, settled = false;
         let keepalive: ReturnType<typeof setInterval> | undefined;
+        const started = Date.now();
         const timer = setTimeout(() => fail(transportError(`couldn't connect to the host: no answer in ${connectTimeoutMs} ms`, "unreachable")), connectTimeoutMs);
         const onAbort = () => fail(signal?.reason ?? new Error("aborted"));
         signal?.addEventListener("abort", onAbort, { once: true });
@@ -165,13 +167,23 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
           for (const f of listeners) f(msg);
         };
         ws.onclose = (e) => {
-          clearTimeout(timer);
           if (!settled) {
-            settled = true;
             closed = true;
-            if (e.code !== 1006) return reject(transportError(`closed ${e.code} ${e.reason}`, "closed"));
-            return void why1006(url, token).then(reject);
+            const done = (err: TransportError) => {
+              if (settled) return; // the deadline or the caller's abort came first
+              settled = true;
+              clearTimeout(timer);
+              signal?.removeEventListener("abort", onAbort);
+              reject(err);
+            };
+            if (e.code !== 1006) return done(transportError(`closed ${e.code} ${e.reason}`, "closed"));
+            // still connecting: the timer and an abort settle `connect` while the probe runs, and the probe stops
+            // with them
+            const left = Math.max(1, connectTimeoutMs - (Date.now() - started));
+            const probeSignal = AbortSignal.any([AbortSignal.timeout(left), ...(signal ? [signal] : [])]);
+            return void why1006(url, token, probeSignal).then(done);
           }
+          clearTimeout(timer);
           finish(e.reason ? `${e.code} ${e.reason}` : String(e.code));
         };
         ws.onerror = () => {}; // the close event carries the outcome

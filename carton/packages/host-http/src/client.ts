@@ -1,10 +1,13 @@
 // Clients of a Carton host's HTTP API, as BlobStores, so code written against the BlobStore plug-in (the sync client,
-// @carton/media) works through any host. Web-standard fetch: Node, Electron and browsers.
+// @carton/media) works through any host. Requests go through @carton/http-node: node:http(s) on Node (a body
+// cut while its reader is paused rejects, where undici behind fetch could crash the process, CI #29), fetch elsewhere.
 // - hostMessageBlobs: the sync envelope routes, for SyncClientOptions.blobs.
 // - hostMediaBlobs: the project's media, for @carton/media: resumable multipart uploads through the session's routes,
 //   small objects and ranged reads through short-lived signed URLs, and the §11 repair report.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
+import { SHA256_HEADER } from "@carton/blob-memory/signed";
+import { platformFetch } from "@carton/http-node";
 
 export interface HostBlobsOptions {
   /** The host's origin, e.g. `https://carton.example` or `http://127.0.0.1:8787`. */
@@ -20,7 +23,7 @@ const unsupported = (what: string): never => {
 };
 
 export function hostMessageBlobs(opts: HostBlobsOptions): BlobStore {
-  const f = opts.fetch ?? ((u: string | URL | Request, i?: RequestInit) => globalThis.fetch(u, i));
+  const f = opts.fetch ?? platformFetch();
   const base = `${opts.origin.replace(/\/+$/, "")}/api/projects/${encodeURIComponent(opts.projectId)}/messages/`;
   const auth = async () => ({ authorization: `Bearer ${typeof opts.token === "string" ? opts.token : await opts.token()}` });
   return {
@@ -84,9 +87,11 @@ const rangeHeader = (r: ByteRange) => (r.length === undefined ? `bytes=${r.offse
 /**
  * A project's media through the host's HTTP API. It has no list or delete (the API offers neither to clients).
  * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically, then reads back what is stored.
+ * `put` with `sha256` sends it in `X-Carton-Sha256`: the host refuses a body that doesn't hash to it (400) and the
+ * store keeps it, for `head`.
  */
 export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
-  const f = opts.fetch ?? ((u: string | URL | Request, i?: RequestInit) => globalThis.fetch(u, i));
+  const f = opts.fetch ?? platformFetch();
   const base = `${opts.origin.replace(/\/+$/, "")}/api/projects/${encodeURIComponent(opts.projectId)}`;
   const bearer = async () => `Bearer ${typeof opts.token === "string" ? opts.token : await opts.token()}`;
   const api = (path: string, key?: string) => base + path + (key === undefined ? "" : `?key=${encodeURIComponent(key)}`);
@@ -140,6 +145,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
       const headers: Record<string, string> = {};
       if (o.contentType) headers["content-type"] = o.contentType;
       if (o.ifAbsent) headers["if-none-match"] = "*";
+      if (o.sha256) headers[SHA256_HEADER] = o.sha256;
       const r = await f(await sign(key, "PUT"), { method: "PUT", body: data as Uint8Array<ArrayBuffer>, headers });
       if (!r.ok) await failed(r);
       await r.body?.cancel();
@@ -150,6 +156,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
       }
       const info: BlobInfo = { key, size: data.byteLength };
       if (o.contentType) info.contentType = o.contentType;
+      if (o.sha256) info.sha256 = o.sha256.toLowerCase();
       const etag = r.headers.get("etag");
       if (etag) info.etag = etag;
       return info;
