@@ -100,3 +100,40 @@ test("the message routes reach exactly the two envelope key patterns of the sequ
   for (const bad of ["keyframes/main/0", up, `messages/s/481234/${"b".repeat(64)}x`]) assert.notEqual((await call("GET", bad))?.status, 200, `GET ${bad}`);
   assert.equal((await handleHttp(req(`/api/projects/p/messages/${up}`, { method: "PUT", body: "{}" }), d))?.status, 401, "no session");
 });
+
+test("POST /invites {branches}: the invite's sessions are scoped to those cuts; a scoped owner invites only within its own", async () => {
+  const d = deps();
+  const post = (path: string, tok: string | null, b: unknown) =>
+    handleHttp(req(`/api/projects/p${path}`, { method: "POST", body: JSON.stringify(b), headers: tok ? { authorization: `Bearer ${tok}` } : {} }), d);
+  const owner = await d.auth.issue!({ ...ctx, role: "owner", ttlMs: 60_000 });
+  const r = await post("/invites", owner, { role: "viewer", branches: ["pub-1"] });
+  assert.equal(r?.status, 200);
+  const { invite } = (await r!.json()) as { invite: string };
+  const j = await post("/join", null, { invite, account: "watcher", installKey: "k".repeat(20) });
+  const session = (await j!.json()) as { token: string; context: AuthContext };
+  assert.deepEqual(session.context.branches, ["pub-1"], "a watch link's viewer reads the Published cut only");
+  assert.deepEqual((await d.auth.verify(session.token))?.branches, ["pub-1"]);
+  assert.equal((await post("/invites", owner, { role: "viewer", branches: ["bad id/x"] }))?.status, 400);
+  // an owner scoped to one cut can't mint a wider invite
+  const scopedOwner = await d.auth.issue!({ ...ctx, role: "owner", branches: ["pub-1"], ttlMs: 60_000 });
+  assert.equal((await post("/invites", scopedOwner, { role: "editor" }))?.status, 403, "unscoped");
+  assert.equal((await post("/invites", scopedOwner, { role: "viewer", branches: ["main"] }))?.status, 403, "another cut");
+  assert.equal((await post("/invites", scopedOwner, { role: "viewer", branches: ["pub-1"] }))?.status, 200);
+});
+
+test("a reader scoped to a Published cut signs reads of media named by content and its cut's files only (web demo review R2-1)", async () => {
+  const d = deps();
+  const sign = async (tok: string, key: string, method = "GET") =>
+    (await handleHttp(req("/api/projects/p/blobs/sign", { method: "POST", headers: { authorization: `Bearer ${tok}` }, body: JSON.stringify({ key, method }) }), d))!.status;
+  const head = async (tok: string, key: string) => (await handleHttp(req(`/api/projects/p/blobs/head?key=${encodeURIComponent(key)}`, { headers: { authorization: `Bearer ${tok}` } }), d))!.status;
+  const watcher = await d.auth.issue!({ ...ctx, account: "viewer", role: "viewer", branches: ["pub-1"], ttlMs: 60_000 });
+  for (const key of [`m/${"a".repeat(64)}`, `mf/${"a".repeat(64)}`, `px/${"a".repeat(64)}/720p`, `t1/${"a".repeat(64)}/poster.jpg`, "cuts/pub-1/watch.json"]) assert.equal(await sign(watcher, key), 200, key);
+  for (const key of ["carton/project.json", "cuts/main-1/watch.json", "cuts/pub-10/watch.json", "secret"]) assert.equal(await sign(watcher, key), 403, key);
+  assert.equal(await head(watcher, "carton/project.json"), 403);
+  assert.equal(await sign(watcher, "cuts/pub-1/watch.json", "PUT"), 403, "a viewer still can't write");
+  // an unscoped viewer (a teammate who may read the project) and a writer read the whole scope
+  const teammate = await d.auth.issue!({ ...ctx, account: "t", role: "viewer", ttlMs: 60_000 });
+  assert.equal(await sign(teammate, "carton/project.json"), 200);
+  const scopedWriter = await d.auth.issue!({ ...ctx, branches: ["pub-1"], ttlMs: 60_000 });
+  assert.equal(await sign(scopedWriter, "carton/project.json"), 200);
+});

@@ -23,9 +23,10 @@ import type { Duplex } from "node:stream";
 import type { AuthContext, BlobStore, SequencerHost } from "@carton/core/plugins";
 import { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, tokenFromRequest, WS_PROTOCOL } from "@carton/server";
-import { handleHttp, checkSession, type HttpAuth, type HttpDeps } from "@carton/host-http";
+import { handleHttp, checkSession, projectMediaStore, type HttpAuth, type HttpDeps } from "@carton/host-http";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { encodeSegment, decodeSegment } from "@carton/blob-fs/keys";
+import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 import { acceptWebSocket, rejectUpgrade, type ServerWebSocket } from "./ws.ts";
 import { nodeSqliteStorage, type NodeSqliteStorage } from "./storage.ts";
 
@@ -38,6 +39,10 @@ export interface NodeHostOptions {
   secret?: string | Uint8Array;
   /** Media, keyframes and archived segments (blob-fs or blob-s3); each project sees its own `projects/<id>/` scope. */
   blobs?: BlobStore;
+  /** The team a project belongs to, for media dedup within a team (PLAN §11): its media bytes and manifests are kept
+   * once under `teams/<team>/media/`, and a project reads only the hashes it was granted (host-http's team.ts). No
+   * team (the default): each project's media stays in its own scope. */
+  teamOf?: (projectId: string) => string | null | undefined;
   /** 0 picks a free port. */
   port?: number;
   host?: string;
@@ -54,7 +59,16 @@ export interface NodeHostOptions {
   /** Largest WebSocket message (default 32 MiB, Cloudflare's own cap, so both hosts accept the same messages). This
    * is the protocol's limit, separate from the sequencer's 1 MB threshold for keeping a change body inline. */
   maxMessageBytes?: number;
-  /** The newest document schemaVersion this host's sequencer accepts in `hello` (default 1). */
+  /** The origin clients reach this host at (`https://carton.example`), for the signed URLs it hands out. Without
+   * it, each request's own Host header is used, so a URL works at the address the client used. */
+  publicOrigin?: string;
+  /** Behind a reverse proxy: take the origin from X-Forwarded-Proto and X-Forwarded-Host. Only set this when a
+   * proxy you run sets them; a client could otherwise choose them. */
+  trustProxy?: boolean;
+  /** The newest document schemaVersion this host's sequencer accepts in `hello`. Default: the Cardboard adapter's
+   * `CARDBOARD_SCHEMA_VERSION`, so the host built with an adapter always takes that adapter's clients (H-SV: a
+   * hard-coded 1 refused every client after the adapter's bump to 2). A newer client is refused with a message
+   * saying to update the server. */
   schemaVersion?: number;
   /** The largest message carried as an envelope, read by the sequencer and taken by the upload route (default 64
    * MiB, the sequencer's own). */
@@ -150,9 +164,10 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   let nextId = 0, closing = false;
 
   // Two scopes per project that no route can cross: the sequencer's keyframes, segments and large change bodies, and
-  // the media the HTTP API signs and uploads (an editor can write media, never the sequencer's records).
-  const scoped = (projectId: string, scope: "seq" | "media") => (opts.blobs ? scopedBlobStore(opts.blobs, `projects/${projectId}/${scope}/`) : undefined);
-  const blobsFor = (projectId: string) => scoped(projectId, "media");
+  // the media the HTTP API signs and uploads (an editor can write media, never the sequencer's records). With a team,
+  // media bytes and manifests sit in the team's scope instead, behind the project's grants (projectMediaStore).
+  const scoped = (projectId: string, scope: "seq") => (opts.blobs ? scopedBlobStore(opts.blobs, `projects/${projectId}/${scope}/`) : undefined);
+  const blobsFor = (projectId: string) => (opts.blobs ? projectMediaStore(opts.blobs, projectId, opts.teamOf?.(projectId)) : undefined);
 
   function openRoom(projectId: string): Room {
     let room = rooms.get(projectId);
@@ -170,7 +185,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
       storage,
       auth: opts.auth,
       projectId,
-      schemaVersion: opts.schemaVersion ?? 1,
+      schemaVersion: opts.schemaVersion ?? CARDBOARD_SCHEMA_VERSION,
       ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
       ...(blobs ? { blobs } : {}),
     });
@@ -266,9 +281,16 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     room.idle.unref();
   }
 
+  // A project known to the sweep without a room: an upload that landed while the host was closing.
+  function registerProject(projectId: string): void {
+    const name = roomFileName(projectId);
+    const idFile = join(roomsDir, name + ".id");
+    if (!existsSync(join(roomsDir, name + ".db")) && !existsSync(idFile)) writeFileSync(idFile, projectId);
+  }
+
   // Envelope blobs expire hours after they were made (core's envelopeExpired), longer than a room usually stays
   // open, and an upload may come with no socket at all. So the sweep runs at the host, over every project with a
-  // room file, open or not; room maintenance (archiving) stays with the room.
+  // room file or a `.id` file, open or not; room maintenance (archiving) stays with the room.
   async function sweepEnvelopes(): Promise<number> {
     if (!opts.blobs) return 0;
     const now = Date.now();
@@ -277,16 +299,18 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     try {
       files = readdirSync(roomsDir);
     } catch {}
+    const projects = new Set<string>();
     for (const f of files) {
-      if (!f.endsWith(".db")) continue;
-      let projectId = decodeSegment(f.slice(0, -3));
-      if (projectId === null) {
+      if (f.endsWith(".db")) {
+        const id = decodeSegment(f.slice(0, -3));
+        if (id !== null) projects.add(id); // a hashed name has its .id file beside it
+      } else if (f.endsWith(".id")) {
         try {
-          projectId = readFileSync(join(roomsDir, f.slice(0, -3) + ".id"), "utf8");
-        } catch {
-          continue;
-        }
+          projects.add(readFileSync(join(roomsDir, f), "utf8"));
+        } catch {}
       }
+    }
+    for (const projectId of projects) {
       const store = scoped(projectId, "seq")!;
       let cursor: string | undefined;
       do {
@@ -318,15 +342,32 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   const hostPart = listenHost.includes(":") ? `[${listenHost}]` : listenHost;
   const origin = `http://${hostPart}:${port}`;
 
+  // The origin a request was made to, for the URLs built from it (signed media URLs): the configured public one, else
+  // what a trusted proxy forwarded, else the Host header the client sent, else the listen address.
+  const HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](:\d{1,5})?$/;
+  const publicOrigin = opts.publicOrigin ? new URL(opts.publicOrigin).origin : null;
+  function originOf(req: IncomingMessage): string {
+    if (publicOrigin) return publicOrigin;
+    const first = (h: string | string[] | undefined) => (Array.isArray(h) ? h[0] : h)?.split(",")[0]?.trim();
+    if (opts.trustProxy) {
+      const host = first(req.headers["x-forwarded-host"]), proto = first(req.headers["x-forwarded-proto"]);
+      if (host && HOST_RE.test(host)) return `${proto === "https" ? "https" : "http"}://${host}`;
+    }
+    const host = req.headers.host;
+    return host && HOST_RE.test(host) ? `http://${host}` : origin;
+  }
+
   const deps: HttpDeps = {
     auth: opts.auth,
     secret: opts.secret ?? new Uint8Array(32),
     blobsFor,
     sequencerBlobsFor: (projectId) => scoped(projectId, "seq"),
     ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
-    // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes
+    // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes;
+    // while closing no room opens, so the project is registered with a `.id` file for the next start's sweep
     onEnvelope: (projectId) => {
-      if (!closing) idleLater(openRoom(projectId));
+      if (closing) registerProject(projectId);
+      else idleLater(openRoom(projectId));
     },
     // a plain GET on the socket route (no Upgrade header): the upgrade itself goes through server.on("upgrade")
     upgrade: async () => new Response("expected a WebSocket upgrade", { status: 426 }),
@@ -338,7 +379,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   server.on("request", (req, res) => {
     const work = (async () => {
       try {
-        const r = await handleHttp(toRequest(req, origin), deps);
+        const r = await handleHttp(toRequest(req, originOf(req)), deps);
         if (r) return await send(res, r);
         if (staticRoot && (req.method === "GET" || req.method === "HEAD")) return serveStatic(staticRoot, req, res);
         res.writeHead(404, { "content-type": "text/plain" }).end("not found");
@@ -360,18 +401,31 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     const headers = { get: (n: string) => (req.headers[n.toLowerCase()] as string | undefined) ?? null };
     const token = tokenFromRequest(headers);
     if (!token) return rejectUpgrade(socket, 401, "session token required");
-    void checkSession(opts.auth, token, projectId).then(
-      (auth) => {
-        if (socket.destroyed) return;
-        const ws = acceptWebSocket(req, socket, head, {
-          protocols: (offered) => (offered.includes(WS_PROTOCOL) ? WS_PROTOCOL : null),
-          maxPayload: opts.maxMessageBytes ?? MAX_MESSAGE,
-          maxBufferedBytes: 16 << 20,
-        });
-        if (ws) connect(ws, auth, projectId);
-      },
-      (e: { status?: number; message?: string }) => rejectUpgrade(socket, e?.status === 403 ? 403 : 401, e?.message ?? "unauthorized"),
-    );
+    void checkSession(opts.auth, token, projectId)
+      .then(
+        (auth) => {
+          if (socket.destroyed) return;
+          // the host began closing while this upgrade was being checked: refuse it before accepting it
+          if (closing) return rejectUpgrade(socket, 503, "host shutting down");
+          const ws = acceptWebSocket(req, socket, head, {
+            protocols: (offered) => (offered.includes(WS_PROTOCOL) ? WS_PROTOCOL : null),
+            maxPayload: opts.maxMessageBytes ?? MAX_MESSAGE,
+            maxBufferedBytes: 16 << 20,
+          });
+          if (!ws) return;
+          try {
+            connect(ws, auth, projectId);
+          } catch (e) {
+            onError(e);
+            ws.close(1011, "internal error");
+          }
+        },
+        (e: { status?: number; message?: string }) => rejectUpgrade(socket, e?.status === 403 ? 403 : 401, e?.message ?? "unauthorized"),
+      )
+      .catch((e) => {
+        onError(e);
+        socket.destroy();
+      });
   });
 
   return {

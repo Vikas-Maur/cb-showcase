@@ -1,13 +1,15 @@
 // Runs `wrangler dev` for a test: a free port and inspector port (other agents run wrangler on this machine too),
 // workerd state on disk under the scratch dir (never /tmp), secrets as --var, and the whole process tree killed at
-// the end. `restart()` stops it and starts it again on the same state: every Durable Object is rebuilt from storage,
-// as after an eviction or a deploy.
+// the end. wrangler runs as node's own child, never through a shell: on Windows cmd would strip the double quotes of
+// a JSON var (TEAMS) and split paths with spaces (CI #23). `restart()` stops it and starts it again on the same
+// state: every Durable Object is rebuilt from storage, as after an eviction or a deploy.
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { mkdirSync } from "node:fs";
 
-const WRANGLER = join(import.meta.dirname, "..", "..", "..", "node_modules", ".bin", process.platform === "win32" ? "wrangler.cmd" : "wrangler");
+// wrangler's own entry script, run with this node: no `.cmd` shim, so no shell on Windows
+const WRANGLER = join(import.meta.dirname, "..", "..", "..", "node_modules", "wrangler", "bin", "wrangler.js");
 
 async function freePort(): Promise<number> {
   return new Promise((ok, fail) => {
@@ -39,12 +41,12 @@ export async function startDev(o: { config: string; state: string; vars: Record<
     const args = ["dev", "--config", o.config, "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", String(inspector), "--persist-to", join(o.state, "wrangler"), "--log-level", "warn", "--show-interactive-dev-session=false"];
     for (const [k, v] of Object.entries(o.vars)) args.push("--var", `${k}:${v}`);
     log = "";
-    child = spawn(WRANGLER, args, {
+    child = spawn(process.execPath, [WRANGLER, ...args], {
       cwd: join(o.config, ".."),
       env: { ...process.env, TMPDIR: tmp, TMP: tmp, TEMP: tmp, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
-      shell: process.platform === "win32",
+      windowsHide: true,
     });
     child.stdout!.on("data", (d) => (log += d));
     child.stderr!.on("data", (d) => (log += d));

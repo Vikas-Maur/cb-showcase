@@ -391,9 +391,9 @@ export class Tables {
   }
 
   /**
-   * `record` for many ids of one collection at the head of `branch`: one primary-key query per 64 ids (padded, so the
-   * statement shape and its cached plan stay the same). Ids with no row on the branch itself go up the fork chain one
-   * by one, as `record` does.
+   * `record` for many ids of one collection at the head of `branch`: one statement per 5 ids (padded, so the statement
+   * shape and its cached plan stay the same). Ids with no row on the branch itself go up the fork chain one by one, as
+   * `record` does.
    */
   records(branch: string, coll: string, ids: readonly string[]): Map<string, RecordState | undefined> {
     const out = new Map<string, RecordState | undefined>();
@@ -401,9 +401,10 @@ export class Tables {
       for (const id of ids) out.set(id, this.record(branch, coll, id));
       return out;
     }
-    // one bounded seek per id (newest row ≤ head, LIMIT 1), 32 to a statement (96 bound parameters): a record's long
-    // history is never read (review finding 15)
-    const CHUNK = 32;
+    // one bounded seek per id (newest row ≤ head, LIMIT 1), 5 to a statement: a record's long history is never read
+    // (review finding 15). 5 is a Durable Object's SQLite limit on compound SELECT terms (measured in workerd: 6 fail
+    // "too many terms in compound SELECT"; test/do-limits.test.ts), and 15 bound parameters stay far under its 100.
+    const CHUNK = 5;
     const one = "SELECT * FROM (SELECT id, alive, seq, lane FROM records WHERE branch = ? AND coll = ? AND id = ? ORDER BY seq DESC LIMIT 1)";
     const q = Array(CHUNK).fill(one).join(" UNION ALL ");
     for (let i = 0; i < ids.length; i += CHUNK) {
