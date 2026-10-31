@@ -122,8 +122,10 @@ On Node, `blob-s3` and host-http's clients (`hostMediaBlobs`, `hostMessageBlobs`
 `@carton/http-node`, which uses `node:http` and `node:https` instead of the global `fetch`. When a server ended the
 connection while a reader had paused the body, Node's built-in undici either crashed the process with an uncaught
 `assert(!this.paused)` (CI #29) or left the read hanging forever; `node:http` rejects the read instead. A streamed
-upload is held to its declared length. Workers and browsers use `fetch`, and a `fetch` passed in the options is used
-as given. `packages/blob-s3/bench/transport.ts` compares the two transports' throughput (see its header to run it).
+upload is held to its declared length. Redirects are followed as `fetch` follows them: Authorization,
+Proxy-Authorization, Cookie and Host never go on to another origin, a Location with credentials is refused, and a
+streamed body ends the request at any redirect but a 303. Workers and browsers use `fetch`, and a `fetch` passed in
+the options is used as given. `packages/blob-s3/bench/transport.ts` compares the two transports' throughput (see its header to run it).
 
 ### One bucket, many projects
 
@@ -200,8 +202,12 @@ every host runs the same function. The host:
      after `idleTimeoutMs` (30 s) of silence and drops the socket after as long again. The Durable Object closes a
      socket that shows presence and has neither sent anything nor pinged (its `ping` auto-response) for
      `PRESENCE_TIMEOUT_MS` (120 s). It checks from its alarm, every half of that, only while some socket shows
-     presence; maintenance keeps its own due time (`carton_room.maintain_at`), so these checks never run it
-     early. The conformance host suite drops a client and silences one, and checks that its peers see the leaves.
+     presence. A socket's last message time rides in its attachment (written at most once a second), so a wake
+     from hibernation is never taken for its activity. Maintenance keeps its own due time
+     (`carton_room.maintain_at`), so these checks never run it early; a room whose alarm was set before that row
+     existed takes the alarm as its due time. Presence still queued when its connection goes is dropped, never
+     relayed. The conformance host suite drops a client and silences one (also across wakes), and checks that its
+     peers see the leaves.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from

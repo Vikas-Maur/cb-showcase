@@ -292,6 +292,26 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       assert.ok(Date.now() - t0 <= fx.presenceTimeoutMs + 5000);
     });
 
+    // Round 2: a Durable Object took each wake for every socket's activity, so a room that hibernated between its
+    // checks never found a silent socket.
+    test("a silent connection is dropped within the timeout even when the host wakes from hibernation between its checks", async (t) => {
+      if (!fx.presenceTimeoutMs || !fx.hibernate || !fx.host.url.startsWith("ws:")) return t.skip("needs presenceTimeoutMs, hibernate and a ws: host");
+      const { p, human, left } = await showing();
+      let done = false;
+      const waking = (async () => {
+        while (!done) {
+          await fx.hibernate!();
+          await new Promise((r) => setTimeout(r, 250));
+        }
+      })();
+      try {
+        await p.wait(left(human), "the human's leave", fx.presenceTimeoutMs + 5000);
+      } finally {
+        done = true;
+        await waking;
+      }
+    });
+
     test("replica ids are bound to the device credential and survive a reconnect; another credential can't use them", async (t) => {
       if (!fx.tokenFor) return t.skip("needs tokenFor");
       const b = newBranch();

@@ -102,6 +102,46 @@ test("a socket that shows presence brings the room's alarm forward to half the p
   raw.kill();
   assert.ok(alarm !== null && alarm - t0 <= 1300, `alarm ${alarm === null ? "none" : `${alarm - t0} ms after the presence`}`);
 });
+// Round 2: a room whose alarm was set by code from before `maintain_at` lost that deadline: a presence check brought
+// forward ran maintenance at once, and an envelope upload recorded a fresh due time, holding maintenance past it.
+test("a room whose alarm predates maintain_at keeps that alarm as maintenance's due time, through a presence check and an upload", async () => {
+  const auth = createHmacAuth({ secret: SECRET });
+  const p = `legacy-${Date.now().toString(36)}`;
+  const token = await auth.issue({ account: "lg", credential: "lg/1", role: "owner", projectId: p, ttlMs: 3600_000 });
+  const raw = await rawWebSocket(`ws://127.0.0.1:${dev.port}/api/projects/${p}/ws`, token);
+  const got: { type: string }[] = [];
+  raw.onMessage((m) => void got.push(m as { type: string }));
+  const until = async (type: string) => {
+    for (let i = 0; i < 200 && !got.some((m) => m.type === type); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(got.some((m) => m.type === type), `no ${type}: ${got.map((m) => m.type)}`);
+  };
+  const rec = { id: "b", name: "main", forkOf: null, owner: "lg", kind: "main", sequencer: { kind: "server", since: 0 } };
+  raw.send({ type: "adopt", branchId: "b", n: 0, stateHash: "", rows: [], rec, doc0: HOST_SUITE_DOC, closure: [] } as never);
+  await until("adopted");
+  raw.send({ type: "hello", branchId: "b", have: 0, pending: [], rids: [], schemaVersion: 1 });
+  await until("hello");
+  const due = async () => (await (await fetch(`${dev.origin}/__test/due/${p}`)).json()) as { maintainAt: number | null; alarm: number | null };
+  const legacy = async (at: number) => assert.equal((await fetch(`${dev.origin}/__test/legacy/${p}?at=${at}`)).status, 204);
+  try {
+    // a presence check comes due (1 s) long before the old alarm (60 s): maintenance waits for its own time
+    const at = Date.now() + 60_000;
+    await legacy(at);
+    raw.send({ type: "presence", branchId: "b", actor: { kind: "human", id: "lg" }, state: { at: 1 } });
+    await new Promise((r) => setTimeout(r, 2200)); // the presence check (armed for 1 s) has run
+    assert.equal((await due()).maintainAt, at, "maintenance kept the old alarm's time, and didn't run at the presence check");
+    // an envelope upload wakes a room that has no due time: it takes the old alarm's, not a fresh one
+    const at2 = Date.now() + 60_000;
+    await legacy(at2);
+    const hour = Math.floor(Date.now() / 3600_000);
+    const bytes = new TextEncoder().encode('{"type":"push"}');
+    const sha = [...new Uint8Array(await crypto.subtle.digest("SHA-256", bytes))].map((x) => x.toString(16).padStart(2, "0")).join("");
+    const put = await fetch(`${dev.origin}/api/projects/${p}/messages/messages/c/${hour}/${sha}-0123abcd`, { method: "PUT", body: bytes, headers: { authorization: `Bearer ${token}` } });
+    assert.equal(put.status, 200);
+    assert.equal((await due()).maintainAt, at2, "the upload kept the old alarm's time");
+  } finally {
+    raw.kill();
+  }
+});
 transportSuite("server-cloudflare (WebSocket through the Worker)", fixture);
 liveSyncSuite("server-cloudflare (Worker + ProjectRoom)", fixture);
 hostSuite("server-cloudflare (Worker + ProjectRoom)", fixture);

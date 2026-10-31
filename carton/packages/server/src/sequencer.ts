@@ -998,7 +998,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
-    if (!stateOf(c).subs.includes(m.branchId)) return;
+    // a connection gone while its presence waited in the queue (behind another client's envelope read, say) said
+    // its last: relayed now, nothing would ever take it back
+    if (!conns.has(c.id) || !stateOf(c).subs.includes(m.branchId)) return;
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
