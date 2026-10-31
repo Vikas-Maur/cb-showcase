@@ -6,7 +6,6 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn, execFileSync } from "node:child_process";
-import * as os from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { openProjectStore, openSqliteStore, MovedError, PlacementConflictError, UnwritableHistoryError, isThisMachine, machineMark, FORMAT_VERSION } from "../src/index.ts";
 import { scratch } from "./scratch.ts";
@@ -436,30 +435,52 @@ test("a read-only exported carton.db (no file id yet) is refused before its id o
 });
 
 // Windows: an ACL that denies writing (the attribute clear). SQLite then quietly opens the file read-only.
-test("Windows: a carton.db whose ACL denies writing is refused the same way", { skip: process.platform !== "win32" ? "Windows ACLs" : false }, async () => {
+test("Windows: a carton.db whose ACL denies writing is refused the same way", { skip: process.platform !== "win32" ? "Windows ACLs" : false }, async (t) => {
   const p = project();
   const a = await openProjectStore(p);
   await a.store.write(put(1));
   await a.store.close();
-  const user = `${process.env.USERDOMAIN ? process.env.USERDOMAIN + "\\" : ""}${os.userInfo().username}`;
-  // Deny writing the data only (WD: write data, AD: append data). icacls' "(W)" is FILE_GENERIC_WRITE, which also
-  // holds SYNCHRONIZE and READ_CONTROL: denying those makes every open fail, reads included (verify-ci #17).
-  execFileSync("icacls", [p.inBundle, "/deny", `${user}:(WD,AD)`], { stdio: "ignore", windowsHide: true });
+  const run = (cmd: string, args: string[]) => execFileSync(cmd, args, { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+  // The deny names this process's own SID (from its token), not a composed DOMAIN\user that may not match it
+  // (verify-ci #17). Only write data and append data are denied: icacls' "(W)" is FILE_GENERIC_WRITE, which also
+  // holds SYNCHRONIZE and READ_CONTROL, and denying those makes every open fail, reads included.
+  const sid = /"(S-1-[0-9-]+)"/.exec(run("whoami", ["/user", "/fo", "csv", "/nh"]))?.[1];
+  assert.ok(sid, "whoami gives this process's SID");
+  run("icacls", [p.inBundle, "/deny", `*${sid}:(WD,AD)`]);
   try {
-    // Readable but not writable: the case only the write probe catches (access() doesn't read ACLs on Windows).
-    // The setup is checked step by step, so a failure says whether the file or SQLite's read-only open broke.
-    assert.ok(fs.readFileSync(p.inBundle).length > 0, "the ACL still lets the file be read");
-    assert.throws(() => fs.appendFileSync(p.inBundle, ""), "and refuses writing it");
+    // The setup is checked with SQLite itself, which is what the refusal path relies on: it must read the file and
+    // be refused writing it. (Node's fs opens files with backup semantics on Windows, which an elevated token with
+    // backup privileges can use to step around a deny, so it is no test of what SQLite may do.)
     const reader = new DatabaseSync(p.inBundle, { readOnly: true });
-    assert.equal((reader.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n, 1);
+    assert.equal((reader.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n, 1, "SQLite can read it");
     reader.close();
+    let sqliteWrites = true;
+    const writer = new DatabaseSync(p.inBundle);
+    try {
+      writer.exec("CREATE TABLE acl_probe(x); DROP TABLE acl_probe");
+    } catch {
+      sqliteWrites = false;
+    } finally {
+      writer.close();
+    }
+    if (sqliteWrites) {
+      const groups = run("whoami", ["/groups", "/fo", "csv", "/nh"]);
+      const diag = `whoami /user: ${sid}\nicacls:\n${run("icacls", [p.inBundle])}\nwhoami /groups:\n${groups}`;
+      if (/S-1-5-32-544[^\n]*Enabled group/i.test(groups)) {
+        // An elevated administrator's writes aren't stopped by the deny here; the refusal path is covered on
+        // Windows by the read-only-attribute tests above.
+        t.skip(`running elevated (Administrators enabled): the deny ACE doesn't stop this process's writes\n${diag}`);
+        return;
+      }
+      assert.fail(`the ACL didn't stop SQLite writing the file\n${diag}`);
+    }
     p.startSyncing();
     let published = 0;
     await assert.rejects(openProjectStore(p, { afterPublish: () => void published++ }), UnwritableHistoryError);
     assert.equal(published, 0, "refused before a copy was made");
     assertNothingPublished(p);
   } finally {
-    execFileSync("icacls", [p.inBundle, "/remove:d", user], { stdio: "ignore", windowsHide: true });
+    run("icacls", [p.inBundle, "/remove:d", `*${sid}`]);
   }
   const b = await openProjectStore(p);
   assert.deepEqual(await seqs(b.store), [1]);
