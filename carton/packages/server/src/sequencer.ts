@@ -6,7 +6,8 @@
 // Protocol, per connection:
 // - `hello` subscribes the connection to a branch, claims the replica's rids for its device credential (R10-02), lists
 //   which of its in-flight ids are already confirmed or withdrawn (R10-01, bounded scan), and sends the rows since
-//   `have`, or the latest keyframe plus the rows after it when more than K behind (§6.3).
+//   `have`, or the latest keyframe plus the rows after it when more than K behind (§6.3), a page at a time: at most
+//   1,000 rows and 4 MiB (`catchupBytes`), with `more` until the client is caught up.
 // - `push` carries pending changes in queue order, pipelined. Each is judged by the shared rule (`evaluatePush`); an
 //   accepted row is fanned out to every subscriber, the pusher included, before its ack, so a later reject never
 //   needs to re-send rows. A reject kills the rest of that epoch: later messages of the epoch are ignored, and the
@@ -102,8 +103,8 @@ export interface SequencerControls extends rules.RuleControls {
   claimScan?: "every-base" | "newest";
   /** false: ignore the rids a hello claims (an unpinned v12 rule, now pinned by a test). */
   helloRidClaim?: boolean;
-  /** Merged claim ranges read per message (default 256): lowered by a test of the cap. */
-  claimRanges?: number;
+  /** Claim windows (one per claimed base, merged or not) read per message (default 256): lowered by a test of the cap. */
+  claimWindows?: number;
 }
 
 export interface SequencerOptions {
@@ -127,6 +128,11 @@ export interface SequencerOptions {
   schemaVersion?: number;
   /** Rows per catch-up message (default 1000). */
   catchupLimit?: number;
+  /**
+   * Bytes per catch-up message (default 4 MiB, keyframe included): a page stops before the row that would pass it,
+   * always holding at least one, so a reply (and what the sequencer loads for it) is at most this plus one row.
+   */
+  catchupBytes?: number;
   /** Change bodies over this go to a blob (default 1 MB, §5.1). */
   maxInlineBytes?: number;
   /** Messages over this many bytes travel as envelopes through `blobs` (default 1 MiB). */
@@ -184,6 +190,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   const K = opts.maxBehind ?? rules.DEFAULT_MAX_BEHIND;
   const KF = opts.keyframeEvery ?? 64;
   const catchup = opts.catchupLimit ?? 1000;
+  const catchupBytes = opts.catchupBytes ?? 4 << 20;
+  const maxEnvelope = opts.maxEnvelopeBytes ?? 64 << 20;
   const maxInline = opts.maxInlineBytes ?? 1 << 20;
   const clock = opts.clock ?? Date.now;
   const collections = opts.collections ?? (timeline ? [tl.lanes, tl.collection] : []);
@@ -260,15 +268,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       return null;
     };
     if (!opts.blobs) return lost("this server has no blob store", false);
-    const max = opts.maxEnvelopeBytes ?? 64 << 20;
     // too big to read: dropped unread (resending it can't help, so no reconnect)
-    if (Number(m.ref?.size) > max) {
+    if (Number(m.ref?.size) > maxEnvelope) {
       if (sync.envelopeKeyOk(m.ref, "client")) await opts.blobs.delete(m.ref.key).catch(() => {});
-      return lost(`${m.ref.size} bytes (the limit is ${max})`, false);
+      return lost(`${m.ref.size} bytes (the limit is ${maxEnvelope})`, false);
     }
     let inner: unknown;
     try {
-      inner = await sync.unseal(m.ref, opts.blobs, { from: "client", maxBytes: max });
+      inner = await sync.unseal(m.ref, opts.blobs, { from: "client", maxBytes: maxEnvelope });
     } catch (e) {
       return lost(e instanceof Error ? e.message : String(e), true);
     }
@@ -287,9 +294,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 
   // ---------------------------------------------------------------- the confirmed-id list (R10-01, bounded: R12-01)
   // A push on base b can only have been confirmed in (b, b + K + 1]: read the id column of those ranges only.
-  const MAX_CLAIM_RANGES = 256;
+  const MAX_CLAIM_WINDOWS = 256;
   /**
-   * The ids of `claims` confirmed or withdrawn. At most MAX_CLAIM_RANGES merged ranges are read per message (a
+   * The ids of `claims` confirmed or withdrawn. At most MAX_CLAIM_WINDOWS claim windows are read per message (a
    * hostile hello can't ask for more); bases past that are reported in `uncheckedFrom`, never treated as unconfirmed:
    * the client asks again for those before acting on the list (review finding 10).
    */
@@ -307,19 +314,25 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       } else for (const b of bs) bases.add(b);
     }
     if (!want.size || !bases.size) return { list: [], uncheckedFrom: null };
-    // merge the ranges so overlapping claims never read a row twice
+    // merge the windows so overlapping claims never read a row twice; every base's window counts against the cap,
+    // merged or not, so a message reads at most cap × (K + 1) seqs (round 2 finding 6: adjacent windows merged into one
+    // range used to bypass it)
     const sorted = [...bases].sort((a, b) => a - b);
+    const cap = controls.claimWindows ?? MAX_CLAIM_WINDOWS;
     const out: ConfirmedId[] = [];
-    let lo = -1, hi = -1, ranges = 0;
+    let lo = -1, hi = -1, windows = 0;
     const flush = () => {
       if (hi > lo) for (const e of tables.idsIn(branchId, lo, hi)) if (want.has(e.id)) out.push(e);
     };
     for (const b of sorted) {
+      if (++windows > cap) {
+        flush();
+        return { list: out, uncheckedFrom: b };
+      }
       const top = Math.min(b + K + 1, head);
       if (b <= hi) hi = Math.max(hi, top);
       else {
         flush();
-        if (++ranges > (controls.claimRanges ?? MAX_CLAIM_RANGES)) return { list: out, uncheckedFrom: b };
         lo = b;
         hi = top;
       }
@@ -329,41 +342,76 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   // ---------------------------------------------------------------- rows for catch-up (live and archived)
-  async function fillBody(r: { row: Row; blob: string | null }): Promise<Row> {
-    if (!r.blob) return r.row;
+  /** A row with its body from the blob store when it has one; `bytes`: that body's size (0 for an inline body). */
+  async function fillBody(r: { row: Row; blob: string | null }): Promise<{ row: Row; bytes: number }> {
+    if (!r.blob) return { row: r.row, bytes: 0 };
     const bytes = await opts.blobs?.get(r.blob);
     if (!bytes) throw new Error(`change body ${r.blob} is missing from the blob store`);
-    return { ...r.row, ...(JSON.parse(dec.decode(bytes)) as Partial<Row>) } as Row;
+    return { row: { ...r.row, ...(JSON.parse(dec.decode(bytes)) as Partial<Row>) } as Row, bytes: bytes.byteLength };
   }
-  async function readRows(branchId: string, after: number, limit: number): Promise<Row[]> {
+  /**
+   * A catch-up page: the rows after `after`, at most `limit` of them and `budget` bytes of reply JSON. It stops before
+   * the row that would pass the budget, except that it always holds one row when `atLeastOne` (the client must make
+   * progress; a big single row then goes as an envelope). Live rows are sized from their stored lengths before any is
+   * loaded, so a page never loads much more than it sends; the client asks again while `more` (§6.3).
+   */
+  async function readRows(branchId: string, after: number, limit: number, budget: number, atLeastOne: boolean): Promise<Row[]> {
     const out: Row[] = [];
+    let used = 0, count = 0, full = false;
+    /** Count a row of `size` bytes in if it fits; false (the page is full) when it doesn't. */
+    const fits = (size: number): boolean => {
+      if (count >= limit || ((count || !atLeastOne) && used + size > budget)) return !(full = true);
+      used += size;
+      count++;
+      return true;
+    };
     const firstLive = tables.firstLive(branchId) ?? tables.head(branchId) + 1;
     if (after + 1 < firstLive && opts.blobs) {
       for (const seg of tables.segmentsAfter(branchId, after)) {
-        if (seg.lo >= firstLive - 1 || out.length >= limit) break;
+        if (seg.lo >= firstLive - 1 || full) break;
         const stored = await opts.blobs.get(seg.blob);
         if (!stored) throw new Error(`segment ${seg.blob} is missing from the blob store`);
         const bytes = seg.blob.endsWith(".gz") ? await gunzip(stored) : stored;
         const raw = JSON.parse(dec.decode(bytes)) as Record<string, string | number | null>[];
         for (const r of raw) {
-          if (Number(r.seq) <= after || out.length >= limit) continue;
-          const rr = { ...r, ops: r.ops === null ? null : enc.encode(String(r.ops)) } as Record<string, string | number | null | Uint8Array>;
-          out.push(await fillBody(Tables.toRow(rr, branchId)));
+          if (Number(r.seq) <= after) continue;
+          const ops = r.ops === null ? null : enc.encode(String(r.ops));
+          const rr = { ...r, ops } as Record<string, string | number | null | Uint8Array>;
+          const { row, bytes: body } = await fillBody(Tables.toRow(rr, branchId));
+          if (!fits(segmentRowBytes(r, ops, branchId) + body)) break;
+          out.push(row);
         }
       }
     }
+    if (full) return out;
+    // live rows: sized from their stored lengths first (no body read), then only those that fit are loaded
     const from = out.length ? out[out.length - 1]!.seq : after;
-    if (out.length < limit) for (const r of tables.rows(branchId, from, limit - out.length)) out.push(await fillBody(r));
+    const sizes = tables.rowSizes(branchId, from, limit - count);
+    let loaded = used;
+    let take = 0;
+    while (take < sizes.length && fits(sizes[take]!)) take++;
+    if (!take) return out;
+    for (const [i, r] of tables.rows(branchId, from, take).entries()) {
+      const { row, bytes } = await fillBody(r);
+      // a body in the blob store wasn't in the sizes: once one takes the page past the budget, the rest of the rows
+      // (that one too, unless it is the page's first) open the next page
+      loaded += sizes[i]! + bytes;
+      if ((out.length || !atLeastOne) && loaded > budget) break;
+      out.push(row);
+    }
     return out;
   }
-  async function loadKeyframe(branchId: string, k: { seq: number; hash: string; blob: string | null; doc: string | null }): Promise<sync.KeyframeData> {
+  /** A stored keyframe, with its document's size in reply bytes (at most). */
+  async function loadKeyframe(branchId: string, k: { seq: number; hash: string; blob: string | null; doc: string | null }): Promise<{ keyframe: sync.KeyframeData; bytes: number }> {
     let docText = k.doc;
+    let bytes = 3 * (docText?.length ?? 0);
     if (docText === null && k.blob) {
-      const bytes = await opts.blobs?.get(k.blob);
-      if (!bytes) throw new Error(`keyframe ${k.blob} is missing from the blob store`);
-      docText = dec.decode(bytes);
+      const stored = await opts.blobs?.get(k.blob);
+      if (!stored) throw new Error(`keyframe ${k.blob} is missing from the blob store`);
+      docText = dec.decode(stored);
+      bytes = stored.byteLength;
     }
-    return { seq: k.seq, stateHash: k.hash, doc: JSON.parse(docText ?? "null") as Doc };
+    return { keyframe: { seq: k.seq, stateHash: k.hash, doc: JSON.parse(docText ?? "null") as Doc }, bytes: bytes + 128 };
   }
   // Where a keyframe's document goes: a blob (uploaded first, outside any transaction; an orphan blob is harmless) or
   // inline in SQL (the DO-blob fallback). Synchronous without a blob store, so set-up paths stay synchronous.
@@ -400,10 +448,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     rootSeq?: number;
     stateHash?: string;
     forkOf?: { branchId: string; seq: number };
+    /** An adoption's ancestry closure: shallow read-only tracking branches (§5.3, R4-07); existing ones are kept. */
+    closure?: readonly { branchId: string; rec: CutRecord; nodes: sync.AdoptMsg["closure"][number]["nodes"] }[];
   }
   /**
-   * Create a branch atomically: the branch row, its root keyframe, its records and its rows commit together or not at
-   * all, and the caches are dropped if the transaction fails (review finding 5). An existing branch is never replaced.
+   * Create a branch atomically: the branch row, its root keyframe, its records, its rows and an adoption's ancestry
+   * closure commit together or not at all, and the caches are dropped if the transaction fails (review finding 5;
+   * the closure joined it after round 2: written apart, a failure there left an adoption whose retry, a repeat, never
+   * wrote it). An existing branch is never replaced.
    * `rids`: the credential that uploaded the rows, bound to their replica ids (review finding 11).
    */
   function createBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[] = [], adoptKey: string | null = null, rids?: string): void | Promise<void> {
@@ -430,6 +482,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           const stored = { paths: rules.storedPaths(clean), structural: rules.isStructural(clean.ops, clean.intent, timeline) };
           tables.append(rec.id, clean, stored, recordWritesOf(clean.ops), { inline: Tables.body(clean) });
           if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) tables.bindRid(ridOf(row.id), rids);
+        }
+        for (const t of init.closure ?? []) {
+          if (tables.branch(t.branchId)) continue;
+          tables.insertBranch({ id: t.branchId, rec: t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: t.nodes });
         }
       });
     } catch (e) {
@@ -521,20 +577,29 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const { list: confirmed, uncheckedFrom } = confirmedOf(m.branchId, m.pending);
     let from = Math.max(-1, Math.min(m.have, head));
     let keyframe: sync.KeyframeData | undefined;
+    let budget = catchupBytes;
     // below the root (a fresh joiner sends have: -1), or more than K behind: the latest keyframe, then its tail. A
     // client that found a keyframe's hash wrong asks for rows only (noKeyframe).
+    // a client that refused a keyframe and holds nothing at or after the root can't be served: say so, never loop
+    if (m.noKeyframe && from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId} that the client can check` });
     if (from < b.root || (head - from > K && !m.noKeyframe)) {
       const k = tables.latestKeyframe(m.branchId, head);
       if (k && k.seq > from) {
-        keyframe = await loadKeyframe(m.branchId, k);
+        const loaded = await loadKeyframe(m.branchId, k);
+        keyframe = loaded.keyframe;
+        budget -= loaded.bytes; // the keyframe is part of the page
         from = k.seq;
       } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
-    const rows = await readRows(m.branchId, from, catchup);
+    // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
+    // is its progress); without one it holds at least one (a big single row then goes as an envelope).
+    const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
     if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
+    // the client then never sends what would be refused unread (round 2 finding 2)
+    if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
     if (last < head) msg.more = true;
     // fan-out starts with the last page: a subscriber still paging would get live rows ahead of its backlog (finding 3)
     else if (!st.subs.includes(m.branchId)) st.subs.push(m.branchId);
@@ -681,17 +746,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const rows = Array.isArray(m.rows) ? (m.rows as Row[]) : [];
     if (rootSeq + rows.length !== m.n) return fail(`rows ${rootSeq + 1}..${m.n} expected`);
     try {
-      await createBranch(m.rec, { doc0: m.doc0, rootSeq, stateHash: rootSeq === m.n ? m.stateHash : "" }, rows, key, credentialOf(c));
+      // the root keyframe's digest, so a joiner from nothing can check it (round 2 finding 8): the state at n when the
+      // upload has no rows, else the root's own (`rootHash`); kept only when it is one
+      const rootHash = rootSeq === m.n ? m.stateHash : m.rootHash;
+      await createBranch(m.rec, { doc0: m.doc0, rootSeq, stateHash: typeof rootHash === "string" && SHA256.test(rootHash) ? rootHash : "", closure }, rows, key, credentialOf(c));
     } catch (e) {
       return fail(e instanceof Error ? e.message : String(e));
     }
-    // the ancestry closure goes up shallow, as read-only tracking branches (§5.3, R4-07); existing ones are kept
-    tables.transaction(() => {
-      for (const t of closure) {
-        if (tables.branch(t.branchId)) continue;
-        tables.insertBranch({ id: t.branchId, rec: t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: t.nodes });
-      }
-    });
     stats.adopts++;
     emit({ type: "adopt", branchId: m.branchId, n: m.n, repeat: false });
     send(c, { type: "adopted", branchId: m.branchId, since: m.n });
@@ -711,7 +772,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (!tables.branch(m.branchId)) {
       // the state at the fork point, when the forking client sends it, is the fork's root keyframe: a fresh joiner
       // (have: -1) starts from it; without it a joiner must hold the parent (review finding 12)
-      const root = m.root && typeof m.root.stateHash === "string" ? m.root : null;
+      if (m.root && !SHA256.test(String(m.root.stateHash))) return send(c, { type: "error", reason: "the fork's root needs its state hash (sha256)" });
+      const root = m.root ?? null;
       try {
         await createBranch(m.rec, { doc0: root ? root.doc : null, stateHash: root?.stateHash ?? "", forkOf: { branchId: m.from, seq: m.seq } });
       } catch (e) {
@@ -726,6 +788,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const b = tables.branch(m.branchId);
     const k = m.keyframe;
     if (!b || !k || !Number.isInteger(k.seq) || k.seq < b.root || k.seq > tables.head(m.branchId)) return;
+    // replicas check a keyframe's digest before installing it: one without a real digest is never stored (round 2
+    // finding 8)
+    if (typeof k.stateHash !== "string" || !SHA256.test(k.stateHash)) return;
     const have = tables.keyframeAt(m.branchId, k.seq);
     if (have) {
       // first upload wins; a different hash from another replica is reported, never stored over it
@@ -790,11 +855,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const c = conn as HostConnection;
       if (!conns.has(c.id)) attach(c);
       busy++;
-      const run = queue.then(() => process(c, msg)).then(flushed);
-      queue = run.catch(() => {}).then(() => void busy--);
-      return run.catch((e: unknown) => {
-        send(c, { type: "error", reason: `internal: ${e instanceof Error ? e.message : String(e)}` });
-      });
+      // the error answer is sent in turn, and everything sent (an envelope still uploading too) is delivered before the
+      // promise resolves, on failure as on success: a host may hibernate once it resolves (round 2 finding 5)
+      const run = queue
+        .then(() => process(c, msg))
+        .catch((e: unknown) => send(c, { type: "error", reason: `internal: ${e instanceof Error ? e.message : String(e)}` }))
+        .then(flushed);
+      queue = run.then(() => void busy--);
+      return run;
     },
     attach,
     disconnect(conn) {
@@ -864,12 +932,20 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 }
 
 const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
+/** A state digest (`hashDoc`: SHA-256, hex). */
+const SHA256 = /^[0-9a-f]{64}$/;
 /** Server messages that can be over the envelope threshold; the rest (acks, statuses, errors…) are never sized. */
 const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject"]);
 
 /** History fields a change may carry into its row (fold-ins, undo, partial accept, names): stored in the body. */
 const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "structural"] as const;
 
+/** As `Tables.rowSizes`, for a row of an archived segment (its columns are strings, `body` its inline body's bytes). */
+function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8Array | null, branchId: string): number {
+  let n = 256 + 3 * branchId.length + (body?.byteLength ?? 0);
+  for (const k of ["id", "hash", "author", "base", "paths", "reads", "spans", "policy"]) n += 3 * String(r[k] ?? "").length;
+  return n;
+}
 /** UTF-8 byte length over `limit`, without encoding short strings (each UTF-16 unit is at most 3 bytes). */
 function utf8Over(text: string, limit: number): boolean {
   if (text.length * 3 <= limit) return false;

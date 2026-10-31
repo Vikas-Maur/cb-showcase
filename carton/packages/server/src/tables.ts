@@ -103,8 +103,21 @@ export class Tables {
     this.sql.exec(q, ...p);
     this.meter.rowsWritten++;
   }
+  /**
+   * Run `fn` in one SQL transaction. If it throws, the rows roll back and so does every cache: anything read inside it
+   * may have been uncommitted (a rid bound by a rolled-back adoption, round 2 finding 3), so all are rebuilt from the
+   * tables on demand.
+   */
   transaction<T>(fn: () => T): T {
-    return this.sql.transaction(fn);
+    try {
+      return this.sql.transaction(fn);
+    } catch (e) {
+      this.heads.clear();
+      this.branches.clear();
+      this.decl.clear();
+      this.ridCache.clear();
+      throw e;
+    }
   }
 
   // ---------------------------------------------------------------- branches
@@ -254,6 +267,21 @@ export class Tables {
       after,
       limit,
     ).map((r) => Tables.toRow(r, branch));
+  }
+  /**
+   * At most how many bytes of reply JSON each of the next `limit` rows after `after` takes, without reading their
+   * bodies (SQLite keeps a BLOB's length in its record header): a catch-up page stops at its byte budget before it
+   * loads a row (§6.3). Text columns count 3 bytes a character (UTF-8, and spans grow from `[t, lo, hi]` to objects); a
+   * body in the blob store isn't counted here (the caller measures it once fetched).
+   */
+  rowSizes(branch: string, after: number, limit: number): number[] {
+    const fixed = 256 + 3 * branch.length; // the keys, the defaults toRow adds, branchId
+    return this.all<{ n: number }>(
+      "SELECT coalesce(length(ops), 0) + 3 * (length(id) + coalesce(length(hash), 0) + length(author) + length(base) + length(paths) + length(reads) + coalesce(length(spans), 0) + coalesce(length(policy), 0)) AS n FROM changes WHERE branch = ? AND seq > ? ORDER BY seq LIMIT ?",
+      branch,
+      after,
+      limit,
+    ).map((r) => num(r.n) + fixed);
   }
   /** Raw rows `(lo, hi]`, for archiving. */
   rawRange(branch: string, lo: number, hi: number): Record<string, SqlValue>[] {
