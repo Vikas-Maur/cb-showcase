@@ -102,6 +102,15 @@ A signed PUT takes two optional headers, neither signed, since each can only nar
 before writing, so every store gives the same guarantee (R2 checks it again), and the store keeps it for `head`.
 `hostMediaBlobs` sends both. A client of its own (a browser's) should too, rather than a `head` before the PUT.
 
+A signed PUT answers with the stored object's info as JSON (`key`, `size`, `etag`, `contentType`, `sha256`; `etag`
+in its header too): 200 when its bytes went in, and 412, as S3 and R2 answer, when `If-None-Match: *` found the key
+already there, with the earlier object's info and nothing written. So a create-only PUT needs no read-back: a
+client takes the info from either answer (or, reading only the status, heads the key after a 412). The host heads
+the key under the same per-key lock its other writes of the key take; a writer outside that lock that creates the
+key in between still loses nothing (the store's `ifAbsent` keeps the first object), and the answer is 412 whenever
+the kept object's size, digest or type differ from the body's. A host from before this answers 200 with an etag
+alone; `hostMediaBlobs` then reads back. A `hostMediaBlobs` from before this takes the 412 for an error.
+
 On Node, `blob-s3` and host-http's clients (`hostMediaBlobs`, `hostMessageBlobs`) send their requests through
 `@carton/http-node`, which uses `node:http` and `node:https` instead of the global `fetch`. When a server ended the
 connection while a reader had paused the body, Node's built-in undici either crashed the process with an uncaught
