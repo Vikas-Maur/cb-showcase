@@ -73,6 +73,17 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
   the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). `carton.media` is null:
   `@carton/media` calls Carton, not the reverse.
+- **Processes and the sync lease (§6.2):** many processes open one `carton.db`; only the lease holder (Cardboard's
+  library worker, or `@carton/local`'s headless helper) connects and pushes. A write to a shared cut must reach the
+  holder: `@carton/local` routes every `cb` and MCP write by the cut it changes (a fold's `into`), and one that
+  changes a shared or handing-off cut, or shares one, goes to the live holder over the control socket, or to a
+  helper it starts that takes the lease; only a write to a local cut with no holder commits in its own process
+  (`local/src/client.ts` `submit`, `local/src/open.ts`; tests R3-03, R4-04, R5-06). A process that commits to a shared
+  cut itself, without the lease, gets `pending`: the edit is kept in `carton.db` and pushed by the next holder to
+  start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"). The holder passes
+  its fence as `sync.connect({ nonce, fence, conditions })`: once replaced, it records nothing more and stops.
+- **Concurrent writers** on one store never fail a write for being busy: a writer that keeps losing the append race
+  takes the append turn (`lease` table, `["append-turn"]`), and the others wait for it (`#mutate`).
 - **Keyframes (§5.4):** a cut's state is stored every K confirmed changes (`keyframeEvery`, default 64) or after
   1 MiB of ops, in the same batch as the row, and at every named, fold, export and Published version. A new periodic
   keyframe replaces the previous periodic one; milestone ones stay. Opening reads each cut's newest keyframe and
