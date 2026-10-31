@@ -65,6 +65,8 @@ export const actorKey = (a: Actor | string | null | undefined): string => (a == 
 export const groupOf = (a: Actor | null | undefined): string => a?.group ?? actorKey(a);
 
 const SYSTEM: Actor = { kind: "system", id: "carton" };
+/** Changes inverted at a cut's head: the state and the remap the inversion applies there, or the cards that stop it. */
+export type Inverted = { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult };
 const REF_RE = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
 
 interface Cut {
@@ -834,7 +836,7 @@ export class History {
   // The head with `changes` (newest last) inverted one by one, newest first, and the remap that inversion applies at
   // the head. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
   // moves back with it; the changes made since it are the other side's recorded remaps. A card in any step stops it.
-  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail?: Tail): { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult } {
+  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail?: Tail): Inverted {
     const log = this.#log(cutId, tail);
     let cur: Doc = tail?.states.length ? tail.states[tail.states.length - 1]! : this.#mustCut(cutId).sq!.head;
     let done: RemapMaps = {};
@@ -902,7 +904,10 @@ export class History {
     const { entry, ...c } = p;
     return { ...this.commit(cutId, { ...c, ...(id ? { id } : {}) }), entry };
   }
-  /** An undo without committing (a shared cut queues it); null when the group has nothing to undo. */
+  /**
+   * What ⌘Z for an actor group would do, without doing it (a shared cut queues it): the inverse of the newest entry of
+   * its stack (an agent turn as one) at the head, or the cards that stop it; null when the stack is empty.
+   */
   planUndo(cutId: string, group: string, { author, turn = true, tail }: { author?: Actor; turn?: boolean; tail?: Tail } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
     const stack = this.undoStack(cutId, group, tail);
     const top = stack[0];

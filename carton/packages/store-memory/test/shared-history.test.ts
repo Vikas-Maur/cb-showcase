@@ -211,3 +211,16 @@ test("an id the shared cut's sequencer would refuse is refused before the edit s
   assert.equal(item((await a.head()).doc, "a")!.name, "a");
   await done();
 });
+
+test("a save that undoes changes (commit undoOf, cb undo --turn) on a shared cut is recorded as their undo", async () => {
+  const { a, sa, cut, done } = await twoOnAShared();
+  const e = await a.commit({ ops: [set("e", "name", "agent's")], author: director("t5"), wait: 5000 });
+  const eid = e.status === "confirmed" ? e.change!.id : assert.fail("the agent's edit");
+  const u = await a.commit({ ops: [set("e", "name", "e")], undoOf: [eid], wait: 5000 });
+  assert.equal(u.status, "confirmed");
+  const ur = (await row(sa, cut, u.status === "confirmed" ? u.change!.id : ""))!;
+  assert.equal(ur.kind, "undo");
+  assert.deepEqual(ur.reverts, [eid]);
+  assert.deepEqual(await a.undoStack(DIRECTOR), [], "the undone change left the stack");
+  await done();
+});
