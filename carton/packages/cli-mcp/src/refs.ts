@@ -1,7 +1,8 @@
-// Naming cuts and versions on the command line. A version is `<cut>@<seq>` (`main@57`, `"30s Instagram cut"@3`), a
+// Naming cuts and versions on the command line. A version is `<cut>@<seq>` (`main@57`, `30s Instagram cut@3`), a
 // bare `@<seq>` or `<seq>` on the current cut, `head`, or a full printed header ref
 // (`main@57~3f9a1c0e b:<cut8> p:<nonce>`), which is passed through for core to check exactly. A cut is its id, an id
-// prefix of at least 4 characters, or its name (any case; the current cut wins when two share a name).
+// prefix of at least 4 characters, its name or its name as a slug (any case; `30s-instagram-cut`), or `main` for the
+// main cut ("Main cut"), as the plan and agents write it. The current cut wins when two share a name.
 import type { Carton, CutRecord, StateRef } from "@carton/core";
 
 export class UsageError extends Error {
@@ -21,7 +22,9 @@ export async function resolveCut(carton: Carton, text: string | undefined, cuts?
   const exact = all.find((c) => c.id === text);
   if (exact) return exact;
   const lower = text.toLowerCase();
-  const byName = all.filter((c) => c.name.toLowerCase() === lower);
+  const slug = (n: string) => n.toLowerCase().trim().replace(/\s+/g, "-");
+  let byName = all.filter((c) => c.name.toLowerCase() === lower || slug(c.name) === lower);
+  if (!byName.length && lower === "main") byName = all.filter((c) => c.kind === "main");
   if (byName.length) return byName.find((c) => c.id === carton.cut) ?? byName[0];
   if (text.length >= 4) {
     const byId = all.filter((c) => c.id.startsWith(text));
@@ -49,5 +52,6 @@ export async function resolveVersion(carton: Carton, text: string): Promise<Stat
   return { branchId: cut.id, seq };
 }
 
-/** How a version prints: `<cut name>@<seq>`, quoted when the name has spaces. */
-export const versionName = (cutName: string, seq: number): string => `${/\s/.test(cutName) ? JSON.stringify(cutName) : cutName}@${seq}`;
+/** How a version prints: `main@<seq>` on the main cut, else `<cut name>@<seq>`. */
+export const versionName = (cut: { name: string; kind?: string } | string, seq: number): string =>
+  `${typeof cut === "string" ? cut : cut.kind === "main" ? "main" : cut.name}@${seq}`;

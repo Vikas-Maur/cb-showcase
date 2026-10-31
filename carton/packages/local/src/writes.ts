@@ -91,7 +91,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       break;
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut }); break;
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut }); break;
-    case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut }); break;
+    case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author }); break;
     case "undoTurn": r = await undoTurn(carton, op.turn, author, op.cut); break;
     case "fork": { const cut = await carton.fork(op.name, { from: op.from, kind: op.cutKind as any }); return { status: "confirmed", seq: 0, ref: null, notices, cut }; }
     case "switch": await carton.switchTo(op.cut); return { status: "confirmed", seq: 0, ref: null, notices, cut: op.cut };

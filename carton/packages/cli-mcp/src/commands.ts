@@ -59,11 +59,11 @@ export function stats(carton: Carton, doc: Doc): { tracks: number; items: number
   return { tracks: ((doc[tl.lanes] as unknown[] | undefined) ?? []).length, items: items.length, duration };
 }
 
-async function cutNames(carton: Carton): Promise<Map<string, string>> {
-  return new Map((await carton.cuts()).map((c) => [c.id, c.name]));
+async function cutNames(carton: Carton): Promise<Map<string, CutRecord>> {
+  return new Map((await carton.cuts()).map((c) => [c.id, c]));
 }
 
-const versionOf = (v: Version, names: Map<string, string>) => versionName(names.get(v.ref.branchId) ?? v.ref.branchId.slice(0, 8), v.ref.seq);
+const versionOf = (v: Version, cuts: Map<string, CutRecord>) => versionName(cuts.get(v.ref.branchId) ?? v.ref.branchId.slice(0, 8), v.ref.seq);
 
 /** A clip by id or by its label (name), on the timeline collection. */
 function findRecord(carton: Carton, doc: Doc, text: string): { coll: string; id: string } {
