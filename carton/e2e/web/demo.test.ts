@@ -87,6 +87,8 @@ async function syncWords(page: Page): Promise<string> {
 class Bot {
   readonly proc: ChildProcess;
   #waiters: ((e: Record<string, unknown>) => boolean)[] = [];
+  /** Events nobody was waiting for yet (a turn can finish while the test is still dragging). */
+  #unread: Record<string, unknown>[] = [];
   constructor(link: string, forAccount: string) {
     this.proc = spawn(process.execPath, [join(cartonDir, "apps", "web", "scripts", "director.ts"), "--link", link, "--for", forAccount, "--gap", String(900 + slow)], { stdio: ["pipe", "pipe", "inherit"] });
     createInterface({ input: this.proc.stdout! }).on("line", (line) => {
@@ -96,10 +98,17 @@ class Bot {
       } catch {
         return;
       }
+      const before = this.#waiters.length;
       this.#waiters = this.#waiters.filter((w) => !w(e));
+      if (this.#waiters.length === before) this.#unread.push(e);
     });
   }
   next(event: string, ms = 30_000): Promise<Record<string, unknown>> {
+    const i = this.#unread.findIndex((e) => e.event === event || e.event === "error");
+    if (i >= 0) {
+      const [e] = this.#unread.splice(i, 1);
+      return e!.event === "error" ? Promise.reject(new Error(String(e!.error))) : Promise.resolve(e!);
+    }
     return new Promise((res, rej) => {
       const t = setTimeout(() => rej(new Error(`the bot sent no ${event}`)), ms);
       this.#waiters.push((e) => {
@@ -170,6 +179,9 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await drag(bob, "clip-3", "end", -45);
       const trimmed = await clipTimes(bob, "clip-3");
       assert.ok(trimmed.end < c3.end, "Bob trimmed clip-3");
+      // presence while it all happens: Alice sees Bob and the Director (an agent acting for her)
+      await alice.locator('.carton-presence .carton-peer[data-kind="human"]').first().waitFor({ timeout: 5000 });
+      await alice.locator('.carton-presence .carton-peer[data-kind="agent"]').first().waitFor({ timeout: 5000 });
       const turn = await bot.next("turn-done");
       assert.deepEqual((turn.results as { status: string }[]).map((r) => r.status), ["confirmed", "confirmed", "confirmed", "confirmed"]);
       await waitCaption(alice, "cap-4", "Same time next weekend?");
@@ -251,7 +263,10 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
     } catch (e) {
       // what each person saw when it failed
       if (shots) for (const [who, page] of pages) await page.screenshot({ path: join(shots, `${kind}-FAILED-${who}.png`) }).catch(() => {});
-      for (const [who, page] of pages) console.error(`[${who}] sync: ${await syncWords(page).catch(() => "?")}; notes: ${await page.locator(".carton-undo-note, [role=alert]").allTextContents().catch(() => [])}`);
+      for (const [who, page] of pages) {
+        const peers = await page.evaluate(() => (window as unknown as { __carton: { ui: { peers(): { actor: { key: string }; idle: boolean }[] } } }).__carton.ui.peers().map((p) => p.actor.key + (p.idle ? " (idle)" : ""))).catch(() => []);
+        console.error(`[${who}] sync: ${await syncWords(page).catch(() => "?")}; peers: ${peers.join(", ")}; notes: ${await page.locator(".carton-undo-note, [role=alert]").allTextContents().catch(() => [])}`);
+      }
       throw e;
     } finally {
       await bot?.stop();
