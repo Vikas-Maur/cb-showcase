@@ -3,7 +3,7 @@
 // are told apart by owner ("Bob's main cut").
 
 import { createElement as h, useState } from "react";
-import { useCartonUi, useCurrentCut, useCuts, usePreview, useWords } from "../hooks.ts";
+import { useCartonUi, useShownCuts, useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { Cut } from "../model.ts";
 import { InlineName, MenuButton, MenuItem, MenuLabel, MenuSeparator, cx } from "./ui.ts";
@@ -19,9 +19,10 @@ export interface CutsMenuProps {
 export function CutsMenu(p: CutsMenuProps) {
   const ui = useCartonUi();
   const words = useWords();
-  const cuts = useCuts();
-  const current = useCurrentCut();
-  const preview = usePreview();
+  // What the menu shows (names, current, read-only): a commit moving a head doesn't re-render it (U6). "From here"
+  // (the newest version, or the preview being watched) is read when the person acts, not on every render.
+  const cuts = useShownCuts();
+  const current = cuts.find((c) => c.current);
   const [mode, setMode] = useState<"menu" | "new" | "rename">("menu");
   // A failed switch, new cut or rename says so next to the menu; nothing fails silently.
   const [error, setError] = useState<string | null>(null);
@@ -35,7 +36,7 @@ export function CutsMenu(p: CutsMenuProps) {
   const main = cuts.find((c) => c.kind === "main" && !c.readOnly);
   const writable = cuts.filter((c) => !c.readOnly);
   const readOnly = cuts.filter((c) => c.readOnly);
-  const fromRef = p.fromRef ?? preview?.ref ?? current?.head;
+  const fromRef = () => p.fromRef ?? ui.preview()?.ref ?? ui.cuts().find((c) => c.current)?.head;
 
   const item = (c: Cut, close: () => void) =>
     h(
@@ -68,7 +69,7 @@ export function CutsMenu(p: CutsMenuProps) {
         setMode("menu");
         close();
       };
-      if (mode === "new" && fromRef)
+      if (mode === "new")
         return h(
           "div",
           { className: "carton-menu-form" },
@@ -77,7 +78,11 @@ export function CutsMenu(p: CutsMenuProps) {
             placeholder: words.newCutPlaceholder,
             label: words.newCutName,
             saveLabel: words.create,
-            onSave: (name) => attempt(() => ui.newCut(name, fromRef), done),
+            onSave: (name) =>
+              attempt(() => {
+                const from = fromRef();
+                return from ? ui.newCut(name, from) : Promise.reject(new Error(words.failed));
+              }, done),
             onCancel: () => setMode("menu"),
           }),
         );
@@ -101,7 +106,7 @@ export function CutsMenu(p: CutsMenuProps) {
         readOnly.length ? h(MenuSeparator, { key: "s0" }) : null,
         ...readOnly.map((c) => item(c, close)),
         h(MenuSeparator, { key: "s1" }),
-        h(MenuItem, { key: "new", icon: "plus", disabled: !fromRef, onSelect: () => setMode("new") }, words.newCutFromHere),
+        h(MenuItem, { key: "new", icon: "plus", disabled: !current, onSelect: () => setMode("new") }, words.newCutFromHere),
         // Offered only when the engine can rename cuts.
         rename ? h(MenuItem, { key: "ren", icon: "pencil", disabled: !current || current.readOnly, onSelect: () => setMode("rename") }, words.renameCut) : null,
         main && current && current.id !== main.id && p.onFoldIn
