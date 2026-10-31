@@ -126,10 +126,10 @@ test("S2 cut switch: the files follow the current cut, and an agent's view save 
   await until(() => sharedRef(m)?.startsWith("Main cut@2"), 20_000, "the GUI save on main");
   await cbOk(m, ["cut", "new", CUT]);
   await cbOk(m, ["cut", "switch", CUT]);
-  await t.test("B6a: after `cb cut switch` the shared timeline.tsx (and project.json) show the new cut", { todo: "B6, local-cli: runWrite's switch never tells the materializer head moved" }, async () => {
+  await t.test("B6a: after `cb cut switch` the shared timeline.tsx (and project.json) show the new cut", async () => {
     await until(() => sharedRef(m)?.startsWith(`${CUT}@`), 5_000, `timeline.tsx to show "${CUT}" after cb cut switch`);
   });
-  await t.test("B6b: an agent's view save on the cut it switched to gets its status sidecar", { todo: "B6, cardboard-adapter: the freeze keeps the old cut's baseSeq; the R7-01 rewrite pins it on the new cut and throws 'state unknown' (or pins a wrong state) after the commit, so no sidecar" }, async () => {
+  await t.test("B6b: an agent's view save on the cut it switched to gets its status sidecar", async () => {
     const ag = await runAgent(procs, m, "director/chat2/turn2", [{ op: "set", name: SAMPLE.badge, set: { zIndex: 4 } }], 10_000);
     assert.equal(ag.results[0].status, "confirmed");
   });

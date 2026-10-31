@@ -246,3 +246,17 @@ test("S4 a machine joins a shared cut from an empty store (Invite to edit): catc
   for (const s of [a.m, c]) await until(() => itemNamed(s, SAMPLE.badge)?.zIndex === 7 && itemNamed(s, SAMPLE.tone)?.volume === 42, 30_000, "both edits on both machines");
   assert.equal((await cbOk(a.m, ["credits", SAMPLE.badge])).by.id, "codex/carol");
 });
+
+// H-SV (hosts-plugins + cardboard-adapter): since cardboard-adapter's 82d8c70 a Cardboard client says schemaVersion 2 in
+// hello, but both hosts as shipped accept at most 1 (server-node `startNodeHost`'s default, server-cloudflare's
+// wrangler.toml SCHEMA_VERSION = "1"): the host refuses the hello, the hand-off's pending commit is never pushed and a
+// teammate never connects. The other scenarios configure their hosts with the client's version, as a deployment can.
+for (const kind of ["node", "cloudflare"] as const) {
+  test(`H-SV a ${kind} host as shipped accepts the current Cardboard client: share, the commit made during the hand-off reaches the server, a teammate catches up`, {
+    timeout: 300_000,
+    skip: hostMissing(kind) ?? (kind === "cloudflare" && process.env.CARTON_E2E_CLOUDFLARE === "0" ? "CARTON_E2E_CLOUDFLARE=0" : false),
+    todo: "H-SV, hosts-plugins + cardboard-adapter: hosts accept schemaVersion 1 by default, the client sends CARDBOARD_SCHEMA_VERSION 2",
+  }, async (t) => {
+    await twoMachines(t, kind, {}, { shipped: true });
+  });
+}

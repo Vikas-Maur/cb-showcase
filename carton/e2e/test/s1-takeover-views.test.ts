@@ -24,11 +24,14 @@ test("B3: an agent's print --view while the app's engine thread is briefly busy 
   // the engine thread is busy for 5 s (under the 6 s lease expiry: its holder is fresh, just not answering); the agent
   // starts once the stall is certainly on, and the test then checks a helper took the lease (so its print was served
   // by a takeover helper, B3's condition, not by the app after the stall)
+  // the agent is loaded and connected first (waitStart), so its print goes out as soon as the stall is certainly on
+  const actor = "director/chat9/turn1/sub-editor-Z";
+  const agent = procs.start(actor, [support("agent.ts"), m.bundle, m.projectId, JSON.stringify({ noRetry: true, waitStart: true, steps: [{ op: "set", name: SAMPLE.logo, set: { zIndex: 3 } }] })], { env: { CARDBOARD_ACTOR: actor } });
+  await agent.next((x) => x.ready, 60_000);
   const marker = join(m.home, "stalled"), since = Date.now();
   const stalled = app.ask({ cmd: "serve", req: { e2e: "stall", ms: 5000, marker } });
   await until(() => existsSync(marker), 30_000, "the engine thread to be stalled");
-  const actor = "director/chat9/turn1/sub-editor-Z";
-  const agent = procs.start(actor, [support("agent.ts"), m.bundle, m.projectId, JSON.stringify({ noRetry: true, steps: [{ op: "set", name: SAMPLE.logo, set: { zIndex: 3 } }] })], { env: { CARDBOARD_ACTOR: actor } });
+  agent.p.stdin!.write("start\n");
   const [out] = await Promise.all([agent.next((x) => Array.isArray(x.results), 60_000), stalled]);
   assert.equal(out.results[0].status, "confirmed");
   assert.ok(helperTookLeaseSince(m, since), "a helper took the lease while the app was stalled (otherwise this run didn't reach B3's condition)");

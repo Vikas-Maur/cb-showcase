@@ -1,7 +1,8 @@
 // A real sequencer host for the live-sync scenarios: `@carton/server-node` (node:sqlite rooms, RFC 6455 WebSocket,
 // the HTTP API) on 127.0.0.1 with the demo HMAC auth. The secret comes from the environment (a random one per run),
 // never from code.
-//   host-node <dataDir> [port]          env: CARTON_E2E_SECRET
+//   host-node <dataDir> [port]          env: CARTON_E2E_SECRET, CARTON_E2E_HOST_SCHEMA (the newest schemaVersion it
+//                                       accepts in hello, or "shipped" for server-node's default)
 // Prints {ready, port, origin}; commands on stdin (JSON, answered with the same seq):
 //   {cmd: "rows", projectId}            the room's change rows: [{branch, seq, id}]
 //   {cmd: "exit"}
@@ -13,7 +14,8 @@ const [dataDir, port = "0"] = process.argv.slice(2);
 const secret = process.env.CARTON_E2E_SECRET;
 if (!secret) throw new Error("CARTON_E2E_SECRET is not set");
 const auth = createHmacAuth({ secret });
-const node = await startNodeHost({ dataDir: dataDir!, auth, secret, port: Number(port), host: "127.0.0.1", durability: "normal" });
+const schema = process.env.CARTON_E2E_HOST_SCHEMA;
+const node = await startNodeHost({ dataDir: dataDir!, auth, secret, port: Number(port), host: "127.0.0.1", durability: "normal", ...(schema && schema !== "shipped" ? { schemaVersion: Number(schema) } : {}) });
 process.stdout.write(JSON.stringify({ ready: true, port: node.port, origin: node.httpUrl }) + "\n");
 setTimeout(() => process.exit(0), Number(process.env.CARTON_E2E_APP_TTL_MS ?? 600_000)).unref();
 for await (const line of createInterface({ input: process.stdin })) {

@@ -3,6 +3,7 @@
 //   - "cloudflare": `@carton/server-cloudflare`'s Worker + ProjectRoom Durable Object under `wrangler dev`, locally only
 //     (never deployed), state on disk under the scenario's scratch folder.
 // Tokens are the demo HMAC tokens, issued here with the run's random secret.
+import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 import { randomBytes } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -32,7 +33,12 @@ export function hostMissing(kind: HostKind): string | null {
   return null;
 }
 
-export async function startHost(kind: HostKind, dir: string, procs: Procs): Promise<Host> {
+/**
+ * `shipped: true` runs the host with the schema version it ships with; otherwise it is configured, as a Cardboard
+ * deployment is, to accept the current Cardboard client's (`CARDBOARD_SCHEMA_VERSION`, sent in hello). H-SV: as shipped,
+ * both hosts accept only 1 while the client sends 2 since cardboard-adapter's 82d8c70.
+ */
+export async function startHost(kind: HostKind, dir: string, procs: Procs, o: { shipped?: boolean } = {}): Promise<Host> {
   const secret = randomBytes(32).toString("base64url");
   const auth = createHmacAuth({ secret });
   const tokenFile = async (d: string, account: string, projectId: string) => {
@@ -45,7 +51,7 @@ export async function startHost(kind: HostKind, dir: string, procs: Procs): Prom
     let proc: Proc;
     let port = 0;
     const up = async () => {
-      proc = procs.start("host-node", [support("host-node.ts"), data, String(port)], { env: { CARTON_E2E_SECRET: secret } });
+      proc = procs.start("host-node", [support("host-node.ts"), data, String(port)], { env: { CARTON_E2E_SECRET: secret, CARTON_E2E_HOST_SCHEMA: o.shipped ? "shipped" : String(CARDBOARD_SCHEMA_VERSION) } });
       port = (await proc.next((x) => x.ready, 30_000)).port;
     };
     await up();
@@ -59,7 +65,7 @@ export async function startHost(kind: HostKind, dir: string, procs: Procs): Prom
     };
   }
   // wrangler dev, with the production wrangler.toml (local R2 and Durable Objects, persisted under `dir`)
-  const dev = await startWrangler({ dir: join(dir, "wrangler"), vars: { AUTH_SECRET: secret, ADMIN_TOKEN: randomBytes(16).toString("base64url") } });
+  const dev = await startWrangler({ dir: join(dir, "wrangler"), vars: { AUTH_SECRET: secret, ADMIN_TOKEN: randomBytes(16).toString("base64url"), ...(o.shipped ? {} : { SCHEMA_VERSION: String(CARDBOARD_SCHEMA_VERSION) }) } });
   return {
     kind,
     port: dev.port,

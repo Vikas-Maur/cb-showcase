@@ -116,7 +116,7 @@ test("S6 the app is killed mid-save (a GUI save and an agent's view save not app
   await until(() => itemNamed(m, SAMPLE.title)?.fontSize === 133, 30_000, "the GUI save applied after the restart");
   const titleBy = (await cbOk(m, ["credits", SAMPLE.title])).by.id;
   assert.ok(titleBy === "human:me" || titleBy === "external:project.json", `the GUI save is the person's or an unattributed file save, never an agent's: ${titleBy}`);
-  await t.test("B8: a view save the crashed app never applied is applied when the app restarts (and its sidecar written)", { todo: "B8, cardboard-adapter: Materializer.start() imports unseen saves of project.json and timeline.tsx, not of .scratch/views/*.tsx; applied only at the owner's next print" }, async () => {
+  await t.test("B8: a view save the crashed app never applied is applied when the app restarts (and its sidecar written)", async () => {
     await until(() => itemNamed(m, SAMPLE.logo)?.zIndex === 9, 15_000, "the view save applied after the restart");
     assert.equal((await cbOk(m, ["credits", SAMPLE.logo])).by.id, actor, "the view save is its owner's, across the crash");
     // the agent that saved is still waiting on its sidecar (as AGENTS.md says): it hears about its save

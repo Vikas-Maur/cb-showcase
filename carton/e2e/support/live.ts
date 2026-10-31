@@ -28,13 +28,13 @@ export async function startApp(procs: Procs, m: Machine, host: Host, account: st
   return app;
 }
 
-export async function twoMachines(t: test.TestContext, kind: HostKind, appConfig: Record<string, unknown> = {}): Promise<{ host: Host; a: Side; b: Side; procs: Procs; shareRows: unknown }> {
+export async function twoMachines(t: test.TestContext, kind: HostKind, appConfig: Record<string, unknown> = {}, hostOpts: { shipped?: boolean } = {}): Promise<{ host: Host; a: Side; b: Side; procs: Procs; shareRows: unknown }> {
   const procs = new Procs();
   const links: Link[] = [];
   let host: Host | null = null;
   t.after(async () => { await procs.close(); for (const l of links) await l.close(); await host?.stop(); });
   const dir = scratch(`s4-${kind}`);
-  host = await startHost(kind, dir, procs);
+  host = await startHost(kind, dir, procs, hostOpts);
   const linkA = await Link.open(host.port), linkB = await Link.open(host.port);
   links.push(linkA, linkB);
 
@@ -58,7 +58,9 @@ export async function twoMachines(t: test.TestContext, kind: HostKind, appConfig
   let shareRows: unknown = null;
   const rows = await host.rows(ma.projectId);
   if (rows) {
-    const mine = await until(async () => { const r = (await host!.rows(ma.projectId))!; return r.length >= localIds.length + 1 && r; }, 30_000, "the server to hold the adopted log and the commit made during it");
+    let seen: unknown = null;
+    const mine = await until(async () => { const r = (await host!.rows(ma.projectId))!; seen = r.map((x) => x.id); return r.length >= localIds.length + 1 && r; }, 30_000, "the server to hold the adopted log and the commit made during it")
+      .catch((e) => { throw new Error(`${(e as Error).message}: server rows ${JSON.stringify(seen)}, local ${JSON.stringify(localIds)}, during ${during.id}`); });
     assert.deepEqual(mine.slice(0, localIds.length).map((r) => r.id), localIds, "seqs 1..n adopted verbatim (R3-03)");
     assert.equal(mine[localIds.length]!.id, during.id, "the commit made during the hand-off is the next seq");
     assert.equal(new Set(mine.map((r) => r.id)).size, mine.length, "no change id twice on the server");

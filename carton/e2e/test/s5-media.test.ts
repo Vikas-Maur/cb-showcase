@@ -245,11 +245,11 @@ test("S5-6 offline: a teammate who played the proxy stream replays it from the d
   assert.equal(again.sha256, online.sha256, "the same bytes, from this machine's cache");
 });
 
-// The teammate learns which footage the project uses from the project itself, not from the test: the media record's
-// `contentHash` is a versioned field (PLAN §4.2), and the proxy is keyed by (source hash, profile) in the store (§11).
-// Nothing in the product writes the share result into the record yet (gap routed in the S5 notes), so the owner's
-// side does it as the app would: one `cb` write handed to its app's lease holder.
-test("S5 the shared clip's id rides in the project: the owner commits it through Carton, the teammate finds it in its own copy's head, follows it to the proxy and plays both, verified", { timeout: 240_000, skip: NO_FF }, async (t) => {
+// The teammate learns which footage the project uses, and where its proxy is, from the project itself: `contentHash`
+// and `shared` (S5-G3: size, original, the proxy ref) are versioned fields of the media entry (PLAN §4.2, §11). Nothing
+// in the product writes the share result into the record yet (S5-G2, routed in the notes), so the owner's side does it
+// as the app would: one `cb` write handed to its app's lease holder.
+test("S5 the shared clip's record rides in the project: the owner commits it through Carton, the teammate finds the clip and its proxy stream in its own copy's head and plays both, verified", { timeout: 240_000, skip: NO_FF }, async (t) => {
   const w = await world(t, "host-http");
   w.procs.watchHelpers(w.owner.dbDir);
   const app = w.procs.start("owner-app", [support("app.ts"), w.owner.bundle, w.owner.projectId, "{}"]);
@@ -263,7 +263,14 @@ test("S5 the shared clip's id rides in the project: the owner commits it through
   const owner = await startMachine(w.procs, "owner", w.owner.home, w.side.storeFor("owner"));
   const shared = (await owner.ask({ cmd: "share", record, original, hostProxy, originals: true }, 120_000)).record;
   assert.equal(shared.hash, want.original.hash);
-  const put = await cbWrite(w.owner, { kind: "commit", ops: [setOp("media", String(record.id), "contentHash", shared.hash)] });
+  // the content id and the shared record (S5-G3, cardboard-adapter 82d8c70: `media[].shared` is versioned field by field)
+  const at = (...path: string[]) => ["media", String(record.id), ...path];
+  const put = await cbWrite(w.owner, { kind: "commit", ops: [
+    setOp("media", String(record.id), "contentHash", shared.hash),
+    { op: "set", path: at("shared", "size"), value: shared.size },
+    { op: "set", path: at("shared", "original"), value: shared.original },
+    { op: "set", path: at("shared", "proxy"), value: shared.proxy },
+  ] });
   assert.equal(put.status, "confirmed", JSON.stringify(put));
 
   // --- the teammate gets the project: a copy of the owner's carton.db (support/clone.ts). Its files were copied before
@@ -276,14 +283,18 @@ test("S5 the shared clip's id rides in the project: the owner commits it through
   const mate = await startMachine(w.procs, "mate", w.mate.home, w.side.storeFor("mate"));
   const proj = await mate.ask({ cmd: "project", bundle: w.mate.bundle, projectId: w.mate.projectId });
   assert.equal(proj.dbPath, mateDb, "read from the teammate's own carton.db");
-  const hash = proj.media.find((m: any) => m.id === record.id)?.contentHash;
+  const entry = proj.media.find((m: any) => m.id === record.id);
+  const hash = entry?.contentHash;
   assert.equal(hash, want.original.hash, "the teammate's head names the clip by its content");
+  assert.deepEqual(entry?.shared, { size: shared.size, original: "shared", proxy: shared.proxy }, "and carries the shared record (S5-G3)");
 
-  // --- from that id alone: the proxy through its pointer, then both read back, every byte verified
+  // --- from the project alone: the proxy stream its record names (the store's pointer agrees), then both read back,
+  // every byte verified
+  const stream = entry.shared.proxy.stream;
+  assert.match(String(stream), /^[0-9a-f]{64}$/);
   const { pointer } = await mate.ask({ cmd: "proxyOf", hash });
-  assert.equal(pointer?.stream, shared.proxy?.stream, `the proxy stream made from this source: ${JSON.stringify(pointer)}`);
-  assert.equal(pointer?.encoder, "cardboard-proxy");
-  const px = await mate.ask({ cmd: "play", stream: pointer.stream, save: join(w.mate.home, "played.mp4") }, 60_000);
+  assert.equal(pointer?.stream, stream, `the store's pointer names the same stream: ${JSON.stringify(pointer)}`);
+  const px = await mate.ask({ cmd: "play", stream, save: join(w.mate.home, "played.mp4") }, 60_000);
   assert.equal(px.failed, undefined, px.failed);
   assert.equal(px.bytes, shared.proxy.size, "every part, as the owner's record sizes it");
   assert.deepEqual(px.events, [], "no leaf failed its check");

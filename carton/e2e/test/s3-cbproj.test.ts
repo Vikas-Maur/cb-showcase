@@ -520,20 +520,57 @@ test("S3-1 a .cbproj names its sender (not \"replica\"), a copied cut keeps its 
   const la2 = await open(A, person("alice", "Alice", "alice@laptop"));
   try {
     const r = await bringInTheirChanges(la2.carton as any, { shallow: theirs });
-    assert.notEqual(r.status, "no-shared-lineage", JSON.stringify(r));
+    assert.equal(r.status, "folded", `brought in, not refused: ${JSON.stringify(r)}`);
     assert.deepEqual((await la2.carton.cuts()).map((c: any) => c.owner), ["Alice"]);
   } finally {
     await la2.close();
   }
 });
 
-// S3-2 (todo): "Include history so they can see every version" (§13, L17) has no recipient path. The file carries
+// S3-4 (foundation-core): a teammate whose project is a copy of yours (the bundle folder copied with its .carton, so
+// the same local "Main cut" id) edits and sends a .cbproj; bringing it in crashes `History.fold` with a TypeError
+// ("Cannot read properties of undefined (reading 'mergeOf')", history.ts #ancOf: the sender's head names a seq on that
+// cut id which the recipient's log doesn't have) instead of folding the edit in or refusing it with a reason.
+test("S3-4 a .cbproj from a teammate whose project is a copy of yours brings their edit in (or says why not), never a crash", { todo: "S3-4, foundation-core: History.#ancOf reads br.log[i] past the recipient's log for a node on a same-id local cut" }, async () => {
+  const { openLocal } = await import("@carton/local");
+  const { cardboardAdapter, toHost } = await import("@carton/cardboard");
+  const { bringInTheirChanges, readProjectForImport } = await import("@carton/cardboard/node");
+  const person = (id: string, name: string) => ({ kind: "human", id: `human:${id}`, name, group: `${id}@pc` }) as any;
+  const open = (m: Machine, who: any, init?: unknown) => openLocal({ projectDir: m.bundle, projectId: m.projectId, dataDir: dataDirFor(m.bundle), adapter: cardboardAdapter as any, actor: who, ...(init ? { init } : {}) } as any);
+  const A = makeMachine("s3-4-a");
+  await (await open(A, person("alice", "Alice"), { doc: readProjectForImport(A.bundle).doc })).close();
+  const B = makeMachine("s3-4-b", A);
+  const cl = await runOnce("clone", [support("clone.ts"), join(A.dbDir, "carton.db"), join(B.dbDir, "carton.db")]);
+  assert.equal(cl.code, 0, cl.stderr);
+  const logo = itemNamed(B, SAMPLE.logo)!.id;
+  const lb = await open(B, person("bob", "Bob"));
+  let theirs;
+  try {
+    const w = await lb.write({ kind: "commit", ops: [{ op: "set", path: ["timelineItems", logo, "zIndex"], value: 4 }] } as any);
+    assert.equal(w.status, "confirmed", JSON.stringify(w));
+    theirs = await lb.carton.exportShallow({ to: "alice" });
+  } finally {
+    await lb.close();
+  }
+  const la = await open(A, person("alice", "Alice"));
+  try {
+    const r = await bringInTheirChanges(la.carton as any, { shallow: theirs });
+    if (r.status === "folded") {
+      const head = toHost((await la.carton.head()).doc) as any;
+      assert.equal(head.timelineItems.find((i: any) => i.id === logo)?.zIndex, 4, "Bob's edit is in");
+    } else assert.ok(r.status, `a status that says why: ${JSON.stringify(r)}`);
+  } finally {
+    await la.close();
+  }
+});
+
+// S3-2 (fixed by cardboard-adapter 2c4344a on foundation c5028c0; was todo): "Include history so they can see every version" (§13, L17) has no recipient path. The file carries
 // `.carton-export/history.db` and `extractFullHistory` writes it out ("to be opened read-only and imported as tracking
 // cuts"), but nothing imports a carton.db copy: `Carton` has no such method (History.importFull takes a JSON
 // FullExport, and Carton doesn't expose it), and `bringInTheirChanges` / an import with `init: {import}` read only the
 // shallow export. So the recipient sees the sender's cut as a shallow tracking cut with no versions, and "Undo this
 // agent turn" for the sender's agents (L17) can't work.
-test("S3-2 opening a file with history shows the sender's versions", { todo: "S3-2, foundation-core + cardboard-adapter: no API imports .carton-export/history.db as tracking cuts", timeout: 180_000 }, async (t) => {
+test("S3-2 opening a file with history shows the sender's versions", { timeout: 180_000 }, async (t) => {
   const { procs, startApp } = world(t);
   const A = makeMachine("s3-2-a");
   const appA = await startApp(A, "appA");
@@ -543,9 +580,15 @@ test("S3-2 opening a file with history shows the sender's versions", { todo: "S3
   const B = emptyMachine("s3-2-b", A.projectId);
   const opened = await openCbproj(file, B);
   const appB = await startApp(B, "appB");
-  const theirs = opened.cuts.find((c: any) => c.tracking);
-  const log = await cbOk(B, ["history", "--cut", theirs.id, "--limit", "50"]).catch((e) => ({ versions: [], error: String(e) }));
-  assert.ok(log.versions.some((v: any) => v.by?.id === "director/chatS2/turn1"), `B lists A's agent's version: ${JSON.stringify(log).slice(0, 400)}`);
+  // the history copy was opened with store-sqlite and read back: the sender's cuts, with their versions and authors
+  assert.equal(opened.history?.status, "imported", `the file's history was read: ${JSON.stringify(opened.history)}`);
+  const ids: string[] = (opened.history.cuts ?? []).map((c: any) => (typeof c === "string" ? c : c.id));
+  assert.ok(ids.length > 0, "the sender's cuts came with it");
+  const logs = [];
+  for (const id of ids) logs.push(await cbOk(B, ["history", "--cut", id, "--limit", "50"]));
+  const all = logs.flatMap((l) => l.versions);
+  assert.ok(all.some((v: any) => v.by?.id === "director/chatS2/turn1"), `B lists A's agent's version: ${JSON.stringify(logs).slice(0, 600)}`);
+  assert.ok(all.some((v: any) => v.by?.id === "human:alice" || v.by?.name === "alice"), `and A's own GUI save: ${JSON.stringify(logs).slice(0, 600)}`);
   void appB;
 });
 
