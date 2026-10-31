@@ -35,13 +35,28 @@ const STYLES: Record<Style, Intl.DateTimeFormatOptions> = {
 };
 const formatters = new Map<string, Intl.DateTimeFormat>();
 // A formatter fixes the system time zone when it is built. If the zone changes while the app runs (a laptop that
-// travels), the offset of "now" changes with it: then the cache is dropped and formatters are built again. (A
-// daylight-saving switch also drops it once; that is harmless.)
-let zoneOffset = new Date().getTimezoneOffset();
+// travels), the cache must be dropped. The offsets of now, 1 January and 1 July tell most zones apart cheaply on every
+// call (Lagos and Paris share UTC+1 in winter, not in July); once a minute the zone's own name is compared too, for
+// zones with the same offsets on those days.
+const zoneSignature = () => {
+  const y = new Date().getFullYear();
+  return `${new Date().getTimezoneOffset()}|${new Date(y, 0, 1).getTimezoneOffset()}|${new Date(y, 6, 1).getTimezoneOffset()}`;
+};
+const zoneName = () => new Intl.DateTimeFormat().resolvedOptions().timeZone;
+let zoneSig = zoneSignature();
+let zone = zoneName();
+let zoneCheckedAt = Date.now();
 function format(style: Style, at: number | Date, locale?: string): string {
-  const offset = new Date().getTimezoneOffset();
-  if (offset !== zoneOffset) {
-    zoneOffset = offset;
+  const sig = zoneSignature();
+  let changed = sig !== zoneSig;
+  if (!changed && Date.now() - zoneCheckedAt > 60_000) {
+    zoneCheckedAt = Date.now();
+    changed = zoneName() !== zone;
+  }
+  if (changed) {
+    zoneSig = sig;
+    zone = zoneName();
+    zoneCheckedAt = Date.now();
     formatters.clear();
   }
   const key = `${locale ?? ""}|${style}`;
