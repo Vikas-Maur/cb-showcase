@@ -624,6 +624,15 @@ const VERIFIED_MAX = 1000;
  */
 const LISTS_BY_PAGE = new Set(["s3", "r2"]);
 
+/**
+ * A store that answers many HEADs in one request: `hostMediaBlobs`'s `heads` (REQ-11, POST /blobs/heads), `{size}` or
+ * null for each key, in order. Not part of BlobStore, so looked for (as `@carton/host-http/client`'s `hasHeads` does;
+ * media can't import it: host-http depends on media).
+ */
+interface ManyHeads {
+  heads?(keys: readonly string[]): Promise<({ size: number } | null)[]>;
+}
+
 /** Stores whose `list` failed on its first page: HEADs only from then on. */
 const cannotList = new WeakSet<BlobStore>();
 
@@ -666,12 +675,24 @@ async function partsWrong(store: BlobStore, stream: string, end: StreamEnd): Pro
 /**
  * The sizes of the parts that are in the store (a part that isn't has no entry). Parts are content-addressed objects
  * (m/<hash>) shared by every stream and clip, not kept under the stream's prefix, so a listing covers all of the
- * project's media: where the store pages its listing on the server (LISTS_BY_PAGE), a few pages (at most one per 250
- * parts asked about, 1000 keys a page) settle the parts they show, and HEADs ask about the rest. Any other store (a
- * Carton host's HTTP API has no list; blob-fs's is a local walk) gets HEADs only.
+ * project's media. A Carton host answers many HEADs in one request (`heads`). Where the store pages its listing on the
+ * server (LISTS_BY_PAGE), a few pages (at most one per 250 parts asked about, 1000 keys a page) settle the parts they
+ * show, and HEADs ask about the rest. Any other store (blob-fs's list is a local walk) gets HEADs only.
  */
 async function partSizes(store: BlobStore, hashes: readonly string[]): Promise<Map<string, number>> {
   const sizes = new Map<string, number>();
+  const many = store as BlobStore & ManyHeads;
+  if (typeof many.heads === "function") {
+    // A Carton host: up to 1,000 keys a request (the client asks again for the rest, and falls back to one HEAD per key
+    // on a host from before the route).
+    const got = await many.heads(hashes.map(mediaKey));
+    if (got.length !== hashes.length) throw new Error(`heads answered ${got.length} of ${hashes.length} keys`);
+    hashes.forEach((h, i) => {
+      const b = got[i];
+      if (b) sizes.set(h, b.size);
+    });
+    return sizes;
+  }
   let rest: readonly string[] = hashes;
   if (LISTS_BY_PAGE.has(store.kind) && typeof store.list === "function" && !cannotList.has(store)) {
     const wanted = new Set(hashes);
