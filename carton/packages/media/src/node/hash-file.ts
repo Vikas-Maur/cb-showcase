@@ -77,6 +77,7 @@ class HashPool {
   readonly #jobs = new Map<number, Job>();
   #nextId = 1;
   #idle: ReturnType<typeof setTimeout> | undefined;
+  #idleMs = 30_000;
   #busy = 0;
 
   #grow(n: number): void {
@@ -92,7 +93,10 @@ class HashPool {
       // starts a fresh worker. Without this, a job waiting on a dead worker would never settle.
       const lost = (why: string) => {
         const i = this.#workers.indexOf(w);
-        if (i >= 0) this.#workers.splice(i, 1);
+        // A worker close() or the idle timeout already removed: its exit arrives later, after new jobs may have
+        // started on fresh workers, and must not fail them (close() settled the jobs of its own time).
+        if (i < 0) return;
+        this.#workers.splice(i, 1);
         this.#stopAll(why);
       };
       w.on("error", (e) => lost(`a hash worker failed: ${String(e)}`));
@@ -101,7 +105,8 @@ class HashPool {
     }
   }
 
-  warm(n: number): void {
+  warm(n: number, idleMs?: number): void {
+    if (idleMs !== undefined) this.#idleMs = idleMs;
     this.#grow(n);
     if (this.#busy === 0) this.#idleSoon();
   }
@@ -110,7 +115,7 @@ class HashPool {
     // Idle workers must not keep the process alive, and are stopped after a while.
     for (const w of this.#workers) w.unref();
     clearTimeout(this.#idle);
-    this.#idle = setTimeout(() => this.close(), 30_000);
+    this.#idle = setTimeout(() => this.close(), this.#idleMs);
     this.#idle.unref();
   }
 
@@ -151,10 +156,10 @@ class HashPool {
 
 let pool: HashPool | undefined;
 
-/** Starts `n` hashing workers ahead of a share (they stop on their own after 30 s idle). */
-export function warmHashWorkers(n = 1): void {
+/** Starts `n` hashing workers ahead of a share. They stop on their own after `idleMs` (default 30 s) with no work. */
+export function warmHashWorkers(n = 1, idleMs?: number): void {
   pool ??= new HashPool();
-  pool.warm(n);
+  pool.warm(n, idleMs);
 }
 
 /** Stops the hashing workers now (they also stop on their own after 30 s idle). */

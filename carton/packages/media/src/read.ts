@@ -32,8 +32,9 @@ export class MediaMissingError extends Error {
 export type ReaderEvent = {
   /**
    * mismatch: a leaf failed its check (it is fetched again). repaired / repair-failed: how that went. served-bad: bytes
-   * that differ from the verified leaf already went to a play-first reader, and its read ends with LeafMismatchError;
-   * a player must reload from them (breaking a response doesn't make it drop what it has).
+   * that differ from the verified leaf (or that can't be checked, when the repair failed too) already went to a
+   * play-first reader, and its read fails; a player must reload from them (breaking a response doesn't make it drop
+   * what it has).
    */
   type: "mismatch" | "repaired" | "repair-failed" | "served-bad";
   hash: string;
@@ -256,6 +257,16 @@ export class MediaReader implements RangeSource {
     return p;
   }
 
+  /** #repair, and when it fails after unverified bytes of the leaf went out, tells the host they may be bad. */
+  async #repairOrReport(hash: string, leaf: number, handedOut: boolean): Promise<Uint8Array> {
+    try {
+      return await this.#repair(hash, leaf);
+    } catch (e) {
+      if (handedOut) this.#o.onEvent?.({ type: "served-bad", hash, leaf });
+      throw e;
+    }
+  }
+
   async #verify(m: Manifest, i: number, bytes: Uint8Array): Promise<boolean> {
     return equalBytes(await this.#o.hasher.sha256(bytes), leafDigest(m, i));
   }
@@ -355,6 +366,11 @@ export class MediaReader implements RangeSource {
     // a stalled store.
     const onAbort = () => reader.cancel(run.ctl.signal.reason).catch(() => {});
     run.ctl.signal.addEventListener("abort", onAbort, { once: true });
+    // Aborted between the body arriving and this reader taking it: the listener above will never fire.
+    if (run.ctl.signal.aborted) {
+      reader.cancel(run.ctl.signal.reason).catch(() => {});
+      throw run.ctl.signal.reason;
+    }
     let leaf = run.first;
     let span = leafSpan(m.size, leaf);
     let buf = new Uint8Array(span.length);
@@ -402,7 +418,7 @@ export class MediaReader implements RangeSource {
             if (verifyFirst || held) ready = buf;
           } else {
             this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut: outFrom >= 0 });
-            const good = await this.#repair(m.hash, leaf);
+            const good = await this.#repairOrReport(m.hash, leaf, outFrom >= 0);
             if (servedBad(good)) {
               this.#o.onEvent?.({ type: "served-bad", hash: m.hash, leaf });
               throw new LeafMismatchError(m.hash, leaf);
@@ -432,7 +448,14 @@ export class MediaReader implements RangeSource {
       if (leaf < run.end && filled > 0) {
         // The response ended inside a leaf. Fetch the whole leaf (verified); what already went out of it must match.
         // A held piece never went out: it is served from the verified leaf instead.
-        const good = await this.leaf(m.hash, leaf, signal);
+        let good: Uint8Array;
+        try {
+          good = await this.leaf(m.hash, leaf, signal);
+        } catch (e) {
+          // No good copy to compare with: what went out can't be vouched for, so the player must drop it.
+          if (outFrom >= 0 && !isAbort(e)) this.#o.onEvent?.({ type: "served-bad", hash: m.hash, leaf });
+          throw e;
+        }
         if (servedBad(good)) {
           this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut: true });
           this.#o.onEvent?.({ type: "served-bad", hash: m.hash, leaf });

@@ -86,7 +86,7 @@ export class HashScheduler {
   request(t: HashTarget, priority: HashPriority = "share"): Promise<Manifest> {
     const id = `${t.key}\0${t.size}\0${t.mtimeMs}`;
     let e = this.#byId.get(id);
-    if (e) {
+    if (e && !e.cancelled) {
       e.waiters++;
       if (priority === "share") e.priority = "share";
       this.#pump();
@@ -128,10 +128,17 @@ export class HashScheduler {
       this.#byId.delete(id);
       e.reject(err);
     } else {
-      // A pause may already have aborted it with "requeue"; the flag wins over that reason.
+      // A pause may already have aborted it with "requeue"; the flag wins over that reason. It leaves the index now,
+      // so a request that comes before it has wound down starts fresh work instead of joining a cancelled one.
       e.cancelled = true;
+      this.#byId.delete(id);
       e.ac?.abort(err);
     }
+  }
+
+  /** Drops `e` from the index, unless a newer request for the same file already took its place. */
+  #forget(e: Entry): void {
+    if (this.#byId.get(e.id) === e) this.#byId.delete(e.id);
   }
 
   #next(): Entry | undefined {
@@ -168,17 +175,17 @@ export class HashScheduler {
         m = await this.#o.hash(e.t, { priority: e.priority, signal: ac.signal, onProgress: (b) => this.#o.onProgress?.(e.t, b) });
         await this.#o.cache?.put(e.t, m.bytes);
       }
-      this.#byId.delete(e.id);
+      this.#forget(e);
       e.resolve(m);
     } catch (err) {
       if (e.cancelled) {
-        this.#byId.delete(e.id);
+        this.#forget(e);
         e.reject(new DOMException("hash request cancelled", "AbortError"));
       } else if (ac.signal.reason instanceof Requeue) {
         e.ac = undefined;
         this.#queue.unshift(e);
       } else {
-        this.#byId.delete(e.id);
+        this.#forget(e);
         e.reject(ac.signal.aborted ? ac.signal.reason : err);
       }
     } finally {

@@ -124,3 +124,19 @@ test("cancel right after pause still cancels a running background hash (review r
   assert.equal(h.started.length, 1, "not started again after resume");
   assert.equal(sched.pending, 0);
 });
+
+test("a fresh request after a cancel gets fresh work, not the cancelled one (review round 2, finding 4)", async () => {
+  const h = harness();
+  const sched = new HashScheduler({ hash: h.hash, hasher: nodeHasher });
+  const old = sched.request(T("x"), "background");
+  await tick();
+  sched.pause();
+  sched.cancel(T("x"));
+  const fresh = sched.request(T("x"), "share");
+  await assert.rejects(old, { name: "AbortError" });
+  await tick();
+  assert.equal(h.started.length, 2, "the share started its own hash");
+  h.started[1].finish();
+  assert.equal((await fresh).size, 10);
+  assert.equal(sched.pending, 0);
+});

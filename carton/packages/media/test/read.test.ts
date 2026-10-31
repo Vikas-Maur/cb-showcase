@@ -239,3 +239,41 @@ test("abort ends a read that is waiting on a stalled store stream", async () => 
   setTimeout(() => ac.abort(), 20);
   await assert.rejects(pending, { name: "AbortError" });
 });
+
+test("a failed repair after unverified bytes went out still tells the player (review round 2, finding 1)", async () => {
+  const { hash, mem } = await shared(2 * MiB, 16);
+  const events: ReaderEvent[] = [];
+  const store = new FaultyStore(mem, { streamChunk: 64 * 1024, corruptAt: { key: mediaKey(hash), offset: 20, times: 1000 } });
+  const reader = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 2, onEvent: (e) => events.push(e) });
+  await assert.rejects(collect(reader.read(hash, 0, 2 * MiB)), LeafMismatchError);
+  assert.deepEqual(events.map((e) => e.type), ["mismatch", "mismatch", "mismatch", "repair-failed", "served-bad"]);
+});
+
+test("abort between the body arriving and the reader taking it still ends the read (review round 2, finding 2)", async () => {
+  const { hash, mem } = await shared(2 * MiB, 17);
+  // The gap is a few microtasks wide, so abort at every depth from 0 to 12 microtasks after the body resolves.
+  for (let depth = 0; depth <= 12; depth++) {
+    const ac = new AbortController();
+    const stalled: BlobStore = {
+      kind: "stalled",
+      head: (k) => mem.head(k),
+      get: (k, r) => mem.get(k, r),
+      list: (p) => mem.list(p),
+      put: (k, d, o) => mem.put(k, d, o),
+      delete: (k) => mem.delete(k),
+      createMultipart: (k) => mem.createMultipart(k),
+      resumeMultipart: (k, u) => mem.resumeMultipart(k, u),
+      // A body that resolves at once and then never sends a byte.
+      getStream: async () => {
+        let p = Promise.resolve();
+        for (let i = 0; i < depth; i++) p = p.then(() => {});
+        void p.then(() => ac.abort());
+        return new ReadableStream<Uint8Array>({ pull: () => new Promise(() => {}) });
+      },
+    };
+    const reader = new MediaReader({ store: stalled, hasher: nodeHasher });
+    const done = collect(reader.read(hash, 0, MiB, ac.signal)).then(() => "resolved", (e) => (e as Error).name);
+    const outcome = await Promise.race([done, new Promise((r) => setTimeout(() => r("hung"), 2000))]);
+    assert.equal(outcome, "AbortError", `abort ${depth} microtasks after the body`);
+  }
+});
