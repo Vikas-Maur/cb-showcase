@@ -18,7 +18,7 @@ after(() => {
 });
 
 test("hashFile gives the same ids as hashSource, in the calling thread and in 1 or 3 workers", async () => {
-  for (const [size, seed] of [[0, 1], [5, 2], [MiB, 3], [8 * MiB, 4], [8 * MiB + 1, 5], [27 * MiB + 99, 6]] as const) {
+  for (const [size, seed] of [[0, 1], [5, 2], [MiB, 3], [8 * MiB + 1, 4], [32 * MiB, 5], [41 * MiB + 99, 6]] as const) {
     const data = xorshiftBytes(size, seed);
     const path = join(s.dir, `f${size}`);
     writeFileSync(path, data);
@@ -33,7 +33,7 @@ test("hashFile gives the same ids as hashSource, in the calling thread and in 1 
 });
 
 test("a file that changes while it is hashed is refused", async () => {
-  for (const size of [3 * MiB, 20 * MiB]) {
+  for (const size of [3 * MiB, 40 * MiB]) {
     const path = join(s.dir, `changing${size}`);
     writeFileSync(path, xorshiftBytes(size, 7));
     await assert.rejects(hashFile(path, { onProgress: (b) => b === size && appendFileSync(path, "x") }), SourceChangedError);

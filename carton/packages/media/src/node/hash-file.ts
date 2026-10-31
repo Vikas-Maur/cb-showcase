@@ -10,11 +10,16 @@ import { open, stat } from "node:fs/promises";
 import { Worker } from "node:worker_threads";
 import { DIGEST_SIZE, LEAF_SIZE, leafCountOf, manifestFromDigests, type Manifest } from "../manifest.ts";
 import { SourceChangedError } from "../upload.ts";
-import { nodeHasher } from "./node-hasher.ts";
+import { nodeHasher, sha256Sync } from "./node-hasher.ts";
 
 const SEGMENT = 8 * LEAF_SIZE;
-/** Below this, hashing in the calling thread costs less than handing the job to a worker. */
-const SMALL = 8 * LEAF_SIZE;
+/**
+ * Up to this size the file is hashed in the calling thread, in 1 MiB steps between reads: starting a worker costs
+ * about as long as hashing tens of MB here (bench/media/hash-throughput.ts, UNVERIFIED), and a step blocks the event
+ * loop for about a millisecond. Hosts that know a share is coming call warmHashWorkers() so the first big file doesn't
+ * wait for the pool.
+ */
+const SMALL = 32 * LEAF_SIZE;
 
 const WORKER_SOURCE = String.raw`
 const { parentPort } = require("node:worker_threads");
@@ -93,6 +98,19 @@ class HashPool {
     }
   }
 
+  warm(n: number): void {
+    this.#grow(n);
+    if (this.#busy === 0) this.#idleSoon();
+  }
+
+  #idleSoon(): void {
+    // Idle workers must not keep the process alive, and are stopped after a while.
+    for (const w of this.#workers) w.unref();
+    clearTimeout(this.#idle);
+    this.#idle = setTimeout(() => this.close(), 30_000);
+    this.#idle.unref();
+  }
+
   async run(path: string, size: number, workers: number, digests: SharedArrayBuffer, shared: SharedArrayBuffer): Promise<void> {
     clearTimeout(this.#idle);
     const n = Math.max(1, Math.min(workers, Math.ceil(size / SEGMENT)));
@@ -109,12 +127,7 @@ class HashPool {
       if (err) throw new SourceChangedError(err);
     } finally {
       this.#jobs.delete(id);
-      if (--this.#busy === 0) {
-        // Idle workers must not keep the process alive, and are stopped after a while.
-        for (const w of this.#workers) w.unref();
-        this.#idle = setTimeout(() => this.close(), 30_000);
-        this.#idle.unref();
-      }
+      if (--this.#busy === 0) this.#idleSoon();
     }
   }
 
@@ -125,6 +138,12 @@ class HashPool {
 }
 
 let pool: HashPool | undefined;
+
+/** Starts `n` hashing workers ahead of a share (they stop on their own after 30 s idle). */
+export function warmHashWorkers(n = 1): void {
+  pool ??= new HashPool();
+  pool.warm(n);
+}
 
 /** Stops the hashing workers now (they also stop on their own after 30 s idle). */
 export function closeHashWorkers(): void {
@@ -149,14 +168,19 @@ export async function hashFile(path: string, opts: HashFileOptions = {}): Promis
   if (size <= SMALL) {
     const fh = await open(path, "r");
     try {
-      const buf = new Uint8Array(size);
-      for (let got = 0; got < size; ) {
-        const { bytesRead } = await fh.read(buf, got, size - got, got);
-        if (bytesRead === 0) throw new SourceChangedError(`short read at ${got}: the file changed while it was hashed`);
-        got += bytesRead;
-      }
+      const buf = new Uint8Array(Math.min(size, SEGMENT));
       digests = new Uint8Array(leafCountOf(size) * DIGEST_SIZE);
-      for (let o = 0, i = 0; o < size; o += LEAF_SIZE, i++) digests.set(await nodeHasher.sha256(buf.subarray(o, Math.min(size, o + LEAF_SIZE))), i * DIGEST_SIZE);
+      for (let off = 0; off < size; off += SEGMENT) {
+        opts.signal?.throwIfAborted();
+        const len = Math.min(SEGMENT, size - off);
+        for (let got = 0; got < len; ) {
+          const { bytesRead } = await fh.read(buf, got, len - got, off + got);
+          if (bytesRead === 0) throw new SourceChangedError(`short read at ${off + got}: the file changed while it was hashed`);
+          got += bytesRead;
+        }
+        for (let o = 0; o < len; o += LEAF_SIZE) digests.set(sha256Sync(buf.subarray(o, Math.min(len, o + LEAF_SIZE))), ((off + o) / LEAF_SIZE) * DIGEST_SIZE);
+        if (off + len < size) opts.onProgress?.(off + len);
+      }
     } finally {
       await fh.close();
     }
