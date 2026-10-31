@@ -54,6 +54,59 @@
       ]
     },
     {
+      "id": "stores-sqlite-recheck",
+      "agent": "stores",
+      "claim": "S1 and S3 again after stores' fixes (14ff3cb one bound per side; 969db35 checkpoint outside the write lock): the open and commit cells only, stores' re-run command (notes: Measurements to re-run after Stage F)",
+      "timeout": 45,
+      "steps": [
+        {
+          "label": "bench/run.ts open|commit cells, fresh databases, 7 rounds",
+          "cwd": "packages/store-sqlite",
+          "env": {
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "bench/run.ts",
+            "{tmp}/sqlite-recheck",
+            "7",
+            "{results}/raw-sqlite-recheck.jsonl",
+            "10000,100000",
+            "^(open|commit)"
+          ],
+          "stdoutTo": "{results}/sqlite-recheck-run.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "raw-sqlite-recheck.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ],
+          "expect": {
+            "cells": 6,
+            "runsPerCell": 7
+          }
+        }
+      ]
+    },
+    {
       "id": "stores-idb-cells",
       "agent": "stores",
       "claim": "store-idb open / commit / readlog at 10k and 100k in headless Chrome (notes 2)",
