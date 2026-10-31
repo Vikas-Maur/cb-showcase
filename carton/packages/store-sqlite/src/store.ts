@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";
-import { Db, openRetrying, type DbOptions } from "./db.ts";
+import { Db, OPEN_RETRY_MS, openRetrying, type DbOptions } from "./db.ts";
 import { encodeKey, decodeKey, prefixEnd } from "./key.ts";
 import { encodeValue, decodeValue } from "./value.ts";
 import { MovedError } from "./move.ts";
@@ -57,7 +57,7 @@ export class SqliteStore implements Store {
         db.close();
         throw e;
       }
-    });
+    }, undefined, opts.openRetryMs ?? OPEN_RETRY_MS);
   }
 
   get<T = unknown>(table: string, key: StoreKey): Promise<T | undefined> {
