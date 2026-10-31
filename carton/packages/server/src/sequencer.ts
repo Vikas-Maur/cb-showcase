@@ -566,7 +566,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return null;
   }
 
+  /** A Published cut's source cut and the version published (its record's `source` and fork point). */
+  function publishedSource(rec: CutRecord | undefined): { branchId: string; at: number } | null {
+    if (rec?.kind !== "published" || typeof rec.forkOf !== "string") return null;
+    const i = rec.forkOf.lastIndexOf("@");
+    const at = Number(rec.forkOf.slice(i + 1));
+    if (i < 1 || !Number.isInteger(at)) return null;
+    return { branchId: typeof rec.source === "string" ? rec.source : rec.forkOf.slice(0, i), at };
+  }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
+    // a reader scoped to some cuts (a Published cut's watch link) reads only those: refused before anything is sent
+    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(m.branchId)) return send(c, { type: "error", reason: `this token can't read ${m.branchId}` });
     const b = tables.branch(m.branchId);
     if (!b) return send(c, { type: "unknownBranch", branchId: m.branchId });
     if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
@@ -610,6 +620,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
     if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
+    // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
+    const src = publishedSource(b.rec);
+    if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId) };
     // the client then never sends what would be refused unread (round 2 finding 2)
     if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
     if (last < head) msg.more = true;
