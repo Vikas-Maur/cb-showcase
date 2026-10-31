@@ -11,7 +11,8 @@
 //   grain  the same with seeded temporal noise (alls=40), much harder to compress
 // CPU time comes from ffmpeg's own -benchmark line (user + system time of the ffmpeg process, all its threads), so it
 // works the same on Windows. On a shared box wall-clock speed depends on the load; CPU time much less.
-// Per run: cpuS, wallS, cpuPerFootageSecond (core-seconds per second of footage), xRealtime, the proxy's size and rate.
+// Per run: cpuS, ffmpegWallS (ffmpeg's own rtime; the runner's `wallS` is the whole run, lock and gate included),
+// cpuPerFootageSecond (core-seconds per second of footage), xRealtime, the proxy's size and rate.
 // Numbers are UNVERIFIED until an independent run reproduces them.
 
 import { execFileSync, spawnSync } from "node:child_process";
@@ -67,7 +68,7 @@ function one(source: string, output: string): Record<string, unknown> {
     source: source.split(/[\\/]/).pop(),
     footageS: footage,
     cpuS: +(utime + stime).toFixed(3),
-    wallS: rtime,
+    ffmpegWallS: rtime,
     cpuPerFootageSecond: +((utime + stime) / footage).toFixed(3),
     xRealtime: +(footage / rtime).toFixed(3),
     outBytes,

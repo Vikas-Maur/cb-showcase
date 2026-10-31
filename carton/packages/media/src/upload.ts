@@ -151,7 +151,8 @@ async function readVerified(o: UploadOptions, offset: number, length: number): P
   return bytes;
 }
 
-async function withRetries<T>(o: UploadOptions, what: () => Promise<T>): Promise<T> {
+/** `stop`: checked after each backoff, so a retry doesn't go out once the work it belongs to has failed elsewhere. */
+async function withRetries<T>(o: UploadOptions, what: () => Promise<T>, stop?: () => boolean): Promise<T> {
   const retries = o.retries ?? 4;
   for (let attempt = 0; ; attempt++) {
     o.signal?.throwIfAborted();
@@ -163,6 +164,7 @@ async function withRetries<T>(o: UploadOptions, what: () => Promise<T>): Promise
       if (isAbort(e) || e instanceof SourceChangedError || uploadGone(e) || attempt >= retries) throw e;
       const base = (o.retryDelayMs ?? 250) * 2 ** attempt;
       await sleep(base / 2 + Math.random() * base, o.signal);
+      if (stop?.()) throw e;
     }
   }
 }
@@ -199,6 +201,8 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
 
 function untilAborted<T>(p: Promise<T>, signal?: AbortSignal): Promise<T> {
   if (!signal) return p;
+  // Whoever stops waiting leaves `p` running: observe it, so its later rejection isn't an unhandled one.
+  p.catch(() => {});
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(signal.reason);
@@ -314,10 +318,15 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
         const n = todo[next++];
         const len = partLength(n);
         const bytes = await readVerified(o, (n - 1) * partSize, len);
-        const { etag } = await withRetries(o, async () => {
-          result.bytesSent += len;
-          return upload.uploadPart(n, bytes);
-        });
+        // A sibling part that failed for good (the upload is gone) stops this one's retries too.
+        const { etag } = await withRetries(
+          o,
+          async () => {
+            result.bytesSent += len;
+            return upload.uploadPart(n, bytes);
+          },
+          () => failed,
+        );
         done.set(n, { partNumber: n, etag, size: len });
         result.partsSent++;
         doneBytes += len;
@@ -333,7 +342,10 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   // Let every in-flight part finish or fail before returning, so no save lands after the caller resumes.
   const settled = await Promise.allSettled(Array.from({ length: workers }, worker));
   await saving;
-  const bad = settled.find((r) => r.status === "rejected");
+  // When several parts failed, the store dropping the upload is what decides what happens next (forget it, or find the
+  // finished object), whatever a sibling's own last error was.
+  const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
+  const bad = failures.find((r) => uploadGone(r.reason)) ?? failures[0];
   const finished = async () => {
     const h = await store.head(key).catch(() => null);
     if (h === null || h.size !== m.size) return false;
@@ -341,7 +353,7 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     return !damaged || (h.etag !== undefined && head?.etag !== undefined && h.etag !== head.etag);
   };
   try {
-    if (bad) throw (bad as PromiseRejectedResult).reason;
+    if (bad) throw bad.reason;
     const parts = [...done.values()].sort((a, b) => a.partNumber - b.partNumber);
     try {
       await withRetries(o, () => upload.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag }))));

@@ -132,6 +132,7 @@ export class MediaReader implements RangeSource {
     if (!this.#present.has(hash)) {
       try {
         // The store may never answer (a stalled link): the caller's abort ends the wait.
+        signal?.throwIfAborted();
         const h = await (signal ? untilAborted(this.#o.store.head(mediaKey(hash)), signal) : this.#o.store.head(mediaKey(hash)));
         if (!h) return null; // only the manifest is up so far
         if (h.size !== m.size) throw new Error(`store object for ${hash} is ${h.size} bytes, manifest says ${m.size}`);
@@ -506,6 +507,8 @@ export class MediaReader implements RangeSource {
 
 /** `p`, or the signal's reason as soon as it aborts. */
 function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  // Whoever stops waiting leaves `p` running: observe it, so its later rejection isn't an unhandled one.
+  p.catch(() => {});
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(signal.reason);

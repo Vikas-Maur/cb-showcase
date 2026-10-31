@@ -299,3 +299,28 @@ for (const size of [3 * MiB + 9, 10 * MiB + 9]) {
     assert.equal((await uploadMedia(o)).deduped, true, "and the next upload dedups as usual");
   });
 }
+
+test("a part waiting to retry doesn't go up again once a sibling found the upload gone (S5-4, review round 2 suggestion)", async () => {
+  const { manifest, source } = await setup(8 * MiB, 18);
+  const mem = new CountingMemoryStore();
+  const attempts = new Map<number, number>();
+  const store = new FaultyStore(mem, {});
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k, o) => {
+    const u = await create(k, o);
+    return {
+      ...u,
+      key: u.key,
+      uploadId: u.uploadId,
+      uploadPart: async (n: number, d: Uint8Array) => {
+        attempts.set(n, (attempts.get(n) ?? 0) + 1);
+        if (n === 1 && attempts.get(1) === 1) throw new Error("ECONNRESET"); // part 1 backs off and will retry
+        if (n === 2) mem.uploads.clear(); // meanwhile the store drops the upload: part 2 sees NoSuchUpload
+        return u.uploadPart(n, d);
+      },
+    };
+  };
+  await assert.rejects(uploadMedia({ store, hasher: nodeHasher, source, manifest, partSize: 4 * MiB, concurrency: 2, retries: 3, retryDelayMs: 80 }), /NoSuchUpload/);
+  await new Promise((r) => setTimeout(r, 300)); // past part 1's backoff
+  assert.equal(attempts.get(1), 1, "part 1 was not sent again into the dead upload");
+});
