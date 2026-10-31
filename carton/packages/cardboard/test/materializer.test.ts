@@ -814,3 +814,93 @@ test("B8: a view save written while the app was down is applied at the next star
   await again.start();
   assert.equal(s.engine.commits.length, commits, "applied once: the next start finds it current");
 });
+
+test("B6: a save is stored and its sidecar written even if regenerating the shared file after it fails", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  await s.mz.onCb(); // frozen: a view save regenerates the shared file (R7-01)
+  t.mock.method(jsonTimelineCodec, "print", () => {
+    throw new Error("printer failed");
+  });
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+  await s.event(rel);
+  t.mock.restoreAll();
+  assert.equal(s.find(await s.head(), "Y").name, "renamed");
+  const status = JSON.parse(fs.readFileSync(s.abs(statusPath("director_c_t1")), "utf8"));
+  assert.equal(status.status, "confirmed");
+  assert.ok(s.mz.log.errors.some((e) => /regenerate after a save: printer failed/.test(String(e.error))), JSON.stringify(s.mz.log.errors));
+});
+
+for (const step of ["view row", "sidecar"] as const) {
+  test(`review 6: a view save that failed after its receipt (at its ${step}) is finished by the retry and by the next start, applied once`, async (t) => {
+    const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+    const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+    const { path: rel, name } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+    // fails after the commit and the receipt: storing the view row, or pinning its sidecar's ref (the row is stored)
+    let failing = true;
+    const realPut = s.engine.putMeta.bind(s.engine);
+    const realPin = s.engine.pin.bind(s.engine);
+    s.engine.putMeta = async (k, v) => {
+      if (failing && step === "view row" && k[0] === "view" && s.engine.commits.length) throw new Error("database is locked");
+      return realPut(k, v);
+    };
+    s.engine.pin = async (o) => {
+      if (failing && step === "sidecar" && s.engine.commits.length && o.owner !== "shared-file") throw new Error("database is locked");
+      return realPin(o);
+    };
+    s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+    await s.event(rel);
+    assert.equal(s.engine.commits.length, 1, "stored");
+    assert.equal(fs.existsSync(s.abs(statusPath(name))), false, "its sidecar not yet");
+    // the app dies before its retry; the next start finishes the save
+    await s.mz.close();
+    failing = false;
+    const mz = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+    t.after(() => mz.close());
+    await mz.start();
+    const status = JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8"));
+    assert.equal(status.status, "confirmed", JSON.stringify(status));
+    assert.equal(status.change, s.engine.commits[0]!.id, "its own change");
+    assert.equal((await s.engine.getMeta<ViewRow>(["view", name]))?.last?.held.causal.filter((c) => c === s.engine.commits[0]!.id).length, 1, "the view's causal past has its change once");
+    assert.equal(s.engine.commits.length, 1, "applied once");
+    assert.equal(await s.engine.getMeta(["attempt", rel]), undefined, "settled");
+  });
+}
+
+test("review 6: a failed view save's tail is finished by its own retry while the app runs", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  let fail = 1;
+  const realPin = s.engine.pin.bind(s.engine);
+  s.engine.pin = async (o) => {
+    if (fail && s.engine.commits.length && o.owner !== "shared-file") {
+      fail--;
+      throw new Error("database is locked");
+    }
+    return realPin(o);
+  };
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+  await s.event(rel);
+  await s.tick(5000);
+  assert.equal(JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8")).status, "confirmed");
+  assert.equal(s.engine.commits.length, 1, "applied once");
+});
+
+test("review 6: a view left half-written while the app was down is refused at the next start once quiet: its sidecar says why", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel, name } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  await s.mz.close();
+  const full = s.edited(s.read(rel), (its) => (its[0]!.name = "renamed"));
+  s.writeInPlace(rel, full.slice(0, full.length - 20)); // the agent died mid-write
+  const mz = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => mz.close());
+  await mz.start();
+  await s.clock.advance(1000, () => mz.idle());
+  const status = JSON.parse(fs.readFileSync(s.abs(statusPath(name)), "utf8"));
+  assert.equal(status.status, "error", JSON.stringify(status));
+  assert.match(status.error, /doesn't parse/);
+  assert.equal(s.engine.commits.length, 0);
+});

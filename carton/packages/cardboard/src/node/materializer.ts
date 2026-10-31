@@ -91,6 +91,8 @@ export interface MaterializerEngine {
   putMeta(key: readonly string[], value: unknown): Promise<void>;
   /** Whether the current cut is shared (remote rewrites of the shared file are rate-limited). */
   shared(): boolean;
+  /** The current cut's id: pins and commits go to it. The freeze view belongs to the cut it started on (B6). */
+  cut?(): string;
 }
 
 /** The host's document conversions the materializer needs (Cardboard's are in `@carton/cardboard`). */
@@ -125,6 +127,8 @@ export interface SaveCards {
   /** This save's cards' own id (stored at `["cards", batch]`), whether or not the save made a change. */
   batch: string;
   change: string | null;
+  /** The id the save was committed under (the engine keeps the author's cards under it, even when no change was made). */
+  request?: string;
   file: string;
   actor: Actor;
   cards: ConflictCard[];
@@ -213,7 +217,8 @@ type Record_ = { t: number; path: string; [k: string]: unknown };
  * the change id it commits with, and once committed, the result. A retry of that same save reuses the id (and the
  * result) instead of committing again; a different save of the path takes the slot over.
  */
-type Attempt = { gen: string; base: string; id?: string; result?: SaveResult };
+/** A save's attempt slot (`["attempt", rel]`): its change id before the commit, its result after, until it is settled. */
+type Attempt = { gen: string; base: string; hash?: string; id?: string; result?: SaveResult };
 /** A foreign project.json's envelope, kept for its unversioned fields until Carton's next write consumes it. */
 type Overlay = { id: string; envelope: Record<string, unknown>; mtimeNs?: string };
 type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null; viewGen?: number };
@@ -259,6 +264,8 @@ export class Materializer {
   /** Where each held displaced file came from. */
   private readonly origin = new Map<string, Origin>();
   private readonly quietTimers = new Map<string, unknown>();
+  /** Paths whose save is being applied right now (its finishing steps read the path again: R7-01). */
+  private readonly applying = new Set<string>();
   private readonly retryTimers = new Map<string, unknown>();
   private reviewTimer: unknown = null;
   private watchers: fs.FSWatcher[] = [];
@@ -267,7 +274,7 @@ export class Materializer {
   // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active. `baseSeq` is
   // the confirmed seq the freeze view was derived from and `causal` the agent saves merged into it since: its pin
   // carries both, so a save from it meets every other change since, and never those saves a second time.
-  readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], timer: null as unknown };
+  readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
   private lastRemoteRewrite = -Infinity;
@@ -427,6 +434,34 @@ export class Materializer {
     });
   }
 
+  /**
+   * The current cut changed (`cb cut switch`; `@carton/local`'s `ViewPrinter.onCutSwitch`): the files show the new cut
+   * from now on. A freeze restarts from the new cut's head, and project.json and the shared file are rewritten at once
+   * (B6). `cut` is for the caller's log; the engine says which cut is current.
+   */
+  onCutSwitch(_cut?: string): Promise<void> {
+    return this.run(async () => {
+      await this.freezeOnCurrentCut(true);
+      this.projectPin = null; // project.json's pin was on the old cut
+      if (this.opts.writeProject) await this.writeProjectNow("cut");
+      await this.writeSharedNow("cut", true);
+    });
+  }
+
+  /**
+   * The freeze view and its seq belong to the cut the freeze started on; on another cut that seq is another state or
+   * none. Once the cut has moved (told, or found here), the freeze restarts from the current cut's head.
+   */
+  private async freezeOnCurrentCut(moved = false): Promise<void> {
+    const cut = this.engine.cut?.() ?? null;
+    if (!this.freeze.active || (!moved && cut === this.freeze.cut)) return;
+    const h = await this.pinnedHead("shared-file");
+    this.freeze.view = h.baseDoc;
+    this.freeze.baseSeq = h.baseSeq;
+    this.freeze.causal = [];
+    this.freeze.cut = cut;
+  }
+
   /** Any `cb` call: windowless agents count as active for a while after it. */
   onCb(): Promise<void> {
     return this.run(async () => {
@@ -480,6 +515,7 @@ export class Materializer {
       this.freeze.view = start.baseDoc;
       this.freeze.baseSeq = start.baseSeq;
       this.freeze.causal = [...start.causal];
+      this.freeze.cut = this.engine.cut?.() ?? null;
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
       this.freeze.view = null;
@@ -557,6 +593,7 @@ export class Materializer {
 
   private async writeSharedNow(cause: string, force = false): Promise<void> {
     await this.importUnseen(TIMELINE_FILE);
+    await this.freezeOnCurrentCut();
     const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, seq: this.freeze.baseSeq, causal: this.freeze.causal, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
     if (cause === "remote") this.lastRemoteRewrite = this.clock.now();
     const body = refBodyOf(pinned);
@@ -714,7 +751,12 @@ export class Materializer {
   }
   /** Content at the path that is the current generation already (installed, applied or tried): nothing to do. */
   private async isCurrent(rel: string, hash: string): Promise<boolean> {
-    return (await this.pathState(rel)).last === hash;
+    if ((await this.pathState(rel)).last !== hash) return false;
+    if (this.applying.has(rel)) return true; // being finished now
+    // stored, but not finished (it failed, or the process died, after the receipt): a view's base and sidecar are
+    // still to be written, so the save is read again and finished from its recorded result
+    const slot = await this.engine.getMeta<Attempt>(["attempt", rel]);
+    return !(slot?.result && slot.hash === hash);
   }
 
   // ------------------------------------------------------------------ foreign saves
@@ -828,10 +870,15 @@ export class Materializer {
   }
 
   /** A foreign save at `rel` that no watcher saw (written while the app was closed): applied before Carton writes it. */
-  private async importUnseen(rel: string): Promise<void> {
+  private async importUnseen(rel: string, o: { unparsed?: "wait" } = {}): Promise<void> {
     const f = await this.readFile(rel);
     if (!f || (await this.isCurrent(rel, f.hash))) return;
-    if (!(await this.parses(rel, f.bytes))) return; // displaced by the install, then kept and reported if it never parses
+    if (!(await this.parses(rel, f.bytes))) {
+      // a view: as at a watch event (re-read once quiet, then refused with its sidecar saying why). project.json and
+      // the shared file are displaced by the install, then kept and reported if they never parse
+      if (o.unparsed === "wait") this.waitForQuiet(rel, f.stamp);
+      return;
+    }
     this.log.imported.push({ t: this.clock.now(), path: rel });
     await this.applySave(rel, f.bytes, f.hash, f.stamp);
   }
@@ -853,7 +900,7 @@ export class Materializer {
       const name = rel ? viewName(rel) : null;
       if (!rel || !name || !(await this.engine.getMeta<ViewRow>(["view", name]))) continue;
       try {
-        await this.importUnseen(rel);
+        await this.importUnseen(rel, { unparsed: "wait" });
       } catch (e) {
         this.log.errors.push({ t: this.clock.now(), path: rel, error: e instanceof Error ? e.message : String(e) });
       }
@@ -1007,6 +1054,15 @@ export class Materializer {
    * bytes are kept. Throws when the engine fails (the caller retries).
    */
   private async applySave(rel: string, bytes: Buffer, hash: string, stamp: string | null, o: { fromDisplaced?: boolean } = {}): Promise<boolean> {
+    const outer = !this.applying.has(rel);
+    if (outer) this.applying.add(rel);
+    try {
+      return await this.applySaveNow(rel, bytes, hash, stamp, o);
+    } finally {
+      if (outer) this.applying.delete(rel);
+    }
+  }
+  private async applySaveNow(rel: string, bytes: Buffer, hash: string, stamp: string | null, o: { fromDisplaced?: boolean }): Promise<boolean> {
     const ps = await this.pathState(rel);
     const failed = async () => {
       // tried and refused: the current generation at the path (if it is still there), and this file is never retried
@@ -1072,9 +1128,11 @@ export class Materializer {
     const gen = sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
     const baseKey = "baseDoc" in base ? `held:${base.baseSeq}:${base.causal.join(",")}:${row?.last?.contentHash ?? ""}` : base.kind === "carton" ? `ref:${base.ref} b:${base.branch8 ?? ""}` : `legacy:${base.rev}`;
     let slot = await this.engine.getMeta<Attempt>(attemptKey);
-    if (!slot || slot.gen !== gen || slot.base !== baseKey) {
+    // finishing a save stored before a failure (or crash): its view row may already name the save itself as the base
+    const finishing = !!slot?.result && slot.gen === gen && slot.hash === hash && row?.last?.contentHash === hash;
+    if (!slot || slot.gen !== gen || (slot.base !== baseKey && !finishing)) {
       const id = this.engine.newChangeId?.();
-      slot = { gen, base: baseKey, ...(id ? { id } : {}) };
+      slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
       await this.engine.putMeta(attemptKey, slot);
     }
     const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
@@ -1110,7 +1168,7 @@ export class Materializer {
     // Cards are data too: stored before the receipt, so a failure in between retries this file instead of deleting the
     // only copy of a save whose every edit carded. The id is stable for the same file, so a retry rewrites the same key.
     const cards = res.cards ?? [];
-    const batch = cards.length ? { batch: res.id ?? `save-${sha(`${rel}\n${stamp ?? ""}\n${hash}`).slice(0, 20)}`, change: res.id ?? null, file: rel, actor, cards, at: this.clock.now() } : null;
+    const batch = cards.length ? { batch: res.id ?? `save-${sha(`${rel}\n${stamp ?? ""}\n${hash}`).slice(0, 20)}`, change: res.id ?? null, ...(slot.id ? { request: slot.id } : {}), file: rel, actor, cards, at: this.clock.now() } : null;
     if (batch) await this.engine.putMeta(["cards", batch.batch], batch);
     // the receipt: stored. Written before the regeneration below reads the path again
     if (!o.fromDisplaced) ps.last = hash;
@@ -1120,17 +1178,26 @@ export class Materializer {
     if (batch) await this.reportCards(batch, !name);
     if (this.freeze.active && this.freeze.view && rel !== PROJECT_FILE) {
       // R8-01: the freeze view gathers every local agent's applied saves (shared file and views), each merged with
-      // that save's own base
-      this.freeze.view = this.host.merge3(baseDoc, this.freeze.view, saved);
-      if (res.id) this.freeze.causal.push(res.id);
+      // that save's own base (on the freeze's own cut: a cut switch restarts it from the new head, which has the save)
+      const cut = this.freeze.cut;
+      await this.freezeOnCurrentCut();
+      if (cut === this.freeze.cut) {
+        this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
+        if (res.id && !this.freeze.causal.includes(res.id)) this.freeze.causal.push(res.id);
+      }
     }
     if (rel === TIMELINE_FILE || (name && this.freeze.active)) {
-      // R7-01: regenerate after every applied save, so the base of any later save is that save's own header ref
-      await this.writeSharedNow("save");
+      // R7-01: regenerate after every applied save, so the base of any later save is that save's own header ref. The
+      // save is stored: a failure here is logged (the next rewrite catches up) and never keeps its sidecar from it.
+      try {
+        await this.writeSharedNow("save");
+      } catch (e) {
+        this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: `regenerate after a save: ${e instanceof Error ? e.message : String(e)}` });
+      }
     }
     if (name && row) {
       // the saved content's causal past: its base's, plus this save's own change
-      if (rev?.kind === "carton" && rev.nonce === row.nonce) row.last = { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal: res.id ? [...held.causal, res.id] : held.causal } };
+      if (rev?.kind === "carton" && rev.nonce === row.nonce) row.last = { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal: res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal } };
       row.lastChange = res.id ?? null;
       await this.engine.putMeta(["view", name], row);
       const head = await this.engine.head();
@@ -1151,7 +1218,7 @@ export class Materializer {
       await this.engine.notice(c.actor, {
         kind: "conflicts",
         text: `Your save of ${c.file} conflicted with changes made since you read it; the newer values were kept, yours are in the cards: ${c.cards.map((x) => x.path).join(", ")}`,
-        ...(c.change ? { change: c.change } : {}),
+        ...(c.change || c.request ? { change: (c.change ?? c.request)! } : {}),
       });
   }
 

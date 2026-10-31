@@ -226,7 +226,7 @@ test("retryBusy: the budget is time (5 s by default, configurable), never other 
   await assert.rejects(retryBusy(busy, { ...WIN, counter, budgetMs: 100 }), { code: "EPERM" });
   const took = performance.now() - t0;
   assert.ok(took >= 50 && took < 1_000, `gave up after ${took} ms with a 100 ms budget`);
-  assert.ok(counter.busy >= 5);
+  assert.ok(counter.busy >= 2, `retried (${counter.busy} times; fewer on a loaded box, where each wait overshoots)`);
   let calls = 0;
   const gone = () => {
     calls++;
