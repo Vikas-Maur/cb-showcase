@@ -17,6 +17,12 @@ const lease = new Lease(store);
 const id = arg.id ?? `${randomBytes(12).toString("hex")}.1`;
 const events: Record<string, unknown>[] = [];
 const factory = fileURLToPath(new URL("./mini-factory.ts", import.meta.url));
+if (arg.waitForGo) {
+  // started ahead of time, so process start-up doesn't decide whether the call lands inside a 500 ms stall
+  process.stdout.write(JSON.stringify({ ready: true }) + "\n");
+  await new Promise<void>((r) => process.stdin.once("data", () => r()));
+}
+const started = Date.now();
 const r = await submit("carton.commit", { id, actor: identify(), op: arg.op ?? { kind: "commit", ops: arg.ops }, waitMs: arg.waitMs }, {
   lease,
   needsHelper: async () => true,
@@ -24,5 +30,6 @@ const r = await submit("carton.commit", { id, actor: identify(), op: arg.op ?? {
   retryOnReset: arg.retryOnReset ?? true,
   log: (e) => events.push({ t: Date.now(), ...e }),
 });
-process.stdout.write(JSON.stringify({ id, started: t0, ended: Date.now(), r, events }) + "\n");
+process.stdout.write(JSON.stringify({ id, processStarted: t0, started, ended: Date.now(), r, events }) + "\n");
+process.stdin.destroy();
 await store.close();

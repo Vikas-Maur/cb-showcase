@@ -41,13 +41,24 @@ export class World {
   }
   /** Start a `cb` call; resolves with its JSON result. */
   cb(arg: Record<string, unknown>): Promise<any> {
-    const p = spawn(process.execPath, [here("./cb.ts"), this.db, JSON.stringify({ config: { port: this.port }, ...arg })], { stdio: ["ignore", "pipe", "inherit"] });
+    return this.cbArmed(arg, false).result;
+  }
+  /** A `cb` process started ahead of time: it makes its call when `go()` is called. */
+  cbArmed(arg: Record<string, unknown>, armed = true): { ready: Promise<void>; go: () => void; result: Promise<any> } {
+    const p = spawn(process.execPath, [here("./cb.ts"), this.db, JSON.stringify({ config: { port: this.port }, ...arg, waitForGo: armed })], { stdio: [armed ? "pipe" : "ignore", "pipe", "inherit"] });
     this.procs.push(p);
-    return new Promise((resolve, reject) => {
-      let out = "";
-      p.stdout!.on("data", (d) => (out += d));
-      p.on("exit", (code) => (out.trim() ? resolve(JSON.parse(out.trim().split("\n").at(-1)!)) : reject(new Error(`cb exited ${code} with no output`))));
+    let out = "";
+    let readyRes: () => void;
+    const ready = new Promise<void>((r) => (readyRes = r));
+    p.stdout!.on("data", (d) => { out += d; if (out.includes('"ready":true')) readyRes(); });
+    if (!armed) readyRes!();
+    const result = new Promise<any>((resolve, reject) => {
+      p.on("exit", (code) => {
+        const last = out.trim().split("\n").filter((l) => !l.includes('"ready":true')).at(-1);
+        last ? resolve(JSON.parse(last)) : reject(new Error(`cb exited ${code} with no output`));
+      });
     });
+    return { ready, go: () => p.stdin!.write("go\n"), result };
   }
   async worker(config: Record<string, unknown> = {}): Promise<{ proc: ChildProcess; lines: any[]; ready: any; send: (l: string) => void; next: (pred: (x: any) => boolean) => Promise<any> }> {
     const p = spawn(process.execPath, [here("./worker.ts"), this.db, JSON.stringify({ port: this.port, ...config })], { stdio: ["pipe", "pipe", "inherit"] });

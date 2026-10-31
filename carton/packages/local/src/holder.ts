@@ -116,9 +116,10 @@ export class Holder {
       const cur = await lease.read();
       if (this.kind !== "worker") {
         // a helper takes over only from the holder its spawner saw dead; anything newer is someone else's helper
+        // The spawner's ping just failed; pinging again here would only add 100 ms to a takeover from a hung
+        // holder. If that holder was merely slow, fencing stops it at its next dequeue (R5-06).
         const seen = this.opts.seen ?? null;
         if ((cur?.nonce ?? null) !== seen) return null;
-        if (cur && (await liveHolder(lease))) return null;
         return lease.take(seen, who);
       }
       if (!cur) { const r = await lease.take(null, who); if (r) return r; continue; }
@@ -199,4 +200,37 @@ export class Holder {
 /** A socket path for a holder: next to carton.db, carrying the pid and a random part (never reused). */
 export function holderSocketPath(dir: string, kind: HolderKind): string {
   return `${dir.replace(/[\\/]+$/, "")}/${kind}-${process.pid}-${randomBytes(3).toString("hex")}.sock`;
+}
+
+/**
+ * The worker's lease for as long as the app runs: a holder that is fenced (a busy main loop mistaken for death, R5-06)
+ * takes the lease back after `reacquireMs`, by handover from whoever took it, rather than leaving the replica to a
+ * helper until the helper's idle timeout.
+ */
+export function keepLease(make: () => HolderOptions, { reacquireMs = 2000 }: { reacquireMs?: number } = {}) {
+  let current: Holder | null = null;
+  let closed = false;
+  let timer: NodeJS.Timeout | null = null;
+  const start = async (): Promise<Holder> => {
+    const o = make();
+    const h = new Holder({
+      ...o,
+      onStop: (why) => {
+        o.onStop?.(why);
+        if (!closed && why.startsWith("fenced")) timer = setTimeout(() => void start().catch(() => {}), reacquireMs);
+      },
+    });
+    current = h;
+    if (!(await h.start())) throw new Error("could not take the sync lease");
+    return h;
+  };
+  return {
+    start,
+    get current(): Holder | null { return current; },
+    async stop(): Promise<void> {
+      closed = true;
+      if (timer) clearTimeout(timer);
+      await current?.retire("app closing");
+    },
+  };
 }

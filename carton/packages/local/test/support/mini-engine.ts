@@ -59,6 +59,9 @@ export class MiniEngine implements HolderEngine {
   }
 
   startSync(nonce: string, onFenced: () => void): void {
+    // a worker that was fenced takes the lease back later and starts again under its new nonce
+    this.stopped = null;
+    this.quiescing = false;
     this.nonce = nonce;
     this.onFenced = onFenced;
     this.connect();

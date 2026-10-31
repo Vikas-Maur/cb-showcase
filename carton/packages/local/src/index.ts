@@ -15,6 +15,7 @@ export * from "./helper.ts";
 export * from "./identity.ts";
 export * from "./hooks.ts";
 export * from "./writes.ts";
+export * from "./engine-thread.ts";
 export { nodeHasher } from "./hasher.ts";
 
 const todo = (what: string): never => {
