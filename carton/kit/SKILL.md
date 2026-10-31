@@ -87,7 +87,10 @@ answers "Not folded in" and saves nothing until every card is decided:
 - `cb fold <project> <cut> --keep mine` keeps the current cut's value on every card;
 - `cb fold <project> <cut> --keep theirs` takes the folded cut's;
 - `cb fold <project> <cut> --reject timelineItems/<clip id>` folds in everything except that clip ("fold in some of
-  it"). Repeat `--reject` for more clips. Folding the same cut again later folds in the rest ("Folded in the rest").
+  it"). Repeat `--reject` for more clips.
+  To take the kept-out clips later, fold the cut again without `--reject` once it has nothing new: that folds in
+  the rest ("Folded in the rest"). If the cut changed since, that fold brings in only the new changes ("Folded in");
+  fold once more for the rest.
 
 A clip's start, end, trims and speed are decided together, so a card about `#time` keeps one side's timing whole.
 
