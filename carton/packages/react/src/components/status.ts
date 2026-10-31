@@ -4,7 +4,7 @@
 import { createElement as h, useEffect, useRef, useState } from "react";
 import { actorLabel } from "../actors.ts";
 import { exactTime, when } from "../format.ts";
-import { useAction, useAsync, useCartonUi, useLocale, useNow, usePreview, usePublished, useSyncStatus, useUndoTurn, useWords } from "../hooks.ts";
+import { useAction, useAsync, useCartonUi, useLocale, useNow, usePreview, usePublishedShown, useSyncStatus, useUndoTurn, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { Credits } from "../model.ts";
 import { ActorName, Avatar, Button, cx } from "./ui.ts";
@@ -30,7 +30,8 @@ export function SyncStatusWords({ className }: { className?: string }) {
 
 /** Published cut status: what the share link shows, and "Newer edits exist" when the cut moved on. */
 export function PublishedStatus({ className, onOpen }: { className?: string; onOpen?: (url: string) => void }) {
-  const pub = usePublished();
+  // Re-renders only when what it shows changes: whether newer edits exist, not each new one (U7).
+  const pub = usePublishedShown();
   const ui = useCartonUi();
   const words = useWords();
   const locale = useLocale();
@@ -49,7 +50,7 @@ export function PublishedStatus({ className, onOpen }: { className?: string; onO
         "span",
         { className: "carton-published-meta" },
         h("span", null, words.publishedCut),
-        stale ? h("span", { className: "carton-badge", "data-tone": "warning", "data-carton-tip": words.newerEditsCount(pub.newerEdits) }, words.newerEdits) : null,
+        stale ? h("span", { className: "carton-badge", "data-tone": "warning", "data-carton-tip": words.newerEditsHint }, words.newerEdits) : null,
         h("time", { dateTime: new Date(pub.at).toISOString(), "data-carton-tip": exactTime(pub.at, locale) }, when(pub.at, now, locale, words.justNow)),
       ),
       h("span", { className: "carton-published-name", title: pub.versionName ? `${pub.cutName} · ${pub.versionName}` : pub.cutName }, pub.versionName ? `${pub.cutName} · ${pub.versionName}` : pub.cutName),

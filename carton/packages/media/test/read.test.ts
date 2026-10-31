@@ -277,3 +277,57 @@ test("abort between the body arriving and the reader taking it still ends the re
     assert.equal(outcome, "AbortError", `abort ${depth} microtasks after the body`);
   }
 });
+
+test("stat's wait on a store that never answers ends with the caller's abort (CI fix #9 review)", async () => {
+  const { hash, mem } = await shared(MiB, 18);
+  const never: BlobStore = {
+    kind: "never",
+    head: () => new Promise(() => {}),
+    get: (k, r) => mem.get(k, r),
+    list: (p) => mem.list(p),
+    put: (k, d, o) => mem.put(k, d, o),
+    delete: (k) => mem.delete(k),
+    createMultipart: (k) => mem.createMultipart(k),
+    resumeMultipart: (k, u) => mem.resumeMultipart(k, u),
+  };
+  const reader = new MediaReader({ store: never, hasher: nodeHasher, cache: new MemoryLeafCache() });
+  const ac = new AbortController();
+  const p = reader.toolSource().stat(hash, ac.signal);
+  setTimeout(() => ac.abort(), 20);
+  const outcome = await Promise.race([p.then(() => "resolved", (e) => (e as Error).name), new Promise((r) => setTimeout(() => r("hung"), 3000))]);
+  assert.equal(outcome, "AbortError");
+});
+
+test("an abort just as stat asks the store leaves no unhandled rejection behind (CI fix #9 review round 2)", async () => {
+  const { hash, mem } = await shared(MiB, 19);
+  const cache = new MemoryLeafCache();
+  await new MediaReader({ store: mem, hasher: nodeHasher, cache }).manifest(hash); // cached: stat's manifest step is quick
+  const unhandled: unknown[] = [];
+  const onUnhandled = (e: unknown) => unhandled.push(e);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    // head() fails a little later (the link drops); the caller aborts right before stat gets to it.
+    const failing: BlobStore = {
+      kind: "failing-head",
+      head: () => new Promise((_, reject) => setTimeout(() => reject(new Error("ECONNRESET")), 20)),
+      get: (k, r) => mem.get(k, r),
+      list: (p) => mem.list(p),
+      put: (k, d, o) => mem.put(k, d, o),
+      delete: (k) => mem.delete(k),
+      createMultipart: (k) => mem.createMultipart(k),
+      resumeMultipart: (k, u) => mem.resumeMultipart(k, u),
+    };
+    for (let depth = 0; depth <= 6; depth++) {
+      const ac = new AbortController();
+      const reader = new MediaReader({ store: failing, hasher: nodeHasher, cache });
+      let p = Promise.resolve();
+      for (let i = 0; i < depth; i++) p = p.then(() => {});
+      void p.then(() => ac.abort());
+      await reader.stat(hash, ac.signal).catch(() => {});
+    }
+    await new Promise((r) => setTimeout(r, 60)); // every head() has rejected by now
+    assert.deepEqual(unhandled, []);
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
+});

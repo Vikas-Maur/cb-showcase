@@ -1,18 +1,19 @@
 # Phase B of the Carton build: the agents' "Measurements to run" re-run on hosted runners (AGENTS.md rule 6), one job
 # per measurement of carton/ci/measure.json. Runs only for a push to ci/carton whose head commit's message names
 # measurements: `[carton-measure agents=stores,ui]`, `[carton-measure ids=ui-bench]`, or `[carton-measure]` for all.
-# Linux runners: these are timing and size claims about portable code; a hosted runner is a shared VM, so only
-# comparisons made inside one job are trusted. Each job uploads its raw results (never builds).
+# Linux runners, except where a measurement is about a system (NTFS, APFS: its `runner` in measure.json). A hosted
+# runner is a shared VM, so only comparisons made inside one job are trusted. Each job uploads its raw results (never
+# builds).
 name: Carton measurements
 
 on:
   push:
     branches: [ci/carton]
 
-# Only a push that names measurements cancels the measurement run it supersedes; every other push (its run is
-# skipped) and a re-run get a group of their own.
+# Every run has a group of its own: a new push usually names other measurements, and cancelling a measurement run
+# throws its results away. (Pushes without a tag skip at once.)
 concurrency:
-  group: carton-measure-${{ github.ref }}-${{ (github.run_attempt == '1' && contains(github.event.head_commit.message, '[carton-measure')) && 'latest' || github.run_id }}
+  group: carton-measure-${{ github.run_id }}
   cancel-in-progress: true
 
 permissions:
@@ -37,7 +38,7 @@ jobs:
   measure:
     needs: plan
     name: ${{ matrix.id }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
@@ -47,6 +48,12 @@ jobs:
         shell: bash
         working-directory: carton
     steps:
+      # the job's clock, for measure.mjs's internal deadline (the job timeout counts from here)
+      - name: Start the clock
+        shell: bash
+        working-directory: .
+        run: echo "CARTON_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
@@ -64,7 +71,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/carton-ci-cache
-          key: carton-measure-tools-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/measure.json') }}
+          key: carton-measure-tools-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/measure.json') }}
 
       - name: Fetch tools ${{ matrix.needs }}
         run: node ci/fetch.mjs ${{ matrix.needs }}
@@ -74,10 +81,10 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/carton-ci-cache
-          key: carton-measure-tools-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/measure.json') }}
+          key: carton-measure-tools-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/measure.json') }}
 
       - name: Measure ${{ matrix.id }}
-        run: node ci/measure.mjs --id ${{ matrix.id }}
+        run: node ci/measure.mjs --id ${{ matrix.id }} --timeout-min ${{ matrix.timeout }}
 
       - name: Upload results
         if: always()

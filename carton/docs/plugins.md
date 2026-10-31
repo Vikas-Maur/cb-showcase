@@ -105,6 +105,35 @@ another project's keys. Both hosts go one step further and give each project two
 sequencer relies on, which may belong to a cut they may not write. A signed URL's MAC also covers its route
 (`/blob/<id>/`), so a URL for one project never opens the same key under another.
 
+### Media dedup within a team
+
+§11 dedups whole files within a team. It is off by default: without a team, each project's media stays in
+`projects/<id>/media/`. Give a host the team of each project (server-node's `teamOf(projectId)` option; on Cloudflare
+the `TEAMS` var, a JSON object from project id to team id, R2 only) and a project's media bytes and manifests
+(`m/<hash>`, `mf/<hash>`) are kept once under `teams/<team>/media/`, through `projectMediaStore` from
+`@carton/host-http`.
+
+**The grant model.** A project reads a team object only after it holds a grant for that hash
+(`projects/<id>/grants/<hash>`, a scope no route reaches). Ideally a grant would follow the project's own media
+records, but a host can't read documents. A project gets a grant in two ways:
+
+- it uploads the object, so it had the bytes;
+- one of its editors checks for the object (the media API's `head`) and the team already holds it. Editors are the
+  people who write media records: an editor could put that hash into a record, and every reader of the project
+  would then stream it. So this gives editors nothing a record wouldn't, and it is what lets a second project's
+  upload find a teammate's copy and send nothing.
+
+What follows from that:
+
+- Grants never cross teams. A project only ever sees its own team's scope.
+- Viewers and commenters can't claim. They read only what their project was granted, and every read checks the
+  grant, so a signed URL for an ungranted hash finds nothing.
+- Grants are never revoked. A project that drops a media record keeps access to bytes it once had.
+
+A sound team object can't be replaced from another project: a manifest must verify against its hash, and a write of
+`m/<hash>` over an object of the manifest's size is a no-op. A damaged object is removed only through the repair
+path, below. Proxy pointers (`px/`) stay per project, because they don't verify themselves.
+
 ## A new SequencerHost
 
 ### What a host does, and what it never does
@@ -150,7 +179,18 @@ every host runs the same function. The host:
    `sequencerBlobsFor` (the sequencer's own). Of the sequencer's scope, the API reaches only the envelope keys:
    `PUT /api/projects/<p>/messages/messages/c/…` (a writer's upload) and `GET …/messages/messages/s/…` (the
    server's). A client passes `hostMessageBlobs({ origin, projectId, token })` from `@carton/host-http/client` as
-   its sync client's `blobs`.
+   its sync client's `blobs`, and `hostMediaBlobs({ origin, projectId, token })` as `@carton/media`'s store: signed
+   ranged reads and PUTs, resumable multipart through the session's routes, and `reportDamaged(key, leaf)`.
+
+   **The repair path (§11).** A reader whose leaf never verifies reports it with `POST …/blobs/damaged {key, leaf}`.
+   The host loads the manifest, which the hash itself verifies, re-reads that leaf, and removes the object only if
+   its stored bytes really are wrong and it wasn't replaced meanwhile. The owner's next share then finds it missing
+   and uploads it again. A report can't remove a sound object.
+
+   **Signed URLs** are built from the request's origin, so build the `Request` with the address the client used. A
+   URL carrying an internal address can't be reached from outside. server-node takes, in order: `publicOrigin`;
+   `X-Forwarded-Host`/`-Proto`, only with `trustProxy` (a client could otherwise choose them); a well-formed `Host`
+   header; the listen address. A Worker's request URL already carries the client's host.
 
 The two shipped hosts are short and worth reading first:
 

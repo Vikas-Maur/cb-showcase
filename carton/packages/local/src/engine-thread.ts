@@ -12,6 +12,12 @@ export interface EngineThreadOptions {
   /** The engine factory module (as for the helper): `createHolderEngine({dbPath, config, log})`. */
   factory: string;
   config?: Record<string, unknown>;
+  /**
+   * What a helper should run when one takes over or runs with the app closed (recorded in carton.db, B3/B7): by default
+   * this factory and config. An app whose factory needs the app around passes a headless one here.
+   */
+  helperFactory?: string;
+  helperConfig?: Record<string, unknown>;
   reacquireMs?: number;
   onEvent?: (event: Record<string, unknown>) => void;
 }
@@ -50,7 +56,7 @@ export class EngineThread {
 
   /** Start the thread; resolves once it holds the lease (asking a live helper to hand over first). */
   static async start(o: EngineThreadOptions): Promise<EngineThread> {
-    const w = new Worker(entry(), { workerData: { dbPath: o.dbPath, factory: o.factory, config: o.config ?? {}, reacquireMs: o.reacquireMs ?? 2000 } });
+    const w = new Worker(entry(), { workerData: { dbPath: o.dbPath, factory: o.factory, config: o.config ?? {}, helperFactory: o.helperFactory, helperConfig: o.helperConfig, reacquireMs: o.reacquireMs ?? 2000 } });
     const t = new EngineThread(w, o.onEvent);
     await t.call("ready", {});
     return t;

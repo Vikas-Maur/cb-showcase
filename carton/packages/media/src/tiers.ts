@@ -38,7 +38,11 @@ export interface MediaRecord {
   bitrate?: number;
   hasAudio?: boolean;
   t1?: Partial<Record<T1Kind, SharedObject>>;
-  proxy?: SharedObject & { profile: string; encoder: string };
+  /**
+   * The collab proxy: a segmented stream a teammate plays while it uploads (stream.ts; `size` once it has ended), or
+   * one whole object (the older layout).
+   */
+  proxy?: { profile: string; encoder: string } & ({ stream: string; size?: number; hash?: undefined } | (SharedObject & { stream?: undefined }));
   /** Whether the original is in the shared store (T3). */
   original?: "local-only" | "shared";
 }

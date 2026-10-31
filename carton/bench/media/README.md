@@ -10,6 +10,7 @@ load and how busy other processes kept the CPUs before the run; `gateTimedOut: t
 |---|---|---|
 | `hash-throughput.ts` | MB/s of the read ceiling, in-process hashing, `hashFile` with 1/2/4 workers (cold and warm pool), and Chromium (page and Web Worker) on a picked File; every method must give the same hash | `node hash-throughput.ts make <file> 256` then `node hash-throughput.ts run <file> 3 <out.jsonl>` |
 | `resume-overhead.ts` | Bytes and upload time of a clean upload, a cut link then resume (state on disk, fresh process objects), and a cut link then starting over, over a simulated link (rate + round trip per request) | `node resume-overhead.ts run 5 <out.jsonl> 64 4 60` (64 MiB, 4 MB/s, 60 ms) |
+| `x264-cost.ts` | CPU cost of the chain's software fallback: libx264 making the 720p collab proxy, with the exact arguments `ffmpegEncoder("libx264")` builds, from two deterministic 10 s 1080p30 sources (easy test pattern; seeded noise), in CPU core-seconds per second of footage (from ffmpeg's `-benchmark`, so it works on Windows) and x realtime | `node x264-cost.ts run <dir> 3 <out.jsonl>` (makes the sources in `<dir>` first) |
 | `first-frame.ts` | Time to the first frame through the loopback range server over a throttled link: Chromium `<video>` to `playing`, and `ffmpeg -frames:v 1`, for faststart and moov-at-end clips | `node first-frame.ts --help` |
 
 `runner.ts` is the shared lock, gate and round-robin runner.

@@ -22,4 +22,8 @@ export interface Env {
   ARCHIVE_KEEP?: string;
   ARCHIVE_SEGMENT?: string;
   ARCHIVE_EVERY_MS?: string;
+  // media dedup within a team (§11), with R2 only: a JSON object from project id to team id, e.g.
+  // {"film-a":"studio","film-b":"studio"}. A listed project's media bytes and manifests live once under
+  // teams/<team>/media/, and the project reads only what it was granted (host-http's team.ts).
+  TEAMS?: string;
 }

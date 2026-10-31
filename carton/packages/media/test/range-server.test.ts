@@ -13,6 +13,11 @@ import { parseRange, startRangeServer, type RangeRequestInfo, type RangeServer }
 import { LeafMismatchError, type MediaStat, type RangeSource } from "../src/range-source.ts";
 import { FFMPEG, FFPROBE, haveFfmpeg, makeClip, scratchDir, xorshiftBytes } from "./helpers.ts";
 
+// The box is shared: a client of another program can reach one of our servers on a port it used before, with a token
+// that isn't ours. Those requests are refused before their path is read, so their reports carry no hash. Tests only
+// count their own requests.
+const mine = (i: RangeRequestInfo): boolean => i.hash !== null;
+
 const run = promisify(execFile);
 const KiB = 1024;
 const MiB = 1024 * 1024;
@@ -92,7 +97,7 @@ describe("range server over an in-memory source", () => {
   let srv: RangeServer;
   const seen: RangeRequestInfo[] = [];
   before(async () => {
-    srv = await startRangeServer({ source: memorySource({ [HASH_A]: data, [HASH_EMPTY]: new Uint8Array(0) }), onRequest: (i) => seen.push(i) });
+    srv = await startRangeServer({ source: memorySource({ [HASH_A]: data, [HASH_EMPTY]: new Uint8Array(0) }), onRequest: (i) => mine(i) && seen.push(i) });
   });
   after(() => srv.close());
 
@@ -241,7 +246,7 @@ test("a slow client doesn't make the server pull the whole body: the source is r
   // source's `finally` runs (CI on Windows caught exactly that).
   let served!: (info: RangeRequestInfo) => void;
   const responseClosed = new Promise<RangeRequestInfo>((r) => (served = r));
-  const srv = await startRangeServer({ source, onRequest: (info) => served(info) });
+  const srv = await startRangeServer({ source, onRequest: (info) => mine(info) && served(info) });
   try {
     const got = await new Promise<{ received: number; plateau: number[] }>((resolve, reject) => {
       const req = request({ host: "127.0.0.1", port: srv.port, path: pathOf(srv, HASH_A), agent: false }, (res) => {
@@ -269,7 +274,7 @@ test("a slow client doesn't make the server pull the whole body: the source is r
     assert.equal(got.received, total);
     const info = await responseClosed;
     assert.equal(info.bytes, total);
-    assert.equal(info.aborted, false);
+    assert.equal(info.error, undefined);
     assert.equal(pulled, total);
     assert.ok(readDone, "the source's read finished once the server closed the response");
   } finally {
@@ -298,7 +303,7 @@ test("a client that disconnects aborts the source read", async () => {
     },
   };
   const infos: RangeRequestInfo[] = [];
-  const srv = await startRangeServer({ source, onRequest: (i) => infos.push(i) });
+  const srv = await startRangeServer({ source, onRequest: (i) => mine(i) && infos.push(i) });
   try {
     await new Promise<void>((resolve, reject) => {
       const req = request({ host: "127.0.0.1", port: srv.port, path: pathOf(srv, HASH_A), agent: false }, (res) => {
@@ -337,7 +342,7 @@ test("a leaf mismatch mid-response breaks the response; the next request gets go
     },
   };
   const infos: RangeRequestInfo[] = [];
-  const srv = await startRangeServer({ source, onRequest: (i) => infos.push(i) });
+  const srv = await startRangeServer({ source, onRequest: (i) => mine(i) && infos.push(i) });
   try {
     const broken = await get(srv.port, pathOf(srv, HASH_A));
     assert.equal(broken.status, 200, "the headers went out with the first bytes");
@@ -508,7 +513,7 @@ describe("real tools read MP4s through the range server", { skip: !FFMPEG_OK && 
       const hash = createHash("sha256").update(readFileSync(path)).digest("hex");
       clips.push({ name, hash, path, size: statSync(path).size });
     }
-    srv = await startRangeServer({ source: fileSource(new Map(clips.map((c) => [c.hash, c.path])), counter), onRequest: (i) => log.push(i) });
+    srv = await startRangeServer({ source: fileSource(new Map(clips.map((c) => [c.hash, c.path])), counter), onRequest: (i) => mine(i) && log.push(i) });
   });
   after(async () => {
     await srv?.close();
@@ -627,5 +632,90 @@ test("a play-first MediaReader never lets a response complete when its last leaf
     assert.equal(createHash("sha256").update(again).digest("hex"), createHash("sha256").update(data).digest("hex"), "the retry is repaired");
   } finally {
     await server.close();
+  }
+});
+
+// CI fix #9 review: the ordering, made deterministic, and shutdown that doesn't depend on a source's cooperation.
+test("onRequest waits for the source's cleanup; close() doesn't wait for a source that ignores its abort", async () => {
+  const data = xorshiftBytes(300_000, 9);
+  let releaseCleanup!: () => void;
+  const cleanupGate = new Promise<void>((r) => (releaseCleanup = r));
+  let cleaned = false;
+  const source: RangeSource = {
+    stat: async () => ({ size: data.length }),
+    async *read(_h, offset, length) {
+      try {
+        yield data.subarray(offset, offset + length);
+      } finally {
+        await cleanupGate; // a slow cleanup, e.g. a store request being cancelled
+        cleaned = true;
+      }
+    },
+  };
+  const infos: RangeRequestInfo[] = [];
+  const srv = await startRangeServer({ source, onRequest: (i) => mine(i) && infos.push(i) });
+  try {
+    const body = await (await fetch(srv.url(HASH_A))).arrayBuffer();
+    assert.equal(body.byteLength, data.length, "the client has the whole body");
+    await new Promise((r) => setTimeout(r, 100));
+    assert.equal(infos.length, 0, "not reported while the source is still cleaning up");
+    releaseCleanup();
+    await until(() => infos.length === 1);
+    assert.ok(cleaned);
+    assert.equal(infos[0].bytes, data.length);
+  } finally {
+    releaseCleanup();
+    await srv.close();
+  }
+
+  // A source whose stat never settles and ignores its signal: close() must still resolve.
+  const stuck: RangeSource = { stat: () => new Promise(() => {}), read: async function* () {} };
+  const srv2 = await startRangeServer({ source: stuck });
+  const req = request({ host: "127.0.0.1", port: srv2.port, path: pathOf(srv2, HASH_A), agent: false });
+  req.on("error", () => {});
+  req.end();
+  await new Promise((r) => setTimeout(r, 100));
+  const closed = await Promise.race([srv2.close().then(() => "closed"), new Promise((r) => setTimeout(() => r("hung"), 3000))]);
+  assert.equal(closed, "closed");
+});
+
+test("a client that leaves with part of the body queued is reported as aborted (CI fix #9 review)", async () => {
+  const data = xorshiftBytes(8 * MiB, 10);
+  // The whole body goes to the socket in one write, so `info.bytes` reaches its length at once: the case the removed
+  // "every byte written is not an abort" rule got wrong. Whether the OS then takes all of it into its buffers is up to
+  // the OS (Windows' loopback buffers can hold all 8 MiB; Linux's can't), so the source's cleanup waits until its read
+  // is aborted, i.e. until the client has left: the server can't finish this response before that on any system.
+  const source: RangeSource = {
+    stat: async () => ({ size: data.length }),
+    async *read(_h, offset, length, signal) {
+      try {
+        yield data.subarray(offset, offset + length);
+      } finally {
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted) return resolve();
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+          setTimeout(resolve, 10_000).unref(); // never hang the suite if the abort doesn't come
+        });
+      }
+    },
+  };
+  const infos: RangeRequestInfo[] = [];
+  const srv = await startRangeServer({ source, onRequest: (i) => mine(i) && infos.push(i) });
+  try {
+    await new Promise<void>((resolve) => {
+      const req = request({ host: "127.0.0.1", port: srv.port, path: pathOf(srv, HASH_A), agent: false }, (res) => {
+        res.once("data", () => {
+          req.destroy();
+          resolve();
+        });
+      });
+      req.on("error", () => {});
+      req.end();
+    });
+    await until(() => infos.length === 1);
+    assert.equal(infos[0].bytes, data.length, "every byte had been handed to the socket");
+    assert.equal(infos[0].aborted, true, "and still the client left before the response was over");
+  } finally {
+    await srv.close();
   }
 });

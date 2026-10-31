@@ -312,3 +312,70 @@ test("exportCopy refuses its own database (also through a symlink or hard link) 
   assert.equal((await again.range("changes")).length, 1);
   await again.close();
 });
+
+test("WAL checkpoints never run inside a commit (no commit-latency spikes), yet the WAL stays bounded", async () => {
+  const file = fresh();
+  const s = await openSqliteStore(file);
+  assert.equal((s.db.raw.prepare("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint, 0);
+  // ~6 MB of WAL in one burst. Awaited writes that find no lock resolve without a macrotask, so the deferred
+  // checkpoint can't run during the loop: a WAL past SQLite's old 1,000-page trigger proves no commit checkpointed.
+  const blob = randomBytes(4500).toString("base64"); // ~6 KB of text: under the 8 KiB compression threshold
+  for (let i = 0; i < 1000; i++) await s.write([{ table: "changes", key: ["main", i], value: { blob, i } }]);
+  const walBytes = fs.statSync(`${file}-wal`).size;
+  assert.ok(walBytes > 1000 * 4096 * 1.2, `the WAL grew to ${walBytes} bytes during the burst`);
+  assert.equal(s.db.checkpoints, 0, "none ran inside a commit");
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(s.db.checkpoints >= 1, "then a checkpoint ran on its own turn of the event loop");
+  // Fully checkpointed, so the next write starts the WAL over: it holds a handful of frames, not thousands.
+  await s.write([{ table: "changes", key: ["main", 5000], value: 1 }]);
+  const after = s.db.raw.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() as { log: number };
+  assert.ok(after.log < 50, `${after.log} frames in the WAL after the checkpoint`);
+  assert.equal((await s.range("changes", { prefix: ["main"] })).length, 1001, "and nothing was lost");
+  await s.close();
+});
+
+test("a WAL left large by other processes is checkpointed at open, not by a commit", async () => {
+  const file = fresh();
+  const w = await openSqliteStore(file);
+  const blob = randomBytes(4500).toString("base64");
+  // Another connection (a cb process) fills the WAL and stays open, so closing it doesn't checkpoint.
+  for (let i = 0; i < 900; i++) await w.write([{ table: "changes", key: ["x", i], value: { blob } }]);
+  const s = await openSqliteStore(file);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(s.db.checkpoints + w.db.checkpoints >= 1, "someone checkpointed it without a commit doing so");
+  await w.close();
+  await s.close();
+});
+
+test("each durability gets its checkpoint mode: deferred and out of the lock by default, SQLite's own for full", async () => {
+  const blob = randomBytes(4500).toString("base64");
+  const normal = await openSqliteStore(fresh());
+  const full = await openSqliteStore(fresh(), { durability: "full" });
+  const auto = (s: typeof normal) => (s.db.raw.prepare("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint;
+  assert.equal(auto(normal), 0, "default: SQLite's checkpoint off, ours deferred");
+  assert.equal(auto(full), 1000, "full: SQLite's automatic checkpoint, as before");
+  for (let i = 0; i < 1100; i++) {
+    await normal.write([{ table: "t", key: [i], value: { blob } }]);
+    await full.write([{ table: "t", key: [i], value: { blob } }]);
+  }
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(normal.db.checkpoints >= 1, "the default ran its own deferred checkpoint");
+  assert.equal(full.db.checkpoints, 0, "full never queues one");
+  const walFull = fs.statSync(`${full.path}-wal`).size;
+  assert.ok(walFull < 1100 * 4096, `and its WAL was still checkpointed by SQLite (${walFull} bytes)`);
+  await normal.close();
+  await full.close();
+});
+
+test("a caller that never yields still gets checkpoints: the WAL stays bounded through the Store API alone", async () => {
+  const s = await openSqliteStore(fresh());
+  // 2,500 small writes in one tight loop of awaited calls: the deferred checkpoint never gets a turn of its own.
+  for (let i = 0; i < 2500; i++) await s.write([{ table: "changes", key: ["main", i], value: { i } }]);
+  assert.ok(s.db.checkpoints >= 1, "one ran inline, before a write, once the budget was twice spent");
+  const frames = (s.db.raw.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() as { log: number }).log;
+  assert.ok(frames < 2500, `the WAL was reused: ${frames} frames for 2,500 commits`);
+  await s.close();
+});

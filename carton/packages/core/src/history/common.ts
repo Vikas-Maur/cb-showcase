@@ -73,6 +73,17 @@ export interface Tail {
   states: readonly Doc[];
 }
 
+/**
+ * What importing a shallow `.cbproj` did (§13): forked a writable cut from the sender's head (a project this replica
+ * didn't have), imported its lineage, refused another project's file, or found no shared lineage under the same
+ * project id, in which case the copy gets `newProjectId` and is opened as a project of its own.
+ */
+export type ShallowImport =
+  | { status: "forked"; cut: string; head: NodeId }
+  | { status: "imported"; head: NodeId }
+  | { status: "other-project" }
+  | { status: "no-shared-lineage"; newProjectId: string };
+
 /** What an undo or a revert writes, computed but not committed (a shared cut queues it). */
 export interface Planned {
   doc: Doc;

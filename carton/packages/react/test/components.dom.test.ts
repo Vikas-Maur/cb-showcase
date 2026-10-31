@@ -1,5 +1,5 @@
 // Component tests in a DOM. `npm test` runs this file twice: on React 19, then on preact/compat (test/preact-alias.ts).
-import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, runtime, type, waitFor } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, renders, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -428,5 +428,58 @@ test(name("R4-1: a card that changed while the plan reloaded loses its pick too,
   assert.equal(go().disabled, true, "B changed during the reload: its old pick doesn't count");
   await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
   assert.equal(go().disabled, false);
+  await m.unmount();
+});
+
+// ---------------------------------------------------------------- Stage F: render counts under live sync (U6/U7)
+
+test(name("U6/U7: versions arriving and ghosts moving re-render only History; avatars, ghosts, cuts, published and sync stay put"), async () => {
+  const ui = createMockUi({ versions: 2000 });
+  const m = await render(
+    wrap(
+      ui,
+      h("div", { id: "bar" }, h(CutsMenu, {}), h(SyncStatusWords), h(PresenceAvatars), h(PublishedStatus)),
+      h("div", { style: { height: "600px" } }, h(HistoryPanel, { initialHeight: 600 })),
+      h("div", { style: { position: "relative", width: "800px", height: "200px" } }, h(GhostLayer, { timeToX: (t: number) => t * 20, trackBand: () => ({ top: 10, height: 30 }) })),
+    ),
+  );
+  await flush();
+  renders.clear();
+  const published = $(m.container, ".carton-published")!;
+  const pubMutations = await mutationsDuring(published, async () => {
+    // Each version moves the current cut's head and bumps the published cut's newer-edit count, as a commit does.
+    for (let i = 0; i < 10; i++) {
+      await act(() => void ui.addVersion({ author: people.bob }));
+      await act(() => ui.setGhosts([{ actorKey: people.bob.key, itemId: "x", trackId: "V1", start: i, end: i + 2 }]));
+      await flush(1);
+    }
+  });
+  const n = (name: string) => renders.get(name) ?? 0;
+  assert.equal(n("PresenceAvatars"), 0, "avatars don't re-render for versions or ghosts");
+  assert.equal(n("GhostLayer"), 0, "ghosts move without React");
+  assert.equal(n("CutsMenu"), 0, "a head moving doesn't re-render the Cuts menu");
+  assert.equal(n("PublishedStatus"), 0, "still 'newer edits exist': nothing it shows changed");
+  assert.equal(n("SyncStatusWords"), 0);
+  assert.equal(pubMutations, 0, "the published status's DOM is untouched");
+  assert.ok(n("HistoryPanel") >= 1 && n("HistoryPanel") <= 10, `History re-renders at most once per version (${n("HistoryPanel")})`);
+  assert.ok(n("VersionRow") <= 10 + 4, `only new rows render (${n("VersionRow")} for 10 versions)`);
+  // And when something it shows does change, it re-renders: publishing clears "newer edits exist".
+  await act(() => ui.publish("cut-main"));
+  await flush();
+  assert.equal(n("PublishedStatus"), 1);
+  assert.match(published.textContent ?? "", /The share link shows the newest version/);
+  await m.unmount();
+});
+
+test(name("F-5: Fold into Main hands the host the cuts as they are now, not the heads the menu last showed"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  await act(() => ui.switchCut("cut-ig"));
+  let got: { from: string; into: string } | null = null;
+  const m = await render(wrap(ui, h(CutsMenu, { onFoldIn: (from: { head: string }, into: { head: string }) => (got = { from: from.head, into: into.head }) })));
+  await act(() => void ui.addVersion({ author: people.bob })); // moves the current cut's head; the menu doesn't re-render
+  await flush();
+  await click($(m.container, ".carton-menu-trigger"));
+  await click(byText(m.container, "[role=menuitem]", "Fold into Main cut"));
+  assert.equal(got!.from, ui.cuts().find((c) => c.id === "cut-ig")!.head, "the source's head as it is now");
   await m.unmount();
 });

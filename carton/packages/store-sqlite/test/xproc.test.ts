@@ -16,12 +16,23 @@ test("P3: 4 processes x 500 CAS appends lose no write (sqlite-check)", async () 
   const file = path.join(dir, ".carton", "carton.db");
 
   const N = 4, COUNT = 500;
+  // Writers start together: each says "ready" once its store is open; "go" goes to all of them at once.
+  let ready = 0;
+  const children: ReturnType<typeof spawn>[] = [];
   const kids = Array.from({ length: N }, (_, n) => {
-    const child = spawn(process.execPath, [path.join(here, "xproc-writer.ts"), file, `w${n}`, String(COUNT)], { stdio: ["ignore", "pipe", "inherit"], env: process.env });
+    const child = spawn(process.execPath, [path.join(here, "xproc-writer.ts"), file, `w${n}`, String(COUNT)], { stdio: ["pipe", "pipe", "inherit"], env: process.env });
+    children.push(child);
     let out = "";
-    child.stdout.on("data", (d) => (out += d));
+    let saidReady = false;
+    child.stdout!.on("data", (d) => {
+      out += d;
+      if (!saidReady && out.includes("ready\n")) {
+        saidReady = true;
+        if (++ready === N) for (const c of children) c.stdin!.end("go\n");
+      }
+    });
     return new Promise<{ code: number | null; report: { maxStallMs: number; busyRetries: number; lostRaces: number } }>((resolve) =>
-      child.on("exit", (code) => resolve({ code, report: code === 0 ? JSON.parse(out) : null })));
+      child.on("exit", (code) => resolve({ code, report: code === 0 ? JSON.parse(out.trim().split("\n").pop()!) : null })));
   });
   const results = await Promise.all(kids);
 

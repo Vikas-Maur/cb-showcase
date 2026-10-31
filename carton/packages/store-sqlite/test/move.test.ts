@@ -442,10 +442,21 @@ test("Windows: a carton.db whose ACL denies writing is refused the same way", { 
   await a.store.write(put(1));
   await a.store.close();
   const user = `${process.env.USERDOMAIN ? process.env.USERDOMAIN + "\\" : ""}${os.userInfo().username}`;
-  execFileSync("icacls", [p.inBundle, "/deny", `${user}:(W)`], { stdio: "ignore", windowsHide: true });
+  // Deny writing the data only (WD: write data, AD: append data). icacls' "(W)" is FILE_GENERIC_WRITE, which also
+  // holds SYNCHRONIZE and READ_CONTROL: denying those makes every open fail, reads included (verify-ci #17).
+  execFileSync("icacls", [p.inBundle, "/deny", `${user}:(WD,AD)`], { stdio: "ignore", windowsHide: true });
   try {
+    // Readable but not writable: the case only the write probe catches (access() doesn't read ACLs on Windows).
+    // The setup is checked step by step, so a failure says whether the file or SQLite's read-only open broke.
+    assert.ok(fs.readFileSync(p.inBundle).length > 0, "the ACL still lets the file be read");
+    assert.throws(() => fs.appendFileSync(p.inBundle, ""), "and refuses writing it");
+    const reader = new DatabaseSync(p.inBundle, { readOnly: true });
+    assert.equal((reader.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n, 1);
+    reader.close();
     p.startSyncing();
-    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    let published = 0;
+    await assert.rejects(openProjectStore(p, { afterPublish: () => void published++ }), UnwritableHistoryError);
+    assert.equal(published, 0, "refused before a copy was made");
     assertNothingPublished(p);
   } finally {
     execFileSync("icacls", [p.inBundle, "/remove:d", user], { stdio: "ignore", windowsHide: true });
@@ -470,4 +481,169 @@ test("any failure after the copy is published (before the mark lands) takes the 
   assert.equal(b.store.path, p.inAppData);
   assert.deepEqual(await seqs(b.store), [1], "the next open moves it normally");
   await b.store.close();
+});
+
+test("a refusal never deletes what is beside the file: a WAL holding a committed change survives", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  // Another process commits a change and exits without checkpointing: the change lives only in the -wal.
+  const key = new URL("../src/key.ts", import.meta.url).href;
+  const code = `import { DatabaseSync } from "node:sqlite"; import { encodeKey } from ${JSON.stringify(key)}; const d = new DatabaseSync(${JSON.stringify(p.inBundle)}); d.exec("PRAGMA wal_autocheckpoint=0"); d.prepare("INSERT INTO changes(k, v) VALUES (?, ?)").run(encodeKey(["main", 2]), JSON.stringify({ id: "r.2" })); process.exit(0);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "inherit"] });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+  const walBefore = fs.statSync(`${p.inBundle}-wal`).size;
+  assert.ok(walBefore > 0);
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    p.startSyncing();
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assert.equal(fs.statSync(`${p.inBundle}-wal`).size, walBefore, "the -wal is untouched");
+    assertNothingPublished(p);
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1, 2], "and its change moved with the rest");
+  await b.store.close();
+});
+
+test("a write probe that aborts the whole transaction (SQLITE_FULL) reports that error, not a lost savepoint, and copies nothing", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  p.startSyncing();
+  let published = 0;
+  const err = await openProjectStore(p, {
+    // The database may not grow by a single page: the probe's page-sized write fails with SQLITE_FULL.
+    afterSourceLock: (raw) => {
+      const pages = (raw.prepare("PRAGMA page_count").get() as { page_count: number }).page_count;
+      raw.exec(`PRAGMA max_page_count=${pages}`);
+    },
+    afterPublish: () => void published++,
+  }).catch((e) => e);
+  assert.ok(err instanceof Error);
+  assert.match(String(err.message), /full/i, String(err));
+  assert.doesNotMatch(String(err.message), /savepoint/);
+  assert.equal(published, 0);
+  assertNothingPublished(p);
+  const b = await openProjectStore(p);
+  assert.equal(b.store.path, p.inAppData, "the next open moves it normally (the lock and connection were released)");
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+});
+
+test("a copy that can't be published (the rename fails) leaves no partial file and leaves the source the history", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  p.startSyncing();
+  // A directory where the copy goes makes the rename itself fail (EISDIR / EPERM), the way an exhausted retry would.
+  await assert.rejects(openProjectStore(p, { beforePublish: (to) => fs.mkdirSync(to, { recursive: true }) }));
+  const dir = path.dirname(p.inAppData);
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes(".part-")), [], "no partial copy left behind");
+  fs.rmdirSync(p.inAppData);
+  const raw = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.equal(raw.prepare(`SELECT count(*) AS n FROM "_carton" WHERE k = 'movedTo'`).get()!.n, 0, "the source was never marked");
+  raw.close();
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+});
+
+test("a read-only carton.db from another machine at the other place never blocks this machine's history", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  p.startSyncing();
+  const here = await openProjectStore(p); // this machine's history lives in app data
+  await here.store.write(put(1));
+  await here.store.close();
+  // A synced-in carton.db made on another machine, read-only, in the bundle.
+  const theirs = await openSqliteStore(p.inBundle);
+  await theirs.write(put(7));
+  theirs.db.raw.prepare(`UPDATE "_carton" SET v = ? WHERE k = 'machine'`).run(JSON.stringify({ id: "0".repeat(32), host: "fedcba9876543210" }));
+  await theirs.close();
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    const b = await openProjectStore(p);
+    assert.equal(b.store.path, p.inAppData);
+    assert.deepEqual(await seqs(b.store), [1], "this machine's history opens");
+    await b.store.close();
+    assert.deepEqual(fs.readdirSync(path.dirname(p.inBundle)).filter((f) => f.startsWith("carton.db")), ["carton.db"], "nothing made beside theirs");
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+  const check = await openSqliteStore(p.inBundle, { readOnly: true });
+  assert.deepEqual(await seqs(check), [7], "theirs untouched");
+  await check.close();
+});
+
+test("a read-only carton.db with a pending -wal is refused even if it looks foreign: the -wal could say otherwise", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  const raw = new DatabaseSync(p.inBundle);
+  raw.prepare(`UPDATE "_carton" SET v = ? WHERE k = 'machine'`).run(JSON.stringify({ id: "0".repeat(32), host: "fedcba9876543210" }));
+  raw.close();
+  const key = new URL("../src/key.ts", import.meta.url).href;
+  const code = `import { DatabaseSync } from "node:sqlite"; import { encodeKey } from ${JSON.stringify(key)}; const d = new DatabaseSync(${JSON.stringify(p.inBundle)}); d.exec("PRAGMA wal_autocheckpoint=0"); d.prepare("INSERT INTO changes(k, v) VALUES (?, ?)").run(encodeKey(["main", 2]), JSON.stringify({ id: "r.2" })); process.exit(0);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "inherit"] });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    p.startSyncing();
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assertNothingPublished(p);
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+});
+
+// A move whose old file survived (a handle kept it from being deleted), then something else put at the new place.
+async function movedThenReplaced(p: ReturnType<typeof project>, replace: (target: string) => Promise<void> | void) {
+  const early = await openProjectStore(p);
+  await early.store.write(put(1));
+  p.startSyncing();
+  const moved = await openProjectStore(p);
+  await moved.store.close();
+  await early.store.close();
+  assert.ok(fs.existsSync(p.inBundle), "the old file outlived the move (it was open)");
+  for (const f of [p.inAppData, `${p.inAppData}-wal`, `${p.inAppData}-shm`]) fs.rmSync(f, { force: true });
+  await replace(p.inAppData);
+}
+
+test("a moved history whose new copy was replaced by an empty file is kept and the open refused, never hidden or deleted", async () => {
+  const p = project();
+  await movedThenReplaced(p, (t) => fs.writeFileSync(t, ""));
+  await assert.rejects(openProjectStore(p), PlacementConflictError);
+  assert.ok(fs.existsSync(p.inBundle), "the only copy of the history is still there");
+  const check = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.equal((check.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n, 1);
+  check.close();
+});
+
+test("a moved history whose new copy was replaced by an unrelated history is kept and the open refused", async () => {
+  const p = project();
+  await movedThenReplaced(p, async (t) => {
+    const other = await openSqliteStore(t);
+    await other.write(put(9));
+    await other.close();
+  });
+  await assert.rejects(openProjectStore(p), PlacementConflictError);
+  assert.ok(fs.existsSync(p.inBundle));
+});
+
+test("a read-only moved history whose new copy was replaced is refused, not silently skipped", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  await movedThenReplaced(p, (t) => fs.writeFileSync(t, ""));
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assert.equal(fs.statSync(p.inAppData).size, 0, "nothing written over what is at the new place");
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
 });

@@ -13,7 +13,7 @@
 // report, never another call's.
 import { merge3 } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
-import type { Store } from "@carton/core/plugins";
+import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
@@ -169,22 +169,33 @@ export async function deliverNotices(carton: Carton, actor: Actor, opts: { reque
   const store = storeOf(carton);
   if (!store) return carton.notices(actor, { take: false });
   const busy = running(carton);
-  const at = Date.now();
-  const out: Notice[] = [];
-  for (const { key, value } of await store.range<NoticeRow>("notices", { prefix: [actorKey(actor)] })) {
-    if (value.handedToHuman) continue;
-    if (value.deliveredAt) {
-      if (opts.request && value.deliveredTo === opts.request && value.change !== opts.answered) out.push(value);
-      continue;
+  // one batch, conditional on every row as read: all of them are marked or none (a failed write gives nothing away),
+  // and a card resolved, a hook's mark, or another copy of this request getting there first means read again
+  for (let attempt = 0; attempt < 16; attempt++) {
+    const at = Date.now();
+    const out: Notice[] = [];
+    const writes: StoreWrite[] = [];
+    const conds: StoreCondition[] = [];
+    for (const { key, value } of await store.range<NoticeRow>("notices", { prefix: [actorKey(actor)] })) {
+      if (value.handedToHuman) continue;
+      if (value.deliveredAt) {
+        if (opts.request && value.deliveredTo === opts.request && value.change !== opts.answered) out.push(value);
+        continue;
+      }
+      // the outcome another running request waits for: it reports it
+      if (value.change && value.change !== opts.request && busy.has(value.change)) continue;
+      const delivered: NoticeRow = { ...value, deliveredAt: at, ...(opts.request ? { deliveredTo: opts.request } : {}) };
+      writes.push({ table: "notices", key, value: delivered });
+      conds.push({ table: "notices", key, expect: { equals: value } });
+      if (value.change !== opts.answered) out.push(delivered);
     }
-    // the outcome another running request waits for: it reports it
-    if (value.change && value.change !== opts.request && busy.has(value.change)) continue;
-    // conditional on the row as read: a card resolved (or a hook's mark written) meanwhile is never undone
-    let delivered: NoticeRow | null = null;
-    const ok = await casUpdate(store, "notices", key, (cur: NoticeRow) => (cur.deliveredAt || cur.handedToHuman ? SKIP : (delivered = { ...cur, deliveredAt: at, ...(opts.request ? { deliveredTo: opts.request } : {}) })), value);
-    if (ok && delivered && (delivered as NoticeRow).change !== opts.answered) out.push(delivered);
+    if (!writes.length || (await store.write(writes, conds))) return out;
+    // other writers (hook marks, resolves) kept changing these rows: let them through before reading again
+    if (attempt >= 2) await new Promise((r) => setTimeout(r, 2 + Math.random() * 8 * attempt));
   }
-  return out;
+  // never answer without them: a retry's replay or this call's own outcome would be lost. The write is run again
+  // (deduplicated by its id), delivery with it
+  throw new Error("Carton: the store changed under this write (its notices kept changing while being delivered)");
 }
 
 export const SKIP = Symbol("skip");
@@ -208,7 +219,7 @@ export async function casUpdate<T>(store: Store, table: string, key: readonly (s
 const cardsKey = (actor: Actor, requestId: ChangeId) => [actorKey(actor), 0, 0, `req:${requestId}`];
 
 /** The notice row holding a save's cards, written in the same batch as the save's append (`cardsWrite`). */
-function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | null, cards: readonly ConflictCard[]) {
+export function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | null, cards: readonly ConflictCard[]) {
   const to = actorKey(actor), at = Date.now();
   const text = `${cards.length} conflict card${cards.length === 1 ? "" : "s"} on your change ${change ?? requestId}: the other side's value was kept; pick with \`cb resolve\``;
   return { table: "notices", key: cardsKey(actor, requestId), value: { to, kind: "late-conflict", text, change: change ?? requestId, cards: [...cards], at, deliveredAt: at } };
@@ -228,6 +239,14 @@ export interface ViewPrinter {
   printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string }>;
   onCb?(): Promise<void>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
+  /**
+   * The current cut changed (`cb cut switch`): the files must show the new cut now, and a freeze started on the old
+   * cut (its view, its base seq) doesn't apply to the new one. Without it, `onHeadChange("local")` (project.json
+   * follows; a frozen timeline.tsx doesn't).
+   */
+  onCutSwitch?(cut: string): void | Promise<void>;
+  /** A view's change settled after its save returned (a shared cut): its `.status` sidecar says so (R5-04). */
+  onChangeUpdate?(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; reason?: string }): Promise<void>;
 }
 
 /** Run one write on a Carton handle and answer with the cb result contract. */
@@ -257,6 +276,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   async function run(): Promise<CbResult> {
   let r: any;
   let kept: ConflictCard[] = [];
+  let extra: Record<string, unknown> = {};
   switch (op.kind) {
     case "printView": {
       if (!opts.materializer) return { status: "error", error: "views need the app open (or a helper that materializes)", notices };
@@ -312,6 +332,17 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       r = op.reject?.length
         ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices, id: req.id })
         : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
+      // nothing new to fold in, but a partial fold of this cut kept some of it out: folding again folds in the rest
+      // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4)
+      if (r?.status === "up-to-date" && !op.check && !op.reject?.length) {
+        // its own id (the fold above may have recorded the request's id as a no-op); a retry finds that change again
+        const restId = `${req.id}.rest`;
+        const inverse = (await revertedBy(carton, restId)) ?? (await keptOut(carton, op.from, op.into));
+        if (inverse) {
+          r = await carton.revert(inverse, { author, cut: op.into, id: restId });
+          extra = { rest: true, inverse };
+        }
+      }
       break;
     }
     // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
@@ -320,7 +351,14 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author, id: req.id }); break;
     case "undoTurn": r = await undoTurn(carton, req.id, op.turn, author, op.cut); break;
     case "fork": { const cut = await carton.fork(op.name, { from: op.from, kind: op.cutKind as any, author, id: req.id }); return { status: "confirmed", seq: 0, ref: null, notices, cut }; }
-    case "switch": await carton.switchTo(op.cut); return { status: "confirmed", seq: 0, ref: null, notices, cut: op.cut };
+    case "switch": {
+      await carton.switchTo(op.cut);
+      // the files follow the current cut (B6): project.json and the shared timeline.tsx show the new one
+      const mz = opts.materializer;
+      if (mz?.onCutSwitch) await mz.onCutSwitch(op.cut);
+      else mz?.onHeadChange?.("local");
+      return { status: "confirmed", seq: 0, ref: null, notices, cut: op.cut };
+    }
     case "name": await carton.name(op.ref, op.name); return { status: "confirmed", seq: 0, ref: op.ref, notices };
     case "pin": { const pin = await carton.pin({ owner: op.owner, cut: op.cut, ttlMs: op.ttlMs }); return { status: "confirmed", seq: pin.ref.seq, ref: pin.header, notices, header: pin.header }; }
     case "closeCard": return { status: "confirmed", seq: 0, ref: null, notices, closed: await closeCard(carton, author, op.change, op.path) };
@@ -336,7 +374,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   if (r?.status === "up-to-date") return { status: "confirmed", seq: 0, ref: null, notices, upToDate: true };
   if (r?.status === "missing-base" || r?.status === "compare") return { status: "conflicts", conflicts: r.cards ?? [], ref: null, notices, dialog: r.dialog };
   const asConflicts = (x: CbResult): CbResult => (kept.length && (x.status === "confirmed" || x.status === "pending") ? { ...x, status: "conflicts", conflicts: kept, ref: x.ref ?? null, landed: x.status } as CbResult : x);
-  if (r?.status !== "pending") return asConflicts(toCbResult(r, notices, r?.entry ? { undid: r.entry } : {}));
+  if (r?.status !== "pending") return asConflicts(toCbResult(r, notices, { ...extra, ...(r?.entry ? { undid: r.entry } : {}) }));
   // a shared cut: wait for the server (L14); offline answers pending at once, and conflicts arrive later as notices
   // the cut written to, not the current one: a write to another cut waits on that cut's connection
   const st = () => carton.sync?.state(destCut(op)).status;
@@ -374,6 +412,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
  */
 async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Actor, cut?: string): Promise<CommitResult> {
   const head = await carton.head(cut);
+  // a retry: answer as the first time (an undo, or nothing to undo), before looking at what the turn holds now, on the
+  // cut that answer is on (the current cut may have changed since the first try)
+  const answeredOn = await answeredBefore(carton, id);
+  if (answeredOn) {
+    const h = answeredOn === (cut ?? carton.cut) ? head : await carton.head(answeredOn);
+    return carton.commit({ id, doc: h.doc, base: h.ref, author, cut: answeredOn });
+  }
   const versions = await carton.log({ cut, limit: 5000 });
   const undone = new Set<string>();
   for (const v of versions) if (v.kind === "undo" && v.change) for (const x of (await revertsOf(carton, v.change))) undone.add(x);
@@ -391,6 +436,48 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   }
   if (cards.length) return { status: "conflicts", cards, ref: head.ref };
   return carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) });
+}
+
+/**
+ * The cut on which core already holds an answer for this id: a confirmed change (`ids`), a no-op (`meta ["noop"]`),
+ * or a pending edit on a shared cut, whichever cut it went to; null when there is none.
+ */
+async function answeredBefore(carton: Carton, id: ChangeId): Promise<string | null> {
+  const store = storeOf(carton);
+  if (!store) return null;
+  const at = (await store.get<[string, number]>("ids", [id])) ?? (await store.get<[string, number]>("meta", ["noop", id]));
+  if (at) return at[0];
+  for (const c of await carton.cuts()) if (c.sequencer.kind !== "local" && (await store.get("pending", [c.id, id])) !== undefined) return c.id;
+  return null;
+}
+
+/**
+ * The newest partial fold of `from` into the cut whose kept-out part isn't folded in yet: its inverse change (a
+ * `partial-revert` whose `reverts` is a merge of `from`, and that no later change reverts). From the Store's confirmed
+ * log; only read when a fold finds nothing new.
+ */
+async function keptOut(carton: Carton, from: string, into?: string): Promise<ChangeId | null> {
+  const store = storeOf(carton);
+  if (!store) return null;
+  type Row = { id: ChangeId; kind?: string; reverts?: ChangeId | ChangeId[]; mergeOf?: { branchId: string } };
+  const rows = (await store.range<Row>("changes", { prefix: [into ?? carton.cut] })).map((r) => r.value);
+  const reverted = new Set<ChangeId>();
+  for (const c of rows) if (c.kind !== "partial-revert") for (const x of [c.reverts ?? []].flat()) reverted.add(x);
+  const byId = new Map(rows.map((c) => [c.id, c]));
+  for (let i = rows.length - 1; i >= 0; i--) {
+    const c = rows[i]!;
+    if (c.kind !== "partial-revert" || reverted.has(c.id)) continue;
+    const merge = byId.get([c.reverts ?? []].flat()[0] ?? "");
+    // a partial fold whose merge was undone since has nothing left to complete
+    if (merge && !reverted.has(merge.id) && merge.mergeOf && (from === merge.mergeOf.branchId || from.startsWith(`${merge.mergeOf.branchId}@`))) return c.id;
+  }
+  return null;
+}
+
+/** The change a confirmed revert with this id reverted (a retried "fold in the rest"), or null. */
+async function revertedBy(carton: Carton, id: ChangeId): Promise<ChangeId | null> {
+  const [first] = await revertsOf(carton, id);
+  return first ?? null;
 }
 
 /** The change ids an undo change reverts (from the confirmed log in the Store; [] when unknown). */

@@ -39,6 +39,11 @@ export interface RangeServerOptions {
   onRequest?: (info: RangeRequestInfo) => void;
   /** Don't keep the process alive for this server alone. Off by default: a tool may be mid-read when main code ends. */
   unref?: boolean;
+  /**
+   * Segmented proxies (stream.ts): the live HLS playlist of stream `id`, served at /s/<id>.m3u8, or null when unknown.
+   * `urlFor` gives the URL of each segment on this server (/m/<hash>), so a tool follows the stream while it uploads.
+   */
+  playlist?: (id: string, urlFor: (hash: string) => string, signal: AbortSignal) => Promise<string | null>;
 }
 
 export interface RangeRequestInfo {
@@ -66,6 +71,8 @@ export interface RangeServer {
   readonly token: string;
   /** `http://127.0.0.1:<port>/m/<hash>?t=<token>`: what a tool gets. */
   url(hash: string): string;
+  /** `http://127.0.0.1:<port>/s/<stream>.m3u8?t=<token>`: a segmented proxy as a live HLS playlist (needs `playlist`). */
+  playlistUrl(stream: string): string;
   /** Stops listening, drops every connection (in-flight reads are aborted) and resolves once the server is closed. */
   close(): Promise<void>;
 }
@@ -73,6 +80,7 @@ export interface RangeServer {
 export { parseRange, type ByteSpan } from "../http-range.ts";
 
 const MEDIA_PATH = "/m/";
+const STREAM_PATH = "/s/";
 const DEFAULT_TYPE = "application/octet-stream";
 
 export async function startRangeServer(opts: RangeServerOptions): Promise<RangeServer> {
@@ -92,9 +100,10 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   };
 
   let hostOk = (_host: string | undefined): boolean => false; // set once the port is known
+  let mediaUrl = (_hash: string, _ext?: string): string => ""; // likewise
 
-  // Responses not closed yet. close() waits for them, so once it resolves every read it started has been aborted and
-  // the caller can shut the source down.
+  // Responses not closed yet. close() waits for them, so once it resolves every read it started has been told to abort
+  // and the caller can shut the source down. (onRequest waits for the reads themselves to end.)
   let open = 0;
   let drained: (() => void) | undefined;
 
@@ -117,12 +126,14 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
     const closed = new Promise<void>((r) => (markClosed = r));
     res.once("close", () => {
       if (!res.writableFinished) {
-        // The client left, the idle timeout fired, close() ran, or we destroyed the socket after a source error. A
-        // client that hangs up once it has every byte (its Content-Length is met) while we finish the source's read
-        // lost nothing: that is not an abort.
-        if (info.error === undefined && !(info.length > 0 && info.bytes === info.length)) info.aborted = true;
+        // The client left, the idle timeout fired, close() ran, or we destroyed the socket after a source error.
+        // (`info.bytes` counts bytes handed to the socket, not bytes the client got, so it can't tell a client that
+        // had everything from one that missed the tail: any close before we finished counts as an abort.)
+        if (info.error === undefined) info.aborted = true;
         ac.abort();
       }
+      // close() waits for responses, not for sources: a source that ignores its abort must not hold up shutdown.
+      if (--open === 0 && drained !== undefined) drained();
       markClosed();
     });
 
@@ -130,7 +141,8 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
       await respond(req, res, ac, info);
     } finally {
       // Report once the response is closed AND this handler is done, the source's read included (its cleanup can
-      // outlast the socket), so onRequest and close() mean "this request is completely over".
+      // outlast the socket: a client with a Content-Length ends at the last byte, before we leave our loop), so
+      // onRequest means "this request is completely over".
       await closed;
       if (onRequest !== undefined) {
         info.status = res.headersSent ? res.statusCode : 0; // 0: it ended before any answer
@@ -141,7 +153,6 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
           process.emitWarning(`range server onRequest threw: ${String(e)}`);
         }
       }
-      if (--open === 0 && drained !== undefined) drained();
     }
   };
 
@@ -155,7 +166,22 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
       const head = req.method === "HEAD";
       // A request with another method may carry a body; closing is cheaper than reading it to keep the connection.
       if (!head && req.method !== "GET") return reply(res, 405, { Allow: "GET, HEAD", ...CLOSE });
-      const hash = path.length === MEDIA_PATH.length + 64 && path.startsWith(MEDIA_PATH) ? path.slice(MEDIA_PATH.length) : "";
+      const stream = path.length === STREAM_PATH.length + 64 + 5 && path.startsWith(STREAM_PATH) && path.endsWith(".m3u8") ? path.slice(STREAM_PATH.length, -5) : "";
+      if (isMediaHash(stream) && opts.playlist) {
+        info.hash = stream;
+        const text = await opts.playlist(stream, (h) => mediaUrl(h, ".m4s"), ac.signal);
+        if (ac.signal.aborted) return;
+        if (text === null) return reply(res, 404);
+        const body = Buffer.from(text, "utf8");
+        // A live playlist changes as segments land: never cached, re-read by the tool every target duration.
+        res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl", "Content-Length": body.length, "Cache-Control": "no-store" });
+        info.length = info.bytes = head ? 0 : body.length;
+        res.end(head ? undefined : body);
+        return;
+      }
+      // /m/<hash>, or /m/<hash>.mp4 / .m4s: ffmpeg's HLS demuxer only follows segment URLs with a media extension.
+      const name = path.startsWith(MEDIA_PATH) ? path.slice(MEDIA_PATH.length).replace(/\.(mp4|m4s)$/, "") : "";
+      const hash = name.length === 64 ? name : "";
       if (!isMediaHash(hash)) return reply(res, 404);
       info.hash = hash;
 
@@ -219,6 +245,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
   hostOk = (h) => h !== undefined && (h === allowed[0] || h.toLowerCase() === allowed[1]);
   const query = `?t=${encodeURIComponent(token)}`;
+  mediaUrl = (hash, ext = "") => `http://127.0.0.1:${port}${MEDIA_PATH}${hash}${ext}${query}`;
 
   let closing: Promise<void> | undefined;
   return {
@@ -226,7 +253,11 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
     token,
     url(hash) {
       if (!isMediaHash(hash)) throw new TypeError(`not a media hash: ${String(hash).slice(0, 80)}`);
-      return `http://127.0.0.1:${port}${MEDIA_PATH}${hash}${query}`;
+      return mediaUrl(hash);
+    },
+    playlistUrl(stream) {
+      if (!isMediaHash(stream)) throw new TypeError(`not a stream id: ${String(stream).slice(0, 80)}`);
+      return `http://127.0.0.1:${port}${STREAM_PATH}${stream}.m3u8${query}`;
     },
     close() {
       closing ??= new Promise<void>((resolve) => {

@@ -15,14 +15,15 @@
 // - Archiving (§18) runs on a timer per open room, with the same defaults as the Durable Object.
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { mkdirSync, createReadStream, statSync, readdirSync } from "node:fs";
+import { mkdirSync, createReadStream, statSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve, sep, extname } from "node:path";
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { AuthContext, BlobStore, SequencerHost } from "@carton/core/plugins";
 import { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, tokenFromRequest, WS_PROTOCOL } from "@carton/server";
-import { handleHttp, checkSession, type HttpAuth, type HttpDeps } from "@carton/host-http";
+import { handleHttp, checkSession, projectMediaStore, type HttpAuth, type HttpDeps } from "@carton/host-http";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { encodeSegment, decodeSegment } from "@carton/blob-fs/keys";
 import { acceptWebSocket, rejectUpgrade, type ServerWebSocket } from "./ws.ts";
@@ -37,6 +38,10 @@ export interface NodeHostOptions {
   secret?: string | Uint8Array;
   /** Media, keyframes and archived segments (blob-fs or blob-s3); each project sees its own `projects/<id>/` scope. */
   blobs?: BlobStore;
+  /** The team a project belongs to, for media dedup within a team (PLAN §11): its media bytes and manifests are kept
+   * once under `teams/<team>/media/`, and a project reads only the hashes it was granted (host-http's team.ts). No
+   * team (the default): each project's media stays in its own scope. */
+  teamOf?: (projectId: string) => string | null | undefined;
   /** 0 picks a free port. */
   port?: number;
   host?: string;
@@ -53,6 +58,12 @@ export interface NodeHostOptions {
   /** Largest WebSocket message (default 32 MiB, Cloudflare's own cap, so both hosts accept the same messages). This
    * is the protocol's limit, separate from the sequencer's 1 MB threshold for keeping a change body inline. */
   maxMessageBytes?: number;
+  /** The origin clients reach this host at (`https://carton.example`), for the signed URLs it hands out. Without
+   * it, each request's own Host header is used, so a URL works at the address the client used. */
+  publicOrigin?: string;
+  /** Behind a reverse proxy: take the origin from X-Forwarded-Proto and X-Forwarded-Host. Only set this when a
+   * proxy you run sets them; a client could otherwise choose them. */
+  trustProxy?: boolean;
   /** The newest document schemaVersion this host's sequencer accepts in `hello` (default 1). */
   schemaVersion?: number;
   /** The largest message carried as an envelope, read by the sequencer and taken by the upload route (default 64
@@ -90,6 +101,15 @@ const MAX_MESSAGE = 32 << 20;
 const WS_PATH = /^\/api\/projects\/([A-Za-z0-9._~-]{1,128})\/ws$/;
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".wasm": "application/wasm", ".ico": "image/x-icon", ".mp4": "video/mp4", ".webm": "video/webm" };
 
+// A room's database file name: the project id as blob-fs encodes a key segment (so `Proj` and `proj` never share a
+// file on a case-insensitive volume), or, when that would be long, `~` and the id's SHA-256. SQLite adds suffixes
+// (`-journal`, `-wal`) to the name, which must stay under 255 bytes, so a readable name is kept to 120.
+const ROOM_NAME_MAX = 120;
+function roomFileName(projectId: string): string {
+  const name = encodeSegment(projectId);
+  return name.length <= ROOM_NAME_MAX && !name.includes("~") ? name : "~" + createHash("sha256").update(projectId).digest("hex");
+}
+
 // node:http request → web Request (the body streams; GET and HEAD have none).
 function toRequest(req: IncomingMessage, origin: string): Request {
   const headers = new Headers();
@@ -104,6 +124,12 @@ function toRequest(req: IncomingMessage, origin: string): Request {
 }
 
 async function send(res: ServerResponse, r: Response): Promise<void> {
+  // the connection may be gone already (the client left, or the host closed it): its "close" event has fired, so
+  // nothing below would ever settle
+  if (res.destroyed) {
+    await r.body?.cancel().catch(() => {});
+    return;
+  }
   const headers: Record<string, string> = {};
   r.headers.forEach((v, k) => (headers[k] = v));
   res.writeHead(r.status, headers);
@@ -134,14 +160,22 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   let nextId = 0, closing = false;
 
   // Two scopes per project that no route can cross: the sequencer's keyframes, segments and large change bodies, and
-  // the media the HTTP API signs and uploads (an editor can write media, never the sequencer's records).
-  const scoped = (projectId: string, scope: "seq" | "media") => (opts.blobs ? scopedBlobStore(opts.blobs, `projects/${projectId}/${scope}/`) : undefined);
-  const blobsFor = (projectId: string) => scoped(projectId, "media");
+  // the media the HTTP API signs and uploads (an editor can write media, never the sequencer's records). With a team,
+  // media bytes and manifests sit in the team's scope instead, behind the project's grants (projectMediaStore).
+  const scoped = (projectId: string, scope: "seq") => (opts.blobs ? scopedBlobStore(opts.blobs, `projects/${projectId}/${scope}/`) : undefined);
+  const blobsFor = (projectId: string) => (opts.blobs ? projectMediaStore(opts.blobs, projectId, opts.teamOf?.(projectId)) : undefined);
 
   function openRoom(projectId: string): Room {
     let room = rooms.get(projectId);
     if (room) return room;
-    const storage = nodeSqliteStorage(join(roomsDir, encodeSegment(projectId) + ".db"), opts.durability ? { durability: opts.durability } : {});
+    if (closing) throw new Error("the host is closing");
+    const name = roomFileName(projectId);
+    // a project id whose file name had to be hashed is kept beside it, so the sweep can name it
+    if (decodeSegment(name) === null) {
+      const idFile = join(roomsDir, name + ".id");
+      if (!existsSync(idFile)) writeFileSync(idFile, projectId);
+    }
+    const storage = nodeSqliteStorage(join(roomsDir, name + ".db"), opts.durability ? { durability: opts.durability } : {});
     const blobs = scoped(projectId, "seq");
     const sequencer = createSequencer({
       storage,
@@ -256,8 +290,14 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     } catch {}
     for (const f of files) {
       if (!f.endsWith(".db")) continue;
-      const projectId = decodeSegment(f.slice(0, -3));
-      if (!projectId) continue;
+      let projectId = decodeSegment(f.slice(0, -3));
+      if (projectId === null) {
+        try {
+          projectId = readFileSync(join(roomsDir, f.slice(0, -3) + ".id"), "utf8");
+        } catch {
+          continue;
+        }
+      }
       const store = scoped(projectId, "seq")!;
       let cursor: string | undefined;
       do {
@@ -289,6 +329,21 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   const hostPart = listenHost.includes(":") ? `[${listenHost}]` : listenHost;
   const origin = `http://${hostPart}:${port}`;
 
+  // The origin a request was made to, for the URLs built from it (signed media URLs): the configured public one, else
+  // what a trusted proxy forwarded, else the Host header the client sent, else the listen address.
+  const HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](:\d{1,5})?$/;
+  const publicOrigin = opts.publicOrigin ? new URL(opts.publicOrigin).origin : null;
+  function originOf(req: IncomingMessage): string {
+    if (publicOrigin) return publicOrigin;
+    const first = (h: string | string[] | undefined) => (Array.isArray(h) ? h[0] : h)?.split(",")[0]?.trim();
+    if (opts.trustProxy) {
+      const host = first(req.headers["x-forwarded-host"]), proto = first(req.headers["x-forwarded-proto"]);
+      if (host && HOST_RE.test(host)) return `${proto === "https" ? "https" : "http"}://${host}`;
+    }
+    const host = req.headers.host;
+    return host && HOST_RE.test(host) ? `http://${host}` : origin;
+  }
+
   const deps: HttpDeps = {
     auth: opts.auth,
     secret: opts.secret ?? new Uint8Array(32),
@@ -296,16 +351,20 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     sequencerBlobsFor: (projectId) => scoped(projectId, "seq"),
     ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
     // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes
-    onEnvelope: (projectId) => idleLater(openRoom(projectId)),
+    onEnvelope: (projectId) => {
+      if (!closing) idleLater(openRoom(projectId));
+    },
     // a plain GET on the socket route (no Upgrade header): the upgrade itself goes through server.on("upgrade")
     upgrade: async () => new Response("expected a WebSocket upgrade", { status: 426 }),
   };
   if (opts.adminToken) deps.adminToken = opts.adminToken;
 
+  // requests still being answered: close waits for them, so none touches a room or the blob store after it resolves
+  const httpPending = new Set<Promise<void>>();
   server.on("request", (req, res) => {
-    void (async () => {
+    const work = (async () => {
       try {
-        const r = await handleHttp(toRequest(req, origin), deps);
+        const r = await handleHttp(toRequest(req, originOf(req)), deps);
         if (r) return await send(res, r);
         if (staticRoot && (req.method === "GET" || req.method === "HEAD")) return serveStatic(staticRoot, req, res);
         res.writeHead(404, { "content-type": "text/plain" }).end("not found");
@@ -315,6 +374,8 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
         res.end("internal error");
       }
     })();
+    httpPending.add(work);
+    void work.finally(() => httpPending.delete(work));
   });
 
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -365,6 +426,8 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
         for (const ws of room.conns.keys()) ws.terminate();
         room.conns.clear();
       }
+      // HTTP requests in flight (an envelope upload whose blob write is slow, say) finish first: they may open a room
+      await Promise.allSettled([...httpPending]);
       // Sequencer work in flight finishes on its own database first, however long its blob store takes: closing the
       // database under it, or resolving while it still writes, would let a host restarted on the same data be
       // overwritten by the old write. No new work can start: sockets and timers are gone.

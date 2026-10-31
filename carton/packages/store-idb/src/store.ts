@@ -10,9 +10,12 @@
 // all tabs, so the conditions and the writes are the local sequencer's compare-and-swap. After a write commits, the
 // other tabs hear about it on a BroadcastChannel and their `watch` listeners fire.
 //
-// Values are JSON text, not structured clones: JSON gives exactly store-sqlite's value semantics (an `undefined`
-// member dropped, -0 read back as 0), and in one unverified run of bench/exp-values.ts (Chromium, 10k changes) text
-// plus JSON.parse read back faster than clones; that measurement waits for the verification phase.
+// Values are JSON text, not structured clones, so a value means exactly what it means in store-sqlite: an
+// `undefined` member is dropped, -0 reads back as 0, and something JSON can't hold (a Date, a Map, a class instance)
+// behaves in a browser as it does on the desktop instead of round-tripping here and nowhere else. The same Store
+// conformance suite then pins one behaviour for both. It is not a speed choice: the verified A/B
+// (bench/exp-values.ts, Chromium, 10k changes, 7 rounds; VERIFIED.md S6) found no reliable difference for reads
+// (text faster in 3 of 7 rounds), and writes and single commits were slightly faster as clones.
 
 import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";

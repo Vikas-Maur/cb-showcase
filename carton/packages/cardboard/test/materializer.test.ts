@@ -775,3 +775,42 @@ test("review 5 #3: if removing a finished save's attempt fails, the save is stil
   assert.ok((await s.engine.getMeta<ViewRow>(["view", name]))?.last, "the view's base was recorded");
   assert.equal(s.engine.commits.length, 1, "applied once");
 });
+
+test("an install holds the bundle's install lock (the app's readers wait on it) and releases it after", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)], { start: false });
+  const lock = path.join(s.bundle, ".carton", "install.lock");
+  const seen: boolean[] = [];
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (to === s.abs(TIMELINE_FILE) || to === s.abs(PROJECT_FILE)) seen.push(fs.existsSync(lock));
+    return real(from, to);
+  });
+  await s.mz.start();
+  t.mock.restoreAll();
+  assert.ok(seen.length >= 1, "start installed the files");
+  assert.ok(seen.every(Boolean), "each link ran under the lock");
+  assert.equal(fs.existsSync(lock), false, "released");
+});
+
+test("B8: a view save written while the app was down is applied at the next start, credited to its owner, sidecar written", async (t) => {
+  const s = await setup(t, [clip("X", 10, 20), clip("Y", 20, 30)]);
+  const agent = { kind: "agent" as const, id: "director/c/t1", turn: "t1" };
+  const { path: rel } = await s.mz.printView("director_c_t1", agent, { hooked: true });
+  await s.mz.close(); // the app crashes before it sees the save
+  s.writeAtomic(rel, s.edited(s.read(rel), (its) => (its[1]!.name = "renamed")));
+  const mz = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => mz.close());
+  await mz.start();
+  assert.equal(s.find(await s.head(), "Y").name, "renamed");
+  const c = s.engine.commits.at(-1)!;
+  assert.equal(c.author.id, agent.id, "credited to the view's owner");
+  const status = JSON.parse(fs.readFileSync(s.abs(statusPath("director_c_t1")), "utf8"));
+  assert.equal(status.status, "confirmed");
+  assert.equal(status.change, c.id);
+  const commits = s.engine.commits.length;
+  await mz.close();
+  const again = new Materializer({ bundle: s.bundle, engine: s.engine, host: plainHost, codec: jsonTimelineCodec, clock: s.clock });
+  t.after(() => again.close());
+  await again.start();
+  assert.equal(s.engine.commits.length, commits, "applied once: the next start finds it current");
+});

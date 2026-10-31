@@ -17,6 +17,7 @@ import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins"
 import type { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, WS_PROTOCOL } from "@carton/server";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
+import { projectMediaStore } from "@carton/host-http";
 import type { CfWebSocket, DurableObjectState, WebSocketPairCtor, WebSocketRequestResponsePairCtor } from "./cf.ts";
 import type { Env } from "./env.ts";
 import { doSqlStorage } from "./storage.ts";
@@ -31,6 +32,20 @@ export const PROJECT_HEADER = "x-carton-project";
 // 24 MiB [E] (MAX_ENVELOPE_BYTES; measurement listed in the hosts-plugins notes). Bigger messages travel on Node.
 export const DEFAULT_MAX_ENVELOPE = 24 << 20;
 export const maxEnvelopeOf = (env: Env) => Number(env.MAX_ENVELOPE_BYTES ?? DEFAULT_MAX_ENVELOPE);
+
+// Is this string's UTF-8 encoding over `cap` bytes? Counted without encoding it (a copy the cap exists to avoid),
+// and only when the UTF-16 length doesn't settle it: each unit is 1 to 3 bytes, a surrogate pair 4 for 2 units.
+export function utf8Over(s: string, cap: number): boolean {
+  if (s.length > cap) return true;
+  if (s.length * 3 <= cap) return false;
+  let n = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    n += c < 0x80 ? 1 : c < 0x800 ? 2 : c >= 0xd800 && c <= 0xdbff ? (i++, 4) : 3;
+    if (n > cap) return true;
+  }
+  return false;
+}
 const ALARM_RETRY_MS = 60_000;
 
 interface Attachment {
@@ -52,7 +67,20 @@ function projectBlobs(env: Env, projectId: string, scope: "seq" | "media"): Blob
   return undefined;
 }
 export const sequencerBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "seq");
-export const mediaBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "media");
+// With R2 and TEAMS, a project's media dedups within its team; the DO-blob fallback is per project, so it never does.
+let teams: { src: string; map: Record<string, unknown> } | null = null;
+function teamOf(env: Env, projectId: string): string | undefined {
+  if (!env.TEAMS) return undefined;
+  if (teams?.src !== env.TEAMS) {
+    const map: unknown = JSON.parse(env.TEAMS);
+    if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error("TEAMS must be a JSON object from project id to team id");
+    teams = { src: env.TEAMS, map: map as Record<string, unknown> };
+  }
+  const team = Object.hasOwn(teams.map, projectId) ? teams.map[projectId] : undefined;
+  return typeof team === "string" ? team : undefined;
+}
+export const mediaBlobs = (env: Env, projectId: string): BlobStore | undefined =>
+  env.BLOBS ? projectMediaStore(r2BlobStore(env.BLOBS), projectId, teamOf(env, projectId)) : projectBlobs(env, projectId, "media");
 
 export class ProjectRoom {
   readonly #ctx: DurableObjectState;
@@ -161,8 +189,10 @@ export class ProjectRoom {
     const conn = this.#conns.get(ws);
     if (!conn) return ws.close(1011, "unknown socket");
     if (conn.auth.expires < Date.now()) return ws.close(4001, "token expired");
+    // the cap is in UTF-8 bytes, checked before anything is decoded or parsed
+    const cap = maxEnvelopeOf(this.#env);
+    if (typeof data === "string" ? utf8Over(data, cap) : data.byteLength > cap) return ws.close(1009, "message too large");
     const text = typeof data === "string" ? data : new TextDecoder().decode(data);
-    if (text.length > maxEnvelopeOf(this.#env)) return ws.close(1009, "message too large");
     let msg: sync.ClientMessage;
     try {
       msg = JSON.parse(text);

@@ -25,6 +25,25 @@ export const LEASE_TABLE = "lease";
 // without depending on the row's heartbeat, which changes every 2 s.
 const ROW_KEY = ["sync"] as const;
 const NONCE_KEY = ["sync", "nonce"] as const;
+const RECIPE_KEY = ["helper"] as const;
+
+/**
+ * How to start a helper for this project (`lease ["helper"]`: a local table, never in an export, since its paths are
+ * this machine's): the engine factory module and its config, as the app's engine thread wants helpers started (paths
+ * only, never a token: a helper gets the same config on its command line anyway). A `cb` call that brings no setup of
+ * its own starts that, so a helper after a takeover or with the app closed has the app's materializer and its sync
+ * server (B3, B7).
+ */
+export interface HelperRecipe { factory: string; config: Record<string, unknown>; by: HolderKind; at: number }
+
+/** The app's engine thread records its recipe every start; a helper only fills a gap (never overrides the app's). */
+export async function recordHelperRecipe(store: Store, r: { factory: string; config: Record<string, unknown> }, by: HolderKind): Promise<boolean> {
+  return store.write([{ table: LEASE_TABLE, key: RECIPE_KEY, value: { factory: r.factory, config: r.config, by, at: Date.now() } satisfies HelperRecipe }], by === "worker" ? [] : [{ table: LEASE_TABLE, key: RECIPE_KEY, expect: "absent" }]);
+}
+
+export async function readHelperRecipe(store: Store): Promise<HelperRecipe | null> {
+  return (await store.get<HelperRecipe>(LEASE_TABLE, RECIPE_KEY)) ?? null;
+}
 
 export type HolderKind = "worker" | "helper" | "cb";
 
