@@ -16,9 +16,9 @@ export async function until(pred: () => boolean | Promise<boolean>, ms = 5000, w
 
 /**
  * `opts`: the host's sequencer options (a small `maxBehind` and `keyframeEvery` force keyframe catch-ups;
- * `schemaVersion`: the newest document schema it accepts).
+ * `schemaVersion`: the newest document schema it accepts; a small `catchupBytes` pages catch-up and history).
  */
-export function world(opts: { maxBehind?: number; keyframeEvery?: number; schemaVersion?: number } = {}) {
+export function world(opts: { maxBehind?: number; keyframeEvery?: number; schemaVersion?: number; catchupBytes?: number } = {}) {
   const tokens = new Map<string, AuthContext>();
   const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
   const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name, ...opts });

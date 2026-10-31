@@ -242,6 +242,8 @@ export interface ConfirmedChange extends Change {
    */
   squashedFrom?: number;
   squashedInto?: number;
+  /** A squashed change: the hash of its version's state before it was squashed (its identity in others' lineage). */
+  squashedHash?: string;
 }
 
 /** A pending change in a replica's queue: every version it had (each rebase adds one), newest last. */

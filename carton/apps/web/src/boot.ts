@@ -71,8 +71,7 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
     await watchFile(rec);
     const saved = keys.get(`carton.watch.${rec.id}`);
     if (saved) return saved;
-    // asked scoped to the Published cut; today's hosts drop the scope, so the link reads the project like any viewer
-    // (requests REQ-4, REQ-5 in the web-demo notes)
+    // scoped to the Published cut: the link reads that cut and nothing else (REQ-4, REQ-5)
     const invite = await session.invite("viewer", 30 * 24 * 3600_000, [rec.id]);
     const url = `${baseUrl}/watch.html${watchHash({ projectId: session.projectId, cut: rec.id, invite })}`;
     keys.set(`carton.watch.${rec.id}`, url);

@@ -38,7 +38,7 @@ export type SharedCutEvent =
   | { type: "state"; state: SyncState }
   /** Caught up after a welcome: the host accepted this replica (an earlier error is over). */
   | { type: "online" }
-  | { type: "error"; error: string };
+  | { type: "error"; error: string; code?: string };
 
 /** What a write learns within its wait (§6.2, L14). */
 export type WriteOutcome =
@@ -165,9 +165,12 @@ export class SharedCut {
     this.refreshState();
     return r;
   }
-  /** Pending changes kept across a restart, back in the queue in order, as they were (`ReplicaQueue.restoreAll`). */
-  restoreAll(inputs: readonly RestoreInput[]): string[] {
-    const r = this.queue.restoreAll(this.branchId, inputs);
+  /**
+   * Pending changes kept across a restart, back in the queue in order, as they were (`ReplicaQueue.restoreAll`);
+   * `stateAt`: confirmed states the queue doesn't hold. `held`: those whose base nobody can rebuild yet.
+   */
+  restoreAll(inputs: readonly RestoreInput[], stateAt?: (seq: number) => Doc | null): ReturnType<ReplicaQueue["restoreAll"]> {
+    const r = this.queue.restoreAll(this.branchId, inputs, stateAt);
     this.refreshState();
     return r;
   }
@@ -232,7 +235,7 @@ export class SharedCut {
         if (e.type === "status") this.refreshState();
         else if (e.type === "presence") this.emit({ type: "presence", branchId: this.branchId, actor: e.actor, state: e.state });
         else if (e.type === "overwritten") this.emit({ type: "overwritten", id: e.id, by: e.by, author: e.author });
-        else if (e.type === "error") this.emit({ type: "error", error: e.error });
+        else if (e.type === "error") this.emit({ type: "error", error: e.error, ...(e.code ? { code: e.code } : {}) });
         else if (e.type === "online") this.emit({ type: "online" });
         else if (e.type === "push") this.emit({ type: "sent", ids: e.ids });
       },

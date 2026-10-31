@@ -4,22 +4,13 @@
 
 import type { SyncError } from "@carton/core";
 
-/**
- * The code the app acts on. Stopgap until the transports' and sequencer's structured codes reach core's classifier
- * (hosts-plugins 9d52fc4, foundation-core): a browser that knows it is offline has a network problem, whatever the
- * failed connection was classified as (offline, core reads the transport's failure as `unauthorized`: REQ-9b).
- */
-export function problemCode(e: SyncError, online: boolean = typeof navigator === "undefined" || navigator.onLine !== false): SyncError["code"] {
-  return online ? e.code : "unreachable";
-}
-
 /** Whether to show it in place of the sync words: not for an unreachable host (they say "Offline: n edits waiting"). */
-export function shownProblem(e: SyncError | null, online?: boolean): SyncError | null {
-  return e && problemCode(e, online) !== "unreachable" ? e : null;
+export function shownProblem(e: SyncError | null): SyncError | null {
+  return e && e.code !== "unreachable" ? e : null;
 }
 
-export function syncProblemWords(e: SyncError, online?: boolean): string {
-  switch (problemCode(e, online)) {
+export function syncProblemWords(e: SyncError): string {
+  switch (e.code) {
     case "update-server":
       return "Can't sync: this project needs a newer server";
     case "unauthorized":

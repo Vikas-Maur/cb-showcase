@@ -61,6 +61,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   `"<cutId>@<seq>"`, or a cut id (its head). A ref that can't be rebuilt exactly throws `StateUnknown`.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have.
+- **A `.cbproj` from a copy of your project folder** (the same cut ids): the sender's versions on a cut you hold that
+  aren't yours come in as a separate cut `<cut>.<hash8 of their first such version>`, named "<name> (<sender>)", linked
+  to the versions you share; the fold brings them in. A version compaction squashed keeps its state hash, so your own
+  versions are still recognized in their copy.
 - **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
   file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
   in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
@@ -69,7 +73,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
 - **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
   sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
-  cut's ancestry closure (`history` request) and loads it as read-only lineage.
+  cut's ancestry closure (`history` request) and loads it as read-only lineage. The client asks for it in pages
+  (`lineageFrom`, from `{entry: 0, state: 0}`) and follows each reply's `lineageNext` to the end; a server that doesn't
+  page sends it whole in one reply.
 - **Shared cuts** (`sequencer.kind !== "local"`) go through `SharedCut` (sync-sequencer's queue and client): `commit`,
   `fold`, `foldSome`, `undo`, `revert` and `restore` all queue an ordinary change with its intent, kind and `reverts`
   under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the
@@ -80,13 +86,18 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
   the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. A pending edit survives a
   restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
-  when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. While a keyframe
-  catch-up's skipped rows aren't saved yet, the queue's state is (meta `["queue-head", cut]`), and a restart resumes
-  there, offline too; a stored edit made on an older head (another process's) is rebased onto what was confirmed
-  since, with cards for what clashed. A settle that fails keeps its outcome for the next one; a wait answers
+  when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. Each stored edit keeps its
+  causal base (the confirmed seq and the pending edits it was made on) and is rebuilt on it and rebased onto what was
+  confirmed since, with cards for what clashed. While a keyframe catch-up's skipped rows aren't saved yet, the
+  confirmed states edits are made on are (meta `["queue-head", cut, seq]`, each while an edit needs it), and a restart
+  resumes at the newest, offline too; an edit whose base nobody can rebuild waits, never applied on a guessed one. An
+  edit absorbed before it was sent spends its id (a retry answers it, never applies it again). A settle that fails keeps its outcome for the next one; a wait answers
   `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
-  the server"; a token it doesn't accept; no host) is `sync.error(cut?)` and a `sync-error` event (`SyncError`:
-  `code`, `message`), until a later welcome or ack clears it (`error: null`).
+  the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is
+  `sync.error(cut?)` and a `sync-error` event (`SyncError`: `code`, `message`), until a later welcome, ack or
+  acknowledged withdraw clears it (`error: null`). Classified by machine code first (a refusal's `ErrorMsg.code`:
+  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`; a failed connect's transport code: `unreachable`,
+  `unauthorized`, `protocol`, `closed`), by the words only when there is none.
   `carton.media` is null: `@carton/media` calls Carton, not the reverse.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
