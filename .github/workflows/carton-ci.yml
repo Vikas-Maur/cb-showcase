@@ -19,8 +19,10 @@ on:
         description: "Systems: comma-separated linux, windows, macos, or all"
         default: all
 
+# A new push cancels the run it supersedes. A re-run of failed jobs (run_attempt > 1) gets a group of its own, so it
+# neither cancels nor is cancelled by the latest push.
 concurrency:
-  group: carton-ci-${{ github.ref }}-${{ inputs.groups || 'all' }}-${{ inputs.os || 'all' }}
+  group: carton-ci-${{ github.ref }}-${{ inputs.groups || 'all' }}-${{ inputs.os || 'all' }}-${{ github.run_attempt == '1' && 'latest' || github.run_id }}
   cancel-in-progress: true
 
 permissions:
