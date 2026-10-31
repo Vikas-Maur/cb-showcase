@@ -57,7 +57,8 @@ export async function exportCbproj(o: CbprojExportOptions): Promise<CbprojExport
   // a listing made while Carton installed the shared file misses it: look once more, through the install's window
   if (!files.some((f) => f.archivePath === SHARED_FILE)) {
     const sourcePath = path.join(o.bundle, SHARED_FILE);
-    const st = await retryMissing(() => fs.promises.stat(sourcePath), { bundle: o.bundle }).catch(() => null);
+    // lstat, as the walk: a symlink is never followed out of the bundle
+    const st = await retryMissing(() => fs.promises.lstat(sourcePath), { bundle: o.bundle }).catch(() => null);
     if (st?.isFile()) files.push({ archivePath: SHARED_FILE, sourcePath, size: st.size });
   }
   let manifest = o.manifest ?? (JSON.parse(await retryMissing(() => fs.promises.readFile(path.join(o.bundle, MANIFEST), "utf8"), { bundle: o.bundle })) as Record<string, unknown>);

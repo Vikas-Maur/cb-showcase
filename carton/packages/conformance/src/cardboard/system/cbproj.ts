@@ -188,6 +188,26 @@ test(".cbproj: an export during an install of timeline.tsx still carries it", as
   assert.ok(c.files.includes("timeline.tsx"));
 });
 
+test(".cbproj: a timeline.tsx that is a symlink is never followed out of the bundle (review 6)", async (t) => {
+  const project = { id: "proj-7", name: "Film", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(1) };
+  const dir = bundle(t, "symlink", project);
+  const out = path.join(dir, "..", `symlink-${Date.now()}.cbproj`);
+  const secret = path.join(dir, "..", `outside-${Date.now()}.txt`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  t.after(() => fs.rmSync(secret, { force: true }));
+  fs.writeFileSync(secret, "not the bundle's");
+  fs.rmSync(path.join(dir, "timeline.tsx"), { force: true });
+  try {
+    fs.symlinkSync(secret, path.join(dir, "timeline.tsx"));
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EPERM") return t.skip("no symlink privilege (Windows without developer mode)");
+    throw e;
+  }
+  const r = await exportCbproj({ bundle: dir, out, shallow: null });
+  assert.ok(!r.names.includes("timeline.tsx"), r.names.join(", "));
+  assert.ok(!fs.readFileSync(out).includes("not the bundle's"), "the outside file's bytes aren't in the archive");
+});
+
 // "Include history so they can see every version": the store's copy without local tables (store-sqlite's exportCopy in
 // the app; a stand-in writer here) travels as its own entry and comes back out byte for byte.
 test(".cbproj: the opt-in full history is its own entry, written by the store's copy function and extracted intact", async (t) => {
