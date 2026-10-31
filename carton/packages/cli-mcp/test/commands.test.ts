@@ -187,3 +187,30 @@ test("Stage F wording: an absorbed change is confirmed, already in place; a too-
   assert.match(t, /not saved: this edit is larger than the server accepts .* The edits after it still went through/);
   assert.equal(exitCodeOf({ status: "rejected", reason: "too large", notices: [] }), 1);
 });
+
+test("fold: a fold that landed and came back with late cards says so (shared cut); hints quote cut names for the shell", async () => {
+  const cuts = [{ id: "main0000-0000", name: "Main cut", kind: "main", sequencer: { kind: "server" } }, { id: "alt00000-0000", name: "$(touch x) cut", kind: "variant", sequencer: { kind: "server" } }];
+  const card = { kind: "group", path: "timelineItems/c1/#time", base: { endTime: 5 }, ours: { endTime: 6 }, theirs: { endTime: 7 } };
+  let answer: any;
+  const ctx = () => ({ project: { carton: { cut: "main0000-0000", cuts: async () => cuts }, write: async () => answer }, actor: human }) as unknown as CbContext;
+  answer = { status: "conflicts", id: "r.1", conflicts: [card], ref: null, notices: [] };
+  const late = await cb(ctx, ["fold", "$(touch x) cut"]);
+  assert.match(late.out, /^Folded in, but 1 card came back: the other side's value was kept\.\n  #1 timelineItems\/c1\/#time \(group\) — yours: \{"endTime":7\} · theirs: \{"endTime":6\}\nSee them with `cb conflicts <project>`/);
+  answer = { status: "conflicts", conflicts: [card], ref: null, notices: [] };
+  const undecided = await cb(ctx, ["fold", "$(touch x) cut", "--into", "main"]);
+  assert.match(undecided.out, /^Not folded in: 1 card, nothing was saved\./);
+  assert.match(undecided.out, /`cb fold <project> '\$\(touch x\) cut' --into main --keep mine` \(keep Main cut's\)/);
+});
+
+test("undo --turn: cards before anything was saved say nothing was undone; late cards on a landed undo say it landed", async () => {
+  const card = { kind: "group", path: "timelineItems/c1/#time", base: { endTime: 5 }, ours: { endTime: 6 }, theirs: { endTime: 4 } };
+  let answer: any;
+  const ctx = () => ({ project: { carton: { cut: "main0000-0000", cuts: async () => [] }, write: async () => answer }, actor: director("t9") }) as unknown as CbContext;
+  answer = { status: "conflicts", conflicts: [card], ref: null, notices: [] };
+  const before = await cb(ctx, ["undo", "--turn", "t9"]);
+  assert.equal(before.code, 1);
+  assert.match(before.out, /^Not undone: 1 thing the turn changed was changed again since, nothing was saved\.\n  #1 timelineItems\/c1\/#time/);
+  answer = { status: "conflicts", id: "r.7", conflicts: [card], ref: null, notices: [] };
+  const late = await cb(ctx, ["undo", "--turn", "t9"]);
+  assert.match(late.out, /^Undid turn t9: conflicts \(1 card; nothing else was lost\)/);
+});

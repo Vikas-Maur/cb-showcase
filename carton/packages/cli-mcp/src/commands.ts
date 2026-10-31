@@ -5,7 +5,7 @@
 import { pathKey } from "@carton/core";
 import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, Version } from "@carton/core";
 import type { CbResult, WriteOp } from "@carton/local";
-import { ago, cardLine, exitCodeOf, noticeLines, resultText, table, who } from "./format.ts";
+import { ago, cardLine, exitCodeOf, noticeLines, resultText, shellWord, table, who } from "./format.ts";
 import { resolveCut, resolveVersion, UsageError, versionName } from "./refs.ts";
 
 /** An open project, as `@carton/local`'s `openLocal` returns it. */
@@ -197,11 +197,15 @@ const fold: CommandSpec = {
   async run(ctx, a) {
     const { carton } = ctx.project;
     let from: string;
-    try { from = (await resolveCut(carton, a.cut)).id; } catch (e) {
+    let fromName = String(a.cut);
+    try { const c = await resolveCut(carton, a.cut); from = c.id; fromName = c.name; } catch (e) {
       const v = await resolveVersion(carton, a.cut).catch(() => { throw e; });
       from = typeof v === "string" ? v : `${v.branchId}@${v.seq}`;
     }
-    const into = a.into ? (await resolveCut(carton, a.into)).id : undefined;
+    const intoCut = await resolveCut(carton, a.into);
+    const into = a.into ? intoCut.id : undefined;
+    // a fold's cards hold the cut folded into as `ours` and the cut folded in as `theirs`: name both sides
+    const sides = { ours: intoCut.name, theirs: fromName };
     const missingBase = a["all-cards"] ? "all-cards" : "dialog";
     if (a.check) {
       // a dry run writes nothing, so it needs no lease
@@ -209,7 +213,7 @@ const fold: CommandSpec = {
       const cards: ConflictCard[] = r.cards ?? [];
       const text = r.status === "up-to-date" ? "Already folded in: nothing to do"
         : r.status === "missing-base" ? r.dialog.text
-        : cards.length ? [`Would fold in with ${cards.length} card${cards.length === 1 ? "" : "s"}:`, ...cards.map((c, i) => `  ${cardLine(c, i)}`)].join("\n")
+        : cards.length ? [`Would fold in with ${cards.length} card${cards.length === 1 ? "" : "s"}:`, ...cards.map((c, i) => `  ${cardLine(c, i, sides)}`), foldHint(a, sides, cards)].join("\n")
         : "Would fold in cleanly (no cards)";
       return out({ check: true, ...r, merge: undefined }, text);
     }
@@ -217,9 +221,31 @@ const fold: CommandSpec = {
     const r = await ctx.project.write({ kind: "fold", from, into, reject: a.reject, missingBase, keep: a.keep }, { actor: ctx.actor });
     if ((r as any).upToDate) return out(r, "Already folded in: nothing to do");
     if ((r as any).dialog) return { json: r, text: (r as any).dialog.text, exitCode: 1 };
+    // an undecided fold comes back with no change id: it saved nothing, and its cards are decided by folding again
+    if (r.status === "conflicts" && r.id === undefined && r.landed === undefined) {
+      const n = r.conflicts.length;
+      const text = [...noticeLines(r.notices ?? []), `Not folded in: ${n} card${n === 1 ? "" : "s"}, nothing was saved.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i, sides)}`), foldHint(a, sides, r.conflicts)].join("\n");
+      return { json: r, text, exitCode: exitCodeOf(r) };
+    }
+    // a fold that landed (on a shared cut) and came back with late cards: they are the caller's to resolve
+    if (r.status === "conflicts") {
+      const n = r.conflicts.length;
+      const text = [...noticeLines(r.notices ?? []), `Folded in, but ${n} card${n === 1 ? "" : "s"} came back: the other side's value was kept.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i)}`), "See them with `cb conflicts <project>`, and pick with `cb resolve`."].join("\n");
+      return { json: r, text, exitCode: exitCodeOf(r) };
+    }
     return writeOut(r, a.reject?.length ? `Folded in (kept out: ${a.reject.join(", ")})` : (r as any).rest ? "Folded in the rest (what an earlier partial fold kept out)" : "Folded in");
   },
 };
+
+/**
+ * How to decide a fold's cards: fold again keeping one side, or keep the clips the cards are about out. The command is
+ * meant to be pasted into a shell, so every name in it is quoted (a cut may be called anything).
+ */
+function foldHint(a: Record<string, any>, sides: { ours: string; theirs: string }, cards: readonly ConflictCard[]): string {
+  const cmd = `cb fold <project> ${shellWord(String(a.cut))}${a.into ? ` --into ${shellWord(String(a.into))}` : ""}`;
+  const rec = cards[0] ? shellWord(cards[0].path.split("/").slice(0, 2).join("/")) : "<path>";
+  return `Decide with \`${cmd} --keep mine\` (keep ${sides.ours}'s) or \`--keep theirs\` (keep ${sides.theirs}'s), or keep a clip out with \`--reject ${rec}\`.`;
+}
 
 const credits: CommandSpec = {
   path: ["credits"],
@@ -269,6 +295,13 @@ const undo: CommandSpec = {
       const turn = a.turn === true || a.turn === "" ? ctx.actor.turn : String(a.turn);
       if (!turn) throw new UsageError("no turn to undo: pass --turn <turn id> (see `cb history`)");
       const r = await ctx.project.write({ kind: "undoTurn", turn, cut }, { actor: ctx.actor });
+      // cards before anything was saved (no change id): the turn is all or nothing, so nothing was undone. With a change
+      // id (a shared cut: the server found a clash after the undo was sent), it landed except those cards
+      if (r.status === "conflicts" && r.id === undefined && r.landed === undefined) {
+        const n = r.conflicts.length;
+        const text = [...noticeLines(r.notices ?? []), `Not undone: ${n} thing${n === 1 ? "" : "s"} the turn changed ${n === 1 ? "was" : "were"} changed again since, nothing was saved.`, ...r.conflicts.map((c, i) => `  ${cardLine(c, i)}`)].join("\n");
+        return { json: r, text, exitCode: exitCodeOf(r) };
+      }
       return writeOut(r, `Undid turn ${turn}`);
     }
     const r = await ctx.project.write({ kind: "undo", group: ctx.actor.group, cut }, { actor: ctx.actor });

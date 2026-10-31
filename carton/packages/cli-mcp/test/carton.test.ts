@@ -180,3 +180,28 @@ test("real Carton: check_timeline dry-runs the proposed edit against head, writi
     await local.close();
   }
 });
+
+test("real Carton: a fold with cards names both cuts, saves nothing, and is decided by folding again with --keep", async () => {
+  const { local } = await realProject("cli-real-fold-cards", human);
+  try {
+    assert.equal((await cb(local, ["cut", "new", "Short"])).code, 0);
+    const short = (await local.carton.cuts()).find((c) => c.name === "Short")!.id;
+    await local.write({ kind: "commit", cut: short, ops: [set("c1", "endTime", 8), set("c1", "trimEnd", 3)] });
+    await local.write({ kind: "commit", ops: [set("c1", "endTime", 9), set("c1", "trimEnd", 4)] });
+    const before = (await local.carton.head()).ref.seq;
+    const chk = await cb(local, ["fold", "Short", "--check"]);
+    assert.match(chk.out, /^Would fold in with 1 card:\n  #1 timelineItems\/c1\/#time \(group[^)]*\) — Main cut: \{[^}]*"endTime":9[^}]*\} · Short: \{[^}]*"endTime":8[^}]*\}\n/);
+    assert.match(chk.out, /`cb fold <project> Short --keep mine` \(keep Main cut's\) or `--keep theirs` \(keep Short's\), or keep a clip out with `--reject timelineItems\/c1`/);
+    const f = await cb(local, ["fold", "Short"]);
+    assert.equal(f.code, 1);
+    assert.match(f.out, /^Not folded in: 1 card, nothing was saved\.\n  #1 timelineItems\/c1\/#time .* — Main cut: .* · Short: /);
+    assert.equal((await local.carton.head()).ref.seq, before, "a fold with cards saves nothing");
+    assert.equal((await cb(local, ["conflicts"])).out, "No open conflict cards", "a fold's cards are not notices");
+    const k = await cb(local, ["fold", "Short", "--keep", "theirs"]);
+    assert.equal(k.code, 0, k.out);
+    const c1 = ((await local.carton.head()).doc.timelineItems as Rec[]).find((i) => i.id === "c1")!;
+    assert.deepEqual([c1.endTime, c1.trimEnd], [8, 3], "--keep theirs keeps the folded cut's value, the one named Short");
+  } finally {
+    await local.close();
+  }
+});
