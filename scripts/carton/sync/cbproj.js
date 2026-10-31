@@ -284,9 +284,13 @@ function usable(entry, bundle) {
  * the entries (the media registry, from which every project write builds project.json's `media` list). Here, for each
  * clip head now uses that this library has no file for (not in the registry, or registered with its file gone; not
  * another project's), the member goes to `<bundle>/media/<id><ext>` (never over an existing file) and is registered as
- * the bundle's own, before head is materialized: that write lists it in project.json, and the clip plays. A member that
- * can't be copied leaves the clip offline (logged), as before. `store` is Cardboard's project store (the library
- * worker's, or cb's).
+ * the bundle's own, and the project is written (Cardboard's own write builds project.json's `media` list from the
+ * registry), so the clip plays and stays found. Called once head is in project.json (that write must be at head). A member that can't be copied leaves the clip offline (logged), as
+ * before. `store` is Cardboard's project store (the library worker's, or cb's).
+ * Round 5 #1: Cardboard's every read of a project registers the media entries its project.json lists, so a stale entry
+ * there (an old path, its file gone) would replace ours at the next read, and Cardboard removes a bundle-owned file
+ * whose entry is replaced: the entries are registered inside the store's own mutation (after any read it makes) and
+ * written with it, as Cardboard's relink does.
  */
 async function adoptMedia(file, contents, store, bundle, projectId, wanted) {
   const registry = store.options?.registry;
@@ -309,8 +313,7 @@ async function adoptMedia(file, contents, store, bundle, projectId, wanted) {
       if (fs.existsSync(dest)) dest = path.join(bundle, "media", `${m.mediaId}-${randomBytes(4).toString("hex")}${ext}`);
       try {
         await z.extractEntry(m.nativePath, dest);
-        registry.register([{ mediaId: m.mediaId, nativePath: dest, ownedByBundle: true }]);
-        adopted.push(m.mediaId);
+        adopted.push({ mediaId: m.mediaId, nativePath: dest, ownedByBundle: true });
       } catch (e) {
         warnOnce("media:" + m.mediaId, `a clip they added (${m.mediaId}) came in without its file, so it shows offline: ${errText(e)}`);
       }
@@ -318,7 +321,21 @@ async function adoptMedia(file, contents, store, bundle, projectId, wanted) {
   } finally {
     await z.close().catch(() => {});
   }
-  return adopted;
+  if (!adopted.length) return [];
+  let written = false;
+  if (typeof store.mutate === "function") {
+    try {
+      written = !!(await store.mutate(projectId, (doc) => (registry.register(adopted), { ...doc })));
+    } catch (e) {
+      warnOnce("media-write:" + projectId, `the files of clips they added came in, but the project wasn't saved with them: ${errText(e)}`);
+    }
+  }
+  if (!written) registry.register(adopted);
+  // Cardboard replaces an entry when it reads a project.json that lists another (and removes a bundle-owned file whose
+  // entry is replaced): said, rather than a clip that quietly stays offline.
+  const lost = adopted.filter((a) => registry.get(a.mediaId)?.nativePath !== a.nativePath);
+  if (lost.length) warnOnce("media-lost:" + projectId, `${lost.length} clip file${lost.length === 1 ? "" : "s"} they added came in but ${lost.length === 1 ? "isn't" : "aren't"} listed in the project; open their file again`);
+  return adopted.filter((a) => !lost.includes(a)).map((a) => a.mediaId);
 }
 
 /**
@@ -398,8 +415,8 @@ async function bringIn(file, store) {
       throw new Error(r.reason);
     case "forked":
       // this copy had no cut of its own yet: it now has one forked from theirs, which is head
-      await adoptMedia(file, contents, store, bundle, id, wanted);
       await materialize(store, id, bundle);
+      await adoptMedia(file, contents, store, bundle, id, wanted);
       return store.read(id);
     case "folded":
       break;
@@ -410,9 +427,11 @@ async function bringIn(file, store) {
   // "This copy builds on a version from Bob that you don't have. Ask Bob for their copy, or …" (core's words).
   if (f.status === "missing-base" || f.status === "compare") throw new Error(f.dialog?.text ?? "This copy builds on a version you don't have.");
   if (f.status === "rejected") throw new Error(`Their changes couldn't be brought into "${name}": ${f.reason ?? "rejected"}`);
-  // Up to date: nothing of theirs is new, so project.json is written only when a clip's file came in.
-  const adopted = await adoptMedia(file, contents, store, bundle, id, wanted);
-  if (f.status !== "up-to-date" || adopted.length) await materialize(store, id, bundle);
+  // Head first, then their clips' files, written with the project at head (adoptMedia; up to date, only they are new).
+  // Round 5 #1: the other way round, adoptMedia's write was of the document before the fold, which Carton's install
+  // refuses as older than head; Cardboard then reads the disk again, its stale entry wins and the file is removed.
+  if (f.status !== "up-to-date") await materialize(store, id, bundle);
+  await adoptMedia(file, contents, store, bundle, id, wanted);
   return store.read(id);
 }
 

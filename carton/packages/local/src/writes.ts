@@ -245,8 +245,12 @@ export function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | n
  * no actor reads). It stays after the cards are resolved, so a retry never brings them back.
  */
 const receiptKey = (requestId: ChangeId) => ["@request", requestId];
-/** `shared`: written with a shared cut's pending row; it holds the cards, and core says whether the change landed. */
-interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number; shared?: boolean }
+/**
+ * `shared`: written with a shared cut's pending row; it holds the cards, and core says whether the change landed.
+ * `cut`: the cut the request went to, so a retry's WriteOp `head` is of that cut even after a switch (older receipts
+ * have none: the op's cut, else the current one).
+ */
+interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number; shared?: boolean; cut?: string }
 
 /** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
 export interface ViewPrinter {
@@ -327,12 +331,14 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       if (receipt && !receipt.shared) {
         // this request already landed (its cards may have been resolved since): answer as it did, write nothing
         kept = receipt.cards;
+        if (receipt.cut) into = receipt.cut;
         r = { status: "confirmed", seq: receipt.seq, ref: null, change: receipt.change ? { id: receipt.change } : null, rebased: 0, notices: [], ...(receipt.change ? {} : { empty: true }) };
         break;
       }
       // on a shared cut core deduplicates a retried id itself (pending, confirmed, or recorded as a no-op) and says
       // where it is now; the receipt, written with its pending row, keeps the cards it answered with
-      const sharedCut = (await carton.cuts()).find((c) => c.id === (op.cut ?? carton.cut))?.sequencer.kind !== "local";
+      const cutId = op.cut ?? carton.cut;
+      const sharedCut = (await carton.cuts()).find((c) => c.id === cutId)?.sequencer.kind !== "local";
       r = await carton.commit({
         id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
         choices: () => "ours" as const,
@@ -340,7 +346,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
           ? {
               cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [
                 cardsRow(author, req.id, change?.id ?? null, cards),
-                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
+                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), cut: cutId, ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
               ],
             }
           : {}),
@@ -409,7 +415,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     }
     default: return { status: "error", error: `unknown write ${(op as any).kind}`, notices };
   }
-  into = (r as { ref?: StateRef | null } | undefined)?.ref?.branchId ?? destCut(op);
+  into ??= (r as { ref?: StateRef | null } | undefined)?.ref?.branchId ?? destCut(op);
   if (r?.status === "confirmed" && !r.empty) opts.materializer?.onHeadChange?.("local");
   if (r?.status === "up-to-date") return { status: "confirmed", seq: 0, ref: null, notices, upToDate: true };
   if (r?.status === "missing-base" || r?.status === "compare") return { status: "conflicts", conflicts: r.cards ?? [], ref: null, notices, dialog: r.dialog };
