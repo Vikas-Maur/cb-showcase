@@ -34,6 +34,8 @@ module.exports = String.raw`var __cartonMain = (() => {
     on,
     library(lib) { library = lib; },
     call(method, args) {
+      // The pages ask once, at start, whether to take Carton's paths.
+      if (method === "enabled") return on;
       if (!on) throw new Error("Carton is off (CARDBOARD_CARTON=1 turns it on)");
       if (!/^[a-zA-Z]+$/.test(method)) throw new Error("Unknown Carton method " + method);
       if (!library) throw new Error("The library is not open yet");

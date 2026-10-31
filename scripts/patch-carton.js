@@ -5,7 +5,7 @@
 // With Carton off at run time (CARDBOARD_CARTON is not "1"), every hook runs Cardboard's own code; only the .cbproj
 // exclusions (H11) apply either way. build-windows.js --no-carton leaves this script out.
 // Usage: node patch-carton.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>
-//        node patch-carton.js --app <dist/main.js> <dist/library-worker.js>
+//        node patch-carton.js --app <dist/main.js> <dist/library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>
 const fs = require("fs");
 const path = require("path");
 
@@ -143,8 +143,8 @@ if (mode === "--cli") {
     );
   });
 } else if (mode === "--app") {
-  const [mainFile, workerFile] = files;
-  if (!workerFile) throw new Error("usage: node patch-carton.js --app <main.js> <library-worker.js>");
+  const [mainFile, workerFile, indexFile, editorFile, storeFile] = files;
+  if (!storeFile) throw new Error("usage: node patch-carton.js --app <main.js> <library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>");
   patch(workerFile, (replace, prepend) => {
     patchStore(replace, "worker");
     // H8: a `carton` namespace in the worker's RPC table, for main's carton:call; its events go to main as changes.
@@ -163,6 +163,8 @@ if (mode === "--cli") {
       '__cartonMain.library(St),_e.handle("carton:call",({method:t,args:r})=>__cartonMain.call(t,r??[])),_e.handle("project:patch",async({document:t,scope:r,carton:__cm})=>{',
     );
     replace('St.call("projects.updateScoped",t,r)', 'St.call("projects.updateScoped",t,__cartonMain.on&&__cm?{...r,carton:{...__cm,actor:"person"}}:r)');
+    // H5: a project change while Carton is on takes the pages' Carton path (adopt without an undo entry).
+    replace('e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s})', 'e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s,...__cartonMain.on&&{carton:!0}})');
     // H8: the worker's Carton events go to every tab.
     replace('onChange:async i=>{if(i.kind==="removed"){n(i.id);return}', 'onChange:async i=>{if(i.kind==="carton"){e.tabs.broadcast("carton:event",i);return}if(i.kind==="removed"){n(i.id);return}');
     // H9: who is acting, for every agent main starts.
@@ -174,6 +176,39 @@ if (mode === "--cli") {
     // H9: host Claude Code gets the same hooks through --settings.
     replace('"--append-system-prompt",ju(e),', '"--append-system-prompt",ju(e),...__cartonMain.hostSettings(),');
   });
+
+  // H4, H6, H7: the editor store (installErrorTelemetry-*.js). The bridge goes first; it waits for the store's handles.
+  patch(storeFile, (replace, prepend) => {
+    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De});");
+    // H4: the save names the version the editor shows; initializeEditor starts from the project's.
+    replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)}))');
+    replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,projectId:n,projectName:r,activeLeftTab:"media",');
+    // H4: a preview of an earlier version is read-only, says so, and is never saved.
+    replace('Tm=t=>ah()||t.timelineLockState!=="unlocked"', 'Tm=t=>!!t.cartonPreview||ah()||t.timelineLockState!=="unlocked"');
+    replace("ure=t=>ah()?aN:", "ure=t=>t.cartonPreview?window.__carton.previewMessage:ah()?aN:");
+    replace("(n===iN||n===sN||n===aN)&&", "(n===iN||n===sN||n===aN||n===window.__carton.previewMessage)&&");
+    replace("function de(){const e=ne.getState().projectId;", "function de(){if(ne.getState().cartonPreview)return;const e=ne.getState().projectId;");
+    // H6: undo and redo of the person's actor group.
+    replace("undo:()=>{if(me())return;const n=e();", "undo:()=>{if(window.__carton.undo())return;if(me())return;const n=e();");
+    replace("redo:()=>{if(me())return;const n=e();", "redo:()=>{if(window.__carton.redo())return;if(me())return;const n=e();");
+    // H7: what ripple, gap and silence deletes and splits moved, for the next save.
+    replace('e().pushTimelineHistory("rippleDeleteGap"),t({timelineItems:s.timelineItems})', 'e().pushTimelineHistory("rippleDeleteGap"),window.__carton.intent({kind:"remap",tracks:[n],at:i,delta:r-i}),t({timelineItems:s.timelineItems})');
+    replace('e().pushTimelineHistory("rippleDeleteAllGaps"),t({timelineItems:i.timelineItems})', 'e().pushTimelineHistory("rippleDeleteAllGaps"),window.__carton.intent({kind:"remap",tracks:[n],gaps:r}),t({timelineItems:i.timelineItems})');
+    replace('return e().pushTimelineHistory("removeSilences"),t(c=>({', 'return e().pushTimelineHistory("removeSilences"),r.results.forEach(c=>window.__carton.intent({kind:"remap",tracks:[c.sourceItem.trackId],at:c.sourceItem.endTime,delta:-c.timeSaved,lineage:{from:c.itemId,to:c.newItemIds}})),t(c=>({');
+    replace('i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")', 'window.__carton.intent({kind:"split",id:n,at:r,into:[a.firstClip.id,a.secondClip.id]}),i?.skipHistory||e().pushTimelineHistory("splitTimelineItem")');
+    prepend(require("./carton/renderer-bridge"));
+  });
+  // H5: the main bundle (index-*.js) adopts a Carton change through the bridge.
+  patch(indexFile, (replace) => {
+    replace("sV=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;", "sV=async(e,t)=>{if(t.carton&&window.__carton?.on){const __r=await window.__carton.receive(e,t);if(__r)return __r}const{id:a,timeline:n,artefacts:s}=t;");
+  });
+  // The History panel: a rail tab in the editor (EditorRoute-*.js), loaded from carton-ui.js when first shown.
+  patch(editorFile, (replace, prepend) => {
+    replace('{id:"effects",icon:gw,label:"Effects",event:"filters_panel_opened"}]],U_=V_.map(', '{id:"effects",icon:gw,label:"Effects",event:"filters_panel_opened"}],...window.__carton?.on?[[{id:"carton",icon:__cbCartonIcon,label:"History",event:"carton_panel_opened"}]]:[]],U_=V_.map(');
+    replace('uf=["media","layouts","music","captions","voiceover","text","transitions","effects"].filter(', 'uf=["media","layouts","music","captions","voiceover","text","transitions","effects",...window.__carton?.on?["carton"]:[]].filter(');
+    replace('case"effects":return c.jsx(tP,{});default:return null}', 'case"effects":return c.jsx(tP,{});case"carton":return c.jsx(__cbCartonPanel,{projectId:t});default:return null}');
+    prepend(require("./carton/editor-panel"));
+  });
 } else {
-  throw new Error("usage: node patch-carton.js --cli <cardboard.mjs> <chunk-LL26E55H.mjs> | --app <main.js> <library-worker.js>");
+  throw new Error("usage: node patch-carton.js --cli <cardboard.mjs> <chunk-LL26E55H.mjs> | --app <main.js> <library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>");
 }

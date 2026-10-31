@@ -19,7 +19,7 @@ const stage = (pristine, out, { carton = false } = {}) => {
   node("patch-cli.js", path.join(cli, "cardboard.mjs"), path.join(work, "cardboard.orig.mjs"));
   node("patch-cli-media.js", path.join(cli, "chunks", "chunk-LL26E55H.mjs"), path.join(work, "cli-media.orig.mjs"));
   if (carton) {
-    node("patch-carton.js", "--app", path.join(dist, "main.js"), path.join(dist, "library-worker.js"));
+    node("patch-carton.js", "--app", path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
     node("patch-carton.js", "--cli", path.join(cli, "cardboard.mjs"), path.join(cli, "chunks", "chunk-LL26E55H.mjs"));
   }
   return { cli, worker: path.join(dist, "library-worker.js"), main: path.join(dist, "main.js"), assets };
