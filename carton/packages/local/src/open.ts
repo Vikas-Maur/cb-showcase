@@ -24,6 +24,7 @@ import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
 import { followStore } from "./follow.ts";
+import { forwardSettles } from "./sidecars.ts";
 import type { Follower } from "./follow.ts";
 import { nudgeHolder } from "./client.ts";
 
@@ -188,6 +189,14 @@ export class CartonHolderEngine implements HolderEngine {
   readonly materializer: ViewPrinter | null;
   private off: (() => void) | null = null;
   private follower: Follower | null = null;
+  private unforward: (() => Promise<void>) | null = null;
+  private cutQueue: Promise<unknown> = Promise.resolve();
+  /** Cut switches one at a time: the ones this holder serves and the follower's adoption of another process's. */
+  private cutLock<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.cutQueue.then(f, f);
+    this.cutQueue = run.catch(() => {});
+    return run;
+  }
   constructor(carton: Carton, opts: HolderEngineOptions = {}) {
     this.carton = carton;
     this.materializer = opts.materializer ?? null;
@@ -197,6 +206,7 @@ export class CartonHolderEngine implements HolderEngine {
       // happened (windowless agents are active), and head moved (or the current cut changed)
       this.follower = followStore(carton, (carton as unknown as { store: Store }).store, {
         intervalMs: opts.follow ? opts.follow.intervalMs : undefined,
+        exclusive: (f) => this.cutLock(f),
         onHead: async (cut) => {
           await mz?.onCb?.();
           mz?.onHeadChange?.("local");
@@ -209,25 +219,8 @@ export class CartonHolderEngine implements HolderEngine {
         },
       });
     }
-    if (mz?.onChangeUpdate) {
-      // A view save on a shared cut is `pending` in its sidecar until the server answers: the answer (confirmed, late
-      // cards, refused) goes to the view whose last save it is (R5-04, B10). On a local cut the save itself answered.
-      const store = (carton as unknown as { store: Store }).store;
-      const settle = (cut: string | null, id: string, s: Parameters<NonNullable<ViewPrinter["onChangeUpdate"]>>[2]) =>
-        void (async () => {
-          if (cut && (await carton.cuts()).find((c) => c.id === cut)?.sequencer.kind === "local") return;
-          for (const r of await store.range<{ lastChange?: string | null }>("views", { prefix: ["view"] })) {
-            if (r.value?.lastChange === id) await mz.onChangeUpdate!(String(r.key[1]), id, s);
-          }
-        })().catch(() => {});
-      carton.on((e: CartonEvent) => {
-        // by id, whoever made it (a view save's id isn't this handle's): only a view's last change has a sidecar to settle
-        if (e.type === "change" && e.change.id) settle(e.branchId, e.change.id, { status: "confirmed", seq: e.seq });
-        else if (e.type === "absorbed") settle(e.branchId, e.id, e.cards.length ? { status: "conflicts", conflicts: e.cards } : { status: "confirmed" });
-        else if (e.type === "notice" && e.notice.change && e.notice.kind === "late-conflict") settle(null, e.notice.change, { status: "conflicts", conflicts: e.notice.cards ?? [] });
-        else if (e.type === "notice" && e.notice.change && e.notice.kind === "rejected") settle(null, e.notice.change, { status: "rejected", reason: e.notice.text });
-      });
-    }
+    // the server's answers to the views' `.status` sidecars on shared cuts (R5-04, B10; sidecars.ts)
+    if (mz?.onChangeUpdate) this.unforward = forwardSettles(carton, (carton as unknown as { store: Store }).store, (v, id, u) => mz.onChangeUpdate!(v, id, u));
   }
 
   serve(req: unknown): Promise<unknown> {
@@ -235,7 +228,8 @@ export class CartonHolderEngine implements HolderEngine {
     if (!r?.id || !r.actor || !r.op) return Promise.reject(Object.assign(new Error("bad carton.commit request"), { code: -32602 }));
     // the written cut connected (catching up or up to date): wait up to 5 s for the ack; not: pending at once (L14)
     const online = (cut?: string) => { const st = this.carton.sync?.state(cut).status; return st === "up-to-date" || st === "syncing"; };
-    return withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
+    const run = () => withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
+    return r.op.kind === "switch" ? this.cutLock(run) : run();
   }
 
   /** Hooked agents' views are named after their actor id; others get a fresh `agent-xxxx` (or the name they asked for). */
@@ -267,10 +261,14 @@ export class CartonHolderEngine implements HolderEngine {
     await this.follower?.check();
   }
 
-  /** Stop following carton.db (the engine is closing; the lease's stop() leaves it running: a fenced app still follows). */
-  close(): void {
-    this.follower?.stop();
+  /** Stop following carton.db and forwarding answers (the engine is closing; the lease's stop() leaves both running: a
+   * fenced app still shows the files). */
+  async close(): Promise<void> {
+    const f = this.follower, u = this.unforward;
     this.follower = null;
+    this.unforward = null;
+    // what is in progress finishes (bounded): nothing is switched, told or forwarded after close
+    await Promise.race([Promise.all([f?.stop(), u?.()]), new Promise((r) => setTimeout(r, 5000).unref())]);
   }
 
   async stop(): Promise<void> {
