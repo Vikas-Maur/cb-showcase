@@ -212,6 +212,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     head: () => tables.head(branchId),
     tail: (after) => tables.tail(branchId, after),
     record: (coll, id) => tables.record(branchId, coll, id),
+    records: (coll, ids) => tables.records(branchId, coll, ids),
   });
 
   // ---------------------------------------------------------------- the confirmed-id list (R10-01, bounded: R12-01)
