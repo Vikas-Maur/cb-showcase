@@ -163,7 +163,12 @@ every host runs the same function. The host:
    save `state` with the socket after each message that changed it.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
-     `hello`;
+     `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from
+     `@carton/cardboard`), as server-node and server-cloudflare do: a hard-coded number goes stale at the adapter's
+     next bump and the host then refuses every client (H-SV). An operator may pin a version (server-node's
+     `schemaVersion`, the Worker's `SCHEMA_VERSION`). The rule for a client newer than the host: it is refused with
+     an error saying to update the server, and the sync client emits it as an `error` event for the app to show. A
+     host never accepts a version it wasn't built for, because it can't vouch for documents it doesn't know;
    - pass `blobs` to `createSequencer`. Any message over 1 MiB, either way, then travels as an envelope through the
      blob store, so no message gets near a WebSocket's limit, whatever the project's size. The host carries
      envelopes like any other message; `@carton/host-http` gives clients the two routes they need (below). Cap one

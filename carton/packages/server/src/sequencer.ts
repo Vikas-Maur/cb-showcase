@@ -604,7 +604,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // (a reader scoped to some cuts never gets here for another: process() refuses it first)
     const b = tables.branch(m.branchId);
     if (!b) return send(c, { type: "unknownBranch", branchId: m.branchId });
-    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
+    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `this client's documents are schema version ${m.schemaVersion}, newer than this server accepts (up to ${opts.schemaVersion}): update the server` });
     const st = stateOf(c);
     if (m.envelopes === true && opts.blobs) st.envelopes = true;
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential

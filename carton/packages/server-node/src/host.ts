@@ -26,6 +26,7 @@ import { createSequencer, type ConnectionState, type HostConnection, type Sequen
 import { handleHttp, checkSession, projectMediaStore, type HttpAuth, type HttpDeps } from "@carton/host-http";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { encodeSegment, decodeSegment } from "@carton/blob-fs/keys";
+import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
 import { acceptWebSocket, rejectUpgrade, type ServerWebSocket } from "./ws.ts";
 import { nodeSqliteStorage, type NodeSqliteStorage } from "./storage.ts";
 
@@ -64,7 +65,10 @@ export interface NodeHostOptions {
   /** Behind a reverse proxy: take the origin from X-Forwarded-Proto and X-Forwarded-Host. Only set this when a
    * proxy you run sets them; a client could otherwise choose them. */
   trustProxy?: boolean;
-  /** The newest document schemaVersion this host's sequencer accepts in `hello` (default 1). */
+  /** The newest document schemaVersion this host's sequencer accepts in `hello`. Default: the Cardboard adapter's
+   * `CARDBOARD_SCHEMA_VERSION`, so the host built with an adapter always takes that adapter's clients (H-SV: a
+   * hard-coded 1 refused every client after the adapter's bump to 2). A newer client is refused with a message
+   * saying to update the server. */
   schemaVersion?: number;
   /** The largest message carried as an envelope, read by the sequencer and taken by the upload route (default 64
    * MiB, the sequencer's own). */
@@ -181,7 +185,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
       storage,
       auth: opts.auth,
       projectId,
-      schemaVersion: opts.schemaVersion ?? 1,
+      schemaVersion: opts.schemaVersion ?? CARDBOARD_SCHEMA_VERSION,
       ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
       ...(blobs ? { blobs } : {}),
     });
