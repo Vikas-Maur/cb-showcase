@@ -119,6 +119,10 @@ export class Tables {
     this.write("INSERT OR REPLACE INTO branches (branch, rec) VALUES (?, ?)", b.id, JSON.stringify(b));
     this.branches.set(b.id, b);
   }
+  /** Every branch this storage holds (for periodic maintenance). */
+  branchIds(): string[] {
+    return this.all<{ branch: string }>("SELECT branch FROM branches").map((r) => text(r.branch));
+  }
   /** Remove a branch and everything stored for it (cancelling a share). */
   dropBranch(id: string): void {
     for (const t of ["changes", "records", "keyframes", "segments", "branches"]) this.sql.exec(`DELETE FROM ${t} WHERE branch = ?`, id);

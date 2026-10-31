@@ -71,7 +71,8 @@ test("local sequencer: accept, duplicate, overlap reject with the clash, lww ove
 
 test("local sequencer: a hard-validator failure is rejected 'invalid'; a set on a removed record notifies 'lost to delete'", { skip }, () => {
   const s = createLocalSequencer(d0 as unknown as Doc, schema);
-  const bad = s.push(mk([set("c1", "endTime", 4), set("c1", "trimEnd", 1)]));
+  // start moved onto the end: the edges stay inside the declared span, so only the hard validator can refuse it
+  const bad = s.push(mk([set("c1", "startTime", 10), set("c1", "trimStart", 5)]));
   assert.ok(!bad.ok && bad.reason === "invalid" && bad.invalid?.path === "timelineItems/c1");
   assert.ok(s.push(mk([{ op: "remove", path: ["timelineItems", "c0"] }])).ok);
   const late = s.push(mk([set("c0", "name", "late")], { base: { seq: 1, pending: [] } }));

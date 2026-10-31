@@ -422,6 +422,7 @@ test("catch-up pages through archived segments and the live table in order", asy
   const a = fakeConn("alice/k1");
   for (let i = 0; i < 700; i++) await push(seq, a, d0, [set(`c${i % 4}`, "name", `n${i}`)]);
   assert.equal(await seq.archive(BRANCH, { keep: 200, segmentRows: 128 }), 384);
+  assert.deepEqual((await seq.maintain()).archived, 0, "maintain: nothing more to move with the default keep");
   const b = fakeConn("bob/k2");
   const seqs: number[] = [];
   let have = 0;

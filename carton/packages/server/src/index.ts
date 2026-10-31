@@ -20,5 +20,6 @@ export {
   type HostConnection,
 } from "./sequencer.ts";
 export { DDL, Tables, type Row, type StoredBranch } from "./tables.ts";
-export { createHmacAuth } from "./auth.ts";
+// The demo AuthProvider is hosts-plugins' (hmac-auth.ts, a contract(server) commit); re-exported here per CONTRACTS.md.
+export * from "./hmac-auth.ts";
 export { createInProcessHost, type InProcessHost } from "./in-process.ts";
