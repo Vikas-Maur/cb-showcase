@@ -32,6 +32,7 @@ export {
   ProxyStreamReader,
   ProxyStreamWriter,
   streamRangeSource,
+  StreamDamagedError,
   type ClaimResult,
   type PlayedPart,
   type ProxyStreamReaderOptions,

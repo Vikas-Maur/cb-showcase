@@ -81,6 +81,18 @@ function asEnd(v: Record<string, unknown> | null): StreamEnd | null {
     : null;
 }
 
+/** A finished stream lists a segment whose entry can't be read: it will never play past it. */
+export class StreamDamagedError extends Error {
+  override name = "StreamDamagedError";
+  readonly stream: string;
+  readonly index: number;
+  constructor(stream: string, index: number) {
+    super(`stream ${stream.slice(0, 12)}: entry ${index} can't be read although the stream has ended`);
+    this.stream = stream;
+    this.index = index;
+  }
+}
+
 export interface ProxyStreamWriterOptions {
   store: BlobStore;
   hasher: Hasher;
@@ -230,18 +242,26 @@ export class ProxyStreamReader {
       if (seg) return seg;
       const end = await this.end();
       if (end && end.segments <= index) return null;
+      if (end) {
+        // The stream ended with this segment in it, yet an entry up to it can't be read: it will never appear.
+        await this.#reportDamage({ entry: this.#segments.length });
+        throw new StreamDamagedError(this.id, this.#segments.length);
+      }
       await sleep(wait, signal);
       wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
     }
+  }
+
+  async #reportDamage(what: Record<string, unknown>): Promise<void> {
+    if (this.#o.reportDamage === false) return;
+    await this.#o.store.put(damagedKey(this.id), utf8.encode(JSON.stringify({ ...what, at: Date.now() })), { contentType: "application/json" }).catch(() => {});
   }
 
   async #bytes(part: StreamPart, signal?: AbortSignal): Promise<Uint8Array> {
     try {
       return await this.#o.media.readVerified(part.hash, 0, part.size, signal);
     } catch (e) {
-      if ((e as Error)?.name === "LeafMismatchError" && this.#o.reportDamage !== false) {
-        await this.#o.store.put(damagedKey(this.id), utf8.encode(JSON.stringify({ hash: part.hash, at: Date.now() })), { contentType: "application/json" }).catch(() => {});
-      }
+      if ((e as Error)?.name === "LeafMismatchError") await this.#reportDamage({ hash: part.hash });
       throw e;
     }
   }

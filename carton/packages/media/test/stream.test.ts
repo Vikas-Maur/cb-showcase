@@ -167,3 +167,23 @@ test("waiting for a segment that isn't up yet ends with an abort", async () => {
   setTimeout(() => ac.abort(), 30);
   await assert.rejects(p, { name: "AbortError" });
 });
+
+test("a finished stream whose entry can't be read fails the play instead of waiting forever", async () => {
+  const { store, writer, reader } = setup();
+  await writer.init(INIT);
+  await writer.segment(seg(0), 2);
+  await writer.segment(seg(1), 2);
+  await writer.end();
+  store.objects.set(streamSegmentKey(writer.id, 1), new TextEncoder().encode("{not json"));
+  const got: number[] = [];
+  const outcome = await Promise.race([
+    (async () => {
+      for await (const p of reader.play()) if (p.part === "segment") got.push(p.segment.index);
+      return "ended";
+    })().catch((e: Error) => e.name),
+    new Promise((r) => setTimeout(() => r("hung"), 3000)),
+  ]);
+  assert.equal(outcome, "StreamDamagedError");
+  assert.deepEqual(got, [0]);
+  assert.ok(store.objects.has(damagedKey(writer.id)), "reported, so the owner's next share replaces it");
+});
