@@ -444,8 +444,14 @@ test("Windows: a carton.db whose ACL denies writing is refused the same way", { 
   const user = `${process.env.USERDOMAIN ? process.env.USERDOMAIN + "\\" : ""}${os.userInfo().username}`;
   execFileSync("icacls", [p.inBundle, "/deny", `${user}:(W)`], { stdio: "ignore", windowsHide: true });
   try {
+    // Readable but not writable: the case only the write probe catches (access() doesn't read ACLs on Windows).
+    const reader = new DatabaseSync(p.inBundle, { readOnly: true });
+    assert.equal((reader.prepare("SELECT count(*) AS n FROM changes").get() as { n: number }).n, 1);
+    reader.close();
     p.startSyncing();
-    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    let published = 0;
+    await assert.rejects(openProjectStore(p, { afterPublish: () => void published++ }), UnwritableHistoryError);
+    assert.equal(published, 0, "refused before a copy was made");
     assertNothingPublished(p);
   } finally {
     execFileSync("icacls", [p.inBundle, "/remove:d", user], { stdio: "ignore", windowsHide: true });
@@ -469,5 +475,76 @@ test("any failure after the copy is published (before the mark lands) takes the 
   const b = await openProjectStore(p);
   assert.equal(b.store.path, p.inAppData);
   assert.deepEqual(await seqs(b.store), [1], "the next open moves it normally");
+  await b.store.close();
+});
+
+test("a refusal never deletes what is beside the file: a WAL holding a committed change survives", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  // Another process commits a change and exits without checkpointing: the change lives only in the -wal.
+  const key = new URL("../src/key.ts", import.meta.url).href;
+  const code = `import { DatabaseSync } from "node:sqlite"; import { encodeKey } from ${JSON.stringify(key)}; const d = new DatabaseSync(${JSON.stringify(p.inBundle)}); d.exec("PRAGMA wal_autocheckpoint=0"); d.prepare("INSERT INTO changes(k, v) VALUES (?, ?)").run(encodeKey(["main", 2]), JSON.stringify({ id: "r.2" })); process.exit(0);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "ignore", "inherit"] });
+  assert.equal(await new Promise((r) => child.on("exit", r)), 0);
+  const walBefore = fs.statSync(`${p.inBundle}-wal`).size;
+  assert.ok(walBefore > 0);
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    p.startSyncing();
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assert.equal(fs.statSync(`${p.inBundle}-wal`).size, walBefore, "the -wal is untouched");
+    assertNothingPublished(p);
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1, 2], "and its change moved with the rest");
+  await b.store.close();
+});
+
+test("a write probe that aborts the whole transaction (SQLITE_FULL) reports that error, not a lost savepoint, and copies nothing", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  p.startSyncing();
+  let published = 0;
+  const err = await openProjectStore(p, {
+    // The database may not grow by a single page: the probe's page-sized write fails with SQLITE_FULL.
+    afterSourceLock: (raw) => {
+      const pages = (raw.prepare("PRAGMA page_count").get() as { page_count: number }).page_count;
+      raw.exec(`PRAGMA max_page_count=${pages}`);
+    },
+    afterPublish: () => void published++,
+  }).catch((e) => e);
+  assert.ok(err instanceof Error);
+  assert.match(String(err.message), /full/i, String(err));
+  assert.doesNotMatch(String(err.message), /savepoint/);
+  assert.equal(published, 0);
+  assertNothingPublished(p);
+  const b = await openProjectStore(p);
+  assert.equal(b.store.path, p.inAppData, "the next open moves it normally (the lock and connection were released)");
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+});
+
+test("a copy that can't be published (the rename fails) leaves no partial file and leaves the source the history", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  p.startSyncing();
+  // A directory where the copy goes makes the rename itself fail (EISDIR / EPERM), the way an exhausted retry would.
+  await assert.rejects(openProjectStore(p, { beforePublish: (to) => fs.mkdirSync(to, { recursive: true }) }));
+  const dir = path.dirname(p.inAppData);
+  assert.deepEqual(fs.readdirSync(dir).filter((f) => f.includes(".part-")), [], "no partial copy left behind");
+  fs.rmdirSync(p.inAppData);
+  const raw = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.equal(raw.prepare(`SELECT count(*) AS n FROM "_carton" WHERE k = 'movedTo'`).get()!.n, 0, "the source was never marked");
+  raw.close();
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1]);
   await b.store.close();
 });

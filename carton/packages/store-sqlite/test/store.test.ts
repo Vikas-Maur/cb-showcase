@@ -348,3 +348,24 @@ test("a WAL left large by other processes is checkpointed at open, not by a comm
   await w.close();
   await s.close();
 });
+
+test("each durability gets its checkpoint mode: deferred and out of the lock by default, SQLite's own for full", async () => {
+  const blob = randomBytes(4500).toString("base64");
+  const normal = await openSqliteStore(fresh());
+  const full = await openSqliteStore(fresh(), { durability: "full" });
+  const auto = (s: typeof normal) => (s.db.raw.prepare("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint;
+  assert.equal(auto(normal), 0, "default: SQLite's checkpoint off, ours deferred");
+  assert.equal(auto(full), 1000, "full: SQLite's automatic checkpoint, as before");
+  for (let i = 0; i < 1100; i++) {
+    await normal.write([{ table: "t", key: [i], value: { blob } }]);
+    await full.write([{ table: "t", key: [i], value: { blob } }]);
+  }
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(normal.db.checkpoints >= 1, "the default ran its own deferred checkpoint");
+  assert.equal(full.db.checkpoints, 0, "full never queues one");
+  const walFull = fs.statSync(`${full.path}-wal`).size;
+  assert.ok(walFull < 1100 * 4096, `and its WAL was still checkpointed by SQLite (${walFull} bytes)`);
+  await normal.close();
+  await full.close();
+});
