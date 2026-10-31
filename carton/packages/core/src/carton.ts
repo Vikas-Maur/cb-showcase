@@ -320,10 +320,35 @@ interface PendingRow {
   kinds: EditKinds | null;
   policy: Policy;
   history?: HistoryFields;
+  // where the queue had it (web-demo REQ-7), so a restart resumes it rather than committing it afresh; absent: none
+  /** Its latest version's rebase count. */
+  k?: number;
+  supersedes?: string[];
+  /** The cards its rebases raised, by rebase count: what it reports when it settles. */
+  cards?: { k: number; cards: ConflictCard[] }[];
+  /** The bases it was pushed on (hello claims them; an emptied one is withdrawn). */
+  sentBases?: number[];
+  /** Refused here after a copy was sent: withdrawn, then reported rejected with this reason. */
+  rejecting?: string;
 }
 const pendingRow = (p: QueuedChange, order: number): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
-  return { id: p.id, author: p.author, ops: v.ops, at: p.created, order, intent: v.intent, kinds: v.kinds, policy: v.policy, ...(p.history ? { history: p.history } : {}) };
+  const cards = p.versions.filter((x) => x.cards.length).map((x) => ({ k: x.k, cards: x.cards }));
+  return {
+    id: p.id,
+    author: p.author,
+    ops: v.ops,
+    at: p.created,
+    order,
+    intent: v.intent,
+    kinds: v.kinds,
+    policy: v.policy,
+    ...(p.history ? { history: p.history } : {}),
+    ...(v.k ? { k: v.k, supersedes: v.supersedes } : {}),
+    ...(cards.length ? { cards } : {}),
+    ...(p.sentBases.length ? { sentBases: [...p.sentBases] } : {}),
+    ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
+  };
 };
 /** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
 const TURN = ["append-turn"] as const;
@@ -1394,12 +1419,28 @@ class CartonImpl implements Carton {
     this.#shared.set(cut, sc);
     // edits an earlier session queued and the server never answered: back in the queue in their queue order. Each row
     // holds its latest version's ops, relative to the stored confirmed head plus the rows before it (rewritten at every
-    // settlement), so re-queuing them in order rebuilds the same optimistic state
+    // settlement), so re-queuing them in order rebuilds the same optimistic state; each resumes where it was (its
+    // rebase count, the cards its rebases raised, the bases it was sent on: REQ-7), not as a fresh change
     const pending = (await this.store.range<PendingRow>(T.pending, { prefix: [cut] })).map((e) => e.value).sort((x, y) => x.order - y.order);
     for (const p of pending) {
       if (this.#h.confirmedById(p.id) || sc.queue.pending(cut).some((q) => q.id === p.id)) continue;
       this.#authors.set(p.id, p.author);
-      sc.commit({ id: p.id, author: p.author, ops: p.ops, at: p.at, intent: p.intent, kinds: p.kinds, policy: p.policy, inferIntent: false, ...(p.history ? { history: p.history } : {}) });
+      sc.restore({
+        id: p.id,
+        author: p.author,
+        ops: p.ops,
+        at: p.at,
+        intent: p.intent,
+        kinds: p.kinds,
+        policy: p.policy,
+        inferIntent: false,
+        ...(p.history ? { history: p.history } : {}),
+        k: p.k ?? 0,
+        supersedes: p.supersedes ?? [],
+        cards: p.cards ?? [],
+        sentBases: p.sentBases ?? [],
+        ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
+      });
     }
     sc.on((e) => this.#onShared(cut, e));
     if (this.#connected) void sc.connect(this.#connected);
