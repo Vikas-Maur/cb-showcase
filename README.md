@@ -341,6 +341,18 @@ the search indexer scanning a file the import has just written can hold one brie
 it was already retried; the removal now retries the same way (adding `ENOTEMPTY`), in the worker
 (`patch-worker.js` 6) and the CLI (`patch-cli-media.js` 6).
 
+**With Carton off** (see "Carton" below), every Carton hook runs Cardboard's own code, except for three changes that
+apply whether Carton is on or off:
+- The staging folder's removal retries on Windows, as above.
+- Open Project of a `.cbproj` removes `.carton\` and `.scratch\views\` from the staged copy before Cardboard reads
+  it: the folders where Carton keeps a project's history and the agents' views. It only acts on archives that contain
+  Carton's data, so a stock `.cbproj` opens exactly as before (an agent's own working folder that happens to be
+  `.scratch\views\` goes the same way). It stops someone else's `carton.db` and views from landing silently in a
+  Carton-off library and surfacing as foreign history if Carton is switched on later. The archive itself is
+  untouched, so nothing is lost. (`scripts\carton\sync\patches\cbproj.js`)
+- Save As of a `.cbproj` leaves the same two folders out, so a file never carries this computer's history database
+  (local paths, this device's pins) or view files. (`scripts\carton\store-bridge.js`)
+
 `scripts\patch-cli-media.js` (applied to `resources\cli\chunks\chunk-LL26E55H.mjs`) makes the same
 media changes in the CLI's own copy of Cardboard's media code. `cb media add`, `cb media proxy` and
 the Director's imports run that copy in the CLI process, not in the app. Unpatched, it encoded
@@ -560,12 +572,12 @@ with Carton off none of it runs at all.
   Clips they added come with their files. Opening one of a project you don't have starts its history from theirs;
   whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
   move or remove an open file). A `.carton\` or `.scratch\views\` folder inside a `.cbproj` is never kept: Open
-  Project removes them, even with Carton off. **Include history**: Cardboard's Save As dialog has no switch for it, so
-  set `CARTON_CBPROJ_HISTORY=1` in the environment of the app or of `cb` before saving. The file then also carries
-  every version, with its author and name, and whoever opens it sees them on a read-only cut. History never includes
-  your local data (pins, notices, sync settings). Saved while edits to a shared project are still waiting to sync
-  (offline), the file has no Carton history at all, only what you see (as in 1.4.0), and the log says so. Save again
-  once synced.
+  Project removes them, even with Carton off (see "Saves on Windows", With Carton off). **Include history**:
+  Cardboard's Save As dialog has no switch for it, so set `CARTON_CBPROJ_HISTORY=1` in the environment of the app or
+  of `cb` before saving. The file then also carries every version, with its author and name, and whoever opens it sees
+  them on a read-only cut. History never includes your local data (pins, notices, sync settings). Saved while edits to
+  a shared project are still waiting to sync (offline), the file has no Carton history at all, only what you see (as
+  in 1.4.0), and the log says so. Save again once synced.
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
