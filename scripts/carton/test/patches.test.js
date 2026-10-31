@@ -225,6 +225,12 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   const on = gui("on", { ...real(), STALE: "1", UNDO: "1", PANEL: "1" }), off = gui("off", { CARDBOARD_CARTON: "0" });
   // The History panel shows the GUI save's card at once, and again when opened later.
   assert.ok(on.panel.live > 0 && on.panel.reopened > 0, JSON.stringify(on.panel));
+  // Mine is the person's own edit (170), theirs the change that was kept (160).
+  assert.deepEqual(on.sides, { mine: "170", theirs: "160" }, JSON.stringify(on));
+  // Two kept cards for one field: resolving the one shown removes only it, and the other (180) is shown next.
+  assert.equal(on.keptBefore, 2);
+  assert.deepEqual(on.keptAfter, [180], JSON.stringify(on));
+  assert.deepEqual(on.shownNext, ["180"], JSON.stringify(on));
   assert.equal(on.guiSave, 150);
   // A stale GUI save's clash keeps head (160) and a card for the person; ⌘Z then reaches project.json and the pages.
   assert.deepEqual([on.stale, on.cards > 0], [160, true], JSON.stringify(on));
@@ -241,8 +247,9 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: 2 ** 22 + 7, me: "dead" }));
       const old = new Date(Date.now() - 20_000); fs.utimesSync(path.join(dir, "owner"), old, old);
       out.dead = await I.withInstallLock(bundle, async (mine) => mine());
-      // A live holder (this process) that beats: waited for, not taken over.
+      // A live holder (this process), even one silent for 20 s: waited for, never taken over.
       fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: process.pid, me: "live" }));
+      fs.utimesSync(path.join(dir, "owner"), old, old);
       const t0 = Date.now();
       setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 400);
       await I.withInstallLock(bundle, async () => {});

@@ -55,6 +55,29 @@ const [workerFile, root] = process.argv.slice(2);
       await panel("after");
       await new Promise((r) => setTimeout(r, 300));
       out.panel = { live: panelCards("before"), reopened: panelCards("after") };
+      // The panel's latest conflicts for a client, as it would show them.
+      const shown = (client) => {
+        let list = [];
+        for (const e of events) if (e.change?.kind === "carton" && e.change.client === client) {
+          const m = e.change.message;
+          if (m.t === "init") list = m.topics.conflicts ?? [];
+          if (m.t === "topic" && m.topic === "conflicts") list = m.value ?? [];
+        }
+        return list;
+      };
+      const first = shown("after")[0];
+      out.sides = first && { mine: first.mine.summary, theirs: first.theirs.summary };
+      // A second stale save on the same size (180): two kept cards for one field, one shown. Resolving the shown one
+      // (keep the change that was kept) removes only it; the other is shown next.
+      const stale2 = doc.timelineItems.map((it) => (it.type === "text" ? { ...it, fontSize: 180 } : it));
+      await call("projects.updateScoped", { ...doc, timelineItems: stale2, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
+      const kept = async () => (await call("carton.notices", { bundlePath, actor: "person" })).flatMap((n) => n.cards ?? []);
+      out.keptBefore = (await kept()).length;
+      await call("carton.ui", { projectId: p.id, client: "after", message: { t: "call", id: 99, method: "resolve", args: [first.id, "theirs"] } });
+      for (let i = 0; i < 100 && !events.some((e) => e.change?.client === "after" && e.change.message?.t === "ret" && e.change.message.id === 99); i++) await new Promise((r) => setTimeout(r, 25));
+      await new Promise((r) => setTimeout(r, 200));
+      out.keptAfter = (await kept()).map((c) => c.theirs);
+      out.shownNext = shown("after").map((c) => c.mine.summary);
     }
   }
   console.log(JSON.stringify(out));
