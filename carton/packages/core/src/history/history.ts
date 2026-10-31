@@ -439,6 +439,8 @@ export class History {
   commit(cutId: string, o: HistoryCommit & { kind?: ChangeKind; extra?: Partial<Change> }): CommitResult & { retry?: (choices: Choices) => CommitResult } {
     const br = this.#mustCut(cutId);
     if (!br.sq) throw new Error(`cut ${br.rec.name} is read-only here (tracking cut)`);
+    // a shared cut is sequenced by its server: its changes go through the sync client, never confirmed here
+    if (br.rec.sequencer.kind !== "local") throw new Error(`cut ${br.rec.name} is shared: its changes go through its sequencer`);
     // a Published cut takes only the change that publishes it (a held state); every other write is refused
     if (br.rec.kind === "published" && !(o.publish && br.log.length === 0)) throw new Error(`cut ${br.rec.name} is a Published cut: read-only (publish again to update it)`);
     const done = this.#done(o.id);
