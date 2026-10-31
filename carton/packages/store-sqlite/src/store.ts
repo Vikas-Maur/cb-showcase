@@ -19,7 +19,7 @@ import { Db, type DbOptions } from "./db.ts";
 import { encodeKey, decodeKey, prefixEnd } from "./key.ts";
 import { encodeValue, decodeValue } from "./value.ts";
 import { MovedError } from "./move.ts";
-import { APPLICATION_ID, FORMAT_VERSION, META, MOVED_TO, DB_ID, MACHINE, USER_TABLES, machineMark, readMeta, writeMeta, newDbId } from "./format.ts";
+import { APPLICATION_ID, FORMAT_VERSION, META, MOVED_TO, DB_ID, MACHINE, USER_TABLES, machineMark, isThisMachine, readMeta, writeMeta, newDbId } from "./format.ts";
 
 
 export interface SqliteStoreOptions extends DbOptions {}
@@ -322,13 +322,16 @@ function identify(raw: DatabaseSync, file: string): "ours" | "new" {
 async function init(db: Db, readOnly: boolean): Promise<void> {
   if (readOnly) return;
   if ((await db.read(() => identify(db.raw, db.path))) === "ours") {
-    // A file from an export or an older build has no id or machine mark yet: give it this machine's, once.
-    if ((await db.read(() => readMeta(db.raw, DB_ID))) === undefined) {
+    // A file from an export or an older build has no id or machine mark yet, or the earlier form of the mark (the
+    // host hash alone): give it this machine's, once.
+    const stale = () => readMeta(db.raw, DB_ID) === undefined || typeof readMeta(db.raw, MACHINE) !== "object";
+    if (await db.read(stale)) {
       await db.write(() => {
-        if (readMeta(db.raw, DB_ID) !== undefined) return;
+        if (!stale()) return;
         db.raw.exec(`CREATE TABLE IF NOT EXISTS "${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
-        writeMeta(db.raw, DB_ID, newDbId());
-        if (readMeta(db.raw, MACHINE) === undefined) writeMeta(db.raw, MACHINE, machineMark());
+        if (readMeta(db.raw, DB_ID) === undefined) writeMeta(db.raw, DB_ID, newDbId());
+        const m = readMeta(db.raw, MACHINE);
+        if (m === undefined || (typeof m === "string" && isThisMachine(m))) writeMeta(db.raw, MACHINE, machineMark());
       });
     }
     return;

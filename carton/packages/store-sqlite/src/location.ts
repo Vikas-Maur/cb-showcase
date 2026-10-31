@@ -340,16 +340,21 @@ const SYNC_ROOTS_MAX_AGE_MS = 10 * 60_000;
  * call, so an in-process cache alone would still spawn reg.exe every time.
  */
 export function cachedSyncRoots(file: string, query: () => string[] | null, now = Date.now()): string[] | null {
+  return readSyncRoots(file, query, now)?.roots ?? null;
+}
+
+// The roots and when they were asked for (the file's time when they came from the file, so they expire with it).
+function readSyncRoots(file: string, query: () => string[] | null, now: number): { roots: string[]; at: number } | null {
   try {
     const c = JSON.parse(fs.readFileSync(file, "utf8")) as { at?: unknown; roots?: unknown };
     const age = typeof c.at === "number" ? now - c.at : -1;
-    if (age >= 0 && age < SYNC_ROOTS_MAX_AGE_MS && Array.isArray(c.roots) && c.roots.every((r) => typeof r === "string")) return c.roots as string[];
+    if (age >= 0 && age < SYNC_ROOTS_MAX_AGE_MS && Array.isArray(c.roots) && c.roots.every((r) => typeof r === "string")) return { roots: c.roots as string[], at: c.at as number };
   } catch {
     // missing, half-written by an older process, or not JSON: ask again
   }
   const roots = query();
   if (roots) writeQuietly(file, JSON.stringify({ at: now, roots }));
-  return roots;
+  return roots ? { roots, at: now } : null;
 }
 
 /**
@@ -362,9 +367,8 @@ export function makeSyncRootsProbe(file: string, query: () => string[] | null, c
   return () => {
     const now = clock();
     if (mem && now >= mem.at && now - mem.at < SYNC_ROOTS_MAX_AGE_MS) return mem.roots;
-    const roots = cachedSyncRoots(file, query, now);
-    mem = roots ? { at: now, roots } : null;
-    return roots ?? [];
+    mem = readSyncRoots(file, query, now);
+    return mem?.roots ?? [];
   };
 }
 

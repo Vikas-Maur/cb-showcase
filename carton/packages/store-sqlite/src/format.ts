@@ -71,6 +71,7 @@ function installId(): string | null {
 /** Whether a file's machine mark is this machine's. Unknown (no mark) counts as this machine's. */
 export function isThisMachine(mark: unknown, me: MachineMark = machineMark()): boolean {
   if (mark === undefined || mark === null) return true;
+  if (typeof mark === "string") return mark === me.host; // the earlier form: the host hash alone
   const m = mark as Partial<MachineMark>;
   return m.id === me.id || m.host === me.host;
 }

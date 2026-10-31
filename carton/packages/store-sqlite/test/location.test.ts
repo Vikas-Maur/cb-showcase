@@ -177,6 +177,19 @@ test("in memory too, a failed registry query is not kept, and a good answer expi
   assert.deepEqual(probe(), ["D:\\Box", "E:\\iCloud"], "then asked again: a sync client installed while the app runs");
 });
 
+test("an answer read from the cache file expires with the file, not ten minutes after it was read", () => {
+  const dir = scratch("roots-age");
+  const file = path.join(dir, "sync-roots.json");
+  let now = 5_000_000;
+  fs.writeFileSync(file, JSON.stringify({ at: now - 9 * 60_000, roots: ["D:\\Old"] }));
+  let calls = 0;
+  const probe = makeSyncRootsProbe(file, () => { calls++; return ["D:\\Old", "E:\\New"]; }, () => now);
+  assert.deepEqual(probe(), ["D:\\Old"], "a nine-minute-old file still answers");
+  now += 2 * 60_000;
+  assert.deepEqual(probe(), ["D:\\Old", "E:\\New"], "eleven minutes after the query: asked again");
+  assert.equal(calls, 1);
+});
+
 test("FAT/exFAT: Linux statfs magic, and the hard-link probe everywhere else", () => {
   const vfat = locateCartonDb({ bundleDir: "/media/usb/p", projectId: "p1", probe: fake({ fsMagic: () => 0x4d44 }) });
   assert.equal(vfat.placement, "no-hard-links");

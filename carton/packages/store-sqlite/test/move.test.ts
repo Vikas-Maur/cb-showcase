@@ -287,3 +287,62 @@ test("this machine is recognised by its install id or its host, so renaming the 
   assert.ok(isThisMachine(undefined), "no mark (an export, an older file)");
   assert.equal(machineMark(), me, "stable for the process");
 });
+
+test("an opener paused between settling and opening is never overtaken by a move (the placement lock covers the open)", async () => {
+  const p = project();
+  const seed = await openProjectStore(p);
+  await seed.store.write(put(1));
+  await seed.store.close();
+  let other: Promise<Awaited<ReturnType<typeof openProjectStore>>> | null = null;
+  const first = await openProjectStore(p, {
+    afterSettle: async () => {
+      // While this opener sits between "settled: the bundle" and opening it, the folder becomes synced and another
+      // open starts: it must wait for the lock, then move the history this opener now has open.
+      p.startSyncing();
+      other = openProjectStore(p);
+      await new Promise((r) => setTimeout(r, 200));
+    },
+  });
+  assert.equal(first.store.path, p.inBundle);
+  const second = await other!;
+  assert.equal(second.store.path, p.inAppData);
+  assert.deepEqual(await seqs(second.store), [1], "the history moved, nothing was recreated empty");
+  await assert.rejects(first.store.write(put(2)), MovedError, "the first opener's file is fenced, not a second history");
+  await first.store.close();
+  await second.store.close();
+  const third = await openProjectStore(p);
+  assert.deepEqual(await seqs(third.store), [1]);
+  assert.ok(!fs.existsSync(p.inBundle), "and the old copy is gone once nobody has it open");
+  await third.store.close();
+});
+
+test("a machine mark in the earlier form (the host hash alone) is still this machine's, and is upgraded", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  const raw = new DatabaseSync(p.inBundle);
+  raw.prepare(`UPDATE "_carton" SET v = ? WHERE k = 'machine'`).run(JSON.stringify(machineMark().host));
+  raw.close();
+  const b = await openProjectStore(p);
+  assert.equal(b.location.setAside, undefined, "not mistaken for another machine's");
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+  const check = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.deepEqual(JSON.parse((check.prepare(`SELECT v FROM "_carton" WHERE k = 'machine'`).get() as { v: string }).v), machineMark());
+  check.close();
+});
+
+test("a source without a file id (an export) gets one before it is moved, so its copy always names it", async () => {
+  const p = project();
+  const elsewhere = await openSqliteStore(path.join(path.dirname(p.bundleDir), "elsewhere", "carton.db"));
+  await elsewhere.write(put(1));
+  await elsewhere.exportCopy(p.inBundle, []); // a full-history copy: no _carton rows at all
+  await elsewhere.close();
+  p.startSyncing();
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1]);
+  const copyOf = JSON.parse((b.store.db.raw.prepare(`SELECT v FROM "_carton" WHERE k = 'copyOf'`).get() as { v: string }).v);
+  assert.match(copyOf.dbId, /^[0-9a-f]{16}$/, "an interrupted move of it could be recognised");
+  await b.store.close();
+});

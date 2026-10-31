@@ -15,15 +15,17 @@ export interface ProjectLocation extends DbLocation {
   setAside?: string;
 }
 
-export async function openProjectStore(opts: ProjectStoreOptions): Promise<{ store: SqliteStore; location: ProjectLocation }> {
+export async function openProjectStore(opts: ProjectStoreOptions, hooks: { afterSettle?: () => Promise<void> } = {}): Promise<{ store: SqliteStore; location: ProjectLocation }> {
   const location: ProjectLocation = locateCartonDb(opts);
+  if (opts.readOnly) return { store: await openSqliteStore(location.dbPath, opts), location };
   const projectDir = path.join(opts.appDataDir ?? defaultAppDataDir(), "projects", projectKey(opts.projectId));
   const inBundle = path.join(path.resolve(opts.bundleDir), ".carton", "carton.db");
   const inAppData = path.join(projectDir, "carton.db");
-  if (!opts.readOnly) {
-    const { setAside } = await settlePlacement(location.dbPath, location.inBundle ? inAppData : inBundle, path.join(projectDir, "placement.lock"));
-    if (setAside) location.setAside = setAside;
-  }
-  const store = await openSqliteStore(location.dbPath, opts);
-  return { store, location };
+  // Settled and opened under one hold of the placement lock (`afterSettle` lets a test pause in between).
+  const { opened, setAside } = await settlePlacement(location.dbPath, location.inBundle ? inAppData : inBundle, path.join(projectDir, "placement.lock"), async () => {
+    await hooks.afterSettle?.();
+    return openSqliteStore(location.dbPath, opts);
+  });
+  if (setAside) location.setAside = setAside;
+  return { store: opened, location };
 }

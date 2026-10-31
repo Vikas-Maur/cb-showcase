@@ -57,16 +57,16 @@ const same = (a: string, b: string) => {
 };
 
 /**
- * Make `target` the project's carton.db, given that `other` is where it may have lived before (the other placement).
- * Called by openProjectStore before it opens `target`, holding the project's placement lock (`lockFile`). Returns the
- * path a foreign carton.db found at `target` was moved aside to, if any.
+ * Make `target` the project's carton.db, given that `other` is where it may have lived before (the other placement),
+ * then run `open` (which opens `target`), all while holding the project's placement lock (`lockFile`): an opener
+ * that settled must not be overtaken by a move before it has the file open. Returns `open`'s result, and the path a
+ * foreign carton.db found at `target` was moved aside to, if any.
  */
-export async function settlePlacement(target: string, other: string, lockFile: string, waitMs = 10_000): Promise<{ setAside?: string }> {
+export async function settlePlacement<T>(target: string, other: string, lockFile: string, open: () => Promise<T>, waitMs = 10_000): Promise<{ opened: T; setAside?: string }> {
   return withLock(lockFile, waitMs, async () => {
     const setAside = setAsideIfForeign(target);
-    if (same(target, other) || !fs.existsSync(other)) return { ...(setAside ? { setAside } : {}) };
-    await settle(target, other, waitMs);
-    return { ...(setAside ? { setAside } : {}) };
+    if (!same(target, other) && fs.existsSync(other)) await settle(target, other, waitMs);
+    return { opened: await open(), ...(setAside ? { setAside } : {}) };
   });
 }
 
@@ -101,6 +101,15 @@ async function settle(target: string, other: string, waitMs: number): Promise<vo
       if (!t) await copyAndMark(src, other, target);
       cleanUp = true;
       return;
+    }
+    // A file from an export or an older build has no id yet. It gets one, committed before anything is copied, so a
+    // copy published by an interrupted move always names the file it came from.
+    if (readMeta<string>(src, DB_ID) === undefined) {
+      src.exec(`CREATE TABLE IF NOT EXISTS main."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
+      writeMeta(src, DB_ID, newDbId());
+      if (readMeta(src, MACHINE) === undefined) writeMeta(src, MACHINE, machineMark());
+      src.exec("COMMIT");
+      await begin(src, other, waitMs);
     }
     if (t) {
       const sourceId = readMeta<string>(src, DB_ID);
