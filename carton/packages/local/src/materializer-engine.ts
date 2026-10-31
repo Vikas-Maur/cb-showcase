@@ -6,7 +6,9 @@
 //     lands, and the sidecar's diagnostics name the failure. The sequencer refuses such a change as a whole
 //     ("invalid") when nothing concurrent forced a merge, so the record is put back and the save committed again.
 // Everything else is the inner engine's, passed through: the current cut and head key (the freeze follows a cut
-// switch, B6; `onExternalHeadChange`, B11), and an author's own inserts (M4).
+// switch, B6; `onExternalHeadChange`, B11), an author's own inserts (M4), and the confirmed changes since a seq (the
+// freeze tells a save that repeated an edit it hid, cardboard-adapter rounds 13-15). Every method the inner engine has
+// is here (`materializer-engine.test.ts` checks it): an optional one left out is silently not used.
 // (Proposed to cardboard-adapter for their engine; this wrapper goes away once it is there.)
 import type { Carton, ConflictCard, Doc } from "@carton/core";
 import { cartonMaterializerEngine } from "@carton/cardboard/node";
@@ -46,6 +48,8 @@ export class CartonMaterializerEngine implements MaterializerEngine {
     return this.carton.head(this.cut()).then((h) => JSON.stringify([this.cut(), h.ref.branchId, h.ref.seq, h.ref.pending ?? []]));
   }
   own(author: Parameters<NonNullable<MaterializerEngine["own"]>>[0]) { return this.inner.own?.(author) ?? this.carton.own(author); }
+  /** The confirmed changes on a cut after `seq`, newest first, each with its before and after states (rounds 13-15). */
+  changesSince(seq: number, o?: Parameters<NonNullable<MaterializerEngine["changesSince"]>>[1]) { return this.inner.changesSince!(seq, o); }
 
   /**
    * The inner engine keeps a save's merge cards for its author (written before the choosing commit, so a retry never
@@ -59,7 +63,8 @@ export class CartonMaterializerEngine implements MaterializerEngine {
       const r = await this.inner.commit({ ...input, doc });
       const refusedInvalid = r.status === "rejected" && /^invalid\b/.test(r.reason ?? "");
       // putting the invalid records back can leave nothing to commit; the sequencer calls that "no ops"
-      if (r.status === "rejected" && r.reason === "no ops" && invalid.length) return { status: "conflicts", cards: invalid, seq: (await this.carton.head()).ref.seq };
+      // the engine's cut, named as the inner engine's answers name it: a state built on this save belongs to it
+      if (r.status === "rejected" && r.reason === "no ops" && invalid.length) { const cut = this.cut(); return { status: "conflicts", cards: invalid, seq: (await this.carton.head(cut)).ref.seq, cut }; }
       if (!refusedInvalid) return invalid.length ? { ...r, status: r.status === "rejected" ? r.status : "conflicts", cards: [...invalid, ...(r.cards ?? [])] } : r;
       const bad = this.invalidRecords(doc);
       if (!bad.length) return r;

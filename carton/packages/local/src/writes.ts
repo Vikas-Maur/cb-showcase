@@ -19,12 +19,18 @@ import { hookDelivered, isFallbackActor } from "./identity.ts";
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
 export type WriteOp =
   /** `base`: the version the edit was made on, as Carton gave it: a StateRef, or a printed header (default: head). */
-  | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string }
-  | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs" }
-  | { kind: "restore"; ref: string; cut?: string }
-  | { kind: "revert"; changeId: ChangeId; cut?: string }
-  | { kind: "undo"; group?: string; cut?: string }
-  | { kind: "undoTurn"; turn: string; cut?: string }
+  /**
+   * `head` (commit, fold, restore, revert, undo, undoTurn): answer a write still pending (the holder offline, or the
+   * server slow) with the holder's head as well (`head: {ref, doc}`: its optimistic state, with this write in, of the
+   * cut the write went to). A caller that writes the project file itself (the Windows app's cb, windows-sync) can't
+   * read that state: its own handle has the confirmed rows only.
+   */
+  | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
+  | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
+  | { kind: "restore"; ref: string; cut?: string; head?: boolean }
+  | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
+  | { kind: "undo"; group?: string; cut?: string; head?: boolean }
+  | { kind: "undoTurn"; turn: string; cut?: string; head?: boolean }
   | { kind: "fork"; name: string; from?: string; cutKind?: string }
   | { kind: "switch"; cut: string }
   | { kind: "name"; ref: string; name: string }
@@ -47,7 +53,8 @@ export interface WriteRequest {
 
 export type CbResult =
   | { status: "confirmed"; id?: ChangeId; seq: number; ref: string | null; notices: Notice[]; empty?: boolean; [k: string]: unknown }
-  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; [k: string]: unknown }
+  /** `head`: the holder's head of the cut written to, when the write asked for it (WriteOp `head`). */
+  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; head?: { ref: StateRef; doc: unknown }; [k: string]: unknown }
   | { status: "conflicts"; id?: ChangeId; conflicts: ConflictCard[]; ref: string | null; notices: Notice[]; [k: string]: unknown }
   | { status: "rejected"; id?: ChangeId; reason: string; notices: Notice[]; [k: string]: unknown }
   | { status: "error"; error: string; notices: Notice[]; [k: string]: unknown };
@@ -399,7 +406,11 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   // the cut written to, not the current one: a write to another cut waits on that cut's connection
   const st = () => carton.sync?.state(destCut(op)).status;
   const online = opts.online ? opts.online(destCut(op)) : st() === "up-to-date" || st() === "syncing";
-  if (!online) return asConflicts({ ...toCbResult(r, notices), online: false } as CbResult);
+  // a write that asked for it gets the holder's head with a pending answer (WriteOp `head`): the head of the cut the
+  // write went to (core's answer names it), never of whichever cut is current when the answer is made
+  const into = (r as { ref?: StateRef | null } | undefined)?.ref?.branchId ?? destCut(op);
+  const withHead = async (x: CbResult): Promise<CbResult> => ("head" in op && op.head && x.status === "pending" ? { ...x, head: await carton.head(into) } : x);
+  if (!online) return asConflicts(await withHead({ ...toCbResult(r, notices), online: false } as CbResult));
   const ms = req.waitMs ?? WAIT_MS;
   if (carton.sync?.waitFor) {
     // the shared cut's own answer: confirmed by the server, a late conflict, a rejection, or still pending
@@ -407,13 +418,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     if (o.status === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices });
     // spent with no effect of its own: an identical edit was already there. Saved, in effect: never an error
     if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
-    if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
+    if (o.status === "pending") return asConflicts(await withHead({ ...toCbResult(r, notices), online: true } as CbResult));
     // its notice (core stored it before the wait returned) is this result: marked delivered, not listed again
     answered = r.id;
     return o.status === "rejected" ? rejectedResult(r.id, o.reason, notices) : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
   }
   const out = await outcomes.wait(r.id, ms);
-  if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
+  if (!out) return asConflicts(await withHead({ ...toCbResult(r, notices), online: true } as CbResult));
   if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
   // the change came back with a late conflict while we waited: it is this call's answer
   const n = out.notice;
