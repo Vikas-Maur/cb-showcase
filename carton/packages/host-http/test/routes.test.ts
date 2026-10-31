@@ -137,3 +137,15 @@ test("a reader scoped to a Published cut signs reads of media named by content a
   const scopedWriter = await d.auth.issue!({ ...ctx, branches: ["pub-1"], ttlMs: 60_000 });
   assert.equal(await sign(scopedWriter, "carton/project.json"), 200);
 });
+
+test("GET /session answers every valid session, a scoped watch link's too, and refuses the rest (the transport's probe)", async () => {
+  const d = deps();
+  const get = async (tok?: string, p = "p") => (await handleHttp(req(`/api/projects/${p}/session`, tok ? { headers: { authorization: `Bearer ${tok}` } } : {}), d))!;
+  const watcher = await d.auth.issue!({ ...ctx, account: "w", role: "viewer", branches: ["pub-1"], ttlMs: 60_000 });
+  const ok = await get(watcher);
+  assert.equal(ok.status, 200);
+  assert.deepEqual(await ok.json(), { role: "viewer" });
+  assert.equal((await get()).status, 401);
+  assert.equal((await get("not-a-token")).status, 401);
+  assert.equal((await get(watcher, "q")).status, 403, "another project's session");
+});

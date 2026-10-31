@@ -8,6 +8,7 @@
 //   POST /api/projects/:p/invites            {role, ttlMs?, branches?}  owner  → {invite}
 //   POST /api/admin/projects/:p/invites      {role}  Bearer ADMIN_TOKEN    → {invite}   (bootstrap; off without one)
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
+//   GET  /api/projects/:p/session            any valid session → {role}  (the transport's probe after a failed handshake)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
 //   GET  /api/projects/:p/blobs/head?key=                                  → BlobInfo | 404  (an editor's head of a
 //                                            team object claims it for the project: team.ts)
@@ -154,6 +155,9 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     if (!token) return err(401, "session token required");
     const ctx = await checkSession(a, token, projectId);
     if (rest === "/ws") return await deps.upgrade(req, ctx, projectId);
+    // the session alone, open to every valid one (a scoped watch link too): a WebSocket client whose handshake failed
+    // asks it to tell a refused session (401/403) from a host it couldn't reach
+    if (req.method === "GET" && rest === "/session") return json({ role: ctx.role });
     if (req.method === "POST" && rest === "/invites") {
       if (!canInvite(ctx)) return err(403, "only the owner invites");
       const b = await body<{ role?: string; ttlMs?: number; branches?: string[] }>(req);
