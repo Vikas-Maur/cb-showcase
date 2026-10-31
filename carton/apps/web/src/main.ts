@@ -181,6 +181,20 @@ async function boot(session: Session, name: string): Promise<void> {
   addEventListener("offline", () => void carton.sync!.disconnect());
   addEventListener("online", () => void (!offline && carton.sync!.connect().catch(() => false)));
   addEventListener("pagehide", () => presence.stop());
+  // presence isn't stored: say we're here when we (re)connect, and once to each teammate who appears
+  const heard = new Map<string, number>();
+  let lastSync = carton.sync!.status;
+  carton.on((e) => {
+    if (e.type === "sync") {
+      if (e.status === "up-to-date" && lastSync !== "up-to-date") presence.announce();
+      lastSync = e.status;
+    } else if (e.type === "presence" && e.state) {
+      const k = `${e.actor.kind}/${e.actor.id}`;
+      const was = heard.get(k);
+      heard.set(k, Date.now());
+      if (was === undefined || Date.now() - was > 30_000) presence.announce();
+    }
+  });
 
   // test and demo hooks (the e2e reads state through these; nothing secret: the page already holds it)
   Object.assign(window, { __carton: { carton, ui, live, presence, me, session: { projectId: session.projectId, account: session.account, role: session.role }, links } });

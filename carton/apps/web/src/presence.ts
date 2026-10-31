@@ -1,6 +1,9 @@
 // Presence at the rates of PLAN §12: 10–20 Hz only while dragging (the drag's ghost), 1 Hz while active, nothing after
 // 30 s idle. Never stored. The state is what @carton/react's fromCarton reads: {activity, ghosts: [{item, track, start,
 // end, label}]}. Sending is throttled here, before the sync client's own throttle and the server's cap.
+// Going idle sends "Idle" once and then nothing (teammates show us dimmed); leaving (closing, offline) sends null.
+// Presence isn't stored, so someone who connects later hasn't heard us: `announce` answers once when a new peer
+// shows up and when we (re)connect.
 
 export interface GhostState {
   item: string;
@@ -35,6 +38,8 @@ export class PresenceSender {
   #pending: unknown = null;
   #idle: unknown = null;
   #active = false;
+  /** Left (stop): nothing goes out until the next activity. */
+  #gone = false;
 
   constructor(send: (s: PresenceState | null) => void, timers: PresenceTimers = realTimers) {
     this.#send = send;
@@ -46,6 +51,7 @@ export class PresenceSender {
     const changed = activity !== this.#activity || !this.#active;
     this.#activity = activity;
     this.#active = true;
+    this.#gone = false;
     this.#armIdle();
     if (changed) this.#flush(true);
     else this.#schedule(ACTIVE_MS);
@@ -54,6 +60,7 @@ export class PresenceSender {
   drag(ghosts: GhostState[]): void {
     this.#ghosts = ghosts;
     this.#active = true;
+    this.#gone = false;
     this.#armIdle();
     this.#schedule(DRAG_MS);
   }
@@ -63,19 +70,26 @@ export class PresenceSender {
     this.#ghosts = [];
     this.#flush(true);
   }
-  /** Leaving (offline, closing, idle): others stop showing us. */
+  /** Say where we are once, now (we connected, or a teammate who hasn't heard us appeared). */
+  announce(): void {
+    if (this.#gone) return;
+    this.#flush(true);
+  }
+  /** Leaving (offline, closing): others stop showing us until the next activity. */
   stop(): void {
     this.#clear();
     if (this.#idle !== null) this.#t.clearTimeout(this.#idle);
     this.#idle = null;
     this.#ghosts = [];
-    if (this.#active) this.#send(null);
+    this.#send(null);
     this.#active = false;
+    this.#gone = true;
     this.#lastSent = "";
   }
 
   #state(): PresenceState {
-    return this.#ghosts.length ? { activity: this.#activity, ghosts: this.#ghosts } : { activity: this.#activity };
+    const activity = this.#active ? this.#activity : "Idle";
+    return this.#ghosts.length ? { activity, ghosts: this.#ghosts } : { activity };
   }
   #schedule(every: number): void {
     const wait = this.#last + every - this.#t.now();
@@ -103,7 +117,9 @@ export class PresenceSender {
     if (this.#idle !== null) this.#t.clearTimeout(this.#idle);
     this.#idle = this.#t.setTimeout(() => {
       this.#idle = null;
-      this.stop();
+      this.#active = false;
+      this.#ghosts = [];
+      this.#flush(true); // "Idle", once
     }, IDLE_MS);
   }
 }

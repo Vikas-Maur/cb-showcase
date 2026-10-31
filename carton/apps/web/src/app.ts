@@ -21,6 +21,7 @@ import {
   WatchTheChanges,
   useCartonUi,
   useConflicts,
+  useCurrentCut,
   usePreview,
   useSyncStatus,
   type CartonUiHandle,
@@ -60,6 +61,7 @@ const useStore = <T,>(s: { subscribe: (l: () => void) => () => void; get: () => 
 
 export function App(p: AppProps) {
   const ui = useCartonUi();
+  const current = useCurrentCut();
   const head = useSyncExternalStore(
     useCallback((l: () => void) => p.live.subscribe(l), [p.live]),
     () => p.live.doc,
@@ -128,7 +130,7 @@ export function App(p: AppProps) {
       h(
         "aside",
         { className: "cb-side" },
-        h(HistoryPanel, { className: "cb-history", currentRef: p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) }),
+        h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) }),
       ),
     ),
     h(
@@ -316,6 +318,11 @@ function WatchDialog(p: { a: string; b: string; carton: Carton; media: Record<st
       live = false;
     };
   }, [p.a, p.b]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && p.onClose();
+    addEventListener("keydown", onKey);
+    return () => removeEventListener("keydown", onKey);
+  }, [p.onClose]);
   const img = useRef<HTMLImageElement>(null);
   const label = useRef<HTMLDivElement>(null);
   const side = useRef<HTMLSpanElement>(null);

@@ -103,7 +103,16 @@ test("presence: a drag goes out at most every 50 ms with its newest position las
   }
   assert.ok(sent.length - before <= 2, "one heartbeat a second at most");
   t.advance(IDLE_MS + ACTIVE_MS);
-  assert.equal(sent.at(-1), null, "idle: others stop showing us");
+  assert.deepEqual(sent.at(-1), { activity: "Idle" }, "idle: said once, then nothing");
+  const n = sent.length;
+  t.advance(IDLE_MS * 3);
+  assert.equal(sent.length, n, "nothing while idle");
+  p.announce();
+  assert.deepEqual(sent.at(-1), { activity: "Idle" }, "a newcomer hears we're here, idle");
+  p.stop();
+  assert.equal(sent.at(-1), null, "leaving clears us");
+  p.announce();
+  assert.equal(sent.at(-1), null, "nothing after leaving until the next activity");
 });
 
 test("a burst of remote rows costs one head read (no re-render storm)", async () => {

@@ -81,6 +81,7 @@ export class Director {
   readonly #o: DirectorOptions;
   readonly #chat = `demo-${hex(3)}`;
   #turns = 0;
+  #activity = "Waiting for a prompt";
   #busy: Promise<unknown> = Promise.resolve();
 
   private constructor(carton: Carton, o: DirectorOptions) {
@@ -95,6 +96,16 @@ export class Director {
     const d = new Director(carton, o);
     // caught up before the first turn, so its edits build on what everyone sees
     for (let i = 0; i < 100 && carton.sync!.status !== "up-to-date"; i++) await new Promise((r) => setTimeout(r, 50));
+    // presence isn't stored: say we're here now, and once to each person who appears later
+    const heard = new Set<string>();
+    carton.on((e) => {
+      if (e.type !== "presence" || !e.state) return;
+      const k = `${e.actor.kind}/${e.actor.id}`;
+      if (heard.has(k)) return;
+      heard.add(k);
+      carton.sync!.presence({ activity: d.#activity });
+    });
+    carton.sync!.presence({ activity: d.#activity });
     return d;
   }
 
@@ -111,7 +122,7 @@ export class Director {
       if (!plan) throw new Error(`no plan ${planName}`);
       const turn = `turn-${++this.#turns}`;
       const results: { status: string; id?: string }[] = [];
-      this.carton.sync!.presence({ activity: plan.activity });
+      this.#say(plan.activity);
       for (let i = 0; i < plan.edits.length; i++) {
         const e = plan.edits[i]!;
         if (i) await new Promise((r) => setTimeout(r, this.#o.gapMs ?? 700));
@@ -121,14 +132,19 @@ export class Director {
         const last = i === plan.edits.length - 1;
         const r = await this.carton.commit({ ops, author: this.actor(turn, e.sub), wait: 5000, ...(last ? { name: plan.prompt } : {}) });
         results.push({ status: r.status, ...(r.status === "pending" ? { id: r.id } : {}) });
-        this.carton.sync!.presence({ activity: plan.activity });
+        this.#say(plan.activity);
       }
-      this.carton.sync!.presence({ activity: "Idle" });
+      this.#say("Waiting for a prompt");
       return { turn, results };
     };
     const p = this.#busy.then(run, run);
     this.#busy = p.catch(() => {});
     return p;
+  }
+
+  #say(activity: string): void {
+    this.#activity = activity;
+    this.carton.sync!.presence({ activity });
   }
 
   async stop(): Promise<void> {
