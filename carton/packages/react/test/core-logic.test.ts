@@ -1,0 +1,184 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { ChangesPlayer, type Clock, type PlayerState } from "../src/player.ts";
+import { duration, seconds, when } from "../src/format.ts";
+import { windowRange } from "../src/virtual.ts";
+import { TopicHub } from "../src/hub.ts";
+import { actorChain, actorLabel, initials } from "../src/actors.ts";
+import { makeShotDiff, people, createMockUi } from "../src/mock.ts";
+import { words } from "../src/words.ts";
+import type { Actor } from "../src/model.ts";
+
+/** A clock the test steps by hand: request() queues one frame, step(ms) runs it. */
+function fakeClock() {
+  let now = 0, next: ((t: number) => void) | null = null, id = 0;
+  const clock: Clock = {
+    now: () => now,
+    request: (fn) => ((next = fn), ++id),
+    cancel: () => void (next = null),
+  };
+  return {
+    clock,
+    step(ms: number) {
+      now += ms;
+      const fn = next;
+      next = null;
+      fn?.(now);
+    },
+    get pending() {
+      return next !== null;
+    },
+  };
+}
+
+test("Play changes plays only the changes, in order, and stops after the last", () => {
+  const d = makeShotDiff(26);
+  const fc = fakeClock();
+  const p = new ChangesPlayer(d, { clock: fc.clock, context: 1 });
+  const segs = p.segments("b");
+  assert.ok(segs.length >= 3);
+  const seen: number[] = [];
+  const states: PlayerState[] = [];
+  p.onFrame((_s, t) => seen.push(t));
+  p.onState((s) => states.push(s));
+  p.play();
+  for (let i = 0; i < 2000 && fc.pending; i++) fc.step(16.7);
+  assert.equal(p.state.playing, false, "stops at the end");
+  // Every frame time is inside a segment (or the end of the last one).
+  for (const t of seen) assert.ok(segs.some((s) => t >= s.start - 1e-9 && t <= s.end + 1e-9), `t=${t} outside the playlist`);
+  // Coarse state changes are few: play, one per change reached, pause. Never one per frame.
+  assert.ok(states.length <= 2 + 2 * p.changeRows.length, `${states.length} state changes for ${seen.length} frames`);
+  assert.ok(seen.length > 100);
+  const changes = states.map((s) => s.change);
+  assert.deepEqual([...changes].sort((x, y) => x - y), changes, "changes advance in order");
+});
+
+test("the A/B toggle keeps the moment and the change", () => {
+  const d = makeShotDiff(26);
+  const fc = fakeClock();
+  const p = new ChangesPlayer(d, { clock: fc.clock });
+  p.goToChange(2);
+  const before = p.state.change;
+  p.setSide("a");
+  assert.equal(p.state.side, "a");
+  assert.equal(p.state.change, before);
+  p.setSide("b");
+  assert.equal(p.state.change, before);
+});
+
+test("next and previous step through changes; seek follows the time", () => {
+  const d = makeShotDiff(26);
+  const p = new ChangesPlayer(d, { clock: fakeClock().clock });
+  assert.equal(p.state.change, 0);
+  p.next();
+  assert.equal(p.state.change, 1);
+  p.next();
+  p.next();
+  p.next();
+  assert.equal(p.state.change, p.changeRows.length - 1, "clamped at the last change");
+  p.previous();
+  assert.equal(p.state.change, p.changeRows.length - 2);
+  p.seek(0);
+  assert.equal(p.state.change, 0);
+});
+
+test("a background tab doesn't skip changes: one frame advances at most 0.25 s", () => {
+  const d = makeShotDiff(26);
+  const fc = fakeClock();
+  const p = new ChangesPlayer(d, { clock: fc.clock });
+  p.play();
+  const t0 = p.time;
+  fc.step(10_000);
+  assert.ok(p.time - t0 <= 0.25 + 1e-9);
+});
+
+test("duration and seconds read like the player and describe()", () => {
+  assert.equal(duration(7.44), "0:07.4");
+  assert.equal(duration(75), "1:15.0");
+  assert.equal(duration(59.96), "1:00.0");
+  assert.equal(duration(3725), "1:02:05");
+  assert.equal(duration(-3), "0:00.0");
+  assert.equal(seconds(4.25), "4.3 s");
+  assert.equal(seconds(Number.NaN), "0.0 s");
+});
+
+test("when: just now, minutes, hours, yesterday, then dates", () => {
+  const now = new Date(2026, 9, 31, 15, 0).getTime();
+  assert.equal(when(now - 20_000, now, "en-GB"), "just now");
+  assert.equal(when(now - 4 * 60_000, now, "en-GB"), "4 min ago");
+  assert.equal(when(now - 2 * 3_600_000, now, "en-GB"), "2 h ago");
+  assert.match(when(new Date(2026, 9, 30, 14, 5).getTime(), now, "en-GB"), /^Yesterday 14:05$/);
+  assert.match(when(new Date(2026, 9, 27, 9, 0).getTime(), now, "en-GB"), /^Tue 09:00$/);
+  assert.equal(when(new Date(2026, 6, 3).getTime(), now, "en-GB"), "3 Jul");
+  assert.equal(when(new Date(2025, 6, 3).getTime(), now, "en-GB"), "3 Jul 2025");
+});
+
+test("windowRange renders the visible rows plus overscan, clamped", () => {
+  assert.deepEqual(windowRange(0, 400, 52, 10_000, 6), [0, 15]);
+  assert.deepEqual(windowRange(52 * 5000, 400, 52, 10_000, 6), [4994, 5015]);
+  assert.deepEqual(windowRange(52 * 9999, 400, 52, 10_000, 6), [9993, 10_000]);
+  assert.deepEqual(windowRange(0, 400, 52, 0, 6), [0, 0]);
+  const [s, e] = windowRange(123_456, 800, 52, 100_000, 6);
+  assert.ok(e - s <= Math.ceil(800 / 52) + 1 + 12, "a window stays small at any size");
+});
+
+test("TopicHub coalesces a burst into one call per topic, on the next microtask", async () => {
+  const hub = new TopicHub<"a" | "b">();
+  let a = 0, b = 0;
+  hub.subscribe("a", () => a++);
+  const off = hub.subscribe("b", () => b++);
+  for (let i = 0; i < 100; i++) hub.notify("a");
+  hub.notify("b");
+  assert.equal(a, 0, "not synchronous");
+  await Promise.resolve();
+  assert.equal(a, 1);
+  assert.equal(b, 1);
+  off();
+  hub.notify("b");
+  await Promise.resolve();
+  assert.equal(b, 1, "unsubscribed");
+  hub.notifyNow("a");
+  assert.equal(a, 2);
+});
+
+test("actors: a subagent is named with the agent that started it", () => {
+  const byKey = (k: string): Actor | undefined => Object.values(people).find((p) => p.key === k);
+  assert.equal(actorLabel(people.explore, byKey), "Director › Explore");
+  assert.equal(actorLabel(people.alice, byKey, "You"), "You");
+  assert.equal(actorLabel(people.bob, byKey, "You"), "Bob Okafor");
+  assert.deepEqual(actorChain(people.explore, byKey).map((a) => a.name), ["Alice Moreau", "Director", "Explore"]);
+  assert.equal(initials("Bob Okafor"), "BO");
+  assert.equal(initials("Émile"), "É");
+  assert.equal(initials("  "), "?");
+});
+
+test("words: the §0.1 status words and plurals", () => {
+  assert.equal(words.offline(1), "Offline: 1 edit waiting");
+  assert.equal(words.offline(3), "Offline: 3 edits waiting");
+  assert.equal(words.syncing, "Syncing");
+  assert.equal(words.upToDate, "Up to date");
+  assert.equal(words.differ(3, 4.2, 31), "3 shots / 4.2 s of 31.0 s differ");
+  assert.equal(words.differ(1, 1, 10), "1 shot / 1.0 s of 10.0 s differ");
+  assert.equal(words.foldInto("Main cut"), "Fold into Main cut");
+  assert.equal(words.undoLabel("Director", "tighter intro"), "Undo Director: tighter intro");
+});
+
+test("mock history: 10k versions, filters, newest first, indexOf in O(log n)", () => {
+  const ui = createMockUi({ versions: 10_000, seed: 3 });
+  const h = ui.history();
+  assert.equal(h.count("all"), 10_004);
+  const newest = h.at("all", 0)!;
+  assert.equal(newest.provisional, true);
+  assert.equal(h.indexOf("all", newest.id), 0);
+  assert.ok(h.count("named") >= 20);
+  assert.ok(h.count("turns") > 1000);
+  for (let i = 0; i < h.count("named"); i++) assert.ok(h.at("named", i)!.name);
+  const t = h.at("turns", 5)!;
+  assert.equal(t.kind, "turn");
+  assert.equal(h.indexOf("turns", t.id), 5);
+  assert.equal(h.indexOf("named", t.id) >= -1, true);
+  const r0 = h.revision();
+  ui.addVersion({ author: people.bob });
+  assert.equal(h.count("all"), 10_005);
+  assert.ok(h.revision() > r0);
+});

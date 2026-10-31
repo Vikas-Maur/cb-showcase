@@ -10,7 +10,7 @@
 //   their id lists, so the confirmed-id list never reads an archived blob, §6.3).
 
 import type { SequencerStorage, SqlValue } from "@carton/core/plugins";
-import type { ConfirmedChange, CutRecord, DagNode, Span } from "@carton/core";
+import type { Actor, ConfirmedChange, CutRecord, DagNode, NodeId, PathKey, Span } from "@carton/core";
 import type { sequencer, sync } from "@carton/core";
 
 type TailRow = sequencer.TailRow;
@@ -50,6 +50,10 @@ export interface StoredBranch {
   /** A read-only tracking branch from a hand-off's ancestry closure: lineage nodes, no log (§5.3). */
   tracking?: boolean;
   nodes?: DagNode[];
+  /** A tracking branch's last author per record at its nodes (credits from before a shared cut's fork point). */
+  authors?: [NodeId, Record<PathKey, Actor>][];
+  /** An adopted branch's ancestry closure: the tracking branches `history` returns as its lineage (Stage F). */
+  closure?: string[];
 }
 
 // The columns the rule reads are their own; everything else of a change goes in the body.
