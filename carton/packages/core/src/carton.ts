@@ -67,7 +67,23 @@ export interface OpenOptions {
    */
   init?: { doc: Doc; projectId?: string; cutName?: string; asChange?: boolean } | { import: ShallowExport } | { join: JoinInit };
   /** `autoConnect: false`: the sync-lease holder connects itself, under its nonce (§6.2). */
-  sync?: { transport: Transport; url: string; token: string | (() => Promise<string>); autoConnect?: boolean };
+  sync?: {
+    transport: Transport;
+    url: string;
+    token: string | (() => Promise<string>);
+    autoConnect?: boolean;
+    /**
+     * The host's blob store (or a client for it): messages over 1 MiB travel as envelopes both ways, and the largest
+     * message the server reads (declared in its welcome) becomes this client's limit. Without it every message goes
+     * inline, up to `maxMessageBytes`.
+     */
+    blobs?: BlobStore;
+    /**
+     * The largest message this client sends (default 32 MiB inline, 64 MiB with `blobs`, until the server declares
+     * its own): a change over it is refused before it is sent, `rejected` / "too large", and the edits after it go on.
+     */
+    maxMessageBytes?: number;
+  };
   media?: { blobStore: BlobStore; encoders?: ProxyEncoder[] };
   clock?: () => number;
   keyframeEvery?: number;
@@ -1240,7 +1256,7 @@ class CartonImpl implements Carton {
       url: sync.url,
       token: sync.token,
       schemaVersion: this.#opts.adapter.schemaVersion,
-      client: { adoptPayload: () => this.#adoptPayload(cut) },
+      client: { adoptPayload: () => this.#adoptPayload(cut), ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
     });
     this.#shared.set(cut, sc);
     // edits an earlier session queued and the server never answered: back in the queue in their queue order. Each row

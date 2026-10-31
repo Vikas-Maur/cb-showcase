@@ -5,7 +5,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton, actorKey, type Actor } from "@carton/core";
-import type { Store, StoreCondition, Transport } from "@carton/core/plugins";
+import type { BlobStore, Store, StoreCondition, Transport } from "@carton/core/plugins";
+import { createMemoryBlobStore } from "../../blob-memory/src/index.ts";
 import { createMemoryStore } from "../src/index.ts";
 import { adapter, doc0, set, item } from "./fixture.ts";
 import { copyStore, sleep, until, world } from "./world.ts";
@@ -152,5 +153,73 @@ test("F5: a process without the sync lease queues a shared-cut write in carton.d
   await until(async () => (await n.log()).some((v) => v.change === id), 5000, "the writer to see it confirmed");
   assert.equal(item((await h2.head()).doc, "a")!.name, "from another process");
   for (const c of [n, h2]) await c.close();
+  w.host.close();
+});
+
+test("verify-ci #10: a change over the client's message limit is refused as too large, never confirmed; the next edit still goes through", { timeout: 120_000 }, async () => {
+  const w = world();
+  const mem = createMemoryStore();
+  const a = await shared(w, mem);
+  // over the client's own limit without blob envelopes (32 MiB, a WebSocket frame): refused before it is sent
+  const big = await a.commit({ ops: [set("c", "name", "x".repeat(33 << 20))], author: agent, wait: 5000 });
+  assert.equal(big.status, "rejected", JSON.stringify(big).slice(0, 200));
+  assert.equal(big.status === "rejected" && big.reason, "too large");
+  const next = await a.commit({ ops: [set("d", "name", "small")], wait: 5000 });
+  assert.equal(next.status, "confirmed", "the edit after it is not held back");
+  assert.equal(item((await a.head()).doc, "c")!.name, "c", "the refused edit is not in the head");
+  assert.equal((await a.notices(agent)).filter((n) => n.kind === "rejected").length, 1, "its author is told once");
+  assert.equal((await mem.range("pending")).length, 0, "nothing left pending");
+  assert.ok(!(await a.log()).some((v) => v.author?.id === agent.id), "never confirmed");
+  await a.close();
+  w.host.close();
+});
+
+/** A shared cut on a Carton whose sync client gets `extra` (a blob store, a message limit), over `transport`. */
+async function sharedWith(w: ReturnType<typeof world>, store: Store, extra: { blobs?: BlobStore; maxMessageBytes?: number }, transport: Transport = w.host.transport) {
+  const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: alice, sync: { ...w.sync("alice", false), transport, ...extra } });
+  await c.share();
+  assert.ok(await c.sync!.connect({ nonce: "n1" }));
+  await until(async () => (await c.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  return c;
+}
+async function refusedAlone(c: Carton, store: Store, size: number) {
+  const big = await c.commit({ ops: [set("c", "name", "x".repeat(size))], author: agent, wait: 5000 });
+  assert.equal(big.status, "rejected", JSON.stringify(big).slice(0, 200));
+  assert.equal(big.status === "rejected" && big.reason, "too large");
+  assert.equal((await c.commit({ ops: [set("d", "name", "small")], wait: 5000 })).status, "confirmed", "the edit after it goes through");
+  assert.equal((await c.notices(agent)).filter((n) => n.kind === "rejected").length, 1, "its author is told once");
+  assert.equal((await store.range("pending")).length, 0, "nothing left pending");
+}
+
+test("verify-ci #10: with `sync.blobs` the host's declared message limit is the client's: a change over it is refused as too large", async () => {
+  const w = world();
+  // the welcome declares 16 KiB, as a host with blob envelopes and a smaller frame does
+  const transport: Transport = {
+    async connect(url, o) {
+      const inner = await w.host.transport.connect(url, o);
+      return {
+        get open() {
+          return inner.open;
+        },
+        send: (m) => inner.send(m),
+        onClose: (f) => inner.onClose(f),
+        close: (...x) => inner.close(...x),
+        onMessage: (f) => inner.onMessage((m: unknown) => f(((m as { type?: string })?.type === "hello" ? { ...(m as object), maxMessageBytes: 16 * 1024 } : m) as never)),
+      } as typeof inner;
+    },
+  } as Transport;
+  const store = createMemoryStore();
+  const c = await sharedWith(w, store, { blobs: createMemoryBlobStore() }, transport);
+  await refusedAlone(c, store, 64 * 1024);
+  await c.close();
+  w.host.close();
+});
+
+test("verify-ci #10: `sync.maxMessageBytes` matches a host set below 32 MiB: a change over it is refused as too large, not left pending", async () => {
+  const w = world();
+  const store = createMemoryStore();
+  const c = await sharedWith(w, store, { maxMessageBytes: 64 * 1024 });
+  await refusedAlone(c, store, 200 * 1024);
+  await c.close();
   w.host.close();
 });
