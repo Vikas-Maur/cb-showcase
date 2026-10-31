@@ -250,7 +250,15 @@ export class History {
   }
   /** The state at a node; null when it isn't held (a shallow node whose state wasn't carried). Never the live head. */
   stateOf(id: NodeId): Doc | null {
-    id = this.canon(id);
+    const c = this.canon(id);
+    const d = this.#stateAt(c);
+    if (d) return d;
+    // a version whose state is gone (compacted after a fork was made from it, in another process or behind a handle
+    // that hadn't seen the compaction: review SF1-1) is still the state its fork keeps a copy of
+    for (const cut of this.#cuts.values()) if (cut.root && cut.rec.forkOf && this.canon(cut.rec.forkOf) === c) return cut.root;
+    return null;
+  }
+  #stateAt(id: NodeId): Doc | null {
     const { branchId: b, seq: s } = parseNode(id);
     const br = this.#cuts.get(b);
     if (!br || br.rec.shallow) {
@@ -271,14 +279,14 @@ export class History {
     return doc;
   }
   hashOf(id: NodeId): string | null {
-    id = this.canon(id);
-    const ln = this.#lineage.get(id);
+    const c = this.canon(id);
+    const ln = this.#lineage.get(c);
     if (ln) return ln.hash;
-    let h = this.#hash.get(id);
+    let h = this.#hash.get(c);
     if (!h) {
-      const d = this.stateOf(id);
+      const d = this.stateOf(c);
       if (!d) return null;
-      this.#hash.set(id, (h = E.hashDoc(d, this.schema)));
+      this.#hash.set(c, (h = E.hashDoc(d, this.schema)));
     }
     return h;
   }
