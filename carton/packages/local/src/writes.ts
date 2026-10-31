@@ -7,7 +7,10 @@
 // A save whose merge raises cards is committed with head's value kept for each card (the rest lands, nothing is lost),
 // as `cb source apply` did in the verified prototype; the cards are kept as a notice for the actor, so `cb conflicts`
 // lists them and `cb resolve` can pick the other side later. Notices are marked delivered when a result carries them,
-// never deleted until resolved or handed to the person (the Stop hook and `cb resolve` still need them).
+// never deleted until resolved or handed to the person (the Stop hook and `cb resolve` still need them). They go out
+// once the result exists (a call that fails gives none away), recorded against the request, so a retry of a request
+// whose answer was lost with its holder gets them again; the outcome a write is still waiting for is that write's to
+// report, never another call's.
 import { merge3 } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
@@ -147,23 +150,39 @@ export function waitOutcome(carton: Carton, id: ChangeId, ms: number): Promise<O
 }
 
 const storeOf = (carton: Carton): Store | undefined => (carton as unknown as { store?: Store }).store;
-type NoticeRow = Notice & { deliveredAt?: number; handedToHuman?: number; blockedAt?: number };
+type NoticeRow = Notice & { deliveredAt?: number; deliveredTo?: ChangeId; handedToHuman?: number; blockedAt?: number };
 
 /**
- * The actor's notices not delivered yet, marked delivered (not deleted: an unresolved card stays for `cb conflicts`,
- * `cb resolve` and the Stop hook). Returned at the start of the actor's next result (§6.2).
+ * Requests running on a handle (the lease holder serves every shared-cut write, so one process sees them all): the
+ * outcome one of them is waiting for is its answer, so another call of the same actor leaves that notice alone.
  */
-export async function deliverNotices(carton: Carton, actor: Actor): Promise<Notice[]> {
+const RUNNING = new WeakMap<Carton, Map<ChangeId, number>>();
+const running = (c: Carton) => RUNNING.get(c) ?? RUNNING.set(c, new Map()).get(c)!;
+
+/**
+ * The actor's notices not delivered yet, marked delivered to `request` (not deleted: an unresolved card stays for `cb
+ * conflicts`, `cb resolve` and the Stop hook), plus those already delivered to `request` (a retry whose first answer
+ * was lost). `answered`: the change whose outcome is the result itself, marked delivered but not listed again.
+ * Returned at the start of the actor's result (§6.2).
+ */
+export async function deliverNotices(carton: Carton, actor: Actor, opts: { request?: ChangeId; answered?: ChangeId | null } = {}): Promise<Notice[]> {
   const store = storeOf(carton);
   if (!store) return carton.notices(actor, { take: false });
-  const rows = (await store.range<NoticeRow>("notices", { prefix: [actorKey(actor)] })).filter((r) => !r.value.deliveredAt && !r.value.handedToHuman);
+  const busy = running(carton);
   const at = Date.now();
   const out: Notice[] = [];
-  for (const r of rows) {
+  for (const { key, value } of await store.range<NoticeRow>("notices", { prefix: [actorKey(actor)] })) {
+    if (value.handedToHuman) continue;
+    if (value.deliveredAt) {
+      if (opts.request && value.deliveredTo === opts.request && value.change !== opts.answered) out.push(value);
+      continue;
+    }
+    // the outcome another running request waits for: it reports it
+    if (value.change && value.change !== opts.request && busy.has(value.change)) continue;
     // conditional on the row as read: a card resolved (or a hook's mark written) meanwhile is never undone
     let delivered: NoticeRow | null = null;
-    const ok = await casUpdate(store, "notices", r.key, (cur: NoticeRow) => (cur.deliveredAt || cur.handedToHuman ? SKIP : (delivered = { ...cur, deliveredAt: at })), r.value);
-    if (ok && delivered) out.push(delivered);
+    const ok = await casUpdate(store, "notices", key, (cur: NoticeRow) => (cur.deliveredAt || cur.handedToHuman ? SKIP : (delivered = { ...cur, deliveredAt: at, ...(opts.request ? { deliveredTo: opts.request } : {}) })), value);
+    if (ok && delivered && (delivered as NoticeRow).change !== opts.answered) out.push(delivered);
   }
   return out;
 }
@@ -201,7 +220,8 @@ function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | null, ca
  * no actor reads). It stays after the cards are resolved, so a retry never brings them back.
  */
 const receiptKey = (requestId: ChangeId) => ["@request", requestId];
-interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number }
+/** `shared`: written with a shared cut's pending row; it holds the cards, and core says whether the change landed. */
+interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number; shared?: boolean }
 
 /** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
 export interface ViewPrinter {
@@ -211,18 +231,28 @@ export interface ViewPrinter {
 }
 
 /** Run one write on a Carton handle and answer with the cb result contract. */
-export async function runWrite(carton: Carton, req: WriteRequest, opts: { online?: () => boolean; materializer?: ViewPrinter | null; viewName?: (actor: Actor, wanted?: string) => Promise<string> } = {}): Promise<CbResult> {
-  const notices = await deliverNotices(carton, req.actor);
+export async function runWrite(carton: Carton, req: WriteRequest, opts: { online?: (cut?: string) => boolean; materializer?: ViewPrinter | null; viewName?: (actor: Actor, wanted?: string) => Promise<string> } = {}): Promise<CbResult> {
+  // filled once the result exists (every result below holds this array): a call that fails gives no notice away
+  const notices: Notice[] = [];
   const op = req.op;
   const author = req.actor;
-  // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers)
-  await opts.materializer?.onCb?.();
+  // the change whose outcome this result reports (its notice is marked delivered, not listed again)
+  let answered: ChangeId | null = null;
+  const busy = running(carton);
+  busy.set(req.id, (busy.get(req.id) ?? 0) + 1);
   // listen before writing: on a shared cut the ack can arrive before commit() returns
   const outcomes = watchOutcomes(carton);
   try {
-    return await run();
+    // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers)
+    await opts.materializer?.onCb?.();
+    const result = await run();
+    notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
+    return result;
   } finally {
     outcomes.close();
+    const n = (busy.get(req.id) ?? 1) - 1;
+    if (n) busy.set(req.id, n);
+    else busy.delete(req.id);
   }
   async function run(): Promise<CbResult> {
   let r: any;
@@ -247,13 +277,14 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       if (op.base === undefined) op.base = (await carton.head(op.cut)).ref as unknown as string;
       const store = storeOf(carton);
       const receipt = store ? await store.get<Receipt>("notices", receiptKey(req.id)) : undefined;
-      if (receipt) {
+      if (receipt && !receipt.shared) {
         // this request already landed (its cards may have been resolved since): answer as it did, write nothing
         kept = receipt.cards;
         r = { status: "confirmed", seq: receipt.seq, ref: null, change: receipt.change ? { id: receipt.change } : null, rebased: 0, notices: [], ...(receipt.change ? {} : { empty: true }) };
         break;
       }
-      // on a shared cut core deduplicates a retried id itself (pending or confirmed): no receipt there, only the cards
+      // on a shared cut core deduplicates a retried id itself (pending, confirmed, or recorded as a no-op) and says
+      // where it is now; the receipt, written with its pending row, keeps the cards it answered with
       const sharedCut = (await carton.cuts()).find((c) => c.id === (op.cut ?? carton.cut))?.sequencer.kind !== "local";
       r = await carton.commit({
         id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
@@ -262,15 +293,15 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
           ? {
               cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [
                 cardsRow(author, req.id, change?.id ?? null, cards),
-                ...(sharedCut ? [] : [{ table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now() } satisfies Receipt }]),
+                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now(), ...(sharedCut ? { shared: true } : {}) } satisfies Receipt },
               ],
             }
           : {}),
       });
       if ((r.status === "confirmed" || r.status === "pending") && r.resolved?.length) kept = r.resolved;
-      else if (r.status === "confirmed" && store) {
-        // another copy of this request won the race (we got its duplicate): answer with that copy's cards
-        const won = await store.get<Receipt>("notices", receiptKey(req.id));
+      else if ((r.status === "confirmed" || r.status === "pending") && store) {
+        // a retry, or another copy of this request won the race (we got its duplicate): answer with its cards
+        const won = receipt ?? (await store.get<Receipt>("notices", receiptKey(req.id)));
         if (won?.cards.length) kept = won.cards;
       }
       break;
@@ -307,7 +338,9 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   const asConflicts = (x: CbResult): CbResult => (kept.length && (x.status === "confirmed" || x.status === "pending") ? { ...x, status: "conflicts", conflicts: kept, ref: x.ref ?? null, landed: x.status } as CbResult : x);
   if (r?.status !== "pending") return asConflicts(toCbResult(r, notices, r?.entry ? { undid: r.entry } : {}));
   // a shared cut: wait for the server (L14); offline answers pending at once, and conflicts arrive later as notices
-  const online = opts.online?.() ?? (carton.sync?.status === "up-to-date" || carton.sync?.status === "syncing");
+  // the cut written to, not the current one: a write to another cut waits on that cut's connection
+  const st = () => carton.sync?.state(destCut(op)).status;
+  const online = opts.online ? opts.online(destCut(op)) : st() === "up-to-date" || st() === "syncing";
   if (!online) return asConflicts({ ...toCbResult(r, notices), online: false } as CbResult);
   const ms = req.waitMs ?? WAIT_MS;
   if (carton.sync?.waitFor) {
@@ -317,16 +350,16 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     // spent with no effect of its own: an identical edit was already there. Saved, in effect: never an error
     if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
     if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
-    for (const x of await deliverNotices(carton, req.actor)) if (x.change !== r.id) notices.push(x);
+    // its notice (core stored it before the wait returned) is this result: marked delivered, not listed again
+    answered = r.id;
     return o.status === "rejected" ? rejectedResult(r.id, o.reason, notices) : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
   }
   const out = await outcomes.wait(r.id, ms);
   if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
   if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
-  // the change came back with a late conflict while we waited: it is this call's answer; other notices that arrived
-  // meanwhile go out with it rather than being marked delivered and dropped
+  // the change came back with a late conflict while we waited: it is this call's answer
   const n = out.notice;
-  for (const x of await deliverNotices(carton, req.actor)) if (!(x.change === n.change && x.kind === n.kind)) notices.push(x);
+  answered = r.id;
   return n.kind === "rejected" ? { status: "rejected", id: r.id, reason: n.text, notices } : { status: "conflicts", id: r.id, conflicts: [...kept, ...(n.cards ?? [])], ref: null, notices };
   }
 }
@@ -345,7 +378,9 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   const undone = new Set<string>();
   for (const v of versions) if (v.kind === "undo" && v.change) for (const x of (await revertsOf(carton, v.change))) undone.add(x);
   const mine = versions.filter((v) => v.author?.turn === turn && v.change && v.kind !== "undo" && !undone.has(v.change));
-  if (!mine.length) return { status: "confirmed", seq: head.ref.seq, ref: head.ref, change: null, rebased: 0, notices: [], empty: true };
+  // nothing (left) to undo: head itself, under the request's id. A retry of an undo that landed gets its answer back;
+  // a first one changes nothing and is recorded as a no-op, so its retry never undoes work that reached the turn since
+  if (!mine.length) return carton.commit({ id, doc: head.doc, base: head.ref, author, cut });
   let doc: Doc = head.doc;
   const cards: ConflictCard[] = [];
   for (const v of mine) {

@@ -41,8 +41,9 @@ export type WriteOutcome =
   | { status: "confirmed"; id: string; seq: number }
   | { status: "conflicts"; id: string; seq?: number; cards: ConflictCard[]; absorbed?: boolean }
   /**
-   * Spent by a withdraw (H1): it changed nothing of its own. Reported when the outcome is older than this process's
-   * record of it, so whether it left cards is no longer known (they went to the replica's cards when it happened).
+   * Spent by a withdraw (H1), or absorbed before it was sent: it changed nothing of its own. Live, it left no cards
+   * (with cards it is `conflicts`, `absorbed: true`); when the outcome is older than this process's record of it,
+   * whether it left cards is no longer known (they went to the replica's cards when it happened).
    */
   | { status: "absorbed"; id: string; seq: number }
   | { status: "rejected"; id: string; reason: string }
@@ -89,7 +90,8 @@ function outcomeLog(queue: ReplicaQueue): OutcomeLog {
         break;
       case "absorbed": {
         const cards = [...e.change.cards, ...e.cards];
-        log.record(e.branchId, e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "confirmed", id: e.change.id, seq: queue.headSeq(e.branchId) });
+        // without cards it is saved in effect, but says so: a `cb` caller reports "already in place", not a new change
+        log.record(e.branchId, e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "absorbed", id: e.change.id, seq: queue.headSeq(e.branchId) });
         break;
       }
       case "rejected":
@@ -189,6 +191,10 @@ export class SharedCut {
   }
   /** An outcome older than the log: what the confirmed log says (a withdraw row is no confirmation, finding 7). */
   private fromLog(id: string): WriteOutcome | null {
+    // a change refused here is decided even when no version of it is known (a keyframe skipped its withdraw row: round 5
+    // finding 1)
+    const reason = this.queue.refusedReason(this.branchId, id);
+    if (reason !== undefined) return { status: "rejected", id, reason };
     const v = this.queue.versionId(this.branchId, id);
     if (!v || v.provisional) return null;
     const seq = Number(v.id.slice(v.id.lastIndexOf("@") + 1));
@@ -221,6 +227,11 @@ export class SharedCut {
     }).start();
     this.refreshState();
     return this.client.whenCaughtUp(timeoutMs);
+  }
+  /** History this replica doesn't hold, from the server (`SyncClient.history`): fails while not connected. */
+  history(after: number, upTo: number, opts: { lineage?: boolean } = {}): ReturnType<SyncClient["history"]> {
+    if (!this.client) return Promise.reject(new Error("history request: not connected"));
+    return this.client.history(after, upTo, opts);
   }
   /**
    * Stop syncing. With `drain`, push nothing new and wait (up to `timeoutMs`) until every in-flight push and withdraw

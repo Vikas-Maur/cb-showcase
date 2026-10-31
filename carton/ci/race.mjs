@@ -17,6 +17,7 @@ const opt = (name, dflt) => {
 };
 const trials = opt("--trials", "1");
 const rounds = opt("--rounds", "2000");
+for (const [k, v] of [["--trials", trials], ["--rounds", rounds]]) if (!/^[1-9]\d*$/.test(v)) throw new Error(`${k} must be a positive integer (got ${v})`);
 const dir = path.join(dirs.root, "carton-race");
 fs.mkdirSync(dir, { recursive: true });
 fs.mkdirSync(dirs.results, { recursive: true });
@@ -42,7 +43,9 @@ const table = spawnSync(process.execPath, ["summarize.ts", out], { cwd: race, en
 console.log(table.stdout);
 
 const rows = fs.readFileSync(out, "utf8").trim().split("\n").filter(Boolean).map((l) => JSON.parse(l));
-const lostOf = (x) => x.lostByEngine ?? (x.mode === "turn" ? x.unaccounted : 0);
+// A loss is known only where race.ts accounted for every foreign write: turn mode (writers never replace each
+// other) sets lostByEngine. Anything else counts as unknown, never as zero.
+const lostOf = (x) => (Number.isFinite(x.lostByEngine) ? x.lostByEngine : NaN);
 const totals = (pred) => {
   const l = rows.filter(pred);
   return { trials: l.length, rounds: l.reduce((a, x) => a + (x.rounds ?? 0), 0), writes: l.reduce((a, x) => a + (x.landed ?? 0), 0), lost: l.reduce((a, x) => a + lostOf(x), 0), busy: l.reduce((a, x) => a + (x.busy ?? 0), 0), eexist: l.reduce((a, x) => a + (x.eexist ?? 0), 0) };
@@ -58,15 +61,29 @@ const result = {
   hardlink: totals(renameRows("hardlink")),
   inplaceSettle2: totals((x) => x.protocol === "displace" && x.style === "inplace" && x.settle === 2),
 };
-fs.writeFileSync(path.join(dirs.results, `race-${OS}.json`), JSON.stringify(result, null, 1));
-
-const ok = result.displace.trials > 0 && result.displace.lost === 0;
+// The gate: the shipped protocol, temp+rename writers, every config of the portable matrix (writers 1 and 4, widen 0
+// and 100) for every trial, each one accounted for (turn mode) and with foreign writes to lose.
+const shipped = rows.filter(renameRows("displace"));
+const problems = [];
+for (const writers of [1, 4])
+  for (const widen of [0, 100]) {
+    const n = shipped.filter((x) => x.writers === writers && (x.widen ?? 0) === widen).length;
+    if (n !== Number(trials)) problems.push(`expected ${trials} displace trial(s) with ${writers} writer(s), widen ${widen}, got ${n}${n ? "" : " (no hard links on this volume?)"}`);
+  }
+if (shipped.length !== 4 * Number(trials)) problems.push(`expected ${4 * Number(trials)} displace trials, got ${shipped.length}`);
+const unaccounted = shipped.filter((x) => x.mode !== "turn" || !Number.isFinite(x.lostByEngine));
+if (unaccounted.length) problems.push(`${unaccounted.length} displace trial(s) without exact accounting`);
+const idle = shipped.filter((x) => !(x.landed > 0));
+if (idle.length) problems.push(`${idle.length} displace trial(s) saw no foreign write`);
+if (!(result.displace.lost === 0)) problems.push(`lost ${result.displace.lost}`);
+const ok = problems.length === 0;
+fs.writeFileSync(path.join(dirs.results, `race-${OS}.json`), JSON.stringify({ ...result, ok, problems }, null, 1));
 const line = (name, t) => `| ${name} | ${t.trials} | ${t.rounds} | ${t.writes} | **${t.lost}** | ${t.eexist} | ${t.busy} |`;
 summary(
-  `### P10 race on ${fsLabel} (${trials} trial(s) x ${rounds} rounds per config)\n\n${ok ? "✅" : "❌"} shipped \`displace\`: ${result.displace.lost} of ${result.displace.writes} foreign writes lost by the engine\n\n` +
+  `### P10 race on ${fsLabel} (${trials} trial(s) x ${rounds} rounds per config)\n\n${ok ? "✅" : "❌"} shipped \`displace\`: ${result.displace.lost} of ${result.displace.writes} foreign writes lost by the engine${ok ? "" : " (" + problems.join("; ") + ")"}\n\n` +
     `| protocol (temp+rename writers) | trials | engine rounds | foreign writes | lost by the engine | EEXIST retries | busy retries |\n|---|---|---|---|---|---|---|\n` +
     [line("displace (shipped)", result.displace), line("naive (control)", result.naive), line("hardlink (control)", result.hardlink), line("displace + settle 2, in-place writers (measured)", result.inplaceSettle2)].join("\n") +
     "\n\n<details><summary>race.ts tables</summary>\n\n" + table.stdout + "\n</details>\n",
 );
-console.log(`${ok ? "PASS" : "FAIL"}: displace lost ${result.displace.lost} of ${result.displace.writes} foreign writes (${result.displace.trials} trials); controls lost naive ${result.naive.lost}, hardlink ${result.hardlink.lost}`);
+console.log(`${ok ? "PASS" : "FAIL"}: displace lost ${result.displace.lost} of ${result.displace.writes} foreign writes (${result.displace.trials} trials); controls lost naive ${result.naive.lost}, hardlink ${result.hardlink.lost}${ok ? "" : "; " + problems.join("; ")}`);
 process.exitCode = ok ? 0 : 1;

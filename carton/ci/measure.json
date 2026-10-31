@@ -1,0 +1,680 @@
+{
+  "$comment": "Phase B: the agents' 'Measurements to run', re-run on CI runners (AGENTS.md rule 6), one job per id (carton-measure.yml, measure.mjs). A step is {label, cwd (relative to carton/), run, env, stdoutTo?, repeat?, allowFail?}; {node}, {electron}, {tmp}, {results}, {pwModules} are filled in. A report reads a results file: jsonl rows grouped by `groupBy`, every numeric field (nested ones as dotted paths) given as median and every run, minus `ignore` (exact keys or prefixes).",
+  "measurements": [
+    {
+      "id": "stores-sqlite-cells",
+      "agent": "stores",
+      "claim": "store-sqlite open / commit / readlog at 10k and 100k changes (notes: Measurements to run, 1)",
+      "timeout": 60,
+      "steps": [
+        {
+          "label": "bench/run.ts: build 10k and 100k carton.db, then 7 rounds of every cell, one fresh process each, rotated order",
+          "cwd": "packages/store-sqlite",
+          "env": {
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "bench/run.ts",
+            "{tmp}/sqlite",
+            "7",
+            "{results}/raw-sqlite.jsonl",
+            "10000,100000"
+          ],
+          "stdoutTo": "{results}/sqlite-run.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "raw-sqlite.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "stores-idb-cells",
+      "agent": "stores",
+      "claim": "store-idb open / commit / readlog at 10k and 100k in headless Chrome (notes 2)",
+      "timeout": 60,
+      "needs": [
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "bench/run.ts: build the data in a persistent profile, then 7 rounds of every cell",
+          "cwd": "packages/store-idb",
+          "env": {
+            "TMPDIR": "{tmp}/idbtmp",
+            "KF_ITEMS": "1000",
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "1.5",
+            "OTHER_MAX": "0.5"
+          },
+          "run": [
+            "{node}",
+            "bench/run.ts",
+            "{tmp}/idb-profile",
+            "7",
+            "{results}/raw-idb.jsonl",
+            "10000,100000"
+          ],
+          "stdoutTo": "{results}/idb-run.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "raw-idb.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "uptime",
+            "gateWaitS",
+            "waitedS",
+            "at",
+            "node",
+            "head",
+            "keyframeSeq"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "stores-misc",
+      "agent": "stores",
+      "claim": "idb value format A/B (notes 3), sqlite value compression (4), the 3-process starvation count (5), the P3/P3b numbers under Node and Electron 43.7.0 (6)",
+      "timeout": 45,
+      "needs": [
+        "chromium",
+        "electron"
+      ],
+      "steps": [
+        {
+          "label": "store-idb value format A/B: 10k changes, 7 alternating rounds (bench/exp-values-run.ts)",
+          "cwd": "packages/store-idb",
+          "env": {
+            "TMPDIR": "{tmp}/idbtmp"
+          },
+          "run": [
+            "{node}",
+            "bench/exp-values-run.ts",
+            "{tmp}/idb-exp"
+          ],
+          "stdoutTo": "{results}/idb-values.json"
+        },
+        {
+          "label": "store-sqlite value compression per deflate level (bench/compress.ts)",
+          "cwd": "packages/store-sqlite",
+          "run": [
+            "{node}",
+            "bench/compress.ts"
+          ],
+          "stdoutTo": "{results}/compress.jsonl"
+        },
+        {
+          "label": "Carton on carton.db, three processes committing back to back, TIGHT=1, 20 runs (counts runs that fail)",
+          "cwd": "packages/store-sqlite",
+          "env": {
+            "TIGHT": "1"
+          },
+          "repeat": 20,
+          "allowFail": true,
+          "run": [
+            "{node}",
+            "--test",
+            "--test-name-pattern=three processes committing",
+            "test/import.test.ts"
+          ],
+          "stdoutTo": "{results}/tight.log"
+        },
+        {
+          "label": "P3/P3b under Node (test/xproc.test.ts)",
+          "cwd": "packages/store-sqlite",
+          "run": [
+            "{node}",
+            "--test",
+            "--test-reporter=tap",
+            "test/xproc.test.ts"
+          ],
+          "stdoutTo": "{results}/xproc-node.tap"
+        },
+        {
+          "label": "P3/P3b under Electron 43.7.0's Node (test/xproc.test.ts)",
+          "cwd": "packages/store-sqlite",
+          "env": {
+            "ELECTRON_RUN_AS_NODE": "1"
+          },
+          "run": [
+            "{electron}",
+            "--test",
+            "--test-reporter=tap",
+            "test/xproc.test.ts"
+          ],
+          "stdoutTo": "{results}/xproc-electron.tap"
+        }
+      ],
+      "reports": [
+        {
+          "file": "idb-values.json",
+          "kind": "json"
+        },
+        {
+          "file": "compress.jsonl",
+          "groupBy": [
+            "level"
+          ],
+          "ignore": [
+            "node",
+            "items"
+          ]
+        },
+        {
+          "file": "tight.log",
+          "kind": "repeat"
+        },
+        {
+          "file": "xproc-node.tap",
+          "kind": "tap-json"
+        },
+        {
+          "file": "xproc-electron.tap",
+          "kind": "tap-json"
+        }
+      ]
+    },
+    {
+      "id": "ui-bench",
+      "agent": "ui",
+      "claim": "@carton/react: bundle sizes (notes 3) and the timing suite on React and preact/compat, 3 alternating runs (notes 1-2)",
+      "timeout": 60,
+      "needs": [
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "bundle sizes (bench/size.mjs --json)",
+          "cwd": "packages/react",
+          "run": [
+            "{node}",
+            "bench/size.mjs",
+            "--json"
+          ],
+          "stdoutTo": "{results}/ui-size.json"
+        },
+        {
+          "label": "build the bench page (bench/build.mjs)",
+          "cwd": "packages/react",
+          "run": [
+            "{node}",
+            "bench/build.mjs"
+          ]
+        },
+        {
+          "label": "timing suite: every cell on React and preact/compat, alternating, 3 runs (bench/run.mjs)",
+          "cwd": "packages/react",
+          "env": {
+            "CARTON_BENCH_OUT": "{results}/ui-bench.jsonl",
+            "CARTON_PLAYWRIGHT": "{pwModules}",
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/run.mjs",
+            "--runs",
+            "3"
+          ],
+          "stdoutTo": "{results}/ui-bench.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "ui-size.json",
+          "kind": "json"
+        },
+        {
+          "file": "ui-bench.jsonl",
+          "groupBy": [
+            "kind",
+            "n",
+            "full",
+            "shots",
+            "runtime"
+          ],
+          "ignore": [
+            "run",
+            "load1",
+            "uptime",
+            "seconds",
+            "vps",
+            "burst",
+            "errors"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "stores-repeat",
+      "agent": "stores",
+      "claim": "more runs of two stores claims: the idb value format A/B (3 more full runs of 7 alternating rounds) and the compression timings (5 more processes, each a median of 15)",
+      "timeout": 40,
+      "needs": [
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "store-idb value format A/B, 3 more runs",
+          "cwd": "packages/store-idb",
+          "env": {
+            "TMPDIR": "{tmp}/idbtmp"
+          },
+          "repeat": 3,
+          "run": [
+            "{node}",
+            "bench/exp-values-run.ts",
+            "{tmp}/idb-exp"
+          ],
+          "stdoutTo": "{results}/idb-values-x3.jsonl"
+        },
+        {
+          "label": "store-sqlite value compression, 5 more processes",
+          "cwd": "packages/store-sqlite",
+          "repeat": 5,
+          "run": [
+            "{node}",
+            "bench/compress.ts"
+          ],
+          "stdoutTo": "{results}/compress-x5.jsonl"
+        }
+      ],
+      "reports": [
+        {
+          "file": "idb-values-x3.jsonl",
+          "kind": "json"
+        },
+        {
+          "file": "compress-x5.jsonl",
+          "groupBy": [
+            "level"
+          ],
+          "ignore": [
+            "node",
+            "items"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "media-hash",
+      "agent": "media",
+      "claim": "media: hashing throughput per method, all methods giving the same hash (notes 1); the universal entry's size (notes 6)",
+      "timeout": 45,
+      "needs": [
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "bundle size of @carton/media's universal entry (esbuild minify, ESM, browser, gzip -9)",
+          "run": [
+            "{node}",
+            "-e",
+            "const {buildSync}=require('esbuild');const r=buildSync({entryPoints:['packages/media/src/index.ts'],bundle:true,minify:true,format:'esm',platform:'browser',write:false,logLevel:'silent'});const b=r.outputFiles[0].contents;console.log(JSON.stringify({entry:'packages/media/src/index.ts',min:b.length,gz:require('zlib').gzipSync(b,{level:9}).length,esbuild:require('esbuild').version}))"
+          ],
+          "stdoutTo": "{results}/media-size.json"
+        },
+        {
+          "label": "make a 256 MiB input (bench/media/hash-throughput.ts make)",
+          "run": [
+            "{node}",
+            "bench/media/hash-throughput.ts",
+            "make",
+            "{tmp}/r256.bin",
+            "256"
+          ]
+        },
+        {
+          "label": "every method, round-robin, 3 rounds (bench/media/hash-throughput.ts run)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/hash-throughput.ts",
+            "run",
+            "{tmp}/r256.bin",
+            "3",
+            "{results}/hash-throughput.jsonl"
+          ],
+          "stdoutTo": "{results}/hash-summary.json"
+        }
+      ],
+      "reports": [
+        {
+          "file": "media-size.json",
+          "kind": "json"
+        },
+        {
+          "file": "hash-throughput.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at",
+            "size"
+          ]
+        },
+        {
+          "file": "hash-summary.json",
+          "kind": "json"
+        }
+      ]
+    },
+    {
+      "id": "media-resume",
+      "agent": "media",
+      "claim": "media: resumable upload overhead, 64 MiB over a 4 MB/s, 60 ms link, cuts at 23/37/51/68/85% (notes 2)",
+      "timeout": 60,
+      "steps": [
+        {
+          "label": "clean / resume / restart, 5 rounds (bench/media/resume-overhead.ts run 5 … 64 4 60)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/resume-overhead.ts",
+            "run",
+            "5",
+            "{results}/resume-overhead.jsonl",
+            "64",
+            "4",
+            "60"
+          ],
+          "stdoutTo": "{results}/resume-summary.json"
+        }
+      ],
+      "reports": [
+        {
+          "file": "resume-overhead.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "loadBefore",
+            "loadAfter",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at"
+          ]
+        },
+        {
+          "file": "resume-summary.json",
+          "kind": "json"
+        }
+      ]
+    },
+    {
+      "id": "media-first-frame",
+      "agent": "media",
+      "claim": "media: time to the first frame, file source and through MediaReader (play-first, verified), Chrome and ffmpeg, faststart and moov-at-end, three links (notes 3, 4)",
+      "timeout": 75,
+      "needs": [
+        "ffmpeg",
+        "chromium"
+      ],
+      "steps": [
+        {
+          "label": "first frame, file source (bench/media/first-frame.ts --rounds 3)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/first-frame.ts",
+            "--rounds",
+            "3",
+            "--out",
+            "{results}/first-frame.jsonl"
+          ],
+          "stdoutTo": "{results}/first-frame.log"
+        },
+        {
+          "label": "first frame through MediaReader, play-first (bench/media/first-frame-reader.ts)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/first-frame-reader.ts",
+            "--mode",
+            "play-first",
+            "--rounds",
+            "3",
+            "--out",
+            "{results}/ffr-play.jsonl"
+          ],
+          "stdoutTo": "{results}/ffr-play.log"
+        },
+        {
+          "label": "first frame through MediaReader, verified (bench/media/first-frame-reader.ts)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock"
+          },
+          "run": [
+            "{node}",
+            "bench/media/first-frame-reader.ts",
+            "--mode",
+            "verified",
+            "--rounds",
+            "3",
+            "--out",
+            "{results}/ffr-verified.jsonl"
+          ],
+          "stdoutTo": "{results}/ffr-verified.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "first-frame.jsonl",
+          "where": {
+            "type": "run"
+          },
+          "groupBy": [
+            "tool",
+            "clip",
+            "link.name"
+          ],
+          "ignore": [
+            "round",
+            "clipBytes",
+            "link",
+            "load",
+            "requests"
+          ]
+        },
+        {
+          "file": "ffr-play.jsonl",
+          "where": {
+            "type": "run"
+          },
+          "groupBy": [
+            "tool",
+            "clip",
+            "link.name"
+          ],
+          "ignore": [
+            "round",
+            "clipBytes",
+            "link",
+            "load",
+            "requests"
+          ]
+        },
+        {
+          "file": "ffr-verified.jsonl",
+          "where": {
+            "type": "run"
+          },
+          "groupBy": [
+            "tool",
+            "clip",
+            "link.name"
+          ],
+          "ignore": [
+            "round",
+            "clipBytes",
+            "link",
+            "load",
+            "requests"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cardboard-race-linux",
+      "agent": "cardboard-adapter",
+      "claim": "P10 on Linux, the full matrix on the shipped code: free mode with the inotify oracle, turn mode, in-place writers, the missing-path gap (notes 1)",
+      "timeout": 120,
+      "steps": [
+        {
+          "label": "bench/race/run-linux.sh, 3 trials x 3000 rounds, ext4",
+          "cwd": "bench/race",
+          "run": [
+            "bash",
+            "run-linux.sh",
+            "{results}/race-linux.jsonl",
+            "3",
+            "3000",
+            "ext4:{tmp}/race-run"
+          ],
+          "stdoutTo": "{results}/race-linux-summary.md"
+        }
+      ],
+      "reports": [
+        {
+          "file": "race-linux.jsonl",
+          "groupBy": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "ignore": [
+            "round",
+            "trial",
+            "rounds",
+            "ms",
+            "at",
+            "base",
+            "fsLabel",
+            "oracle",
+            "keep",
+            "size",
+            "jitter",
+            "pace"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "cardboard-race-macos",
+      "agent": "cardboard-adapter",
+      "runner": "macos-latest",
+      "claim": "P10 on APFS (macOS), the portable matrix on the shipped code (notes 2: 'APFS: node race.ts on a Mac')",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "bench/race/race.ts, 3 trials x 3000 rounds, APFS",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "race.ts",
+            "--dir",
+            "{tmp}/carton-race",
+            "--fs",
+            "macos-APFS",
+            "--trials",
+            "3",
+            "--rounds",
+            "3000",
+            "--out",
+            "{results}/race-macos.jsonl"
+          ],
+          "stdoutTo": "{results}/race-macos.log"
+        },
+        {
+          "label": "bench/race/summarize.ts",
+          "cwd": "bench/race",
+          "run": [
+            "{node}",
+            "summarize.ts",
+            "{results}/race-macos.jsonl"
+          ],
+          "stdoutTo": "{results}/race-macos-summary.md"
+        }
+      ],
+      "reports": [
+        {
+          "file": "race-macos.jsonl",
+          "groupBy": [
+            "protocol",
+            "mode",
+            "style",
+            "writers",
+            "widen",
+            "settle",
+            "engine",
+            "reader"
+          ],
+          "ignore": [
+            "round",
+            "trial",
+            "rounds",
+            "ms",
+            "at",
+            "base",
+            "fsLabel",
+            "oracle",
+            "keep",
+            "size",
+            "jitter",
+            "pace"
+          ]
+        }
+      ]
+    }
+  ]
+}

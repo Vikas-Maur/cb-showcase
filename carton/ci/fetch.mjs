@@ -25,9 +25,19 @@ const exe = (name) => (OS === "windows" ? name + ".exe" : name);
 const npm = OS === "windows" ? "npm.cmd" : "npm";
 const SEVEN_ZIP = OS === "windows" ? "C:\\Program Files\\7-Zip\\7z.exe" : "7z";
 
-function run(cmd, args, opts = {}) {
-  const r = spawnSync(cmd, args, { stdio: "inherit", shell: cmd === npm && OS === "windows", ...opts });
-  if (r.status !== 0) throw new Error(`${cmd} ${args.join(" ")} exited ${r.status ?? r.signal}${r.error ? ": " + r.error.message : ""}`);
+// `quiet`: the tool reads Cardboard's code, whose errors can quote it (a parse error prints a code frame), so its
+// stderr is kept out of the log but for one short line.
+function run(cmd, args, opts = {}, quiet = false) {
+  const stdio = quiet ? ["ignore", opts.stdio?.[1] ?? "ignore", "pipe"] : (opts.stdio ?? "inherit");
+  const r = spawnSync(cmd, args, { shell: cmd === npm && OS === "windows", encoding: "utf8", ...opts, stdio });
+  if (r.status !== 0) {
+    // Only the error's own line: Node's `SyntaxError: …` / `Error [ERR_X]: …`, or prettier's `[error] file: …Error: …`.
+    // Never a fallback line: a file name or a code frame above it may be Cardboard's code.
+    const lines = String(r.stderr ?? "").split("\n").map((l) => l.trim());
+    const errLine = /^(\[error\] [^\s:]+: )?([A-Z][A-Za-z]*)?Error( \[[A-Z0-9_]+\])?: /;
+    const why = quiet ? (lines.find((l) => errLine.test(l)) ?? "").slice(0, 160) : "";
+    throw new Error(`${path.basename(cmd)} ${quiet ? path.basename(args[0] ?? "") : args.join(" ")} exited ${r.status ?? r.signal}${r.error ? ": " + r.error.message : ""}${why ? ": " + why : ""}`);
+  }
   return r;
 }
 
@@ -168,7 +178,7 @@ const tools = {
       if (!fs.existsSync(path.join(res, "app.asar"))) throw new Error("no Cardboard.app/Contents/Resources/app.asar in the installer");
       // @electron/asar from the repo's tools/ (what build-windows.js uses), and prettier into the scratch dir
       if (!fs.existsSync(path.join(REPO, "tools", "node_modules", "@electron", "asar"))) run(npm, ["ci", "--no-audit", "--no-fund"], { cwd: path.join(REPO, "tools") });
-      run(process.execPath, [path.join(REPO, "tools", "node_modules", "@electron", "asar", "bin", "asar.mjs"), "extract", path.join(res, "app.asar"), path.join(dest, "app-asar")]);
+      run(process.execPath, [path.join(REPO, "tools", "node_modules", "@electron", "asar", "bin", "asar.mjs"), "extract", path.join(res, "app.asar"), path.join(dest, "app-asar")], {}, true);
       fs.cpSync(path.join(res, "cli"), path.join(dest, "cli"), { recursive: true, dereference: true });
       const pdir = path.join(work, "prettier");
       run(npm, ["install", "--prefix", pdir, "--no-save", "--no-package-lock", "--no-audit", "--no-fund", `prettier@${VERSIONS.prettier}`]);
@@ -180,7 +190,7 @@ const tools = {
       fs.mkdirSync(pin);
       fs.copyFileSync(path.join(dest, "app-asar", "dist", "renderer", "assets", "installErrorTelemetry-DxKId8tA.js"), path.join(pin, "renderer.js"));
       const out = fs.openSync(renderer + ".part", "w");
-      run(process.execPath, [path.join(pdir, "node_modules", "prettier", "bin", "prettier.cjs"), "--no-config", "--no-editorconfig", "--parser", "babel", "renderer.js"], { cwd: pin, stdio: ["ignore", out, "inherit"] });
+      run(process.execPath, [path.join(pdir, "node_modules", "prettier", "bin", "prettier.cjs"), "--no-config", "--no-editorconfig", "--parser", "babel", "renderer.js"], { cwd: pin, stdio: ["ignore", out, "pipe"] }, true);
       fs.closeSync(out);
       fs.renameSync(renderer + ".part", renderer);
       fs.rmSync(work, { recursive: true, force: true });

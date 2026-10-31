@@ -51,10 +51,31 @@ export class PlacementConflictError extends Error {
   }
 }
 
+/** The project's history is in a carton.db Carton can't write (read-only file or attribute, folder, ACL): it can't
+ *  be fenced, so it is never moved. Nothing was copied anywhere. */
+export class UnwritableHistoryError extends Error {
+  readonly code = "CARTON_DB_UNWRITABLE";
+  readonly path: string;
+  constructor(file: string, cause: unknown) {
+    super(`This project's history (${file}) can't be written, so Carton can't move it to where it belongs now. Make the file and its folder writable (on Windows, clear the read-only attribute), then open the project again. (${(cause as Error)?.message ?? cause})`);
+    this.path = file;
+    this.cause = cause;
+  }
+}
+
+// SQLite's answers that mean "this file can't be written here": READONLY, PERM, CANTOPEN, AUTH (primary codes).
+const UNWRITABLE_CODES = new Set([8, 3, 14, 23]);
+const isUnwritable = (e: unknown) => UNWRITABLE_CODES.has(((e as { errcode?: number }).errcode ?? -1) & 0xff);
+
 const same = (a: string, b: string) => {
   const fold = process.platform === "win32" || process.platform === "darwin" ? (x: string) => x.toLowerCase() : (x: string) => x;
   return fold(path.resolve(a)) === fold(path.resolve(b));
 };
+
+/** Test-only points to stop at (a crash test exits the process there). */
+export interface MoveHooks {
+  afterPublish?: () => void | Promise<void>;
+}
 
 /**
  * Make `target` the project's carton.db, given that `other` is where it may have lived before (the other placement),
@@ -62,11 +83,6 @@ const same = (a: string, b: string) => {
  * that settled must not be overtaken by a move before it has the file open. Returns `open`'s result, and the path a
  * foreign carton.db found at `target` was moved aside to, if any.
  */
-/** Test-only points to stop at (a crash test exits the process there). */
-export interface MoveHooks {
-  afterPublish?: () => void | Promise<void>;
-}
-
 export async function settlePlacement<T>(target: string, other: string, lockFile: string, open: () => Promise<T>, waitMs = 10_000, hooks: MoveHooks = {}): Promise<{ opened: T; setAside?: string }> {
   return withLock(lockFile, waitMs, async () => {
     const setAside = setAsideIfForeign(target);
@@ -78,20 +94,35 @@ export async function settlePlacement<T>(target: string, other: string, lockFile
 async function settle(target: string, other: string, waitMs: number, hooks: MoveHooks): Promise<void> {
   // Nothing can fence a history Carton can't write (another process may still have it open and writing), so it is
   // never copied as if it were frozen.
-  const unwritable = (e: unknown) => new PlacementConflictError(other, target, `This project's history is in a place Carton can't write (${(e as Error).message})`);
+  const unwritable = (e: unknown) => new UnwritableHistoryError(other, e);
+  // SQLite gives the -wal and -shm it creates the database file's own permissions, so opening a read-only file makes
+  // read-only sidecars, which would still block the move after the user makes carton.db writable again. If this
+  // attempt is refused, the sidecars it made go again (nobody can be writing a file nobody can write).
+  const made = [`${other}-wal`, `${other}-shm`].filter((f) => !fs.existsSync(f));
+  const forgetSidecars = () => {
+    for (const f of made) {
+      try {
+        fs.rmSync(f, { force: true });
+      } catch {
+        // held by a reader that opened it meanwhile: harmless, it holds no data
+      }
+    }
+  };
   let src: DatabaseSync;
   try {
     src = new DatabaseSync(other, { timeout: 3 });
     src.prepare("SELECT count(*) AS n FROM sqlite_schema").get();
   } catch (e) {
+    forgetSidecars();
     throw unwritable(e);
   }
   let cleanUp = false;
+  let refused = false;
   try {
     try {
       await begin(src, other, waitMs);
     } catch (e) {
-      if ((e as { errcode?: number }).errcode !== undefined) throw unwritable(e); // SQLITE_READONLY and the like
+      if (isUnwritable(e)) throw unwritable(e);
       throw e;
     }
     const id = src.prepare("SELECT (SELECT application_id FROM pragma_application_id) AS a, (SELECT user_version FROM pragma_user_version) AS v, (SELECT count(*) FROM sqlite_schema) AS n").get() as { a: number; v: number; n: number };
@@ -110,10 +141,14 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
     // A file from an export or an older build has no id yet. It gets one, committed before anything is copied, so a
     // copy published by an interrupted move always names the file it came from.
     if (readMeta<string>(src, DB_ID) === undefined) {
-      src.exec(`CREATE TABLE IF NOT EXISTS main."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
-      writeMeta(src, DB_ID, newDbId());
-      if (readMeta(src, MACHINE) === undefined) writeMeta(src, MACHINE, machineMark());
-      src.exec("COMMIT");
+      try {
+        src.exec(`CREATE TABLE IF NOT EXISTS main."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
+        writeMeta(src, DB_ID, newDbId());
+        if (readMeta(src, MACHINE) === undefined) writeMeta(src, MACHINE, machineMark());
+        src.exec("COMMIT");
+      } catch (e) {
+        throw isUnwritable(e) ? unwritable(e) : e;
+      }
       await begin(src, other, waitMs);
     }
     if (t) {
@@ -126,9 +161,13 @@ async function settle(target: string, other: string, waitMs: number, hooks: Move
     }
     await copyAndMark(src, other, target, hooks);
     cleanUp = true;
+  } catch (e) {
+    refused = e instanceof UnwritableHistoryError;
+    throw e;
   } finally {
     if (src.isTransaction) src.exec("ROLLBACK");
     src.close();
+    if (refused) forgetSidecars();
     if (cleanUp) {
       try {
         removeUnused(other);
@@ -171,12 +210,41 @@ async function begin(db: DatabaseSync, file: string, waitMs: number): Promise<vo
 // Steps 2-4 of the protocol; `src` holds the write lock on `from`, so the copy (made on a second connection, which
 // reads the last committed state) is exactly what the mark will vouch for.
 async function copyAndMark(src: DatabaseSync, from: string, to: string, hooks: MoveHooks): Promise<void> {
+  // Step 4 must be possible before step 2 starts: a source that can't take the mark can't be fenced.
+  assertWritable(src, from);
   const token = randomBytes(8).toString("hex");
   await copyInto(from, to, { path: path.resolve(from), token, ...(readMeta<string>(src, DB_ID) ? { dbId: readMeta<string>(src, DB_ID) } : {}) });
-  await hooks.afterPublish?.(); // between steps 3 and 4: where a crash leaves an unconfirmed copy
-  src.exec(`CREATE TABLE IF NOT EXISTS main."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
-  writeMeta(src, MOVED_TO, { path: path.resolve(to), token });
-  src.exec("COMMIT");
+  try {
+    await hooks.afterPublish?.(); // between steps 3 and 4: where a crash leaves an unconfirmed copy
+    src.exec(`CREATE TABLE IF NOT EXISTS main."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
+    writeMeta(src, MOVED_TO, { path: path.resolve(to), token });
+    src.exec("COMMIT");
+  } catch (e) {
+    // The mark didn't land, so the copy vouches for nothing: take it back (the source is still the history). A
+    // crash here instead leaves it for the next open to recognise and redo.
+    try {
+      removeUnused(to);
+    } catch {
+      // somebody opened it already (outside openProjectStore); the next open recognises it as unconfirmed
+    }
+    throw isUnwritable(e) ? new UnwritableHistoryError(from, e) : e;
+  }
+}
+
+// Ask SQLite itself whether this connection may write the file: one write, undone at once. On Windows BEGIN IMMEDIATE
+// succeeds on a file with the read-only attribute (or a write-denying ACL, where SQLite quietly opened it read-only),
+// and only the first real write is refused; this makes that refusal come before anything is copied.
+function assertWritable(src: DatabaseSync, file: string): void {
+  src.exec("SAVEPOINT carton_probe");
+  try {
+    src.exec(`CREATE TABLE IF NOT EXISTS main."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`);
+    writeMeta(src, "writeProbe", 1);
+  } catch (e) {
+    throw isUnwritable(e) ? new UnwritableHistoryError(file, e) : e;
+  } finally {
+    src.exec("ROLLBACK TO carton_probe");
+    src.exec("RELEASE carton_probe");
+  }
 }
 
 // Copy every table of `from` (one snapshot, on its own connection) into a new file at `to`, appearing there only when

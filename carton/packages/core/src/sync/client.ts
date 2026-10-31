@@ -18,7 +18,7 @@
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
-import type { AdoptMsg, ClientMessage, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
+import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
 import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, jsonBytesBound, oversized, seal, unseal } from "./envelope.ts";
@@ -95,6 +95,8 @@ export interface SyncClientOptions {
 export const PRESENCE_PER_SEC = 10;
 
 let CONN = 0;
+/** Refusals about the connection (its token, its branch), not the change: the same on every message it sends. */
+const CONNECTION_REASONS: ReadonlySet<string> = new Set(["forbidden", "read-only branch", "unknown branch", "foreign id"]);
 
 export class SyncClient {
   readonly queue: ReplicaQueue;
@@ -132,6 +134,9 @@ export class SyncClient {
   readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0, envelopesSent: 0, envelopesReceived: 0 };
 
   private unsubscribe: (() => void) | null = null;
+  /** `history` requests waiting for their answer on the current connection, by `req`. */
+  private requests = new Map<number, { m: HistoryMsg; rows: ConfirmedChange[]; lineage?: ClosureEntry[]; resolve: (r: { rows: ConfirmedChange[]; lineage?: ClosureEntry[] }) => void; reject: (e: Error) => void }>();
+  private reqN = 0;
 
   constructor(opts: SyncClientOptions) {
     this.o = opts;
@@ -186,6 +191,7 @@ export class SyncClient {
     const c = this.conn;
     this.conn = null;
     c?.close();
+    this.failRequests(why);
     this.setStatus("stopped");
     this.emit({ type: "stopped", why });
     for (const w of this.waiters.splice(0)) w(false);
@@ -273,10 +279,27 @@ export class SyncClient {
   private onClose(id: number, why: string): void {
     if (id !== this.connId || !this.conn) return;
     this.conn = null;
+    this.failRequests(why);
     this.caughtUp = false;
     this.setStatus("offline");
     this.emit({ type: "offline", why });
     if (!this.stopped) this.retry = this.timers.setTimeout(() => ((this.retry = null), void this.connectLoop()), this.o.backoffMs ?? 500);
+  }
+  private failRequests(why: string): void {
+    for (const r of this.requests.values()) r.reject(new Error(`history request lost: ${why}`));
+    this.requests.clear();
+  }
+  /**
+   * History this replica doesn't hold (Stage F): the rows `(after, upTo]` of this branch, paged like catch-up, and with
+   * `lineage` its ancestry closure. Fails if offline or if the connection drops before the last page.
+   */
+  history(after: number, upTo: number, { lineage = false }: { lineage?: boolean } = {}): Promise<{ rows: ConfirmedChange[]; lineage?: ClosureEntry[] }> {
+    if (!this.conn || this.stopped) return Promise.reject(new Error("history request: offline"));
+    return new Promise((resolve, reject) => {
+      const m: HistoryMsg = { type: "history", branchId: this.branchId, req: ++this.reqN, after, upTo, ...(lineage ? { lineage: true } : {}) };
+      this.requests.set(m.req, { m, rows: [], resolve, reject });
+      this.send(m);
+    });
   }
   /** Drop connection `id` (a lost message: the server couldn't read an envelope, or we couldn't): reconnect, catch up. */
   private drop(id: number, why: string): void {
@@ -304,7 +327,7 @@ export class SyncClient {
    * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
    * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
    */
-  private hello(onlyFrom = -1): ClientMessage {
+  private hello(onlyFrom = -1, after?: number): ClientMessage {
     const b = this.branchId;
     const pending: PendingClaim[] = [];
     for (const p of this.queue.pending(b)) {
@@ -315,6 +338,7 @@ export class SyncClient {
     }
     const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
     if (this.noKeyframe) m.noKeyframe = true;
+    if (after !== undefined) m.claimsAfter = after;
     if (this.o.blobs) m.envelopes = true;
     return m;
   }
@@ -372,7 +396,7 @@ export class SyncClient {
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
             // the server checked only part of our claims: keep what it found, ask for the rest, act on nothing yet
             this.confirmedSoFar.push(...m.confirmed);
-            return this.send(this.hello(m.uncheckedFrom));
+            return this.send(this.hello(m.uncheckedFrom, m.checkedThrough));
           }
           const confirmed = m.type === "hello" ? [...this.confirmedSoFar.splice(0), ...m.confirmed] : [];
           if (m.type === "changes" && m.rows.length && m.rows[0]!.seq > this.queue.headSeq(b) + 1) return this.resync("a gap in the rows");
@@ -433,9 +457,18 @@ export class SyncClient {
         this.epoch++; // everything still in flight from the dead epoch is dropped by the server; resend all
         this.emit({ type: "reject", id: m.id, reason: m.reason, epoch: m.epoch });
         if (VALIDATION_REASONS.has(m.reason)) {
-          // can't be fixed by resubmitting: it leaves the queue as rejected; the rest is rebased without it
           this.fenced(() => {
-            if (m.id) this.queue.rejectPending(b, m.id, m.reason);
+            const p = m.id ? this.queue.pending(b).find((x) => x.id === m.id) : undefined;
+            if (p && this.queue.isEmpty(p)) {
+              // an emptied change (absorbed, or refused here) is only withdrawn: nothing about it is decided by a
+              // refusal, since a copy sent earlier may still be confirmed (round 4 finding 1). One this connection may
+              // not make (its token, its branch) isn't sent again on it; any other answered a push refused for its
+              // content, and the change is withdrawn in the new epoch.
+              if (CONNECTION_REASONS.has(m.reason)) {
+                p.withdrawRefused = this.connId;
+                this.emit({ type: "error", error: `withdraw of ${m.id} refused (${m.reason}): it stays pending` });
+              }
+            } else if (m.id) this.queue.rejectPending(b, m.id, m.reason); // the rest is rebased without it
             this.defer(() => this.pump(), 1);
           });
           return;
@@ -465,6 +498,20 @@ export class SyncClient {
           this.defer(() => this.pump(), Math.max(1, n)); // the rebase holds the pusher, then the resubmission
         });
         return;
+      }
+      case "history": {
+        const r = this.requests.get(m.req);
+        if (!r || m.branchId !== b) return;
+        if (m.error) {
+          this.requests.delete(m.req);
+          return r.reject(new Error(m.error));
+        }
+        r.rows.push(...m.rows);
+        if (m.lineage) r.lineage = m.lineage;
+        // the next page starts after the last row; a page with no row can't make progress, so it ends the request
+        if (m.more && m.rows.length) return this.send((r.m = { ...r.m, after: m.rows[m.rows.length - 1]!.seq, lineage: false }));
+        this.requests.delete(m.req);
+        return r.resolve({ rows: r.rows, ...(r.lineage ? { lineage: r.lineage } : {}) });
       }
       case "overwritten":
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
@@ -551,7 +598,11 @@ export class SyncClient {
         continue;
       }
       if (p.withdrawSent?.conn === this.connId && p.withdrawSent.epoch === this.epoch) continue;
+      if (p.withdrawRefused === this.connId) continue;
       p.withdrawSent = { conn: this.connId, epoch: this.epoch };
+      // a withdraw lands in (head, head + K + 1] like a push: its base joins the claims a reconnect makes, so a lost
+      // answer is found again rather than spent twice (round 4 finding 2)
+      if (!p.sentBases.includes(head)) p.sentBases.push(head);
       this.stats.withdraws++;
       this.emit({ type: "withdraw", id: p.id, epoch: this.epoch });
       this.send({ type: "withdraw", branchId: b, id: p.id, base: head, epoch: this.epoch });

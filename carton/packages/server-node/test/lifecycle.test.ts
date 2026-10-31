@@ -141,3 +141,22 @@ test("a message of several MiB (a large adoption) gets through; a newer schemaVe
   assert.notEqual(answer.type, "hello", "a hello from a newer schema version was welcomed");
   c.close();
 });
+
+test("expired envelope blobs are swept by the host, room open or not, even when no socket ever came", async () => {
+  const blobs = createMemoryBlobStore();
+  const h = await startNodeHost({ dataDir: join(scratch("sweep"), "d"), auth, secret: SECRET, blobs, idleCloseMs: 20, durability: "normal" });
+  hosts.push(h);
+  const token = await tokenFor("w", "s");
+  const sha = (b: Uint8Array) => crypto.subtle.digest("SHA-256", b as Uint8Array<ArrayBuffer>).then((d) => [...new Uint8Array(d)].map((x) => x.toString(16).padStart(2, "0")).join(""));
+  const body = new TextEncoder().encode('{"type":"push"}');
+  const hour = Math.floor(Date.now() / 3600_000);
+  const oldKey = `messages/c/${hour - 30}/${await sha(body)}-00000001`, youngKey = `messages/c/${hour}/${await sha(body)}-00000002`;
+  for (const k of [oldKey, youngKey]) {
+    const r = await fetch(`${h.httpUrl}/api/projects/s/messages/${k}`, { method: "PUT", body, headers: { authorization: `Bearer ${token}` } });
+    assert.equal(r.status, 200);
+  }
+  await until(() => h.room("s") === undefined, "the room the upload opened idled out");
+  assert.equal(await h.sweepEnvelopes(), 1);
+  assert.equal(await blobs.head(`projects/s/seq/${oldKey}`), null, "the expired envelope is gone");
+  assert.ok(await blobs.head(`projects/s/seq/${youngKey}`), "the young one stays");
+});

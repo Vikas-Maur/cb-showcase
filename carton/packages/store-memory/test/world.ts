@@ -14,10 +14,11 @@ export async function until(pred: () => boolean | Promise<boolean>, ms = 5000, w
   }
 }
 
-export function world() {
+/** `opts`: the host's sequencer options (a small `maxBehind` and `keyframeEvery` force keyframe catch-ups). */
+export function world(opts: { maxBehind?: number; keyframeEvery?: number } = {}) {
   const tokens = new Map<string, AuthContext>();
   const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
-  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name, ...opts });
   const token = (name: string) => {
     tokens.set(`tok-${name}`, { account: name, credential: `${name}/install`, role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
     return `tok-${name}`;

@@ -113,12 +113,25 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
       aborted: false,
       ms: 0,
     };
+    let markClosed!: () => void;
+    const closed = new Promise<void>((r) => (markClosed = r));
     res.once("close", () => {
       if (!res.writableFinished) {
-        // The client left, the idle timeout fired, close() ran, or we destroyed the socket after a source error.
-        if (info.error === undefined) info.aborted = true;
+        // The client left, the idle timeout fired, close() ran, or we destroyed the socket after a source error. A
+        // client that hangs up once it has every byte (its Content-Length is met) while we finish the source's read
+        // lost nothing: that is not an abort.
+        if (info.error === undefined && !(info.length > 0 && info.bytes === info.length)) info.aborted = true;
         ac.abort();
       }
+      markClosed();
+    });
+
+    try {
+      await respond(req, res, ac, info);
+    } finally {
+      // Report once the response is closed AND this handler is done, the source's read included (its cleanup can
+      // outlast the socket), so onRequest and close() mean "this request is completely over".
+      await closed;
       if (onRequest !== undefined) {
         info.status = res.headersSent ? res.statusCode : 0; // 0: it ended before any answer
         info.ms = performance.now() - t0;
@@ -129,8 +142,10 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
         }
       }
       if (--open === 0 && drained !== undefined) drained();
-    });
+    }
+  };
 
+  const respond = async (req: IncomingMessage, res: ServerResponse, ac: AbortController, info: RangeRequestInfo): Promise<void> => {
     try {
       if (!hostOk(req.headers.host)) return reply(res, 403, CLOSE);
       const url = req.url ?? "";
