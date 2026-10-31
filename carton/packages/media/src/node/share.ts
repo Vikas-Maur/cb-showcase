@@ -14,7 +14,7 @@ import { proxyPointerKey, mediaKey, type ProxyPointer } from "../keys.ts";
 import type { Manifest } from "../manifest.ts";
 import { COLLAB_PROXY_720P, encodeProxy, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
 import type { HashScheduler } from "../scheduler.ts";
-import { planShare, type MediaRecord, type SharePolicy, type T1Kind } from "../tiers.ts";
+import { CONTEXT_CAP_BYTES, planShare, type MediaRecord, type SharePolicy, type T1Kind } from "../tiers.ts";
 import { uploadMedia, type UploadResult, type UploadStateStore } from "../upload.ts";
 import { fileSource } from "./file-source.ts";
 import { hashFile } from "./hash-file.ts";
@@ -81,16 +81,34 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
     record.size = original.size;
     o.onEvent?.({ type: "hashed", what: "original", hash: original.hash });
   }
+  // T1 files: sizes first, so files the policy leaves out (a .context over its cap) are never read; then a hash of
+  // each candidate. One unreadable T1 file is skipped, not a reason to fail the whole clip.
   const t1Sizes: Partial<Record<T1Kind, number>> = {};
   const t1Manifests: Partial<Record<T1Kind, Manifest>> = {};
+  const unreadable: { what: string; why: string }[] = [];
   for (const [kind, path] of Object.entries(o.local.t1 ?? {}) as [T1Kind, string][]) {
-    const m = await hash(path);
-    t1Manifests[kind] = m;
-    t1Sizes[kind] = m.size;
-    if (record.t1![kind] && record.t1![kind]!.hash !== m.hash) delete record.t1![kind];
+    let size: number;
+    try {
+      size = (await stat(path)).size;
+    } catch (e) {
+      unreadable.push({ what: kind, why: `can't read it: ${(e as Error).message}` });
+      continue;
+    }
+    t1Sizes[kind] = size;
+    if (kind === "context" && size > CONTEXT_CAP_BYTES) continue; // planShare reports it
+    try {
+      const m = await hash(path);
+      t1Manifests[kind] = m;
+      if (record.t1![kind] && record.t1![kind]!.hash !== m.hash) delete record.t1![kind];
+    } catch (e) {
+      if ((e as Error)?.name === "AbortError") throw e;
+      delete t1Sizes[kind];
+      unreadable.push({ what: kind, why: `can't read it: ${(e as Error).message}` });
+    }
   }
   const hostProxy = o.encoders.some(canReuse);
   const plan = planShare(record, { original: !!o.local.original, t1: t1Sizes, hostProxy }, o.policy);
+  plan.skipped.push(...unreadable);
   for (const s of plan.skipped) o.onEvent?.({ type: "skipped", ...s });
 
   const upload = async (what: string, path: string, manifest: Manifest, contentType?: string): Promise<UploadResult> => {

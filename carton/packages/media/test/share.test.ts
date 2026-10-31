@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { writeFileSync } from "node:fs";
+import { truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ProxyEncoder } from "../src/contracts.ts";
@@ -145,4 +145,28 @@ test("re-sharing a clip relinked to other footage replaces its proxy and origina
   assert.equal(second.record.proxy?.encoder, "libx264");
   assert.ok(store.objects.has(mediaKey(otherHash)), "the new original was uploaded");
   assert.equal(second.record.t1?.poster?.hash, (await hashFile(poster2)).hash, "the new poster replaced the old one");
+});
+
+test("files the policy leaves out are never read, and an unreadable T1 file doesn't fail the clip (review round 2, finding 6)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  const store = new CountingMemoryStore();
+  const big = join(s.dir, "context.tar");
+  writeFileSync(big, "");
+  truncateSync(big, 26_000_000); // over the 25 MB cap; sparse, so nothing is really written
+  const asked: string[] = [];
+  const scheduler = new HashScheduler({ hash: (t, o) => (asked.push(t.key), hashFile(t.key, { signal: o.signal })), hasher: nodeHasher });
+  const events: ShareEvent[] = [];
+  const r = await shareMedia({
+    store,
+    record: record(),
+    local: { original, t1: { poster, context: big, transcript: join(s.dir, "missing.json") } },
+    policy: { originals: false, proxies: false },
+    encoders: [],
+    workDir: s.dir,
+    scheduler,
+    onEvent: (e) => events.push(e),
+  });
+  assert.equal(asked.includes(big), false, "the oversized .context was never hashed");
+  assert.ok(r.record.t1?.poster, "the poster still went up");
+  const skipped = events.filter((e) => e.type === "skipped").map((e) => (e as { what: string }).what).sort();
+  assert.deepEqual(skipped, [".context", "transcript"]);
 });

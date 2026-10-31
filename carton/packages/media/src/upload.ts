@@ -165,8 +165,30 @@ async function withRetries<T>(o: UploadOptions, what: () => Promise<T>): Promise
   }
 }
 
+// Uploads of one object through one store object, so callers in the same process take turns: the second then finds
+// the finished object and sends nothing. Callers in other processes (the app and a `cb` call) are handled at
+// completion, below.
+const inFlight = new WeakMap<BlobStore, Map<string, Promise<unknown>>>();
+
 /** Makes sure m/<hash> and mf/<hash> are in the store, sending only what is missing. */
 export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
+  let byKey = inFlight.get(o.store);
+  if (!byKey) inFlight.set(o.store, (byKey = new Map()));
+  const key = mediaKey(o.manifest.hash);
+  const before = byKey.get(key);
+  const mine = (async () => {
+    if (before) await before.catch(() => {});
+    return uploadOnce(o);
+  })();
+  byKey.set(key, mine);
+  try {
+    return await mine;
+  } finally {
+    if (byKey.get(key) === mine) byKey.delete(key);
+  }
+}
+
+async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   const { store, manifest: m } = o;
   if (o.source.size !== m.size) throw new SourceChangedError(`file is ${o.source.size} bytes, manifest says ${m.size}`);
   const key = mediaKey(m.hash);
@@ -286,21 +308,48 @@ export async function uploadMedia(o: UploadOptions): Promise<UploadResult> {
   const settled = await Promise.allSettled(Array.from({ length: workers }, worker));
   await saving;
   const bad = settled.find((r) => r.status === "rejected");
+  const finished = async () => {
+    const h = await store.head(key).catch(() => null);
+    return h !== null && h.size === m.size;
+  };
   try {
     if (bad) throw (bad as PromiseRejectedResult).reason;
     const parts = [...done.values()].sort((a, b) => a.partNumber - b.partNumber);
-    await withRetries(o, () => upload.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag }))));
-  } catch (e) {
-    if (uploadGone(e)) {
-      // The upload is gone. Either another caller resuming the same saved upload completed it first (the object is
-      // there: success), or the store dropped it (forget it, so the next attempt starts over instead of failing again).
-      await states.delete(key);
-      const done = await store.head(key).catch(() => null);
-      if (done && done.size === m.size) {
-        result.deduped = true;
-        return result;
+    try {
+      await withRetries(o, () => upload.complete(parts.map((p) => ({ partNumber: p.partNumber, etag: p.etag }))));
+    } catch (first) {
+      // Another process resuming the same saved upload may be sending parts again, which gives them new ETags (fs and
+      // S3 stores do). Every part holds the same verified bytes whoever sent it, so: wait a little, and either the
+      // other process has finished the object, or complete with the ETags the store lists now. A few rounds, since
+      // the other process may still be replacing parts between our listing and our complete.
+      let e: unknown = first;
+      for (let round = 0; ; round++) {
+        if (isAbort(e) || uploadGone(e) || (await finished()) || round >= 5) throw e;
+        await sleep((o.retryDelayMs ?? 250) * 2 ** round, o.signal);
+        if (await finished()) throw e; // handled below as success
+        const listed = await upload.listParts().catch(() => null);
+        if (!listed) throw e;
+        const current = new Map(listed.map((p) => [p.partNumber, p]));
+        const fresh = parts.map((p) => current.get(p.partNumber));
+        if (fresh.some((p, i) => !p || p.size !== parts[i].size)) throw e;
+        try {
+          await upload.complete(fresh.map((p) => ({ partNumber: p!.partNumber, etag: p!.etag })));
+          break;
+        } catch (again) {
+          e = again;
+        }
       }
     }
+  } catch (e) {
+    if (isAbort(e)) throw e;
+    // The upload may be gone, or completion refused: either another caller completed the object (success), or the
+    // store dropped the upload (forget it, so the next attempt starts over instead of failing again).
+    if (await finished()) {
+      await states.delete(key);
+      result.deduped = true;
+      return result;
+    }
+    if (uploadGone(e)) await states.delete(key);
     throw e;
   }
   await states.delete(key);

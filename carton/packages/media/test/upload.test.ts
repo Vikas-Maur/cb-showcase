@@ -180,3 +180,16 @@ test("two callers resuming the same upload both succeed (review round 1, finding
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
   assert.equal(await state.load(mediaKey(manifest.hash)), null);
 });
+
+test("two processes resuming one upload both succeed although part ETags change (review round 2, finding 5)", async () => {
+  const { manifest, source, data } = await setup(12 * MiB, 13);
+  const mem = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  await assert.rejects(uploadMedia({ store: new FaultyStore(mem, { dropUploadAfterBytes: 5 * MiB }), hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 }));
+  // Two store objects over one backend, as two processes have: both send the missing parts, each ETag replacing the
+  // other's, then both complete.
+  const opts = (store: FaultyStore) => ({ store, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 });
+  const results = await Promise.allSettled([uploadMedia(opts(new FaultyStore(mem, {}))), uploadMedia(opts(new FaultyStore(mem, {})))]);
+  assert.deepEqual(results.map((r) => (r.status === "rejected" ? String(r.reason) : "ok")), ["ok", "ok"]);
+  assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+});

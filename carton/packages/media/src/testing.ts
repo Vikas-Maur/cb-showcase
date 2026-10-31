@@ -25,11 +25,13 @@ function clip(o: Uint8Array, range?: ByteRange): Uint8Array {
 export class CountingMemoryStore implements BlobStore {
   readonly kind = "counting-memory";
   readonly objects = new Map<string, Uint8Array>();
-  readonly uploads = new Map<string, { key: string; parts: Map<number, Uint8Array> }>();
+  readonly uploads = new Map<string, { key: string; parts: Map<number, { body: Uint8Array; etag: string }> }>();
   readonly counters: StoreCounters = { bytesUp: 0, bytesDown: 0, puts: 0, parts: 0, gets: 0, heads: 0 };
   /** Every ranged read, in order. */
   readonly reads: { key: string; offset: number; length: number }[] = [];
   #nextUpload = 1;
+  // Every part write gets a new ETag, as on the fs store and S3: a part written again invalidates the old ETag.
+  #nextEtag = 1;
 
   async head(key: string): Promise<BlobInfo | null> {
     this.counters.heads++;
@@ -82,18 +84,20 @@ export class CountingMemoryStore implements BlobStore {
         const u = this.#upload(key, uploadId);
         this.counters.parts++;
         this.counters.bytesUp += data.length;
-        u.parts.set(partNumber, copyBytes(data));
-        return { partNumber, etag: `e${partNumber}-${data.length}` };
+        const etag = `e${partNumber}-${this.#nextEtag++}`;
+        u.parts.set(partNumber, { body: copyBytes(data), etag });
+        return { partNumber, etag };
       },
       listParts: async () =>
-        [...this.#upload(key, uploadId).parts].map(([partNumber, b]) => ({ partNumber, etag: `e${partNumber}-${b.length}`, size: b.length })),
+        [...this.#upload(key, uploadId).parts].map(([partNumber, p]) => ({ partNumber, etag: p.etag, size: p.body.length })),
       complete: async (parts) => {
         const u = this.#upload(key, uploadId);
         const bodies: Uint8Array[] = [];
         let partSize = -1;
         parts.forEach((p, i) => {
-          const b = u.parts.get(p.partNumber);
-          if (!b || p.partNumber !== i + 1 || p.etag !== `e${p.partNumber}-${b.length}`) throw new Error(`InvalidPart ${p.partNumber}`);
+          const stored = u.parts.get(p.partNumber);
+          if (!stored || p.partNumber !== i + 1 || p.etag !== stored.etag) throw Object.assign(new Error(`InvalidPart ${p.partNumber}`), { code: "InvalidPart" });
+          const b = stored.body;
           // R2: every part but the last has the same size.
           if (i < parts.length - 1) {
             if (partSize === -1) partSize = b.length;
