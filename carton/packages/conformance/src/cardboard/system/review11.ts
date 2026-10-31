@@ -179,3 +179,31 @@ test("review 12 #1: a project.json save equal to head is committed on the cut fo
   assert.equal(find(await w.head(), "c").name, "main rename", "the app's save lands on Cut B");
   assert.deepEqual(w.mz.log.errors, []);
 });
+
+test("review 12 #1's class: project.json's rewrite isn't skipped against an old cut's head when its head read finds a cut switch [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 10), clip("y", 40, 45)], tracks: ["V1"] });
+  const other = await Carton.open({ adapter: cardboardAdapter, store: w.carton.store, actor: BOB });
+  t.after(() => other.close());
+  await w.tick(1000); // project.json shows main's head
+  const realHead = w.engine.head.bind(w.engine);
+  let cutB: string | undefined;
+  w.engine.head = async () => {
+    const d = await realHead();
+    if (!cutB) {
+      // another process switches to a cut of its own with an edit; this handle's head read finds it
+      cutB = (await other.fork("Cut B")).id;
+      await other.switchTo(cutB);
+      await commitOn(other, (its) => void (find(its, "y").name = "Cut B edit"));
+      await w.carton.head();
+    }
+    return d;
+  };
+  w.mz.onHeadChange("local"); // project.json is rewritten after its delay
+  await w.tick(1000);
+  w.engine.head = realHead;
+  assert.ok(cutB);
+  assert.equal(w.carton.cut, cutB);
+  const items = (JSON.parse(fs.readFileSync(w.abs(PROJECT_FILE), "utf8")) as { project: { timelineItems: Item[] } }).project.timelineItems;
+  assert.equal(find(items, "y").name, "Cut B edit", "project.json shows the cut the head read found");
+  assert.deepEqual(w.mz.log.errors, []);
+});

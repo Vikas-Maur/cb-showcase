@@ -779,10 +779,12 @@ export class Materializer {
     // project.json has one base: Carton's latest materialization of it. Only that state stays pinned for it (the
     // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
     // unpatched tools, rare, and get the latest view as their base).
+    const on = this.engine.cut?.();
     const head = await this.engine.head();
     const onDisk = await this.readEnvelope();
     const same = (x: unknown) => onDisk !== null && JSON.stringify(x) === JSON.stringify(onDisk);
-    if (!fresh && this.projectPin && cur && same({ ...env, project: this.host.toProject(head, cur) })) return;
+    // (not when the head read found a cut switch: that head is the old cut's, review 12 #1's class)
+    if (!fresh && this.projectPin && cur && on === this.engine.cut?.() && same({ ...env, project: this.host.toProject(head, cur) })) return;
     await this.engine.release("project-file");
     const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     const body = refBodyOf(p);
