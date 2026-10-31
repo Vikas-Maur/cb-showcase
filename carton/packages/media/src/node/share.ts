@@ -10,7 +10,7 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { BlobStore, Hasher, ProxyEncoder } from "../contracts.ts";
-import { proxyPointerKey, mediaKey, type ProxyPointer } from "../keys.ts";
+import { damagedKey, mediaKey, proxyPointerKey, type ProxyPointer } from "../keys.ts";
 import { findProxy } from "../stream.ts";
 import type { Manifest } from "../manifest.ts";
 import { COLLAB_PROXY_720P, encodeProxy, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
@@ -72,6 +72,13 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
     const st = await stat(path);
     return o.scheduler.request({ key: path, size: st.size, mtimeMs: st.mtimeMs }, "share");
   };
+
+  // Shared objects a reader reported damaged (bad/<hash>, e2e S5-5) count as not shared: they are planned again, and
+  // their upload replaces the stored copy instead of deduping on it. A damaged proxy stream is made anew.
+  const reported = async (id: string | undefined) => id !== undefined && (await o.store.head(damagedKey(id)).catch(() => null)) !== null;
+  if (record.proxy && (await reported(record.proxy.stream ?? record.proxy.hash))) delete record.proxy;
+  if (record.original === "shared" && (await reported(record.hash))) delete record.original;
+  for (const kind of Object.keys(record.t1!) as T1Kind[]) if (await reported(record.t1![kind]?.hash)) delete record.t1![kind];
 
   // What is shared already counts only if it still matches what is on this machine. Hash first, then plan:
   // - the original: relinked to other footage, its proxy and shared original belong to the old footage;

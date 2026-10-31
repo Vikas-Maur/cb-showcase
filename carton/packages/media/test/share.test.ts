@@ -5,7 +5,7 @@ import { chmodSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ProxyEncoder } from "../src/contracts.ts";
-import { mediaKey, proxyPointerKey } from "../src/keys.ts";
+import { damagedKey, mediaKey, proxyPointerKey } from "../src/keys.ts";
 import { COLLAB_PROXY_720P } from "../src/proxy.ts";
 import { MediaReader } from "../src/read.ts";
 import { HashScheduler, MemoryManifestCache } from "../src/scheduler.ts";
@@ -64,7 +64,7 @@ test("sharing uploads T1 and an encoded proxy, keeps the original local, and a t
   assert.equal(r.record.proxy?.profile, COLLAB_PROXY_720P.id);
   assert.equal(r.record.proxy?.encoder, "libx264");
   assert.equal(r.record.original, undefined);
-  assert.ok(store.objects.has(mediaKey(r.record.proxy!.hash)));
+  assert.ok(store.objects.has(mediaKey(r.record.proxy!.hash!)));
   assert.equal(store.objects.has(mediaKey(orig.hash)), false, "the original stays on this machine (C8)");
   assert.ok(store.objects.has(proxyPointerKey(orig.hash, COLLAB_PROXY_720P.id)));
   assert.ok(events.some((e) => e.type === "proxy" && e.how === "encoded"));
@@ -90,7 +90,7 @@ test("sharing uploads T1 and an encoded proxy, keeps the original local, and a t
   const server = await startRangeServer({ source: new MediaReader({ store, hasher: nodeHasher }).toolSource() });
   try {
     // Async: the range server runs in this process, so a synchronous ffprobe would block it and never get an answer.
-    const { stdout: out } = await promisify(execFile)(FFPROBE, ["-v", "error", "-show_entries", "stream=codec_name,height", "-of", "csv=p=0", server.url(r.record.proxy!.hash)], { timeout: 30_000 });
+    const { stdout: out } = await promisify(execFile)(FFPROBE, ["-v", "error", "-show_entries", "stream=codec_name,height", "-of", "csv=p=0", server.url(r.record.proxy!.hash!)], { timeout: 30_000 });
     assert.match(out, /h264,540/);
   } finally {
     await server.close();
@@ -221,4 +221,25 @@ test("T1 files: the cap applies to the size hashed, a file that can't be opened 
     shareMedia({ store, record: toMediaRecord({ id: "m9", kind: "video", fileName: "x.mp4", size: 0 }), local: { t1: { poster } }, policy: { originals: false }, encoders: [], workDir: s.dir, scheduler: cancelling, signal: ac.signal }),
     (e) => e === reason,
   );
+});
+
+test("a shared file a reader reported damaged is uploaded again by the next share (S5-5)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  const store = new CountingMemoryStore();
+  const o = { store, local: { original, t1: { poster } }, policy: { originals: true, proxies: false }, encoders: [], workDir: s.dir };
+  const first = await shareMedia({ ...o, record: record() });
+  const posterHash = first.record.t1!.poster!.hash;
+  // Disk rot in the store, and a teammate's reader that reported it.
+  store.objects.get(mediaKey(posterHash))![100] ^= 0xff;
+  store.objects.get(mediaKey(first.record.hash!))![100] ^= 0xff;
+  await store.put(damagedKey(posterHash), new TextEncoder().encode("{}"));
+  await store.put(damagedKey(first.record.hash!), new TextEncoder().encode("{}"));
+  const up = store.counters.bytesUp;
+  const again = await shareMedia({ ...o, record: first.record });
+  assert.equal(again.record.t1?.poster?.hash, posterHash);
+  assert.equal(again.record.original, "shared");
+  const reader = new MediaReader({ store, hasher: nodeHasher });
+  assert.equal((await reader.readVerified(posterHash, 0, first.record.t1!.poster!.size)).length, first.record.t1!.poster!.size, "the poster verifies again");
+  assert.equal((await reader.readVerified(first.record.hash!, 0, first.record.size)).length, first.record.size, "so does the original");
+  assert.equal(store.objects.has(damagedKey(posterHash)), false);
+  assert.ok(store.counters.bytesUp - up >= first.record.size, "both went up again");
 });
