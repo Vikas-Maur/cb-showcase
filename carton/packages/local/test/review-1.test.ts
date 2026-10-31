@@ -45,8 +45,9 @@ test("a non-idempotent write whose holder died holding it is not run again: its 
     assert.equal((r as { code?: string }).code, UNKNOWN_OUTCOME);
     assert.equal(h.calls(), 1, "sent once, never again");
     assert.deepEqual(spawned, [], "no takeover to run it a second time");
-    assert.equal(IDEMPOTENT.has("undo") || IDEMPOTENT.has("fold") || IDEMPOTENT.has("fork") || IDEMPOTENT.has("restore") || IDEMPOTENT.has("revert"), false);
-    assert.ok(IDEMPOTENT.has("commit") && IDEMPOTENT.has("undoTurn"));
+    // (the mechanism stays for a write without an id; since core took ids for every mutating call, all writes are
+    // idempotent: see stage-f.test.ts for retried undo, fold, restore, revert and new cuts)
+    for (const k of ["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork"] as const) assert.ok(IDEMPOTENT.has(k), k);
   } finally {
     await h.srv.close();
   }

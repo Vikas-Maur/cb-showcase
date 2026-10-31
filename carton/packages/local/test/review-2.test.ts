@@ -28,6 +28,7 @@ function scripted(store: Store, steps: ((input: any) => any)[], landed: Record<s
     on: (l: (e: any) => void) => { listeners.push(l); return () => listeners.splice(listeners.indexOf(l), 1); },
     emit: (e: any) => listeners.forEach((l) => l(e)),
     notices: async () => [],
+    async cuts() { return [{ id: "cut1", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }]; },
     async commit(input: any) { this.calls.push(input); return steps.shift()!(input); },
     async checkout() { return { timelineItems: Object.entries(landed).map(([id, name]) => ({ id, name })) }; },
     async head() { return { ref, doc: await this.checkout() }; },

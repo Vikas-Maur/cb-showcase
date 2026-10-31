@@ -51,11 +51,13 @@ export type CbResult =
 export const WAIT_MS = 5000;
 
 /**
- * Writes that are safe to run twice with the same request: a commit is deduplicated by its change id, `undoTurn`
- * commits under the request id too, and the rest change nothing on a second run. A fold, restore, revert, undo or new
- * cut whose holder died after receiving it has an unknown outcome and is never retried blindly.
+ * Writes that are safe to run twice with the same request: every write is deduplicated by its request id in core (a
+ * commit, fold, restore, revert, undo or new cut retried under the same id gets the first answer, never a second
+ * change), `undoTurn` commits under it, and the rest change nothing on a second run. So a holder that died after
+ * receiving a write is simply asked again. (`submit`'s `idempotent: false` path stays for any future write without an
+ * id; none uses it now.)
  */
-export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "undoTurn", "switch", "name", "pin", "printView", "closeCard", "share"]);
+export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share"]);
 
 /**
  * Run an idempotent write again when Carton lost its append race too many times in a row (many writers on one
@@ -243,6 +245,8 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
         r = { status: "confirmed", seq: receipt.seq, ref: null, change: receipt.change ? { id: receipt.change } : null, rebased: 0, notices: [], ...(receipt.change ? {} : { empty: true }) };
         break;
       }
+      // on a shared cut core deduplicates a retried id itself (pending or confirmed): no receipt there, only the cards
+      const sharedCut = (await carton.cuts()).find((c) => c.id === (op.cut ?? carton.cut))?.sequencer.kind !== "local";
       r = await carton.commit({
         id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
         choices: () => "ours" as const,
@@ -250,12 +254,12 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
           ? {
               cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [
                 cardsRow(author, req.id, change?.id ?? null, cards),
-                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now() } satisfies Receipt },
+                ...(sharedCut ? [] : [{ table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now() } satisfies Receipt }]),
               ],
             }
           : {}),
       });
-      if (r.status === "confirmed" && r.resolved?.length) kept = r.resolved;
+      if ((r.status === "confirmed" || r.status === "pending") && r.resolved?.length) kept = r.resolved;
       else if (r.status === "confirmed" && store) {
         // another copy of this request won the race (we got its duplicate): answer with that copy's cards
         const won = await store.get<Receipt>("notices", receiptKey(req.id));
@@ -267,15 +271,16 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // --keep mine|theirs decides every card one way; without it a fold with cards saves nothing and lists them
       const choices = op.keep ? () => (op.keep === "mine" ? "ours" : "theirs") as "ours" | "theirs" : undefined;
       r = op.reject?.length
-        ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices })
-        : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices });
+        ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices, id: req.id })
+        : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
       break;
     }
-    case "restore": r = await carton.restore(op.ref, { author, cut: op.cut }); break;
-    case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut }); break;
-    case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author }); break;
+    // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
+    case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
+    case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
+    case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author, id: req.id }); break;
     case "undoTurn": r = await undoTurn(carton, req.id, op.turn, author, op.cut); break;
-    case "fork": { const cut = await carton.fork(op.name, { from: op.from, kind: op.cutKind as any }); return { status: "confirmed", seq: 0, ref: null, notices, cut }; }
+    case "fork": { const cut = await carton.fork(op.name, { from: op.from, kind: op.cutKind as any, author, id: req.id }); return { status: "confirmed", seq: 0, ref: null, notices, cut }; }
     case "switch": await carton.switchTo(op.cut); return { status: "confirmed", seq: 0, ref: null, notices, cut: op.cut };
     case "name": await carton.name(op.ref, op.name); return { status: "confirmed", seq: 0, ref: op.ref, notices };
     case "pin": { const pin = await carton.pin({ owner: op.owner, cut: op.cut, ttlMs: op.ttlMs }); return { status: "confirmed", seq: pin.ref.seq, ref: pin.header, notices, header: pin.header }; }
