@@ -54,6 +54,12 @@ export interface NodeHostOptions {
   /** Largest WebSocket message (default 32 MiB, Cloudflare's own cap, so both hosts accept the same messages). This
    * is the protocol's limit, separate from the sequencer's 1 MB threshold for keeping a change body inline. */
   maxMessageBytes?: number;
+  /** The origin clients reach this host at (`https://carton.example`), for the signed URLs it hands out. Without
+   * it, each request's own Host header is used, so a URL works at the address the client used. */
+  publicOrigin?: string;
+  /** Behind a reverse proxy: take the origin from X-Forwarded-Proto and X-Forwarded-Host. Only set this when a
+   * proxy you run sets them; a client could otherwise choose them. */
+  trustProxy?: boolean;
   /** The newest document schemaVersion this host's sequencer accepts in `hello` (default 1). */
   schemaVersion?: number;
   /** The largest message carried as an envelope, read by the sequencer and taken by the upload route (default 64
@@ -318,6 +324,21 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   const hostPart = listenHost.includes(":") ? `[${listenHost}]` : listenHost;
   const origin = `http://${hostPart}:${port}`;
 
+  // The origin a request was made to, for the URLs built from it (signed media URLs): the configured public one, else
+  // what a trusted proxy forwarded, else the Host header the client sent, else the listen address.
+  const HOST_RE = /^[A-Za-z0-9.-]+(:\d{1,5})?$|^\[[0-9A-Fa-f:.]+\](:\d{1,5})?$/;
+  const publicOrigin = opts.publicOrigin ? new URL(opts.publicOrigin).origin : null;
+  function originOf(req: IncomingMessage): string {
+    if (publicOrigin) return publicOrigin;
+    const first = (h: string | string[] | undefined) => (Array.isArray(h) ? h[0] : h)?.split(",")[0]?.trim();
+    if (opts.trustProxy) {
+      const host = first(req.headers["x-forwarded-host"]), proto = first(req.headers["x-forwarded-proto"]);
+      if (host && HOST_RE.test(host)) return `${proto === "https" ? "https" : "http"}://${host}`;
+    }
+    const host = req.headers.host;
+    return host && HOST_RE.test(host) ? `http://${host}` : origin;
+  }
+
   const deps: HttpDeps = {
     auth: opts.auth,
     secret: opts.secret ?? new Uint8Array(32),
@@ -338,7 +359,7 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   server.on("request", (req, res) => {
     const work = (async () => {
       try {
-        const r = await handleHttp(toRequest(req, origin), deps);
+        const r = await handleHttp(toRequest(req, originOf(req)), deps);
         if (r) return await send(res, r);
         if (staticRoot && (req.method === "GET" || req.method === "HEAD")) return serveStatic(staticRoot, req, res);
         res.writeHead(404, { "content-type": "text/plain" }).end("not found");
