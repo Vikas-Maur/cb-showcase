@@ -140,3 +140,25 @@ test("an edit made offline is kept in the store and pushed after a restart; disc
   await again.close();
   w.host.close();
 });
+
+test("a commit on a shared cut reaches the host with no pump and no wait, also after a reconnect", async () => {
+  const w = world();
+  const sa = createMemoryStore();
+  const a = await Carton.open({ adapter, store: sa, init: { doc: doc0() }, actor: alice, sync: w.sync("alice") });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const b = await Carton.open({ adapter, store: await copyStore(sa), actor: bob, sync: w.sync("bob") });
+  await until(() => b.sync!.status === "up-to-date", 5000, "bob connected");
+  // Carton has no pump(): the commit alone must get the change to the server and on to bob
+  assert.equal((await a.commit({ ops: [set("a", "name", "no pump")] })).status, "pending");
+  await until(async () => item((await b.head()).doc, "a")!.name === "no pump", 5000, "the change at bob");
+  // offline, then reconnected: the queued change goes out on its own
+  await a.sync!.disconnect();
+  assert.equal((await a.commit({ ops: [set("b", "name", "after reconnect")] })).status, "pending");
+  await a.sync!.connect({ nonce: "lease-2" });
+  await until(async () => item((await b.head()).doc, "b")!.name === "after reconnect", 5000, "the queued change at bob");
+  assert.equal(a.sync!.state().pending, 0);
+  await a.close();
+  await b.close();
+  w.host.close();
+});
