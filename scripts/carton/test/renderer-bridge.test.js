@@ -31,7 +31,7 @@ const load = ({ enabled }) => {
     editor: { adopt: (p) => { log.push(["adopt", p]); state = { ...state, ...p }; } },
   };
   window.__carton.store(store);
-  return { c: window.__carton, calls, log, host, disk, project, setArmed: (a) => (armed = a), state: () => state };
+  return { c: window.__carton, calls, log, host, disk, project, store, setArmed: (a) => (armed = a), state: () => state };
 };
 
 test("off: nothing is attached and nothing is taken", async () => {
@@ -115,6 +115,21 @@ test("an edit made while head is being read is saved first, and only then is hea
   const fetch = t.host.fetch;
   // The person edits while the first read is in flight.
   t.host.fetch = async (id) => { if (reads++ === 0) t.setArmed(true); return fetch(id); };
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 200, carton: true });
+  assert.equal(reads, 2);
+  assert.deepEqual(t.log.map((l) => l[0]), ["flush", "replace", "adopt"]);
+});
+
+test("a save whose write is under way counts as unsaved: head is adopted only after it is done", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let inflight = false, reads = 0;
+  t.store.inflight = () => inflight;
+  const flush = t.store.flush;
+  t.store.flush = async () => { inflight = false; return flush(); };
+  const fetch = t.host.fetch;
+  // The person's save timer fires while head is read: armed no more, but its write is in flight.
+  t.host.fetch = async (id) => { if (reads++ === 0) inflight = true; return fetch(id); };
   await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 200, carton: true });
   assert.equal(reads, 2);
   assert.deepEqual(t.log.map((l) => l[0]), ["flush", "replace", "adopt"]);

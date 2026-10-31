@@ -16,6 +16,18 @@ const [workerFile, root] = process.argv.slice(2);
   const saved = await call("projects.updateScoped", { ...doc, timelineItems: items, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
   out.guiSave = saved.timelineItems.find((i) => i.type === "text").fontSize;
   if (process.env.CARDBOARD_CARTON === "1") out.ping = await call("carton.ping");
+  const text = (d) => d.timelineItems.find((i) => i.type === "text");
+  if (process.env.UNDO === "1") {
+    // ⌘Z right after the person's save: undone at head, written into project.json, and announced to the pages; then
+    // redone by saving again, so the rest runs as without it.
+    const before = events.length;
+    out.undo = (await call("carton.undo", { projectId: p.id })).status;
+    out.undone = text(await call("projects.read", p.id)).fontSize;
+    out.announced = events.slice(before).some((e) => e.change?.kind === "changed");
+    const again = await call("projects.read", p.id);
+    await call("projects.updateScoped", { ...again, timelineItems: again.timelineItems.map((it) => (it.type === "text" ? { ...it, fontSize: 150 } : it)), stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: again.stateUpdatedAt, actor: "person" } });
+  }
+
   const tsx = path.join((await call("projects.bundleInfo", p.id)).bundlePath, "timeline.tsx");
   fs.writeFileSync(tsx, fs.readFileSync(tsx, "utf8").replace(/fontSize=\{\d+\}/, "fontSize={160}"));
   for (let i = 0; i < 200 && !events.some((e) => e.change?.kind?.startsWith("timeline")); i++) await new Promise((r) => setTimeout(r, 25));
@@ -24,7 +36,13 @@ const [workerFile, root] = process.argv.slice(2);
   out.after = final.timelineItems.find((i) => i.type === "text").fontSize;
   if (lossy) out.video = final.timelineItems.find((i) => i.type === "video");
   const bundlePath = (await call("projects.bundleInfo", p.id)).bundlePath;
-  const text = (d) => d.timelineItems.find((i) => i.type === "text");
+  // The History panel's view model, served to a page: does a GUI save's card reach it?
+  const panel = (client) => call("carton.ui", { projectId: p.id, client, message: { t: "hello" } });
+  const panelCards = (client) => events.filter((e) => e.change?.kind === "carton" && e.change.client === client).flatMap((e) => {
+    const m = e.change.message;
+    return m.t === "init" ? m.topics.conflicts ?? [] : m.t === "topic" && m.topic === "conflicts" ? m.value ?? [] : [];
+  }).length;
+  if (process.env.PANEL === "1") await panel("before");
   if (process.env.STALE === "1") {
     // A GUI save made on the version read at the start: its size clashes with the agent's 160 since. Head keeps 160,
     // and the person's 170 is a card kept for the person.
@@ -32,13 +50,12 @@ const [workerFile, root] = process.argv.slice(2);
     await call("projects.updateScoped", { ...doc, timelineItems: stale, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
     out.stale = text(await call("projects.read", p.id)).fontSize;
     out.cards = (await call("carton.notices", { bundlePath, actor: "person" })).flatMap((n) => n.cards ?? []).length;
-  }
-  if (process.env.UNDO === "1") {
-    // ⌘Z: the person's last change is undone at head, written into project.json, and announced to the pages.
-    const before = events.length;
-    out.undo = (await call("carton.undo", { projectId: p.id })).status;
-    out.undone = text(await call("projects.read", p.id)).fontSize;
-    out.announced = events.slice(before).some((e) => e.change?.kind === "changed");
+    if (process.env.PANEL === "1") {
+      await new Promise((r) => setTimeout(r, 300));
+      await panel("after");
+      await new Promise((r) => setTimeout(r, 300));
+      out.panel = { live: panelCards("before"), reopened: panelCards("after") };
+    }
   }
   console.log(JSON.stringify(out));
   process.exit(0);

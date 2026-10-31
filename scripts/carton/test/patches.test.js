@@ -222,13 +222,47 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
     assert.equal(g.status, 0, g.stderr);
     return JSON.parse(g.stdout.trim().split("\n").pop());
   };
-  const on = gui("on", { ...real(), STALE: "1", UNDO: "1" }), off = gui("off", { CARDBOARD_CARTON: "0" });
+  const on = gui("on", { ...real(), STALE: "1", UNDO: "1", PANEL: "1" }), off = gui("off", { CARDBOARD_CARTON: "0" });
+  // The History panel shows the GUI save's card at once, and again when opened later.
+  assert.ok(on.panel.live > 0 && on.panel.reopened > 0, JSON.stringify(on.panel));
   assert.equal(on.guiSave, 150);
   // A stale GUI save's clash keeps head (160) and a card for the person; ⌘Z then reaches project.json and the pages.
   assert.deepEqual([on.stale, on.cards > 0], [160, true], JSON.stringify(on));
-  assert.deepEqual([on.undo !== "unavailable", on.announced], [true, true], JSON.stringify(on));
+  assert.deepEqual([on.undo, on.undone !== 150, on.announced], ["confirmed", true, true], JSON.stringify(on));
   assert.equal(on.video.autoReframe, true, JSON.stringify(on.video));
   assert.equal(off.video.autoReframe, undefined);
+  // The install lock and the sweep, through the facade's internals.
+  const locks = spawnSync(process.execPath, ["-e", `
+    const fs = require("fs"), path = require("path");
+    const { internals: I } = require(${JSON.stringify(path.join(out, "carton", "carton-node.cjs"))});
+    const bundle = ${JSON.stringify(b)}, dir = path.join(bundle, ".carton", "install.lock"), out = {};
+    (async () => {
+      // A lock left by a process that is gone, silent for over 10 s: taken over.
+      fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: 2 ** 22 + 7, me: "dead" }));
+      const old = new Date(Date.now() - 20_000); fs.utimesSync(path.join(dir, "owner"), old, old);
+      out.dead = await I.withInstallLock(bundle, async (mine) => mine());
+      // A live holder (this process) that beats: waited for, not taken over.
+      fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: process.pid, me: "live" }));
+      const t0 = Date.now();
+      setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 400);
+      await I.withInstallLock(bundle, async () => {});
+      out.waited = Date.now() - t0 >= 380;
+      // A file displaced a moment ago is not swept, even if Carton wrote it and its own mtime is old.
+      const d = path.join(bundle, ".carton", "displaced"); fs.mkdirSync(d, { recursive: true });
+      const f = path.join(d, "fresh-0"); fs.writeFileSync(f, "x"); fs.utimesSync(f, old, old);
+      const j = I.readJournal(bundle); j["fresh-0"] = { at: Date.now(), stamp: "?" };
+      I.sweep(path.join(bundle, "project.json"), { mine: new Set() }, j);
+      out.fresh = fs.existsSync(f);
+      fs.rmSync(f);
+      // An install of a state that is no longer head is skipped, and says so.
+      const tmp = path.join(bundle, ".stale.tmp");
+      fs.writeFileSync(tmp, JSON.stringify({ project: { stateUpdatedAt: 1700000000123 } }));
+      await I.setRevFor(bundle, 1700000000123, { branchId: (await I.refOfRev(bundle, JSON.parse(fs.readFileSync(path.join(bundle, "project.json"), "utf8")).project.stateUpdatedAt)).branchId, seq: 0 });
+      out.skipped = (await I.install(tmp, path.join(bundle, "project.json"))) === false && !fs.existsSync(tmp);
+      console.log(JSON.stringify(out));
+    })().catch((e) => { console.error(e); process.exit(1); });
+  `], { env: env(), encoding: "utf8", timeout: 60_000 });
+  assert.deepEqual(JSON.parse(locks.stdout.trim().split("\n").pop()), { dead: true, waited: true, fresh: true, skipped: true }, locks.stderr);
   // Four agents at once on different titles: none loses its last edit (B1).
   const wroot = path.join(TMP, "lib-real-writers");
   fs.rmSync(wroot, { recursive: true, force: true });

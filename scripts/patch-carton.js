@@ -33,7 +33,7 @@ const STORE = {
     dir: `require("node:url").fileURLToPath(new URL("../../carton/", import.meta.url))`,
     slice: "Cr",
     updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
-    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?(await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp),d=await Qo(c)):await Bx(l,c)}"],
+    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp)===!1?null:await Qo(c):await Bx(l,c)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:a,document:c.project}),", "c.project"],
     attach: ["n.onWritten((h,y)=>f.afterWrite(h,y));", "n,f,t"],
     revFiles: [
@@ -60,7 +60,7 @@ const STORE = {
     dir: `require("node:path").join(__dirname, "..", "..", "carton")`,
     slice: "Zs",
     updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
-    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?(await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp),l=await G1(s)):await(0,Bt.rename)(c,s)}"],
+    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
     attach: ["n.onWritten((y,x)=>m.afterWrite(y,x));", "n,m,t"],
     revFiles: [
@@ -183,7 +183,7 @@ if (mode === "--cli") {
 
   // H4, H6, H7: the editor store (installErrorTelemetry-*.js). The bridge goes first; it waits for the store's handles.
   patch(storeFile, (replace, prepend) => {
-    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De});");
+    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De});");
     // H4: the save names the version the editor shows; initializeEditor starts from the project's.
     replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)}))');
     replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,projectId:n,projectName:r,activeLeftTab:"media",');
