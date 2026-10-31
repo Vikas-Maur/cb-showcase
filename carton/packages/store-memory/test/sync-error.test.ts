@@ -4,7 +4,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton, type CartonEvent, type SyncError } from "@carton/core";
-import type { Transport } from "@carton/core/plugins";
+import { transportError, type Transport } from "@carton/core/plugins";
 import { createMemoryStore } from "../src/index.ts";
 import { adapter, doc0, set } from "./fixture.ts";
 import { copyStore, until, world } from "./world.ts";
@@ -106,7 +106,7 @@ test("REQ-9: a failed connect is classified by its transport's code: unreachable
     ["unreachable", "connection refused or dropped (check the token and URL)", "unreachable"],
     ["unauthorized", "the host refused this session", "unauthorized"],
   ] as const) {
-    const refusing: Transport = { connect: async () => Promise.reject(Object.assign(new Error(words), { code })) };
+    const refusing: Transport = { connect: async () => Promise.reject(transportError(words, code)) };
     const b = await Carton.open({ adapter, store: await copyStore(sa), sync: { transport: refusing, url: w.host.url, token: "tok-x" } });
     await b.head();
     await until(() => b.sync!.error() !== null, 5000, "the connect failure");
@@ -114,5 +114,43 @@ test("REQ-9: a failed connect is classified by its transport's code: unreachable
     await b.close();
   }
   await a.close();
+  w.host.close();
+});
+
+test("REQ-9b: through a real host: an offline host is `unreachable`, a token it refuses `unauthorized`", async () => {
+  const w = world();
+  const sa = createMemoryStore();
+  const a = await Carton.open({ adapter, store: sa, init: { doc: doc0() }, sync: w.sync("alice") });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const copy = await copyStore(sa);
+  // a token the host doesn't accept
+  const bad = await Carton.open({ adapter, store: await copyStore(sa), sync: { transport: w.host.transport, url: w.host.url, token: "tok-nobody" } });
+  await bad.head();
+  await until(() => bad.sync!.error() !== null, 5000, "the refusal");
+  assert.equal(bad.sync!.error()!.code, "unauthorized");
+  await bad.close();
+  await a.close();
+  // the host is gone: offline, whatever the token
+  w.host.close();
+  const offline = await Carton.open({ adapter, store: copy, sync: w.sync("bob") });
+  await offline.head();
+  await until(() => offline.sync!.error() !== null, 5000, "the connect failure");
+  assert.equal(offline.sync!.error()!.code, "unreachable", JSON.stringify(offline.sync!.error()));
+  await offline.close();
+});
+
+test("REQ-9b: a transport from before codes (server-node's old offline words mention the token) is `unreachable`", async () => {
+  const w = world();
+  const sa = createMemoryStore();
+  const a = await Carton.open({ adapter, store: sa, init: { doc: doc0() }, sync: w.sync("alice") });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const old: Transport = { connect: async () => Promise.reject(new Error("connection refused or dropped (check the token and URL)")) };
+  const b = await Carton.open({ adapter, store: await copyStore(sa), sync: { transport: old, url: w.host.url, token: "tok-x" } });
+  await b.head();
+  await until(() => b.sync!.error() !== null, 5000, "the connect failure");
+  assert.deepEqual(b.sync!.error(), { code: "unreachable", message: "connection refused or dropped (check the token and URL)" });
+  for (const c of [a, b]) await c.close();
   w.host.close();
 });

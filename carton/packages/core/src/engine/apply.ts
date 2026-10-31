@@ -1,11 +1,12 @@
 // apply (PLAN §4.4): total and deterministic. A set or unset under a record or element that doesn't exist is a no-op
 // (reported in `notes` as {op, lost: "missing"}); removing an absent record or unsetting an absent path is a no-op;
 // an insert of an existing id replaces it (the sequencer rejects that case before apply); a remap op expands against
-// the doc as it is at that point. Ownership: collection arrays are mutated in place, records are path-copied.
+// the doc as it is at that point. Ownership: collection arrays are mutated in place, records are path-copied; what is
+// written into a sealed array (doc.ts: a state Carton has handed out) is frozen with it.
 import { POS } from "../types.ts";
 import type { FieldSpec, Schema } from "../schema.ts";
 import type { ApplyNote, Doc, Op, Path, Rec } from "../types.ts";
-import { DEEP, ownIndex, posOf } from "./doc.ts";
+import { DEEP, freezeDeep, isSealed, ownIndex, posOf } from "./doc.ts";
 import { isObj } from "./json.ts";
 import { byPos } from "./keys.ts";
 import { expandRemap } from "./remap.ts";
@@ -45,6 +46,7 @@ function applyOne(doc: Doc, op: Exclude<Op, { op: "remap" }>, schema: Schema, no
         ownIndex(arr, key).set(id, arr.length);
         arr.push(op.value as Rec);
       } else arr[i] = op.value as Rec;
+      if (isSealed(arr)) freezeDeep(op.value);
     } else if (i >= 0) {
       // swap-remove: collections are unordered, so O(1)
       const m = ownIndex(arr, key);
@@ -62,7 +64,10 @@ function applyOne(doc: Doc, op: Exclude<Op, { op: "remap" }>, schema: Schema, no
   if (i < 0) return void notes?.push({ op, lost: "missing" });
   const r = edit(arr[i], cs.record, p, 2, op);
   if (r === MISSING) notes?.push({ op, lost: "missing" });
-  else arr[i] = r as Rec;
+  else {
+    arr[i] = r as Rec;
+    if (isSealed(arr)) freezeDeep(r); // the path copy and the op's value; the record's untouched parts are frozen
+  }
 }
 
 function sortedInsert(arr: Rec[], el: Rec, key: string): Rec[] {

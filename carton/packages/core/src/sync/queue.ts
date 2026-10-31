@@ -24,12 +24,14 @@ import type {
   Doc,
   EditKinds,
   Intent,
+  Lineage,
   Op,
   Policy,
   RemapMaps,
   SequencerState,
 } from "../types.ts";
-import { apply, canonical, composeMaps, declare, diff, fork, hashDoc, inferRemaps, isEmptyMap, merge3, sha256Hex } from "../engine/index.ts";
+import { apply, canonical, composeMaps, declare, diff, fork, hashDoc, inferRemaps, intentRemap, isEmptyMap, merge3, sha256Hex } from "../engine/index.ts";
+import { forkSealed } from "../engine/doc.ts";
 import type { ConfirmedId, KeyframeData } from "./messages.ts";
 
 /** A confirmed row as a replica holds it. Rows learned only through a keyframe are placeholders (`id: null`). */
@@ -231,7 +233,7 @@ export class ReplicaQueue {
     }
     let doc = kf.get(s)!;
     for (let i = s; i < seq; i++) {
-      doc = apply(fork(doc, this.schema), log[i]!.ops, this.schema);
+      doc = apply(forkSealed(doc, this.schema), log[i]!.ops, this.schema);
       if ((i + 1) % this.keyframeEvery === 0 || i + 1 === seq) kf.set(i + 1, doc);
     }
     return doc;
@@ -243,7 +245,7 @@ export class ReplicaQueue {
     let doc = this.confirmedState(b, this.headSeq(b));
     for (const p of this.queues.get(b)!) {
       const v = last(p.versions);
-      if (v.ops.length) doc = apply(fork(doc, this.schema), v.ops, this.schema);
+      if (v.ops.length) doc = apply(forkSealed(doc, this.schema), v.ops, this.schema); // a handed-out head stays sealed
     }
     o = { doc, version: ++this.optVersion };
     this.opt.set(b, o);
@@ -527,19 +529,25 @@ export class ReplicaQueue {
     const mine = apply(fork(v.baseDoc, S), v.ops, S);
     const recorded: RemapMaps[] = [];
     const concKinds: EditKinds = {};
+    // lineage too: a concurrent split records only lineage, which must reach the pieces of a clip this change edits
+    // (kit-docs)
+    const concLineage: Lineage = {};
     for (const c of concurrent) {
       if (c.intent?.maps && !isEmptyMap(c.intent.maps)) recorded.push(c.intent.maps);
       for (const op of c.ops) if (op.op === "remap") recorded.push(op.maps);
+      if (c.intent?.lineage) Object.assign(concLineage, c.intent.lineage);
       if (c.kinds) Object.assign(concKinds, c.kinds);
     }
+    const ours = intentRemap({ maps: recorded.length ? composeMaps(...recorded) : {}, lineage: concLineage });
     // the change's own remap: its recorded intent and any first-class remap op (a ripple stored as one op, P5)
     const remapOps = v.ops.filter((op): op is Extract<Op, { op: "remap" }> => op.op === "remap");
     const ownMaps: RemapMaps[] = [];
     if (v.intent?.maps && !isEmptyMap(v.intent.maps)) ownMaps.push(v.intent.maps);
     for (const op of remapOps) if (!isEmptyMap(op.maps)) ownMaps.push(op.maps);
-    const own = ownMaps.length ? { maps: ownMaps.length === 1 ? ownMaps[0]! : composeMaps(...ownMaps), lineage: v.intent?.lineage } : undefined;
+    // its own: maps and lineage (a split records lineage only: kept, kit-docs)
+    const own = intentRemap({ maps: ownMaps.length ? (ownMaps.length === 1 ? ownMaps[0]! : composeMaps(...ownMaps)) : {}, lineage: v.intent?.lineage ?? remapOps[0]?.lineage });
     const m = merge3(v.baseDoc, head, mine, S, {
-      remaps: { ...(recorded.length ? { ours: { maps: composeMaps(...recorded) } } : {}), ...(own ? { theirs: { maps: own.maps, ...(own.lineage ? { lineage: own.lineage } : {}) } } : {}) },
+      remaps: { ...(ours ? { ours } : {}), ...(own ? { theirs: own } : {}) },
       kinds: { ours: concKinds, theirs: v.kinds ?? {} },
       rekeys: "ours",
     });

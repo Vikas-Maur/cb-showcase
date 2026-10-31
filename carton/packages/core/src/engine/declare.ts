@@ -6,7 +6,8 @@
 //    insert or move was placed between;
 //  - spans: per lane, the half-open time range an op changes ([min, max) of old and new edges; an item's extent for
 //    insert/remove; [t0, ∞) for a remap, `hi: null`; both lanes for a lane change);
-//  - trackOrder: lanes whose `#pos` changed; structural: an item insert/remove, a lane change, or a remap.
+//  - trackOrder: lanes whose `#pos` changed; structural: an item insert/remove, a lane change, or a remap;
+//  - a lineage intent (a split) also declares each source record's path, so a concurrent edit of it meets the split.
 import { POS } from "../types.ts";
 import type { Schema } from "../schema.ts";
 import type { Declaration, Doc, Intent, Op, Rec, RemapMaps, Span } from "../types.ts";
@@ -104,5 +105,9 @@ export function declare(schema: Schema, base: Doc, ops: readonly Op[], intent: I
     }
   for (const [track, t0] of remapped) spans.push({ track, lo: t0, hi: null, item: null, structural: true });
   if (remapped.size) structural = true;
+  // a split (lineage: a clip into its pieces) writes the whole source clip as far as concurrent edits are concerned: an
+  // edit to any field of it must meet the split in merge3, whose lineage carries it to every piece (kit-docs: with no
+  // overlap the sequencer took both as they were, and the new piece kept the old value)
+  if (tl && intent?.lineage) for (const src of Object.keys(intent.lineage)) paths.push(pathKey([tl.collection, src]));
   return { paths: groups.size ? [...paths, ...groups] : paths, reads: [...reads], spans, trackOrder: [...trackOrder], structural };
 }
