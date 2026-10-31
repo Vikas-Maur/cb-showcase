@@ -6,8 +6,7 @@
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { AuthProvider, Role, SequencerHost, SequencerStorage, Transport, TransportConnection } from "@carton/core/plugins";
-import type { sync } from "@carton/core";
+import type { AuthProvider, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
 
 export interface HostFixture {
   host: SequencerHost;
@@ -138,3 +137,5 @@ export function sequencerStorageSuite(name: string, make: () => Promise<Sequence
 // ------------------------------------------------------------------ SequencerHost and Transport
 
 export { sequencerHostSuite, transportSuite, HOST_SUITE_DOC } from "./host-suite.ts";
+export { httpApiSuite, type HttpFixture } from "./http-suite.ts";
+export { liveSyncSuite } from "./live-suite.ts";

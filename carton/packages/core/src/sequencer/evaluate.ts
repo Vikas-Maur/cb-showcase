@@ -10,8 +10,9 @@
 // 3. the base must be reconstructable: every pending id it builds on is in that tail.
 // 4. lww is only for leaf edits: a span or a group path makes it structure, so the change must go through merge3
 //    (R11-01). Clients send such changes as `merge` (H2); this guards against bad clients.
-// 5. every op is covered by a declared path (otherwise a writer could hide a write from the overlap test).
-// 6. the overlap test against every concurrent row (§6.1).
+// 5. the overlap test against every concurrent row (§6.1).
+// 6. every op is covered by a declared path (otherwise a writer could hide a write from the overlap test). It runs
+//    after the overlap test so a push rejected anyway doesn't pay a pass over its ops; an accepted change passes both.
 // 7. the span check, after the overlap test (H4): a concurrent move or remove of the clip is an overlap, so the
 //    change is rejected and rebased, never dropped as "span missing". Once no concurrent row touched the clip, its
 //    track at head is its track at the change's base.
@@ -244,9 +245,7 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   if (!ch.ops.length && !ch.mergeOf && !ch.reverts) return { kind: "reject", reason: "no ops" };
   if (ch.policy === "lww" && controls.lwwCheck !== false && (ch.spans.length > 0 || ch.trackOrder.length > 0 || ch.paths.some(hasGroupSegment)))
     return { kind: "reject", reason: "lww on structure" };
-  const declared = new Set(ch.paths); // built once: the declaration check and the overlap index share it
-  const missing = undeclared(ch, tl, cfg.groupOf ?? timeGroupOf(tl), declared);
-  if (missing) return { kind: "reject", reason: "undeclared path", detail: missing };
+  const declared = new Set(ch.paths); // built once: the overlap index and the declaration check share it
 
   const structural = isStructural(ch.ops, ch.intent, tl);
   const overwrote: TailRow[] = [];
@@ -270,6 +269,10 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
     else return { kind: "reject", reason: "overlap" };
   }
 
+  // after the overlap test, so a push that will be rejected anyway doesn't pay a pass over every op; an accepted
+  // change has passed both (an undeclared write can't hide from the overlap test and still be confirmed)
+  const missing = undeclared(ch, tl, cfg.groupOf ?? timeGroupOf(tl), declared);
+  if (missing) return { kind: "reject", reason: "undeclared path", detail: missing };
   if (controls.spanCheck !== false && !spansCover(view, ch, tl)) return { kind: "reject", reason: "span missing" };
 
   // existence: no insert of a live id; the track an item is placed on must exist (or be inserted by this change)

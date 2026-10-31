@@ -100,6 +100,8 @@ export class SyncClient {
   tamper: ((ch: Change) => Change) | undefined;
   readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0 };
 
+  private unsubscribe: (() => void) | null = null;
+
   constructor(opts: SyncClientOptions) {
     this.o = opts;
     this.queue = opts.queue;
@@ -107,6 +109,10 @@ export class SyncClient {
     this.K = opts.maxBehind ?? 100;
     this.timers = opts.timers ?? { setTimeout: (f, ms) => setTimeout(f, ms), clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>) };
     this.tamper = opts.tamper;
+    // a local commit joins the queue: push it soon (after the committing task), without the owner having to call pump
+    this.unsubscribe = this.queue.on((e) => {
+      if (e.type === "pending" && e.branchId === this.branchId && !this.stopped) this.defer(() => this.pump(), 0);
+    });
   }
 
   get status(): SyncStatus {
@@ -137,6 +143,8 @@ export class SyncClient {
     if (this.stopped) return;
     this.stopped = true;
     this.stopReason = why;
+    this.unsubscribe?.();
+    this.unsubscribe = null;
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
     const c = this.conn;
     this.conn = null;
@@ -162,8 +170,9 @@ export class SyncClient {
     fn();
     return true;
   }
+  /** Run `fn` after `n` pending changes' worth of rebase work (n = 0: just after the current task). */
   private defer(fn: () => void, n: number): void {
-    const cost = (this.o.rebaseCostMs ?? 0) * Math.max(1, n);
+    const cost = n === 0 ? 0 : (this.o.rebaseCostMs ?? 0) * n;
     if (this.o.defer) this.o.defer(fn, cost);
     else this.timers.setTimeout(fn, cost);
   }
@@ -336,7 +345,7 @@ export class SyncClient {
           }
           this.stats.rebases += n;
           this.emit({ type: "rebase", n });
-          this.defer(() => this.pump(), n);
+          this.defer(() => this.pump(), Math.max(1, n)); // the rebase holds the pusher, then the resubmission
         });
         return;
       }

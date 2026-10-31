@@ -113,6 +113,33 @@ export const composeMaps = (...ms: (RemapMaps | null | undefined)[]): RemapMaps 
   for (const m of ms) for (const [t, c] of Object.entries(m ?? {})) out[t] = composeChain(out[t], c);
   return out;
 };
+/**
+ * The inverse of a remap (§8: undo inverts intents as intents): steps reversed, each step's deletions become gaps
+ * inserted at their images and its inserted gaps become deletions of their images. `invertChain(c)` after `c` is the
+ * identity on every time `c` didn't delete.
+ */
+export function invertChain(chain: RemapChain | null | undefined): RemapChain {
+  return (chain ?? [])
+    .slice()
+    .reverse()
+    .map((st) => {
+      // image of an event point: content entirely deleted before it pulls it left, gaps inserted before it push it right
+      const image = (x: number): number => {
+        let dx = 0;
+        for (const [a, b] of st.d) if (b <= x + EPS) dx -= b - a;
+        for (const [p, len] of st.i) if (p < x - EPS) dx += len;
+        return r6(x + dx);
+      };
+      const d: [number, number][] = st.i.map(([p, len], k) => {
+        let x = image(p);
+        for (let j = 0; j < k; j++) if (near(st.i[j]![0], p)) x = r6(x + st.i[j]![1]); // gaps at one point sit side by side
+        return [x, r6(x + len)];
+      });
+      const i: [number, number][] = st.d.map(([a, b]) => [image(a), r6(b - a)]);
+      return step(d, i);
+    });
+}
+export const invertMaps = (m: RemapMaps | null | undefined): RemapMaps => Object.fromEntries(Object.entries(m ?? {}).map(([t, c]) => [t, invertChain(c)]));
 export const isEmptyMap = (m: RemapMaps | null | undefined): boolean => !m || Object.values(m).every((c) => !c?.length);
 
 /**

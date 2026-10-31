@@ -26,8 +26,14 @@ export const MAX_KEY_BYTES = 1024;
 export const MAX_PARTS = 10_000;
 const enc = new TextEncoder();
 
+// Segments must be non-empty and never `.` or `..`: URLs (S3) and file systems (blob-fs) would resolve those to
+// another key, so every store refuses them, and the same call fails the same way everywhere.
+const BAD_SEGMENT = /(^|\/)(\.{1,2})?(\/|$)/;
+
 export function checkKey(key: string): void {
   if (typeof key !== "string" || key.length === 0) throw new BlobError("InvalidKey", "blob key must be a non-empty string");
+  if (BAD_SEGMENT.test(key)) throw new BlobError("InvalidKey", `blob key ${JSON.stringify(key.slice(0, 80))} has an empty, "." or ".." segment`);
+  if (key.includes("\0")) throw new BlobError("InvalidKey", "blob key contains NUL");
   // UTF-16 length ≥ bytes/3, so only long keys pay for the encode
   if (key.length * 3 > MAX_KEY_BYTES && enc.encode(key).byteLength > MAX_KEY_BYTES)
     throw new BlobError("InvalidKey", `blob key longer than ${MAX_KEY_BYTES} bytes`);
