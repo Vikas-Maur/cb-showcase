@@ -1,136 +1,104 @@
-// Store keys as SQLite BLOBs whose byte order (SQLite compares BLOBs with memcmp) is the Store contract's key order:
-// element by element; numbers before strings; numbers numerically; strings by UTF-16 code units (JS `<`); a key
-// before its extensions. So every range the contract asks for is one primary-key range read.
+// Store keys as SQLite TEXT whose order under SQLite's BINARY collation (memcmp of the UTF-8 bytes, which is code point
+// order) is the Store contract's key order: element by element; numbers before strings; numbers numerically; strings
+// by UTF-16 code units (JS `<`); a key before its extensions. So every range the contract asks for is one primary-key
+// range read.
 //
-//   number: 0x01, then the IEEE-754 double big-endian, sign bit flipped (positive) or every bit flipped (negative)
-//   string: 0x02, then each UTF-16 code unit as UTF-8 of that unit alone (CESU-8: a surrogate is 3 bytes, so byte
-//           order is code-unit order, and lone surrogates survive), 0x00 written as 0x00 0xFF, then 0x00
+// TEXT rather than a BLOB because node:sqlite returns a BLOB as a fresh Uint8Array (its own ArrayBuffer) per row,
+// which costs a log read about as much as fetching the values; a string is cheap, and a plain string element decodes
+// as a slice of the key.
 //
-// Every encoded element starts with a byte below 0xFF, so `prefix ‖ 0xFF` is above every key extending `prefix`.
+//   number: "\u0003", then the IEEE-754 double's 8 bytes big-endian (sign bit flipped when positive, every bit flipped
+//           when negative), each byte b as the character U+0080 + b
+//   string: "\u0004", then the string itself, then the terminator "\u0001". Three kinds of code unit are escaped so
+//           that order survives and the text stays valid UTF-8 (a lone surrogate can't be stored as UTF-8):
+//             U+0000–U+0002 -> "\u0002" + (c + 3)                  (below every unescaped unit, above the terminator)
+//             U+D7FE–U+FFFF -> (U+E000 + d >> 7) + (U+0080 + d & 0x7f), d = c − 0xD7FE   (above every unescaped unit)
+//           Every other code unit (U+0003–U+D7FD) is itself.
+//
+// Every element starts with a character below U+FFFF, so `prefix + "￿"` is above every key extending `prefix`.
 
-const NUM = 0x01;
-const STR = 0x02;
+const NUM = "\u0003";
+const STR = "\u0004";
+const END = "\u0001";
+const HIGH = 0xd7fe;
+const ESCAPED = /[\u0000-\u0002퟾-￿]/;
+const ENCODED_ESCAPE = /[\u0002-￿]/;
 
-let buf = new Uint8Array(256);
 const f64 = new Float64Array(1);
 const f64b = new Uint8Array(f64.buffer);
 const littleEndian = new Uint8Array(new Uint16Array([1]).buffer)[0] === 1;
 
-function room(at: number, n: number): void {
-  if (at + n <= buf.length) return;
-  const next = new Uint8Array(Math.max(buf.length * 2, at + n));
-  next.set(buf.subarray(0, at));
-  buf = next;
-}
-
-function put(key: readonly (string | number)[]): number {
-  let at = 0;
+export function encodeKey(key: readonly (string | number)[]): string {
+  let out = "";
   for (const el of key) {
-    if (typeof el === "number") {
-      if (!Number.isFinite(el)) throw new TypeError(`store key: ${el} is not a finite number`);
-      room(at, 9);
-      buf[at++] = NUM;
-      f64[0] = el === 0 ? 0 : el; // -0 and 0 are one key, as for JS `<`
-      const neg = (f64b[littleEndian ? 7 : 0] & 0x80) !== 0;
-      for (let i = 0; i < 8; i++) {
-        const b = f64b[littleEndian ? 7 - i : i];
-        buf[at++] = neg ? ~b & 0xff : i === 0 ? b ^ 0x80 : b;
-      }
-    } else if (typeof el === "string") {
-      room(at, 2 + el.length * 3 + 1);
-      buf[at++] = STR;
-      for (let i = 0; i < el.length; i++) {
-        const c = el.charCodeAt(i);
-        if (c === 0) {
-          buf[at++] = 0x00;
-          buf[at++] = 0xff;
-        } else if (c < 0x80) buf[at++] = c;
-        else if (c < 0x800) {
-          buf[at++] = 0xc0 | (c >> 6);
-          buf[at++] = 0x80 | (c & 0x3f);
-        } else {
-          buf[at++] = 0xe0 | (c >> 12);
-          buf[at++] = 0x80 | ((c >> 6) & 0x3f);
-          buf[at++] = 0x80 | (c & 0x3f);
-        }
-      }
-      buf[at++] = 0x00;
-    } else throw new TypeError(`store key: elements are strings or numbers, got ${typeof el}`);
+    if (typeof el === "number") out += NUM + num(el);
+    else if (typeof el === "string") out += STR + (ESCAPED.test(el) ? escape(el) : el) + END;
+    else throw new TypeError(`store key: elements are strings or numbers, got ${typeof el}`);
   }
-  return at;
-}
-
-/** The BLOB for a key. A fresh array (SQLite copies it on bind, so the shared scratch buffer is never exposed). */
-export function encodeKey(key: readonly (string | number)[]): Uint8Array {
-  const n = put(key);
-  return buf.slice(0, n);
-}
-
-/** The smallest BLOB above every key that extends `prefix` (and above `prefix` itself). */
-export function prefixEnd(prefix: readonly (string | number)[]): Uint8Array {
-  const n = put(prefix);
-  const out = new Uint8Array(n + 1);
-  out.set(buf.subarray(0, n));
-  out[n] = 0xff;
   return out;
 }
 
-export function decodeKey(b: Uint8Array): (string | number)[] {
+/** The smallest text above every key that extends `prefix` (and above `prefix` itself). */
+export function prefixEnd(prefix: readonly (string | number)[]): string {
+  return encodeKey(prefix) + "￿";
+}
+
+export function decodeKey(k: string): (string | number)[] {
   const out: (string | number)[] = [];
   let at = 0;
-  while (at < b.length) {
-    const tag = b[at++];
+  while (at < k.length) {
+    const tag = k[at++];
     if (tag === NUM) {
-      const neg = (b[at] & 0x80) === 0;
+      const neg = k.charCodeAt(at) < 0x80 + 0x80;
       for (let i = 0; i < 8; i++) {
-        const v = b[at + i];
-        f64b[littleEndian ? 7 - i : i] = neg ? ~v & 0xff : i === 0 ? v ^ 0x80 : v;
+        const b = k.charCodeAt(at + i) - 0x80;
+        f64b[littleEndian ? 7 - i : i] = neg ? ~b & 0xff : i === 0 ? b ^ 0x80 : b;
       }
       at += 8;
       out.push(f64[0]);
     } else if (tag === STR) {
-      let s = "";
-      let start = at;
-      // ASCII runs decode in one call; anything else unit by unit.
-      for (;;) {
-        const c = b[at];
-        if (c === 0x00) {
-          if (b[at + 1] === 0xff) {
-            s += ascii(b, start, at) + "\u0000";
-            at += 2;
-            start = at;
-            continue;
-          }
-          s += ascii(b, start, at);
-          at++;
-          break;
-        }
-        if (c < 0x80) {
-          at++;
-          continue;
-        }
-        s += ascii(b, start, at);
-        if (c < 0xe0) {
-          s += String.fromCharCode(((c & 0x1f) << 6) | (b[at + 1] & 0x3f));
-          at += 2;
-        } else {
-          s += String.fromCharCode(((c & 0x0f) << 12) | ((b[at + 1] & 0x3f) << 6) | (b[at + 2] & 0x3f));
-          at += 3;
-        }
-        start = at;
-      }
-      out.push(s);
-    } else throw new Error(`store key: bad encoding (tag ${tag} at ${at - 1})`);
+      const end = k.indexOf(END, at);
+      if (end < 0) throw new Error("store key: bad encoding (unterminated string)");
+      const seg = k.slice(at, end);
+      out.push(ENCODED_ESCAPE.test(seg) ? unescape(seg) : seg);
+      at = end + 1;
+    } else throw new Error(`store key: bad encoding (tag ${k.charCodeAt(at - 1)} at ${at - 1})`);
   }
   return out;
 }
 
-function ascii(b: Uint8Array, from: number, to: number): string {
-  if (to - from <= 0) return "";
-  if (to - from < 64) {
-    let s = "";
-    for (let i = from; i < to; i++) s += String.fromCharCode(b[i]);
-    return s;
+function num(n: number): string {
+  if (!Number.isFinite(n)) throw new TypeError(`store key: ${n} is not a finite number`);
+  f64[0] = n === 0 ? 0 : n; // -0 and 0 are one key, as for JS `<`
+  const neg = (f64b[littleEndian ? 7 : 0] & 0x80) !== 0;
+  let s = "";
+  for (let i = 0; i < 8; i++) {
+    const b = f64b[littleEndian ? 7 - i : i];
+    s += String.fromCharCode(0x80 + (neg ? ~b & 0xff : i === 0 ? b ^ 0x80 : b));
   }
-  return String.fromCharCode.apply(null, b.subarray(from, to) as unknown as number[]);
+  return s;
+}
+
+function escape(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c <= 2) out += "\u0002" + String.fromCharCode(c + 3);
+    else if (c >= HIGH) {
+      const d = c - HIGH;
+      out += String.fromCharCode(0xe000 + (d >> 7), 0x80 + (d & 0x7f));
+    } else out += s[i];
+  }
+  return out;
+}
+
+function unescape(s: string): string {
+  let out = "";
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c === 2) out += String.fromCharCode(s.charCodeAt(++i) - 3);
+    else if (c >= 0xe000) out += String.fromCharCode(HIGH + ((c - 0xe000) << 7) + (s.charCodeAt(++i) - 0x80));
+    else out += s[i];
+  }
+  return out;
 }

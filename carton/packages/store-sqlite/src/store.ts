@@ -1,8 +1,8 @@
 // The Store plug-in on node:sqlite (PLAN §3.1, §6.2): `.carton/carton.db`, shared by every process on the machine.
 //
 // Each Carton table (core's STORE_TABLES: changes, cuts, keyframes, pins, lease…) is one SQLite table
-// `(k BLOB PRIMARY KEY, v TEXT) WITHOUT ROWID`: the key encoded so that byte order is the contract's key order
-// (key.ts), the value as JSON text. Every `range` is then one primary-key range read, and a row costs one B-tree
+// `(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`: the key encoded so that SQLite's text order is the contract's key
+// order (key.ts), the value as JSON text. Every `range` is then one primary-key range read, and a row costs one B-tree
 // entry (no rowid index, as in the DO's DDL, §6.3).
 //
 // `write` is the cross-process compare-and-swap: conditions are checked and writes applied inside one
@@ -26,7 +26,7 @@ const META = "_carton";
 
 export interface SqliteStoreOptions extends DbOptions {}
 
-type Row = [Uint8Array, string];
+type Row = [string, string];
 
 export class SqliteStore implements Store {
   readonly info: StoreInfo = { kind: "sqlite", persistent: true, multiProcess: true };
@@ -68,9 +68,9 @@ export class SqliteStore implements Store {
     const t = tableName(table);
     if (r.limit !== undefined && r.limit <= 0) return Promise.resolve([]);
     // The SQL text says which bounds are present, so each shape of query is prepared once and cached.
-    const args: (Uint8Array | number)[] = [];
+    const args: (string | number)[] = [];
     let where = "";
-    const bound = (op: string, v: Uint8Array) => {
+    const bound = (op: string, v: string) => {
       where += (where ? " AND " : " WHERE ") + `k ${op} ?`;
       args.push(v);
     };
@@ -155,7 +155,7 @@ export class SqliteStore implements Store {
       for (const t of tables) {
         if (t === META) src.exec(`CREATE TABLE x."${META}" (k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID; INSERT INTO x."${META}" SELECT k, v FROM main."${META}"`);
         else {
-          src.exec(`CREATE TABLE x."${t}" (k BLOB PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID`);
+          src.exec(`CREATE TABLE x."${t}" (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID`);
           const first = src.prepare(`INSERT INTO x."${t}" SELECT k, v FROM main."${t}" ORDER BY k LIMIT ?`);
           const next = src.prepare(`INSERT INTO x."${t}" SELECT k, v FROM main."${t}" WHERE k > (SELECT max(k) FROM x."${t}") ORDER BY k LIMIT ?`);
           for (let batch = first; ; batch = next) {
@@ -184,7 +184,7 @@ export class SqliteStore implements Store {
     await this.db.write(() => this.db.raw.prepare(`PRAGMA incremental_vacuum${maxPages > 0 ? `(${Math.floor(maxPages)})` : ""}`).all());
   }
 
-  #holds(t: string, k: Uint8Array, expect: StoreCondition["expect"]): boolean {
+  #holds(t: string, k: string, expect: StoreCondition["expect"]): boolean {
     const row = this.#exists(t) ? (this.db.stmt(`SELECT v FROM "${t}" WHERE k = ?`).get(k) as { v: string } | undefined) : undefined;
     if (expect === "absent") return row === undefined;
     if (expect === "present") return row !== undefined;
@@ -200,7 +200,7 @@ export class SqliteStore implements Store {
 
   #create(t: string): void {
     if (this.#tables.has(t)) return;
-    this.db.raw.exec(`CREATE TABLE IF NOT EXISTS "${t}" (k BLOB PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID`);
+    this.db.raw.exec(`CREATE TABLE IF NOT EXISTS "${t}" (k TEXT PRIMARY KEY, v TEXT NOT NULL) WITHOUT ROWID`);
     this.#tables.add(t);
   }
 }
