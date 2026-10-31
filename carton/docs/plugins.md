@@ -55,9 +55,13 @@ interface BlobStore {
 Use `@carton/blob-memory/rules` for the argument checks, so a bad call fails the same way everywhere, before any I/O:
 `checkKey`, `checkRange`, `checkPartNumber`, `checkCompleteParts`, `BlobError`.
 
-- **Keys** are opaque, up to 1,024 bytes of UTF-8, and case-sensitive. `Clip.MP4` and `clip.mp4` are two objects,
-  and `a` and `a/b` can both exist. A store on a file system must encode keys itself; see `blob-fs/src/keys.ts` for
-  NTFS and APFS (case-insensitive), Windows device names, `..`, and long names.
+- **Keys** are opaque, up to 1,024 bytes of UTF-8, and case-sensitive: `Clip.MP4` and `clip.mp4` are two objects. A
+  store on a file system must encode keys itself; see `blob-fs/src/keys.ts` for NTFS and APFS (case-insensitive),
+  Windows device names, `..`, and long names.
+- **Two things Carton's keys never need**, because POSIX-backed S3 servers refuse them (VersityGW, MinIO): an object
+  at `a` beside objects under `a/`, and a single path segment over 255 bytes. AWS, R2 and blob-fs allow both. The
+  suite checks the first only when a store doesn't opt out (`objectsBesideFolders`), and builds its 1,024-byte key
+  from short segments.
 - **Ranges** return exactly `[offset, offset + length)`, clipped at the end. A range at or past the end, or of length
   0, is an empty array, not an error. R2 throws there, so `blob-r2` translates.
 - **Replacing** is atomic: a reader sees the old bytes or the new, never a mix. `ifAbsent` never touches existing
