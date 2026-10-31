@@ -90,7 +90,7 @@ async function retrying<T>(fn: () => T | Promise<T>, o: BusyOptions, start: numb
  * The install's steps: `fn` runs at once, synchronously, and only a busy file turns it into a promise that `retryBusy`
  * finishes. The fast path never yields, so the path stays missing for microseconds, not a trip around the event loop.
  */
-function atOnce(fn: () => void, o: BusyOptions): Promise<void> | undefined {
+function atOnce(fn: () => void, o: BusyOptions, again: () => void = fn): Promise<void> | undefined {
   const start = performance.now();
   try {
     fn();
@@ -98,7 +98,7 @@ function atOnce(fn: () => void, o: BusyOptions): Promise<void> | undefined {
   } catch (e) {
     if (!isBusy(e, o)) throw e;
     if (o.counter) o.counter.busy = (o.counter.busy ?? 0) + 1;
-    return retrying(fn, o, start, 0);
+    return retrying(again, o, start, 0); // `again`: each retry, after a wait the lock may have been taken over in
   }
 }
 
@@ -215,13 +215,18 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
   const displaced: string[] = [];
   let eexist = 0;
   let first: bigint | null = null;
-  for (;;) {
+  // a busy file's retries wait on timers: before each one, the lock must still be ours (the first try runs at once,
+  // right after the check below, so the gap stays as short as it was)
+  const stillMine = (): void => {
     if (opts.mine && !opts.mine()) throw new InstallLockLost(target, displaced);
+  };
+  for (;;) {
+    stillMine();
     const slot = nextSlot();
     const t0 = hr();
     first ??= t0;
     try {
-      const busy = atOnce(() => fs.renameSync(target, slot), opts);
+      const busy = atOnce(() => fs.renameSync(target, slot), opts, () => (stillMine(), fs.renameSync(target, slot)));
       if (busy) await busy;
       displaced.push(slot);
     } catch (e) {
@@ -230,10 +235,11 @@ export async function displaceThenInstall(target: string, tmp: string, nextSlot:
     const t1 = hr();
     opts.between?.();
     try {
-      const busy = atOnce(() => fs.linkSync(tmp, target), opts);
+      const busy = atOnce(() => fs.linkSync(tmp, target), opts, () => (stillMine(), fs.linkSync(tmp, target)));
       if (busy) await busy;
     } catch (e) {
       if (errCode(e) !== "EEXIST") {
+        // a failure, or the lock lost while the link waited: the file this round moved aside goes back
         if (displaced.at(-1) === slot && (await putBack(slot, target, opts))) displaced.pop();
         throw e;
       }

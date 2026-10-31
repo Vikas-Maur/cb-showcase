@@ -402,3 +402,33 @@ test(".cbproj S3-4: a file naming newer versions of a shared cut than this repli
   assert.equal(r.status, "behind", JSON.stringify(r));
   assert.equal(imported, false);
 });
+
+test(".cbproj review 8 #5: a damaged history entry is reported, and the rest of the file still comes in [real engine]", async (t) => {
+  const project = { id: "proj-12", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
+  const alice = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
+  const bob = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { import: await alice.exportShallow({ to: "bob" }) }, actor: BOB });
+  t.after(async () => {
+    await alice.close();
+    await bob.close();
+  });
+  await edit(alice, DIRECTOR, (its) => void (find(its, "c1").name = "the Director's edit"));
+  const dir = bundle(t, "damaged-history", project);
+  const out = path.join(dir, "..", `damaged-history-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  const MARK = "HISTORY-COPY-MARKER-7f3a9c";
+  await exportCbproj({ bundle: dir, out, shallow: await alice.exportShallow({ to: "bob" }), fullHistory: (to) => fs.promises.writeFile(to, `${MARK} a copy of carton.db`) });
+  // one byte of the stored history entry flips in transit: its CRC no longer matches
+  const zip = fs.readFileSync(out);
+  const at = zip.indexOf(MARK);
+  assert.ok(at > 0);
+  zip[at] = zip[at]! ^ 0x20;
+  fs.writeFileSync(out, zip);
+  const tmpDir = fs.mkdtempSync(path.join(SCRATCH, "history-tmp-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const r = await bringInTheirChanges(bob, await readCbproj(out), { history: { file: out, openStore: openHistory, tmpDir } });
+  assert.equal(r.status, "folded", JSON.stringify(r));
+  assert.equal(r.history?.status, "refused");
+  assert.match(r.history?.status === "refused" ? r.history.reason : "", /history can't be read/);
+  assert.equal(find(toHost((await bob.head()).doc).timelineItems as Item[], "c1").name, "the Director's edit", "their changes came in");
+  assert.deepEqual(fs.readdirSync(tmpDir), [], "nothing left behind");
+});

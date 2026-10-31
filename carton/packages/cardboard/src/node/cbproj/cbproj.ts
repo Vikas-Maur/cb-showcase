@@ -195,7 +195,12 @@ export async function importFullHistory(target: HistoryTarget, file: string, o: 
   const dir = fs.mkdtempSync(path.join(o.tmpDir ?? os.tmpdir(), "cbproj-history-"));
   try {
     const db = path.join(dir, "history.db");
-    if (!(await extractFullHistory(file, db))) return { status: "no-history" };
+    try {
+      if (!(await extractFullHistory(file, db))) return { status: "no-history" };
+    } catch (e) {
+      // a damaged entry (bad CRC, truncated): the history is optional, the rest of the file still comes in
+      return { status: "refused", reason: `the file's history can't be read: ${e instanceof Error ? e.message : String(e)}` };
+    }
     let store: Store;
     try {
       store = await o.openStore(db);
