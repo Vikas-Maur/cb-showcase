@@ -108,13 +108,17 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   goes out at most 10 times a second (`PRESENCE_PER_SEC`), coalesced: the latest state always arrives, and one
   still waiting when the handle closes (a leave, `null`) is sent before the close; the relay keeps none. When this
   replica's own connection closes (or it stops), every peer it showed gets a `presence` event with `state: null`: a
-  host that restarts keeps no one to send leaves for; a peer still there shows again with its next update. A pending edit survives a
+  host that restarts keeps no one to send leaves for; a peer still there shows again with its next update. This
+  replica's own latest presence (unless it was a leave) goes out again after each reconnect's welcome, an update a
+  disconnect caught waiting included. A pending edit survives a
   restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
   when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. Each stored edit keeps its
-  causal base (the confirmed seq and the pending edits it was made on) and is rebuilt on it and rebased onto what was
-  confirmed since, with cards for what clashed. While a keyframe catch-up's skipped rows aren't saved yet, the
+  causal base (the confirmed seq and the pending edits it was made on, and what those did as it read them) and is
+  rebuilt on it and rebased onto what was confirmed since, with cards for what clashed. While a keyframe catch-up's skipped rows aren't saved yet, the
   confirmed states edits are made on are (meta `["queue-head", cut, seq]`, each while an edit needs it), and a restart
-  resumes at the newest, offline too; an edit whose base nobody can rebuild waits, never applied on a guessed one. An
+  resumes at the newest, offline too; an edit whose base nobody can rebuild waits, never applied on a guessed one, and
+  so do the edits made on it. A retry of an edit already queued (here, waiting, or another process's row) answers
+  `pending`. An
   edit absorbed before it was sent spends its id (a retry answers it, never applies it again). A settle that fails keeps its outcome for the next one; a wait answers
   `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
   the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is

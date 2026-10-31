@@ -551,17 +551,11 @@ export class History {
       }
       // rebase: merge3(base, head, mine) with the concurrent changes' recorded remaps and kinds
       const head = br.sq.head;
-      const conc = res.missing.filter((c) => !causal.includes(c.id));
-      const rec = conc.filter((c) => !isEmptyMap(c.intent?.maps));
-      // the concurrent changes' maps and lineage (a split records lineage only: kit-docs)
-      const concLineage: NonNullable<Intent["lineage"]> = {};
-      for (const c of conc) if (c.intent?.lineage) Object.assign(concLineage, c.intent.lineage);
-      const concMaps = E.intentRemap({ maps: rec.length ? E.composeMaps(...rec.map((c) => c.intent!.maps)) : {}, lineage: concLineage });
-      const concKinds: Record<string, NonNullable<Change["kinds"]>[string]> = {};
-      for (const c of conc) for (const [id, k] of Object.entries(c.kinds ?? {})) concKinds[id] = k;
+      // the concurrent changes' maps, lineage (a split records lineage only: kit-docs) and kinds
+      const conc = E.sideOf(res.missing.filter((c) => !causal.includes(c.id)));
       const m = E.merge3(baseDoc, head, mine, this.schema, {
-        remaps: { ours: concMaps, theirs: E.intentRemap(change.intent) },
-        kinds: { ours: concKinds, theirs: change.kinds ?? {} },
+        remaps: { ours: conc.remap, theirs: E.intentRemap(change.intent) },
+        kinds: { ours: conc.kinds, theirs: change.kinds ?? {} },
         rekeys: "ours",
       });
       let merged = m.doc;
@@ -1236,7 +1230,7 @@ export class History {
       if (br && !br.rec.shallow) continue;
       const prev = this.#lineage.get(n.id);
       // a node's identity never changes: one we hold under this id with another state is a different version (SF3-2)
-      if (prev && prev.hash !== n.hash) throw new Error(`shallow export: node ${n.id} is another version than the one held under that id`);
+      if (prev && prev.hash !== n.hash) throw new Error(`shallow export: node ${n.id} is another version than the one held here`);
       const bn = branches[n.branchId]?.name;
       incoming.set(n.id, { ...n, ...(prev ? { parents: prev.parents } : {}), kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
     }

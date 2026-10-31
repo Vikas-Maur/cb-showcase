@@ -371,9 +371,12 @@ interface PendingRow {
    */
   head?: number;
   basePending?: string[];
+  /** Its base as ops from the confirmed state at `head` (review SF4-2); absent when it sits on no pending change. */
+  baseDelta?: Op[];
 }
-const pendingRow = (p: QueuedChange, order: number): PendingRow => {
+const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
+  const delta = q.baseDelta(p.branchId, v);
   const cards = p.versions.filter((x) => x.cards.length).map((x) => ({ k: x.k, cards: x.cards }));
   return {
     id: p.id,
@@ -383,6 +386,7 @@ const pendingRow = (p: QueuedChange, order: number): PendingRow => {
     order,
     head: v.base.seq,
     basePending: [...v.base.pending],
+    ...(delta?.length ? { baseDelta: delta } : {}),
     intent: v.intent,
     kinds: v.kinds,
     policy: v.policy,
@@ -411,6 +415,7 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
   ...(p.head !== undefined ? { head: p.head } : {}),
   ...(p.basePending ? { basePending: p.basePending } : {}),
+  ...(p.baseDelta ? { baseDelta: p.baseDelta } : {}),
 });
 /**
  * The problem a machine code names (web-demo REQ-9): a sequencer refusal's `ErrorMsg.code`, or a transport's for a
@@ -1688,11 +1693,7 @@ class CartonImpl implements Carton {
     // the queue was ahead of the stored rows (a keyframe catch-up whose skipped rows weren't saved yet): back to that
     // state first, as the catch-up left it, so rows written on it restore exactly and the backfill fetches the rest
     // (SF1-4; a state that doesn't check is ignored)
-    const saved = new Map<number, { key: StoreKey; doc: Doc }>();
-    for (const e of await this.store.range<KeyframeData>(T.meta, { prefix: [QUEUE_HEAD, cut] })) {
-      if (typeof e.value?.seq !== "number" || E.hashDoc(e.value.doc, this.schema) !== e.value.stateHash) continue; // never an unchecked state
-      saved.set(e.value.seq, { key: e.key, doc: e.value.doc });
-    }
+    const saved = await this.#savedStates(cut);
     this.#gapSaved.set(cut, saved);
     const top = Math.max(0, ...saved.keys());
     if (top > sc.queue.headSeq(cut)) sc.queue.jumpTo(cut, { seq: top, doc: saved.get(top)!.doc, stateHash: E.hashDoc(saved.get(top)!.doc, this.schema) });
@@ -1805,6 +1806,13 @@ class CartonImpl implements Carton {
     this.#queue = p;
     return p;
   }
+  /** The catch-up states saved for the cut, any holder's, each checked against its hash (never an unchecked state). */
+  async #savedStates(cut: string, known?: Map<number, { key: StoreKey; doc: Doc }>): Promise<Map<number, { key: StoreKey; doc: Doc }>> {
+    const saved = new Map(known);
+    for (const e of await this.store.range<KeyframeData>(T.meta, { prefix: [QUEUE_HEAD, cut] }))
+      if (typeof e.value?.seq === "number" && !saved.has(e.value.seq) && E.hashDoc(e.value.doc, this.schema) === e.value.stateHash) saved.set(e.value.seq, { key: e.key, doc: e.value.doc });
+    return saved;
+  }
   /** A confirmed state of the cut for a stored row's base: History's (up to its head), or a saved catch-up state. */
   #stateFor(cut: string, seq: number): Doc | null {
     if (seq <= this.#h.headSeq(cut)) return this.#h.stateOf(nodeId(cut, seq));
@@ -1880,6 +1888,9 @@ class CartonImpl implements Carton {
     // pending rows: the queue's pending changes, each its latest version in queue order. A row goes once its change
     // left this handle's queue, or once its id is confirmed; another process's row stays for the next holder (SF1-2),
     // and one waiting for its base stays as stored
+    // the saved states another holder wrote too, so they are pruned when no row needs them (review SF4-7): read before
+    // the rows, since a row and the state it is made on are written in one batch (one seen here has its row below)
+    this.#gapSaved.set(cut, await this.#savedStates(cut, this.#gapSaved.get(cut)));
     const stored = await this.store.range<PendingRow>(T.pending, { prefix: [cut] });
     const live = q.pending(cut);
     const liveIds = new Set(live.map((p) => p.id));
@@ -1892,7 +1903,7 @@ class CartonImpl implements Carton {
       const settled = !this.#authors.has(id) || outcomes.some((o) => o.id === id);
       if (!liveIds.has(id) && !heldIds.has(id) && ((queued.has(id) && settled) || confirmedNow.has(id) || this.#h.confirmedById(id))) writes.push({ table: T.pending, key: r.key, value: undefined });
     }
-    const rowsNow = live.map((p, order) => pendingRow(p, order));
+    const rowsNow = live.map((p, order) => pendingRow(p, order, q));
     for (const v of rowsNow) writes.push({ table: T.pending, key: [cut, v.id], value: v });
     // the confirmed states past the store's rows that pending rows are made on: this queue's rows, and the rows it keeps
     // as stored (another process's, or waiting for their base)
@@ -2069,7 +2080,9 @@ class CartonImpl implements Carton {
     this.#feedQueue(cut);
     const done = this.#h.confirmedById(id);
     if (done) return { sc, done };
-    if (sc.queue.pending(cut).some((p) => p.id === id)) return { sc, done: { status: "pending", id, ref: this.#sharedRef(cut), notices: [] } };
+    // queued already: in this queue, held until its base can be rebuilt, or another process's stored row. A retry
+    // waits for it, and never queues it again on another base over its row (review SF4-3)
+    if (sc.queue.pending(cut).some((p) => p.id === id) || this.#heldRows.get(cut)?.some((p) => p.id === id) || (await this.store.get(T.pending, [cut, id]))) return { sc, done: { status: "pending", id, ref: this.#sharedRef(cut), notices: [] } };
     // a lease fence (or any caller condition) must hold before the edit enters the queue (§6.2 fencing)
     if (conditions.length && !(await this.store.write([], conditions))) throw new Error("Carton: the store changed under this write (a condition failed)");
     return { sc, done: null };
@@ -2115,7 +2128,7 @@ class CartonImpl implements Carton {
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
     const writes: StoreWrite[] = [];
     const rows: PendingRow[] = [];
-    sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && rows.push(pendingRow(p, order)));
+    sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && rows.push(pendingRow(p, order, sc.queue)));
     for (const v of rows) writes.push({ table: T.pending, key: [cut, v.id], value: v });
     // made on the queue's state: if that is past the store's rows, it is saved with them (SF1-4); nothing is removed
     // here (a settle does that)
@@ -2151,12 +2164,14 @@ class CartonImpl implements Carton {
     else {
       // a stale base (an agent's header): merge it onto the optimistic state here, as a local cut's commit would
       const b = input.base;
-      const baseDoc = typeof b === "object" && "baseDoc" in b ? b.baseDoc : this.#h.resolve(b as StateRef | string).doc;
+      const at = typeof b === "object" && "baseDoc" in b ? { doc: b.baseDoc, seq: b.baseSeq, causal: b.causal ?? [], cutId: cut } : this.#h.resolve(b as StateRef | string);
+      const baseDoc = at.doc;
       const mine = input.doc ?? E.apply(E.fork(baseDoc, this.schema), input.ops ?? [], this.schema);
       if (E.hashDoc(baseDoc, this.schema) === E.hashDoc(opt, this.schema)) ops = E.diff(opt, mine, this.schema);
       else {
         const own = E.intentRemap(input.intent);
-        const m = E.merge3(baseDoc, opt, mine, this.schema, { ...(own ? { remaps: { theirs: own } } : {}), kinds: { theirs: input.kinds ?? {} }, rekeys: "ours" });
+        const since = this.#sinceBase(sc, cut, at);
+        const m = E.merge3(baseDoc, opt, mine, this.schema, { remaps: { ...(since.remap ? { ours: since.remap } : {}), ...(own ? { theirs: own } : {}) }, kinds: { ours: since.kinds, theirs: input.kinds ?? {} }, rekeys: "ours" });
         const unseen = input.unchosen === "prefer" ? [] : unseenCards(m.conflicts, input.choices);
         if (m.conflicts.length && (!input.choices || unseen.length)) return { status: "conflicts", cards: m.conflicts, ref: this.#sharedRef(cut), merge: m, ...(input.choices ? { unseen: unseen.map((c) => c.path) } : {}) };
         ops = E.diff(opt, m.conflicts.length ? E.resolve(m, input.choices!) : m.doc, this.schema);
@@ -2168,6 +2183,18 @@ class CartonImpl implements Carton {
     const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
     const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites);
     return resolved.length && (out.status === "pending" || out.status === "confirmed") ? { ...out, resolved } : out;
+  }
+  /**
+   * The head side of a stale base's merge on a shared cut, as a local cut's commit has it: the recorded remaps, split
+   * lineage and edit kinds of what the optimistic state holds that the base doesn't (the cut's confirmed rows after it,
+   * then the pending edits outside its causal set), composed in order (review SF4-4: an edit of a clip split since
+   * reached one piece). A base on another cut, or one before a stretch known only through a keyframe: none recorded,
+   * merge3 infers as before.
+   */
+  #sinceBase(sc: SharedCut, cut: string, at: { seq: number; causal: readonly ChangeId[]; cutId: string }): { remap?: ReturnType<typeof E.intentRemap>; kinds: EditKinds } {
+    const rows = sc.queue.rows(cut).slice(at.seq);
+    if (at.cutId !== cut || rows.some((r) => r.placeholder)) return { kinds: {} };
+    return E.sideOf([...rows, ...sc.queue.pending(cut).filter((p) => !at.causal.includes(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };

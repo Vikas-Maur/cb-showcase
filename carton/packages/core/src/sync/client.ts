@@ -153,6 +153,8 @@ export class SyncClient {
   private presenceAt = -Infinity;
   private presenceNext: { actor: Change["author"]; state: PresenceState | null } | null = null;
   private presenceTimer: unknown = null;
+  /** The latest presence asked for, sent or not: shown again after a reconnect (review SF4-8). */
+  private presenceLast: { actor: Change["author"]; state: PresenceState | null } | null = null;
   /** Peers this connection shows (their last presence not a leave), by actor: told gone when it closes. */
   private shown = new Map<string, unknown>();
   private waiters: ((ok: boolean) => void)[] = [];
@@ -505,6 +507,10 @@ export class SyncClient {
             this.setStatus(this.queue.pending(b).length ? "syncing" : "up-to-date");
             for (const w of this.waiters.splice(0)) w(true);
             this.emit({ type: "online" });
+            // shown again on a new connection: peers got a leave for the old one, and an update the disconnect caught
+            // waiting is the latest (review SF4-8); a leave isn't repeated
+            const p = this.presenceLast;
+            if (p?.state) this.sendPresence(p.actor, p.state);
           }
           this.pump();
         });
@@ -644,6 +650,7 @@ export class SyncClient {
    * (The server also drops anything over a per-connection cap.)
    */
   sendPresence(actor: Change["author"], state: PresenceState | null): void {
+    this.presenceLast = { actor, state };
     if (!this.conn?.open) return;
     const now = (this.o.clock ?? Date.now)();
     const wait = this.presenceAt + 1000 / PRESENCE_PER_SEC - now;

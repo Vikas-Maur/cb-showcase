@@ -57,8 +57,12 @@ export function ownIndex(arr: Rec[], key: string): Map<unknown, number> {
 // freezing what it writes into it, so a live head stays sealed at the cost of the records each change writes. An
 // array nobody sealed (a caller's own doc, a fork) is never frozen by apply, and fork() doesn't pass the seal on.
 const SEALED = new WeakSet<readonly Rec[]>();
+// objects this module froze with everything under them: a value frozen elsewhere (a caller's Object.freeze) may hold
+// mutable children, so being frozen proves nothing (review SF4-6)
+const FROZEN = new WeakSet<object>();
 export function freezeDeep(v: unknown): void {
-  if (v === null || typeof v !== "object" || Object.isFrozen(v)) return;
+  if (v === null || typeof v !== "object" || FROZEN.has(v)) return;
+  FROZEN.add(v);
   Object.freeze(v);
   for (const x of Object.values(v)) freezeDeep(x);
 }
