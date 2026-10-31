@@ -209,7 +209,11 @@ export class SyncClient {
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
     if (this.presenceTimer !== null) this.timers.clearTimeout(this.presenceTimer);
     this.presenceTimer = null;
+    // a coalesced update still waiting goes out before the close: it is often the leave (`null`) a closing editor
+    // sends right after its last move, and peers have no other way to learn the person left (the relay keeps none)
+    const p = this.presenceNext;
     this.presenceNext = null;
+    if (p && this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
     const c = this.conn;
     this.conn = null;
     c?.close();

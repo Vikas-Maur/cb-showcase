@@ -14,12 +14,18 @@
 // `maintain()` sweeps old hours. Owner: sync-sequencer.
 
 import type { BlobStore } from "../plugins.ts";
+import { sha256Hex } from "../engine/index.ts";
 
-// SHA-256 of the bytes as they are, with the platform's WebCrypto (Workers, browsers, Node): the digest is computed
-// natively, with no copy of the payload, which a message near a Durable Object's 128 MB budget can't afford (the
-// portable hash first re-encodes the text and pads a copy). Same digest as sha256Hex of the text it encodes.
-async function digestHex(bytes: Uint8Array): Promise<string> {
-  const d = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
+// SHA-256 of the bytes as they are, with the platform's WebCrypto (Workers, browsers, Node): computed natively over
+// the bytes (WebCrypto takes one copy of its input), instead of the portable hash's re-encoded text and its padded
+// copy, two more payload-sized buffers a message near a Durable Object's 128 MB budget can't afford. Same digest as
+// sha256Hex of the text the bytes encode. A page without WebCrypto (`crypto.subtle` exists only in a secure context:
+// not on plain http from a LAN address) hashes the text the portable way, as before.
+type Subtle = { digest(algorithm: "SHA-256", data: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer> };
+async function digestHex(bytes: Uint8Array, text?: string): Promise<string> {
+  const subtle = (globalThis as { crypto?: { subtle?: Subtle } }).crypto?.subtle;
+  if (!subtle) return sha256Hex(text ?? dec.decode(bytes));
+  const d = new Uint8Array(await subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
   let s = "";
   for (let i = 0; i < d.length; i++) s += d[i]!.toString(16).padStart(2, "0");
   return s;
@@ -135,7 +141,7 @@ export function envelopeExpired(key: string, now: number): boolean {
 
 /** Upload an oversized message's JSON and return the envelope that stands for it. */
 export async function seal(big: { text: string; bytes: Uint8Array }, blobs: BlobStore, keyOf: (sha256: string) => string): Promise<EnvelopeMsg> {
-  const sha256 = await digestHex(big.bytes);
+  const sha256 = await digestHex(big.bytes, big.text);
   const key = keyOf(sha256);
   await blobs.put(key, big.bytes, { contentType: "application/json", sha256, ifAbsent: true });
   return { type: "blob", ref: { key, size: big.bytes.byteLength, sha256 } };
