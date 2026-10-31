@@ -55,6 +55,9 @@ node race.ts trial --protocol displace --writers 4 --mode free --rounds 5000 --o
   1 µs buckets to 2 ms, then 100 µs buckets to 100 ms (NTFS reaches milliseconds); quantiles print in µs.
 - **The `retry` reader** (`--reader retry`, a paced row of the matrix) reads through the shipped `retryMissing`, as
   Carton's own readers do: `failed after retry` must be 0, and `retry wait` is what a reader pays in the window.
+  With `--lock` (the matrix runs both) the engine installs under the bundle's install lock (`.carton/install.lock/`),
+  as the materializer does, and the reader waits up to 6 s while it is held instead of 100 ms, as the app's readers
+  do (stock 1.4.0 takes a missing project.json for a removed project, so this grace matters on every OS).
 - **`replace`** is the install proposed for Windows to remove the missing window. It is not shipped: a foreign save
   that lands between its check and its rename is destroyed (the test "Windows decision" in
   `packages/cardboard/test/displace.test.ts` shows the interleaving on any OS); this row measures how often on NTFS.

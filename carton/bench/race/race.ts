@@ -28,6 +28,8 @@
 // --style inplace makes writers write the view in place (open, truncate, write) instead of temp+rename.
 // --widen <µs> busy-waits inside each protocol's vulnerable step, to make rare interleavings common.
 // --settle 1|2 (displace only) re-reads displaced files that in-place writers may still be writing; see settle().
+// --lock (displace only) installs under the bundle's install lock, as the materializer does, and the `retry` reader
+// passes the bundle to `retryMissing`, so it waits up to 6 s while an install holds the lock (as the app's readers do).
 // Windows: rename/link/unlink, and the turn lock's mkdir/rmdir, retry with backoff on EPERM/EBUSY/EACCES (another
 // process has the file open, or the name is still being deleted).
 // fs.link is CreateHardLinkW there; FAT/exFAT have no hard links, so only `naive` can run on them.
@@ -39,6 +41,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { BUSY_BUDGET_MS, displaceThenInstall, isBusy, retryMissing, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/node/displace.ts";
 import { DisplacedFiles } from "../../packages/cardboard/src/node/displaced.ts";
+import { withInstallLock } from "../../packages/cardboard/src/node/install-lock.ts";
 import { hadd, hist, hmax, hmerge, hq, type Hist } from "./hist.ts";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -119,6 +122,8 @@ interface Opts {
   oracle: string | null;
   keep: boolean;
   settle?: number | boolean;
+  /** Install under the bundle's install lock (displace), and let the `retry` reader wait on it. */
+  lock?: boolean;
   trials?: number;
 }
 interface Trial {
@@ -128,6 +133,7 @@ interface Trial {
   widen: number;
   drop: boolean;
   settle: number;
+  lock: boolean;
   tmpDir: string;
   dispDir: string;
   prevDir: string;
@@ -252,7 +258,8 @@ const PROTO: Record<string, Proto> = {
   async displace(T, E) {
     const t = writeTmp(T, E);
     const next = E.held ? E.held.next : () => path.join(T.dispDir, String(E.n++));
-    const r = await displaceThenInstall(T.view, t.p, next, { counter: E, between: T.widen ? () => spin(T.widen) : undefined });
+    const install = () => displaceThenInstall(T.view, t.p, next, { counter: E, between: T.widen ? () => spin(T.widen) : undefined });
+    const r = T.lock ? await withInstallLock(T.dir, install, { counter: E }) : await install();
     E.eexist += r.eexist;
     hadd(E.gap, r.gapNs);
     hadd(E.gapTotal, r.gapTotalNs);
@@ -354,6 +361,7 @@ interface ChildCfg {
   jitter: number;
   w?: number;
   kind?: string;
+  lock?: boolean;
 }
 /**
  * A writer's own steps on the view, each waiting out a busy file as a real Windows app does (the engine has the view
@@ -446,7 +454,7 @@ async function retryReader(cfg: ChildCfg): Promise<void> {
     out.reads++;
     const c: BusyCounter = {};
     try {
-      if (!whole(await retryMissing(() => fs.readFileSync(view), { counter: c }), size)) out.torn++;
+      if (!whole(await retryMissing(() => fs.readFileSync(view), { counter: c, ...(cfg.lock ? { bundle: dir } : {}) }), size)) out.torn++;
       if (c.missing) {
         out.retried++;
         hadd(out.wait, Number(now() - t));
@@ -534,6 +542,7 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
     widen: o.widen,
     drop: o.mode === "free",
     settle: lvl(o.settle),
+    lock: !!o.lock && o.protocol === "displace" && o.engine !== "async",
     tmpDir: path.join(dir, ".carton", "tmp"),
     dispDir: path.join(dir, ".carton", "displaced"),
     prevDir: path.join(dir, ".carton", "prev"),
@@ -572,7 +581,7 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
     oracle = { log, done: new Promise((res) => p.once("exit", res)) };
   }
   await proto(T, E); // round 0: the first view
-  const cfg: ChildCfg = { dir, size: o.size, ctl, mode: o.mode, style: o.style, jitter: o.jitter };
+  const cfg: ChildCfg = { dir, size: o.size, ctl, mode: o.mode, style: o.style, jitter: o.jitter, lock: T.lock };
   const kids: Kid[] = [];
   for (let w = 1; w <= o.writers; w++) kids.push(child("writer", { ...cfg, w }));
   const kinds = o.reader === "both" ? ["read", "stat"] : o.reader === "retry" ? ["retry"] : o.reader ? [o.reader === "stat" ? "stat" : "read"] : [];
@@ -754,7 +763,7 @@ function args(argv: string[]): Record<string, any> {
 export function table(results: Record<string, any>[]): string {
   const g = new Map<string, Record<string, any>>();
   for (const r of results) {
-    const key = [r.fs, r.mode, r.style, (r.engine === "async" ? "displace(async)" : r.protocol) + (r.settle ? "+settle" + lvl(r.settle) : ""), r.writers, r.widen, r.pace, r.reader || "none"].join("|");
+    const key = [r.fs, r.mode, r.style, (r.engine === "async" ? "displace(async)" : r.protocol) + (r.settle ? "+settle" + lvl(r.settle) : "") + (r.lock ? "+lock" : ""), r.writers, r.widen, r.pace, r.reader || "none"].join("|");
     const a = g.get(key) ?? { key, trials: 0, rounds: 0, landed: 0, unaccounted: 0, superseded: 0, lostByEngine: null, eexist: 0, engineAfterImport: 0, oracleBad: 0, reads: 0, enoent: 0, torn: 0, probes: 0, absent: 0, busy: 0, wbusy: 0, wby: {} as Record<string, number>, rreads: 0, rfailed: 0, rretried: 0, gap: hist(), streak: hist(), pstreak: hist(), rwait: hist() };
     a.trials++;
     a.rounds += r.rounds;
@@ -853,6 +862,8 @@ async function main(): Promise<void> {
   if (links) for (const engine of ["sync", "async"] as const) plan.push({ protocol: "displace", engine, writers: 0, pace: 2, rounds: 1000, reader: "both" });
   // Carton's own readers through the window: no read may fail
   if (links) plan.push({ protocol: "displace", writers: 0, pace: 2, rounds: 1000, reader: "retry" });
+  // the same under the install lock, as the materializer installs: readers get the lock's grace
+  if (links) plan.push({ protocol: "displace", writers: 0, pace: 2, rounds: 1000, reader: "retry", lock: true });
   const results: Record<string, any>[] = [];
   console.log(`${process.platform} ${os.release()}, node ${process.version}, dir ${base}; ${plan.length} configs x ${trials} trials`);
   for (const p of plan)

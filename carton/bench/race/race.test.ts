@@ -170,3 +170,20 @@ test("a short in-place trial (the configs CI #11 couldn't finish on NTFS): the s
   assert.equal(typeof r.writerBusy, "number", "writer retries are part of the result");
   assert.deepEqual(Object.keys(r.writerBusyBy).filter((k) => !["write in place", "read back"].includes(k)), [], "in place: only those two steps");
 });
+
+test("--lock: the engine installs under the bundle's install lock and Carton's retrying reader never fails a read", { timeout: 120_000 }, async (t) => {
+  fs.mkdirSync(SCRATCH, { recursive: true });
+  const base = fs.mkdtempSync(path.join(SCRATCH, "race-lock-"));
+  t.after(() => fs.rmSync(base, { recursive: true, force: true }));
+  const seen: boolean[] = [];
+  const real = fs.linkSync;
+  t.mock.method(fs, "linkSync", (from: fs.PathLike, to: fs.PathLike) => {
+    if (String(to).endsWith("view.json")) seen.push(fs.existsSync(path.join(path.dirname(String(to)), ".carton", "install.lock")));
+    return real(from, to);
+  });
+  const r = await trial({ base, fsLabel: "test", size: 512, mode: "turn", style: "rename", protocol: "displace", engine: "sync", writers: 0, rounds: 200, widen: 0, jitter: 0, pace: 1, reader: "retry", lock: true, oracle: null, keep: false });
+  t.mock.restoreAll();
+  assert.ok(seen.length >= 200 && seen.every(Boolean), "every link ran under the lock");
+  assert.ok(r.rreads > 0);
+  assert.equal(r.rfailed, 0, "no read failed");
+});

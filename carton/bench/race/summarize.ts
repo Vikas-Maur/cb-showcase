@@ -49,7 +49,7 @@ for (const [k, l] of group(ip, (r) => [r.fs, r.protocol + (lvl(r.settle) ? " + s
 // C: the missing-path gap, paced engine (one materialization per 2 ms), no writers.
 const gap = rs.filter((r) => r.writers === 0);
 const C: unknown[][] = [["fs", "engine", "other process", "trials", "rounds", "engine gap µs p50 / p90 / p99 / max", "stat-probe absent streak µs p50 / p99 / max", "readFile calls", "readFile ENOENT", "ENOENT per read", "Carton's reader (retryMissing): failed / reads; wait µs p50 / p99 / max"]];
-for (const [k, l] of group(gap, (r) => [r.fs, r.engine, r.reader || "none"].join("|"))) {
+for (const [k, l] of group(gap, (r) => [r.fs, r.engine + (r.lock ? " + install lock" : ""), r.reader || "none"].join("|"))) {
   const [fsl, eng, rd] = k.split("|") as [string, string, string];
   const g = merge(l, "gap");
   const p = merge(l, "pstreak");
