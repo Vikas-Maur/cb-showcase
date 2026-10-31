@@ -141,3 +141,42 @@ test("R2-02 cb statuses on a shared cut: confirmed@seq online, pending with the 
     for (const p of procs) if (p.exitCode === null) p.kill("SIGKILL");
   }
 });
+
+// The client refuses a change bigger than the largest message the server takes, before sending it: 32 MiB by default on
+// both sides without blob envelopes (server-node's WebSocket limit and the client's), so a 33 MiB edit is "too large".
+// (A host set to a smaller limit doesn't declare it in its welcome yet: reported in the notes.)
+test("Stage F: an edit larger than the server takes fails alone, clearly; the edits after it go through", async (t) => {
+  const BIG = 33 << 20;
+  const { dir, projectId } = bundle("r202-large");
+  const procs: ReturnType<typeof spawn>[] = [];
+  const host = proc("./support/host.ts", [dir, projectId]);
+  procs.push(host.p);
+  await host.next();
+  const { url } = JSON.parse(readFileSync(join(dir, "host.json"), "utf8"));
+  const syncCfg = { url, tokenFile: join(dir, "token-alice") };
+  const init = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: { kind: "human", id: "human:alice" } });
+  await init.close();
+  const w = proc("./support/real-worker.ts", [dir, projectId, "./real-sync-factory.ts", JSON.stringify(syncCfg)]);
+  procs.push(w.p);
+  await w.next();
+  const local = await openLocal({ projectDir: dir, projectId, adapter, actor: agent, helperFactory: here("./support/real-sync-factory.ts"), helperConfig: syncCfg });
+  try {
+    const cut = local.carton.cut;
+    assert.equal((await local.write({ kind: "share" })).status, "confirmed");
+    await until(async () => (await local.carton.cuts()).find((c) => c.id === cut)!.sequencer.kind === "server", 30_000, "the cut to be shared");
+    const big = await local.write({ kind: "commit", ops: [set("c3", "name", "x".repeat(BIG))] });
+    assert.equal(big.status, "rejected", JSON.stringify(big).slice(0, 300));
+    assert.equal((big as any).reason, "too large");
+    assert.match(String((big as any).note), /larger than the server accepts.*edits after it still went through/);
+    const small = await local.write({ kind: "commit", ops: [set("c4", "name", "small")] });
+    assert.equal(small.status, "confirmed", "the edit after it went through");
+    const later = await local.write({ kind: "pin", owner: "later" });
+    for (const r of [small, later]) assert.ok(!r.notices.some((n) => n.change === big.id), "the rejection was this call's answer, not told again");
+    const head = (await local.carton.head()).doc.timelineItems as any[];
+    assert.notEqual(head.find((i) => i.id === "c3").name.length, BIG, "the oversized edit is not in the cut");
+    t.diagnostic(JSON.stringify({ big: big.status, small: small.status }));
+  } finally {
+    await local.close();
+    for (const p of procs) if (p.exitCode === null) p.kill("SIGKILL");
+  }
+});

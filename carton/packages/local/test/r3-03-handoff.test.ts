@@ -58,6 +58,12 @@ async function world(name: string) {
   return { dir, projectId, open, rows, worker, close, localIds };
 }
 
+/** The detached helper a cb call started holds the lease after the test: stop it with the test. */
+async function stopHolder(local: LocalCarton | undefined) {
+  const row = await local?.lease.read().catch(() => null);
+  if (row && row.pid !== process.pid) try { process.kill(row.pid, "SIGKILL"); } catch {}
+}
+
 async function cutOf(local: LocalCarton) {
   return (await local.carton.cuts()).find((c) => c.id === local.carton.cut)!;
 }
@@ -94,10 +100,11 @@ test("R3-03 hand-off with the app open: commits made during the upload stay pend
 
 test("R3-03 the holder dies in the middle of the hand-off: the next holder asks the server, never sequences locally again; one adoption", async (t) => {
   const w = await world("r303-killed");
+  let opened: LocalCarton | undefined;
   try {
     const wk = w.worker();
     await wk.next();
-    const local = await w.open();
+    const local = (opened = await w.open());
     const cut = local.carton.cut;
     assert.equal((await local.write({ kind: "share" })).status, "confirmed");
     wk.p.kill("SIGKILL"); // the upload may or may not have reached the server; its answer never reaches this holder
@@ -113,9 +120,10 @@ test("R3-03 the holder dies in the middle of the hand-off: the next holder asks 
     assert.equal(new Set(rows.map((r) => r.id)).size, rows.length, "no change id twice");
     const after = await until(async () => { const x = await cutOf(local); return x.sequencer.kind === "server" && x; }, 30_000, "server sequencing");
     assert.equal((after.sequencer as { since: number }).since, 5);
-    await local.close();
     t.diagnostic(JSON.stringify({ serverRows: rows.length, stateAfterKill: st.sequencer.kind }));
   } finally {
+    await stopHolder(opened);
+    await opened?.close();
     w.close();
   }
 });

@@ -53,7 +53,8 @@ export function resultText(r: CbResult, what = "Saved"): string {
   const lines = noticeLines(r.notices ?? []);
   switch (r.status) {
     case "confirmed":
-      lines.push(r.empty ? "Nothing changed" : `${what}: confirmed${r.ref ? ` ${r.ref}` : r.seq ? ` @${r.seq}` : ""}`);
+      // absorbed: spent with no effect of its own (an identical edit was already there): saved in effect
+      lines.push(r.absorbed ? `${what}: confirmed, already in place (an identical edit was already there; nothing new to record)` : r.empty ? "Nothing changed" : `${what}: confirmed${r.ref ? ` ${r.ref}` : r.seq ? ` @${r.seq}` : ""}`);
       break;
     case "pending":
       lines.push(r.online ? `${what}: pending (the server hasn't answered within 5 s; conflicts, if any, come back on your next call)` : `${what}: pending (offline; it syncs when the connection is back)`);
@@ -63,7 +64,9 @@ export function resultText(r: CbResult, what = "Saved"): string {
       lines.push("Resolve with `cb resolve <n> --keep mine|theirs`, or leave the cards for the user.");
       break;
     case "rejected":
-      lines.push(`${what}: rejected (${r.reason})`);
+      lines.push(r.reason === "too large"
+        ? `${what}: not saved: this edit is larger than the server accepts (its maximum message size). The edits after it still went through; split it into smaller edits.`
+        : `${what}: rejected (${r.reason})`);
       break;
     case "error":
       lines.push(`Error: ${r.error}`);

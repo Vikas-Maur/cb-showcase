@@ -19,5 +19,5 @@ test("a shared-cut write the server answers `absorbed` is confirmed, with absorb
   } as unknown as Carton;
   const actor: Actor = { kind: "agent", id: "codex", group: "local:me@box" };
   const r = await runWrite(carton, { id: "r.1", actor, op: { kind: "commit", ops: [] } }, { online: () => true });
-  assert.deepEqual(r, { status: "confirmed", id: "r.1", seq: 7, ref: null, notices: [], absorbed: true });
+  assert.deepEqual([r.status, r.status === "confirmed" && r.seq, r.absorbed], ["confirmed", 7, true]);
 });

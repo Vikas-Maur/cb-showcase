@@ -1,0 +1,101 @@
+# Carton's tests on Linux, Windows and macOS, in groups of packages (carton/ci/groups.json), plus what the dev box
+# can't run: named pipes, NTFS/APFS renames and the P10 race, store-sqlite under Electron 43.7.0, wrangler dev, and
+# the checks against Cardboard 1.4.0's own code (downloaded at run time inside the job, never cached or uploaded).
+# Runs on a push to ci/carton or by hand. Either can run some groups or systems only (re-run after one agent's
+# change): by hand through the inputs, on a push with `[carton-ci groups=core,stores os=windows]` in the head commit's
+# message (see carton/ci/plan.mjs).
+# Nothing here builds, releases or deploys: each job uploads only its test results (carton-results).
+name: Carton CI
+
+on:
+  push:
+    branches: [ci/carton]
+  workflow_dispatch:
+    inputs:
+      groups:
+        description: "Groups to run: comma-separated names from carton/ci/groups.json, or all"
+        default: all
+      os:
+        description: "Systems: comma-separated linux, windows, macos, or all"
+        default: all
+
+# A new push cancels the run it supersedes. A re-run of failed jobs (run_attempt > 1) gets a group of its own, so it
+# neither cancels nor is cancelled by the latest push.
+concurrency:
+  group: carton-ci-${{ github.ref }}-${{ inputs.groups || 'all' }}-${{ inputs.os || 'all' }}-${{ github.run_attempt == '1' && 'latest' || github.run_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: carton/ci
+      - id: plan
+        env:
+          CARTON_CI_GROUPS: ${{ inputs.groups }}
+          CARTON_CI_OS: ${{ inputs.os }}
+          CARTON_CI_MESSAGE: ${{ github.event.head_commit.message }}
+        run: node carton/ci/plan.mjs
+
+  test:
+    needs: plan
+    name: ${{ matrix.group }} (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: carton
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: carton/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Restore tools
+        id: tools
+        if: matrix.needs != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/carton-ci-cache
+          key: carton-ci-tools-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.group }}-${{ hashFiles('carton/ci/fetch.mjs') }}
+
+      - name: Fetch tools ${{ matrix.needs }}
+        run: node ci/fetch.mjs ${{ matrix.needs }}
+
+      # Saved before the tests run, so a failing test doesn't throw the download away. Never holds Cardboard's code.
+      - name: Save tools
+        if: matrix.needs != '' && steps.tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/carton-ci-cache
+          key: carton-ci-tools-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.group }}-${{ hashFiles('carton/ci/fetch.mjs') }}
+
+      - name: Test ${{ matrix.group }}
+        run: node ci/run-tests.mjs --group ${{ matrix.group }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carton-results-${{ matrix.group }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/carton-results
+          if-no-files-found: ignore
+          retention-days: 14
