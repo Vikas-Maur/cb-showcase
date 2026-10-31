@@ -969,6 +969,19 @@ export function conformanceTests(S: Schema, opts: ConformanceOptions = {}): void
     assert.deepEqual(paths, ["name", "timelineItems/credits", "timelineItems/music", "timelineItems/outro", "timelineItems/tmp"], "every difference is a card");
   });
 
+  test("missing LCA, every difference decided: an all-cards fold commits as a recorded merge, so the next fold is up to date (ui review c)", () => {
+    const { alice, A, carolHead } = diamond({ carry: "head-only" });
+    const cmp = alice.fold(A, carolHead, { author: HUMAN, missingBase: "all-cards" });
+    assert.equal(cmp.status, "compare");
+    const cards = cmp.status === "compare" ? cmp.cards : [];
+    const partial = alice.fold(A, carolHead, { author: HUMAN, missingBase: "all-cards", choices: { [cards[0]!.path]: "theirs" } });
+    assert.equal(partial.status, "compare", "a difference left undecided commits nothing");
+    const r = alice.fold(A, carolHead, { author: HUMAN, missingBase: "all-cards", choices: Object.fromEntries(cards.map((c) => [c.path, "theirs"])) });
+    assert.equal(r.status, "confirmed");
+    assert.deepEqual(alice.changes(A).at(-1)!.mergeOf, { branchId: carolHead.slice(0, carolHead.lastIndexOf("@")), seq: Number(carolHead.slice(carolHead.lastIndexOf("@") + 1)) });
+    assert.equal(alice.fold(A, carolHead, { author: HUMAN }).status, "up-to-date", "the merge is recorded: no missing base the second time");
+  });
+
   test(".cbproj Alice → Bob → Alice twice, then a third merge: each LCA is the last exchanged node and nothing is reverted", () => {
     const d0 = doc(
       ["V"],
