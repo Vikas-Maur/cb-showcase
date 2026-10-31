@@ -1001,12 +1001,26 @@ class CartonImpl implements Carton {
       this.#h.load(cut, fresh);
       for (const r of fresh) writes.push({ table: T.changes, key: [cut, r.seq], value: r }, { table: T.ids, key: [r.id], value: [cut, r.seq] }, { table: T.pending, key: [cut, r.id], value: undefined });
     }
+    // a pending change that came back with cards after its write had returned (a late conflict, §6.2): a notice for
+    // its author, in the same batch, returned at the start of that actor's next cb/MCP result and by the Stop hook
+    const late = e.type === "confirmed" ? e.lateCards : e.type === "absorbed" ? e.cards : [];
+    const lateId = e.type === "confirmed" || e.type === "absorbed" ? e.id : null;
+    let lateNotice: Notice | null = null;
+    if (late.length && lateId) {
+      const author = (e.type === "confirmed" ? this.#h.findChange(lateId)?.author : undefined) ?? (await this.store.get<PendingRow>(T.pending, [cut, lateId]))?.author;
+      if (author) {
+        const at = this.#opts.clock?.() ?? Date.now();
+        lateNotice = { to: actorKey(author), kind: "late-conflict", text: `Your change ${lateId} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: lateId, cards: late, at };
+        writes.push({ table: T.notices, key: [lateNotice.to, at, 0, randomHex(4)], value: lateNotice });
+      }
+    }
     if (e.type === "absorbed" || e.type === "rejected") writes.push({ table: T.pending, key: [cut, e.id], value: undefined });
     // the hand-off finished (handingOff → server{since}): the cut's record says so from now on
     const qs = sc.queue.branch(cut).sequencer;
     if (E.canonical(qs) !== E.canonical(this.#h.cut(cut)!.sequencer)) writes.push({ table: T.cuts, key: [cut], value: this.#h.updateCut(cut, { sequencer: qs }) });
     if (writes.length) await this.store.write(writes);
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
+    if (lateNotice) this.#emit({ type: "notice", notice: lateNotice });
   }
   async #commitShared(cut: string, input: CommitInput, author: Actor, id: ChangeId, history?: HistoryFields): Promise<CommitResult> {
     const sc = await this.#ensureShared(cut);
@@ -1019,6 +1033,8 @@ class CartonImpl implements Carton {
     if (q.pending(cut).some((p) => p.id === id)) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
     const opt = q.optimistic(cut).doc;
     let ops: Op[];
+    // the cards `choices` decided merging a stale base onto the optimistic head (written with the queued row)
+    let resolved: ConflictCard[] = [];
     if (input.base === undefined) ops = input.ops ?? E.diff(opt, input.doc!, this.schema);
     else {
       // a stale base (an agent's header): merge it onto the optimistic state here, as a local cut's commit would
@@ -1031,17 +1047,22 @@ class CartonImpl implements Carton {
         const unseen = input.unchosen === "prefer" ? [] : unseenCards(m.conflicts, input.choices);
         if (m.conflicts.length && (!input.choices || unseen.length)) return { status: "conflicts", cards: m.conflicts, ref: this.#sharedRef(cut), merge: m, ...(input.choices ? { unseen: unseen.map((c) => c.path) } : {}) };
         ops = E.diff(opt, m.conflicts.length ? E.resolve(m, input.choices!) : m.doc, this.schema);
+        if (m.conflicts.length) resolved = m.conflicts;
       }
     }
     const at = this.#opts.clock?.() ?? Date.now();
     const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
     const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}) });
-    if (r.status === "confirmed") return { status: "confirmed", seq: q.headSeq(cut), ref: this.#sharedRef(cut), change: null, empty: true, rebased: 0, notices: [] };
+    const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
+    if (r.status === "confirmed") {
+      if (cardWrites.length) await this.store.write(cardWrites);
+      return { status: "confirmed", seq: q.headSeq(cut), ref: this.#sharedRef(cut), change: null, empty: true, rebased: 0, notices: [], ...(resolved.length ? { resolved } : {}) };
+    }
     // queued: kept in the store until the server answers, so a restart pushes it again under the same id
     const row: PendingRow = { id, author, ops, at, intent: input.intent ?? null, kinds: input.kinds ?? null, policy: input.policy ?? "merge", ...(hist ? { history: hist } : {}) };
-    await this.store.write([{ table: T.pending, key: [cut, id], value: row }]);
+    await this.store.write([{ table: T.pending, key: [cut, id], value: row }, ...cardWrites]);
     if (input.wait) return this.#outcome(cut, await sc.waitFor(id, input.wait));
-    return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
+    return { status: "pending", id, ref: this.#sharedRef(cut), notices: [], ...(resolved.length ? { resolved } : {}) };
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };
