@@ -9,7 +9,9 @@
 //   POST /api/admin/projects/:p/invites      {role}  Bearer ADMIN_TOKEN    → {invite}   (bootstrap; off without one)
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
-//   GET  /api/projects/:p/blobs/head?key=                                  → BlobInfo | 404
+//   GET  /api/projects/:p/blobs/head?key=                                  → BlobInfo | 404  (an editor's head of a
+//                                            team object claims it for the project: team.ts)
+//   POST /api/projects/:p/blobs/damaged      {key: "m/<hash>", leaf}       → {damaged, removed?}  (§11 repair path)
 //   POST /api/projects/:p/uploads            {key, contentType?}  editor   → {uploadId}
 //   PUT  /api/projects/:p/uploads/:id/:n?key=  part bytes          editor   → {partNumber, etag}
 //   GET  /api/projects/:p/uploads/:id?key=                         editor   → {parts}   (resume after a cut link)
@@ -23,11 +25,16 @@
 // The two message routes carry the sync protocol's envelopes (core/src/sync/envelope.ts): a message over 1 MiB
 // travels through the sequencer's own blob scope, and these routes reach exactly the two envelope key patterns of
 // that scope, nothing else in it (keyframes, segments).
+//
+// A host may give a project's media API a team store (team.ts, `projectMediaStore`): media bytes and manifests are
+// then kept once per team, and a project reads only the hashes it was granted.
 
 import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins";
 import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "@carton/server";
 import { createBlobUrlSigner, serveSignedBlob, readBody, BodyTooLarge, type BlobUrlSigner } from "@carton/blob-memory/signed";
 import { BlobError, MAX_PARTS } from "@carton/blob-memory/rules";
+import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
+import { isTeamMediaStore } from "./team.ts";
 
 // Any AuthProvider serves sessions; the invite routes need the demo's invite flow (HmacAuth). With another provider
 // (Cardboard's accounts) those routes answer 501 and sessions come from that provider.
@@ -55,6 +62,8 @@ export interface HttpDeps {
 const PROJECT = /^\/(?:api\/(?:admin\/)?projects|blob)\/([A-Za-z0-9._~-]{1,128})(\/.*)?$/;
 const MAX_JSON = 64 * 1024;
 const ROLES = new Set(["owner", "editor", "commenter", "viewer"]);
+
+export { teamMediaStore, projectMediaStore, isTeamMediaStore, type TeamMediaStore, type TeamMediaOptions } from "./team.ts";
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const err = (status: number, message: string) => json({ error: message }, status);
@@ -206,6 +215,41 @@ async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: 
   return err(405, "PUT or GET");
 }
 
+// §11's repair path, host side: a reader whose leaf can never verify reports it; the host checks that leaf itself
+// against the manifest (mf/<hash>, which the hash itself verifies) and, only if the stored bytes really are wrong,
+// removes the object, so the owner's next share finds it missing and uploads it again. A report can't remove a good
+// object: the host reads the leaf and the manifest, and trusts neither the reporter nor its claim. If the object was
+// replaced while it was being checked (its etag changed), it is left alone: the new one may be good. BlobStore has no
+// conditional delete, so a replacement landing between the last head and the delete is removed too; the cost is one
+// more upload on the owner's next share, never wrong bytes served.
+const hasher = webCryptoHasher();
+async function checkDamaged(store: BlobStore, key: string, leaf: number): Promise<Response> {
+  const m = /^m\/([0-9a-f]{64})$/.exec(key);
+  if (!m) return err(400, "only media objects (m/<hash>) are checked");
+  const manifestBytes = await store.get(manifestKey(m[1]!));
+  if (!manifestBytes) return err(409, "no manifest to check it against");
+  let manifest;
+  try {
+    manifest = await decodeManifest(manifestBytes, hasher, m[1]!);
+  } catch {
+    return err(409, "the manifest doesn't verify");
+  }
+  const before = await store.head(key);
+  if (!before) return json({ damaged: true, removed: false, missing: true });
+  let damaged: boolean;
+  if (before.size !== manifest.size) damaged = true;
+  else {
+    if (!Number.isInteger(leaf) || leaf < 0 || leaf >= manifest.leafCount) return err(400, `leaf must be 0..${manifest.leafCount - 1}`);
+    const bytes = await store.get(key, leafSpan(manifest.size, leaf));
+    damaged = !bytes || !(await verifyLeaf(manifest, leaf, bytes, hasher));
+  }
+  if (!damaged) return json({ damaged: false });
+  const now = await store.head(key);
+  if (!now || now.etag !== before.etag) return json({ damaged: true, removed: false, replaced: true });
+  await store.delete(key);
+  return json({ damaged: true, removed: true });
+}
+
 async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext, store: BlobStore, deps: HttpDeps, projectId: string): Promise<Response> {
   const key = url.searchParams.get("key") ?? "";
   if (req.method === "POST" && rest === "/blobs/sign") {
@@ -215,7 +259,13 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
     const signer = blobSigner(deps, url.origin, projectId);
     return json({ url: await signer.sign(method, String(b.key ?? ""), Math.min(Number(b.expiresIn ?? 300), 3600)) });
   }
+  if (req.method === "POST" && rest === "/blobs/damaged") {
+    const b = await body<{ key?: string; leaf?: number }>(req);
+    return checkDamaged(store, String(b.key ?? ""), Number(b.leaf));
+  }
   if (req.method === "GET" && rest === "/blobs/head") {
+    // an editor could reference this hash in the document anyway; claiming it here lets an upload find a teammate's copy
+    if (canPush(ctx) && isTeamMediaStore(store)) await store.claim(key);
     const info = await store.head(key);
     return info ? json(info) : err(404, "no such blob");
   }

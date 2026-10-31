@@ -17,6 +17,7 @@ import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins"
 import type { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, WS_PROTOCOL } from "@carton/server";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
+import { projectMediaStore } from "@carton/host-http";
 import type { CfWebSocket, DurableObjectState, WebSocketPairCtor, WebSocketRequestResponsePairCtor } from "./cf.ts";
 import type { Env } from "./env.ts";
 import { doSqlStorage } from "./storage.ts";
@@ -66,7 +67,20 @@ function projectBlobs(env: Env, projectId: string, scope: "seq" | "media"): Blob
   return undefined;
 }
 export const sequencerBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "seq");
-export const mediaBlobs = (env: Env, projectId: string) => projectBlobs(env, projectId, "media");
+// With R2 and TEAMS, a project's media dedups within its team; the DO-blob fallback is per project, so it never does.
+let teams: { src: string; map: Record<string, unknown> } | null = null;
+function teamOf(env: Env, projectId: string): string | undefined {
+  if (!env.TEAMS) return undefined;
+  if (teams?.src !== env.TEAMS) {
+    const map: unknown = JSON.parse(env.TEAMS);
+    if (!map || typeof map !== "object" || Array.isArray(map)) throw new Error("TEAMS must be a JSON object from project id to team id");
+    teams = { src: env.TEAMS, map: map as Record<string, unknown> };
+  }
+  const team = Object.hasOwn(teams.map, projectId) ? teams.map[projectId] : undefined;
+  return typeof team === "string" ? team : undefined;
+}
+export const mediaBlobs = (env: Env, projectId: string): BlobStore | undefined =>
+  env.BLOBS ? projectMediaStore(r2BlobStore(env.BLOBS), projectId, teamOf(env, projectId)) : projectBlobs(env, projectId, "media");
 
 export class ProjectRoom {
   readonly #ctx: DurableObjectState;
