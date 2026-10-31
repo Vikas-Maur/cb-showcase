@@ -34,7 +34,7 @@ import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "
 import { createBlobUrlSigner, serveSignedBlob, readBody, BodyTooLarge, type BlobUrlSigner } from "@carton/blob-memory/signed";
 import { BlobError, MAX_PARTS } from "@carton/blob-memory/rules";
 import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
-import { isTeamMediaStore } from "./team.ts";
+import { isTeamMediaStore, mediaLockScope } from "./team.ts";
 
 // Any AuthProvider serves sessions; the invite routes need the demo's invite flow (HmacAuth). With another provider
 // (Cardboard's accounts) those routes answer 501 and sessions come from that provider.
@@ -63,7 +63,7 @@ const PROJECT = /^\/(?:api\/(?:admin\/)?projects|blob)\/([A-Za-z0-9._~-]{1,128})
 const MAX_JSON = 64 * 1024;
 const ROLES = new Set(["owner", "editor", "commenter", "viewer"]);
 
-export { teamMediaStore, projectMediaStore, isTeamMediaStore, type TeamMediaStore, type TeamMediaOptions } from "./team.ts";
+export { teamMediaStore, projectMediaStore, isTeamMediaStore, mediaLockScope, type TeamMediaStore, type TeamMediaOptions } from "./team.ts";
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const err = (status: number, message: string) => json({ error: message }, status);
@@ -125,7 +125,7 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     if (url.pathname.startsWith("/blob/")) {
       const store = deps.blobsFor(projectId);
       if (!store) return err(404, "this host has no blob store");
-      return await serveSignedBlob(req, store, blobSigner(deps, url.origin, projectId), { ...(deps.maxBodyBytes ? { maxPutBytes: deps.maxBodyBytes } : {}), aroundPut: withMediaLock });
+      return await serveSignedBlob(req, store, blobSigner(deps, url.origin, projectId), { ...(deps.maxBodyBytes ? { maxPutBytes: deps.maxBodyBytes } : {}), aroundPut: (k, write) => withMediaLock(mediaLockScope(store, projectId), k, write) });
     }
     if (url.pathname.startsWith("/api/admin/")) {
       if (req.method !== "POST" || rest !== "/invites") return err(404, "no such route");
@@ -225,32 +225,33 @@ async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: 
 // replaced while it was being checked (its etag changed), it is left alone: the new one may be good. Writes of an
 // `m/<hash>` key through this API (a signed PUT's store write, once its body has arrived; a multipart complete) wait
 // for a check of that key in progress, and the check waits for them, so a replacement can't land between the last head
-// and the delete. That lock is per
-// process: on a host of many processes (Workers), a write served by another one can still land there, and since
+// and the delete. The lock is per physical scope and key (`mediaLockScope`: a team's media, shared by its projects, or
+// one project's), so other projects' writes of the same hash don't wait. It is per process: on a host of many processes (Workers), a write served by another one can still land there, and since
 // BlobStore has no conditional delete it is removed too. The cost is that one write undone (the uploader's next share
 // uploads it again), never wrong bytes served.
 const hasher = webCryptoHasher();
 const MEDIA_KEY = /^m\/[0-9a-f]{64}$/;
 const mediaLocks = new Map<string, Promise<void>>();
-async function withMediaLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
+async function withMediaLock<T>(scope: string, key: string, fn: () => Promise<T>): Promise<T> {
   if (!MEDIA_KEY.test(key)) return fn();
-  const before = mediaLocks.get(key) ?? Promise.resolve();
+  const id = `${scope}\n${key}`;
+  const before = mediaLocks.get(id) ?? Promise.resolve();
   let release!: () => void;
   const mine = before.then(() => new Promise<void>((r) => (release = r)));
-  mediaLocks.set(key, mine);
+  mediaLocks.set(id, mine);
   await before;
   try {
     return await fn();
   } finally {
     release();
-    if (mediaLocks.get(key) === mine) mediaLocks.delete(key);
+    if (mediaLocks.get(id) === mine) mediaLocks.delete(id);
   }
 }
 
-async function checkDamaged(store: BlobStore, key: string, leaf: number): Promise<Response> {
+async function checkDamaged(store: BlobStore, scope: string, key: string, leaf: number): Promise<Response> {
   const m = /^m\/([0-9a-f]{64})$/.exec(key);
   if (!m) return err(400, "only media objects (m/<hash>) are checked");
-  return withMediaLock(key, () => checkDamagedLocked(store, key, m[1]!, leaf));
+  return withMediaLock(scope, key, () => checkDamagedLocked(store, key, m[1]!, leaf));
 }
 async function checkDamagedLocked(store: BlobStore, key: string, hash: string, leaf: number): Promise<Response> {
   const manifestBytes = await store.get(manifestKey(hash));
@@ -288,7 +289,7 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
   }
   if (req.method === "POST" && rest === "/blobs/damaged") {
     const b = await body<{ key?: string; leaf?: number }>(req);
-    return checkDamaged(store, String(b.key ?? ""), Number(b.leaf));
+    return checkDamaged(store, mediaLockScope(store, projectId), String(b.key ?? ""), Number(b.leaf));
   }
   if (req.method === "GET" && rest === "/blobs/head") {
     // an editor could reference this hash in the document anyway; claiming it here lets an upload find a teammate's copy
@@ -324,7 +325,7 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
     const parts = b.parts;
     if (!Array.isArray(parts) || parts.length === 0 || parts.length > MAX_PARTS || parts.some((p) => !p || typeof p.etag !== "string" || p.etag.length > 256 || !Number.isInteger(p.partNumber)))
       return err(400, `parts must be 1..${MAX_PARTS} {partNumber, etag} entries`);
-    return json(await withMediaLock(key, () => handle.complete(parts as { partNumber: number; etag: string }[])));
+    return json(await withMediaLock(mediaLockScope(store, projectId), key, () => handle.complete(parts as { partNumber: number; etag: string }[])));
   }
   if (req.method === "DELETE" && !sub) {
     await handle.abort();

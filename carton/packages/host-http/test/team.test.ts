@@ -108,3 +108,37 @@ test("grants: writing grants, resuming needs one, delete reaches the team copy o
   assert.equal(await root.head(`teams/t1/media/${key}`), null);
   assert.throws(() => projectMediaStore(root, "a", "bad/team"), /team/);
 });
+
+test("a write that found no object is create-only: a teammate's copy written meanwhile (another process) stands", async () => {
+  const inner = createMemoryBlobStore();
+  const { bytes, m, key, mf } = await setup();
+  let paused = false, arrived!: () => void, release!: () => void;
+  const atPut = new Promise<void>((r) => (arrived = r));
+  const gate = new Promise<void>((r) => (release = r));
+  // the first write of the team's object pauses after its head found nothing, as a slow process would
+  const root = new Proxy(inner, {
+    get(t, prop) {
+      if (prop === "put")
+        return async (k: string, d: Uint8Array, o?: { ifAbsent?: boolean }) => {
+          if (k === `teams/t1/media/${key}` && !paused) {
+            paused = true;
+            arrived();
+            await gate;
+          }
+          return t.put(k, d, o);
+        };
+      const v = Reflect.get(t, prop);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as typeof inner;
+  const a = projectMediaStore(root, "a", "t1"), b = projectMediaStore(root, "b", "t1");
+  await a.put(mf, m.bytes);
+  const garbage = bytes.map((x) => x ^ 0x5a);
+  const slow = a.put(key, garbage);
+  await atPut;
+  await b.put(key, bytes);
+  release();
+  await slow;
+  // compared whole, not with deepEqual: its diff of two 2 MiB arrays takes minutes
+  assert.equal(Buffer.compare((await inner.get(`teams/t1/media/${key}`))!, bytes), 0, "the sound copy was overwritten");
+});
