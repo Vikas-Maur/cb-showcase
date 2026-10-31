@@ -573,3 +573,47 @@ test("a resumed upload that went away with no object to show for it starts a fre
   assert.equal(r.resumedParts, 0, "a fresh upload");
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
 });
+
+test("a host check still on its way when an upload runs never leaves the object gone with its report answered (host review)", async () => {
+  let reached!: () => void;
+  const atHost = new Promise<void>((r) => (reached = r));
+  let release!: () => void;
+  const hostMayGo = new Promise<void>((r) => (release = r));
+  class SlowHost extends TeamHostStore {
+    override async reportDamaged(key: string, leaf: number): Promise<unknown> {
+      reached();
+      await hostMayGo; // the request hasn't reached the host's lock yet: other requests finish first
+      return super.reportDamaged(key, leaf);
+    }
+  }
+  const store = new SlowHost();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 63);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good), retries: 0 };
+  await uploadMedia(o);
+  store.objects.get(mediaKey(manifest.hash))![1] ^= 255;
+  const reading = assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).readVerified(manifest.hash, 0, 9), LeafMismatchError);
+  await atHost;
+  await uploadMedia(o); // meanwhile: no report up yet, so nothing is answered
+  release();
+  await reading;
+  const gone = (await store.head(mediaKey(manifest.hash))) === null;
+  assert.ok(gone, "the host removed the damaged object");
+  assert.equal(await isDamaged(store, manifest.hash), true, "gone, so its report must be open: the next share puts it back");
+  assert.ok((await uploadMedia(o)).bytesSent > 0);
+  assert.ok(equalBytes(await new MediaReader({ store, hasher: nodeHasher }).readVerified(manifest.hash, 0, good.length), good));
+  assert.equal(await isDamaged(store, manifest.hash), false);
+});
+
+test("an upload with no object to dedup on doesn't fail because the damage report can't be read (host review)", async () => {
+  const store = new CountingMemoryStore();
+  const good = xorshiftBytes(1000, 64);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const get = store.get.bind(store);
+  store.get = async (key, range) => {
+    if (key === damagedKey(manifest.hash)) throw new Error("damage report GET unavailable");
+    return get(key, range);
+  };
+  await uploadMedia({ store, hasher: nodeHasher, manifest, source: bytesSource(good), retries: 1, retryDelayMs: 0 });
+  assert.ok(equalBytes((await get(mediaKey(manifest.hash)))!, good));
+});

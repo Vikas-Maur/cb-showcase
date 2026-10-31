@@ -263,9 +263,11 @@ export class MediaReader implements RangeSource {
     }
     this.#o.onEvent?.({ type: "repair-failed", hash, leaf: i });
     if (this.#o.reportDamage !== false) {
-      // Our record (bad/<hash>), and the host's own check where the store has one (it removes a damaged object).
-      await reportDamage(this.#o.store, hash, { leaf: i });
+      // The host's own check first, where the store has one (it removes a damaged object), then our record
+      // (bad/<hash>). In that order an upload can't answer the report, its no-op PUT kept by a team host, before the
+      // host removes the object it was about: once the report is up, the removal is done.
       await reportToHost(this.#o.store, hash, i);
+      await reportDamage(this.#o.store, hash, { leaf: i });
     }
     throw new LeafMismatchError(hash, i);
   }
