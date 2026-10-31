@@ -47,6 +47,7 @@ export { cardboardSchema, hard, soft, diagnose, itemOf, ITEMS, TRACKS, MEDIA, TI
 export { fromHost, toHost, projectGuiSave, projectDoc, sliceOf, materializeProject, SEQ_FIELDS, ROOT_FIELDS } from "./host.ts";
 export type { CardboardProject, ItemProjection } from "./host.ts";
 export { identityProjection, standInProjection } from "./projection.ts";
+export { inferRipple } from "./ripple.ts";
 export { parseActor, subagentActorId, cardboardIdentity } from "./identity.ts";
 export * from "./header.ts";
 export * from "./codec.ts";
