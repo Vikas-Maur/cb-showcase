@@ -20,7 +20,7 @@
 import { equalBytes } from "./bytes.ts";
 import type { LeafCache } from "./cache.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
-import { manifestKey, mediaKey } from "./keys.ts";
+import { damagedKey, manifestKey, mediaKey } from "./keys.ts";
 import { decodeManifest, LEAF_SIZE, leafDigest, leafSpan, type Manifest } from "./manifest.ts";
 import { LeafMismatchError, type MediaStat, type RangeSource } from "./range-source.ts";
 
@@ -61,6 +61,12 @@ export interface MediaReaderOptions {
   retryDelayMs?: number;
   contentType?: (hash: string) => string | undefined;
   onEvent?: (e: ReaderEvent) => void;
+  /**
+   * When a leaf still fails after its repair attempts, the store's copy is damaged (disk rot, a bad copy): write
+   * bad/<hash> so the next upload of this media replaces the object instead of deduping on it (e2e S5-5). Default on;
+   * a reader without write access just fails to report.
+   */
+  reportDamage?: boolean;
 }
 
 interface Run {
@@ -248,6 +254,10 @@ export class MediaReader implements RangeSource {
       this.#o.onEvent?.({ type: "mismatch", hash, leaf: i, handedOut: false });
     }
     this.#o.onEvent?.({ type: "repair-failed", hash, leaf: i });
+    if (this.#o.reportDamage !== false) {
+      const note = new TextEncoder().encode(JSON.stringify({ leaf: i, at: Date.now() }));
+      await this.#o.store.put(damagedKey(hash), note, { contentType: "application/json" }).catch(() => {});
+    }
     throw new LeafMismatchError(hash, i);
   }
 

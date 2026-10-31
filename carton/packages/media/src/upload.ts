@@ -13,7 +13,7 @@
 
 import type { BlobStore, Hasher, MultipartUpload } from "./contracts.ts";
 import type { ByteSource } from "./hash.ts";
-import { manifestKey, mediaKey } from "./keys.ts";
+import { damagedKey, manifestKey, mediaKey } from "./keys.ts";
 import { equalBytes } from "./bytes.ts";
 import { LEAF_SIZE, leafDigest, type Manifest } from "./manifest.ts";
 
@@ -221,7 +221,9 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   const result: UploadResult = { hash: m.hash, size: m.size, deduped: false, partSize, resumedParts: 0, partsSent: 0, bytesSent: 0 };
 
   const head = await withRetries(o, () => store.head(key));
-  if (head && head.size === m.size) {
+  // A reader found leaves of the stored object that never verify (e2e S5-5): replace it rather than dedup on it.
+  const damaged = head !== null && (await withRetries(o, () => store.head(damagedKey(m.hash)))) !== null;
+  if (head && head.size === m.size && !damaged) {
     await ensureManifest(o);
     if (state) {
       // Someone else completed the same object meanwhile: our open upload is no longer needed.
@@ -232,8 +234,13 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     o.onProgress?.({ done: m.size, total: m.size, sent: 0 });
     return result;
   }
-  // A different size at a content-addressed key means a broken object; the upload below replaces it.
+  // A different size at a content-addressed key, or a reported damage, means a broken object: the upload below
+  // replaces it, and the damage note goes once it has.
   await ensureManifest(o);
+  const repaired = async <T>(r: T): Promise<T> => {
+    if (damaged) await store.delete(damagedKey(m.hash)).catch(() => {});
+    return r;
+  };
 
   if (m.size <= partSize && !resumable) {
     const bytes = await readVerified(o, 0, m.size);
@@ -241,7 +248,7 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     result.partsSent = 1;
     result.bytesSent = m.size;
     o.onProgress?.({ done: m.size, total: m.size, sent: m.size });
-    return result;
+    return repaired(result);
   }
 
   const partCount = Math.ceil(m.size / partSize);
@@ -329,7 +336,9 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   const bad = settled.find((r) => r.status === "rejected");
   const finished = async () => {
     const h = await store.head(key).catch(() => null);
-    return h !== null && h.size === m.size;
+    if (h === null || h.size !== m.size) return false;
+    // Replacing a damaged object: the old one has the right size too. Only a new ETag says someone replaced it.
+    return !damaged || (h.etag !== undefined && head?.etag !== undefined && h.etag !== head.etag);
   };
   try {
     if (bad) throw (bad as PromiseRejectedResult).reason;
@@ -372,7 +381,7 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     throw e;
   }
   await states.delete(key);
-  return result;
+  return repaired(result);
 }
 
 /** Errors that mean the store has no such multipart upload (S3 and R2 say NoSuchUpload). */

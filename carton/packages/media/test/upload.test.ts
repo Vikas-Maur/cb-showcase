@@ -3,10 +3,12 @@ import { test } from "node:test";
 import { equalBytes } from "../src/bytes.ts";
 import type { BlobStore } from "../src/contracts.ts";
 import { bytesSource, hashSource } from "../src/hash.ts";
-import { manifestKey, mediaKey } from "../src/keys.ts";
+import { damagedKey, manifestKey, mediaKey } from "../src/keys.ts";
 import { decodeManifest, LEAF_SIZE } from "../src/manifest.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
 import { CountingMemoryStore, FaultyStore, LinkDroppedError } from "../src/testing.ts";
+import { MediaReader } from "../src/read.ts";
+import { LeafMismatchError } from "../src/range-source.ts";
 import { cancelUpload, choosePartSize, MAX_PARTS, MemoryUploadStateStore, SourceChangedError, uploadMedia } from "../src/upload.ts";
 import { xorshiftBytes } from "./helpers.ts";
 
@@ -276,3 +278,24 @@ test("an upload the store dropped mid-way costs at most the parts in flight: NoS
   assert.ok(sent <= 4 * 4 * MiB + 64 * 1024, `${sent} bytes went up for an upload that died after 2 parts`);
   assert.equal(await state.load(mediaKey(manifest.hash)), null, "the dead upload is forgotten");
 });
+
+for (const size of [3 * MiB + 9, 10 * MiB + 9]) {
+  test(`a damaged stored object is reported by a reader and replaced by the next upload (S5-5, ${size > 4 * MiB ? "multipart" : "one put"})`, async () => {
+    const { manifest, source, data } = await setup(size, 17);
+    const mem = new CountingMemoryStore();
+    const o = { store: mem, hasher: nodeHasher, source, manifest, partSize: 4 * MiB };
+    await uploadMedia(o);
+    // Disk rot on the host: one byte of leaf 2 changes for good.
+    mem.objects.get(mediaKey(manifest.hash))![2 * MiB + 5] ^= 0xff;
+    const reader = new MediaReader({ store: mem, hasher: nodeHasher, repairAttempts: 2 });
+    await assert.rejects(reader.readVerified(manifest.hash, 0, size), LeafMismatchError);
+    assert.ok(mem.objects.has(damagedKey(manifest.hash)), "the reader reported it");
+    const again = await uploadMedia(o);
+    assert.equal(again.deduped, false, "not deduped on a damaged object");
+    assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data), "replaced byte for byte");
+    assert.equal(mem.objects.has(damagedKey(manifest.hash)), false, "the report is cleared once replaced");
+    const fresh = new MediaReader({ store: mem, hasher: nodeHasher });
+    assert.ok(equalBytes(await fresh.readVerified(manifest.hash, 0, size), data), "a teammate reads it again");
+    assert.equal((await uploadMedia(o)).deduped, true, "and the next upload dedups as usual");
+  });
+}
