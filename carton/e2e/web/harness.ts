@@ -84,7 +84,7 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
   const wrangler = join(carton, "node_modules", ".bin", "wrangler");
   const proc = spawn(
     wrangler,
-    ["dev", "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--log-level", "warn", "--show-interactive-dev-session=false"],
+    ["dev", "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--log-level", process.env.CARTON_E2E_HOSTLOG ? "debug" : "warn", "--show-interactive-dev-session=false"],
     { cwd: join(carton, "packages", "server-cloudflare"), stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, WRANGLER_SEND_METRICS: "false", CI: "1", XDG_CONFIG_HOME: join(dir, "xdg") } },
   );
   let log = "";
@@ -102,6 +102,8 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
     url,
     adminToken,
     close: async () => {
+      // the host's own log, for a failed run (CARTON_E2E_HOSTLOG=<file>)
+      if (process.env.CARTON_E2E_HOSTLOG) (await import("node:fs")).writeFileSync(process.env.CARTON_E2E_HOSTLOG, log);
       proc.kill("SIGTERM");
       await new Promise((r) => setTimeout(r, 500));
       if (proc.exitCode === null) proc.kill("SIGKILL");

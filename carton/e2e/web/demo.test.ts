@@ -127,6 +127,7 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
     const host: TestHost = await startHost(kind, "demo");
     let bot: Bot | null = null;
     const contexts: { close(): Promise<void> }[] = [];
+    const pages: [string, Page][] = [];
     try {
       const seed: SeedResult = await seedDemo({ baseUrl: host.url, adminToken: host.adminToken, media: fakeMedia ? { given: fakeMedia } : { generate: { clipsDir: join(process.env.HOME ?? ".", "gfv-scratch", "carton", "web-demo", "clips") } } });
       const vdir = (who: string) => (video ? join(video, `${kind}-${who}`) : undefined);
@@ -136,11 +137,13 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
 
       // 1. Alice shares, Bob joins
       const alice = await joinAs(aliceCtx, seed.alice, "Alice");
+      pages.push(["alice", alice]);
       await alice.getByTestId("invite").click();
       const link = await alice.getByTestId("invite-link").inputValue();
       assert.match(link, /#join=/);
       await alice.keyboard.press("Escape");
       const bob = await joinAs(bobCtx, link, "Bob");
+      pages.push(["bob", bob]);
       for (const p of [alice, bob]) await p.locator(".carton-sync", { hasText: "Up to date" }).waitFor({ timeout: 15_000 });
       await alice.locator('.carton-presence .carton-peer[data-kind="human"]').first().waitFor({ timeout: 10_000 });
       await bob.locator('.carton-presence .carton-peer[data-kind="human"]').first().waitFor({ timeout: 10_000 });
@@ -245,6 +248,11 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await alice.locator(".carton-published[data-stale]").waitFor({ timeout: 10_000 });
       await shot(watch, `${kind}-8-watch-page-newer`);
       assert.equal(await captionOf(alice, "cap-1"), "An edit after publishing");
+    } catch (e) {
+      // what each person saw when it failed
+      if (shots) for (const [who, page] of pages) await page.screenshot({ path: join(shots, `${kind}-FAILED-${who}.png`) }).catch(() => {});
+      for (const [who, page] of pages) console.error(`[${who}] sync: ${await syncWords(page).catch(() => "?")}; notes: ${await page.locator(".carton-undo-note, [role=alert]").allTextContents().catch(() => [])}`);
+      throw e;
     } finally {
       await bot?.stop();
       for (const c of contexts) await c.close().catch(() => {});

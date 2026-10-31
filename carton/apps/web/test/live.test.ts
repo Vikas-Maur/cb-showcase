@@ -42,17 +42,22 @@ async function person(link: string, account: string): Promise<{ carton: Carton; 
   return { carton, session };
 }
 
+// CARTON_LIVE_HOST=cloudflare runs the same story against the Worker under `wrangler dev` (local only)
 before(async () => {
   rmSync(scratch, { recursive: true, force: true });
   mkdirSync(scratch, { recursive: true });
-  host = await serveDemo({ dataDir: join(scratch, "host"), staticDir: scratch });
+  if (process.env.CARTON_LIVE_HOST === "cloudflare") {
+    const { startHost } = await import("../../../e2e/web/harness.ts");
+    const h = await startHost("cloudflare", "live");
+    host = { url: h.url, adminToken: h.adminToken, close: h.close } as DemoNodeHost;
+  } else host = await serveDemo({ dataDir: join(scratch, "host"), staticDir: scratch });
   seed = await seedDemo({ baseUrl: host.url, adminToken: host.adminToken, media: { given: fakeMedia } });
 });
 after(async () => {
   await host?.close();
 });
 
-test("the §17 story over server-node: join, live edits with an agent, undo its turn, offline rebase, publish and watch", async () => {
+test("the §17 story over a real host: join, live edits with an agent, undo its turn, offline rebase, publish and watch", async () => {
   const alice = await person(seed.alice, "alice");
   const bob = await person(seed.bob, "bob");
   assert.equal(alice.session.role, "owner");
