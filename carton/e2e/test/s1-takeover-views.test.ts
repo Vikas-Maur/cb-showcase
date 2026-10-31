@@ -1,4 +1,4 @@
-// B3 (routed to local-cli): the app is open and holds the lease, but its engine thread misses one 100 ms ping (busy
+// B3 (fixed by local-cli f9a656c; was routed to local-cli): the app is open and holds the lease, but its engine thread misses one 100 ms ping (busy
 // or preempted; seen at load 11-12 on the shared box in 2 of 4 runs of s1). The `cb` call then takes the lease over
 // at once (R4-04) with a detached helper started from `@carton/local`'s default factory, which runs no materializer,
 // so an agent's `cb source print --view` (the documented flow, §6.4) answers "views need the app open (or a helper that
@@ -14,7 +14,7 @@ import { support, until } from "../support/env.ts";
 import { helperTookLeaseSince } from "../support/head.ts";
 import { cbWrite, setOp } from "../support/cb.ts";
 
-test("B3: an agent's print --view while the app's engine thread is briefly busy is served (not 'views need the app open')", { timeout: 120_000, todo: "B3, local-cli: a takeover helper has no materializer" }, async (t) => {
+test("B3: an agent's print --view while the app's engine thread is briefly busy is served (not 'views need the app open')", { timeout: 120_000 }, async (t) => {
   const procs = new Procs();
   t.after(() => procs.close());
   const m = makeMachine("s1-takeover");
@@ -30,12 +30,12 @@ test("B3: an agent's print --view while the app's engine thread is briefly busy 
   t.diagnostic(JSON.stringify({ helpers: procs.helperPids().length }));
 });
 
-// B11 (routed to local-cli + cardboard-adapter): a `cb` write that doesn't go through the app's lease holder (a helper
+// B11 (fixed by local-cli 38814d9; was routed to local-cli + cardboard-adapter): a `cb` write that doesn't go through the app's lease holder (a helper
 // that took the lease over after one missed ping, B3, or an in-process commit when no holder answered) lands in
 // carton.db, but the app's materializer never hears of it: project.json and the shared timeline.tsx keep showing the
 // old head (the editor too) until something else moves head through the app. Seen in CI (run 41201619463, s1: "timed out
 // waiting for the restore in project.json").
-test("B11: a cb write served while the app's engine thread is briefly busy still reaches the app's project.json", { timeout: 120_000, todo: "B11, local-cli + cardboard-adapter: a write committed outside the app's holder never reaches its materializer" }, async (t) => {
+test("B11: a cb write served while the app's engine thread is briefly busy still reaches the app's project.json", { timeout: 120_000 }, async (t) => {
   const procs = new Procs();
   t.after(() => procs.close());
   const m = makeMachine("s1-takeover-files");

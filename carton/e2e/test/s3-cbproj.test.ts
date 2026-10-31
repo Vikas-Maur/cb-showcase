@@ -459,11 +459,11 @@ test("S3 the same project id with no shared lineage: bringing it in folds nothin
   assert.equal((await head(appX)).cuts.length, 1, "no tracking cut was added");
 });
 
-// S3-3 (todo): "A project with the same id and no shared lineage gets a new id" (§13). History.importShallow answers
+// S3-3 (fixed by foundation-core; was todo): "A project with the same id and no shared lineage gets a new id" (§13). History.importShallow answers
 // `{status: "no-shared-lineage", newProjectId}`, and bringInTheirChanges passes `imp.newProjectId` on, but
 // Carton.importShallow (core/src/carton.ts:916) returns only `{status, cut?}`: the new id (and the import's `head`) is
 // dropped between core and the adapter, so the app has no id to open the copy under.
-test("S3-3 bringing in a same-id project with no shared lineage offers a new project id", { todo: "S3-3, foundation-core: Carton.importShallow drops newProjectId (and head) from History.importShallow's answer" }, async () => {
+test("S3-3 bringing in a same-id project with no shared lineage offers a new project id", async () => {
   const { Carton } = await import("@carton/core");
   const { openSqliteStore } = await import("@carton/store-sqlite");
   const { cardboardAdapter } = await import("@carton/cardboard");
@@ -483,12 +483,12 @@ test("S3-3 bringing in a same-id project with no shared lineage offers a new pro
   }
 });
 
-// S3-1 (todo): every replica is called "replica". `Carton.open({name})` is "a display name for this replica in lineage
+// S3-1 (fixed by local-cli; was todo): every replica is called "replica". `Carton.open({name})` is "a display name for this replica in lineage
 // and dialogs ("Bob")", but no product entry point can set it (`openLocal`'s LocalOptions, local's default factory,
 // the Windows facade's openLocal call), so every cut's owner and every `.cbproj`'s sender is "replica": a recipient's
 // two "Main cut"s can't be told apart ("Bob's main", §5.3), and the missing-base dialog reads "This copy builds on a
 // version from replica… Ask replica for their copy" (§13).
-test("S3-1 a .cbproj names its sender, and the recipient can tell the sender's cut from its own", { todo: "S3-1, local-cli (+windows): no entry point passes Carton.open({name}), so every sender/owner is \"replica\"" }, async () => {
+test("S3-1 a .cbproj names its sender, and the recipient can tell the sender's cut from its own", async () => {
   const { openLocal } = await import("@carton/local");
   const { cardboardAdapter } = await import("@carton/cardboard");
   const { readProjectForImport } = await import("@carton/cardboard/node");

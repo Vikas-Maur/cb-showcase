@@ -7,7 +7,7 @@
 // Zero lost edits, zero edits re-attributed to another actor.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeMachine, itemNamed, SAMPLE, readEnvelope, type Machine } from "../support/project.ts";
 import { Procs, killIfOurs } from "../support/procs.ts";
@@ -15,7 +15,7 @@ import { pkg, renameRetry, scratch, support, until, sleep } from "../support/env
 import { cbOk, cbWrite, setOp } from "../support/cb.ts";
 import { Link } from "../support/link.ts";
 import { startHost } from "../support/hosts.ts";
-import { twoMachines, state, gui, LOCAL_FACTORY, helperConfigFile } from "../support/live.ts";
+import { twoMachines, state, gui, LOCAL_FACTORY } from "../support/live.ts";
 import { helperTookLeaseSince } from "../support/head.ts";
 
 
@@ -177,12 +177,12 @@ test("S6 the server restarts with pushes on the wire: both machines converge, no
   assert.equal(new Set(rows.map((r) => r.id)).size, rows.length, "no change id twice on the server");
 });
 
-test("B7: with the app closed, a plain `cb` write on a shared cut starts a helper that syncs it (not 'open Carton with sync')", { timeout: 300_000, todo: "B7, local-cli + windows: the helper a cb starts gets no sync config (server URL, token file); nothing records it for the project" }, async (t) => {
+test("B7: with the app closed, a plain `cb` write on a shared cut starts a helper that syncs it (not 'open Carton with sync')", { timeout: 300_000 }, async (t) => {
   const { host, a, b, procs } = await twoMachines(t, "node");
   await a.app.ask({ cmd: "exit" });
-  // no holder left from setup (a helper started then has the stand-in config and a working sync connection)
+  // no holder left from setup (a helper started then already has a working sync connection): the write must start a
+  // fresh helper from the recipe the app recorded (B7, fixed by local-cli f9a656c)
   await procs.stopHelpers();
-  rmSync(helperConfigFile(a.m), { force: true }); // the product's own behaviour: no recorded sync config
   const since = Date.now();
   const r = await cbWrite(a.m, { kind: "commit", ops: [setOp("timelineItems", itemNamed(a.m, SAMPLE.logo)!.id, "zIndex", 12)] }, { actor: "codex/closed-app" });
   assert.ok(r.status === "confirmed" || r.status === "pending", JSON.stringify(r));

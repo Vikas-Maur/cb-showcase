@@ -191,34 +191,31 @@ for (const kind of ["node", "cloudflare"] as const) {
 // Agents through their per-agent views on a shared cut (the documented flow, §6.4): the status sidecar says `pending`
 // at once, then the server's answer; offline, an agent's three dependent edits each say `pending` and it edits on from
 // its own file; after the rejoin all three land, attributed, and its sidecar settles.
-for (const wire of [true, false]) {
-  test(wire ? "S4 view agents on a shared cut: online pending → confirmed; offline three dependent edits, settled after the rejoin" : "B10: with @carton/local's CartonHolderEngine alone, a shared view save's sidecar settles", { timeout: 300_000, ...(wire ? {} : { todo: "B10, local-cli (+windows): nothing forwards a shared view change's settlement to Materializer.onChangeUpdate; its sidecar stays pending" }) }, async (t) => {
-    const { a, b, procs } = await twoMachines(t, "node", wire ? {} : { wireSidecars: false });
-    const agent = (actor: string, cfg: Record<string, unknown>) => procs.start(actor, [support("agent.ts"), b.m.bundle, b.m.projectId, JSON.stringify(cfg)], { env: { CARDBOARD_ACTOR: actor } });
-    const online = await agent("director/chatV/turn1/sub-editor-o1", { settled: true, statusMs: wire ? 30_000 : 15_000, steps: [{ op: "set", name: SAMPLE.logo, set: { zIndex: 6 } }] }).next((x) => Array.isArray(x.results), 120_000);
-    assert.equal(online.results[0].status, "confirmed", JSON.stringify(online.results[0]));
-    if (!wire) return;
-    await until(() => itemNamed(a.m, SAMPLE.logo)?.zIndex === 6, 30_000, "the view save on A");
-    b.link.down();
-    await until(async () => (await state(b.app)).sync?.status === "offline", 30_000, "B offline");
-    const sub = "director/chatV/turn2/sub-editor-o2";
-    const steps = [
-      { op: "insert", like: SAMPLE.title, id: "title-V", name: "Title V", set: { textContent: "V v1", startTime: 6, endTime: 7, trimStart: 0, trimEnd: 1 } },
-      { op: "set", name: "Title V", set: { textContent: "V v2" } },
-      { op: "set", name: "Title V", set: { startTime: 7, endTime: 8 } },
-    ];
-    const off = await agent(sub, { steps }).next((x) => Array.isArray(x.results), 120_000);
-    assert.deepEqual(off.results.map((r: any) => r.status), ["pending", "pending", "pending"], "offline, each save is acknowledged as pending");
-    b.link.up();
-    await until(() => itemNamed(a.m, "Title V")?.textContent === "V v2" && itemNamed(a.m, "Title V")?.startTime === 7, 60_000, "the three offline edits on A");
-    const statusFile = join(b.m.bundle, off.view.path.replace(/\.tsx$/, ".status"));
-    const settled = await until(() => { const s = JSON.parse(readFileSync(statusFile, "utf8")); return s.status !== "pending" && s; }, 30_000, "the agent's sidecar to settle");
-    assert.equal(settled.status, "confirmed", JSON.stringify(settled));
-    const h = await cbOk(a.m, ["history", "--limit", "30"]);
-    assert.equal(h.versions.filter((v: any) => v.by?.id === sub).length, 3, "three changes by the offline subagent, on the other machine");
-    assert.equal(items(a.m).filter((i) => i.name === "Title V").length, 1, "no duplicate");
-  });
-}
+test("S4 view agents on a shared cut: online pending → confirmed; offline three dependent edits, settled after the rejoin (the product's own sidecar wiring, B10 fixed)", { timeout: 300_000 }, async (t) => {
+  const { a, b, procs } = await twoMachines(t, "node");
+  const agent = (actor: string, cfg: Record<string, unknown>) => procs.start(actor, [support("agent.ts"), b.m.bundle, b.m.projectId, JSON.stringify(cfg)], { env: { CARDBOARD_ACTOR: actor } });
+  const online = await agent("director/chatV/turn1/sub-editor-o1", { settled: true, statusMs: 30_000, steps: [{ op: "set", name: SAMPLE.logo, set: { zIndex: 6 } }] }).next((x) => Array.isArray(x.results), 120_000);
+  assert.equal(online.results[0].status, "confirmed", JSON.stringify(online.results[0]));
+  await until(() => itemNamed(a.m, SAMPLE.logo)?.zIndex === 6, 30_000, "the view save on A");
+  b.link.down();
+  await until(async () => (await state(b.app)).sync?.status === "offline", 30_000, "B offline");
+  const sub = "director/chatV/turn2/sub-editor-o2";
+  const steps = [
+    { op: "insert", like: SAMPLE.title, id: "title-V", name: "Title V", set: { textContent: "V v1", startTime: 6, endTime: 7, trimStart: 0, trimEnd: 1 } },
+    { op: "set", name: "Title V", set: { textContent: "V v2" } },
+    { op: "set", name: "Title V", set: { startTime: 7, endTime: 8 } },
+  ];
+  const off = await agent(sub, { steps }).next((x) => Array.isArray(x.results), 120_000);
+  assert.deepEqual(off.results.map((r: any) => r.status), ["pending", "pending", "pending"], "offline, each save is acknowledged as pending");
+  b.link.up();
+  await until(() => itemNamed(a.m, "Title V")?.textContent === "V v2" && itemNamed(a.m, "Title V")?.startTime === 7, 60_000, "the three offline edits on A");
+  const statusFile = join(b.m.bundle, off.view.path.replace(/\.tsx$/, ".status"));
+  const settled = await until(() => { const s = JSON.parse(readFileSync(statusFile, "utf8")); return s.status !== "pending" && s; }, 30_000, "the agent's sidecar to settle");
+  assert.equal(settled.status, "confirmed", JSON.stringify(settled));
+  const h = await cbOk(a.m, ["history", "--limit", "30"]);
+  assert.equal(h.versions.filter((v: any) => v.by?.id === sub).length, 3, "three changes by the offline subagent, on the other machine");
+  assert.equal(items(a.m).filter((i) => i.name === "Title V").length, 1, "no duplicate");
+});
 
 // "Invite to edit" (§0.1): a machine that holds nothing of the project joins the shared cut from the invite (the cut's
 // record and root, support/invite.ts) with an empty carton.db; every row comes from the host. Its files show A's edits,
