@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { COLLAB_PROXY_720P, MediaReader, ProxyStreamReader, serveMedia, streamRangeSource, toMediaRecord } from "@carton/media";
 import { shareMedia, hostProxyEncoder, defaultEncoderChain, FsLeafCache, FsUploadStateStore, startRangeServer, nodeHasher } from "@carton/media/node";
-import { hostBlobStore } from "./host-blobs.js";
+import { mediaStore } from "./host.js";
 import * as store from "./store.js";
 
 export const recordKey = (mediaId) => `carton/media/${encodeURIComponent(mediaId)}.json`;
@@ -39,7 +39,7 @@ export function storeFor(bundlePath, projectId) {
   const cfg = store.readConfig(bundlePath, projectId);
   if (!cfg) throw new Error("This project isn't shared from this computer");
   const session = store.sessionFor(bundlePath, projectId);
-  return hostBlobStore({ origin: cfg.host, projectId, token: () => session.token() });
+  return mediaStore({ host: cfg.host, projectId, token: () => session.token() });
 }
 
 const readEnvelope = (bundlePath) => JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8"));
