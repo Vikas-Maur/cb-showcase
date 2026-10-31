@@ -1245,11 +1245,11 @@
           ]
         },
         {
-          "label": "transport.ts: 7 runs per mode, alternating fetch / node, 5 uploads + downloads per run, no lock (dedicated runner)",
+          "label": "transport.ts: 15 runs per mode, alternating fetch / node, 5 uploads + downloads per run, no lock (dedicated runner)",
           "env": {
             "CARTON_BENCH_CLIP": "{tmp}/clips/big.mp4",
             "CARTON_BENCH_OUT": "{results}/transport-raw.log",
-            "CARTON_BENCH_RUNS": "7"
+            "CARTON_BENCH_RUNS": "15"
           },
           "run": [
             "{node}",
