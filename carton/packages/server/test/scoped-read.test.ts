@@ -110,3 +110,18 @@ test("a cut named by anything but a string is refused before any lookup, directl
   await seq.handle(editor, { type: "fork", branchId: "f1", from: 1.5, seq: 0, rec: { id: "f1", name: "f", forkOf: null, owner: "e", kind: "variant", sequencer: { kind: "server", since: 0 } } } as never);
   assert.deepEqual(editor.inbox, [refused]);
 });
+
+test("a Published cut of an unedited variant counts the variant's edits since its root (SF1-9)", async () => {
+  const d0 = doc([clip("c0", 0, 5)]);
+  const { seq } = await world(d0);
+  const editor = fakeConn("e/k");
+  for (let i = 0; i < 3; i++) await push(seq, editor, d0, [set("c0", "name", `n${i}`)], { base: { seq: i, pending: [] } });
+  const rec = (id: string, o: object) => ({ id, name: id, owner: "alice", kind: "variant", sequencer: { kind: "server", since: 0 }, ...o });
+  // the variant has no edits when it is published, so its version is its parent's node (BRANCH@3)
+  await seq.createBranch(rec("variant", { forkOf: `${BRANCH}@3` }) as never, { doc0: d0 as never, stateHash: "h0" });
+  await seq.createBranch(rec(PUB, { forkOf: `${BRANCH}@3`, source: "variant", kind: "published" }) as never, { doc0: d0 as never, stateHash: "h0" });
+  await push(seq, editor, d0, [set("c0", "name", "a variant edit")], { branch: "variant", base: { seq: 0, pending: [] } });
+  const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
+  await seq.handle(viewer, hello(PUB));
+  assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 1 }, "one variant edit since the publication");
+});

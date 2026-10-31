@@ -598,7 +598,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const i = rec.forkOf.lastIndexOf("@");
     const at = Number(rec.forkOf.slice(i + 1));
     if (i < 1 || !Number.isInteger(at)) return null;
-    return { branchId: typeof rec.source === "string" ? rec.source : rec.forkOf.slice(0, i), at };
+    const forkCut = rec.forkOf.slice(0, i);
+    const source = typeof rec.source === "string" ? rec.source : forkCut;
+    // core names a version by the cut it was made on, so a source with no edits of its own when published has its
+    // parent's version as the fork point: the publication is then the source at its root (SF1-9)
+    if (source !== forkCut) return { branchId: source, at: tables.branch(source)?.root ?? 0 };
+    return { branchId: source, at };
   }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
     // (a reader scoped to some cuts never gets here for another: process() refuses it first)
@@ -823,7 +828,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
    * branch's ancestry closure (its tracking branches with their carried states), for a joiner's log and credits.
    */
   async function onHistory(c: HostConnection, m: sync.HistoryMsg) {
-    const reply = (r: Pick<sync.HistoryReplyMsg, "rows" | "more" | "lineage" | "error">) => send(c, { type: "history", branchId: m.branchId, req: m.req, ...r });
+    const reply = (r: Pick<sync.HistoryReplyMsg, "rows" | "more" | "lineage" | "lineageNext" | "error">) => send(c, { type: "history", branchId: m.branchId, req: m.req, ...r });
     const b = typeof m.branchId === "string" ? tables.branch(m.branchId) : null;
     if (!b) return reply({ rows: [], error: "unknown branch" });
     if (c.auth.branches && !c.auth.branches.includes(m.branchId)) return reply({ rows: [], error: "forbidden" });
@@ -831,25 +836,54 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const upTo = Math.min(tables.head(m.branchId), Number.isInteger(m.upTo) ? m.upTo : 0);
     const rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
     const last = rows.length ? rows[rows.length - 1]!.seq : after;
+    // The lineage: whole, or with `lineageFrom` paged like catch-up (SF1-8): entries in closure order within the
+    // catch-up byte budget, at least one state (or one entry with none) per page, `lineageNext` where the next starts.
     const lineage: sync.ClosureEntry[] = [];
-    if (m.lineage)
-      for (const id of b.closure ?? []) {
+    let lineageNext: sync.LineageCursor | undefined;
+    if (m.lineage) {
+      const ids = b.closure ?? [];
+      const from = m.lineageFrom;
+      const paged = from !== undefined && from !== null;
+      const index = (x: unknown) => (Number.isSafeInteger(x) && (x as number) >= 0 ? (x as number) : 0);
+      let budget = paged ? catchupBytes : Infinity;
+      let taken = 0; // states in this page
+      let s = paged ? index(from.state) : 0;
+      page: for (let e = paged ? index(from.entry) : 0; e < ids.length; e++, s = 0) {
+        const id = ids[e]!;
         // a reader scoped to some cuts (a Published cut's watch link) reads no ancestor outside them: a private variant
         // partly folded into the cut carries states that were never published (web-demo review R3-1). A scoped writer
         // reads every cut (hello), and a join needs its cut's ancestry.
         if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(id)) continue;
         const t = tables.branch(id);
         if (!t?.tracking) continue;
-        const states: NonNullable<sync.ClosureEntry["states"]> = [];
-        for (const n of t.nodes ?? []) {
-          const k = tables.keyframeAt(id, n.seq);
-          if (!k) continue;
-          const { keyframe } = await loadKeyframe(id, k);
-          states.push({ seq: n.seq, hash: keyframe.stateHash, doc: keyframe.doc });
+        const nodes = t.nodes ?? [];
+        const entry: sync.ClosureEntry = { branchId: id, rec: t.rec, nodes: s === 0 ? nodes : [], states: [] };
+        if (s === 0) {
+          if (t.authors?.length) entry.authors = t.authors;
+          const head = sync.jsonBytesBound({ rec: t.rec, nodes, authors: entry.authors ?? null }, Infinity);
+          if (lineage.length && head > budget) {
+            lineageNext = { entry: e, state: 0 };
+            break;
+          }
+          budget -= head;
         }
-        lineage.push({ branchId: id, rec: t.rec, nodes: t.nodes ?? [], states, ...(t.authors?.length ? { authors: t.authors } : {}) });
+        for (let i = s; i < nodes.length; i++) {
+          const k = tables.keyframeAt(id, nodes[i]!.seq);
+          if (!k) continue;
+          const { keyframe, bytes } = await loadKeyframe(id, k);
+          if (taken > 0 && bytes > budget) {
+            lineageNext = { entry: e, state: i };
+            if (s === 0 || entry.states!.length) lineage.push(entry);
+            break page;
+          }
+          entry.states!.push({ seq: nodes[i]!.seq, hash: keyframe.stateHash, doc: keyframe.doc });
+          taken++;
+          budget -= bytes;
+        }
+        lineage.push(entry);
       }
-    reply({ rows, ...(last < upTo && rows.length ? { more: true } : {}), ...(m.lineage ? { lineage } : {}) });
+    }
+    reply({ rows, ...(last < upTo && rows.length ? { more: true } : {}), ...(m.lineage ? { lineage } : {}), ...(lineageNext ? { lineageNext } : {}) });
   }
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
