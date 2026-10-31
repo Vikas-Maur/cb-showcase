@@ -625,12 +625,19 @@
             "wallS",
             "at",
             "size"
-          ]
+          ],
+          "expect": {
+            "cells": 7,
+            "runsPerCell": 3
+          }
         },
         {
           "file": "hash-summary.json",
           "kind": "json",
-          "lastJson": true
+          "lastJson": true,
+          "requireTrue": [
+            "hashesAgree"
+          ]
         }
       ]
     },
@@ -672,7 +679,11 @@
             "gateWaitS",
             "wallS",
             "at"
-          ]
+          ],
+          "expect": {
+            "cells": 3,
+            "runsPerCell": 5
+          }
         },
         {
           "file": "resume-summary.json",
@@ -759,7 +770,14 @@
             "load",
             "requests"
           ],
-          "optionalKeys": []
+          "optionalKeys": [],
+          "expect": {
+            "cells": 18,
+            "runsPerCell": 3
+          },
+          "requireAll": {
+            "ok": true
+          }
         },
         {
           "file": "ffr-play.jsonl",
@@ -778,7 +796,14 @@
             "load",
             "requests"
           ],
-          "optionalKeys": []
+          "optionalKeys": [],
+          "expect": {
+            "cells": 18,
+            "runsPerCell": 3
+          },
+          "requireAll": {
+            "ok": true
+          }
         },
         {
           "file": "ffr-verified.jsonl",
@@ -797,7 +822,14 @@
             "load",
             "requests"
           ],
-          "optionalKeys": []
+          "optionalKeys": [],
+          "expect": {
+            "cells": 18,
+            "runsPerCell": 3
+          },
+          "requireAll": {
+            "ok": true
+          }
         }
       ]
     },

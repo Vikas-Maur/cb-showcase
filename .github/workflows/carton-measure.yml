@@ -48,6 +48,12 @@ jobs:
         shell: bash
         working-directory: carton
     steps:
+      # the job's clock, for measure.mjs's internal deadline (the job timeout counts from here)
+      - name: Start the clock
+        shell: bash
+        working-directory: .
+        run: echo "CARTON_JOB_START=$(date +%s)" >> "$GITHUB_ENV"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4

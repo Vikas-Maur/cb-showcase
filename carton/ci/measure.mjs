@@ -18,7 +18,10 @@ const config = JSON.parse(fs.readFileSync(path.join(import.meta.dirname, "measur
 const m = config.measurements.find((x) => x.id === id);
 if (!m) throw new Error(`no measurement "${id}" in measure.json`);
 const t0 = Date.now();
-const deadline = t0 + Math.max(1, Number(opt("--timeout-min") ?? m.timeout ?? 60) - 4) * 60_000;
+// The job's clock starts at its first step (CARTON_JOB_START, epoch seconds, set by the workflow), so checkout, install
+// and tool downloads count against the job timeout and the 4-minute reserve for writing and uploading the results.
+const jobStart = Number(process.env.CARTON_JOB_START) * 1000 || t0;
+const deadline = jobStart + Math.max(1, Number(opt("--timeout-min") ?? m.timeout ?? 60) - 4) * 60_000;
 
 const tmp = path.join(dirs.root, "carton-measure-tmp");
 fs.mkdirSync(tmp, { recursive: true });
@@ -142,7 +145,7 @@ function parseJsonLines(f) {
       if (v && typeof v === "object") rows.push(v);
       else bad++;
     } catch {
-      if (l.trim().startsWith("{")) bad++;
+      bad++;
     }
   }
   return { rows, bad };
@@ -209,6 +212,8 @@ function report(rep) {
       }
     }
     if (value === null) problems.push("no JSON value");
+    // `requireTrue`: paths in the value that must be true (e.g. hashesAgree)
+    for (const k of rep.requireTrue ?? []) if (value === null || at(value, k) !== true) problems.push(`${k} is not true`);
     if (e.rows !== undefined && (Array.isArray(value) ? value.length : value === null ? 0 : 1) !== e.rows) problems.push(`expected ${e.rows} JSON value(s)`);
     return { file: rep.file, kind: "json", value, problems };
   }
@@ -239,6 +244,11 @@ function report(rep) {
   // grouping keys are required on the rows the report uses (after `where`), not on a tool's other lines
   const used = rows.filter((r) => Object.entries(rep.where ?? {}).every(([k, v]) => at(r, k) === v));
   for (const k of rep.groupBy ?? []) if (used.some((r) => at(r, k) === undefined) && !(rep.optionalKeys ?? []).includes(k)) problems.push(`some rows lack the grouping key ${k}`);
+  // `requireAll`: fields every used row must have with this value (a tool that records a failed cell as ok: false)
+  for (const [k, v] of Object.entries(rep.requireAll ?? {})) {
+    const n = used.filter((r) => at(r, k) !== v).length;
+    if (n) problems.push(`${n} row(s) with ${k} other than ${JSON.stringify(v)}`);
+  }
   if (rep.noErrors) {
     const n = rows.filter((r) => Array.isArray(at(r, rep.noErrors)) && at(r, rep.noErrors).length).length;
     if (n) problems.push(`${n} row(s) with ${rep.noErrors}`);
@@ -256,13 +266,14 @@ const record = (status, reports = null) =>
   fs.writeFileSync(recordFile, JSON.stringify({ id, agent: m.agent, claim: m.claim, status, sha: process.env.GITHUB_SHA ?? null, run: process.env.GITHUB_RUN_ID ?? null, at: new Date().toISOString(), machine: info, steps, reports }, null, 1));
 record("running");
 
+let stopped = null;
 for (const [n, step] of m.steps.entries()) {
   const stdoutFile = step.stdoutTo ? fill(step.stdoutTo) : null;
   const stderrFile = path.join(dirs.results, `${id}-step${n + 1}.stderr.log`);
   const s = { label: step.label, command: step.run.join(" "), runs: [], ok: false, stderr: path.basename(stderrFile) };
   steps.push(s);
-  if (Date.now() >= deadline) {
-    s.skipped = "the internal deadline had passed";
+  if (Date.now() >= deadline || stopped) {
+    s.skipped = stopped ?? "the internal deadline had passed";
     record("running");
     continue;
   }
@@ -278,7 +289,11 @@ for (const [n, step] of m.steps.entries()) {
   console.log("::endgroup::");
   const failed = s.runs.filter((r) => r.code !== 0);
   const unexplained = failed.filter((r) => !r.explained).length;
-  s.ok = s.runs.length === (step.repeat ?? 1) && !s.runs.some((r) => r.deadline) && (step.failPattern ? unexplained === 0 : failed.length === 0);
+  // a run that left a process holding its output didn't finish cleanly: that process may still be running and skew
+  // whatever is measured next, so the measurement stops here
+  const unfinished = s.runs.some((r) => r.unfinishedOutput);
+  if (unfinished) stopped = "an earlier step left a process running";
+  s.ok = s.runs.length === (step.repeat ?? 1) && !unfinished && !s.runs.some((r) => r.deadline) && (step.failPattern ? unexplained === 0 : failed.length === 0);
   if (step.failPattern && stdoutFile) repeats[path.basename(stdoutFile)] = { runs: s.runs.length, failedRuns: failed.length, observed: failed.length - unexplained, unexplained, codes: s.runs.map((r) => r.code) };
   console.log(`${s.ok ? "DONE" : "FAIL"} ${step.label}: ${s.runs.length} run(s), ${failed.length} failed${step.failPattern ? ` (${failed.length - unexplained} with the expected diagnostic)` : ""}`);
   record("running");
