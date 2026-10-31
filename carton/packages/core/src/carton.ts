@@ -169,7 +169,8 @@ export interface Carton {
   /** Published cuts, each with the cut it came from and whether that cut has edits newer than what was published. */
   publications(): Promise<Publication[]>;
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
-  fork(name: string, opts?: { from?: StateRef | string; kind?: CutKind }): Promise<CutRecord>;
+  /** `id`: a stable cut id, so a retried call returns the cut it already made. */
+  fork(name: string, opts?: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string }): Promise<CutRecord>;
   switchTo(cut: string): Promise<void>;
   /** Fold `from` (a cut id or a ref) into `into` (default: current cut). */
   /** With `check: true`, nothing is committed and `preview` tells what the fold would bring in. */
@@ -186,11 +187,15 @@ export interface Carton {
   /** Name a version ("Sent to client, Monday"). */
   name(ref: StateRef | string, name: string): Promise<void>;
   /** Restore: the state at `ref`, saved as a new version on the current cut. */
-  restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string }): Promise<CommitResult>;
+  restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** Undo one change (revert by change). */
-  revert(changeId: ChangeId, opts?: { author?: Actor; cut?: string }): Promise<CommitResult>;
+  revert(changeId: ChangeId, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** ⌘Z for an actor group (default: the handle actor's group). Remote teammates are never in it. */
-  undo(group?: string, opts?: { cut?: string; author?: Actor }): Promise<CommitResult & { entry?: UndoEntry }>;
+  /**
+   * Like commit, undo (and fold, fold-some, restore, revert, fork) takes a stable `id`: a call retried with an id
+   * already confirmed returns that confirmation and never makes a second change.
+   */
+  undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId }): Promise<CommitResult & { entry?: UndoEntry }>;
   undoStack(group?: string, opts?: { cut?: string }): Promise<UndoEntry[]>;
   /** Read-only preview of a state. */
   preview(ref: StateRef | string): Promise<Preview>;
@@ -631,17 +636,22 @@ class CartonImpl implements Carton {
     if (!h8 || this.#h.hashOf(node)!.startsWith(h8)) return { node, doc: null };
     return { node, doc: this.#h.resolve(ref).doc };
   }
-  async fork(name: string, opts: { from?: StateRef | string; kind?: CutKind; author?: Actor } = {}): Promise<CutRecord> {
+  async fork(name: string, opts: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string } = {}): Promise<CutRecord> {
     let rec!: CutRecord;
+    let made = false;
     await this.#mutate(
       undefined,
       () => {
+        made = false;
+        const known = opts.id ? this.#h.cut(opts.id) : undefined;
+        if (known) return void (rec = known); // a retried fork: the cut it already made
         const from = opts.from === undefined ? { node: this.#h.head(this.#h.current), doc: null } : this.#held(opts.from);
-        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name }))!;
+        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, ...(opts.id ? { id: opts.id } : {}) }))!;
+        made = true;
         // forking from a held state: the cut forks at its version and the held edits are its first change
-        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author: this.#actor(opts.author) });
+        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author: this.#actor(opts.author), ...(opts.id ? { id: `${opts.id}.held` } : {}) });
       },
-      { extra: () => ({ writes: [{ table: T.cuts, key: [rec.id], value: rec }] }), idempotent: false },
+      { extra: () => (made ? { writes: [{ table: T.cuts, key: [rec.id], value: rec }], conds: [{ table: T.cuts, key: [rec.id], expect: "absent" }] } : {}), idempotent: !!opts.id },
     );
     return rec;
   }
@@ -717,20 +727,20 @@ class CartonImpl implements Carton {
       idempotent: true,
     });
   }
-  async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string } = {}) {
+  async restore(ref: StateRef | string, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
     // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
     // its head as of now (inside the mutation, after the refresh), never a cached one
-    return this.#mutate(undefined, () => this.#h.restore(cut, typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref, { author: this.#actor(opts.author) }), { idempotent: false });
+    return this.#mutate(undefined, () => this.#h.restore(cut, typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id });
   }
-  async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string } = {}) {
+  async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
-    return this.#mutate(cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author) }), { idempotent: false });
+    return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id });
   }
-  async undo(group?: string, opts: { cut?: string; author?: Actor } = {}) {
+  async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
     const actor = this.#actor(opts.author);
-    return this.#mutate(cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor }), { idempotent: false });
+    return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id });
   }
 
   // ------------------------------------------------------------ .cbproj (§13)
