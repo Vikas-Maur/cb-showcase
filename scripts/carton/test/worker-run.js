@@ -53,6 +53,7 @@ const [workerFile, root] = process.argv.slice(2);
     if (process.env.PANEL === "1") {
       await new Promise((r) => setTimeout(r, 300));
       await panel("after");
+      await panel("other");
       await new Promise((r) => setTimeout(r, 300));
       out.panel = { live: panelCards("before"), reopened: panelCards("after") };
       // The panel's latest conflicts for a client, as it would show them.
@@ -78,6 +79,17 @@ const [workerFile, root] = process.argv.slice(2);
       await new Promise((r) => setTimeout(r, 200));
       out.keptAfter = (await kept()).map((c) => c.theirs);
       out.shownNext = shown("after").map((c) => c.mine.summary);
+      // Another panel still showing the first card resolves it too: it was already gone, so nothing else goes.
+      await call("carton.ui", { projectId: p.id, client: "other", message: { t: "call", id: 98, method: "resolve", args: [first.id, "theirs"] } });
+      for (let i = 0; i < 100 && !events.some((e) => e.change?.client === "other" && e.change.message?.t === "ret" && e.change.message.id === 98); i++) await new Promise((r) => setTimeout(r, 25));
+      await new Promise((r) => setTimeout(r, 200));
+      out.keptAfterOther = (await kept()).map((c) => c.theirs);
+      // An agent's clash is the agent's: kept for it, never shown in the person's panel as theirs or as "mine".
+      const agentSave = doc.timelineItems.map((it) => (it.type === "text" ? { ...it, fontSize: 190 } : it));
+      await call("projects.updateScoped", { ...doc, timelineItems: agentSave, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "codex/c7" } });
+      await new Promise((r) => setTimeout(r, 300));
+      out.agentCards = (await call("carton.notices", { bundlePath, actor: "codex/c7" })).flatMap((n) => n.cards ?? []).length;
+      out.panelHasAgent = [...shown("after"), ...shown("other")].some((c) => c.mine.summary === "190" || c.theirs.summary === "190");
     }
   }
   console.log(JSON.stringify(out));

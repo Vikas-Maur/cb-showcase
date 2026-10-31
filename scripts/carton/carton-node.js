@@ -70,8 +70,14 @@ const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 // agents (§8).
 const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : parseActorId(id) ?? identify({ declared: id }));
 
-// The History panels open in this process, per bundle: a GUI save's cards show in them at once.
+// The History panels open in this process, per bundle, each with the card it shows for each field (fromCarton shows
+// one per field): a person's GUI save's cards show in them at once, and resolving removes exactly the card shown.
 const panels = new Map();
+const show = (panel, cards) => {
+  const fresh = [];
+  for (const c of cards) if (!panel.shown.has(c.path)) panel.shown.set(c.path, c.cid), fresh.push(c);
+  if (fresh.length) panel.handle.reportConflicts(forPanel(fresh));
+};
 // A commit rebases the writer's change onto head (merge3(base, head, mine)), so its cards hold head's value as
 // `ours`. The panel reads `ours` as the person's own edit and `theirs` as the change that was kept: swapped for it.
 // A compare card's `ops` take `theirs` as it is, so it stays.
@@ -80,10 +86,13 @@ const forPanel = (cards) => cards.map((c) => (c.kind === "compare" ? c : { ...c,
 // Cards a commit raised, as a notice for its author in carton.db's notices table, where `cb conflicts`, the Stop hook
 // and the History panel read them (core keeps notices only for confirmed and pending commits).
 const keyOf = (a) => [a.kind, a.id, a.agentId].filter(Boolean).join("/");
+// Each card gets an id of its own (`cid`), so the one a panel resolves is the one it showed.
 async function keepCards(lc, author, cards) {
-  const to = keyOf(author), at = Date.now();
+  const to = keyOf(author), at = Date.now(), rand = () => Math.random().toString(16).slice(2, 10);
+  const kept = cards.map((c) => ({ ...c, cid: rand() + rand() }));
   const text = `${cards.length} of your edits clashed with a change made meanwhile; the other change was kept. Choose with cb conflicts / cb resolve, or in History.`;
-  await lc.store.write([{ table: "notices", key: [to, at, 0, Math.random().toString(16).slice(2, 10)], value: { to, kind: "late-conflict", text, cards, at } }]);
+  await lc.store.write([{ table: "notices", key: [to, at, 0, rand()], value: { to, kind: "late-conflict", text, cards: kept, at } }]);
+  return kept;
 }
 
 // A Director turn's name in History, from the user's prompt: its first sentence, at most six words ("tighter intro").
@@ -135,8 +144,9 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   // A clash keeps head's value; the writer's side is a conflict card, kept as a notice for its author until it is
   // resolved (`cb conflicts`, the History panel), never dropped.
   if (r.status === "conflicts" && r.cards?.length) {
-    await keepCards(lc, actorOf(meta?.actor ?? actor), r.cards);
-    for (const h of panels.get(bundlePath) ?? []) h.reportConflicts(forPanel(r.cards));
+    const author = actorOf(meta?.actor ?? actor), kept = await keepCards(lc, author, r.cards);
+    // Only the person's own cards go to the person's panel: an agent's are its own (the Stop hook, cb conflicts).
+    if (author.id === "person") for (const panel of panels.get(bundlePath) ?? []) show(panel, kept);
   }
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
   const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
@@ -176,19 +186,22 @@ const markSeen = (file, hash) => {
 
 // One install at a time per bundle, across processes (mkdir is atomic on NTFS too): the check that a file is still
 // head and its install happen together, so two writers can't leave an older state on disk after a newer one.
-// The holder writes who it is and beats every second. Another process takes the lock over only from a holder that is
-// gone (its pid no longer runs) and silent for 10 s; it moves the folder aside (one rename, so only one taker wins). A
-// live holder is never taken over, so it can't lose the lock in the middle of an install: a writer that waits 30 s
-// for one skips its install instead (its commit is in history; the next install brings the file to head).
+// The holder writes who it is and beats every second. Another process takes the lock over from a holder silent for 10 s
+// whose pid no longer runs, or from any holder silent for 60 s (Windows reuses pids, so a running pid may be someone
+// else); it moves the folder aside (one rename, so only one taker wins). A holder that finds after its install that it
+// lost the lock (it was stalled that long) puts back the newer file it displaced. A writer that waits 30 s skips its
+// install (its commit is in history; the next install brings the file to head).
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LOCK_BUSY = Symbol("busy");
+// Test seams (scripts/carton/test): `between` runs between the displace and the link, as displaceThenInstall's does.
+const testHooks = { between: null };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 function takeOverIfAbandoned(dir) {
   const owner = path.join(dir, "owner");
   let who = null, beat;
   try { who = JSON.parse(fs.readFileSync(owner, "utf8")); beat = fs.statSync(owner).mtimeMs; } catch { try { beat = fs.statSync(dir).mtimeMs; } catch { return; } }
   const silent = Date.now() - beat;
-  if (!(silent > 10_000 && !(who && alive(who.pid)))) return;
+  if (!(silent > 60_000 || (silent > 10_000 && !(who && alive(who.pid))))) return;
   const aside = dir + ".abandoned." + process.pid + "." + Math.random().toString(16).slice(2);
   try { fs.renameSync(dir, aside); fs.rmSync(aside, { recursive: true, force: true }); } catch {}
 }
@@ -238,11 +251,23 @@ async function install(tmp, file, seenStamp) {
       s = { files: new DisplacedFiles(path.join(bundle, ".carton", "displaced")), own: null, noLinks: !hardLinksWork(bundle), timer: null, mine: new Set() };
       installs.set(file, s);
     }
+    let installed = true;
     const journal = readJournal(bundle);
     sweep(file, s, journal);
     // Taken over while waiting (this process was stalled): the new holder installs.
     if (!mine()) return fs.rmSync(tmp, { force: true }), false;
-    const r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null });
+    let r = displaceThenInstall(file, tmp, s.files.next, { noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null, ...(testHooks.between ? { between: testHooks.between } : {}) });
+    if (!mine()) {
+      // Taken over while installing: the last file displaced is the successor's. If its state is newer than ours, it
+      // goes back (ours is displaced and held like any other), and the store reads the disk again.
+      const theirs = r.displaced.at(-1), back = theirs && (await refOf(lc, revIn(file, fs.readFileSync(theirs))));
+      if (back && ref && (back.branchId !== ref.branchId || back.seq > ref.seq)) {
+        const tmp2 = theirs + ".back";
+        fs.copyFileSync(theirs, tmp2);
+        r = { displaced: [...r.displaced, ...displaceThenInstall(file, tmp2, s.files.next, { noLinks: s.noLinks }).displaced] };
+        installed = false;
+      }
+    }
     markSeen(file, sha(bytes));
     // What was at the path is held, never deleted at once: the file the writer read (its stamp unchanged) or one
     // Carton wrote goes only if its bytes and stamp are still the same after the hold. An in-place writer that opened
@@ -261,15 +286,15 @@ async function install(tmp, file, seenStamp) {
       s.files.hold([p], mine ? { bytes: b, stamp: st } : i === 0 ? s.own : null);
     });
     writeJournal(bundle, journal);
-    s.own = { bytes, stamp: statStamp(file) };
+    s.own = { bytes: fs.readFileSync(file), stamp: statStamp(file) };
     s.files.endRound();
-    if (!s.files.size) return true;
+    if (!s.files.size) return installed;
     // Review after the hold (never inside this write: applying a foreign timeline.tsx writes the project again). A
     // foreign file keeps the process alive until it is applied, so a short cb call doesn't exit with it unapplied.
     clearTimeout(s.timer);
     s.timer = setTimeout(() => review(file, s).catch((e) => warnOnce("review:" + file, "review of displaced files failed: " + errText(e))), 300);
     if (!foreign) s.timer.unref?.();
-    return true;
+    return installed;
   });
   if (done !== LOCK_BUSY) return done;
   warnOnce("busy:" + bundle, "another process kept the install lock of " + path.basename(bundle) + "; its file catches up at the next save");
@@ -448,27 +473,31 @@ export const cardboard14 = {
           const ui = handle.ui ?? handle;
           const bundlePath = bundleOf(projectId);
           if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
-          panels.get(bundlePath).add(handle);
-          // Cards kept from earlier GUI saves are shown too, until resolved.
+          const panel = { handle, shown: new Map() };
+          panels.get(bundlePath).add(panel);
+          // Cards kept from earlier GUI saves are shown too, until resolved (the earliest first for each field).
           const person = keyOf(actorOf("person"));
-          for (const n of await lc.carton.notices(actorOf("person"), { take: false })) if (n.cards?.length) handle.reportConflicts(forPanel(n.cards));
+          const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
+          show(panel, (await kept()).flatMap((x) => x.value.cards));
           // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
           for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
             const f = ui[m];
             if (typeof f === "function") ui[m] = async (...a) => {
               const r = await f.apply(ui, a);
               if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-              // The card resolved is the one the panel showed for its path: the earliest kept one. Only it goes (its
-              // notice with it, once empty); a later card for the same path is shown next.
+              // Exactly the card this panel showed goes (its notice with it, once empty); if another panel resolved it
+              // first, nothing else is touched. The next card kept for that field is shown.
               if (m === "resolve") {
-                const at = a[0], rows = await lc.store.range("notices", { prefix: [person] });
-                const row = rows.find((x) => x.value?.cards?.some((c) => c.path === at));
-                if (row) {
-                  const i = row.value.cards.findIndex((c) => c.path === at), cards = row.value.cards.filter((_, k) => k !== i);
-                  await lc.store.write([{ table: "notices", key: row.key, value: cards.length ? { ...row.value, cards } : undefined }]);
+                const at = a[0], cid = panel.shown.get(at);
+                panel.shown.delete(at);
+                for (const x of await kept()) {
+                  if (!cid || !x.value.cards.some((c) => c.cid === cid)) continue;
+                  const cards = x.value.cards.filter((c) => c.cid !== cid);
+                  await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
                 }
-                const next = rows.filter((x) => x !== row).flatMap((x) => x.value?.cards?.filter((c) => c.path === at) ?? []);
-                if (next.length) handle.reportConflicts(forPanel(next.slice(0, 1)));
+                for (const other of panels.get(bundlePath)) if (other !== panel && other.shown.get(at) === cid) other.shown.delete(at);
+                const next = (await kept()).flatMap((x) => x.value.cards).find((c) => c.path === at);
+                if (next) show(panel, [next]);
               }
               return r;
             };
@@ -484,7 +513,7 @@ export const cardboard14 = {
 };
 
 // For the tests (scripts/carton/test): the install lock, the sweep and its journal.
-export const internals = { withInstallLock, sweep, readJournal, writeJournal, install, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
+export const internals = { testHooks, withInstallLock, sweep, readJournal, writeJournal, install, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev) };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {

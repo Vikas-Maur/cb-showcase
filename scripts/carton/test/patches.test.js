@@ -231,6 +231,9 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   assert.equal(on.keptBefore, 2);
   assert.deepEqual(on.keptAfter, [180], JSON.stringify(on));
   assert.deepEqual(on.shownNext, ["180"], JSON.stringify(on));
+  // A second panel resolving the card already resolved leaves the next one kept; an agent's card stays the agent's.
+  assert.deepEqual(on.keptAfterOther, [180], JSON.stringify(on));
+  assert.deepEqual([on.agentCards > 0, on.panelHasAgent], [true, false], JSON.stringify(on));
   assert.equal(on.guiSave, 150);
   // A stale GUI save's clash keeps head (160) and a card for the person; ⌘Z then reaches project.json and the pages.
   assert.deepEqual([on.stale, on.cards > 0], [160, true], JSON.stringify(on));
@@ -254,6 +257,11 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       setTimeout(() => fs.rmSync(dir, { recursive: true, force: true }), 400);
       await I.withInstallLock(bundle, async () => {});
       out.waited = Date.now() - t0 >= 380;
+      // A running pid silent for over a minute (Windows reuses pids): taken over.
+      fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: process.pid, me: "reused" }));
+      const older = new Date(Date.now() - 70_000); fs.utimesSync(path.join(dir, "owner"), older, older);
+      const t1 = Date.now();
+      out.reused = await I.withInstallLock(bundle, async (mine) => mine()) && Date.now() - t1 < 5000;
       // A file displaced a moment ago is not swept, even if Carton wrote it and its own mtime is old.
       const d = path.join(bundle, ".carton", "displaced"); fs.mkdirSync(d, { recursive: true });
       const f = path.join(d, "fresh-0"); fs.writeFileSync(f, "x"); fs.utimesSync(f, old, old);
@@ -266,10 +274,30 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
       fs.writeFileSync(tmp, JSON.stringify({ project: { stateUpdatedAt: 1700000000123 } }));
       await I.setRevFor(bundle, 1700000000123, { branchId: (await I.refOfRev(bundle, JSON.parse(fs.readFileSync(path.join(bundle, "project.json"), "utf8")).project.stateUpdatedAt)).branchId, seq: 0 });
       out.skipped = (await I.install(tmp, path.join(bundle, "project.json"))) === false && !fs.existsSync(tmp);
+      // Taken over in the middle of an install (stalled for a minute): the successor's newer file goes back.
+      const pj = path.join(bundle, "project.json"), cur = JSON.parse(fs.readFileSync(pj, "utf8"));
+      const head = await I.refOfRev(bundle, cur.project.stateUpdatedAt);
+      const oursRev = 1700000000201, theirsRev = 1700000000202;
+      await I.setRevFor(bundle, oursRev, head);
+      await I.setRevFor(bundle, theirsRev, { branchId: head.branchId, seq: head.seq + 1 });
+      const ours = path.join(bundle, ".ours.tmp");
+      fs.writeFileSync(ours, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: oursRev } }));
+      let fired = false;
+      I.testHooks.between = () => {
+        if (fired) return;
+        fired = true;
+        I.testHooks.between = null;
+        fs.writeFileSync(path.join(dir, "owner"), JSON.stringify({ pid: process.pid, me: "successor" }));
+        fs.writeFileSync(pj, JSON.stringify({ ...cur, project: { ...cur.project, stateUpdatedAt: theirsRev } }));
+      };
+      const res = await I.install(ours, pj);
+      out.putBack = res === false && JSON.parse(fs.readFileSync(pj, "utf8")).project.stateUpdatedAt === theirsRev;
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.writeFileSync(pj, JSON.stringify(cur));
       console.log(JSON.stringify(out));
     })().catch((e) => { console.error(e); process.exit(1); });
   `], { env: env(), encoding: "utf8", timeout: 60_000 });
-  assert.deepEqual(JSON.parse(locks.stdout.trim().split("\n").pop()), { dead: true, waited: true, fresh: true, skipped: true }, locks.stderr);
+  assert.deepEqual(JSON.parse(locks.stdout.trim().split("\n").pop()), { dead: true, waited: true, reused: true, fresh: true, skipped: true, putBack: true }, locks.stderr);
   // Four agents at once on different titles: none loses its last edit (B1).
   const wroot = path.join(TMP, "lib-real-writers");
   fs.rmSync(wroot, { recursive: true, force: true });
