@@ -118,25 +118,14 @@ test("a holder replaced before its fence noticed records nothing from the server
 });
 
 test("a change refused at once (too large) on carton.db finds its author, tells them once, and never comes back pending", async () => {
+  // over the client's own limit (32 MiB without blob envelopes, as server-node's): refused before it is sent, while
+  // carton.db is still writing its pending row (store-sqlite compresses large values off the main thread)
   const w = world();
-  // the welcome declares a 16 KiB limit, as a host with blob envelopes does
-  const transport: Transport = {
-    async connect(url, o) {
-      const inner = await w.host.transport.connect(url, o);
-      return {
-        get open() { return inner.open; },
-        send: (m) => inner.send(m),
-        onClose: (f) => inner.onClose(f),
-        close: (...x) => inner.close(...x),
-        onMessage: (f) => inner.onMessage((m: any) => f(m?.type === "hello" ? { ...m, maxMessageBytes: 16 * 1024 } : m)),
-      } as typeof inner;
-    },
-  } as Transport;
   const store = await openSqliteStore(join(mkdtempSync(join(scratch(), "sf1-")), "carton.db"));
-  const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice", transport) });
+  const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: agent, sync: w.sync("alice") });
   try {
     await share(c);
-    const big = await runWrite(c, { id: "sf1.big", actor: agent, op: { kind: "commit", ops: [set("c3", "name", "x".repeat(64 * 1024))] } });
+    const big = await runWrite(c, { id: "sf1.big", actor: agent, op: { kind: "commit", ops: [set("c3", "name", "x".repeat(33 << 20))] } });
     assert.equal(big.status, "rejected", JSON.stringify(big).slice(0, 200));
     assert.equal((big as { reason: string }).reason, "too large");
     await c.head();
