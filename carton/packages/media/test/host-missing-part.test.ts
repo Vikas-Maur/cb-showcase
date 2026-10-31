@@ -155,7 +155,8 @@ test('a part reported missing that is there is not reported, and a hash that is 
   assert.ok(await usableProxy(store, src, 'p1'));
 });
 
-for (const wiring of ['reportDamage only (wired before reportMissing existed)', 'reportDamage and reportMissing']) {
+for (const withMissing of [false, true]) {
+  const wiring = withMissing ? 'reportDamage and reportMissing' : 'reportDamage only, wired before reportMissing existed';
   test(`a part missing at the read but back before the report doesn't mark the stream (review 1, ${wiring})`, async () => {
     const store = new CountingMemoryStore();
     const { id, segs } = await finishedStream(store);
@@ -177,11 +178,12 @@ for (const wiring of ['reportDamage only (wired before reportMissing existed)', 
     };
     let over!: () => void;
     const ended = new Promise<void>((r) => (over = r));
+    let calls = 0;
     const server = await startRangeServer({
       onRequest: () => over(),
       source: media.toolSource(),
-      reportDamage: (_stream, hash) => reader.reportPartDamage(hash),
-      ...(wiring.includes('reportMissing') ? { reportMissing: (_stream: string, hash: string) => reader.reportPartDamage(hash, 'missing') } : {}),
+      reportDamage: (_stream, hash) => (calls++, reader.reportPartDamage(hash)),
+      ...(withMissing ? { reportMissing: (_stream: string, hash: string) => reader.reportPartDamage(hash, 'missing') } : {}),
     });
     try {
       const r = await fetch(`${server.url(segs[0]!.hash)}&s=${id}`);
@@ -191,6 +193,7 @@ for (const wiring of ['reportDamage only (wired before reportMissing existed)', 
     } finally {
       await server.close();
     }
+    assert.equal(calls, 0, 'a missing part never goes to reportDamage');
     assert.equal(store.objects.has(damagedKey(id)), false, 'not reported');
     assert.ok(await usableProxy(store, src, 'p1'), 'still reused');
   });
