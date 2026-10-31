@@ -137,3 +137,15 @@ test("a burst of remote rows costs one head read (no re-render storm)", async ()
   for (const l of listeners) l({ type: "change", branchId: "other", seq: 1, change: {} as never, local: false });
   assert.equal(frames.length, 0);
 });
+
+test("conflict cards in an editor's words: the clip's name, what each side did to its timing, why", async () => {
+  const { describeCardWith } = await import("../src/cards.ts");
+  const { cardboardSchema } = await import("@carton/cardboard");
+  const d = describeCardWith(() => doc);
+  const base = { startTime: 12, endTime: 16, trimStart: 0, trimEnd: 4 };
+  const w = d({ kind: "group", path: "timelineItems/clip-1/#time", base, ours: { ...base, endTime: 14.9, trimEnd: 2.9 }, theirs: { ...base, endTime: 15.6, trimEnd: 3.6 } }, cardboardSchema);
+  assert.deepEqual(w, { title: "'S1' timing", mine: "Ends at 0:14.9", theirs: "Ends at 0:15.6", reason: "You both changed this clip's timing, differently." });
+  const c = d({ kind: "field", path: "timelineItems/cap-1/captionText", base: "a", ours: "Hello", theirs: "Hi" }, cardboardSchema);
+  assert.equal(c.title, "Caption “Saturday, 7 am” text");
+  assert.equal(c.mine, "“Hello”");
+});

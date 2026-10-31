@@ -130,6 +130,7 @@ export function App(p: AppProps) {
       h(
         "aside",
         { className: "cb-side" },
+        h(Conflicts),
         h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) }),
       ),
     ),
@@ -137,7 +138,6 @@ export function App(p: AppProps) {
       "div",
       { className: "cb-bottom" },
       h(Timeline, { doc, media: p.media, time, onSeek: (t: number) => (setPlaying(false), setTime(t)), selected, onSelect: setSelected, onEdit, presence: p.presence, readOnly: !!previewDoc, onBlocked, image: (k: string) => p.images.get(k) }),
-      h(Conflicts),
     ),
     watch ? h(WatchDialog, { ...watch, carton: p.carton, media: p.media, images: p.images, onClose: () => setWatch(null) }) : null,
     fold ? h(FoldInDialog, { fromCutId: fold.from.id, intoCutId: fold.into.id, onClose: () => setFold(null) }) : null,

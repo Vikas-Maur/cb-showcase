@@ -25,6 +25,9 @@ export class LiveDoc {
       if (e.type === "change" || e.type === "absorbed") {
         if (e.branchId === this.#carton.cut) this.invalidate();
       }
+      // a write queued through another path (undo, fold, a card's pick) shows only as a sync-state change: Carton has
+      // no "pending" event for its own shared-cut writes, and the optimistic head already holds it
+      else if (e.type === "sync") this.invalidate();
     });
   }
   static async open(carton: Carton, schedule: (f: () => void) => void = defaultSchedule): Promise<LiveDoc> {

@@ -14,6 +14,7 @@ import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 import { openIdbStore } from "@carton/store-idb";
 import { webSocketTransport } from "@carton/server-node/transport";
 import { App } from "./app.ts";
+import { describeCardWith } from "./cards.ts";
 import { parseJoinHash, watchHash } from "./descriptor.ts";
 import { ImageCache } from "./images.ts";
 import { LiveDoc } from "./live-doc.ts";
@@ -165,6 +166,7 @@ async function boot(session: Session, name: string): Promise<void> {
       return r ? String(r.name ?? (r.captionText ? `Caption "${r.captionText}"` : id)) : id;
     },
     shareUrl: (cut) => links.get(cut.id),
+    describeCard: describeCardWith(() => live.doc),
     onPreview: (pv) => previewDoc.set(pv ? (pv.doc as Doc) : null),
   });
   ui.subscribe("cuts", () => live.invalidate());
