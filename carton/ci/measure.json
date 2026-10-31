@@ -1327,6 +1327,67 @@
           ]
         }
       ]
+    },
+    {
+      "id": "media-reuse-check",
+      "agent": "media",
+      "claim": "reuse check of a finished 2,000-part stream proxy (bench/media/reuse-check.ts, fd87449) vs before (d9f9a5f): the first check is faster through the host and on blob-fs with request delay; a repeat check on the same store object is far faster; plain blob-fs with no delay is slightly slower on the first check",
+      "timeout": 45,
+      "steps": [
+        {
+          "label": "before = git archive d9f9a5f carton/packages/media/src, with a node_modules symlink to this checkout's",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; git fetch --no-tags --depth=1 origin \"$2\"; mkdir -p \"$3/before\"; git archive \"$2\" carton/packages/media/src | tar -x -C \"$3/before\"; ln -s \"$PWD/carton/node_modules\" \"$3/before/carton/node_modules\"; ls \"$3/before/carton/packages/media/src\" | head -3",
+            "_",
+            "..",
+            "d9f9a5f1cad6ea69b40ef97af4c48a943b47b0cb",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "reuse-check.ts run 3 rounds, 2,000 parts, before vs after x host/fs x rtt 0/20 (lock on an uncontended temp file; gate relaxed: dedicated runner)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "4",
+            "GATE_WAIT_S": "15"
+          },
+          "run": [
+            "{node}",
+            "bench/media/reuse-check.ts",
+            "run",
+            "3",
+            "{results}/reuse-check.jsonl",
+            "{tmp}/before/carton/packages/media/src",
+            "2000"
+          ],
+          "stdoutTo": "{results}/reuse-check-summary.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "reuse-check.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "parts",
+            "rttMs",
+            "firstRequests",
+            "againRequests",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at"
+          ],
+          "expect": {
+            "cells": 8,
+            "runsPerCell": 3
+          }
+        }
+      ]
     }
   ]
 }
