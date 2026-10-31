@@ -152,3 +152,24 @@ test("the library worker: Windows build, Carton off, Carton on", { skip }, () =>
   assert.equal(commits[1].actor, "external:timeline.tsx");
   assert.equal(commits[1].meta.source, "timeline");
 });
+
+// The real facade, built from the carton workspace. Until @carton/local can open a project, Carton on must behave as
+// Cardboard does: no history, and writes exactly as 1.4.0 makes them.
+const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
+const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
+test("Carton on with the real facade and no history yet: cb is Cardboard's", { skip: noBuild }, async () => {
+  const out = path.join(TMP, "bundle");
+  fs.rmSync(out, { recursive: true, force: true });
+  fs.mkdirSync(path.join(out, "assets"), { recursive: true });
+  await require("../build.js").build(out, path.join(out, "assets"));
+  for (const f of ["carton-node.cjs", "engine-thread-main.js", "helper-main.js", "package.json"]) assert.ok(fs.existsSync(path.join(out, "carton", f)), f);
+  assert.ok(fs.existsSync(path.join(out, "assets", "carton-ui.js")));
+  const real = { CARDBOARD_CARTON: "1", CARTON_DIR: path.join(out, "carton") };
+  const a = session(win.cli, path.join(TMP, "lib-win2")), b = session(carton.cli, path.join(TMP, "lib-real"), real);
+  assert.deepEqual(b.map((s) => s.code), a.map((s) => s.code));
+  // The same JSON results; the only addition is the warning that history is off.
+  const json = (s) => norm(s.out.replace(/\[carton\][^\n]*\n/g, ""));
+  assert.deepEqual(b.map(json), a.map(json));
+  assert.deepEqual(files(path.join(TMP, "lib-real")), files(path.join(TMP, "lib-win2")));
+  assert.ok(!fs.existsSync(path.join(TMP, "lib-real", "Demo.cardboard", ".carton", "displaced")), "nothing displaced without history");
+});

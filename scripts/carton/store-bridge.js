@@ -58,7 +58,7 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
       return { document: out.doc, changed: true };
     },
     // H1, H3: displace-then-install in place of rename(tmp, file).
-    install: (tmp, file) => carton().install(tmp, file),
+    install: (tmp, file, seenStamp) => carton().install(tmp, file, seenStamp),
     // H3: timeline.tsx is written the same way, from a temp file next to it.
     async writeFile(file, text) {
       const fsp = require("node:fs/promises"), tmp = path.join(path.dirname(file), "." + path.basename(file) + "." + require("node:crypto").randomUUID() + ".tmp");
@@ -83,7 +83,9 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     },
     // H3: Carton's merge3 in place of Cardboard's item-level 3-way merge; same result shape.
     merge3: (base, current, file, opts, rn) => carton().merge3({ base, current, file, prefer: opts?.prefer, rn }),
-    status: (id) => { const r = last.get(id); return r ? { status: r.status, ref: r.ref, conflicts: r.conflicts?.length ?? 0 } : null; },
+    // The apply's result gains carton: {status, ref, conflicts} when its write was committed; nothing when history
+    // is off for the project.
+    status: (id) => { const r = last.get(id); return r && r.status !== "off" ? { carton: { status: r.status, ref: r.ref, conflicts: r.conflicts?.length ?? 0 } } : {}; },
     // H8 (worker only): the engine thread, the per-agent view watcher, and the worker's carton RPC namespace.
     // emit sends a {kind:"carton"} change to main, which passes it to the tabs.
     worker: (library, emit) => carton().worker({ library, emit }),

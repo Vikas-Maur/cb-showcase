@@ -11,7 +11,7 @@
 // Main says whether Carton is on (carton:call "enabled"). Until it has, and whenever it's off, every hook does what
 // Cardboard does.
 module.exports = String.raw`window.__carton = (() => {
-  let on = false, store = null, sent = null, intents = [], stale = false;
+  let on = false, store = null, sent = null, intents = [], stale = false, bypass = false;
   let settle;
   const ready = new Promise((r) => (settle = r));
   const TIMELINE = new Set(["tracks", "timelineItems", "aspectRatio"]);
@@ -62,14 +62,16 @@ module.exports = String.raw`window.__carton = (() => {
       host.editor.adopt({ ...t, duration: duration(t.timelineItems), cartonBase: project.stateUpdatedAt ?? null });
       return { adopted: false, timeline: undefined };
     },
-    // H6: true when Carton took the undo (Cardboard's snapshot undo then doesn't run).
+    // H6: true when Carton took the undo (Cardboard's snapshot undo then doesn't run). If Carton has no history for
+    // the project, Cardboard's own undo runs after all.
     undo() { return this.step("undo"); },
     redo() { return this.step("redo"); },
     step(which) {
-      if (!on || !store) return false;
+      if (!on || !store || bypass) return false;
       const st = store.state();
       if (!st.projectId || st.cartonPreview) return false;
-      store.flush().then(() => call(which, { projectId: st.projectId })).catch((e) => console.warn("[carton] " + which + " failed:", e?.message ?? e));
+      const own = () => { bypass = true; try { store.state()[which](); } finally { bypass = false; } };
+      store.flush().then(() => call(which, { projectId: st.projectId })).then((r) => { if (r?.status === "unavailable") own(); }, (e) => { console.warn("[carton] " + which + " failed:", e?.message ?? e); own(); });
       return true;
     },
     // Compare and the A/B toggle: an earlier version in the editor, read-only (§9). null returns to current.
@@ -86,6 +88,9 @@ module.exports = String.raw`window.__carton = (() => {
       } else store.adopt({ ...t, duration: duration(t.timelineItems), cartonPreview: { ref } });
     },
     get stale() { return stale; },
+    // For the History panel (carton-ui.js): the worker's carton namespace, and its events for the tabs.
+    call: (method, args) => call(method, args),
+    onEvent: (f) => store.on("carton:event", f),
   };
 })();
 `;

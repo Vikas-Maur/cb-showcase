@@ -30,7 +30,7 @@ const STORE = {
     dir: `require("node:url").fileURLToPath(new URL("../../carton/", import.meta.url))`,
     slice: "Cr",
     updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
-    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?(await __carton.install(l,c),d=await Qo(c)):await Bx(l,c)}"],
+    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?(await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp),d=await Qo(c)):await Bx(l,c)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:a,document:c.project}),", "c.project"],
     attach: ["n.onWritten((h,y)=>f.afterWrite(h,y));", "n,f,t"],
     revFiles: [
@@ -42,7 +42,7 @@ const STORE = {
     merge: ["Z=rn(B,j,J.doc,{prefer:n.prefer})", "Z=__carton.on?await __carton.merge3(B,j,J.doc,{prefer:n.prefer},rn):rn(B,j,J.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added]);return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt})",
-      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added],{source:\"timeline\",rev:g.rev,actor:n.cartonActor});return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&{carton:__carton.status(t)}})",
+      "let h=await this.writeTimeline(i,Z.doc,[...w,...J.added],{source:\"timeline\",rev:g.rev,actor:n.cartonActor});return p({applied:!0,ops:se,conflicts:A,diagnostics:_,rev:h?.stateUpdatedAt??i.stateUpdatedAt,...__carton.on&&__carton.status(t)})",
     ],
     writeTimeline: [
       ["writeTimeline(t,r,n){let o={...Aa(t,r)", "writeTimeline(t,r,n,__cm){let o={...Aa(t,r)"],
@@ -57,7 +57,7 @@ const STORE = {
     dir: `require("node:path").join(__dirname, "..", "..", "carton")`,
     slice: "Zs",
     updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
-    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?(await __carton.install(c,s),l=await G1(s)):await(0,Bt.rename)(c,s)}"],
+    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?(await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp),l=await G1(s)):await(0,Bt.rename)(c,s)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
     attach: ["n.onWritten((y,x)=>m.afterWrite(y,x));", "n,m,t"],
     revFiles: [
@@ -69,7 +69,7 @@ const STORE = {
     merge: ["ee=$f(be,de,qe.doc,{prefer:n.prefer})", "ee=__carton.on?await __carton.merge3(be,de,qe.doc,{prefer:n.prefer},$f):$f(be,de,qe.doc,{prefer:n.prefer})"],
     applyWrite: [
       "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added]);return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt})",
-      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&{carton:__carton.status(t)}})",
+      "let y=await this.writeTimeline(a,ee.doc,[...b,...qe.added],{source:\"timeline\",rev:h.rev,actor:n.cartonActor});return p({applied:!0,ops:J,conflicts:P,diagnostics:re,rev:y?.stateUpdatedAt??a.stateUpdatedAt,...__carton.on&&__carton.status(t)})",
     ],
     writeTimeline: [
       ["writeTimeline(t,r,n){let i={...Ay(t,r)", "writeTimeline(t,r,n,__cm){let i={...Ay(t,r)"],
