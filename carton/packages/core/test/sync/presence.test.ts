@@ -81,3 +81,27 @@ test("a 60 Hz drag sends at most PRESENCE_PER_SEC presence messages a second, an
   client.stop();
   vt.advance(1000); // no timer left behind after stop
 });
+
+test("presence after a quiet spell goes out at once; a leave right after a move still goes out when the client stops (owner check)", async () => {
+  const vt = virtualTime();
+  const q = new ReplicaQueue(schema);
+  q.addBranch({ id: "b", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
+  const conn = new Conn();
+  const client = new SyncClient({ queue: q, branchId: "b", schemaVersion: 1, connect: async () => conn, timers: vt.timers, clock: vt.clock, defer: (fn) => queueMicrotask(fn) }).start();
+  await new Promise((r) => setTimeout(r, 0));
+  conn.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  const me = { kind: "human" as const, id: "me" };
+  const presence = () => conn.sent.filter((m) => m.type === "presence") as Extract<ClientMessage, { type: "presence" }>[];
+  vt.advance(5000);
+  client.sendPresence(me, { at: 1 });
+  assert.deepEqual(presence().map((m) => m.state?.at), [1], "the first update after a quiet spell isn't delayed");
+  vt.advance(1000);
+  client.sendPresence(me, { at: 2 });
+  vt.advance(20);
+  client.sendPresence(me, null); // the editor closes: its leave, inside the 100 ms interval
+  assert.deepEqual(presence().map((m) => m.state?.at ?? null), [1, 2], "the leave is coalesced, waiting");
+  client.stop();
+  assert.deepEqual(presence().map((m) => m.state?.at ?? null), [1, 2, null], "the leave went out before the close");
+  vt.advance(1000);
+  assert.equal(presence().length, 3, "nothing after stop");
+});
