@@ -223,7 +223,8 @@ async function uploadSettled(o: UploadOptions): Promise<UploadResult> {
       const report = there ? await abortable(openReport(store, m.hash), null) : null;
       if (report && (await abortable(storedMatches(store, key, m, o.hasher, o.signal), false))) {
         await abortable(markRepaired(store, m.hash, report), undefined);
-        await abortable((o.state ?? new MemoryUploadStateStore()).delete(key), undefined);
+        // No state to forget: the run that met NoSuchUpload forgot it under its turn. (Doing it here, a cancelled call
+        // could leave a deletion running that removes the state of an upload after it.)
         o.signal?.throwIfAborted();
         return { hash: m.hash, size: m.size, deduped: true, partSize: acc.partSize ?? 0, resumedParts: 0, partsSent: acc.partsSent, bytesSent: acc.bytesSent };
       }

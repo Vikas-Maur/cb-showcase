@@ -56,7 +56,7 @@ async function setup() {
   };
 }
 
-for (const stage of ['report read', 'answer write', 'state deletion']) {
+for (const stage of ['report read', 'answer write']) {
   test(`abort during recovery ${stage} must reject promptly`, async () => {
     const s = await setup();
     const entered = deferred();
@@ -182,4 +182,60 @@ test('resumedParts and partSize reset after a resumed upload expires and the res
   assert.equal(result.bytesSent, 5 * LEAF_SIZE);
   assert.equal(await state.load(key), null);
   assert.deepEqual(store.objects.get(key), data);
+});
+
+test('recovery forgets no saved state of its own: the run that met NoSuchUpload already did (review of 821f598)', async () => {
+  const s = await setup();
+  let verificationRead = false;
+  let deletedAfter = 0;
+  const get = s.store.get.bind(s.store);
+  s.store.get = async (k, r) => {
+    if (s.recovering() && k === s.key) verificationRead = true;
+    return get(k, r);
+  };
+  const del = s.state.delete.bind(s.state);
+  s.state.delete = async (k) => {
+    if (verificationRead) deletedAfter++;
+    return del(k);
+  };
+  await uploadMedia(s.opts);
+  assert.equal(deletedAfter, 0);
+  assert.equal(await s.state.load(s.key), null);
+});
+
+test('work a cancelled recovery leaves running cannot erase a later upload\'s saved state (review of 821f598)', async () => {
+  const s = await setup();
+  const entered = deferred();
+  const release = deferred();
+  const put = s.store.put.bind(s.store);
+  let blockOnce = true;
+  s.store.put = async (k, d, o) => {
+    if (blockOnce && s.recovering() && k === repairedKey(s.manifest.hash)) {
+      blockOnce = false;
+      entered.resolve();
+      await release.promise;
+    }
+    return put(k, d, o);
+  };
+  const ac = new AbortController();
+  const first = assert.rejects(uploadMedia({ ...s.opts, signal: ac.signal }), { name: 'AbortError' });
+  await entered.promise;
+  ac.abort();
+  await first;
+  // The object goes (a host removed it); a retry saves its progress and fails resumably.
+  s.store.objects.delete(s.key);
+  const source = {
+    size: s.data.length,
+    read: async (offset: number, length: number) => {
+      if (offset >= LEAF_SIZE) throw new Error('source temporarily unavailable');
+      return s.data.subarray(offset, offset + length);
+    },
+  };
+  await assert.rejects(uploadMedia({ ...s.opts, source }), /source temporarily unavailable/);
+  const saved = await s.state.load(s.key);
+  assert.ok(saved && saved.parts.length > 0, 'the failed retry saved its resumable upload');
+  release.resolve();
+  await tick();
+  await tick();
+  assert.deepEqual(await s.state.load(s.key), saved);
 });
