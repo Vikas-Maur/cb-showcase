@@ -4,7 +4,7 @@
 // blob-s3 presigns natively instead. Web-standard Request/Response, so Workers and Node hosts share it.
 
 import type { BlobInfo, BlobStore } from "@carton/core/plugins";
-import { checkKey } from "./rules.ts";
+import { checkKey, putCreated } from "./rules.ts";
 
 export interface BlobUrlSigner {
   sign(method: "GET" | "PUT", key: string, expiresInSec: number): Promise<string>;
@@ -198,18 +198,21 @@ export async function serveSignedBlob(req: Request, store: BlobStore, signer: Bl
       if (Array.from(digest, (x) => x.toString(16).padStart(2, "0")).join("") !== sha256)
         return new Response(`the body does not match its ${SHA256_HEADER}`, { status: 400 });
     }
-    // A create-only PUT that finds the key answers 412, as S3 and R2 do, and writes nothing. The head runs inside
-    // `aroundPut`, so no write of the key through this host comes between it and the put. A writer the host doesn't
-    // serialize with (another Worker, a multipart complete elsewhere) can still create the key in between: the store's
-    // ifAbsent keeps that object, and when its info differs from this body's (size, digest, type) the answer is 412 too.
+    // A create-only PUT that finds the key answers 412, as S3 and R2 do, and writes nothing: a head first (inside
+    // `aroundPut`) spares the write when the key is plainly there. Anything can still create the key between the head
+    // and the put (a key the host doesn't lock, another Worker, a multipart complete), so the answer is the store's
+    // own outcome: its ifAbsent says whether this put created the object (PUT_CREATED). A store that doesn't say gets
+    // 200 only when the object it holds is provably these bytes (the client's digest), else 412: never a 200 for bytes
+    // that didn't go in.
     const write = async (): Promise<[200 | 412, BlobInfo]> => {
       if (createOnly) {
         const there = await store.head(key);
         if (there) return [412, there];
       }
       const info = await store.put(key, body, { ...(ct ? { contentType: ct } : {}), ...(sha256 ? { sha256 } : {}), ...(createOnly ? { ifAbsent: true } : {}) });
-      const theirs = info.size !== body.byteLength || (sha256 && info.sha256 && info.sha256 !== sha256) || (ct && info.contentType && info.contentType !== ct);
-      return [createOnly && theirs ? 412 : 200, info];
+      if (!createOnly) return [200, info];
+      const created = putCreated(info) ?? (sha256 !== undefined && info.sha256 === sha256 && info.size === body.byteLength);
+      return [created ? 200 : 412, info];
     };
     const [status, info] = await (opts.aroundPut ? opts.aroundPut(key, write) : write());
     return storedInfo(status, info);

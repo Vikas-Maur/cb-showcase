@@ -43,7 +43,7 @@ const vaultNs: DurableObjectNamespace = {
     },
   }),
 };
-blobStoreSuite("do-blob (BlobVault in workerd)", async () => doBlobStore(vaultNs, `vault-${Date.now()}`));
+blobStoreSuite("do-blob (BlobVault in workerd)", async () => doBlobStore(vaultNs, `vault-${Date.now()}`), { reportsCreated: true });
 
 let devN = 0;
 async function fixture(): Promise<HostFixture> {
@@ -138,6 +138,41 @@ test("a room whose alarm predates maintain_at keeps that alarm as maintenance's 
     const put = await fetch(`${dev.origin}/api/projects/${p}/messages/messages/c/${hour}/${sha}-0123abcd`, { method: "PUT", body: bytes, headers: { authorization: `Bearer ${token}` } });
     assert.equal(put.status, 200);
     assert.equal((await due()).maintainAt, at2, "the upload kept the old alarm's time");
+  } finally {
+    raw.kill();
+  }
+});
+// Round 3: an attachment from before `seen` took the wake's time on every wake and never kept it, so a silent socket
+// in a room woken more often than the presence timeout was never judged silent.
+test("a silent socket whose attachment predates `seen` is dropped within the timeout, however often the room wakes", async () => {
+  const p = `unseen-${Date.now().toString(36)}`;
+  const token = await createHmacAuth({ secret: SECRET }).issue({ account: "us", credential: "us/1", role: "owner", projectId: p, ttlMs: 3600_000 });
+  const raw = await rawWebSocket(`ws://127.0.0.1:${dev.port}/api/projects/${p}/ws`, token);
+  const got: { type: string }[] = [];
+  let closed = "";
+  raw.onMessage((m) => void got.push(m as { type: string }));
+  raw.onClose((why) => void (closed = why));
+  const until = async (type: string) => {
+    for (let i = 0; i < 200 && !got.some((m) => m.type === type); i++) await new Promise((r) => setTimeout(r, 25));
+    assert.ok(got.some((m) => m.type === type), `no ${type}: ${got.map((m) => m.type)}`);
+  };
+  const rec = { id: "b", name: "main", forkOf: null, owner: "us", kind: "main", sequencer: { kind: "server", since: 0 } };
+  raw.send({ type: "adopt", branchId: "b", n: 0, stateHash: "", rows: [], rec, doc0: HOST_SUITE_DOC, closure: [] } as never);
+  await until("adopted");
+  raw.send({ type: "hello", branchId: "b", have: 0, pending: [], rids: [], schemaVersion: 1 });
+  await until("hello");
+  raw.send({ type: "presence", branchId: "b", actor: { kind: "human", id: "us" }, state: { at: 1 } });
+  await new Promise((r) => setTimeout(r, 100));
+  try {
+    // the attachment as older code wrote it (no `seen`), woken; then woken every 300 ms, well within the 2 s timeout
+    assert.equal((await fetch(`${dev.origin}/__test/unseen/${p}`)).status, 204);
+    const t0 = Date.now();
+    while (!closed && Date.now() - t0 < 2000 + 6000) {
+      await fetch(`${dev.origin}/__test/wake/${p}`);
+      await new Promise((r) => setTimeout(r, 300));
+    }
+    assert.ok(closed, "the silent socket was dropped");
+    assert.ok(Date.now() - t0 < 2000 + 3000, `dropped ${Date.now() - t0} ms after the first wake`);
   } finally {
     raw.kill();
   }

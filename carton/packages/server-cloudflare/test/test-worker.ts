@@ -31,6 +31,15 @@ export class ProjectRoom {
       this.#room = new Room(this.#ctx, this.#env);
       return new Response(null, { status: 204 });
     }
+    if (url.pathname.endsWith("/__unseen")) {
+      // every socket's attachment as code from before `seen` wrote it, then a wake
+      for (const ws of this.#ctx.getWebSockets()) {
+        const att = ws.deserializeAttachment() as { seen?: number } | null;
+        if (att) delete att.seen, ws.serializeAttachment(att);
+      }
+      this.#room = new Room(this.#ctx, this.#env);
+      return new Response(null, { status: 204 });
+    }
     if (url.pathname.endsWith("/__legacy")) {
       this.#ctx.storage.sql.exec("DELETE FROM carton_room WHERE k = 'maintain_at'");
       await this.#ctx.storage.setAlarm(Number(url.searchParams.get("at")));
@@ -98,7 +107,7 @@ export default {
       const auth = { account: "test", credential: "test/alarm", role: "owner", projectId: p, expires: Date.now() + 60_000 };
       return env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(p)).fetch(new Request(`https://room/${p}/alarm`, { headers: { [PROJECT_HEADER]: p, [AUTH_HEADER]: JSON.stringify(auth) } }));
     }
-    const wk = /^\/__test\/(wake|legacy|due)\/([^/]+)$/.exec(url.pathname);
+    const wk = /^\/__test\/(wake|unseen|legacy|due)\/([^/]+)$/.exec(url.pathname);
     if (wk) {
       const p = decodeURIComponent(wk[2]!);
       const auth = { account: "test", credential: `test/${wk[1]}`, role: "owner", projectId: p, expires: Date.now() + 60_000 };

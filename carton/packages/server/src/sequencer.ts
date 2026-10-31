@@ -59,6 +59,11 @@ export interface ConnectionState {
    * PRESENCE_SHOWN_MAX actors, of ids no longer than PRESENCE_ID_MAX (an actor beyond either is relayed, not kept).
    */
   shown?: ShownPresence[];
+  /**
+   * The connection's identity changes left (`tokens`, IDENTITY_BURST at most, one back every IDENTITY_EVERY_MS) as of
+   * `at`. Kept here, not beside the connection, so a socket restored after hibernation has no fresh burst.
+   */
+  identity?: { tokens: number; at: number };
 }
 
 /** An actor a connection shows on a branch: only what names it (`actorKey`: kind, id, agentId). */
@@ -612,7 +617,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   /** A change to the people, to every connection of the project that may see them, once per cut it follows (the sync
    * client is per cut); a connection still paging its welcome gets the whole list on its last page. */
   function toPeople(people: sync.PersonRids[]): void {
-    for (const c of conns.values()) if (seesPeople(c)) for (const b of stateOf(c).subs) send(c, { type: "people", branchId: b, people });
+    // a hello's claim binds up to 4096 rids: over the threshold, each cut's message goes as one envelope, for everyone
+    const sent = new Map<string, { msg: ServerMessage; env?: Promise<sync.EnvelopeMsg> | null }>();
+    for (const c of conns.values()) {
+      if (!seesPeople(c)) continue;
+      for (const b of stateOf(c).subs) {
+        let m = sent.get(b);
+        if (!m) sent.set(b, (m = { msg: { type: "people", branchId: b, people } }));
+        if (stateOf(c).envelopes && m.env === undefined) m.env = sealed(m.msg);
+        send(c, m.msg, m.env ?? null);
+      }
+    }
   }
   /** rids newly bound to `credential`, told when it has a person. */
   function announce(credential: string, rids: string[]): void {
@@ -620,15 +635,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const p = tables.person(credential);
     if (p) toPeople([{ ...p, rids }]);
   }
-  const identityBuckets = new Map<string, { tokens: number; at: number }>();
   function identityAllowed(c: HostConnection): boolean {
-    const now = clock();
-    const b = identityBuckets.get(c.id) ?? { tokens: IDENTITY_BURST, at: now };
-    b.tokens = Math.min(IDENTITY_BURST, b.tokens + (now - b.at) / IDENTITY_EVERY_MS);
-    b.at = now;
-    identityBuckets.set(c.id, b);
-    if (b.tokens < 1) return false;
-    b.tokens -= 1;
+    const now = clock(),
+      st = stateOf(c),
+      was = st.identity;
+    const tokens = was ? Math.min(IDENTITY_BURST, was.tokens + Math.max(0, now - was.at) / IDENTITY_EVERY_MS) : IDENTITY_BURST;
+    if (tokens < 1) return false;
+    // a new object: a host comparing the state before and after a message sees the change (the attachment)
+    st.identity = { tokens: tokens - 1, at: now };
     return true;
   }
   /** `hello.identity` or an `identity` message: refused with an error (the connection stays), or recorded and told. */
@@ -1061,7 +1075,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
     // a connection gone while its presence waited in the queue (behind another client's envelope read, say) said
     // its last: relayed now, nothing would ever take it back
-    if (!conns.has(c.id) || !stateOf(c).subs.includes(m.branchId)) return;
+    // (or replaced: a socket that reconnected under the same id is another connection, with its own state)
+    if (conns.get(c.id) !== c || !stateOf(c).subs.includes(m.branchId)) return;
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
@@ -1083,7 +1098,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const entry = {
         msg,
         timer: setTimeout(function relay() {
-          if (!conns.has(c.id) || !stateOf(c).subs.includes(branchId)) return clearTrailing(c.id, branchId);
+          if (conns.get(c.id) !== c || !stateOf(c).subs.includes(branchId)) return clearTrailing(c.id, branchId);
           // one token per relay, as any update; a connection with several branches waiting takes its turns
           if (!presenceAllowed(c)) {
             entry.timer = setTimeout(relay, Math.max(1, Math.ceil(1000 / PRESENCE_PER_SEC)));
@@ -1170,11 +1185,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     },
     attach,
     disconnect(conn) {
-      if (!conns.has(conn.id)) return; // once per connection
+      // once per connection; not one already replaced under its id (its replacement is another connection)
+      if (conns.get(conn.id) !== conn) return;
       conns.delete(conn.id);
       outboxes.delete(conn.id);
       presenceBuckets.delete(conn.id);
-      identityBuckets.delete(conn.id);
       // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
       // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
       // Not while another connection shows the same actor there: the same person reconnected (the old socket timed out
@@ -1255,7 +1270,7 @@ const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
 /** A state digest (`hashDoc`: SHA-256, hex). */
 const SHA256 = /^[0-9a-f]{64}$/;
 /** Server messages that can be over the envelope threshold; the rest (acks, statuses, errors…) are never sized. */
-const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject", "history"]);
+const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject", "history", "people"]);
 
 /** History fields a change may carry into its row (fold-ins, undo, partial accept, names): stored in the body. */
 const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "structural"] as const;

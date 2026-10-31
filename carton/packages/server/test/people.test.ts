@@ -4,8 +4,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import type { Op, sync } from "@carton/core";
-import { createSequencer } from "../src/index.ts";
-import { BRANCH, clip, doc, fakeConn, push, set, sqliteStorage, staticAuth, verdict, world, type FakeConn } from "./helpers.ts";
+import { sync as wire } from "@carton/core";
+import { createInProcessHost, createSequencer } from "../src/index.ts";
+import { BRANCH, clip, doc, fakeConn, memoryBlobs, push, set, sqliteStorage, staticAuth, verdict, world, type FakeConn } from "./helpers.ts";
 
 const rec = (id: string) => ({ id, name: id, forkOf: null, owner: "alice", kind: "main" as const, sequencer: { kind: "server" as const, since: 0 } });
 const hello = (o: Partial<sync.HelloMsg> = {}): sync.HelloMsg => ({ type: "hello", branchId: BRANCH, have: 0, pending: [], rids: [], schemaVersion: 1, ...o });
@@ -204,4 +205,60 @@ test("the people persist: a new sequencer over the same storage (a restart, a wo
   // and a rid bound after the restart joins the person read back
   await again.handle(fakeConn("alice/dev1"), hello({ rids: ["r2bbbbbbbbbbbbbbbbbbbbbb"] }));
   assert.deepEqual(again.tables.people()[0]!.rids, ["r1aaaaaaaaaaaaaaaaaaaaaa", "r2bbbbbbbbbbbbbbbbbbbbbb"]);
+});
+
+// People review round 1: a hello's claim binds up to 4096 rids, and its `people` update went inline whatever its size,
+// so a big one closed every subscribed peer's capped connection.
+test("a big `people` update goes as an envelope, one blob for every connection that reads them; a capped peer stays", async () => {
+  const blobs = memoryBlobs();
+  const auth = { kind: "test", async verify(token: string) { return { account: token, credential: `${token}/dev`, role: "editor" as const, projectId: "p", expires: Number.MAX_SAFE_INTEGER }; } };
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, blobs, envelopeBytes: 512, maxMessageBytes: 2048 });
+  try {
+    await host.sequencer.createBranch(rec(BRANCH), { doc0: d0() as never, stateHash: "h0" });
+    const tick = () => new Promise((r) => setImmediate(r));
+    const alice = await host.transport.connect(host.url, { token: "alice" });
+    const peers = await Promise.all(["bob", "carol"].map((t) => host.transport.connect(host.url, { token: t })));
+    const got = peers.map(() => [] as wire.ServerMessage[]);
+    const closed: string[] = [];
+    peers.forEach((p, i) => (p.onMessage((m) => void got[i]!.push(m as wire.ServerMessage)), p.onClose((why) => void closed.push(why))));
+    alice.send(hello({ identity: { id: "alice", name: "Alice" }, envelopes: true }));
+    for (const p of peers) p.send(hello({ envelopes: true }));
+    for (let i = 0; i < 10; i++) await tick();
+    const before = host.sequencer.stats.envelopesOut;
+    // 150 rids claimed in an envelope, as a client sends a hello over its envelope threshold
+    const rids = Array.from({ length: 150 }, (_, i) => i.toString(16).padStart(24, "0"));
+    alice.send(await wire.seal(wire.oversized(hello({ rids, envelopes: true }), 512)!, blobs, (sha) => wire.clientEnvelopeKey(sha, Date.now())));
+    for (let i = 0; i < 200 && got.some((g) => !g.some((m) => m.type === "blob")); i++) await new Promise((r) => setTimeout(r, 10));
+    assert.deepEqual(closed, [], "no peer closed");
+    const envs = got.map((g) => g.find((m) => m.type === "blob") as wire.EnvelopeMsg);
+    assert.ok(envs.every(Boolean), `each peer got the update as an envelope: ${JSON.stringify(got.map((g) => g.map((m) => m.type)))}`);
+    assert.equal(envs[0]!.ref.key, envs[1]!.ref.key, "one blob, sealed once");
+    assert.equal(host.sequencer.stats.envelopesOut - before, 2, "two envelopes: alice's own welcome, and one people update for all");
+    const opened = (await wire.unseal(envs[0]!.ref, blobs, { from: "server", maxBytes: 1 << 20 })) as wire.PeopleMsg;
+    assert.equal(opened.type, "people");
+    assert.deepEqual(opened.people, [{ id: "alice", name: "Alice", rids }]);
+  } finally {
+    await host.close();
+  }
+});
+
+// People review round 1: the cap lived beside the sequencer, so a Durable Object's wake gave every restored socket a
+// fresh burst. It is in the connection's state now, which a host keeps across hibernation.
+test("the cap on changes to a person holds for a connection restored after hibernation (its state kept, the sequencer new)", async () => {
+  let now = 1_000_000;
+  const storage = sqliteStorage();
+  const { seq } = await world(d0(), { storage, clock: () => now });
+  const a = fakeConn("alice/dev1");
+  await seq.handle(a, hello());
+  for (let i = 0; i < 5; i++) await seq.handle(a, identity("alice", `Alice ${i}`));
+  // as the Durable Object keeps it: the attachment's copy of the state, on a socket of the same id
+  const restored = { ...fakeConn("alice/dev1"), id: a.id, state: structuredClone(a.state) };
+  const woken = createSequencer({ storage, auth: staticAuth, clock: () => now });
+  woken.attach(restored);
+  await woken.handle(restored, identity("alice", "after the wake"));
+  assert.deepEqual(errors(restored).map((e) => e.reason), ["identity: changed too often; try again in a minute"]);
+  assert.equal(woken.tables.people()[0]!.name, "Alice 4");
+  now += 12_000;
+  await woken.handle(restored, identity("alice", "after the wake"));
+  assert.equal(woken.tables.people()[0]!.name, "after the wake");
 });

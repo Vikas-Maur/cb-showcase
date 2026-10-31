@@ -121,6 +121,24 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       assert.deepEqual(new Uint8Array(await (await fetch(get)).arrayBuffer()), first, "the first writer's bytes stay");
     });
 
+    // Round 3: two create-only PUTs racing on a key the host doesn't lock both got 200 when their bodies had one size.
+    test("create-only signed PUTs racing on one key: exactly one 200, and the stored bytes are its body", async () => {
+      const p = project();
+      const o = await owner(p);
+      const sign = async (key: string, method: string) => ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method, expiresIn: 60 } })).json()) as { url: string }).url;
+      for (let i = 0; i < 6; i++) {
+        const key = `media/race-${i}`;
+        const bodies = [enc.encode(`first-${i}`), enc.encode(`other-${i}`)]; // the same size
+        const [u1, u2] = [await sign(key, "PUT"), await sign(key, "PUT")];
+        const rs = await Promise.all([fetch(u1, { method: "PUT", body: bodies[0], headers: { "if-none-match": "*" } }), fetch(u2, { method: "PUT", body: bodies[1], headers: { "if-none-match": "*" } })]);
+        for (const r of rs) await r.body?.cancel();
+        const statuses = rs.map((r) => r.status);
+        assert.deepEqual([...statuses].sort(), [200, 412], `${key}: ${statuses}`);
+        const stored = new Uint8Array(await (await fetch(await sign(key, "GET"))).arrayBuffer());
+        assert.deepEqual(stored, bodies[statuses.indexOf(200)], `${key}: the 200's bytes are what is stored`);
+      }
+    });
+
     test("signed media URLs: PUT, then GET with ranges, bound to their key; viewers can't sign a PUT", async () => {
       const p = project();
       const o = await owner(p);

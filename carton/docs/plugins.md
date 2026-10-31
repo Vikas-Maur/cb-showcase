@@ -66,6 +66,12 @@ Use `@carton/blob-memory/rules` for the argument checks, so a bad call fails the
   0, is an empty array, not an error. R2 throws there, so `blob-r2` translates.
 - **Replacing** is atomic: a reader sees the old bytes or the new, never a mix. `ifAbsent` never touches existing
   bytes.
+- **Say whether an `ifAbsent` put created the key** (recommended): mark the info it returns with `markCreated(info,
+  created)` from `@carton/blob-memory/rules` (a non-enumerable `PUT_CREATED` symbol, so the info's JSON is unchanged).
+  `serveSignedBlob` answers a create-only PUT by it, exactly, even when another writer raced to the same key with
+  bytes of the same size. A wrapper that copies the info keeps the mark (`withCreated`). Without it, the host can only
+  answer 200 when the client's `X-Carton-Sha256` and size match the kept object, and 412 otherwise. The suite checks
+  the mark when a store opts in (`reportsCreated`).
 - **Your buffers are yours.** A blob is the bytes at put time: copy, or never keep the caller's array.
 - **Multipart:** parts are numbered 1–10,000. All parts but the last have the same size, and the last is no larger,
   as R2 requires. S3 and R2 need parts of at least 5 MiB except the last. `complete` joins the parts in part-number
@@ -106,10 +112,11 @@ A signed PUT answers with the stored object's info as JSON (`key`, `size`, `etag
 in its header too): 200 when its bytes went in, and 412, as S3 and R2 answer, when `If-None-Match: *` found the key
 already there, with the earlier object's info and nothing written. So a create-only PUT needs no read-back: a
 client takes the info from either answer (or, reading only the status, heads the key after a 412). The host heads
-the key under the same per-key lock its other writes of the key take; a writer outside that lock that creates the
-key in between still loses nothing (the store's `ifAbsent` keeps the first object), and the answer is 412 whenever
-the kept object's size, digest or type differ from the body's. A `hostMediaBlobs` from before this takes the 412 for
-an error.
+the key under the same per-key lock its other writes of the key take (host-http locks media keys, `m/<hash>`). A writer
+outside that lock that creates the key in between still loses nothing: the store's `ifAbsent` keeps the first object,
+and says whether this PUT created it (above), so of two create-only PUTs racing on one key exactly one gets 200,
+whatever their bytes. A store that doesn't say gets 200 only when the PUT's `X-Carton-Sha256` proves the kept bytes are
+its own, else 412. A `hostMediaBlobs` from before this takes the 412 for an error.
 
 Not every PUT answer holds that info, so a client decides by the answer, not by which host signed the URL. A URL a
 host presigns straight to its bucket (S3's or R2's presigned URLs, not `serveSignedBlob`) gets the bucket's answer:
@@ -215,13 +222,21 @@ every host runs the same function. The host:
      the Durable Object's included. The sequencer's rules: an identity's `id` must be the session's account
      (`forbidden` otherwise; the connection goes on), and its name is the person's own choice, 1–200 characters with
      no control characters (`bad-request`). Changes to a person are capped per connection (5, then one every 12 s),
-     since any role may set one and each is a row and a message to everyone. Every welcome page that subscribes
+     since any role may set one and each is a row and a message to everyone; the cap rides in the connection's state,
+     so a Durable Object's wake doesn't reset it. Every welcome page that subscribes
      carries `people` (every person, with every rid bound to them; `[]` says the host keeps them); a person set or
      renamed, and a rid newly bound to a credential with a person (a hello's claim, a push, a hand-off's rows once its
-     transaction commits), go to every connection of the project before the row the rid binds. A reader scoped to some
-     cuts (a Published cut's watch link) gets `people: []` and no `people` messages: a link never tells a stranger the
-     team's accounts and names, so its viewers see the generic person. The conformance host suite checks the refusal,
-     the order, a rename, and that the people survive a hibernation and a restart.
+     transaction commits), go to every connection of the project before the row the rid binds (as an envelope when
+     big: a hello claims up to 4,096 rids). A reader scoped to some cuts (a Published cut's watch link) gets
+     `people: []` and no `people` messages: a link never tells a stranger the team's accounts and names. The
+     conformance host suite checks the refusal, the order, a rename, the cap across a wake, and that the people survive
+     a hibernation and a restart.
+
+     **Known limit: a watch link's viewers see the generic person.** The privacy rule above has a cost: in a Published
+     cut, every change saved from the GUI shows its author as the generic person, never by name, while editors of the
+     same project see the names. A later option is to send a watch link only the display names of the authors in its
+     cut, keyed by the rids of that cut's rows and never with account ids, so its viewers see who made the cut without
+     learning the team's accounts or anyone outside the cut.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from

@@ -8,7 +8,7 @@
 // never saw.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { BlobError, checkKey, MAX_KEY_BYTES } from "./rules.ts";
+import { BlobError, checkKey, MAX_KEY_BYTES, withCreated } from "./rules.ts";
 
 const enc = new TextEncoder();
 
@@ -23,7 +23,7 @@ export function scopedBlobStore(inner: BlobStore, prefix: string): BlobStore {
       throw new BlobError("InvalidKey", `blob key longer than ${room} bytes, what the ${MAX_KEY_BYTES}-byte limit leaves after this store's ${MAX_KEY_BYTES - room}-byte scope prefix`);
     return prefix + key;
   };
-  const strip = (i: BlobInfo): BlobInfo => ({ ...i, key: i.key.slice(prefix.length) });
+  const strip = (i: BlobInfo): BlobInfo => withCreated({ ...i, key: i.key.slice(prefix.length) }, i);
   const wrap = (u: MultipartUpload): MultipartUpload => ({
     key: u.key.slice(prefix.length),
     uploadId: u.uploadId,

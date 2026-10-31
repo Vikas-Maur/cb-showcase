@@ -3,7 +3,7 @@
 // against it doesn't break on R2 or S3.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkPartNumber, checkRange, checkCompleteParts, randomId, BlobError } from "./rules.ts";
+import { checkKey, checkPartNumber, checkRange, checkCompleteParts, randomId, BlobError, markCreated } from "./rules.ts";
 
 export { BlobError } from "./rules.ts";
 
@@ -44,9 +44,10 @@ export class MemoryBlobStore implements BlobStore {
   async put(key: string, data: Uint8Array, opts: { contentType?: string; sha256?: string; ifAbsent?: boolean } = {}): Promise<BlobInfo> {
     checkKey(key);
     const old = this.#objects.get(key);
-    if (opts.ifAbsent && old) return { ...old.info };
+    if (opts.ifAbsent && old) return markCreated({ ...old.info }, false);
     // A copy: the caller may reuse its buffer, and a blob is the bytes as they were at put time.
-    return this.#store(key, data.slice(), opts.contentType, opts.sha256);
+    const info = this.#store(key, data.slice(), opts.contentType, opts.sha256);
+    return opts.ifAbsent ? markCreated(info, true) : info;
   }
 
   async get(key: string, range?: ByteRange): Promise<Uint8Array | null> {

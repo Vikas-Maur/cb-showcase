@@ -412,6 +412,28 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       }
     });
 
+    // People review round 1: the cap lived in the sequencer's memory, so each wake gave a socket a fresh burst.
+    test("changes to a person are capped per connection, and a hibernation doesn't reset the cap", async (t) => {
+      if (!fx.tokenFor || !fx.hibernate) return t.skip("needs tokenFor and hibernate");
+      const acct = `pc${ridOf().slice(0, 10)}`, cred = `${acct}/dev-${ridOf().slice(0, 6)}`;
+      const a = await connect(await fx.tokenFor({ credential: cred, account: acct }));
+      const bx = newBranch();
+      await share(a, bx);
+      await hello(a, bx);
+      for (let i = 0; i < 5; i++) {
+        identify(a, bx, acct, `Cap ${i}`);
+        await a.wait(peopleWith(acct, (p) => p.name === `Cap ${i}`), `rename ${i}`);
+      }
+      const capped = (m: Msg) => m.type === "error" && /changed too often/.test((m as sync.ErrorMsg).reason);
+      identify(a, bx, acct, "over the cap");
+      await a.wait(capped, "the cap");
+      await fx.hibernate();
+      a.got.length = 0;
+      identify(a, bx, acct, "after the wake");
+      const m = await a.wait((m) => capped(m) || peopleWith(acct, (p) => p.name === "after the wake")(m), "the cap, still");
+      assert.equal(m.type, "error", "the woken room still caps the socket");
+    });
+
     test("a duplicate push is acked with the original seq", async () => {
       const b = newBranch();
       const c = await connect(await fx.token("editor"));

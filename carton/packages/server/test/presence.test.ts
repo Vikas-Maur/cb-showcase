@@ -191,3 +191,43 @@ test("presence still queued when its connection goes, sent directly or in an env
   await Promise.all([stalled, direct, inEnvelope]);
   assert.deepEqual(b.inbox.filter((m) => m.type === "presence"), [], "nothing from a connection already gone");
 });
+
+test("presence still queued when its connection is replaced under the same id never reaches the others", async () => {
+  // a host that hands a socket's id to its replacement (a restored socket, a reconnect): the old connection's queued
+  // presence is not the new one's
+  const blobs = memoryBlobs();
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let stall = true;
+  const get = blobs.get.bind(blobs);
+  blobs.get = async (key, range) => {
+    if (stall) {
+      stall = false;
+      await gate;
+    }
+    return get(key, range);
+  };
+  const { seq } = await world(doc([clip("c0", 0, 5)]), { blobs });
+  const a = fakeConn("alice/1"), b = fakeConn("bob/1"), c = fakeConn("carol/1");
+  for (const x of [a, b, c]) await seq.handle(x, hello());
+  b.inbox.length = 0;
+  const key = (sha: string) => sync.clientEnvelopeKey(sha, Date.now());
+  const enveloped = async (m: sync.ClientMessage) => ({ type: "blob" as const, ref: (await sync.seal(sync.oversized(m, 1)!, blobs, key)).ref });
+  const stalled = seq.handle(c, await enveloped(hello()));
+  const actor = { kind: "human" as const, id: "alice" };
+  const queued = seq.handle(a, { type: "presence", branchId: BRANCH, actor, state: { at: 1 } });
+  seq.disconnect(a);
+  const a2 = { ...fakeConn("alice/1"), id: a.id }; // its replacement, not yet subscribed
+  seq.attach(a2);
+  a2.state = { subs: [BRANCH], deadEpoch: -1 }; // as a host restores it, subscribed
+  release();
+  await Promise.all([stalled, queued]);
+  assert.deepEqual(b.inbox.filter((m) => m.type === "presence"), [], "the replaced connection's presence");
+  // the old connection's late close doesn't drop its replacement: the others' presence still reaches it, and its own
+  // goes out
+  seq.disconnect(a);
+  await seq.handle(b, { type: "presence", branchId: BRANCH, actor: { kind: "human", id: "bob" }, state: { at: 9 } });
+  assert.deepEqual(a2.inbox.filter((m) => m.type === "presence").map((m) => (m as sync.PresenceFanoutMsg).state), [{ at: 9 }]);
+  await seq.handle(a2, { type: "presence", branchId: BRANCH, actor, state: { at: 3 } });
+  assert.deepEqual(b.inbox.filter((m) => m.type === "presence").map((m) => (m as sync.PresenceFanoutMsg).state), [{ at: 3 }]);
+});

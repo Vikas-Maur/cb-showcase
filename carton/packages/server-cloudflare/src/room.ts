@@ -172,9 +172,14 @@ export class ProjectRoom {
       },
     };
     this.#conns.set(ws, conn);
-    // after a wake, the time the attachment kept: a wake is not the socket's activity (an attachment from before
-    // `seen` gets the wake's time, once)
+    // after a wake, the time the attachment kept: a wake is not the socket's activity. An attachment from before
+    // `seen` gets the wake's time, written back: the next wake must not give it a fresh one again
     const seen = att.seen ?? Date.now();
+    if (att.seen === undefined) {
+      try {
+        ws.serializeAttachment({ ...att, seen } satisfies Attachment);
+      } catch {} // a socket already closing: dropped by its close
+    }
     this.#seen.set(ws, seen);
     this.#seenSaved.set(ws, seen);
     seq.attach(conn);
@@ -398,5 +403,5 @@ export class ProjectRoom {
   }
 }
 
-/** What of a connection's state the attachment must keep up with. */
-const stateKey = (s: ConnectionState) => `${s.deadEpoch}|${s.envelopes ? 1 : 0}|${s.subs.join(",")}|${JSON.stringify(s.shown ?? null)}`;
+/** What of a connection's state the attachment must keep up with (all of it: a wake restores only the attachment). */
+const stateKey = (s: ConnectionState) => `${s.deadEpoch}|${s.envelopes ? 1 : 0}|${s.subs.join(",")}|${JSON.stringify(s.shown ?? null)}|${JSON.stringify(s.identity ?? null)}`;
