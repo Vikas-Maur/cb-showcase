@@ -211,3 +211,39 @@ test("B5: a view save whose merge raises a card keeps it for its author (cb conf
     await c.close();
   }
 });
+
+test("B5: a retried view save never brings back a card its author resolved meanwhile; the engine passes cut, head and own through", async () => {
+  const { CartonMaterializerEngine } = await import("../src/materializer-engine.ts");
+  const { actorKey } = await import("../src/writes.ts");
+  const store = createMemoryStore();
+  const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: { kind: "system", id: "engine" } });
+  try {
+    const eng = new CartonMaterializerEngine(c);
+    await eng.head();
+    // what cardboard's materializer reads through it: the current cut, its head key, an author's own inserts
+    assert.equal(eng.cut(), c.cut);
+    assert.equal(JSON.parse(await eng.headRef())[0], c.cut);
+    assert.equal(typeof eng.own(agent), "function");
+    const at = await c.head();
+    const base = { baseDoc: structuredClone(at.doc), baseSeq: at.ref.seq, causal: [] as string[] };
+    await c.commit({ author: { kind: "human", id: "human:me" }, ops: [set("c1", "opacity", 0.6)] });
+    const doc = structuredClone(base.baseDoc) as { timelineItems: { id: string; opacity: number }[] };
+    doc.timelineItems.find((i) => i.id === "c1")!.opacity = 0.33;
+    const id = c.newChangeId();
+    const input = { doc: doc as never, base, author: agent, meta: { file: ".scratch/views/a.tsx", view: "a" }, id };
+    assert.equal((await eng.commit(input)).status, "conflicts");
+    const mine = async () => (await store.range<{ cards?: { path: string }[] }>("notices", { prefix: [actorKey(agent)] })).map((r) => r.value).filter((v) => v.cards?.length);
+    assert.equal((await mine()).length, 1, "the card, kept for its author");
+    // the agent resolves it (`cb resolve` closes the card) ...
+    const r = await runWrite(c, { id: "b5.resolve", actor: agent, op: { kind: "closeCard", change: id, path: "timelineItems/c1/opacity" } });
+    assert.equal(r.status, "confirmed", JSON.stringify(r));
+    assert.equal((await mine()).length, 0, "resolved");
+    // ... and then the save is retried (the materializer finishing a save stored before a crash): same id, same answer
+    const again = await eng.commit(input);
+    assert.equal(again.status, "conflicts", "the retry still reports the save's cards in its sidecar");
+    assert.equal((await mine()).length, 0, "but the resolved card stays resolved");
+    assert.equal(((await c.head()).doc.timelineItems as { id: string; opacity: number }[]).find((i) => i.id === "c1")!.opacity, 0.6, "one change, the newer value kept");
+  } finally {
+    await c.close();
+  }
+});

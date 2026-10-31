@@ -251,6 +251,13 @@ export interface ViewPrinter {
    * follows; a frozen timeline.tsx doesn't).
    */
   onCutSwitch?(cut: string): void | Promise<void>;
+  /**
+   * carton.db may have moved under the holder (another process wrote it, B11): the materializer reads head and brings
+   * the files up to it, or does nothing when it already shows that head (cardboard-adapter `e352fea`). The holder's
+   * follower calls it on every write another connection made; without it, `onHeadChange("local")` for another
+   * process's change on the current cut.
+   */
+  onExternalHeadChange?(): Promise<unknown>;
   /** A view's change settled after its save returned (a shared cut): its `.status` sidecar says so (R5-04). */
   onChangeUpdate?(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; reason?: string }): Promise<void>;
 }
@@ -335,6 +342,11 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "fold": {
       // --keep mine|theirs decides every card one way; without it a fold with cards saves nothing and lists them
       const choices = op.keep ? () => (op.keep === "mine" ? "ours" : "theirs") as "ours" | "theirs" : undefined;
+      // what "the rest" would be for this request is decided (and recorded) before the fold: core records a fold that
+      // finds nothing new as a no-op under the request's id, so a decision made after it could be interrupted, and a
+      // retry would then pick a partial fold made after the request was answered
+      const restAsked = !op.check && !op.reject?.length;
+      const rest = restAsked ? await restOf(carton, req.id, op.from, op.into) : null;
       r = op.reject?.length
         ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices, id: req.id })
         : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
@@ -342,8 +354,8 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4).
       // A retry finds the first try's answer recorded as a no-op (confirmed, empty) and carries on from there
       const nothingNew = r?.status === "up-to-date" || (r?.status === "confirmed" && r.empty);
-      if (nothingNew && !op.check && !op.reject?.length) {
-        const inverse = await restOf(carton, req.id, op.from, op.into);
+      if (nothingNew && restAsked) {
+        const inverse = rest;
         if (inverse) {
           // its own id (the fold above recorded the request's id as a no-op); a retry gets this revert's answer again
           r = await carton.revert(inverse, { author, cut: op.into, id: `${req.id}.rest` });
@@ -436,29 +448,64 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   const store = storeOf(carton);
   // a retry: answer as the first time (an undo, or nothing to undo), before looking at what the turn holds now, on the
   // cut that answer is on (the current cut may have changed since the first try), with the cards it raised
-  const answeredOn = await answeredBefore(carton, id);
-  if (answeredOn) {
-    const h = answeredOn === (cut ?? carton.cut) ? head : await carton.head(answeredOn);
+  const replay = async (on: string) => {
+    const h = on === (cut ?? carton.cut) ? head : await carton.head(on);
     const cards = (store ? await store.get<ConflictCard[]>("notices", undoCardsKey(id)) : undefined) ?? [];
-    return { r: await carton.commit({ id, doc: h.doc, base: h.ref, author, cut: answeredOn }), cards };
-  }
+    return { r: await carton.commit({ id, doc: h.doc, base: h.ref, author, cut: on }), cards };
+  };
+  const answeredOn = await answeredBefore(carton, id);
+  if (answeredOn) return replay(answeredOn);
   const versions = await carton.log({ cut, limit: 5000 });
   const undone = new Set<string>();
   for (const v of versions) if (v.kind === "undo" && v.change) for (const x of (await revertsOf(carton, v.change))) undone.add(x);
   const mine = versions.filter((v) => v.author?.turn === turn && v.change && v.kind !== "undo" && !undone.has(v.change));
   // nothing (left) to undo: head itself, under the request's id. A retry of an undo that landed gets its answer back;
   // a first one changes nothing and is recorded as a no-op, so its retry never undoes work that reached the turn since
-  if (!mine.length) return { r: await carton.commit({ id, doc: head.doc, base: head.ref, author, cut }), cards: [] };
+  if (!mine.length) {
+    // a copy of this request that finished meanwhile is why nothing is left: its answer, with its cards
+    const on = await answeredBefore(carton, id);
+    if (on) return replay(on);
+    return { r: await carton.commit({ id, doc: head.doc, base: head.ref, author, cut }), cards: [] };
+  }
   let doc: Doc = head.doc;
-  const cards: ConflictCard[] = [];
+  // one card per path: the turn changed a field several times, and a later edit changed it again. Newest first, so the
+  // first card's base is the turn's last value and ours is head's; each older change's card only moves theirs back to
+  // the value before it, so picking the undo restores the value from before the turn, not one of the turn's own
+  const byPath = new Map<string, ConflictCard>();
   for (const v of mine) {
     const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - 1 }), carton.checkout(v.ref)]);
     // base: the turn's change; ours: head (a clash keeps head's newer value); theirs: before the change
     const m = merge3(after, doc, before, carton.schema, { infer: false });
     doc = m.doc;
-    cards.push(...m.conflicts);
+    for (const c of m.conflicts) {
+      const prev = byPath.get(c.path);
+      if (!prev) { byPath.set(c.path, c); continue; }
+      const { hunks: _h, ops: _o, ...kept } = prev; // a text card's hunks described the newer pair only
+      byPath.set(c.path, { ...kept, theirs: c.theirs });
+    }
   }
-  if (cards.length && store) await store.write([cardsRow(author, id, id, cards), { table: "notices", key: undoCardsKey(id), value: cards }]);
+  const cards = [...byPath.values()];
+  if (store) {
+    // the cards go in only while this request has no answer yet: a copy of it that finished meanwhile (and whose cards
+    // its author may have resolved since) is answered as it was, its cards never written again. A first try that
+    // stopped before committing left cards for an undo that never landed: these replace them
+    const target = cut ?? carton.cut;
+    const shared = (await carton.cuts()).find((c) => c.id === target)?.sequencer.kind !== "local";
+    const unanswered = [
+      { table: "ids", key: [id], expect: "absent" as const },
+      { table: "meta", key: ["noop", id], expect: "absent" as const },
+      ...(shared ? [{ table: "pending", key: [target, id], expect: "absent" as const }] : []),
+    ];
+    const earlier = await store.get<ConflictCard[]>("notices", undoCardsKey(id));
+    if (cards.length || earlier?.length) {
+      const row = cards.length ? cardsRow(author, id, id, cards) : { table: "notices", key: cardsKey(author, id), value: undefined };
+      if (!(await store.write([row, { table: "notices", key: undoCardsKey(id), value: cards }], unanswered))) {
+        const on = await answeredBefore(carton, id);
+        if (on) return replay(on);
+        throw new Error("undo --turn: the store changed under this write; try again");
+      }
+    }
+  }
   return { r: await carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) }), cards };
 }
 /** The cards an `undo --turn` request raised (local `notices` table, no actor reads it): its retry answers with them. */
@@ -505,9 +552,9 @@ async function keptOut(carton: Carton, from: string, into?: string): Promise<Cha
 }
 
 /**
- * What a fold request folds in as "the rest": decided once per request and recorded before acting (local `notices`
- * table, `["@fold-rest", id]`, which no actor reads), so a retry, or a second copy of the request, replays that
- * decision: the same inverse, or nothing, never a partial fold made after the request was answered.
+ * What a fold request folds in as "the rest": decided once per request and recorded before the fold itself runs
+ * (local `notices` table, `["@fold-rest", id]`, which no actor reads), so a retry, or a second copy of the request,
+ * replays that decision: the same inverse, or nothing, never a partial fold made after the request was first made.
  */
 async function restOf(carton: Carton, requestId: ChangeId, from: string, into?: string): Promise<ChangeId | null> {
   const store = storeOf(carton);
@@ -517,6 +564,9 @@ async function restOf(carton: Carton, requestId: ChangeId, from: string, into?: 
   if (done || !store) return done ?? (await keptOut(carton, from, into));
   const prior = await store.get<Decision>("notices", key);
   if (prior) return prior.inverse;
+  // core already holds an answer for this request but no decision was recorded with it (a request from before
+  // decisions were recorded first): nothing more, never a partial fold made since
+  if (await answeredBefore(carton, requestId)) return null;
   const inverse = await keptOut(carton, from, into);
   if (await store.write([{ table: "notices", key, value: { inverse } satisfies Decision }], [{ table: "notices", key, expect: "absent" }])) return inverse;
   return (await store.get<Decision>("notices", key))?.inverse ?? null; // another copy decided first

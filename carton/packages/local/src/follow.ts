@@ -41,6 +41,11 @@ export interface FollowOptions {
   onHead(cut: string): void | Promise<void>;
   /** This machine's current cut is another one now (another process switched it); this handle has switched too. */
   onCut(cut: string): void | Promise<void>;
+  /**
+   * Another connection committed, but no change row of another process on the current cut says so (its write was on
+   * another cut, a pending change or a notice, or the app's own sync): told when nothing else was.
+   */
+  onMoved?(cut: string): void | Promise<void>;
   /** Poll interval (ms). 0: no polling, only `check()` (a nudge). Default FOLLOW_MS. */
   intervalMs?: number;
   /**
@@ -79,6 +84,15 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (known.size > KNOWN_MAX) known.delete(known.values().next().value!);
   });
   let running: Promise<void> | null = null;
+  /**
+   * A notification whose listener failed: the stamp and the baselines have moved past what it reports, so it is kept
+   * and tried again at the next look (poll or nudge) until it goes through; a newer one replaces it.
+   */
+  let owed: (() => Promise<void>) | null = null;
+  const tell = async (f: () => void | Promise<void>): Promise<void> => {
+    owed = null;
+    try { await f(); } catch (e) { if (!stopped) owed = async () => { await f(); }; throw e; }
+  };
   let again = false;
   let timer: NodeJS.Timeout | null = null;
 
@@ -105,8 +119,10 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     const stored = await store.get<string>("meta", ["current"]);
     if (!stored || stored === mine || !(await carton.cuts()).some((c) => c.id === stored)) return null;
     return exclusive(async () => {
-      // under the lock, read again: a switch served (or made by the app) since the first read wins
-      if (stopped || carton.cut !== mine || (await store.get<string>("meta", ["current"])) !== stored) return null;
+      // under the lock, read again: a switch served (or made by the app) since the first read wins, and a stop asked
+      // for during that read stops it
+      const now = await store.get<string>("meta", ["current"]);
+      if (stopped || carton.cut !== mine || now !== stored) return null;
       await carton.switchTo(stored);
       return stored;
     });
@@ -114,8 +130,11 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
 
   const look = async (): Promise<void> => {
     if (!started) await start();
+    if (owed && !stopped) await tell(owed);
     const s = await stamp();
     if (s === lastStamp) return;
+    // the first look only records where the store is
+    const first = lastStamp === null;
     lastStamp = s;
     const switched = await adoptCut();
     if (stopped) return;
@@ -132,8 +151,9 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (foreign.length) { await new Promise((r) => setImmediate(r)); foreign = foreign.filter((id) => !known.has(id)); }
     for (const id of mine) known.delete(id);
     if (stopped) return;
-    if (switched) await o.onCut(switched);
-    else if (foreign.length) await o.onHead(cut);
+    if (switched) await tell(() => o.onCut(switched));
+    else if (foreign.length) await tell(() => o.onHead(cut));
+    else if (!first && o.onMoved) await tell(() => o.onMoved!(cut));
   };
   // one look at a time; a check asked for during one runs once more after it (it may have missed that write)
   const check = (): Promise<void> => {
