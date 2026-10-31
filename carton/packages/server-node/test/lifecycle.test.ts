@@ -77,17 +77,26 @@ test("host close waits for sequencer work still writing, however long, before it
       return typeof v === "function" ? v.bind(t) : v;
     },
   }) as BlobStore;
-  const h = await startNodeHost({ dataDir: join(scratch("close-drain"), "d"), auth, secret: SECRET, blobs: slow, durability: "normal" });
+  const dataDir = join(scratch("close-drain"), "d");
+  const h = await startNodeHost({ dataDir, auth, secret: SECRET, blobs: slow, durability: "normal" });
   const c = await webSocketTransport({ keepaliveMs: 0 }).connect(h.urlFor("p"), { token: await tokenFor("o", "p") });
   c.send(adoptMsg("b1", { tracks: [{ id: "V1" }], timelineItems: [] }));
   await until(() => blocked > 0, "the keyframe write started");
   let closed = false;
   const closing = h.close().then(() => (closed = true));
-  await new Promise((r) => setTimeout(r, 300));
+  // past the 10 s an earlier version waited before closing the database anyway
+  await new Promise((r) => setTimeout(r, 10_500));
   assert.equal(closed, false, "close resolved while the sequencer was still writing");
   release();
   await closing;
-  assert.ok(closed);
+  // the held write finished on its own database: a host restarted on the same data has the adopted cut
+  const again = await startNodeHost({ dataDir, auth, secret: SECRET, blobs: slow, durability: "normal" });
+  hosts.push(again);
+  const d = await webSocketTransport({ keepaliveMs: 0 }).connect(again.urlFor("p"), { token: await tokenFor("o", "p") });
+  const got = new Promise<sync.ServerMessage>((ok) => d.onMessage(ok));
+  d.send({ type: "branchStatus", branchId: "b1" } as sync.ClientMessage);
+  assert.equal(((await got) as sync.StatusMsg).adopted, true);
+  d.close();
 });
 
 test("an expired subscriber gets nothing more and is closed with 4001, even while silent", async () => {
