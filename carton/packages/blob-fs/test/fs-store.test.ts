@@ -121,3 +121,20 @@ test("complete copies the part it validated, even if the part is replaced meanwh
   }
   rmSync(dir, { recursive: true });
 });
+
+test("complete holds one part open at a time (an upload may have thousands of parts)", async (t) => {
+  if (!existsSync("/proc/self/fd")) return t.skip("counts open handles through /proc (Linux)");
+  const dir = fresh();
+  const s = new FsBlobStore({ root: dir, durable: false });
+  const up = await s.createMultipart("many");
+  const parts = [];
+  for (let i = 1; i <= 120; i++) parts.push(await up.uploadPart(i, new Uint8Array(64).fill(i)));
+  const base = readdirSync("/proc/self/fd").length;
+  let peak = 0;
+  const timer = setInterval(() => (peak = Math.max(peak, readdirSync("/proc/self/fd").length - base)), 0);
+  const info = await up.complete(parts);
+  clearInterval(timer);
+  assert.equal(info.size, 120 * 64);
+  assert.ok(peak < 20, `${peak} more descriptors open during complete`);
+  rmSync(dir, { recursive: true });
+});
