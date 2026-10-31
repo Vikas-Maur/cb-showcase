@@ -109,6 +109,8 @@ export interface HelloMsg {
   envelopes?: boolean;
   /** A continuation of the claims (`WelcomeMsg.checkedThrough`): they were checked through this seq already. */
   claimsAfter?: number;
+  /** The person at this replica (`IdentityMsg`); a server that keeps no people ignores it. */
+  identity?: Person;
 }
 /** Pipelined push of pending changes in queue order. A reject kills the rest of that `epoch`. */
 export interface PushMsg {
@@ -208,8 +210,27 @@ export interface PresenceMsg {
   actor: Actor;
   state: PresenceState | null;
 }
+/** The person at a replica (windows-sync R3): the session's account (`AuthContext.account`) and the name it shows. */
+export interface Person {
+  id: string;
+  name: string;
+}
+/** A person and every replica id bound to their device credential (§6.3): changes with those ids are theirs. */
+export interface PersonRids extends Person {
+  rids: string[];
+}
+/**
+ * This replica's person, kept by the server for the connection's device credential: `id` must be the session's
+ * account (else `forbidden`), the name is the person's own choice. Also sent in `hello`; sent alone only to a server
+ * whose welcome had `people`.
+ */
+export interface IdentityMsg {
+  type: "identity";
+  branchId: string;
+  identity: Person;
+}
 /** Any message over 1 MiB, either way, travels as an envelope (`envelope.ts`). */
-export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | HistoryMsg | EnvelopeMsg;
+export type ClientMessage = HelloMsg | PushMsg | WithdrawMsg | BranchStatusMsg | AdoptMsg | ForkMsg | KeyframeMsg | PresenceMsg | HistoryMsg | IdentityMsg | EnvelopeMsg;
 
 // ------------------------------------------------------------------ server -> client
 
@@ -240,6 +261,11 @@ export interface WelcomeMsg {
    * through this seq; ask again with `claimsAfter` set to it. Such a page holds the list alone (no rows, no keyframe).
    */
   checkedThrough?: number;
+  /**
+   * Every person of the project with the replica ids bound to them (on a page that subscribes). Present, even empty,
+   * when the server keeps people: the client may then send `identity` on this connection.
+   */
+  people?: PersonRids[];
 }
 /** New confirmed rows, fanned out to every subscriber (the pusher too, before its ack). */
 export interface ChangesMsg {
@@ -353,8 +379,19 @@ export interface HistoryReplyMsg {
   error?: string;
 }
 
+/**
+ * A change to the people (a person set or renamed, a replica id newly bound to one), to every connection of the
+ * project, before the rows of a newly bound replica id. An entry for a replica id replaces what the client had for it.
+ */
+export interface PeopleMsg {
+  type: "people";
+  branchId: string;
+  people: PersonRids[];
+}
+
 export type ServerMessage =
   | WelcomeMsg
+  | PeopleMsg
   | HistoryReplyMsg
   | ChangesMsg
   | AckMsg

@@ -350,7 +350,9 @@ export interface Version {
   /** Full state hash, when already known (the head, named versions); `hashOf(ref)` computes any other. */
   hash?: string;
   change: ChangeId | null;
+  /** Who: the generic person told by person where known (Carton.setIdentity), the actor as recorded in `authoredAs`. */
   author: Actor | null;
+  authoredAs?: Actor;
   at: number;
   name?: string;
   kind: ChangeKind | "root" | "fork";
@@ -358,7 +360,7 @@ export interface Version {
   summary?: string;
 }
 
-export type LineageKind = "head" | "root" | "fork" | "merge" | "export";
+export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";
 
 /**
  * A node of the lineage graph carried by shallow `.cbproj` exports (§13): fork, merge, export, root and head nodes.
@@ -541,7 +543,9 @@ export type CartonEvent =
    * The host refused or failed this replica's sync of a cut (a hello refused, a token the host doesn't accept, a host
    * it can't reach, an upload over the host's limit): `error`, until a later welcome or ack clears it (`null`).
    */
-  | { type: "sync-error"; branchId: string; error: SyncError | null };
+  | { type: "sync-error"; branchId: string; error: SyncError | null }
+  /** Who is behind a replica changed (`setIdentity`, or the server's people): authors in log() and credits() may read differently. */
+  | { type: "people" };
 
 /**
  * Why a cut's sync is failing, for a sync status line. `code`: `update-server` (the host is older than this app's
