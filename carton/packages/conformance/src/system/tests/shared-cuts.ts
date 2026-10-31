@@ -50,14 +50,14 @@ export async function sharedCutWorld({ latencyMs = 0, blobs, clientBlobs = true 
   const d0 = withKeys({ name: "e2e", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: [clip("c0", 0, 5), clip("c1", 5, 10), clip("c2", 10, 15)] });
   const branch = { id: "cut-main", name: "Main cut", kind: "main", sequencer: { kind: "server" as const, since: 0 } };
   await host.sequencer.createBranch({ id: branch.id, name: branch.name, forkOf: null, owner: "alice", kind: "main", sequencer: { kind: "server", since: 0 } }, { doc0: d0 });
-  const replica = (name: string) => {
+  const replica = (name: string, wrap: (t: Transport) => Transport = (t) => t) => {
     const token = `tok-${name}`;
     tokens.set(token, { account: name, credential: `${name}/install`, role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
     const cut = new sync.SharedCut({
       schema: cardboard,
       branch,
       doc0: d0,
-      transport: latencyMs ? withLatency(host.transport, latencyMs) : host.transport,
+      transport: wrap(latencyMs ? withLatency(host.transport, latencyMs) : host.transport),
       url: host.url,
       token,
       schemaVersion: 1,
@@ -78,8 +78,9 @@ export async function sharedCutWorld({ latencyMs = 0, blobs, clientBlobs = true 
   assert.ok(await a.cut.connect({ nonce: "na" }), "alice caught up");
   assert.ok(await b.cut.connect({ nonce: "nb" }), "bob caught up");
   const extra: ReturnType<typeof replica>[] = [];
-  const more = (name: string) => {
-    const r = replica(name);
+  /** Another replica (connect it yourself); `wrap` its transport to watch or delay what it sends. */
+  const more = (name: string, wrap?: (t: Transport) => Transport) => {
+    const r = replica(name, wrap);
     extra.push(r);
     return r;
   };
