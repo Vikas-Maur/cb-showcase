@@ -80,6 +80,8 @@ export interface SequencerStats {
   adoptRepeats: number;
   ridClaimConflicts: number;
   keyframes: number;
+  /** Presence updates dropped by the per-connection cap. */
+  presenceDropped: number;
   rowsRead: number;
   rowsWritten: number;
   /** Envelopes opened (from clients) and sealed (to clients: one per message, however many connections). */
@@ -214,6 +216,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     adoptRepeats: 0,
     ridClaimConflicts: 0,
     keyframes: 0,
+    presenceDropped: 0,
     get rowsRead() {
       return opts.storage.stats?.().rowsRead ?? tables.meter.rowsRead;
     },
@@ -784,8 +787,27 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     emit({ type: "keyframe", branchId: m.branchId, seq: k.seq, mismatch: false });
   }
 
+  // Per connection, a token bucket: PRESENCE_BURST updates at once, refilled at PRESENCE_PER_SEC. Clients send at most
+  // 10 a second (the sync client coalesces); anything over the cap is dropped, so a misbehaving client can't make the
+  // relay, and on a Durable Object the fan-out work, grow with its sending rate.
+  const presenceBuckets = new Map<string, { tokens: number; at: number }>();
+  function presenceAllowed(c: HostConnection): boolean {
+    const now = clock();
+    const b = presenceBuckets.get(c.id) ?? { tokens: PRESENCE_BURST, at: now };
+    b.tokens = Math.min(PRESENCE_BURST, b.tokens + ((now - b.at) / 1000) * PRESENCE_PER_SEC);
+    b.at = now;
+    presenceBuckets.set(c.id, b);
+    if (b.tokens < 1) return false;
+    b.tokens -= 1;
+    return true;
+  }
+
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
     if (!stateOf(c).subs.includes(m.branchId)) return;
+    if (!presenceAllowed(c)) {
+      stats.presenceDropped++;
+      return;
+    }
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
@@ -847,6 +869,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     disconnect(conn) {
       conns.delete(conn.id);
       outboxes.delete(conn.id);
+      presenceBuckets.delete(conn.id);
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
@@ -932,6 +955,9 @@ function utf8Over(text: string, limit: number): boolean {
 function declarationTooLarge(ch: Change): boolean {
   return (ch.paths?.length ?? 0) + (ch.reads?.length ?? 0) > 200_000 || (ch.spans?.length ?? 0) > 50_000 || (ch.trackOrder?.length ?? 0) > 10_000 || (ch.base?.pending?.length ?? 0) > 10_000;
 }
+/** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
+const PRESENCE_BURST = 20;
+const PRESENCE_PER_SEC = 20;
 /** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
 const ARCHIVE_KEEP = 10_000;
 const ARCHIVE_SEGMENT = 10_000;
