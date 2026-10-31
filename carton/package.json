@@ -13,6 +13,7 @@
     "packages/blob-fs",
     "packages/blob-s3",
     "packages/server",
+    "packages/host-http",
     "packages/server-node",
     "packages/server-cloudflare",
     "packages/media",

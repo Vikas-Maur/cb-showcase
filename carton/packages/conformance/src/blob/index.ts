@@ -71,7 +71,9 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
 
     test("put then get and head return the bytes and their size", async () => {
       const data = bytes(1000, 1);
-      const info = await store.put(k("a"), data, { contentType: "video/mp4", sha256: "ab".repeat(32) });
+      // the real hash: a store may verify it (R2 does) and refuse bytes that don't match
+      const sha256 = [...new Uint8Array(await crypto.subtle.digest("SHA-256", data))].map((b) => b.toString(16).padStart(2, "0")).join("");
+      const info = await store.put(k("a"), data, { contentType: "video/mp4", sha256 });
       assert.equal(info.key, k("a"));
       assert.equal(info.size, 1000);
       eq(await store.get(k("a")), data);
@@ -79,7 +81,7 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
       assert.ok(h);
       assert.equal(h.size, 1000);
       assert.equal(h.contentType, "video/mp4");
-      assert.equal(h.sha256, "ab".repeat(32));
+      assert.equal(h.sha256, sha256);
     });
 
     test("a blob is the bytes at put time: the caller's buffers are never shared", async () => {
