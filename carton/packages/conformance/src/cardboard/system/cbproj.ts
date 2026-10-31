@@ -10,7 +10,7 @@ import { Carton } from "@carton/core";
 import type { Actor, Doc } from "@carton/core";
 import { createMemoryStore } from "@carton/store-memory";
 import { cardboardAdapter, fromHost, toHost } from "@carton/cardboard";
-import { execFileSync } from "node:child_process";
+import zlib from "node:zlib";
 import { exportCbproj, readCbproj, bringInTheirChanges, extractFullHistory } from "@carton/cardboard/node";
 import { SCRATCH, clips, find, type Item } from "./world.ts";
 
@@ -110,20 +110,62 @@ test(".cbproj: a sender's file that does carry view files or Carton's database l
   void ({} as Doc);
 });
 
+/**
+ * A zip of STORED members with exactly these names, written byte by byte: a sender's file our writer would refuse. No
+ * zip library is used, because they rewrite names (Python's zipfile turns `\` into `/` on Windows), so the archive is
+ * the same on every OS.
+ */
+function rawZip(entries: [name: string, data: string][]): Buffer {
+  const parts: Buffer[] = [];
+  const central: Buffer[] = [];
+  let offset = 0;
+  for (const [name, text] of entries) {
+    const n = Buffer.from(name, "utf8");
+    const data = Buffer.from(text, "utf8");
+    const crc = zlib.crc32(data);
+    const local = Buffer.alloc(30);
+    local.writeUInt32LE(0x04034b50, 0);
+    local.writeUInt16LE(20, 4); // version needed: 2.0
+    local.writeUInt16LE(0x0800, 6); // UTF-8 name
+    local.writeUInt16LE(0x21, 12); // date 1980-01-01 (method 0, stored, and time 0 stay zero)
+    local.writeUInt32LE(crc, 14);
+    local.writeUInt32LE(data.length, 18);
+    local.writeUInt32LE(data.length, 22);
+    local.writeUInt16LE(n.length, 26);
+    parts.push(local, n, data);
+    const cd = Buffer.alloc(46);
+    cd.writeUInt32LE(0x02014b50, 0);
+    cd.writeUInt16LE(20, 4); // made by: MS-DOS, 2.0
+    cd.writeUInt16LE(20, 6);
+    cd.writeUInt16LE(0x0800, 8);
+    cd.writeUInt16LE(0x21, 14);
+    cd.writeUInt32LE(crc, 16);
+    cd.writeUInt32LE(data.length, 20);
+    cd.writeUInt32LE(data.length, 24);
+    cd.writeUInt16LE(n.length, 28);
+    cd.writeUInt32LE(offset, 42);
+    central.push(cd, n);
+    offset += local.length + n.length + data.length;
+  }
+  const dir = Buffer.concat(central);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(entries.length, 8);
+  end.writeUInt16LE(entries.length, 10);
+  end.writeUInt32LE(dir.length, 12);
+  end.writeUInt32LE(offset, 16);
+  return Buffer.concat([...parts, dir, end]);
+}
+
 // 1.4.0's importer turns `\` into `/` (yauzl with strictFileNames off), so `.scratch\views\x.tsx` would be extracted
-// into `.scratch/views/`. Our zip writer refuses such names, so the file is made with Python's zipfile.
+// into `.scratch/views/`. Our zip writer refuses such names, so the file is written by `rawZip`.
 test(".cbproj: a member named with backslashes is judged as 1.4.0 will extract it: `.scratch\\views\\…` is ignored", async (t) => {
   const project = { id: "proj-3", name: "Film", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(1) };
   const dir = bundle(t, "bs", project);
   const out = path.join(dir, "..", `bs-${Date.now()}.cbproj`);
   t.after(() => fs.rmSync(out, { force: true }));
   const manifest = JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] });
-  try {
-    execFileSync("python3", ["-c", "import sys,zipfile\nz=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED)\nz.writestr('project.json',sys.argv[2])\nz.writestr('.scratch\\\\views\\\\x.tsx','// cardboard:rev main@3~deadbeef b:00000000\\n')\nz.writestr('.carton\\\\carton.db','x')\nz.close()", out, manifest]);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return t.skip("no python3");
-    throw e;
-  }
+  fs.writeFileSync(out, rawZip([["project.json", manifest], [".scratch\\views\\x.tsx", "// cardboard:rev main@3~deadbeef b:00000000\n"], [".carton\\carton.db", "x"]]));
   const c = await readCbproj(out);
   assert.deepEqual(c.ignored.sort(), [".carton\\carton.db", ".scratch\\views\\x.tsx"]);
   assert.deepEqual(c.files, []);
@@ -157,12 +199,7 @@ test(".cbproj: aliases of excluded paths, unsafe names and colliding members are
   t.after(() => fs.rmSync(out, { force: true }));
   const manifest = JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] });
   const names = ["./.carton/carton.db", ".scratch/./views/x.tsx", "media//a.mp4", "media/a.mp4", "../escape.txt", "./.carton-export/shallow.json", "notes.md"];
-  try {
-    execFileSync("python3", ["-c", "import sys,zipfile,json\nz=zipfile.ZipFile(sys.argv[1],'w',zipfile.ZIP_STORED)\nz.writestr('project.json',sys.argv[2])\nfor n in json.loads(sys.argv[3]): z.writestr(n,'x')\nz.close()", out, manifest, JSON.stringify(names)]);
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === "ENOENT") return t.skip("no python3");
-    throw e;
-  }
+  fs.writeFileSync(out, rawZip([["project.json", manifest], ...names.map((n): [string, string] => [n, "x"])]));
   const c = await readCbproj(out);
   assert.deepEqual(c.files, ["media//a.mp4", "notes.md"], "only one member per extracted path, and nothing excluded");
   assert.deepEqual(c.ignored.sort(), ["../escape.txt", "./.carton-export/shallow.json", "./.carton/carton.db", ".scratch/./views/x.tsx", "media/a.mp4"].sort());
