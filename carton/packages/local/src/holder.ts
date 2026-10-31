@@ -122,7 +122,8 @@ export class Holder {
     this.beatTimer = setInterval(() => void this.heartbeat(), LEASE_BEAT_MS);
     this.beatTimer.unref?.();
     // the fence is this holder's own knowledge, refreshed by every heartbeat (a failed beat stops it); between beats a
-    // replaced holder can push at most what the server deduplicates by id (§6.2, R5-06)
+    // replaced holder can push at most what the server deduplicates by id (§6.2, R5-06). What it would record from the
+    // server's answers is conditional on the lease in the store (the engine's `startSync`), so it records nothing
     await this.opts.engine.startSync?.(row.nonce, () => void this.stop("fenced: lease nonce changed"), (n) => !this.stopped && this.nonce === n);
     if (this.opts.idleMs) this.armIdle();
     return true;
