@@ -96,16 +96,21 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
    * never holds up adopting a newer cut). It is what to tell, not a call to repeat: it is told for the cut the handle
    * is on then, merged with what that look found (the larger of the two), and dropped once the handle has left its cut
    * (whatever moved it told the materializer: an adoption, told as such, or a switch served here, which owes a notice of
-   * its own through `owe` when telling failed).
+   * its own through `owe` when telling failed). Only a notice for the cut the handle is on is ever kept: a failed one for
+   * a cut it has left since (a served switch while the listener ran) never replaces what that switch owes.
    */
   let owed: Notice | null = null;
+  const owe = (n: Notice): void => {
+    if (stopped || n.cut !== carton.cut) return;
+    if (!owed || owed.cut !== n.cut || RANK[n.kind] > RANK[owed.kind]) owed = n;
+  };
   const tell = async (n: Notice): Promise<void> => {
     try {
       if (n.kind === "cut") await o.onCut(n.cut);
       else if (n.kind === "head") await o.onHead(n.cut);
       else await o.onMoved?.(n.cut);
     } catch (e) {
-      if (!stopped) owed = n;
+      owe(n);
       throw e;
     }
   };
@@ -172,6 +177,8 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   const look = async (): Promise<void> => {
     if (!started) await start();
     let n = await scan();
+    // a served switch moved the handle while this look read the store: what it found is about a cut the handle has left
+    if (n && n.cut !== carton.cut) n = null;
     const left = owed;
     owed = null;
     if (left && left.cut === carton.cut && (!n || RANK[left.kind] > RANK[n.kind])) n = left;
@@ -209,10 +216,6 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   };
   // the first look records where the store is; moves are what changes after it
   tick();
-  const owe = (n: Notice): void => {
-    if (stopped) return;
-    if (!owed || owed.cut !== n.cut || RANK[n.kind] > RANK[owed.kind]) owed = n;
-  };
   return { check, stop, owe };
 }
 
