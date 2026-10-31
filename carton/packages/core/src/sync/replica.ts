@@ -40,8 +40,68 @@ export type SharedCutEvent =
 export type WriteOutcome =
   | { status: "confirmed"; id: string; seq: number }
   | { status: "conflicts"; id: string; seq?: number; cards: ConflictCard[]; absorbed?: boolean }
+  /**
+   * Spent by a withdraw (H1), or absorbed before it was sent: it changed nothing of its own. Live, it left no cards
+   * (with cards it is `conflicts`, `absorbed: true`); when the outcome is older than this process's record of it,
+   * whether it left cards is no longer known (they went to the replica's cards when it happened).
+   */
+  | { status: "absorbed"; id: string; seq: number }
   | { status: "rejected"; id: string; reason: string }
   | { status: "pending"; id: string };
+
+/**
+ * The outcomes of a queue's changes, shared by every SharedCut over that queue: a wrapper made later, or a second one,
+ * sees what happened before it (round 2 finding 7). Subscribed once, for the queue's lifetime; the newest 4,096 kept.
+ */
+interface OutcomeLog {
+  get(b: string, id: string): WriteOutcome | undefined;
+  record(b: string, id: string, o: WriteOutcome): void;
+  on(l: (b: string, id: string, o: WriteOutcome) => void): () => void;
+}
+const LOGS = new WeakMap<ReplicaQueue, OutcomeLog>();
+function outcomeLog(queue: ReplicaQueue): OutcomeLog {
+  const had = LOGS.get(queue);
+  if (had) return had;
+  const map = new Map<string, WriteOutcome>();
+  const listeners = new Set<(b: string, id: string, o: WriteOutcome) => void>();
+  const log: OutcomeLog = {
+    get: (b, id) => map.get(`${b}\u0000${id}`),
+    record(b, id, o) {
+      const k = `${b}\u0000${id}`;
+      map.delete(k);
+      map.set(k, o);
+      if (map.size > 4096) map.delete(map.keys().next().value!);
+      for (const l of listeners) l(b, id, o);
+    },
+    on(l) {
+      listeners.add(l);
+      return () => listeners.delete(l);
+    },
+  };
+  queue.on((e) => {
+    switch (e.type) {
+      case "confirmed": {
+        const cards = [...e.change.cards, ...e.lateCards];
+        log.record(e.branchId, e.row.id, cards.length ? { status: "conflicts", id: e.row.id, seq: e.row.seq, cards } : { status: "confirmed", id: e.row.id, seq: e.row.seq });
+        break;
+      }
+      case "local-confirmed":
+        log.record(e.branchId, e.row.id, { status: "confirmed", id: e.row.id, seq: e.row.seq });
+        break;
+      case "absorbed": {
+        const cards = [...e.change.cards, ...e.cards];
+        // without cards it is saved in effect, but says so: a `cb` caller reports "already in place", not a new change
+        log.record(e.branchId, e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "absorbed", id: e.change.id, seq: queue.headSeq(e.branchId) });
+        break;
+      }
+      case "rejected":
+        log.record(e.branchId, e.change.id, { status: "rejected", id: e.change.id, reason: e.reason });
+        break;
+    }
+  });
+  LOGS.set(queue, log);
+  return log;
+}
 
 export interface SharedCutOptions {
   /** The replica's queue; one per replica, shared by all its cuts. Made from `schema` when absent. */
@@ -68,9 +128,11 @@ export class SharedCut {
   private readonly o: SharedCutOptions;
   private client: SyncClient | null = null;
   private readonly listeners = new Set<(e: SharedCutEvent) => void>();
-  private readonly waiters = new Map<string, ((o: WriteOutcome) => void)[]>();
-  private readonly outcomes = new Map<string, WriteOutcome>();
+  /** Writes being waited for: each wait's answer and its timer (cleared once answered, round 2 finding 10). */
+  private readonly waiters = new Map<string, Set<{ done: (o: WriteOutcome) => void; timer: unknown }>>();
+  private readonly log: OutcomeLog;
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeLog: () => void;
   private lastState: SyncState;
 
   constructor(o: SharedCutOptions) {
@@ -83,13 +145,19 @@ export class SharedCut {
       this.queue.addBranch(o.branch, o.doc0, o.rows ?? []);
     }
     this.lastState = this.computeState();
+    this.log = outcomeLog(this.queue);
     this.unsubscribe = this.queue.on((e) => this.onQueue(e));
+    this.unsubscribeLog = this.log.on((b, id, o) => {
+      if (b === this.branchId) this.answer(id, o);
+    });
   }
 
   // ---------------------------------------------------------------- writing
   /** Queue a change on this cut. Returns at once: `pending` (or `confirmed` when the cut is still local). */
   commit(input: CommitInput): ReturnType<ReplicaQueue["commit"]> {
     const r = this.queue.commit(this.branchId, input);
+    // an empty change is confirmed at once with no event: its wait must say so too (round 2 finding 11)
+    if (r.empty) this.log.record(this.branchId, r.id, { status: "confirmed", id: r.id, seq: this.queue.headSeq(this.branchId) });
     this.refreshState();
     return r;
   }
@@ -98,27 +166,40 @@ export class SharedCut {
    * or absorbed with cards), rejected (validation), or still pending.
    */
   waitFor(id: string, ms: number): Promise<WriteOutcome> {
-    const known = this.outcomes.get(id);
+    const known = this.log.get(this.branchId, id) ?? this.fromLog(id);
     if (known) return Promise.resolve(known);
-    const v = this.queue.versionId(this.branchId, id);
-    if (v && !v.provisional) return Promise.resolve({ status: "confirmed", id, seq: Number(v.id.slice(v.id.lastIndexOf("@") + 1)) });
     return new Promise((res) => {
       const t = this.timers();
       // the timer is cleared once the outcome arrives, so a settled wait never keeps a process (a `cb` write) alive
-      const done = (o: WriteOutcome) => {
-        t.clearTimeout(timer);
-        res(o);
+      const w = {
+        done: (o: WriteOutcome) => {
+          t.clearTimeout(w.timer);
+          res(o);
+        },
+        timer: null as unknown,
       };
-      const timer = t.setTimeout(() => {
-        const l = this.waiters.get(id);
-        if (!l?.includes(done)) return;
-        l.splice(l.indexOf(done), 1);
+      w.timer = t.setTimeout(() => {
+        const set = this.waiters.get(id);
+        if (!set?.delete(w)) return;
+        if (!set.size) this.waiters.delete(id);
         res({ status: "pending", id });
       }, ms);
-      const list = this.waiters.get(id) ?? [];
-      list.push(done);
-      this.waiters.set(id, list);
+      const set = this.waiters.get(id) ?? new Set();
+      set.add(w);
+      this.waiters.set(id, set);
     });
+  }
+  /** An outcome older than the log: what the confirmed log says (a withdraw row is no confirmation, finding 7). */
+  private fromLog(id: string): WriteOutcome | null {
+    // a change refused here is decided even when no version of it is known (a keyframe skipped its withdraw row: round 5
+    // finding 1)
+    const reason = this.queue.refusedReason(this.branchId, id);
+    if (reason !== undefined) return { status: "rejected", id, reason };
+    const v = this.queue.versionId(this.branchId, id);
+    if (!v || v.provisional) return null;
+    const seq = Number(v.id.slice(v.id.lastIndexOf("@") + 1));
+    const row = this.queue.rows(this.branchId)[seq - 1];
+    return row && !row.placeholder && row.withdrawn ? { status: "absorbed", id, seq } : { status: "confirmed", id, seq };
   }
 
   // ---------------------------------------------------------------- the lease holder's controls
@@ -146,6 +227,11 @@ export class SharedCut {
     }).start();
     this.refreshState();
     return this.client.whenCaughtUp(timeoutMs);
+  }
+  /** History this replica doesn't hold, from the server (`SyncClient.history`): fails while not connected. */
+  history(after: number, upTo: number, opts: { lineage?: boolean } = {}): ReturnType<SyncClient["history"]> {
+    if (!this.client) return Promise.reject(new Error("history request: not connected"));
+    return this.client.history(after, upTo, opts);
   }
   /**
    * Stop syncing. With `drain`, push nothing new and wait (up to `timeoutMs`) until every in-flight push and withdraw
@@ -179,12 +265,18 @@ export class SharedCut {
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-  /** Forget this cut's listeners and stop syncing (the queue keeps its log and pending changes). */
+  /**
+   * Forget this cut's listeners and stop syncing (the queue keeps its log and pending changes). Writes still being
+   * waited for are answered `pending` now and their timers cancelled (round 2 finding 10).
+   */
   close(): void {
     this.client?.stop("closed");
     this.client = null;
     this.unsubscribe();
+    this.unsubscribeLog();
     this.listeners.clear();
+    for (const [id, set] of this.waiters) for (const w of set) w.done({ status: "pending", id });
+    this.waiters.clear();
   }
 
   private computeState(): SyncState {
@@ -203,33 +295,26 @@ export class SharedCut {
   private emit(e: SharedCutEvent): void {
     for (const l of this.listeners) l(e);
   }
-  private settle(id: string, o: WriteOutcome): void {
-    this.outcomes.set(id, o);
-    if (this.outcomes.size > 1000) this.outcomes.delete(this.outcomes.keys().next().value!);
-    for (const w of this.waiters.get(id)?.splice(0) ?? []) w(o);
+  private answer(id: string, o: WriteOutcome): void {
+    const set = this.waiters.get(id);
+    if (!set) return;
     this.waiters.delete(id);
+    for (const w of set) w.done(o);
   }
   private onQueue(e: QueueEvent): void {
     if (e.branchId !== this.branchId) return;
     switch (e.type) {
-      case "confirmed": {
-        const cards = [...e.change.cards, ...e.lateCards];
-        this.settle(e.row.id, cards.length ? { status: "conflicts", id: e.row.id, seq: e.row.seq, cards } : { status: "confirmed", id: e.row.id, seq: e.row.seq });
+      // the outcomes themselves are recorded by the queue's shared log (`outcomeLog`), which answers the waits
+      case "confirmed":
         this.emit({ type: "confirmed", id: e.row.id, seq: e.row.seq, lateCards: e.lateCards });
         break;
-      }
       case "local-confirmed":
-        this.settle(e.row.id, { status: "confirmed", id: e.row.id, seq: e.row.seq });
         this.emit({ type: "confirmed", id: e.row.id, seq: e.row.seq, lateCards: [] });
         break;
-      case "absorbed": {
-        const cards = [...e.change.cards, ...e.cards];
-        this.settle(e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "confirmed", id: e.change.id, seq: this.queue.headSeq(this.branchId) });
+      case "absorbed":
         this.emit({ type: "absorbed", id: e.change.id, cards: e.cards, withdrawn: e.withdrawn });
         break;
-      }
       case "rejected":
-        this.settle(e.change.id, { status: "rejected", id: e.change.id, reason: e.reason });
         this.emit({ type: "rejected", id: e.change.id, reason: e.reason });
         break;
       case "remote":

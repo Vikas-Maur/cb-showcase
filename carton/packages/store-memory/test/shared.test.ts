@@ -5,44 +5,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton, type Actor, type CartonEvent } from "@carton/core";
-import type { AuthContext, AuthProvider, Store } from "@carton/core/plugins";
-import { createInProcessHost } from "@carton/server";
-import { sqliteStorage } from "../../conformance/src/system/sqlite.ts";
 import { createMemoryStore } from "../src/index.ts";
-import { adapter, schema, doc0, set, item } from "./fixture.ts";
+import { adapter, doc0, set, item } from "./fixture.ts";
+import { copyStore, until, world } from "./world.ts";
 
 const alice: Actor = { kind: "human", id: "alice", group: "alice@laptop" };
 const bob: Actor = { kind: "human", id: "bob", group: "bob@desk" };
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until(pred: () => boolean | Promise<boolean>, ms = 5000, what = "condition"): Promise<void> {
-  const end = Date.now() + ms;
-  while (!(await pred())) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-    await sleep(10);
-  }
-}
-
-function world() {
-  const tokens = new Map<string, AuthContext>();
-  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
-  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
-  const token = (name: string) => {
-    tokens.set(`tok-${name}`, { account: name, credential: `${name}/install`, role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
-    return `tok-${name}`;
-  };
-  const sync = (name: string, autoConnect = true) => ({ transport: host.transport, url: host.url, token: token(name), autoConnect });
-  return { host, sync };
-}
-/** A copy of a store's tables (another machine that got the project with its shared cut). */
-async function copyStore(from: Store): Promise<Store> {
-  const to = createMemoryStore();
-  const data = (from as unknown as { data: { tables: Map<string, unknown> } }).data;
-  for (const t of data.tables.keys()) {
-    const rows = await from.range(t);
-    if (rows.length) await to.write(rows.map((r) => ({ table: t, key: r.key, value: JSON.parse(JSON.stringify(r.value)) })));
-  }
-  return to;
-}
 
 test("share hands a local cut to the server; commits then go pending and come back confirmed", async () => {
   const w = world();
@@ -115,7 +83,6 @@ test("fold a local variant into a shared cut: one fold change, with its merge ed
   assert.equal(head.kind, "merge");
   assert.equal(item((await c.head(main)).doc, "d")!.name, "variant edit");
   assert.equal((await c.fold(v.id, { into: main })).status, "up-to-date", "the merge edge is recorded");
-  await assert.rejects(c.undo(undefined, { cut: main }), /not available on a shared cut yet/);
   await c.close();
   w.host.close();
 });
@@ -138,5 +105,27 @@ test("an edit made offline is kept in the store and pushed after a restart; disc
   assert.equal(item((await again.head()).doc, "e")!.name, "offline");
   assert.equal((await store.range("pending")).length, 0, "and left the pending table");
   await again.close();
+  w.host.close();
+});
+
+test("a commit on a shared cut reaches the host with no pump and no wait, also after a reconnect", async () => {
+  const w = world();
+  const sa = createMemoryStore();
+  const a = await Carton.open({ adapter, store: sa, init: { doc: doc0() }, actor: alice, sync: w.sync("alice") });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const b = await Carton.open({ adapter, store: await copyStore(sa), actor: bob, sync: w.sync("bob") });
+  await until(() => b.sync!.status === "up-to-date", 5000, "bob connected");
+  // Carton has no pump(): the commit alone must get the change to the server and on to bob
+  assert.equal((await a.commit({ ops: [set("a", "name", "no pump")] })).status, "pending");
+  await until(async () => item((await b.head()).doc, "a")!.name === "no pump", 5000, "the change at bob");
+  // offline, then reconnected: the queued change goes out on its own
+  await a.sync!.disconnect();
+  assert.equal((await a.commit({ ops: [set("b", "name", "after reconnect")] })).status, "pending");
+  await a.sync!.connect({ nonce: "lease-2" });
+  await until(async () => item((await b.head()).doc, "b")!.name === "after reconnect", 5000, "the queued change at bob");
+  assert.equal(a.sync!.state().pending, 0);
+  await a.close();
+  await b.close();
   w.host.close();
 });

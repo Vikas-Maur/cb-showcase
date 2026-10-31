@@ -66,7 +66,7 @@ test("finding 4: a token scoped to other cuts can't upload keyframes, adopt or f
   const { seq, d0 } = await world(doc(clips(2)), { keyframeEvery: 1 });
   const scoped = fakeConn("agent/k", "editor", { branches: ["private"] });
   await seq.handle(scoped, hello(0));
-  await seq.handle(scoped, { type: "keyframe", branchId: BRANCH, keyframe: { seq: 0, stateHash: "evil", doc: { tracks: [], timelineItems: [] } } });
+  await seq.handle(scoped, { type: "keyframe", branchId: BRANCH, keyframe: { seq: 0, stateHash: "e".repeat(64), doc: { tracks: [], timelineItems: [] } } });
   assert.equal(seq.tables.keyframeAt(BRANCH, 0)!.hash, "h0", "main's root keyframe untouched");
   await seq.handle(scoped, adopt("elsewhere", [], d0));
   assert.equal(scoped.last("adoptError")?.reason, "forbidden");
@@ -131,7 +131,7 @@ test("findings 8 and 9: a record-level set is refused; inserted clips and edits 
 });
 
 test("finding 10: claims beyond the per-message cap are reported unchecked, never treated as unconfirmed", async () => {
-  const { seq, d0 } = await world(doc(clips(40)), { controls: { claimRanges: 3 } });
+  const { seq, d0 } = await world(doc(clips(40)), { controls: { claimWindows: 3 } });
   const x = fakeConn("x/kx"), bob = fakeConn("bob/kb");
   for (let i = 0; i < 600; i++) await push(seq, bob, d0, [set(`c${i % 40}`, "name", `b${i}`)]);
   // x's change was confirmed at seq 601, pushed on base 600 after retries on bases far below (each its own range)
@@ -158,11 +158,11 @@ test("finding 11: adoption binds the uploaded rows' replica ids to the adopter's
 test("finding 12: a fork made with its root state can be joined from nothing", async () => {
   const { seq, d0 } = await world(doc(clips(2)));
   const c = fakeConn("x/k");
-  await seq.handle(c, { type: "fork", branchId: "V", from: BRANCH, seq: 0, rec: rec("V"), root: { stateHash: "rootV", doc: d0 as never } });
+  await seq.handle(c, { type: "fork", branchId: "V", from: BRANCH, seq: 0, rec: rec("V"), root: { stateHash: "f".repeat(64), doc: d0 as never } });
   assert.equal(c.last("forked")!.branchId, "V");
   const j = fakeConn("j/k");
   await seq.handle(j, hello(-1, [], "V"));
-  assert.equal(j.last("hello")!.keyframe?.stateHash, "rootV", "a joiner with no state gets the fork's root");
+  assert.equal(j.last("hello")!.keyframe?.stateHash, "f".repeat(64), "a joiner with no state gets the fork's root");
 });
 
 test("finding 17: the inline limit counts UTF-8 bytes, so multibyte text over it goes to the blob store", async () => {

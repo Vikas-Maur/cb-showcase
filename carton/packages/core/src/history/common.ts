@@ -1,6 +1,6 @@
 // Shared names of the history layer: the Store table layout, the "state unknown" error, and History's option types.
 
-import type { Actor, ChangeId, Choices, CommitResult, ConflictCard, Doc, EditKinds, Intent, NodeId, Op, Policy, StateRef } from "../types.ts";
+import type { Actor, ChangeId, ChangeKind, Choices, CommitResult, ConfirmedChange, ConflictCard, Doc, EditKinds, Intent, NodeId, Op, Policy, StateRef } from "../types.ts";
 import type { SoftWarning } from "../schema.ts";
 
 /**
@@ -61,6 +61,36 @@ export interface HistoryOptions {
   keyframeEvery?: number;
   /** Change ids for commits that don't pass one (default `${rid}.${n}`). A handle that rebuilds its History passes its own. */
   nextId?: () => string;
+}
+
+/**
+ * A shared cut's pending changes on top of its confirmed log, with the state after each (newest last). Undo, revert and
+ * the undo stack see them as the cut's newest changes: ⌘Z right after an edit undoes that edit before the server
+ * answers, and an undo still waiting to sync hides its change from the stack.
+ */
+export interface Tail {
+  rows: readonly ConfirmedChange[];
+  states: readonly Doc[];
+}
+
+/**
+ * What importing a shallow `.cbproj` did (§13): forked a writable cut from the sender's head (a project this replica
+ * didn't have), imported its lineage, refused another project's file, or found no shared lineage under the same
+ * project id, in which case the copy gets `newProjectId` and is opened as a project of its own.
+ */
+export type ShallowImport =
+  | { status: "forked"; cut: string; head: NodeId }
+  | { status: "imported"; head: NodeId }
+  | { status: "other-project" }
+  | { status: "no-shared-lineage"; newProjectId: string };
+
+/** What an undo or a revert writes, computed but not committed (a shared cut queues it). */
+export interface Planned {
+  doc: Doc;
+  author: Actor;
+  kind: ChangeKind;
+  intent?: Intent;
+  extra: { reverts: ChangeId | ChangeId[] };
 }
 
 /** A commit's base when the caller holds the doc (GUI base in engine memory, a view's last applied state). */
