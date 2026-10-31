@@ -39,7 +39,8 @@ export type SyncEvent =
   | { type: "reject"; id: string | undefined; reason: string; epoch: number }
   | { type: "rebase"; n: number }
   | { type: "stopped"; why: string }
-  | { type: "error"; error: string };
+  /** `code`: a refusal's machine code (`ErrorMsg.code`), or a transport's for a failed connect (`connect: …`). */
+  | { type: "error"; error: string; code?: string };
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -250,7 +251,9 @@ export class SyncClient {
       } catch (e) {
         c = null;
         // why it couldn't connect (a refused token, no host): an owner shows it (REQ-8)
-        if (!this.stopped) this.emit({ type: "error", error: `connect: ${e instanceof Error ? e.message : String(e)}` });
+        // a transport that says why in a code (server-node's TransportError: unreachable, unauthorized, …) is read by it
+        const code = typeof (e as { code?: unknown } | null)?.code === "string" ? (e as { code: string }).code : undefined;
+        if (!this.stopped) this.emit({ type: "error", error: `connect: ${e instanceof Error ? e.message : String(e)}`, ...(code ? { code } : {}) });
       }
       if (this.stopped) {
         c?.close();
@@ -552,7 +555,7 @@ export class SyncClient {
         return this.emit({ type: "error", error: m.reason });
       case "error":
         if (m.reconnect) this.drop(id, m.reason);
-        return this.emit({ type: "error", error: m.reason });
+        return this.emit({ type: "error", error: m.reason, ...(m.code ? { code: m.code } : {}) });
     }
   }
 

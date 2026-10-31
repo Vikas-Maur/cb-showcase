@@ -95,7 +95,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
   the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is
   `sync.error(cut?)` and a `sync-error` event (`SyncError`: `code`, `message`), until a later welcome, ack or
-  acknowledged withdraw clears it (`error: null`).
+  acknowledged withdraw clears it (`error: null`). Classified by machine code first (a refusal's `ErrorMsg.code`:
+  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`; a failed connect's transport code: `unreachable`,
+  `unauthorized`, `protocol`, `closed`), by the words only when there is none.
   `carton.media` is null: `@carton/media` calls Carton, not the reverse.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared

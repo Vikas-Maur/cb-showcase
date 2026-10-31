@@ -321,9 +321,16 @@ export interface PresenceFanoutMsg {
   actor: Actor;
   state: PresenceState | null;
 }
+export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request";
 export interface ErrorMsg {
   type: "error";
   reason: string;
+  /**
+   * What kind of refusal, for a client to act on (`reason` is for people): `schema-too-new` (the client's documents are
+   * newer than the server accepts: update the server), `unauthorized` (the token expired, or is for another project),
+   * `forbidden` (outside this token's cuts or role), `bad-request` (a malformed message). Absent: anything else.
+   */
+  code?: ErrorCode;
   /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */
   reconnect?: boolean;
 }

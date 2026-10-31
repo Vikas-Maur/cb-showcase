@@ -385,22 +385,43 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.head !== undefined ? { head: p.head } : {}),
   ...(p.basePending ? { basePending: p.basePending } : {}),
 });
+/**
+ * The problem a machine code names (web-demo REQ-9): a sequencer refusal's `ErrorMsg.code`, or a transport's for a
+ * failed connect (hosts-plugins' TransportError). Read before the words, which are for people and change.
+ */
+const CODED: Record<string, SyncError["code"]> = {
+  "schema-too-new": "update-server",
+  unauthorized: "unauthorized",
+  forbidden: "unauthorized",
+  "bad-request": "server",
+  unreachable: "unreachable",
+  closed: "unreachable",
+  protocol: "server",
+};
 /** A sync client's error, classified for a status line (the words are kept as they came). */
-function syncError(message: string): SyncError {
-  // the token or its scope ("token expired", "this token is for another project", "this token can't read …", a write
-  // refused as forbidden, read-only or under another device's id), at connect or after (review SF3-7)
-  const code: SyncError["code"] = /schemaVersion \d+ is newer than this server/.test(message)
+function syncError(message: string, code?: string): SyncError {
+  const words = message.replace(/^connect: /, "");
+  const coded = code ? CODED[code] : undefined;
+  if (coded) return { code: coded, message: words };
+  // no code (an older host, another transport): by the words. A failed connect is unreachable unless the host said it
+  // refused (a message that only mentions a token is not a refusal: REQ-9b); otherwise the token or its scope
+  // ("token expired", "this token is for another project", "can't read …", a write refused as forbidden, read-only or
+  // under another device's id: SF3-7)
+  const connect = /^connect: /.test(message);
+  const kind: SyncError["code"] = /newer than this server|schemaVersion \d+ is newer/.test(message)
     ? "update-server"
-    : /unauthori[sz]ed|forbidden|token|can't read|foreign id|read-only branch|\b40[13]\b/i.test(message)
-      ? "unauthorized"
-      : /^connect: /.test(message)
-        ? "unreachable"
+    : connect
+      ? /unauthori[sz]ed|forbidden|\b40[13]\b/i.test(message)
+        ? "unauthorized"
+        : "unreachable"
+      : /unauthori[sz]ed|forbidden|token expired|token is for another project|this token|can't read|foreign id|read-only branch/i.test(message)
+        ? "unauthorized"
         : /^unknown branch/.test(message)
           ? "unknown-cut"
           : /over the server's limit|too large/i.test(message)
             ? "too-large"
             : "server";
-  return { code, message: message.replace(/^connect: /, "") };
+  return { code: kind, message: words };
 }
 /** Confirmed states past the stored rows that pending rows were made on (meta `[QUEUE_HEAD, cut, seq]`): `#gapWrites`. */
 const QUEUE_HEAD = "queue-head";
@@ -1574,7 +1595,7 @@ class CartonImpl implements Carton {
     switch (e.type) {
       // a sync failure, until a welcome or an ack says the host accepts this replica again (web-demo REQ-8)
       case "error": {
-        const err = syncError(e.error);
+        const err = syncError(e.error, e.code);
         const was = this.#syncErrors.get(cut);
         if (!was || was.code !== err.code || was.message !== err.message) {
           this.#syncErrors.set(cut, err);
