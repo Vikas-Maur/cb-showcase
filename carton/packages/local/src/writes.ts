@@ -246,6 +246,13 @@ export interface ViewPrinter {
    * follows; a frozen timeline.tsx doesn't).
    */
   onCutSwitch?(cut: string): void | Promise<void>;
+  /**
+   * carton.db may have moved under the holder (another process wrote it, B11): the materializer reads head and brings
+   * the files up to it, or does nothing when it already shows that head (cardboard-adapter `e352fea`). The holder's
+   * follower calls it on every write another connection made; without it, `onHeadChange("local")` for another
+   * process's change on the current cut.
+   */
+  onExternalHeadChange?(): Promise<unknown>;
   /** A view's change settled after its save returned (a shared cut): its `.status` sidecar says so (R5-04). */
   onChangeUpdate?(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; reason?: string }): Promise<void>;
 }

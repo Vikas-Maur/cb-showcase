@@ -214,9 +214,13 @@ export class CartonHolderEngine implements HolderEngine {
         exclusive: (f) => this.cutLock(f),
         onHead: async (cut) => {
           await mz?.onCb?.();
-          mz?.onHeadChange?.("local");
+          if (mz?.onExternalHeadChange) await mz.onExternalHeadChange();
+          else mz?.onHeadChange?.("local");
           opts.onExternal?.({ type: "head", cut });
         },
+        // cardboard's materializer reads head itself (one read; nothing when it already shows it): told on every
+        // other write too, so a pending change another process queued on a shared cut shows as well
+        ...(mz?.onExternalHeadChange ? { onMoved: async () => void (await mz.onExternalHeadChange!()) } : {}),
         onCut: async (cut) => {
           if (mz?.onCutSwitch) await mz.onCutSwitch(cut);
           else mz?.onHeadChange?.("local");

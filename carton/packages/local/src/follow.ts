@@ -41,6 +41,11 @@ export interface FollowOptions {
   onHead(cut: string): void | Promise<void>;
   /** This machine's current cut is another one now (another process switched it); this handle has switched too. */
   onCut(cut: string): void | Promise<void>;
+  /**
+   * Another connection committed, but no change row of another process on the current cut says so (its write was on
+   * another cut, a pending change or a notice, or the app's own sync): told when nothing else was.
+   */
+  onMoved?(cut: string): void | Promise<void>;
   /** Poll interval (ms). 0: no polling, only `check()` (a nudge). Default FOLLOW_MS. */
   intervalMs?: number;
   /**
@@ -116,6 +121,8 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (!started) await start();
     const s = await stamp();
     if (s === lastStamp) return;
+    // the first look only records where the store is
+    const first = lastStamp === null;
     lastStamp = s;
     const switched = await adoptCut();
     if (stopped) return;
@@ -134,6 +141,7 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (stopped) return;
     if (switched) await o.onCut(switched);
     else if (foreign.length) await o.onHead(cut);
+    else if (!first) await o.onMoved?.(cut);
   };
   // one look at a time; a check asked for during one runs once more after it (it may have missed that write)
   const check = (): Promise<void> => {

@@ -2,7 +2,7 @@
 // worker_thread of their own. Pings are answered there, so a main loop busy with a multi-MB project.json is never
 // mistaken for a dead holder; a stalled engine thread is (and fencing then stops it).
 // The main thread talks to it over the thread's message port: `call("serve", request)` runs a write exactly as a
-// `cb` call on the socket would.
+// `cb` call on the socket would; `call("nudge")` has it look at carton.db now (B11), answered once it has.
 import { Worker } from "node:worker_threads";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
