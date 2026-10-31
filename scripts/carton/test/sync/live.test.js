@@ -5,7 +5,8 @@
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js
 // One scenario, in order (each step needs the one before): share with history, invite, join in the other library,
 // concurrent edits, presence, media, offline and rejoin, cb on the shared project with the app open, then with the
-// app closed in cb's cloud mode (a headless helper syncs; H13), and a host too old for the app (the panel says why).
+// app closed in cb's cloud mode (a headless helper syncs; H13), another program's save and an offline restore with the
+// app closed, and a host too old for the app (the panel says why).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path");
@@ -44,6 +45,7 @@ test("share with history: the cut goes to the host with its versions, and the pr
   assert.equal(st.shared, true);
   assert.equal(st.account, "Alice");
   assert.equal(st.holder, true, "the worker holds the sync lease");
+  if (process.env.CARTON_TEST_FREEZE === "1") assert.equal(await alice.call("carton.testFrozen", { projectId: id }), true, "frozen mode: the facade's handle returns frozen docs");
 });
 
 test("invite and join: Bob joins from the link in his own library and gets the project with its history", t, async () => {
@@ -285,6 +287,50 @@ test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the p
   }
   await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 66, 30_000, "the agent's edit at bob");
   assert.equal(bob.cb(["history", "Demo"]).json().versions[0].by?.id, "codex/c10", "credited to the agent on Bob's computer");
+});
+
+test("app closed: another program's save, and the agent's edit on it, go through the helper to Bob; an offline restore shows in Alice's file at once", t, async () => {
+  // Alice's app is still closed. Another program saves her project.json: a version Carton didn't write. cb imports it
+  // through the lease holder (a headless helper), as it does its own saves (review round 3 #3: the import went straight
+  // into cb's own handle, which can't commit on a shared cut, so that save and the cb saves on it had no history).
+  const file = path.join(alice.root, "Demo.cardboard", "project.json");
+  const env = JSON.parse(fs.readFileSync(file, "utf8"));
+  S.textOf(env.project).textContent = "From an editor";
+  env.project.stateUpdatedAt = Date.now();
+  fs.writeFileSync(file, JSON.stringify(env));
+  const m = await alice.mcp({ CARDBOARD_ACTOR: "codex/c12" });
+  try {
+    const p = await m.tool("print_timeline", { project: "Demo" });
+    assert.ok(!p.isError, p.text);
+    assert.match(p.text, /From an editor/);
+    const rev = Number(p.text.match(/cardboard:rev[^\d]*(\d+)/)?.[1]);
+    const a = await m.tool("apply_timeline", { project: "Demo", edits: [{ oldText: "fontSize={66}", newText: "fontSize={44}" }], ...(rev ? { rev } : {}) });
+    assert.ok(!a.isError, a.text);
+  } catch (e) {
+    throw new Error(e.message + "\n--- cb mcp stderr (tail):\n" + m.stderr().slice(-3000));
+  } finally {
+    await m.close();
+  }
+  await S.until(async () => { const y = S.textOf(await S.projectOf(bob, id)); return y.fontSize === 44 && y.textContent === "From an editor"; }, 30_000, "the outside save and the agent's edit at bob");
+  const by = bob.cb(["history", "Demo"]).json().versions.slice(0, 2).map((v) => v.by?.id);
+  assert.equal(by[0], "codex/c12", "the agent's edit, credited: " + JSON.stringify(by));
+  assert.match(by[1] ?? "", /^external:project\.json/, "the outside save, as one: " + JSON.stringify(by));
+
+  // Offline, the app still closed: cb restores the version from before the outside save. It stays pending in the helper,
+  // and Alice's project.json shows it at once (round 3 #5: cb wrote head from its own handle, which holds the confirmed
+  // rows only, so the file kept the old state until a confirmation that nothing would write in).
+  const v = alice.cb(["history", "Demo"]).json().versions.find((x) => x.by?.id === "codex/c10");
+  assert.ok(v, "the agent's version from the step before");
+  const port = host.port;
+  await host.stop();
+  const r = alice.cb(["restore", "Demo", v.version]);
+  assert.equal(r.code, 0, r.out + r.err);
+  assert.equal(r.json().status, "pending", r.out);
+  assert.ok(!("head" in r.json()), "the holder's state isn't printed");
+  const x = S.textOf(S.fileOf(alice));
+  assert.deepEqual([x.fontSize, x.textContent], [66, "Bob again"], "Alice's project.json shows the restore while offline");
+  host = await S.startHost(path.join(S.TMP, "host"), port);
+  await S.until(async () => { const y = S.textOf(await S.projectOf(bob, id)); return y.fontSize === 66 && y.textContent === "Bob again"; }, 60_000, "the restore at bob");
 });
 
 test("a host older than the app: Bob's panel says the host needs an update, instead of \"Syncing\" for ever", t, async () => {

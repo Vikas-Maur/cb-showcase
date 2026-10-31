@@ -63,17 +63,22 @@ export const adminInvite = async ({ host, projectId, adminToken, role = "owner",
  * proxy signs with its own listen address (e2e-qa S5-2, still open on the host side).
  */
 export function mediaStore({ host, projectId, token, fetchFn = (u, i) => fetch(u, i) }) {
-  const pub = new URL(origin(host));
-  const onto = (u) => {
-    const url = new URL(String(u instanceof Request ? u.url : u));
-    if (url.pathname.startsWith("/blob/") && url.host !== pub.host) {
-      url.protocol = pub.protocol;
-      url.host = pub.host;
-      return url.toString();
-    }
-    return u;
-  };
-  return hostMediaBlobs({ origin: origin(host), projectId, token, fetch: (u, i) => fetchFn(onto(u), i) });
+  const pub = origin(host);
+  return hostMediaBlobs({ origin: pub, projectId, token, fetch: (u, i) => fetchFn(ontoOrigin(pub, u), i) });
+}
+
+/**
+ * A signed media URL (`/blob/…`) on `origin`, the one this computer reaches the host by: scheme, host and port. The
+ * whole origin, never the host alone: a host behind TLS termination signs http://<same host>, which must not go out as
+ * plain http (review round 3 #6). Anything else is left as it is.
+ */
+export function ontoOrigin(origin, u) {
+  const pub = new URL(origin), url = new URL(String(u instanceof Request ? u.url : u));
+  if (!url.pathname.startsWith("/blob/") || url.origin === pub.origin) return u;
+  url.protocol = pub.protocol;
+  url.hostname = pub.hostname;
+  url.port = pub.port;
+  return url.toString();
 }
 
 export const putBlob = ({ host, projectId, token, key, bytes, contentType = "application/octet-stream", fetchFn }) =>

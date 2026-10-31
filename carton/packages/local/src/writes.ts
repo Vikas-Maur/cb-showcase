@@ -20,16 +20,17 @@ import { hookDelivered, isFallbackActor } from "./identity.ts";
 export type WriteOp =
   /** `base`: the version the edit was made on, as Carton gave it: a StateRef, or a printed header (default: head). */
   /**
-   * `head`: answer a commit still pending (the holder offline, or the server slow) with the holder's head as well
-   * (`head: {ref, doc}`, its optimistic state with the edit merged in). A caller that writes the project file itself
-   * (the Windows app's cb, windows-sync) can't read that state: its own handle has the confirmed rows only.
+   * `head` (commit, fold, restore, revert, undo, undoTurn): answer a write still pending (the holder offline, or the
+   * server slow) with the holder's head as well (`head: {ref, doc}`: its optimistic state, with this write in, of the
+   * cut the write went to). A caller that writes the project file itself (the Windows app's cb, windows-sync) can't
+   * read that state: its own handle has the confirmed rows only.
    */
   | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
-  | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs" }
-  | { kind: "restore"; ref: string; cut?: string }
-  | { kind: "revert"; changeId: ChangeId; cut?: string }
-  | { kind: "undo"; group?: string; cut?: string }
-  | { kind: "undoTurn"; turn: string; cut?: string }
+  | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
+  | { kind: "restore"; ref: string; cut?: string; head?: boolean }
+  | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
+  | { kind: "undo"; group?: string; cut?: string; head?: boolean }
+  | { kind: "undoTurn"; turn: string; cut?: string; head?: boolean }
   | { kind: "fork"; name: string; from?: string; cutKind?: string }
   | { kind: "switch"; cut: string }
   | { kind: "name"; ref: string; name: string }
@@ -392,8 +393,10 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   // the cut written to, not the current one: a write to another cut waits on that cut's connection
   const st = () => carton.sync?.state(destCut(op)).status;
   const online = opts.online ? opts.online(destCut(op)) : st() === "up-to-date" || st() === "syncing";
-  // a commit that asked for it gets the holder's head with a pending answer (WriteOp `head`)
-  const withHead = async (x: CbResult): Promise<CbResult> => (op.kind === "commit" && op.head && x.status === "pending" ? { ...x, head: await carton.head(destCut(op)) } : x);
+  // a write that asked for it gets the holder's head with a pending answer (WriteOp `head`): the head of the cut the
+  // write went to (core's answer names it), never of whichever cut is current when the answer is made
+  const into = (r as { ref?: StateRef | null } | undefined)?.ref?.branchId ?? destCut(op);
+  const withHead = async (x: CbResult): Promise<CbResult> => ("head" in op && op.head && x.status === "pending" ? { ...x, head: await carton.head(into) } : x);
   if (!online) return asConflicts(await withHead({ ...toCbResult(r, notices), online: false } as CbResult));
   const ms = req.waitMs ?? WAIT_MS;
   if (carton.sync?.waitFor) {
