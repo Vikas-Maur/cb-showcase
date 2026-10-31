@@ -138,3 +138,4 @@ export function sequencerStorageSuite(name: string, make: () => Promise<Sequence
 // ------------------------------------------------------------------ SequencerHost and Transport
 
 export { sequencerHostSuite, transportSuite, HOST_SUITE_DOC } from "./host-suite.ts";
+export { httpApiSuite, type HttpFixture } from "./http-suite.ts";
