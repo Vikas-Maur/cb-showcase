@@ -10,6 +10,7 @@
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
 //   GET  /api/projects/:p/blobs/head?key=                                  → BlobInfo | 404
+//   POST /api/projects/:p/blobs/damaged      {key: "m/<hash>", leaf}       → {damaged, removed?}  (§11 repair path)
 //   POST /api/projects/:p/uploads            {key, contentType?}  editor   → {uploadId}
 //   PUT  /api/projects/:p/uploads/:id/:n?key=  part bytes          editor   → {partNumber, etag}
 //   GET  /api/projects/:p/uploads/:id?key=                         editor   → {parts}   (resume after a cut link)
@@ -28,6 +29,7 @@ import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins"
 import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "@carton/server";
 import { createBlobUrlSigner, serveSignedBlob, readBody, BodyTooLarge, type BlobUrlSigner } from "@carton/blob-memory/signed";
 import { BlobError, MAX_PARTS } from "@carton/blob-memory/rules";
+import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
 
 // Any AuthProvider serves sessions; the invite routes need the demo's invite flow (HmacAuth). With another provider
 // (Cardboard's accounts) those routes answer 501 and sessions come from that provider.
@@ -206,6 +208,41 @@ async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: 
   return err(405, "PUT or GET");
 }
 
+// §11's repair path, host side: a reader whose leaf can never verify reports it; the host checks that leaf itself
+// against the manifest (mf/<hash>, which the hash itself verifies) and, only if the stored bytes really are wrong,
+// removes the object, so the owner's next share finds it missing and uploads it again. A report can't remove a good
+// object: the host reads the leaf and the manifest, and trusts neither the reporter nor its claim. If the object was
+// replaced while it was being checked (its etag changed), it is left alone: the new one may be good. BlobStore has no
+// conditional delete, so a replacement landing between the last head and the delete is removed too; the cost is one
+// more upload on the owner's next share, never wrong bytes served.
+const hasher = webCryptoHasher();
+async function checkDamaged(store: BlobStore, key: string, leaf: number): Promise<Response> {
+  const m = /^m\/([0-9a-f]{64})$/.exec(key);
+  if (!m) return err(400, "only media objects (m/<hash>) are checked");
+  const manifestBytes = await store.get(manifestKey(m[1]!));
+  if (!manifestBytes) return err(409, "no manifest to check it against");
+  let manifest;
+  try {
+    manifest = await decodeManifest(manifestBytes, hasher, m[1]!);
+  } catch {
+    return err(409, "the manifest doesn't verify");
+  }
+  const before = await store.head(key);
+  if (!before) return json({ damaged: true, removed: false, missing: true });
+  let damaged: boolean;
+  if (before.size !== manifest.size) damaged = true;
+  else {
+    if (!Number.isInteger(leaf) || leaf < 0 || leaf >= manifest.leafCount) return err(400, `leaf must be 0..${manifest.leafCount - 1}`);
+    const bytes = await store.get(key, leafSpan(manifest.size, leaf));
+    damaged = !bytes || !(await verifyLeaf(manifest, leaf, bytes, hasher));
+  }
+  if (!damaged) return json({ damaged: false });
+  const now = await store.head(key);
+  if (!now || now.etag !== before.etag) return json({ damaged: true, removed: false, replaced: true });
+  await store.delete(key);
+  return json({ damaged: true, removed: true });
+}
+
 async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext, store: BlobStore, deps: HttpDeps, projectId: string): Promise<Response> {
   const key = url.searchParams.get("key") ?? "";
   if (req.method === "POST" && rest === "/blobs/sign") {
@@ -214,6 +251,10 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
     if (method === "PUT" && !canPush(ctx)) return err(403, "read-only role");
     const signer = blobSigner(deps, url.origin, projectId);
     return json({ url: await signer.sign(method, String(b.key ?? ""), Math.min(Number(b.expiresIn ?? 300), 3600)) });
+  }
+  if (req.method === "POST" && rest === "/blobs/damaged") {
+    const b = await body<{ key?: string; leaf?: number }>(req);
+    return checkDamaged(store, String(b.key ?? ""), Number(b.leaf));
   }
   if (req.method === "GET" && rest === "/blobs/head") {
     const info = await store.head(key);
