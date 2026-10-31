@@ -46,6 +46,11 @@ export interface LocalOptions {
    * cuts but hands every write on them to the lease holder.
    */
   sync?: OpenOptions["sync"];
+  /**
+   * This replica's display name in lineage, cut owners and the missing-base dialog ("Ask Alice for her copy", §13):
+   * the person's name, never a path. Default: core's ("replica").
+   */
+  name?: string;
 }
 
 export interface LocalCarton {
@@ -89,7 +94,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   const adapter = opts.adapter ?? (await defaultAdapter());
   let carton: Carton;
   try {
-    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
+    carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName } : undefined, ...(opts.sync ? { sync: opts.sync } : {}), ...(opts.name ? { name: opts.name } : {}) });
   } catch (e) {
     await store.close();
     throw e;

@@ -43,3 +43,14 @@ test("openLocal without sync keeps the handle local-only (sync is null)", async 
     await lc.close();
   }
 });
+
+test("openLocal passes name to Carton.open: a new cut's owner is the person's name, not \"replica\" (S3-1)", async () => {
+  const { dir, projectId } = bundle("open-name");
+  const lc = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: { kind: "human", id: "human:alice" }, name: "Alice" });
+  try {
+    const cut = await lc.carton.fork("30s cut");
+    assert.equal(cut.owner, "Alice");
+  } finally {
+    await lc.close();
+  }
+});
