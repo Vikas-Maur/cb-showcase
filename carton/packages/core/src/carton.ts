@@ -155,7 +155,11 @@ export interface CartonSync {
   /** Stop; `drain`: push nothing new and resolve once nothing is in flight (a lease hand-over). */
   disconnect(opts?: { drain?: boolean; timeoutMs?: number }): Promise<void>;
   presence(state: PresenceState | null): void;
-  /** What a write learned within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed, conflicts, rejected or pending. */
+  /**
+   * What a write learned within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed, conflicts, rejected or pending.
+   * A settled outcome resolves once it is in the store too (its author's notice written, its pending row gone), so a
+   * caller that reports it can mark that notice delivered rather than have it told again on the next call.
+   */
   waitFor(id: ChangeId, ms: number, cut?: string): Promise<WriteOutcome>;
 }
 
@@ -351,8 +355,10 @@ class CartonImpl implements Carton {
           const sc = self.#shared.get(b);
           if (sc) {
             const o = await sc.waitFor(id, ms);
-            // read your writes: once this says confirmed, log(), credits() and diff() see the change
-            if (o.status === "confirmed") await self.#settle(b, { type: "remote", rows: [] });
+            // a settled outcome answers once it is in the store and History (its author's notice written, its pending
+            // row gone, the confirmed row in log() and credits()), so a caller that reports it can mark that notice
+            // delivered rather than have it told again on the next call
+            if (o.status !== "pending") await self.#settle(b, { type: "remote", rows: [] });
             return o;
           }
           const done = self.#h.confirmedById(id);
@@ -1068,7 +1074,8 @@ class CartonImpl implements Carton {
     const authorOf = (id: string) => stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
     const late = e.type === "confirmed" ? e.lateCards : e.type === "absorbed" ? e.cards : [];
     if (late.length && (e.type === "confirmed" || e.type === "absorbed")) notices.push({ to: actorKey(authorOf(e.id)), kind: "late-conflict", text: `Your change ${e.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: e.id, cards: late });
-    if (e.type === "rejected") notices.push({ to: actorKey(authorOf(e.id)), kind: "rejected", text: `the server refused a change: ${e.reason}`, change: e.id });
+    // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
+    if (e.type === "rejected") notices.push({ to: actorKey(authorOf(e.id)), kind: "rejected", text: `Your change ${e.id} wasn't saved: ${e.reason === "too large" ? "it is larger than the server accepts; the edits after it still went through" : e.reason}`, change: e.id });
     const at = this.#opts.clock?.() ?? Date.now();
     notices.forEach((n, i) => writes.push({ table: T.notices, key: [n.to, at, i, randomHex(4)], value: { ...n, at } }));
     // the hand-off finished (handingOff → server{since}): the cut's record says so from now on
