@@ -10,7 +10,8 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { BlobStore, Hasher, ProxyEncoder } from "../contracts.ts";
-import { proxyPointerKey, mediaKey, type ProxyPointer } from "../keys.ts";
+import { damagedKey, mediaKey, proxyPointerKey, type ProxyPointer } from "../keys.ts";
+import { findProxy } from "../stream.ts";
 import type { Manifest } from "../manifest.ts";
 import { COLLAB_PROXY_720P, encodeProxy, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
 import type { HashScheduler } from "../scheduler.ts";
@@ -71,6 +72,13 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
     const st = await stat(path);
     return o.scheduler.request({ key: path, size: st.size, mtimeMs: st.mtimeMs }, "share");
   };
+
+  // Shared objects a reader reported damaged (bad/<hash>, e2e S5-5) count as not shared: they are planned again, and
+  // their upload replaces the stored copy instead of deduping on it. A damaged proxy stream is made anew.
+  const reported = async (id: string | undefined) => id !== undefined && (await o.store.head(damagedKey(id)).catch(() => null)) !== null;
+  if (record.proxy && (await reported(record.proxy.stream ?? record.proxy.hash))) delete record.proxy;
+  if (record.original === "shared" && (await reported(record.hash))) delete record.original;
+  for (const kind of Object.keys(record.t1!) as T1Kind[]) if (await reported(record.t1![kind]?.hash)) delete record.t1![kind];
 
   // What is shared already counts only if it still matches what is on this machine. Hash first, then plan:
   // - the original: relinked to other footage, its proxy and shared original belong to the old footage;
@@ -174,19 +182,15 @@ async function shareProxy(
   upload: (what: string, path: string, m: Manifest, contentType?: string) => Promise<UploadResult>,
 ): Promise<NonNullable<MediaRecord["proxy"]>> {
   const pointerKey = proxyPointerKey(original.hash, profile.id);
-  const existing = await o.store.get(pointerKey);
-  if (existing) {
-    try {
-      const p = JSON.parse(new TextDecoder().decode(existing)) as ProxyPointer;
-      const head = await o.store.head(mediaKey(p.hash));
-      if (head && head.size === p.size) {
-        o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
-        return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
-      }
-    } catch {
-      // A broken pointer: make the proxy again and overwrite it.
+  const p = await findProxy(o.store, original.hash, profile.id);
+  if (p && "hash" in p) {
+    const head = await o.store.head(mediaKey(p.hash));
+    if (head && head.size === p.size) {
+      o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
+      return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
     }
   }
+  // No pointer, a broken one, or one to an object that's gone: make the proxy again and overwrite it.
   const input = { path: o.local.original! };
   let path: string | null = null;
   let encoder = "cardboard-proxy";
