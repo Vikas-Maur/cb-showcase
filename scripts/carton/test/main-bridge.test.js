@@ -1,6 +1,6 @@
 // Main's bridge (scripts/carton/main-bridge.js): who is acting for each agent, the Director's Bash hook (turn and
-// subagent, composed with the credit gate), the Stop hooks, host Claude Code's settings, the forwarder, the G2 timing
-// log, and nothing at all with Carton off.
+// subagent, composed with the credit gate), the Stop hooks, host Claude Code's settings, the forwarder and the methods
+// main answers itself, the G2 timing log, and nothing at all with Carton off.
 //   node --test scripts/carton/test/main-bridge.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -69,6 +69,20 @@ test("host Claude Code gets the hooks through --settings; carton:call forwards t
   m.library({ call: async (method, ...args) => [method, ...args] });
   assert.deepEqual(await m.call("undo", [{ projectId: "p1" }]), ["carton.undo", { projectId: "p1" }]);
   assert.throws(() => m.call("../x", []), /Unknown Carton method/);
+});
+
+test("a method main answers itself (the live-sync half) runs there, and can still reach the worker", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  m.library({ call: async (method, ...args) => [method, ...args] });
+  m.handle("invite", async (a) => ["main", a, await m.forward("syncStatus", [a])]);
+  assert.deepEqual(await m.call("invite", [{ projectId: "p1" }]), ["main", { projectId: "p1" }, ["carton.syncStatus", { projectId: "p1" }]]);
+  assert.deepEqual(await m.call("undo", [{ projectId: "p1" }]), ["carton.undo", { projectId: "p1" }]);
+  assert.throws(() => m.handle("enabled", () => true), /letters only/);
+  assert.throws(() => m.handle("a.b", () => true), /letters only/);
+  // Off, it is never reached.
+  const off = load({});
+  off.handle("invite", () => "main");
+  assert.throws(() => off.call("invite", []), /Carton is off/);
 });
 
 test("G2's timing log records each save's round trip, on and off", async () => {

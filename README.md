@@ -477,7 +477,7 @@ node --test --test-concurrency=1 scripts/carton/test/patches.test.js scripts/car
 They check that with Carton off `cb`'s output and files equal this build's without Carton, that `.cbproj` leaves out
 `.carton\` and `.scratch\views\`, that with Carton on every hook reaches Carton with the right arguments (a
 recording stand-in), that the real library worker runs patched (on Node, standing in for Electron's port), and the
-editor's and main's bridges on stand-ins. 21 tests.
+editor's and main's bridges on stand-ins, with the methods each answers itself. 23 tests.
 
 On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
 

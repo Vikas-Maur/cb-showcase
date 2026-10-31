@@ -148,7 +148,10 @@ export interface ConflictSide {
 
 /** A conflict card (§7): both edits are kept, and the person picks. */
 export interface Conflict {
+  /** Opaque and unique. A host maps a card back with fromCarton's `cardFor(id)`, never by parsing it. */
   readonly id: string;
+  /** Which field or record the card is about (core's card path, `items/a/name`); several cards can share one. */
+  readonly path?: string;
   /** What the card is about: "'Intro' timing", "Title text". */
   readonly title: string;
   readonly mine: ConflictSide;

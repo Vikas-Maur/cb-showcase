@@ -21,6 +21,11 @@ const stage = (pristine, out, { carton = false } = {}) => {
   if (carton) {
     node("patch-carton.js", "--app", path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
     node("patch-carton.js", "--cli", path.join(cli, "cardboard.mjs"), path.join(cli, "chunks", "chunk-LL26E55H.mjs"));
+    // As build-windows.js does: the live-sync half's patches on top, when it has them.
+    if (fs.existsSync(path.join(scripts, "patch-carton-sync.js"))) {
+      node("patch-carton-sync.js", "--app", path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
+      node("patch-carton-sync.js", "--cli", path.join(cli, "cardboard.mjs"), path.join(cli, "chunks", "chunk-LL26E55H.mjs"));
+    }
   }
   return { cli, worker: path.join(dist, "library-worker.js"), main: path.join(dist, "main.js"), assets };
 };
