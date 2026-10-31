@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
 import { openSqliteStore, openProjectStore, BusyError, DatabaseHeldError, FORMAT_VERSION } from "../src/index.ts";
-import { Db, OPEN_RETRY_MS, openRetrying } from "../src/db.ts";
+import { Db, OPEN_RETRY_MS, openRetrying, openPlatform } from "../src/db.ts";
 import { scratch } from "./scratch.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -416,7 +416,7 @@ test("Windows: still held after the retry window, the open fails with DatabaseHe
     assert.ok(e instanceof DatabaseHeldError);
     assert.equal(e.code, "CARTON_DB_HELD");
     assert.equal(e.path, "C:\\p\\carton.db");
-    assert.match(e.message, /is held by another process .*errcode 3338/);
+    assert.match(e.message, /may still be holding it .*check its permissions .*errcode 3338/);
     assert.equal((e.cause as { errcode: number }).errcode, 3338);
     return true;
   });
@@ -432,7 +432,11 @@ test("other failures, and I/O errors off Windows, are reported at once (an I/O e
   await assert.rejects(openRetrying("x", failWith(sqliteError(1, "SQL logic error")), "win32"), /^Error: SQL logic error$/);
   await assert.rejects(openRetrying("x", failWith(ioerr()), "linux"), /^Error: disk I\/O error \(SQLite errcode 3338\)$/);
   await assert.rejects(openRetrying("x", failWith(sqliteError(14, "unable to open database file")), "darwin"), /^Error: unable to open database file$/);
-  assert.equal(attempts, 4);
+  // on Windows "unable to open" is retried only for a file that exists: a missing one (or folder) is lasting
+  await assert.rejects(openRetrying(path.join(root, "missing", "carton.db"), failWith(sqliteError(14, "unable to open database file")), "win32"), /^Error: unable to open database file$/);
+  await assert.rejects(openRetrying("x", failWith(sqliteError(11, "database disk image is malformed")), "win32"), /malformed$/);
+  await assert.rejects(openRetrying("x", failWith(sqliteError(26, "file is not a database")), "win32"), /not a database$/);
+  assert.equal(attempts, 7);
 });
 
 test("Windows: a -wal or -shm held exclusively by another process gives DatabaseHeldError, and opens once let go", { skip: process.platform !== "win32" ? "Windows sharing modes" : false }, async () => {
@@ -444,20 +448,73 @@ test("Windows: a -wal or -shm held exclusively by another process gives Database
     // Another process opens the sidecar with no sharing at all (as a scanner can), by path from the environment.
     const ps = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     const holder = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", "$f = [IO.File]::Open($env:CARTON_HOLD, 'OpenOrCreate', 'ReadWrite', 'None'); [Console]::Out.WriteLine('held'); [void][Console]::In.ReadLine(); $f.Close()"], { env: { ...process.env, CARTON_HOLD: file + side }, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
-    const exited = new Promise((r) => holder.once("close", r));
+    const closed = new Promise<void>((r) => holder.once("close", () => r()));
+    const within = <T>(p: Promise<T>, ms: number, what: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      return Promise.race([p, new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error(`${what}: no answer in ${ms} ms`)), ms); })]).finally(() => clearTimeout(timer));
+    };
     try {
-      await new Promise<void>((resolve, reject) => {
-        holder.stdout!.on("data", (d) => String(d).includes("held") && resolve());
+      let out = "";
+      await within(new Promise<void>((resolve, reject) => {
+        holder.stdout!.on("data", (d) => { out += d; if (/^held\r?$/m.test(out)) resolve(); });
         holder.once("error", reject);
         holder.once("close", (c) => reject(new Error(`the holder ended (${c}) before holding ${side}`)));
-      });
+      }), 30_000, `holding ${side}`);
       await assert.rejects(openSqliteStore(file), DatabaseHeldError, `held ${side}`);
     } finally {
       holder.stdin!.end("\n");
-      await exited;
+      try {
+        await within(closed, 10_000, "the holder letting go");
+      } catch {
+        holder.kill();
+        await within(closed, 10_000, "the holder being killed");
+      }
     }
     const again = await openSqliteStore(file);
     assert.deepEqual((await again.range("changes")).map((r) => r.value), [{ id: "a" }], `opens once ${side} is let go`);
     await again.close();
   }
+});
+
+test("Windows: an I/O error after the connection is up (marking a new file) is retried too, on a fresh connection, the failed one closed", async () => {
+  const file = fresh();
+  const proto = DatabaseSync.prototype as unknown as { prepare(sql: string): unknown };
+  const prepare = proto.prepare;
+  const conns: DatabaseSync[] = [];
+  let failures = 2;
+  proto.prepare = function (this: DatabaseSync, sql: string) {
+    if (!conns.includes(this)) conns.push(this);
+    if (failures > 0 && sql.startsWith("INSERT INTO") && sql.includes("_carton")) {
+      failures--;
+      throw ioerr();
+    }
+    return prepare.call(this, sql);
+  };
+  openPlatform.override = "win32";
+  let store;
+  try {
+    store = await openSqliteStore(file);
+  } finally {
+    proto.prepare = prepare;
+    delete openPlatform.override;
+  }
+  try {
+    assert.equal(failures, 0, "both injected failures happened in init, after Db.open");
+    assert.equal(conns.length, 3, "three attempts, each on its own connection");
+    assert.deepEqual(conns.map((c) => c.isOpen), [false, false, true], "the failed ones are closed");
+    assert.equal(pragma(file, "application_id"), 0x4352544e, "and the file is marked once, normally");
+  } finally {
+    await store.close();
+  }
+});
+
+test("Windows: a missing file opened read-only is reported at once, not as held", async () => {
+  openPlatform.override = "win32";
+  const t0 = Date.now();
+  try {
+    await assert.rejects(openSqliteStore(path.join(root, "nowhere", "carton.db"), { readOnly: true }), (e: Error) => !(e instanceof DatabaseHeldError) && /unable to open/.test(e.message));
+  } finally {
+    delete openPlatform.override;
+  }
+  assert.ok(Date.now() - t0 < OPEN_RETRY_MS, "no retry window");
 });

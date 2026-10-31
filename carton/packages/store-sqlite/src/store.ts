@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";
-import { Db, type DbOptions } from "./db.ts";
+import { Db, openRetrying, type DbOptions } from "./db.ts";
 import { encodeKey, decodeKey, prefixEnd } from "./key.ts";
 import { encodeValue, decodeValue } from "./value.ts";
 import { MovedError } from "./move.ts";
@@ -44,17 +44,20 @@ export class SqliteStore implements Store {
   /** Open (creating if needed) the store at a carton.db path. */
   static async open(file: string, opts: SqliteStoreOptions = {}): Promise<SqliteStore> {
     if (!opts.readOnly) fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-    const db = await Db.open(file, opts, (raw) => identify(raw, file));
-    try {
-      await init(db, !!opts.readOnly);
-      // History that moved to another placement (§6.4) is read there; this file only says where.
-      const moved = opts.readOnly ? undefined : await db.read(() => readMeta<{ path: string }>(db.raw, MOVED_TO));
-      if (moved) throw new MovedError(file, moved.path);
-      return new SqliteStore(db);
-    } catch (e) {
-      db.close();
-      throw e;
-    }
+    // The whole open is one attempt (Windows retries a held file: openRetrying): every step is safe to repeat.
+    return openRetrying(file, async () => {
+      const db = await Db.open(file, opts, (raw) => identify(raw, file));
+      try {
+        await init(db, !!opts.readOnly);
+        // History that moved to another placement (§6.4) is read there; this file only says where.
+        const moved = opts.readOnly ? undefined : await db.read(() => readMeta<{ path: string }>(db.raw, MOVED_TO));
+        if (moved) throw new MovedError(file, moved.path);
+        return new SqliteStore(db);
+      } catch (e) {
+        db.close();
+        throw e;
+      }
+    });
   }
 
   get<T = unknown>(table: string, key: StoreKey): Promise<T | undefined> {
