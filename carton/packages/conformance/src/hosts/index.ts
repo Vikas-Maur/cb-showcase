@@ -66,9 +66,16 @@ export function authProviderSuite(name: string, make: () => Promise<AuthProvider
     test("any change to a token makes it invalid", async (t) => {
       if (!auth.issue) return t.skip("no issue()");
       const tok = await auth.issue({ account: "a", credential: "a/dev", role: "viewer", projectId: "p", ttlMs: 60_000 });
-      const flip = (i: number) => tok.slice(0, i) + (tok[i] === "A" ? "B" : "A") + tok.slice(i + 1);
+      // Flip the low bits of a character's base64url value: at the end of a base64 run those bits can be unused, so
+      // a lax decoder maps the changed token to the same bytes (a token it never issued, which must still be refused).
+      const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      const flip = (i: number, bit: number) => {
+        const v = B64.indexOf(tok[i]!);
+        const c = v < 0 ? (tok[i] === "A" ? "B" : "A") : B64[v ^ bit]!;
+        return tok.slice(0, i) + c + tok.slice(i + 1);
+      };
       for (const i of [0, 5, Math.floor(tok.length / 3), Math.floor(tok.length / 2), tok.length - 2, tok.length - 1])
-        if (flip(i) !== tok) assert.equal(await auth.verify(flip(i)), null, `flipped char ${i}`);
+        for (const bit of [1, 2, 32]) assert.equal(await auth.verify(flip(i, bit)), null, `flipped bit ${bit} of char ${i}`);
       assert.equal(await auth.verify(tok + "A"), null, "appended");
       assert.equal(await auth.verify(tok.slice(0, -1)), null, "truncated");
     });
