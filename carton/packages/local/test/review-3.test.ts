@@ -80,7 +80,7 @@ test("a retried request (same id) never brings back a card resolved after it lan
   await runWrite(a, structuredClone(req));
   for (const row of await store.range<any>("notices", { prefix: [actorKey(agent)] })) await store.write([{ table: "notices", key: row.key, value: undefined }]);
   const again = await runWrite(a, structuredClone(req));
-  assert.equal(again.status, "confirmed", "deduplicated by the change id");
+  assert.equal(again.status, "conflicts", "answered from the request's receipt, as the first time (nothing committed again)");
   assert.deepEqual(await cardsIn(store), []);
 });
 

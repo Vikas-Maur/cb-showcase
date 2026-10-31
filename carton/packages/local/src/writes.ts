@@ -183,6 +183,14 @@ function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | null, ca
   return { table: "notices", key: cardsKey(actor, requestId), value: { to, kind: "late-conflict", text, change: change ?? requestId, cards: [...cards], at, deliveredAt: at } };
 }
 
+/**
+ * A request's receipt, written with its cards: what it answered. A save whose every edit was carded confirms without a
+ * change, so the change id can't deduplicate a retry; the receipt does (local `notices` table, `@request` prefix, which
+ * no actor reads). It stays after the cards are resolved, so a retry never brings them back.
+ */
+const receiptKey = (requestId: ChangeId) => ["@request", requestId];
+interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number }
+
 /** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
 export interface ViewPrinter {
   printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string }>;
@@ -226,12 +234,31 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // from the same base, never re-apply the proposal on a newer head.
       if (op.base === undefined) op.base = (await carton.head(op.cut)).ref as unknown as string;
       const store = storeOf(carton);
+      const receipt = store ? await store.get<Receipt>("notices", receiptKey(req.id)) : undefined;
+      if (receipt) {
+        // this request already landed (its cards may have been resolved since): answer as it did, write nothing
+        kept = receipt.cards;
+        r = { status: "confirmed", seq: receipt.seq, ref: null, change: receipt.change ? { id: receipt.change } : null, rebased: 0, notices: [], ...(receipt.change ? {} : { empty: true }) };
+        break;
+      }
       r = await carton.commit({
         id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
         choices: () => "ours" as const,
-        ...(store ? { cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [cardsRow(author, req.id, change?.id ?? null, cards)] } : {}),
+        ...(store
+          ? {
+              cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [
+                cardsRow(author, req.id, change?.id ?? null, cards),
+                { table: "notices", key: receiptKey(req.id), value: { seq: change?.seq ?? 0, change: change?.id ?? null, cards, at: Date.now() } satisfies Receipt },
+              ],
+            }
+          : {}),
       });
       if (r.status === "confirmed" && r.resolved?.length) kept = r.resolved;
+      else if (r.status === "confirmed" && store) {
+        // another copy of this request won the race (we got its duplicate): answer with that copy's cards
+        const won = await store.get<Receipt>("notices", receiptKey(req.id));
+        if (won?.cards.length) kept = won.cards;
+      }
       break;
     }
     case "fold": {
