@@ -1,5 +1,5 @@
-// Regression tests for review round 4's findings on the sequencer: a store without getStream is read in bounded ranges,
-// and a welcome's confirmed-id list counts against its page.
+// Regression tests for review rounds 4 and 5 on the sequencer: a store without getStream is read in bounded ranges, and
+// a welcome's confirmed-id list counts against its page and is paged (inside one base too) when it doesn't fit.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
@@ -38,7 +38,24 @@ test("round 4 finding 3: a store without getStream is read in bounded ranges, ne
   assert.deepEqual(seqs, Array.from({ length: 900 }, (_, i) => i + 1));
 });
 
-test("a welcome's confirmed-id list counts against its page (round 4, outside its range)", async () => {
+/** Follow a hello's continuations as a client does (claims from `uncheckedFrom`, after `checkedThrough`) to the end. */
+async function helloPages(seq: Awaited<ReturnType<typeof world>>["seq"], j: ReturnType<typeof fakeConn>, claims: sync.PendingClaim[]) {
+  const pages: sync.WelcomeMsg[] = [];
+  let from = -1, after: number | undefined;
+  for (let i = 0; i < 200; i++) {
+    j.inbox.length = 0;
+    const pending = claims.map((c) => ({ id: c.id, bases: c.bases.filter((b) => b >= from) })).filter((c) => c.bases.length);
+    await seq.handle(j, hello(0, { pending, ...(after !== undefined ? { claimsAfter: after } : {}) }));
+    const p = j.last("hello")!;
+    pages.push(p);
+    if (p.uncheckedFrom === undefined) return pages;
+    from = p.uncheckedFrom;
+    after = p.checkedThrough;
+  }
+  throw new Error("no end");
+}
+
+test("a welcome's confirmed-id list counts against its page, and pages on when it doesn't fit (round 4, outside its range)", async () => {
   const { seq } = await world(d0, { catchupBytes: 8 * KiB });
   const x = fakeConn("x/1");
   const ids: string[] = [];
@@ -47,11 +64,27 @@ test("a welcome's confirmed-id list counts against its page (round 4, outside it
     ids.push(id);
     assert.equal(verdict(await push(seq, x, d0, [set(`c${i % 2}`, "name", `n${i}`)], { id })), "ack");
   }
-  // a replica that holds nothing and claims every id, each pushed on base 0
-  const j = fakeConn("x/1");
-  await seq.handle(j, hello(0, { pending: ids.map((id) => ({ id, bases: [0] })) }));
-  const page = j.last("hello")!;
-  assert.ok(page.confirmed.length > 50, `${page.confirmed.length} ids listed`);
-  const biggest = Math.max(0, ...page.rows.map(utf8));
-  assert.ok(utf8(page) <= 8 * KiB + biggest, `${utf8(page)} bytes with ${page.rows.length} rows and the list`);
+  // a replica that holds nothing and claims every id, each pushed on its own base
+  const pages = await helloPages(seq, fakeConn("x/1"), ids.map((id, i) => ({ id, bases: [i] })));
+  assert.ok(pages.length > 1, `${pages.length} pages`);
+  for (const p of pages) assert.ok(utf8(p) <= 8 * KiB + Math.max(0, ...p.rows.map(utf8)), `${utf8(p)} bytes with ${p.rows.length} rows and ${p.confirmed.length} ids`);
+  assert.deepEqual(pages.flatMap((p) => p.confirmed.map((e) => e.id)), ids, "every id once, in order");
+  assert.ok(pages.slice(0, -1).every((p) => !p.rows.length), "rows only once the list is complete");
+});
+
+test("round 5 finding 2: 101 ids confirmed on one base, a list over the page alone, are paged inside the base", async () => {
+  const budget = 4096;
+  const { seq } = await world(d0, { catchupBytes: budget });
+  const w = fakeConn("w/3");
+  const ids: string[] = [];
+  for (let i = 0; i < 101; i++) {
+    const id = `0123456789abcdef01234567.${i}`;
+    ids.push(id);
+    assert.equal(verdict(await push(seq, w, d0, [set("c0", "name", String(i))], { id, base: { seq: 0, pending: ids.slice(0, -1) } })), "ack");
+  }
+  const pages = await helloPages(seq, fakeConn("w/3"), ids.map((id) => ({ id, bases: [0] })));
+  assert.ok(pages.length > 2, `${pages.length} pages`);
+  for (const p of pages) assert.ok(utf8(p) <= budget + Math.max(0, ...p.rows.map(utf8)), `${utf8(p)} bytes`);
+  assert.deepEqual(pages.flatMap((p) => p.confirmed.map((e) => e.id)), ids, "every id once, in order");
+  assert.ok(pages.slice(0, -1).every((p) => p.checkedThrough !== undefined && p.uncheckedFrom === 0));
 });

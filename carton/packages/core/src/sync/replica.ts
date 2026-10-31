@@ -189,14 +189,15 @@ export class SharedCut {
   }
   /** An outcome older than the log: what the confirmed log says (a withdraw row is no confirmation, finding 7). */
   private fromLog(id: string): WriteOutcome | null {
+    // a change refused here is decided even when no version of it is known (a keyframe skipped its withdraw row: round 5
+    // finding 1)
+    const reason = this.queue.refusedReason(this.branchId, id);
+    if (reason !== undefined) return { status: "rejected", id, reason };
     const v = this.queue.versionId(this.branchId, id);
     if (!v || v.provisional) return null;
     const seq = Number(v.id.slice(v.id.lastIndexOf("@") + 1));
     const row = this.queue.rows(this.branchId)[seq - 1];
-    if (!row || row.placeholder || !row.withdrawn) return { status: "confirmed", id, seq };
-    // a withdraw row: refused here (its reason kept by the queue, round 4 finding 4), else absorbed
-    const reason = this.queue.refusedReason(this.branchId, id);
-    return reason !== undefined ? { status: "rejected", id, reason } : { status: "absorbed", id, seq };
+    return row && !row.placeholder && row.withdrawn ? { status: "absorbed", id, seq } : { status: "confirmed", id, seq };
   }
 
   // ---------------------------------------------------------------- the lease holder's controls

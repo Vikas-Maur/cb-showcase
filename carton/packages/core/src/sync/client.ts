@@ -297,7 +297,7 @@ export class SyncClient {
    * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
    * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
    */
-  private hello(onlyFrom = -1): ClientMessage {
+  private hello(onlyFrom = -1, after?: number): ClientMessage {
     const b = this.branchId;
     const pending: PendingClaim[] = [];
     for (const p of this.queue.pending(b)) {
@@ -308,6 +308,7 @@ export class SyncClient {
     }
     const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
     if (this.noKeyframe) m.noKeyframe = true;
+    if (after !== undefined) m.claimsAfter = after;
     if (this.o.blobs) m.envelopes = true;
     return m;
   }
@@ -365,7 +366,7 @@ export class SyncClient {
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
             // the server checked only part of our claims: keep what it found, ask for the rest, act on nothing yet
             this.confirmedSoFar.push(...m.confirmed);
-            return this.send(this.hello(m.uncheckedFrom));
+            return this.send(this.hello(m.uncheckedFrom, m.checkedThrough));
           }
           const confirmed = m.type === "hello" ? [...this.confirmedSoFar.splice(0), ...m.confirmed] : [];
           if (m.type === "changes" && m.rows.length && m.rows[0]!.seq > this.queue.headSeq(b) + 1) return this.resync("a gap in the rows");

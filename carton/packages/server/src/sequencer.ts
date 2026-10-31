@@ -300,8 +300,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
    * hostile hello can't ask for more); bases past that are reported in `uncheckedFrom`, never treated as unconfirmed:
    * the client asks again for those before acting on the list (review finding 10).
    */
-  function confirmedOf(branchId: string, claims: readonly PendingClaim[] | undefined): { list: ConfirmedId[]; uncheckedFrom: number | null } {
-    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null };
+  function confirmedOf(
+    branchId: string,
+    claims: readonly PendingClaim[] | undefined,
+    { after = -1, budget = Infinity }: { after?: number; budget?: number } = {},
+  ): { list: ConfirmedId[]; uncheckedFrom: number | null; checkedThrough: number | null } {
+    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null, checkedThrough: null };
     const head = tables.head(branchId);
     const want = new Set<string>();
     const bases = new Set<number>();
@@ -313,32 +317,51 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (bs.length) bases.add(Math.max(...bs));
       } else for (const b of bs) bases.add(b);
     }
-    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null };
+    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null, checkedThrough: null };
     // merge the windows so overlapping claims never read a row twice; every base's window counts against the cap,
     // merged or not, so a message reads at most cap × (K + 1) seqs (round 2 finding 6: adjacent windows merged into one
     // range used to bypass it)
+    //
+    // The list is in seq order and stops at `budget` bytes (at least one id): it then says where to go on, the base its
+    // range began at and the seq checked through, and a continuation (`after`) reads only past it. One window can list
+    // up to K + 1 ids, so a page can end inside one (round 5 finding 2).
     const sorted = [...bases].sort((a, b) => a - b);
     const cap = controls.claimWindows ?? MAX_CLAIM_WINDOWS;
     const out: ConfirmedId[] = [];
-    let lo = -1, hi = -1, windows = 0;
-    const flush = () => {
-      if (hi > lo) for (const e of tables.idsIn(branchId, lo, hi)) if (want.has(e.id)) out.push(e);
+    let lo = -1, hi = -1, windows = 0, used = 0;
+    let cut: number | null = null;
+    /** Read the current range past `after`; false (and `cut`) when the budget runs out inside it. */
+    const flush = (): boolean => {
+      const from = Math.max(lo, after);
+      if (hi > from)
+        for (const e of tables.idsIn(branchId, from, hi)) {
+          if (!want.has(e.id)) continue;
+          const n = sync.jsonBytesBound(e, Infinity) + 1;
+          if (out.length && used + n > budget) {
+            cut = lo;
+            return false;
+          }
+          used += n;
+          out.push(e);
+        }
+      return true;
     };
+    const stopped = (): { list: ConfirmedId[]; uncheckedFrom: number; checkedThrough: number } => ({ list: out, uncheckedFrom: cut!, checkedThrough: out[out.length - 1]!.seq });
     for (const b of sorted) {
       if (++windows > cap) {
-        flush();
-        return { list: out, uncheckedFrom: b };
+        if (!flush()) return stopped();
+        return { list: out, uncheckedFrom: b, checkedThrough: null };
       }
       const top = Math.min(b + K + 1, head);
       if (b <= hi) hi = Math.max(hi, top);
       else {
-        flush();
+        if (!flush()) return stopped();
         lo = b;
         hi = top;
       }
     }
-    flush();
-    return { list: out, uncheckedFrom: null };
+    if (!flush()) return stopped();
+    return { list: out, uncheckedFrom: null, checkedThrough: null };
   }
 
   // ---------------------------------------------------------------- rows for catch-up (live and archived)
@@ -571,7 +594,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       }
     }
     const head = tables.head(m.branchId);
-    const { list: confirmed, uncheckedFrom } = confirmedOf(m.branchId, m.pending);
+    const claimsAfter = Number.isInteger(m.claimsAfter) ? (m.claimsAfter as number) : -1;
+    const { list: confirmed, uncheckedFrom, checkedThrough } = confirmedOf(m.branchId, m.pending, { after: claimsAfter, budget: catchupBytes });
+    // the list isn't complete: the client acts on nothing until it is, so this page is the list alone (no rows, no
+    // keyframe, no subscription yet), within the page's budget
+    if (uncheckedFrom !== null) {
+      const partial: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows: [], confirmed, uncheckedFrom };
+      if (checkedThrough !== null) partial.checkedThrough = checkedThrough;
+      return send(c, partial);
+    }
     let from = Math.max(-1, Math.min(m.have, head));
     let keyframe: sync.KeyframeData | undefined;
     let budget = catchupBytes;
@@ -595,7 +626,6 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
-    if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
     // the client then never sends what would be refused unread (round 2 finding 2)
     if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
     if (last < head) msg.more = true;
@@ -617,7 +647,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const head0 = tables.head(m.branchId);
       if (Number.isInteger(ch.base?.seq) && head0 - ch.base.seq > K) {
         // the K cap (§6.3): no scan of the log, only the bounded id list for this push's changes
-        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })));
+        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })), { budget: catchupBytes });
         return reject(c, m.branchId, ch.id, "behind", m.epoch, r ? { confirmed: r.list, ...(r.uncheckedFrom !== null ? { uncheckedFrom: r.uncheckedFrom } : {}) } : {});
       }
       if (declarationTooLarge(ch)) return reject(c, m.branchId, ch.id, "too large", m.epoch);
