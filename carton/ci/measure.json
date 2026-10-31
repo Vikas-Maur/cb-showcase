@@ -1419,10 +1419,10 @@
           ]
         },
         {
-          "label": "head.ts A (fb7f4e9) vs C (cb21eec), N=1000,10000, 11 runs x 200 calls (no lock: dedicated runner)",
+          "label": "head.ts A (fb7f4e9) vs C (cb21eec), N=10000 only, 21 runs x 200 calls (repeat: run 1 spread 5.5-8.8 ms after-commit)",
           "env": {
-            "N": "1000,10000",
-            "RUNS": "11",
+            "N": "10000",
+            "RUNS": "21",
             "CALLS": "200",
             "OUT": "{results}/head-bench.json"
           },
@@ -1441,7 +1441,6 @@
           "file": "head-bench.txt",
           "kind": "text",
           "mustMatch": [
-            "^N=1000 items",
             "^N=10000 items",
             "after-commit median"
           ]
