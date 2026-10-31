@@ -253,3 +253,27 @@ test("a whole-object proxy whose stored size is wrong is replaced (S5 review rou
   await store.put(mediaKey(h), new Uint8Array(2));
   assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
 });
+
+test("checking a finished stream for damaged parts reads its end, not every entry; a takeover clears the old report (round 2, finding 4)", async () => {
+  const store = new CountingMemoryStore();
+  const src = "ab".repeat(32);
+  const a = await claimProxyStream(store, src, "p1", "libx264");
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, id: (a.pointer as { stream: string }).stream });
+  await w.init(INIT);
+  for (let i = 0; i < 3; i++) await w.segment(seg(i), 2);
+  await w.end();
+  await store.put(damagedKey("cd".repeat(32)), new Uint8Array([1])); // someone else's report
+  const got: string[] = [];
+  const get = store.get.bind(store);
+  store.get = async (k, r) => {
+    got.push(k);
+    return get(k, r);
+  };
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, false);
+  assert.equal(got.filter((k) => k.startsWith(`ps/${w.id}/s/`)).length, 0, "no segment entry read");
+  store.get = get;
+  // Reported: taken over, and the old stream's report goes with it (nothing points at that stream now).
+  await store.put(damagedKey(w.id), new Uint8Array([1]));
+  assert.equal((await claimProxyStream(store, src, "p1", "x")).claimed, true);
+  assert.equal(store.objects.has(damagedKey(w.id)), false);
+});

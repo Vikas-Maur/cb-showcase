@@ -40,6 +40,11 @@ export interface StreamEnd {
   /** Bytes of init + all segments: the size of the stream as one file. */
   size: number;
   at: number;
+  /**
+   * The hashes of its parts, init first, then the segments in order: lets a check for damage reports on its parts
+   * read one entry instead of every segment's. Absent in ends written before it was added.
+   */
+  parts?: string[];
 }
 
 /** A new stream id: 32 random bytes as hex (the same shape as a media hash, so URLs and keys check it the same way). */
@@ -77,7 +82,13 @@ function asSegment(v: Record<string, unknown> | null, index: number): StreamSegm
 }
 function asEnd(v: Record<string, unknown> | null): StreamEnd | null {
   return v && isCount(v.segments) && isSeconds(v.durationSec) && isCount(v.size) && isCount(v.at)
-    ? { segments: v.segments, durationSec: v.durationSec, size: v.size, at: v.at }
+    ? {
+        segments: v.segments,
+        durationSec: v.durationSec,
+        size: v.size,
+        at: v.at,
+        ...(Array.isArray(v.parts) && v.parts.length === v.segments + 1 && v.parts.every(isMediaHash) ? { parts: v.parts as string[] } : {}),
+      }
     : null;
 }
 
@@ -111,6 +122,7 @@ export class ProxyStreamWriter {
   #size = 0;
   #hasInit = false;
   #ended = false;
+  readonly #parts: string[] = [];
 
   constructor(o: ProxyStreamWriterOptions) {
     this.#o = o;
@@ -134,6 +146,7 @@ export class ProxyStreamWriter {
     await putOnce(this.#o.store, streamInitKey(this.id), part);
     this.#hasInit = true;
     this.#size += part.size;
+    this.#parts.push(part.hash);
     return part;
   }
 
@@ -149,12 +162,13 @@ export class ProxyStreamWriter {
     this.#next++;
     this.#durationSec += durationSec;
     this.#size += part.size;
+    this.#parts.push(part.hash);
     return seg;
   }
 
   async end(): Promise<StreamEnd> {
     if (!this.#hasInit) throw new Error("a stream needs its init segment");
-    const end: StreamEnd = { segments: this.#next, durationSec: this.#durationSec, size: this.#size, at: Date.now() };
+    const end: StreamEnd = { segments: this.#next, durationSec: this.#durationSec, size: this.#size, at: Date.now(), parts: this.#parts.slice() };
     await putOnce(this.#o.store, streamEndKey(this.id), end);
     this.#ended = true;
     return end;
@@ -430,6 +444,9 @@ export async function claimProxyStream(
   // Unreadable, abandoned or damaged: take it over. Two takers at once both write; the last one's pointer wins and the
   // other one's stream is simply never pointed at.
   await store.put(key, body, { contentType: "application/json" });
+  // The replaced stream's report did its job: nothing points at it now. (An object's report stays until an upload
+  // replaces the object: other media may share its bytes.)
+  if (there && "stream" in there) await store.delete(damagedKey(there.stream)).catch(() => {});
   return { claimed: true, pointer: mine };
 }
 
@@ -439,8 +456,9 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     return (await store.head(mediaKey(p.hash)))?.size !== p.size;
   }
   if ((await store.head(damagedKey(p.stream))) !== null) return true;
-  if (await partDamaged(store, p.stream)) return true;
-  if ((await store.head(streamEndKey(p.stream))) !== null) return false;
+  // Finished: kept unless a part was reported. Damage a player finds in a live stream it reports as bad/<stream>.
+  const end = await getJson(store, streamEndKey(p.stream));
+  if (end !== null) return partDamaged(store, p.stream, asEnd(end));
   // Live if anything happened lately: the newest entry, or the claim itself.
   let latest = p.at;
   // Entry keys sort in segment order; stores list a page at a time.
@@ -460,10 +478,10 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
 
 /**
  * Whether a reader reported one of the stream's parts damaged: a tool reading a segment through the range server's
- * /m/<hash> writes bad/<hash>, not bad/<stream>. Reports are rare and go once repaired, so list them first; the
- * stream's entries are read only when there are any.
+ * /m/<hash> writes bad/<hash>, not bad/<stream>. Reports are rare (an object's goes once an upload replaces it, a
+ * stream's once its pointer is taken over), so list them first; then the end entry says which are this stream's.
  */
-async function partDamaged(store: BlobStore, stream: string): Promise<boolean> {
+async function partDamaged(store: BlobStore, stream: string, end: StreamEnd | null): Promise<boolean> {
   const bad = new Set<string>();
   let cursor: string | undefined;
   do {
@@ -472,6 +490,8 @@ async function partDamaged(store: BlobStore, stream: string): Promise<boolean> {
     cursor = page.cursor;
   } while (cursor);
   if (bad.size === 0) return false;
+  if (end?.parts) return end.parts.some((h) => bad.has(h));
+  // An end written before it listed its parts: read the entries.
   const init = await getJson(store, streamInitKey(stream));
   if (init && bad.has(init.hash as string)) return true;
   cursor = undefined;

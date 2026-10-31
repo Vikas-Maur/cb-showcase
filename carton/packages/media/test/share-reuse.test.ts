@@ -8,7 +8,7 @@ import { bytesSource, hashSource } from "../src/hash.ts";
 import { damagedKey, mediaKey, proxyPointerKey, streamEndKey } from "../src/keys.ts";
 import { COLLAB_PROXY_720P } from "../src/proxy.ts";
 import { MediaReader } from "../src/read.ts";
-import { claimProxyStream, ProxyStreamReader } from "../src/stream.ts";
+import { claimProxyStream, ProxyStreamReader, ProxyStreamWriter } from "../src/stream.ts";
 import { CountingMemoryStore } from "../src/testing.ts";
 import { uploadMedia } from "../src/upload.ts";
 import { closeHashWorkers } from "../src/node/hash-file.ts";
@@ -124,4 +124,49 @@ test("a segment a tool found damaged gets the stream made again, by a fresh shar
   const c = await claimProxyStream(store, await originalHash(), COLLAB_PROXY_720P.id, "x");
   assert.equal(c.claimed, false);
   assert.equal((c.pointer as { stream: string }).stream, again.record.proxy?.stream);
+});
+
+test("a record whose proxy was replaced takes the replacement, in its own profile, with no encoder here (round 2, finding 1)", async () => {
+  const store = new CountingMemoryStore();
+  const o = await options(store);
+  const src = await originalHash();
+  const claim = await claimProxyStream(store, src, "other-profile", "libx264");
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, id: (claim.pointer as { stream: string }).stream });
+  await w.init(new Uint8Array([1]));
+  await w.end();
+  const old = { stream: "ef".repeat(32), profile: "other-profile", encoder: "libx264" };
+  const r = await shareMedia({ ...o, record: { ...o.record, hash: src, proxy: old }, encoders: [], segmenter: failing });
+  assert.equal(r.record.proxy?.stream, w.id);
+  assert.equal(r.record.proxy?.profile, "other-profile");
+});
+
+test("a teammate without the original also moves a record off a replaced stream (round 2, finding 2)", async () => {
+  const store = new CountingMemoryStore();
+  const o = await options(store);
+  const src = "ab".repeat(32);
+  const old = await claimProxyStream(store, src, COLLAB_PROXY_720P.id, "libx264", { now: () => 0 });
+  const replacement = await claimProxyStream(store, src, COLLAB_PROXY_720P.id, "libx264");
+  assert.equal(replacement.claimed, true);
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, id: (replacement.pointer as { stream: string }).stream });
+  await w.init(new Uint8Array([1]));
+  await w.end();
+  const proxy = { stream: (old.pointer as { stream: string }).stream, profile: COLLAB_PROXY_720P.id, encoder: "libx264" };
+  const r = await shareMedia({ ...o, record: { ...o.record, hash: src, proxy }, local: {}, encoders: [] });
+  assert.equal(r.record.proxy?.stream, w.id);
+});
+
+test("a store that can't answer the proxy check doesn't block the rest of the share (round 2, finding 3)", async () => {
+  const store = new CountingMemoryStore();
+  const o = await options(store);
+  const poster = join(s.dir, "poster.bin");
+  await writeFile(poster, new Uint8Array([9]));
+  const proxy = { hash: "ef".repeat(32), size: 1, profile: COLLAB_PROXY_720P.id, encoder: "libx264" };
+  const get = store.get.bind(store);
+  store.get = async (k, r) => {
+    if (k.startsWith("px/")) throw new Error("proxy pointer GET failed");
+    return get(k, r);
+  };
+  const r = await shareMedia({ ...o, record: { ...o.record, hash: await originalHash(), proxy }, local: { ...o.local, t1: { poster } }, policy: { originals: false, proxies: false } });
+  assert.ok(r.record.t1?.poster, "the poster went up");
+  assert.deepEqual(r.record.proxy, proxy, "the record's proxy is left as it was");
 });

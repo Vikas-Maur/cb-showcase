@@ -151,6 +151,17 @@ async function readVerified(o: UploadOptions, offset: number, length: number): P
   return bytes;
 }
 
+/** Whether the stored object at `key` holds exactly the manifest's bytes: read leaf by leaf, stopping at the first miss. */
+async function storedMatches(store: BlobStore, key: string, m: Manifest, hasher: Hasher, signal?: AbortSignal): Promise<boolean> {
+  for (let i = 0, at = 0; at < m.size; i++, at += LEAF_SIZE) {
+    signal?.throwIfAborted();
+    const length = Math.min(LEAF_SIZE, m.size - at);
+    const bytes = await store.get(key, { offset: at, length });
+    if (!bytes || bytes.length !== length || !equalBytes(await hasher.sha256(bytes), leafDigest(m, i))) return false;
+  }
+  return true;
+}
+
 /** `stop`: checked after each backoff, so a retry doesn't go out once the work it belongs to has failed elsewhere. */
 async function withRetries<T>(o: UploadOptions, what: () => Promise<T>, stop?: () => boolean): Promise<T> {
   const retries = o.retries ?? 4;
@@ -346,11 +357,15 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   // finished object), whatever a sibling's own last error was.
   const failures = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
   const bad = failures.find((r) => uploadGone(r.reason)) ?? failures[0];
-  const finished = async () => {
+  // `thorough`: when an ETag can't tell (none, or the same one: S3's multipart ETag depends only on the bytes and the
+  // part layout, so replacing a falsely reported object with the same bytes keeps it), read the object and verify it.
+  // Only the last check after a failure does that: it downloads the object.
+  const finished = async (thorough = false) => {
     const h = await store.head(key).catch(() => null);
     if (h === null || h.size !== m.size) return false;
     // Replacing a damaged object: the old one has the right size too. Only a new ETag says someone replaced it.
-    return !damaged || (h.etag !== undefined && head?.etag !== undefined && h.etag !== head.etag);
+    if (!damaged || (h.etag !== undefined && head?.etag !== undefined && h.etag !== head.etag)) return true;
+    return thorough && (await storedMatches(store, key, m, o.hasher, o.signal).catch(() => false));
   };
   try {
     if (bad) throw bad.reason;
@@ -384,7 +399,7 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     if (isAbort(e)) throw e;
     // The upload may be gone, or completion refused: either another caller completed the object (success), or the
     // store dropped the upload (forget it, so the next attempt starts over instead of failing again).
-    if (await finished()) {
+    if (await finished(true)) {
       await states.delete(key);
       result.deduped = true;
       // When replacing a damaged object, finished() saw a new ETag: it is replaced (by us or another caller).

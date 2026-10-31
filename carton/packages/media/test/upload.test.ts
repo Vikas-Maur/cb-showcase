@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { equalBytes } from "../src/bytes.ts";
 import type { BlobStore } from "../src/contracts.ts";
@@ -349,4 +350,32 @@ test("a repair whose completion answer was lost still clears the damage report (
   assert.equal(store.objects.has(damagedKey(manifest.hash)), false);
   const again = await uploadMedia(o);
   assert.equal(again.bytesSent, 0, "deduped now");
+});
+
+test("a repair that keeps the object's ETag (same bytes) and lost its completion answer still clears the report (round 2, finding 5)", async () => {
+  const store = new CountingMemoryStore();
+  // ETags from the bytes, as S3's multipart ETag is for the same bytes in the same parts.
+  const head = store.head.bind(store);
+  store.head = async (k) => {
+    const h = await head(k);
+    return h && { ...h, etag: createHash("md5").update(store.objects.get(k)!).digest("hex") };
+  };
+  const good = xorshiftBytes(2 * LEAF_SIZE + 1, 43);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good), partSize: LEAF_SIZE, retries: 0 };
+  await uploadMedia(o);
+  await store.put(damagedKey(manifest.hash), new Uint8Array([1])); // a false report: the bytes were fine
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k: string) => {
+    const u = await create(k);
+    return {
+      ...u,
+      complete: async (parts: { partNumber: number; etag: string }[]) => {
+        await u.complete(parts);
+        throw Object.assign(new Error("NoSuchUpload: the answer to a completion that went through"), { code: "NoSuchUpload" });
+      },
+    };
+  };
+  await uploadMedia(o);
+  assert.equal(store.objects.has(damagedKey(manifest.hash)), false);
 });
