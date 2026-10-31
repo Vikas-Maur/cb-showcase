@@ -2,7 +2,9 @@
 // document, and the project as it is today is one insert-all change, so the first version in History is attributed
 // ("Import") and every later version diffs against it. Core does the import (`Carton.open` with `init.asChange`);
 // this opens carton.db where §6.4 says it lives, converts the project only when it isn't in carton.db yet, and
-// finishes an import that stopped between core's two steps (the empty cut, then main@1).
+// finishes an import that stopped between core's two steps (the empty cut, then main@1). Once done it records that
+// in carton.db, so a project whose file is empty (core records no empty change: it stays at main@0) or that later
+// returns to an empty timeline is never imported or read again.
 //
 // Safe to call on every open and from several processes at once: main@1 has a fixed id per project, so it is
 // recorded once (Carton.commit is idempotent by id).
@@ -12,6 +14,7 @@ import type { Hasher, HostAdapter } from "@carton/core/plugins";
 import type { DbLocation } from "./location.ts";
 import { openProjectStore, type ProjectStoreOptions } from "./project.ts";
 import type { SqliteStore } from "./store.ts";
+import { IMPORTED } from "./format.ts";
 
 /** main@1's author and id, as core's `init.asChange` writes them. */
 export const IMPORT_AUTHOR: Actor = { kind: "system", id: "import", name: "Import" };
@@ -41,7 +44,12 @@ export interface ImportedProject {
 export async function importProject<HostDoc>(opts: ImportProjectOptions<HostDoc>): Promise<ImportedProject> {
   const { store, location } = await openProjectStore(opts);
   try {
-    const doc = (): Doc => opts.adapter.fromHost(typeof opts.host === "function" ? (opts.host as () => HostDoc)() : opts.host, null);
+    let converted: Doc | undefined; // the project file is read and converted at most once
+    const doc = (): Doc => (converted ??= opts.adapter.fromHost(typeof opts.host === "function" ? (opts.host as () => HostDoc)() : opts.host, null));
+    if (await store.getOwn(IMPORTED)) {
+      const carton = await Carton.open({ adapter: opts.adapter as HostAdapter, store, ...(opts.hasher ? { hasher: opts.hasher } : {}), ...(opts.actor ? { actor: opts.actor } : {}) });
+      return { carton, store, location, imported: false };
+    }
     // Core writes its meta row together with the cut, so an empty meta table means there is no project yet.
     const fresh = (await store.range(STORE_TABLES.meta, { limit: 1 })).length === 0;
     const carton = await Carton.open({
@@ -60,6 +68,7 @@ export async function importProject<HostDoc>(opts: ImportProjectOptions<HostDoc>
       if (r.status !== "confirmed") throw new Error(`importing ${opts.projectId}: ${r.status === "rejected" ? r.reason : r.status}`);
       resumed = true;
     }
+    await store.setOwn(IMPORTED, { projectId: opts.projectId, at: Date.now() });
     return { carton, store, location, imported: fresh || resumed };
   } catch (e) {
     await store.close();

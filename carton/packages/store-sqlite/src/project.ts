@@ -1,7 +1,8 @@
 // Open a project's carton.db where §6.4 says it lives: in the bundle, or in app data for bundles in cloud-synced
 // folders, on network shares and on FAT/exFAT volumes (L15). When that place changed since the last open (the bundle
 // moved into a synced folder, or back out), the history moves with it first (move.ts): it is never left behind for a
-// new, empty database.
+// new, empty database. Every process opening the project must pass the same `appDataDir`: the project's placement
+// lock lives there.
 import * as path from "node:path";
 import { locateCartonDb, defaultAppDataDir, projectKey, type DbLocation, type LocateOptions } from "./location.ts";
 import { openSqliteStore, type SqliteStore, type SqliteStoreOptions } from "./store.ts";
@@ -9,11 +10,20 @@ import { settlePlacement } from "./move.ts";
 
 export interface ProjectStoreOptions extends LocateOptions, SqliteStoreOptions {}
 
-export async function openProjectStore(opts: ProjectStoreOptions): Promise<{ store: SqliteStore; location: DbLocation }> {
-  const location = locateCartonDb(opts);
+export interface ProjectLocation extends DbLocation {
+  /** A carton.db another machine made was found where this one goes, and moved here; offer it as their history. */
+  setAside?: string;
+}
+
+export async function openProjectStore(opts: ProjectStoreOptions): Promise<{ store: SqliteStore; location: ProjectLocation }> {
+  const location: ProjectLocation = locateCartonDb(opts);
+  const projectDir = path.join(opts.appDataDir ?? defaultAppDataDir(), "projects", projectKey(opts.projectId));
   const inBundle = path.join(path.resolve(opts.bundleDir), ".carton", "carton.db");
-  const inAppData = path.join(opts.appDataDir ?? defaultAppDataDir(), "projects", projectKey(opts.projectId), "carton.db");
-  if (!opts.readOnly) await settlePlacement(location.dbPath, location.inBundle ? inAppData : inBundle);
+  const inAppData = path.join(projectDir, "carton.db");
+  if (!opts.readOnly) {
+    const { setAside } = await settlePlacement(location.dbPath, location.inBundle ? inAppData : inBundle, path.join(projectDir, "placement.lock"));
+    if (setAside) location.setAside = setAside;
+  }
   const store = await openSqliteStore(location.dbPath, opts);
   return { store, location };
 }

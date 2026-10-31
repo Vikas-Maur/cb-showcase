@@ -133,3 +133,19 @@ test("an import that stopped between creating the cut and main@1 is finished by 
   await r.carton.close();
   await r.store.close();
 });
+
+test("an empty project imports once: it stays at main@0 (nothing to insert) and is never re-read or re-imported", async () => {
+  const bundleDir = path.join(root, "Empty.cardboard");
+  let reads = 0;
+  const host = () => (reads++, { tracks: [], items: [] });
+  const r = await importProject({ bundleDir, projectId: "proj-empty", adapter, host });
+  assert.equal(r.imported, true);
+  assert.equal((await r.carton.head()).ref.seq, 0);
+  await r.carton.close();
+  await r.store.close();
+  const again = await importProject({ bundleDir, projectId: "proj-empty", adapter, host });
+  assert.equal(again.imported, false);
+  assert.equal(reads, 1, "the empty file was read once, by the import");
+  await again.carton.close();
+  await again.store.close();
+});

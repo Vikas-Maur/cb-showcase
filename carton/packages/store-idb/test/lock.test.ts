@@ -41,6 +41,22 @@ test("fallback lock: aborting a queued request rejects at once, and the queue be
   assert.deepEqual(order, ["a", "c"]);
 });
 
+test("fallback lock: an abort during the hand-over (the holder just let go) still stops the request", async () => {
+  let releaseA!: () => void;
+  const a = withPushLock("h", () => new Promise<void>((r) => (releaseA = r)));
+  const ctl = new AbortController();
+  let ran = false;
+  const b = withPushLock("h", async () => { ran = true; }, { signal: ctl.signal });
+  await new Promise((r) => setTimeout(r, 5));
+  releaseA();
+  await a;
+  // a's release resolves b's wait in a microtask; abort in the same turn, before b's callback can start
+  ctl.abort(new Error("too late"));
+  await assert.rejects(b, /too late/);
+  assert.equal(ran, false);
+  assert.equal(await withPushLock("h", async () => "free", { ifAvailable: true }), "free", "and the lock is free again");
+});
+
 test.after(() => {
   if (saved) Object.defineProperty(globalThis, "navigator", saved);
 });

@@ -5,7 +5,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { locateCartonDb, detectCloudSync, defaultAppDataDir, projectKey, parseSyncRootManager, nodeProbe, makeLinkProbe, cachedSyncRoots, type LocationProbe, type LinkProbeFs } from "../src/location.ts";
+import { locateCartonDb, detectCloudSync, defaultAppDataDir, projectKey, parseSyncRootManager, nodeProbe, makeLinkProbe, cachedSyncRoots, makeSyncRootsProbe, type LocationProbe, type LinkProbeFs } from "../src/location.ts";
 import { scratch } from "./scratch.ts";
 
 function fake(over: Partial<LocationProbe> & { files?: Record<string, string>; dirs?: Record<string, string[]> }): LocationProbe {
@@ -154,8 +154,27 @@ test("Windows sync roots are kept in a file for ten minutes, written whole; a fa
   cachedSyncRoots(file, query, t0);
   assert.equal(calls, 5, "roots that aren't strings: asked again");
   const failed = path.join(dir, "failed.json");
-  assert.deepEqual(cachedSyncRoots(failed, () => null, t0), []);
+  assert.equal(cachedSyncRoots(failed, () => null, t0), null);
   assert.ok(!fs.existsSync(failed));
+});
+
+test("in memory too, a failed registry query is not kept, and a good answer expires like the file's", () => {
+  const dir = scratch("roots-mem");
+  let now = 1_000_000;
+  let answer: string[] | null = null;
+  let calls = 0;
+  const probe = makeSyncRootsProbe(path.join(dir, "sync-roots.json"), () => { calls++; return answer; }, () => now);
+  assert.deepEqual(probe(), []);
+  assert.deepEqual(probe(), [], "still failing");
+  assert.equal(calls, 2, "a failure is asked again, not remembered");
+  answer = ["D:\\Box"];
+  assert.deepEqual(probe(), ["D:\\Box"], "the registry recovered: seen at once");
+  answer = ["D:\\Box", "E:\\iCloud"];
+  now += 9 * 60_000;
+  assert.deepEqual(probe(), ["D:\\Box"], "kept for ten minutes");
+  now += 2 * 60_000;
+  fs.rmSync(path.join(dir, "sync-roots.json"));
+  assert.deepEqual(probe(), ["D:\\Box", "E:\\iCloud"], "then asked again: a sync client installed while the app runs");
 });
 
 test("FAT/exFAT: Linux statfs magic, and the hard-link probe everywhere else", () => {
@@ -347,6 +366,8 @@ test("project keys are file-name safe: plain ids keep their name, every other id
   assert.notEqual(projectKey("Abc"), projectKey("abc-06d90109"), "the old scheme mapped both to abc-06d90109");
   assert.notEqual(projectKey("Abc"), projectKey("abc"), "ids that differ only in case");
   assert.notEqual(projectKey("Abc"), projectKey("ABC"));
+  assert.notEqual(projectKey("\ud800"), projectKey("\ud801"), "lone surrogates hash apart (UTF-8 would make both U+FFFD)");
+  assert.notEqual(projectKey("\ud800"), projectKey("\ufffd"));
   const odd = ["Abc", "ABC", "../../etc", "a/b", "a\\b", "CON:", "con", "Nul", "com1", "lpt9", "abc.", "", "x".repeat(101), "x".repeat(300), "a..b", "_x", "-x", "Zoë"];
   for (const id of odd) assert.match(projectKey(id), /^_[0-9a-f]{32}$/, id);
   assert.equal(new Set(odd.map(projectKey)).size, odd.length);

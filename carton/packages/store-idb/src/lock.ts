@@ -54,6 +54,9 @@ async function localLock<T>(projectId: string, fn: () => Promise<T>, opts: PushL
     }
   }
   try {
+    // An abort that landed while the lock was being handed over (after the predecessor let go, before this line)
+    // still counts; `finally` hands the place on either way.
+    opts.signal?.throwIfAborted();
     return await fn();
   } finally {
     done();
