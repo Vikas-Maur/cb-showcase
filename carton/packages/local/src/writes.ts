@@ -27,6 +27,8 @@ export type WriteOp =
   | { kind: "pin"; owner: string; cut?: string; ttlMs?: number }
   /** `cb source print --view [name]`: the materializer prints a per-agent view (§6.4); needs a holder that runs one. */
   | { kind: "printView"; name?: string }
+  /** Share a cut (§5.3): the holder hands it from the local sequencer to the server (local → handing off → server). */
+  | { kind: "share"; cut?: string }
   /** `cb resolve` closed a card: drop it from the actor's late-conflict notices. */
   | { kind: "closeCard"; change: ChangeId | null; path: PathKey };
 
@@ -53,7 +55,7 @@ export const WAIT_MS = 5000;
  * commits under the request id too, and the rest change nothing on a second run. A fold, restore, revert, undo or new
  * cut whose holder died after receiving it has an unknown outcome and is never retried blindly.
  */
-export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "undoTurn", "switch", "name", "pin", "printView", "closeCard"]);
+export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "undoTurn", "switch", "name", "pin", "printView", "closeCard", "share"]);
 
 /**
  * Run an idempotent write again when Carton lost its append race too many times in a row (many writers on one
@@ -75,7 +77,7 @@ export async function withRaceRetry<T>(idempotent: boolean, fn: () => Promise<T>
 export function destCut(op: WriteOp): string | undefined {
   switch (op.kind) {
     case "fold": return op.into;
-    case "commit": case "restore": case "revert": case "undo": case "undoTurn": case "pin": return op.cut;
+    case "commit": case "restore": case "revert": case "undo": case "undoTurn": case "pin": case "share": return op.cut;
     default: return undefined;
   }
 }
@@ -278,6 +280,12 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "name": await carton.name(op.ref, op.name); return { status: "confirmed", seq: 0, ref: op.ref, notices };
     case "pin": { const pin = await carton.pin({ owner: op.owner, cut: op.cut, ttlMs: op.ttlMs }); return { status: "confirmed", seq: pin.ref.seq, ref: pin.header, notices, header: pin.header }; }
     case "closeCard": return { status: "confirmed", seq: 0, ref: null, notices, closed: await closeCard(carton, author, op.change, op.path) };
+    case "share": {
+      // local → handing off → server (§5.3); the pusher this holder runs picks the cut up, and commits made during the
+      // upload stay pending until the server has adopted the cut
+      const rec = await carton.share(op.cut);
+      return { status: "confirmed", seq: 0, ref: null, notices, cut: rec };
+    }
     default: return { status: "error", error: `unknown write ${(op as any).kind}`, notices };
   }
   if (r?.status === "confirmed" && !r.empty) opts.materializer?.onHeadChange?.("local");
@@ -286,9 +294,18 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   const asConflicts = (x: CbResult): CbResult => (kept.length && (x.status === "confirmed" || x.status === "pending") ? { ...x, status: "conflicts", conflicts: kept, ref: x.ref ?? null, landed: x.status } as CbResult : x);
   if (r?.status !== "pending") return asConflicts(toCbResult(r, notices, r?.entry ? { undid: r.entry } : {}));
   // a shared cut: wait for the server (L14); offline answers pending at once, and conflicts arrive later as notices
-  const online = opts.online?.() ?? carton.sync?.status === "up-to-date";
+  const online = opts.online?.() ?? (carton.sync?.status === "up-to-date" || carton.sync?.status === "syncing");
   if (!online) return asConflicts({ ...toCbResult(r, notices), online: false } as CbResult);
-  const out = await outcomes.wait(r.id, req.waitMs ?? WAIT_MS);
+  const ms = req.waitMs ?? WAIT_MS;
+  if (carton.sync?.waitFor) {
+    // the shared cut's own answer: confirmed by the server, a late conflict, a rejection, or still pending
+    const o = await carton.sync.waitFor(r.id, ms, destCut(op));
+    if (o.status === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices });
+    if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
+    for (const x of await deliverNotices(carton, req.actor)) if (x.change !== r.id) notices.push(x);
+    return o.status === "rejected" ? { status: "rejected", id: r.id, reason: o.reason, notices } : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
+  }
+  const out = await outcomes.wait(r.id, ms);
   if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
   if (out.kind === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: out.seq, ref: null, notices });
   // the change came back with a late conflict while we waited: it is this call's answer; other notices that arrived

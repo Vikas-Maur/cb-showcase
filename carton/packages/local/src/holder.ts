@@ -20,8 +20,11 @@ import type { HolderKind, LeaseRow } from "./lease.ts";
 export interface HolderEngine {
   /** Serve one `cb` request. Must resolve within the request's own wait budget (§6.2: up to 5 s on shared cuts). */
   serve(req: unknown, ctx: { holder: Holder }): Promise<unknown>;
-  /** The lease is ours: start pushing (shared cuts). Every dequeue must carry `fence(nonce)`. */
-  startSync?(nonce: string, onFenced: () => void): void | Promise<void>;
+  /**
+   * The lease is ours: start pushing (shared cuts). `fence(nonce)` says synchronously whether this holder still holds
+   * the lease (asked before every queue step); `onFenced` is called when the client stops because it doesn't.
+   */
+  startSync?(nonce: string, onFenced: () => void, fence: (nonce: string) => boolean): void | Promise<void>;
   /** Push nothing new and resolve once nothing is in flight (handover, idle exit). */
   quiesce?(): Promise<void>;
   /** Stop everything (after quiesce, or when fenced). */
@@ -118,7 +121,9 @@ export class Holder {
     this.log({ type: "lease", nonce: row.nonce, from: this.opts.seen ?? null });
     this.beatTimer = setInterval(() => void this.heartbeat(), LEASE_BEAT_MS);
     this.beatTimer.unref?.();
-    await this.opts.engine.startSync?.(row.nonce, () => void this.stop("fenced: lease nonce changed"));
+    // the fence is this holder's own knowledge, refreshed by every heartbeat (a failed beat stops it); between beats a
+    // replaced holder can push at most what the server deduplicates by id (§6.2, R5-06)
+    await this.opts.engine.startSync?.(row.nonce, () => void this.stop("fenced: lease nonce changed"), (n) => !this.stopped && this.nonce === n);
     if (this.opts.idleMs) this.armIdle();
     return true;
   }
