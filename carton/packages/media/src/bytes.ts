@@ -23,6 +23,16 @@ export function equalBytes(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
+/**
+ * A copy with its own memory. Not `bytes.slice()`: on a Node Buffer (a Uint8Array subclass) slice is a view that keeps
+ * the whole parent allocation alive.
+ */
+export function copyBytes(bytes: Uint8Array): Uint8Array {
+  const out = new Uint8Array(bytes.length);
+  out.set(bytes);
+  return out;
+}
+
 export function concatBytes(parts: readonly Uint8Array[]): Uint8Array {
   let n = 0;
   for (const p of parts) n += p.length;

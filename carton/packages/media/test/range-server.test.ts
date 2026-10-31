@@ -594,3 +594,30 @@ interface Page {
   waitForFunction(expression: string, arg: unknown, opts: { timeout: number }): Promise<unknown>;
   close(): Promise<void>;
 }
+
+// Review round 1, finding 1: the server stops pulling once Content-Length is met, so the reader must not hand out the
+// response's last bytes before their leaf is checked.
+test("a play-first MediaReader never lets a response complete when its last leaf is bad", async () => {
+  const { bytesSource, hashSource } = await import("../src/hash.ts");
+  const { nodeHasher } = await import("../src/node/node-hasher.ts");
+  const { CountingMemoryStore, FaultyStore } = await import("../src/testing.ts");
+  const { uploadMedia } = await import("../src/upload.ts");
+  const { MediaReader } = await import("../src/read.ts");
+  const { mediaKey } = await import("../src/keys.ts");
+  const data = xorshiftBytes(700_000, 31); // one leaf
+  const manifest = await hashSource(bytesSource(data), nodeHasher);
+  const mem = new CountingMemoryStore();
+  await uploadMedia({ store: mem, hasher: nodeHasher, source: bytesSource(data), manifest });
+  const store = new FaultyStore(mem, { streamChunk: 16 * 1024, corruptAt: { key: mediaKey(manifest.hash), offset: 1000, times: 1 } });
+  const events: string[] = [];
+  const reader = new MediaReader({ store, hasher: nodeHasher, onEvent: (e) => events.push(e.type) });
+  const server = await startRangeServer({ source: reader });
+  try {
+    await assert.rejects(fetch(server.url(manifest.hash)).then((r) => r.arrayBuffer()), "the response breaks instead of completing");
+    assert.ok(events.includes("served-bad"));
+    const again = new Uint8Array(await (await fetch(server.url(manifest.hash))).arrayBuffer());
+    assert.equal(createHash("sha256").update(again).digest("hex"), createHash("sha256").update(data).digest("hex"), "the retry is repaired");
+  } finally {
+    await server.close();
+  }
+});

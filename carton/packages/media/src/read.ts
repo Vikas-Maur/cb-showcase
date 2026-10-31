@@ -7,9 +7,12 @@
 //   bytes were handed out is repaired silently.
 // - Breaking a response does NOT make a client drop bytes it already has: Chromium re-requests from the break offset
 //   and keeps playing the bad bytes, and ffmpeg with -reconnect does the same (range-server helper's experiments,
-//   2026-10-31). So the player must be told: hosts forward the "mismatch" event (`handedOut: true`) to the renderer,
-//   which reloads the element at its current time. Tools gain little from play first, so `toolSource()` verifies every
+//   2026-10-31). So the player must be told: hosts forward the "served-bad" event to the renderer, which reloads the
+//   element at its current time. Tools gain little from play first, so `toolSource()` verifies every
 //   leaf before handing it out; the loopback range server for ffmpeg-based tools serves that.
+// - A read never ends on unverified bytes: its last piece is held until that leaf's check passes. A client that stops
+//   reading once it has the bytes it asked for (an HTTP server whose Content-Length is met) would otherwise never let
+//   the last leaf be checked.
 // - Requests start small and grow (1, 2, 4 … leaves), so the first frame waits for one leaf, not a big window, and a
 //   long read needs few round trips. The next request starts once the current one is flowing.
 // - Whatever the cache holds is served from it, including when the link is down.
@@ -27,10 +30,15 @@ export class MediaMissingError extends Error {
 }
 
 export type ReaderEvent = {
-  type: "mismatch" | "repaired" | "repair-failed";
+  /**
+   * mismatch: a leaf failed its check (it is fetched again). repaired / repair-failed: how that went. served-bad: bytes
+   * that differ from the verified leaf already went to a play-first reader, and its read ends with LeafMismatchError;
+   * a player must reload from them (breaking a response doesn't make it drop what it has).
+   */
+  type: "mismatch" | "repaired" | "repair-failed" | "served-bad";
   hash: string;
   leaf: number;
-  /** For "mismatch": some of the bad leaf's bytes already went to a reader (the player must reload from them). */
+  /** For "mismatch": some of the leaf's bytes had already gone out, unverified, when it failed. */
   handedOut?: boolean;
 };
 
@@ -280,9 +288,10 @@ export class MediaReader implements RangeSource {
   async *#consume(m: Manifest, run: Run, pos: number, end: number, startAhead: () => void, signal: AbortSignal | undefined, verifyFirst: boolean): AsyncGenerator<Uint8Array> {
     let body: ReadableStream<Uint8Array> | Uint8Array | null | undefined;
     try {
-      body = await run.body;
+      // A store that never answers must not outlive an abort.
+      body = await untilAborted(run.body, run.ctl.signal);
     } catch (e) {
-      if (isAbort(e) && signal?.aborted) throw e;
+      if (run.ctl.signal.aborted) throw run.ctl.signal.reason;
       body = undefined; // network error: fall back to leaf-by-leaf fetches with retries
     }
     if (body === null) throw new MediaMissingError(`media ${m.hash} is not in the store`);
@@ -342,20 +351,30 @@ export class MediaReader implements RangeSource {
     progress: (leaf: number, pos: number) => void,
   ): AsyncGenerator<Uint8Array> {
     const reader = body.getReader();
+    // The stream is locked to this reader, so an abort has to cancel through it: that ends a read() that is waiting on
+    // a stalled store.
+    const onAbort = () => reader.cancel(run.ctl.signal.reason).catch(() => {});
+    run.ctl.signal.addEventListener("abort", onAbort, { once: true });
     let leaf = run.first;
     let span = leafSpan(m.size, leaf);
     let buf = new Uint8Array(span.length);
     let filled = 0;
-    let handedOut = false; // some of this leaf's bytes went to the player unverified
+    // The part of this leaf handed to the reader unverified: [outFrom, outTo), offsets in the leaf.
+    let outFrom = -1;
+    let outTo = 0;
+    // After a failed check: did any byte that went out differ from the verified leaf?
+    const servedBad = (good: Uint8Array) => outFrom >= 0 && !equalBytes(good.subarray(outFrom, outTo), buf.subarray(outFrom, outTo));
+    let held: Uint8Array | null = null; // the read's last piece, waiting for its leaf's check
     try {
       while (leaf < run.end) {
         let chunk: Awaited<ReturnType<typeof reader.read>>;
         try {
           chunk = await reader.read();
         } catch (e) {
-          if (run.ctl.signal.aborted && isAbort(e)) throw e;
+          if (run.ctl.signal.aborted) throw run.ctl.signal.reason;
           break; // the link dropped mid-response: the caller refetches from here
         }
+        if (run.ctl.signal.aborted) throw run.ctl.signal.reason;
         if (chunk.done) break;
         const value = chunk.value;
         for (let at = 0; at < value.length && leaf < run.end; ) {
@@ -365,22 +384,33 @@ export class MediaReader implements RangeSource {
           filled += n;
           at += n;
           if (piece) {
-            handedOut = true;
-            pos += piece.length;
-            progress(leaf, pos);
-            yield piece;
+            if (pos + piece.length === end) {
+              held = piece; // the read's last bytes: they go out once their leaf is checked
+            } else {
+              if (outFrom < 0) outFrom = filled - piece.length;
+              outTo = filled;
+              pos += piece.length;
+              progress(leaf, pos);
+              yield piece;
+            }
           }
           if (filled < span.length) continue;
           let ready: Uint8Array | null = null; // a verified leaf whose wanted bytes haven't gone out yet
           if (await this.#verify(m, leaf, buf)) {
             await this.#o.cache?.putLeaf(m.hash, leaf, buf);
-            if (verifyFirst) ready = buf;
+            // Tools get the whole verified leaf; a held piece goes out now (`pos` is where it starts).
+            if (verifyFirst || held) ready = buf;
           } else {
-            this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut });
+            this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut: outFrom >= 0 });
             const good = await this.#repair(m.hash, leaf);
-            if (handedOut) throw new LeafMismatchError(m.hash, leaf);
+            if (servedBad(good)) {
+              this.#o.onEvent?.({ type: "served-bad", hash: m.hash, leaf });
+              throw new LeafMismatchError(m.hash, leaf);
+            }
+            // What went out was right after all (the damage was elsewhere in the leaf): carry on from the good copy.
             ready = good;
           }
+          held = null;
           const p = ready && slice(ready, span.offset, pos, end);
           if (p) {
             pos += p.length;
@@ -393,15 +423,19 @@ export class MediaReader implements RangeSource {
             span = leafSpan(m.size, leaf);
             buf = new Uint8Array(span.length);
             filled = 0;
-            handedOut = false;
+            outFrom = -1;
+            outTo = 0;
           }
         }
       }
+      if (run.ctl.signal.aborted) throw run.ctl.signal.reason;
       if (leaf < run.end && filled > 0) {
         // The response ended inside a leaf. Fetch the whole leaf (verified); what already went out of it must match.
+        // A held piece never went out: it is served from the verified leaf instead.
         const good = await this.leaf(m.hash, leaf, signal);
-        if (handedOut && !equalBytes(good.subarray(0, filled), buf.subarray(0, filled))) {
-          this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut });
+        if (servedBad(good)) {
+          this.#o.onEvent?.({ type: "mismatch", hash: m.hash, leaf, handedOut: true });
+          this.#o.onEvent?.({ type: "served-bad", hash: m.hash, leaf });
           throw new LeafMismatchError(m.hash, leaf);
         }
         const p = slice(good, span.offset, pos, end);
@@ -413,6 +447,7 @@ export class MediaReader implements RangeSource {
         progress(leaf, pos);
       }
     } finally {
+      run.ctl.signal.removeEventListener("abort", onAbort);
       reader.cancel().catch(() => {});
     }
   }
@@ -429,6 +464,16 @@ export class MediaReader implements RangeSource {
       }
     }
   }
+}
+
+/** `p`, or the signal's reason as soon as it aborts. */
+function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise((resolve, reject) => {
+    const onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+    p.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  });
 }
 
 /** The part of `bytes` (which starts at file offset `at`) inside [pos, end), or null. */

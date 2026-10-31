@@ -100,7 +100,7 @@ test("streamed: a corrupted leaf stops the read after play-first bytes, and the 
     for await (const p of reader.read(hash, 0, data.length)) handedOut += p.length;
   }, LeafMismatchError);
   assert.ok(handedOut > MiB, "bytes of the bad leaf went out before it completed (play first)");
-  assert.deepEqual(events.map((e) => [e.type, e.leaf]), [["mismatch", 1], ["repaired", 1]]);
+  assert.deepEqual(events.map((e) => [e.type, e.leaf]), [["mismatch", 1], ["repaired", 1], ["served-bad", 1]]);
   const down = mem.counters.bytesDown;
   assert.ok(equalBytes(await collect(reader.read(hash, MiB, MiB)), data.subarray(MiB, 2 * MiB)));
   assert.equal(mem.counters.bytesDown, down, "the retry is served from the repaired, cached leaf");
@@ -172,4 +172,70 @@ test("play-first mismatch events say whether bytes of the bad leaf already went 
   const reader = new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache(), onEvent: (e) => events.push(e) });
   await assert.rejects(collect(reader.read(hash, 0, 2 * MiB)), LeafMismatchError);
   assert.equal(events[0].handedOut, true);
+});
+
+test("the memory cache keeps its own copy of a leaf handed in as a Node Buffer view", async () => {
+  const cache = new MemoryLeafCache();
+  const parent = Buffer.alloc(4 * MiB, 7);
+  const leaf = parent.subarray(MiB, 2 * MiB);
+  await cache.putLeaf("a".repeat(64), 1, leaf);
+  const got = (await cache.getLeaf("a".repeat(64), 1))!;
+  assert.equal(got.buffer.byteLength, MiB, "the 4 MiB parent is not pinned");
+  parent.fill(0);
+  assert.equal(got[0], 7, "and later writes to the parent don't reach the cache");
+});
+
+test("a play-first read never ends on unverified bytes, even when the reader stops at the last byte", async () => {
+  const { data, hash, mem } = await shared(2 * MiB, 14);
+  for (const corruptAt of [MiB + 100, MiB + 900_000]) {
+    const events: ReaderEvent[] = [];
+    // The range ends inside leaf 1; the corruption is before the end (handed out) or after it (never asked for).
+    const store = new FaultyStore(mem, { streamChunk: 64 * 1024, corruptAt: { key: mediaKey(hash), offset: corruptAt, times: 1 } });
+    const reader = new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache(), onEvent: (e) => events.push(e) });
+    const want = MiB + 500_000;
+    const got: Uint8Array[] = [];
+    let n = 0;
+    let error: unknown;
+    try {
+      // Like an HTTP server: stop pulling as soon as the asked-for bytes are in.
+      for await (const p of reader.read(hash, 0, want)) {
+        got.push(p.slice());
+        if ((n += p.length) === want) break;
+      }
+    } catch (e) {
+      error = e;
+    }
+    assert.ok(events.some((e) => e.type === "mismatch" && e.leaf === 1), `leaf 1 was checked (corrupt at ${corruptAt})`);
+    if (corruptAt < want) {
+      assert.ok(error instanceof LeafMismatchError, "a bad byte went out: the read fails");
+      assert.ok(events.some((e) => e.type === "served-bad"));
+    } else {
+      assert.equal(error, undefined);
+      assert.ok(equalBytes(concatBytes(got), data.subarray(0, want)), "nothing bad went out: the read completes, repaired");
+      assert.equal(events.some((e) => e.type === "served-bad"), false);
+    }
+  }
+});
+
+test("abort ends a read that is waiting on a stalled store stream", async () => {
+  const { hash, mem } = await shared(2 * MiB, 15);
+  const stalled: BlobStore = {
+    kind: "stalled",
+    head: (k) => mem.head(k),
+    get: (k, r) => mem.get(k, r),
+    list: (p) => mem.list(p),
+    put: (k, d, o) => mem.put(k, d, o),
+    delete: (k) => mem.delete(k),
+    createMultipart: (k) => mem.createMultipart(k),
+    resumeMultipart: (k, u) => mem.resumeMultipart(k, u),
+    // Sends 1 KiB, then nothing ever again.
+    getStream: async () => new ReadableStream<Uint8Array>({ start: (c) => c.enqueue(new Uint8Array(1024)), pull: () => new Promise(() => {}) }),
+  };
+  const ac = new AbortController();
+  const reader = new MediaReader({ store: stalled, hasher: nodeHasher });
+  const it = reader.read(hash, 0, 2 * MiB, ac.signal)[Symbol.asyncIterator]();
+  await it.next(); // the first KiB
+  const pending = it.next();
+  setTimeout(() => ac.abort(), 20);
+  await assert.rejects(pending, { name: "AbortError" });
 });

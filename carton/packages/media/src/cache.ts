@@ -3,6 +3,8 @@
 // Service Worker on the web) and tools all read through one cache, so a range fetched once is never fetched again.
 // Node keeps it on disk (`@carton/media/node` FsLeafCache); this file has the interface and a memory version.
 
+import { copyBytes } from "./bytes.ts";
+
 export interface LeafCache {
   hasLeaf(hash: string, leaf: number): Promise<boolean>;
   getLeaf(hash: string, leaf: number): Promise<Uint8Array | null>;
@@ -49,8 +51,9 @@ export class MemoryLeafCache implements LeafCache {
       this.#leaves.delete(k);
     }
     if (bytes.length > this.maxBytes) return;
-    // A view into a bigger buffer (one ranged response holds several leaves) would pin all of it; keep a copy.
-    if (bytes.byteLength !== bytes.buffer.byteLength) bytes = bytes.slice();
+    // A view into a bigger buffer (one ranged response holds several leaves, a Node Buffer may sit in a shared pool)
+    // would pin all of it while only the leaf is counted: keep a copy with its own memory.
+    if (bytes.byteLength !== bytes.buffer.byteLength) bytes = copyBytes(bytes);
     this.#leaves.set(k, bytes);
     this.#bytes += bytes.length;
     for (const [key, v] of this.#leaves) {

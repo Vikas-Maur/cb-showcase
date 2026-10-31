@@ -4,7 +4,7 @@
 // the counters and the faults.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "./contracts.ts";
-import { concatBytes } from "./bytes.ts";
+import { concatBytes, copyBytes } from "./bytes.ts";
 
 export interface StoreCounters {
   bytesUp: number;
@@ -16,10 +16,10 @@ export interface StoreCounters {
 }
 
 function clip(o: Uint8Array, range?: ByteRange): Uint8Array {
-  if (!range) return o.slice();
+  if (!range) return copyBytes(o);
   const start = Math.min(o.length, range.offset);
   const end = range.length === undefined ? o.length : Math.min(o.length, range.offset + range.length);
-  return o.slice(start, Math.max(start, end));
+  return copyBytes(o.subarray(start, Math.max(start, end)));
 }
 
 export class CountingMemoryStore implements BlobStore {
@@ -50,7 +50,7 @@ export class CountingMemoryStore implements BlobStore {
     if (old && opts?.ifAbsent) return { key, size: old.length };
     this.counters.puts++;
     this.counters.bytesUp += data.length;
-    this.objects.set(key, data.slice());
+    this.objects.set(key, copyBytes(data));
     return { key, size: data.length };
   }
   async delete(key: string): Promise<void> {
@@ -82,7 +82,7 @@ export class CountingMemoryStore implements BlobStore {
         const u = this.#upload(key, uploadId);
         this.counters.parts++;
         this.counters.bytesUp += data.length;
-        u.parts.set(partNumber, data.slice());
+        u.parts.set(partNumber, copyBytes(data));
         return { partNumber, etag: `e${partNumber}-${data.length}` };
       },
       listParts: async () =>
@@ -185,7 +185,7 @@ export class FaultyStore implements BlobStore {
         }
         if (at >= bytes.length) return ctl.close();
         const n = Math.min(chunk, bytes.length - at, drop !== undefined ? drop - at : Infinity);
-        ctl.enqueue(bytes.slice(at, at + n));
+        ctl.enqueue(copyBytes(bytes.subarray(at, at + n)));
         at += n;
       },
     });
