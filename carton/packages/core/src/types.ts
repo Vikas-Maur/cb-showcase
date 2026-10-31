@@ -70,6 +70,8 @@ export interface RemapOp {
   path: readonly ["#remap"];
   maps: RemapMaps;
   lineage?: Lineage;
+  /** The item ids it moved on the state it was made on (credits and descriptions; apply re-derives them). */
+  ids?: string[];
 }
 export type Op = InsertOp | RemoveOp | SetOp | UnsetOp | RemapOp;
 
@@ -290,7 +292,10 @@ export interface PinRow {
   seq: number;
   hash8: string;
   hash: string;
+  /** The causal past a commit on this pin builds on. */
   pending: ChangeId[];
+  /** Ops on top of the confirmed state at `seq`: the pending changes' ops, or a held state's delta (a freeze view). */
+  delta: Op[];
   owners: PinOwner[];
 }
 
@@ -332,8 +337,8 @@ export interface CutRecord {
 /** A version: a confirmed state, optionally named. `ref` prints as `main@57`. */
 export interface Version {
   ref: StateRef;
-  /** Full state hash. */
-  hash: string;
+  /** Full state hash, when already known (the head, named versions); `hashOf(ref)` computes any other. */
+  hash?: string;
   change: ChangeId | null;
   author: Actor | null;
   at: number;
