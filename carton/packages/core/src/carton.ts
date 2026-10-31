@@ -14,7 +14,7 @@
 
 import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreKey, StoreWrite, Transport } from "./plugins.ts";
 import type { FieldSpec, Schema } from "./schema.ts";
-import type { PresenceState } from "./sync/messages.ts";
+import type { KeyframeData, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { ReplicaQueue, type HistoryFields, type QueuedChange, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
@@ -331,8 +331,9 @@ interface PendingRow {
   /** Refused here after a copy was sent: withdrawn, then reported rejected with this reason. */
   rejecting?: string;
   /**
-   * The confirmed seq its ops are relative to (with the rows before it). Past what the store holds after a keyframe
-   * catch-up whose skipped rows weren't saved yet, it waits at open until the queue has caught up that far (SF1-4).
+   * The confirmed seq its ops were made on (with the rows stored before it on that seq): restored on an older head, it
+   * is rebased onto what was confirmed since (SF2-2); past the stored rows, the queue's state there is in the meta
+   * table (`["queue-head", cut]`) and the queue is put back there first (SF1-4).
    */
   head?: number;
 }
@@ -372,7 +373,10 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   cards: p.cards ?? [],
   sentBases: p.sentBases ?? [],
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
+  ...(p.head !== undefined ? { head: p.head } : {}),
 });
+/** The queue's confirmed state when it is ahead of the stored rows (meta table, per cut): see `#gapWrites`. */
+const QUEUE_HEAD = "queue-head";
 /** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
 const TURN = ["append-turn"] as const;
 /** A turn its holder never gave back is free after this long (a crashed writer; one append takes far less). */
@@ -460,8 +464,8 @@ class CartonImpl implements Carton {
    * next settle of the cut, and a wait answers `pending` until one stores them (review SF1-6).
    */
   #unsettled = new Map<string, SharedCutEvent[]>();
-  /** Stored pending rows waiting, in order, for the queue to catch up to their `head` before they rejoin it (SF1-4). */
-  #waiting = new Map<string, PendingRow[]>();
+  /** Per cut, the seq of the queue state saved as `["queue-head", cut]` (0: none): see `#gapWrites`. */
+  #gapSaved = new Map<string, number>();
   readonly media: CartonMedia | null = null;
   #opts: OpenOptions;
   #h!: History;
@@ -1378,7 +1382,9 @@ class CartonImpl implements Carton {
     for (const c of (await from.range<CutRecord>(T.cuts)).map((e) => e.value)) {
       if (c.shallow) continue;
       const log = (await from.range<ConfirmedChange>(T.changes, { prefix: [c.id] })).map((e) => e.value);
-      const root = c.forkOf ? null : ((await from.get<Doc>(T.keyframes, [c.id, 0])) ?? null);
+      // a root cut's state at 0, or a fork's own copy of its fork state (SF1-1: it may be all that is left of a version
+      // compaction squashed; review SF2-4). A fork without one is rebuilt from its fork version.
+      const root = (await from.get<Doc>(T.keyframes, [c.id, 0])) ?? null;
       if (!c.forkOf && !root) continue; // a root cut without its root state can't be rebuilt here
       branches.push({ id: c.id, name: c.name, forkOf: c.forkOf, owner: c.owner, root, log });
       for (const e of await from.range<{ name: string; at: number; by?: Actor }>(T.names, { prefix: [c.id] })) names.push({ key: e.key, value: e.value });
@@ -1472,19 +1478,29 @@ class CartonImpl implements Carton {
     // holds its latest version's ops, relative to the stored confirmed head plus the rows before it (rewritten at every
     // settlement), so re-queuing them in order rebuilds the same optimistic state; each resumes where it was (its
     // rebase count, the cards its rebases raised, the bases it was sent on: REQ-7), not as a fresh change
+    // the queue was ahead of the stored rows (a keyframe catch-up whose skipped rows weren't saved yet): back to that
+    // state first, as the catch-up left it, so rows written on it restore exactly and the backfill fetches the rest
+    // (SF1-4; a state that doesn't check is ignored)
+    const ahead = await this.store.get<KeyframeData>(T.meta, [QUEUE_HEAD, cut]);
+    if (ahead && ahead.seq > sc.queue.headSeq(cut)) {
+      try {
+        sc.queue.jumpTo(cut, ahead);
+      } catch {
+        // its hash doesn't match: the rows restore on the stored head (best effort)
+      }
+    }
+    this.#gapSaved.set(cut, ahead?.seq ?? 0);
     const pending = (await this.store.range<PendingRow>(T.pending, { prefix: [cut] })).map((e) => e.value).sort((x, y) => x.order - y.order);
     const queued = this.#queuedIn(cut);
-    const waiting: PendingRow[] = [];
+    const restore: RestoreInput[] = [];
     for (const p of pending) {
       if (this.#h.confirmedById(p.id) || sc.queue.pending(cut).some((q) => q.id === p.id)) continue;
       queued.add(p.id);
       this.#authors.set(p.id, p.author);
-      // ops relative to confirmed rows this store doesn't hold yet (written during a keyframe catch-up's backfill):
-      // it, and every row after it, join once the queue has caught up that far (SF1-4)
-      if (waiting.length || (p.head ?? 0) > sc.queue.headSeq(cut)) waiting.push(p);
-      else sc.restore(restoreInput(p));
+      restore.push(restoreInput(p));
     }
-    if (waiting.length) this.#waiting.set(cut, waiting);
+    // in order; one made on an older head than the queue's is rebased onto what was confirmed since (SF2-2)
+    sc.restoreAll(restore);
     sc.on((e) => this.#onShared(cut, e));
     if (this.#connected) void sc.connect(this.#connected);
     return sc;
@@ -1560,11 +1576,31 @@ class CartonImpl implements Carton {
     this.#queue = p;
     return p;
   }
+  /**
+   * The queue's confirmed state while it is ahead of what the store holds (`stored`: History's head once the batch is
+   * saved): a keyframe catch-up whose skipped rows aren't fetched yet, or rows not settled yet. Pending rows are written
+   * on that state; a restart puts the queue back there before restoring them (SF1-4). Removed once the store has caught
+   * up. `saved`: the seq saved after the batch (0: none).
+   */
+  #gapWrites(cut: string, q: ReplicaQueue, stored: number): { writes: StoreWrite[]; saved: number } {
+    const head = q.headSeq(cut);
+    const was = this.#gapSaved.get(cut) ?? 0;
+    if (head > stored) {
+      if (was === head) return { writes: [], saved: was };
+      const doc = q.confirmedState(cut, head);
+      return { writes: [{ table: T.meta, key: [QUEUE_HEAD, cut], value: { seq: head, doc, stateHash: E.hashDoc(doc, this.schema) } satisfies KeyframeData }], saved: head };
+    }
+    return was ? { writes: [{ table: T.meta, key: [QUEUE_HEAD, cut], value: undefined }], saved: 0 } : { writes: [], saved: 0 };
+  }
   async #settleShared(cut: string, e: SharedCutEvent): Promise<void> {
     const sc = this.#shared.get(cut);
     if (!sc || this.#closed || this.#fenced) return;
     const q = sc.queue;
     const writes: StoreWrite[] = [];
+    // this event's outcome, and any whose earlier batch couldn't be stored, are kept until this batch is: a read below
+    // can fail too (review SF2-5)
+    const outcomes = [...(this.#unsettled.get(cut) ?? []).filter((x) => x !== e), e].filter((x): x is Extract<SharedCutEvent, { type: "confirmed" | "absorbed" | "rejected" }> => x.type === "confirmed" || x.type === "absorbed" || x.type === "rejected");
+    if (outcomes.length) this.#unsettled.set(cut, outcomes);
     // rows the server confirmed (ours and others'), up to the first stretch known only through a keyframe
     const rows = q.rows(cut);
     const fresh: ConfirmedChange[] = [];
@@ -1582,17 +1618,8 @@ class CartonImpl implements Carton {
       const known = await this.store.get(T.ids, [r.id]);
       if (known === undefined) writes.push({ table: T.ids, key: [r.id], value: [cut, r.seq] });
     }
-    // rows that waited for the queue to catch up rejoin it in order, now that it has (SF1-4)
-    const waiting = this.#waiting.get(cut) ?? [];
-    while (waiting.length && (waiting[0]!.head ?? 0) <= q.headSeq(cut)) {
-      const p = waiting.shift()!;
-      if (!this.#h.confirmedById(p.id) && !q.pending(cut).some((x) => x.id === p.id)) sc.restore(restoreInput(p));
-    }
-    if (!waiting.length) this.#waiting.delete(cut);
-    const waitingIds = new Set(waiting.map((p) => p.id));
     // pending rows: the queue's pending changes, each its latest version in queue order. A row goes once its change
-    // left this handle's queue, or once its id is confirmed; another process's row stays for the next holder (SF1-2),
-    // and a row still waiting to rejoin stays as stored
+    // left this handle's queue, or once its id is confirmed; another process's row stays for the next holder (SF1-2)
     const stored = await this.store.range<PendingRow>(T.pending, { prefix: [cut] });
     const live = q.pending(cut);
     const liveIds = new Set(live.map((p) => p.id));
@@ -1600,16 +1627,17 @@ class CartonImpl implements Carton {
     const confirmedNow = new Set(fresh.map((r) => r.id));
     for (const r of stored) {
       const id = r.value.id;
-      if (!liveIds.has(id) && !waitingIds.has(id) && (queued.has(id) || confirmedNow.has(id) || this.#h.confirmedById(id))) writes.push({ table: T.pending, key: r.key, value: undefined });
+      if (!liveIds.has(id) && (queued.has(id) || confirmedNow.has(id) || this.#h.confirmedById(id))) writes.push({ table: T.pending, key: r.key, value: undefined });
     }
     live.forEach((p, order) => writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order, q.headSeq(cut)) }));
+    // the queue's state when it is ahead of what the store will hold (SF1-4)
+    const gap = this.#gapWrites(cut, q, this.#h.headSeq(cut) + fresh.length);
+    writes.push(...gap.writes);
     // a pending change that came back with cards after its write had returned (a late conflict, §6.2), or that the
     // server refused: a notice for its author, in the same batch, returned at the start of that actor's next cb/MCP
     // result and by the Stop hook
     const notices: Notice[] = [];
     const authorOf = (id: string) => this.#authors.get(id) ?? stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
-    // this event's outcome, and any whose earlier batch couldn't be stored (SF1-6)
-    const outcomes = [...(this.#unsettled.get(cut) ?? []).filter((x) => x !== e), e].filter((x): x is Extract<SharedCutEvent, { type: "confirmed" | "absorbed" | "rejected" }> => x.type === "confirmed" || x.type === "absorbed" || x.type === "rejected");
     for (const o of outcomes) {
       const late = o.type === "confirmed" ? o.lateCards : o.type === "absorbed" ? o.cards : [];
       if (late.length && (o.type === "confirmed" || o.type === "absorbed")) notices.push({ to: actorKey(authorOf(o.id)), kind: "late-conflict", text: `Your change ${o.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: o.id, cards: late });
@@ -1625,14 +1653,8 @@ class CartonImpl implements Carton {
     if (handed) writes.push({ table: T.cuts, key: [cut], value: handed });
     // the store first: History only moves to what is saved. Under the holder's fence: a holder the lease has moved on
     // from records nothing more, reloads what the store holds and stops; its replacement settles the same answers once
-    let saved = true;
-    try {
-      saved = !writes.length || (await this.store.write(writes, this.#settleConds));
-    } catch (err) {
-      // nothing of this batch was stored: its outcomes' notices go with the next settle
-      if (outcomes.length) this.#unsettled.set(cut, outcomes);
-      throw err;
-    }
+    // (a write that throws stored nothing: the outcomes stay in #unsettled for the next settle, SF1-6)
+    const saved = !writes.length || (await this.store.write(writes, this.#settleConds));
     if (!saved) {
       // Its queues already dropped outcomes it couldn't record: they go too, and a later connect (this handle under a
       // new nonce) builds them again from the store, whose pending rows are pushed again and answered once more
@@ -1645,22 +1667,30 @@ class CartonImpl implements Carton {
       }
       this.#shared.clear();
       this.#queued.clear();
-      this.#waiting.clear();
+      this.#gapSaved.clear();
+      // its outcomes too: the store's pending rows are pushed again on a later connect and answered once more
+      this.#unsettled.clear();
       this.#rq = null;
       this.#emit({ type: "sync", status: "stopped", waiting: 0 });
       return;
     }
-    for (const id of queued) if (!liveIds.has(id) && !waitingIds.has(id)) queued.delete(id);
+    // the outcomes are stored: never retried again, whatever follows (review SF2-6)
+    this.#unsettled.delete(cut);
+    for (const o of outcomes) this.#authors.delete(o.id);
+    this.#gapSaved.set(cut, gap.saved);
+    for (const id of queued) if (!liveIds.has(id)) queued.delete(id);
     if (fresh.length) {
       this.#h.load(cut, fresh);
       // keyframes for rows the server confirmed: a write of their own (a lost one only means a longer replay at open)
       const k = this.#keyframeWrites(cut, fresh);
-      if (k.writes.length && (await this.store.write(k.writes, this.#settleConds))) this.#kf.set(cut, k.next);
+      try {
+        if (k.writes.length && (await this.store.write(k.writes, this.#settleConds))) this.#kf.set(cut, k.next);
+      } catch {
+        // a later keyframe write covers it
+      }
     }
     if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs });
-    this.#unsettled.delete(cut);
-    for (const o of outcomes) this.#authors.delete(o.id);
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     for (const n of notices) this.#emit({ type: "notice", notice: n });
   }
@@ -1808,6 +1838,9 @@ class CartonImpl implements Carton {
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
     const writes: StoreWrite[] = [];
     sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order, sc.queue.headSeq(cut)) }));
+    // written on the queue's state: if that is ahead of the store, it is saved with them (SF1-4)
+    const gap = this.#gapWrites(cut, sc.queue, this.#h.headSeq(cut));
+    if (gap.writes.length && gap.saved) writes.push(...gap.writes);
     // started before anything can settle it: a settle waits for #inflight
     if (writes.length || extra.length) {
       const w = this.store.write([...writes, ...extra]);

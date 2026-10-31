@@ -80,9 +80,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
   the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. A pending edit survives a
   restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
-  when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. One written during a
-  keyframe catch-up, before the rows it jumped are saved, rejoins once the queue has caught up that far. A settle
-  whose store write fails keeps its outcome for the next one; a wait answers `pending` until it is stored.
+  when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. While a keyframe
+  catch-up's skipped rows aren't saved yet, the queue's state is (meta `["queue-head", cut]`), and a restart resumes
+  there, offline too; a stored edit made on an older head (another process's) is rebased onto what was confirmed
+  since, with cards for what clashed. A settle that fails keeps its outcome for the next one; a wait answers
+  `pending` until it is stored.
   `carton.media` is null: `@carton/media` calls Carton, not the reverse.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared

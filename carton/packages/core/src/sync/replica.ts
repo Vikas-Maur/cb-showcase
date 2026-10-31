@@ -163,9 +163,9 @@ export class SharedCut {
     this.refreshState();
     return r;
   }
-  /** A pending change kept across a restart, back in the queue as it was (`ReplicaQueue.restore`). */
-  restore(input: RestoreInput): boolean {
-    const r = this.queue.restore(this.branchId, input);
+  /** Pending changes kept across a restart, back in the queue in order, as they were (`ReplicaQueue.restoreAll`). */
+  restoreAll(inputs: readonly RestoreInput[]): string[] {
+    const r = this.queue.restoreAll(this.branchId, inputs);
     this.refreshState();
     return r;
   }
