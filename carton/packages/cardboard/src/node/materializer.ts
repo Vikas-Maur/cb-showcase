@@ -112,6 +112,8 @@ export interface MaterializerOptions {
   remoteRewriteMs?: number;
   /** A windowless agent counts as active until this long after its last save or `cb` call. */
   freezeIdleMs?: number;
+  /** How long a hooked agent's announced write (`hookWrite`) waits for its save to land. */
+  attributeMs?: number;
   /** Write project.json as a view of head (H1). Off when the host writes it itself. */
   writeProject?: boolean;
 }
@@ -166,6 +168,8 @@ export class Materializer {
   private readonly lastInstall = new Map<string, OwnInstall & { hash: string }>();
   /** Displaced foreign files that don't parse (yet): re-read when their stamp changes. */
   private readonly partials = new Map<string, { rel: string; stamp: string | null; mtimeNs: bigint }>();
+  /** Writes hooked agents announced, per path, oldest first (see `hookWrite`). */
+  private readonly announced = new Map<string, { actor: Actor; at: number }[]>();
   /** Where each held displaced file came from. */
   private readonly origin = new Map<string, { rel: string; mtimeNs: bigint }>();
   private readonly quietTimers = new Map<string, unknown>();
@@ -197,6 +201,7 @@ export class Materializer {
       localRewriteMs: o.localRewriteMs ?? 20,
       remoteRewriteMs: o.remoteRewriteMs ?? 30_000,
       freezeIdleMs: o.freezeIdleMs ?? 60_000,
+      attributeMs: o.attributeMs ?? 30_000,
       writeProject: o.writeProject ?? true,
     };
     const carton = path.join(this.bundle, CARTON_DIR);
@@ -289,6 +294,24 @@ export class Materializer {
       if (this.freeze.hooked.delete(actor.id)) await this.updateFreeze();
     });
   }
+  /**
+   * A hooked agent is about to write a watched file (PreToolUse on Write/Edit/MultiEdit). Files carry no writer, so the
+   * next foreign save of `rel` within `attributeMs` is credited to this actor, down to the subagent (Credits); saves no
+   * hook announced stay `external:<file>`. Per-agent views are credited to their owner without this.
+   */
+  hookWrite(actor: Actor, rel: string): Promise<void> {
+    return this.run(async () => {
+      const canon = this.watched(rel) ?? rel;
+      const list = this.announced.get(canon) ?? [];
+      list.push({ actor, at: this.clock.now() });
+      this.announced.set(canon, list);
+      if (canon === TIMELINE_FILE) {
+        this.freeze.hooked.set(actor.id, actor); // a hooked agent writing the shared file is active, as when it reads
+        await this.updateFreeze();
+      }
+    });
+  }
+
   /** Any `cb` call: windowless agents count as active for a while after it. */
   onCb(): Promise<void> {
     return this.run(async () => {
@@ -433,6 +456,12 @@ export class Materializer {
     await this.importUnseen(PROJECT_FILE);
     const env = this.readEnvelope() ?? { format: "cardboard-project", version: 1, media: [] };
     const cur = (env.project as Project | undefined) ?? null;
+    // project.json has one base: Carton's latest materialization of it. Only that state stays pinned for it (the
+    // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
+    // unpatched tools, rare, and get the latest view as their base).
+    const head = await this.engine.head();
+    if (this.projectPin && cur && JSON.stringify(this.host.toProject(head, cur)) === JSON.stringify(cur)) return;
+    await this.engine.release("project-file");
     const { ref, doc } = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
     if (this.projectPin === ref && cur) return;
     const next = this.host.toProject(doc, cur);
@@ -653,13 +682,17 @@ export class Materializer {
     await this.reviewDisplaced();
   }
 
-  private async actorOf(rel: string): Promise<Actor> {
+  private async actorOf(rel: string, consume = false): Promise<Actor> {
     const name = viewName(rel);
     if (name) {
       const row = await this.engine.getMeta<ViewRow>(["view", name]);
       if (row) return row.owner;
     }
-    return { kind: "external", id: `external:${rel}`, name: rel };
+    const list = (this.announced.get(rel) ?? []).filter((a) => this.clock.now() - a.at <= this.opts.attributeMs);
+    const who = list[0]?.actor;
+    if (consume && who) list.shift();
+    this.announced.set(rel, list);
+    return who ?? { kind: "external", id: `external:${rel}`, name: rel };
   }
 
   /** Applies a foreign save. Returns false when it couldn't be (no print, unknown base, doesn't parse): keep its bytes. */
@@ -669,7 +702,7 @@ export class Materializer {
       return false;
     };
     const text = bytes.toString("utf8");
-    const actor = await this.actorOf(rel);
+    const actor = await this.actorOf(rel, true);
     const name = viewName(rel);
     const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
     if (name && !row) {
