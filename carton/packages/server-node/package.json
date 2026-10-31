@@ -5,13 +5,18 @@
   "type": "module",
   "license": "UNLICENSED",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./transport": "./src/transport.ts"
   },
   "publishConfig": {
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      },
+      "./transport": {
+        "types": "./dist/transport.d.ts",
+        "default": "./dist/transport.js"
       }
     }
   },

@@ -278,12 +278,28 @@ async function checkDamagedLocked(store: BlobStore, key: string, hash: string, l
   return json({ damaged: true, removed: true });
 }
 
+// Keys named by content (@carton/media: `m/<hash>` bytes, `mf/<hash>` manifests, `px/<hash>/…` proxy pointers, `t1/<hash>/…`
+// T1 extras, §11): reading one needs its content hash, which only a document that uses the media gives away.
+const CONTENT_KEYS = ["m/", "mf/", "px/", "t1/"];
+
+/**
+ * What a reader scoped to some cuts (a Published cut's watch link, §14) may read from the media scope: media named by
+ * content, and files kept for one of its cuts under `cuts/<cutId>/`. Never the project's own files (its descriptor
+ * holds Main's root; web-demo review R2-1). An unscoped session, or a writer, reads the whole scope. (web-demo a05f18e)
+ */
+export function mayRead(ctx: AuthContext, key: string): boolean {
+  if (!ctx.branches || canPush(ctx)) return true;
+  if (CONTENT_KEYS.some((p) => key.startsWith(p))) return true;
+  return ctx.branches.some((b) => key.startsWith(`cuts/${b}/`));
+}
+
 async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext, store: BlobStore, deps: HttpDeps, projectId: string): Promise<Response> {
   const key = url.searchParams.get("key") ?? "";
   if (req.method === "POST" && rest === "/blobs/sign") {
     const b = await body<{ key?: string; method?: string; expiresIn?: number }>(req);
     const method = b.method === "PUT" ? "PUT" : "GET";
     if (method === "PUT" && !canPush(ctx)) return err(403, "read-only role");
+    if (!mayRead(ctx, String(b.key ?? ""))) return err(403, "outside this link's scope");
     const signer = blobSigner(deps, url.origin, projectId);
     return json({ url: await signer.sign(method, String(b.key ?? ""), Math.min(Number(b.expiresIn ?? 300), 3600)) });
   }
@@ -292,6 +308,7 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
     return checkDamaged(store, mediaLockScope(store, projectId), String(b.key ?? ""), Number(b.leaf));
   }
   if (req.method === "GET" && rest === "/blobs/head") {
+    if (!mayRead(ctx, key)) return err(403, "outside this link's scope");
     // an editor could reference this hash in the document anyway; claiming it here lets an upload find a teammate's copy
     if (canPush(ctx) && isTeamMediaStore(store)) await store.claim(key);
     const info = await store.head(key);
