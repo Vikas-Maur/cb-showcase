@@ -92,8 +92,9 @@ async function computer(name, b) {
     return { code: r.status, out: r.stdout, err: r.stderr, json: () => JSON.parse(r.stdout.replace(/^\[carton\][^\n]*\n/gm, "")) };
   };
   let w = null, n = 0;
-  const startWorker = async () => {
-    w = proc(path.join(__dirname, "worker-proc.js"), [b.worker, root], env);
+  // `extra`: more environment for this worker run only (e.g. CARTON_CBPROJ_HISTORY for the app's Save As).
+  const startWorker = async (extra = {}) => {
+    w = proc(path.join(__dirname, "worker-proc.js"), [b.worker, root], { ...env, ...extra });
     await w.next((x) => x.ready, 60_000);
   };
   const call = async (method, ...args) => {
@@ -185,4 +186,25 @@ function killHelpers() {
 /** A project's file as it is on a computer's disk (its worker may be stopped). */
 const fileOf = (pc, bundle = "Demo") => JSON.parse(fs.readFileSync(path.join(pc.root, bundle + ".cardboard", "project.json"), "utf8")).project;
 
-module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf };
+/** A .cbproj's members (Cardboard writes a stored zip), and a member's bytes. */
+function zipOf(file) {
+  const buf = fs.readFileSync(file);
+  let e = buf.length - 22;
+  while (e >= 0 && buf.readUInt32LE(e) !== 0x06054b50) e--;
+  if (e < 0) throw new Error("no zip end record in " + file);
+  const entries = new Map();
+  for (let i = 0, n = buf.readUInt16LE(e + 10), at = buf.readUInt32LE(e + 16); i < n; i++) {
+    const len = buf.readUInt16LE(at + 28), extra = buf.readUInt16LE(at + 30), comment = buf.readUInt16LE(at + 32);
+    entries.set(buf.toString("utf8", at + 46, at + 46 + len), { size: buf.readUInt32LE(at + 20), local: buf.readUInt32LE(at + 42) });
+    at += 46 + len + extra + comment;
+  }
+  return {
+    names: [...entries.keys()],
+    read(name) {
+      const x = entries.get(name), start = x.local + 30 + buf.readUInt16LE(x.local + 26) + buf.readUInt16LE(x.local + 28);
+      return buf.subarray(start, start + x.size);
+    },
+  };
+}
+
+module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf };
