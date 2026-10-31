@@ -396,7 +396,7 @@ class CartonImpl implements Carton {
       }
       const root = c.forkOf || c.shallow ? null : ((await s.get<Doc>(T.keyframes, [c.id, 0])) ?? null);
       h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}) });
-      if (c.protected !== undefined || c.sequencer.kind !== "local") h.updateCut(c.id, { ...(c.protected !== undefined ? { protected: c.protected } : {}), sequencer: c.sequencer });
+      if (c.protected !== undefined || c.sequencer.kind !== "local" || c.source) h.updateCut(c.id, { ...(c.protected !== undefined ? { protected: c.protected } : {}), sequencer: c.sequencer, ...(c.source ? { source: c.source } : {}) });
       done.add(c.id);
       if (!c.shallow) h.load(c.id, (await s.range<ConfirmedChange>(T.changes, { prefix: [c.id] })).map((e) => e.value));
     };
@@ -425,7 +425,6 @@ class CartonImpl implements Carton {
       // another process renamed it (or changed its kind, protection, sequencer): take the stored record
       if (E.canonical(known) !== E.canonical(e.value)) this.#h.updateCut(e.value.id, { name: e.value.name, kind: e.value.kind, sequencer: e.value.sequencer, ...(e.value.protected !== undefined ? { protected: e.value.protected } : {}), ...(e.value.source ? { source: e.value.source } : {}) });
     }
-    for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) this.#h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
     const cuts = cut ? [cut] : this.#h.cuts().filter((c) => !c.shallow).map((c) => c.id);
     for (const id of cuts) {
       const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [id], gt: [id, this.#h.headSeq(id)] })).map((e) => e.value);
@@ -466,7 +465,8 @@ class CartonImpl implements Carton {
     for (const { cut, change } of confirmed) {
       writes.push({ table: T.changes, key: [cut, change.seq], value: change }, { table: T.ids, key: [change.id], value: [cut, change.seq] });
       // the slot is free and the id was never confirmed anywhere (dedup by id spans every cut and process)
-      conds.push({ table: T.changes, key: [cut, change.seq], expect: "absent" }, { table: T.ids, key: [change.id], expect: "absent" });
+      // the id was never confirmed anywhere, nor recorded as a no-op (dedup by id spans every cut and process)
+      conds.push({ table: T.changes, key: [cut, change.seq], expect: "absent" }, { table: T.ids, key: [change.id], expect: "absent" }, { table: T.meta, key: ["noop", change.id], expect: "absent" });
       if (change.name) writes.push({ table: T.names, key: [cut, change.seq], value: { name: change.name, at: change.at, by: change.author } });
     }
     // every replica id that committed here (R10-02: claimed in hello), one key each
@@ -477,12 +477,19 @@ class CartonImpl implements Carton {
     if (ok) for (const { cut, change } of confirmed) this.#emit({ type: "change", branchId: cut, seq: change.seq, change, local: true });
     return ok;
   }
+  /** A write with an id: if another process recorded it as a no-op, this handle learns it before acting (by id, not a scan). */
+  async #noopOf(id: ChangeId | undefined): Promise<void> {
+    if (!id) return;
+    const n = await this.store.get<[string, number]>(T.meta, ["noop", id]);
+    if (n) this.#h.noteNoop(id, n[0], n[1]);
+  }
   /** Run a History mutation under the handle's queue, persist what it confirmed, and retry after losing a race. */
-  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean } = {}): Promise<R> {
+  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
       for (let attempt = 0; ; attempt++) {
         await this.#refresh(cut);
+        await this.#noopOf(opts.id);
         this.#confirmed.length = 0;
         this.#noops.length = 0;
         let ok: boolean, r: R;
@@ -670,7 +677,7 @@ class CartonImpl implements Carton {
           id,
         });
       },
-      { conditions: input.conditions ?? [], idempotent: !input.conditions?.length },
+      { conditions: input.conditions ?? [], idempotent: !input.conditions?.length, id },
     );
     const { retry: _r, ...out } = r as CommitResult & { retry?: unknown };
     this.#notices(out);
@@ -750,7 +757,9 @@ class CartonImpl implements Carton {
     return rec;
   }
   async publish(opts: { from?: StateRef | string; name?: string; id?: string } = {}): Promise<CutRecord> {
-    // the cut it comes from, said explicitly: a fork node is canonical, so an unedited variant's would name its parent
+    // the cut it comes from, said explicitly: a fork node is canonical, so an unedited variant's would name its parent;
+    // refreshed first, so a cut another process made is known by its full id
+    await this.#refresh();
     const from = opts.from;
     const source = from === undefined ? this.#h.current : typeof from === "string" && this.#h.cut(from) ? from : typeof from === "string" && NODE_RE.test(from) ? parseNode(from).branchId : (() => {
       const p = this.#h.parseRef(from);
@@ -780,7 +789,7 @@ class CartonImpl implements Carton {
     if (this.#isShared(into)) return this.#foldShared(into, from, opts);
     const author = this.#actor(opts.author);
     // refresh every cut: the one folded in may have grown in another process
-    const r = await this.#mutate(undefined, () => this.#h.fold(into, this.#foldable(from), { ...opts, author }), { idempotent: true });
+    const r = await this.#mutate(undefined, () => this.#h.fold(into, this.#foldable(from), { ...opts, author }), { idempotent: true, ...(opts.id ? { id: opts.id } : {}) });
     const { retry: _r, merge, base: _b, doc: _d, ...out } = r as FoldResult & { retry?: unknown; merge?: MergeResult; base?: unknown; doc?: unknown };
     // a dry run tells what the fold would bring in (the Fold in dialog, `cb fold --check`): with choices, the resolved
     // state; without, every card on its provisional side
@@ -796,7 +805,7 @@ class CartonImpl implements Carton {
     const into = opts.into ?? this.#h.current;
     this.#localOnly(into, "foldSome");
     const author = this.#actor(opts.author);
-    const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#foldable(from), { ...opts, author }), { idempotent: true });
+    const r = await this.#mutate(undefined, () => this.#h.foldSome(into, this.#foldable(from), { ...opts, author }), { idempotent: true, ...(opts.id ? { id: opts.id } : {}) });
     const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
     return out as FoldResult;
   }
@@ -815,18 +824,18 @@ class CartonImpl implements Carton {
     this.#localOnly(cut, "restore");
     // History resolves headers and StateRefs itself, pins included, so a held state is restored as held; a cut id is
     // its head as of now (inside the mutation, after the refresh), never a cached one
-    return this.#mutate(undefined, () => this.#h.restore(cut, typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id });
+    return this.#mutate(undefined, () => this.#h.restore(cut, typeof ref === "string" && this.#h.cut(ref) ? this.#h.head(ref) : ref, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async revert(changeId: ChangeId, opts: { author?: Actor; cut?: string; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
     this.#localOnly(cut, "revert");
-    return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id });
+    return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
     const cut = opts.cut ?? this.#h.current;
     this.#localOnly(cut, "undo");
     const actor = this.#actor(opts.author);
-    return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id });
+    return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
   // ------------------------------------------------------------ .cbproj (§13)
@@ -962,6 +971,7 @@ class CartonImpl implements Carton {
     const sc = await this.#ensureShared(cut);
     const q = sc.queue;
     await this.#refresh(cut);
+    await this.#noopOf(id);
     this.#feedQueue(cut);
     const done = this.#h.confirmedById(id);
     if (done) return done;
