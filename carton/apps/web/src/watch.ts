@@ -8,12 +8,12 @@ import type { Doc } from "@carton/core";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 import { cardboardAdapter } from "@carton/cardboard";
 import { webSocketTransport } from "@carton/server-node/transport";
-import { parseWatchHash, type ProjectDescriptor } from "./descriptor.ts";
+import { parseWatchDescriptor, parseWatchHash, watchKey, type WatchDescriptor } from "./descriptor.ts";
 import { Follower } from "./follow.ts";
 import { ImageCache } from "./images.ts";
 import { startMedia } from "./media-client.ts";
 import { Player } from "./player.ts";
-import { readBlob, readDescriptor } from "./project.ts";
+import { readBlob } from "./project.ts";
 import { Session, type KeyStore } from "./session.ts";
 import { appCss } from "./styles.ts";
 import { formatTime } from "./timeline.ts";
@@ -33,7 +33,7 @@ interface State {
   error: string | null;
 }
 
-function WatchPage(p: { descriptor: ProjectDescriptor; state: State; images: ImageCache; mediaUrl: (hash: string) => string }) {
+function WatchPage(p: { descriptor: WatchDescriptor; state: State; images: ImageCache; mediaUrl: (hash: string) => string }) {
   const [time, setTime] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [, setV] = useState(0);
@@ -69,7 +69,10 @@ async function main(): Promise<void> {
   }
   const baseUrl = location.origin;
   const session = (await Session.resume({ baseUrl, projectId: link.projectId, keys, slot: `watch.${link.cut}` })) ?? (await Session.join({ baseUrl, projectId: link.projectId, invite: link.invite, account: "viewer", keys, slot: `watch.${link.cut}` }));
-  const descriptor = await readDescriptor(session);
+  // the cut's own watch data: the link's scoped session can't read the project's descriptor (review R2-1)
+  const bytes = await readBlob(session, watchKey(link.cut));
+  if (!bytes) throw new Error("This published cut isn't available.");
+  const descriptor = parseWatchDescriptor(new TextDecoder().decode(bytes));
   const images = new ImageCache((key) => readBlob(session, key));
   const media = startMedia({ baseUrl, projectId: link.projectId, token: () => session.token() });
   // media URLs only once the Service Worker controls the page (review R2-2): posters until then

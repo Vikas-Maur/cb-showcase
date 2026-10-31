@@ -29,6 +29,23 @@ export function parseDescriptor(text: string): ProjectDescriptor {
   return d;
 }
 
+/**
+ * What a Published cut's watch page needs besides the cut itself: its name and the media its document uses. Kept at
+ * `cuts/<cutId>/watch.json`, the only non-media key the link's scoped session may read (host-http `mayRead`): the
+ * project descriptor holds Main's root, which a watch link must not see.
+ */
+export interface WatchDescriptor {
+  v: 1;
+  name: string;
+  media: Record<string, SampleMedia>;
+}
+export const watchKey = (cutId: string) => `cuts/${cutId}/watch.json`;
+export function parseWatchDescriptor(text: string): WatchDescriptor {
+  const d = JSON.parse(text) as WatchDescriptor;
+  if (d?.v !== 1 || typeof d.name !== "string" || typeof d.media !== "object" || !d.media) throw new Error("this published cut's watch data is unreadable");
+  return d;
+}
+
 export interface JoinLink {
   projectId: string;
   invite: string;

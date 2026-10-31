@@ -9,12 +9,12 @@ import { openIdbStore } from "@carton/store-idb";
 import { webSocketTransport } from "@carton/server-node/transport";
 import { App } from "./app.ts";
 import { describeCardWith } from "./cards.ts";
-import { parseDescriptor, watchHash } from "./descriptor.ts";
+import { parseDescriptor, watchHash, watchKey, type WatchDescriptor } from "./descriptor.ts";
 import { ImageCache } from "./images.ts";
 import { LiveDoc } from "./live-doc.ts";
 import { startMedia } from "./media-client.ts";
 import { PresenceSender } from "./presence.ts";
-import { holdPushLock, openProject, readBlob, readDescriptor } from "./project.ts";
+import { holdPushLock, openProject, putBlob, readBlob, readDescriptor } from "./project.ts";
 import type { KeyStore, Session } from "./session.ts";
 
 /** A small observable value for the views (no framework store needed). */
@@ -69,6 +69,11 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const publishing: Carton["publish"] = async (opts) => {
     const rec = await carton.publish(opts);
     await carton.share(rec.id);
+    // what the watch page may read besides the cut: its name and only the media its document uses (review R2-1)
+    const doc = await carton.checkout(rec.id);
+    const used = new Set(((doc.timelineItems ?? []) as { mediaItemId?: string }[]).map((r) => r.mediaItemId).filter((x): x is string => !!x));
+    const watch: WatchDescriptor = { v: 1, name: String(doc.name ?? descriptor.name), media: Object.fromEntries(Object.entries(descriptor.media).filter(([id]) => used.has(id))) };
+    await putBlob(session, watchKey(rec.id), new TextEncoder().encode(JSON.stringify(watch)), "application/json");
     const url = await watchLink(rec);
     if (url) links.set(rec.id, url);
     return rec;

@@ -13,10 +13,10 @@ import { webSocketTransport } from "@carton/server-node/transport";
 import { serveDemo, type DemoNodeHost } from "../scripts/serve-node.ts";
 import { seedDemo, type SeedResult } from "../scripts/seed.ts";
 import { Director } from "../scripts/director.ts";
-import { parseJoinHash } from "../src/descriptor.ts";
+import { DESCRIPTOR_KEY, parseJoinHash } from "../src/descriptor.ts";
 import { trimOps } from "../src/edit.ts";
 import { Follower } from "../src/follow.ts";
-import { openProject } from "../src/project.ts";
+import { openProject, readBlob } from "../src/project.ts";
 import { Session, memoryKeys } from "../src/session.ts";
 
 const scratch = join(process.env.HOME ?? ".", "gfv-scratch", "carton", "web-demo", "test-live");
@@ -130,6 +130,8 @@ test("the §17 story over a real host: join, live edits with an agent, undo its 
   await until(() => watched?.doc != null, 5000, "the viewer reads the published version");
   await until(() => refused.length > 0, 5000, "the source is refused");
   assert.match(refused[0]!, /can't read/, "Main stays out of the watch link's reach");
+  // nor can it read the project descriptor (it holds Main's root): only media named by content and cuts/<pub>/ (R2-1)
+  await assert.rejects(readBlob(viewer, DESCRIPTOR_KEY), (e: { status?: number }) => e.status === 403);
   const pubCap = ((watched!.doc as { timelineItems: Rec[] }).timelineItems).find((r) => r.id === "cap-1")!;
   assert.equal(pubCap.captionText, "Bob was offline");
   assert.deepEqual(watched!.source && { at: watched!.source.at, newer: watched!.source.head - watched!.source.at }, { at, newer: 0 }, "no newer edits yet");
