@@ -25,7 +25,7 @@ Every `cb` write (`source apply`, `fold`, `restore`, `undo`, `resolve`…) answe
 |---|---|---|
 | `confirmed` | Saved, in order, for everyone | Go on |
 | `pending` | Saved on this machine, but the server hasn't answered yet (or you are offline). It syncs by itself | Go on. If it later clashes, you hear about it on your next `cb` call |
-| `conflicts` | On a save: the rest of your edit landed, and each card kept the other side's value. On `undo --turn`, and on a fold that says "Not folded in": nothing was saved (see those sections). On a fold that says "Folded in, but … came back": it landed, and the cards are yours to resolve like a save's | Read the cards (below). Never write your edit again to get around one |
+| `conflicts` | On a save: the rest of your edit landed, and each card kept the other side's value. When `undo --turn` says "Not undone", or a fold says "Not folded in": nothing was saved (see those sections). When a fold says "Folded in, but … came back", or `undo --turn` says "Undid turn …: conflicts": it landed except those cards, which are yours to resolve like a save's | Read the cards (below). Never write your edit again to get around one |
 | `rejected` | Nothing was saved: the edit broke a rule (a clip ending before it starts, a missing track) | Fix the edit and save again |
 
 The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the result is
@@ -99,8 +99,10 @@ like a save's (step 5 of the loop).
 
 - **Undo your own turn:** `cb undo <project> --turn <turn>` takes back every change of that turn, yours and your
   subagents', as one new version. Changes others made since stay. If someone changed any of the same things after
-  you, it undoes **nothing** and answers `conflicts` with those cards (they aren't kept for later): tell the user which
-  clips were changed since, and undo the rest by hand only if they ask. `cb history` shows `(turn <turn>)` next to each
+  you, it undoes **nothing**: the answer starts "Not undone" and lists those cards (they aren't kept for later). Tell
+  the user which clips were changed since, and undo the rest by hand only if they ask. On a shared cut the server can
+  find such a clash after the undo was sent: then the answer is "Undid turn …: conflicts", the rest was undone, and
+  the cards are in `cb conflicts`. `cb history` shows `(turn <turn>)` next to each
   version. Plain `cb undo <project>` undoes the newest change of your undo group (the person's edits and the turns they
   started).
 - **Restore** brings back an old version as a new version: `cb restore <project> main@12`. It also takes back everyone

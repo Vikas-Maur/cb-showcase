@@ -9,6 +9,7 @@ import { createServer } from "node:net";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { defaultAppDataDir, projectKey } from "@carton/store-sqlite";
 
 const carton = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const qs = (f: string) => join(carton, "kit", "quickstart", f);
@@ -91,14 +92,18 @@ test("quickstart 2: .cbproj round trip, a teammate's changes brought back in wit
   assert.notEqual(refused.code, 0);
   assert.match(refused.out, /already exists and isn't empty: pick a new folder/);
   assert.equal(readFileSync(join(T, "busy", "project.json"), "utf8"), "someone else's project");
-  // a project whose history this machine already keeps in app data is refused before anything is written or moved
-  const appData = join(T, "xdg");
-  mkdirSync(join(appData, "carton", "projects", "demo-project"), { recursive: true });
-  writeFileSync(join(appData, "carton", "projects", "demo-project", "carton.db"), "their history");
-  const known = await run(qs("cbproj.ts"), ["open", join(T, "demo.cbproj"), join(T, "known", "Demo.cardboard")], { XDG_DATA_HOME: appData });
+  // a project whose history this machine already keeps in app data is refused before anything is written or moved.
+  // The child gets an app-data folder of its own, by the variable its platform reads (defaultAppDataDir).
+  const home = join(T, "home");
+  const appEnv: Record<string, string> = process.platform === "win32" ? { LOCALAPPDATA: join(T, "localappdata") } : process.platform === "darwin" ? { HOME: home } : { XDG_DATA_HOME: join(T, "xdg") };
+  const appData = defaultAppDataDir({ platform: process.platform, env: { ...process.env, ...appEnv }, home: appEnv.HOME ?? homedir() });
+  const knownDb = join(appData, "projects", projectKey("demo-project"), "carton.db");
+  mkdirSync(dirname(knownDb), { recursive: true });
+  writeFileSync(knownDb, "their history");
+  const known = await run(qs("cbproj.ts"), ["open", join(T, "demo.cbproj"), join(T, "known", "Demo.cardboard")], appEnv);
   assert.match(known.out, /you already have project demo-project on this machine: use bring-in/);
   assert.ok(!existsSync(join(T, "known")), "nothing was unpacked");
-  assert.equal(readFileSync(join(appData, "carton", "projects", "demo-project", "carton.db"), "utf8"), "their history");
+  assert.equal(readFileSync(knownDb, "utf8"), "their history");
   assert.equal((await run(qs("cbproj.ts"), ["open", join(T, "demo.cbproj"), B])).out, `Opened demo-project with their history; you are on "Main cut"`);
   assert.ok(!existsSync(join(B, ".carton", "displaced")));
   assert.match((await cb(B, "cut", "list")).out, /Main cut\s+main\s+-\s+read-only[\s\S]*\*\s+Main cut\s+main\s+@0\s+local/);

@@ -4,7 +4,7 @@
 //   node kit/quickstart/cbproj.ts bring-in <bundle> <file.cbproj> [--check] [--keep mine|theirs]
 //                                                                    "Bring in their changes": a fold, with cards
 // In Cardboard these are File › Save As and Open Project (INTEGRATION.md, H11).
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { Carton } from "@carton/core";
 import { cardboardAdapter, materializeProject } from "@carton/cardboard";
@@ -40,8 +40,9 @@ if (cmd === "export" && a && b) {
   // This machine may already keep this project's history in app data (a bundle in a synced folder, L15): then it isn't
   // a project you don't have, and "Bring in their changes" is the way. Checked before anything is written, because
   // opening the store would move that history into the new folder.
-  if (existsSync(join(defaultAppDataDir(), "projects", projectKey(projectId), "carton.db")))
-    throw new Error(`you already have project ${projectId} on this machine: use bring-in on it instead`);
+  const known = join(defaultAppDataDir(), "projects", projectKey(projectId), "carton.db");
+  const alreadyHere = `you already have project ${projectId} on this machine: use bring-in on it instead`;
+  if (existsSync(known)) throw new Error(alreadyHere);
   // unpack into a staging folder, then move it into place (Cardboard's Open Project does the same; files it must never
   // apply are already left out)
   mkdirSync(dirname(bundle), { recursive: true });
@@ -56,9 +57,20 @@ if (cmd === "export" && a && b) {
   } finally {
     await z.close();
   }
+  // again: another process may have opened it meanwhile (the staging folder is ours: remove it)
+  if (existsSync(known)) {
+    rmSync(staging, { recursive: true, force: true });
+    throw new Error(alreadyHere);
+  }
   if (existsSync(bundle)) rmdirSync(bundle); // the empty folder checked above
   renameSync(staging, bundle);
-  const { store } = await openProjectStore({ bundleDir: bundle, projectId });
+  const { store, location } = await openProjectStore({ bundleDir: bundle, projectId });
+  // Still a window between that check and the open (closing it needs a create-only open in store-sqlite): if a history
+  // arrived in it, the open moved it here. Say so, and import nothing over it.
+  if ((await store.range("meta", { limit: 1 })).length) {
+    await store.close();
+    throw new Error(`project ${projectId} already had a history on this machine; it is now at ${location.dbPath}. Nothing was imported: use bring-in on ${bundle}`);
+  }
   // their cuts arrive as read-only tracking cuts, and a cut of your own starts from their head
   const carton = await Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, init: { import: contents.shallow } });
   const mine = (await carton.cuts()).find((c) => c.id === carton.cut)!;
