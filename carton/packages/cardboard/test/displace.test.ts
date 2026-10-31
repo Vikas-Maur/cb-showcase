@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { displaceThenInstall, hardLinksWork, statStamp } from "../src/node/displace.ts";
+import { displaceThenInstall, hardLinksWork, retryBusy, statStamp } from "../src/node/displace.ts";
 import { DisplacedFiles } from "../src/node/displaced.ts";
 
 const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "test");
@@ -139,4 +139,68 @@ test("displaced slot names never repeat across instances", (t) => {
   const b = new DisplacedFiles(path.join(dir, "d"));
   const names = new Set([a.next(), a.next(), b.next(), b.next()]);
   assert.equal(names.size, 4);
+});
+
+// Windows: a file another process has open, or a name deleted while something (Defender, the indexer) still had it
+// open ("delete pending"), fails rename, link, unlink and stat with EPERM, EBUSY or EACCES for a moment. These can't be
+// made to happen on Linux, so the calls fail that way once each, then run for real.
+const winErr = (code: string) => Object.assign(new Error(`${code}: busy (simulated)`), { code });
+function failOnce(t: test.TestContext, name: "renameSync" | "linkSync" | "unlinkSync" | "statSync", code: string) {
+  const real = fs[name] as (...a: unknown[]) => unknown;
+  let failed = false;
+  t.mock.method(fs, name, (...a: unknown[]) => {
+    if (!failed) {
+      failed = true;
+      throw winErr(code);
+    }
+    return real(...a);
+  });
+}
+
+test("Windows busy errors at every step of displace-then-install are retried, and the foreign file is still kept", (t) => {
+  const { target, held, tmp } = setup(t);
+  fs.writeFileSync(target, "foreign");
+  const ours = tmp("ours");
+  failOnce(t, "renameSync", "EPERM");
+  failOnce(t, "linkSync", "EACCES");
+  failOnce(t, "unlinkSync", "EBUSY");
+  const counter = { busy: 0 };
+  const r = displaceThenInstall(target, ours, held.next, { counter });
+  t.mock.restoreAll();
+  assert.equal(counter.busy, 3);
+  assert.deepEqual(r.displaced.map((d) => fs.readFileSync(d, "utf8")), ["foreign"]);
+  assert.equal(fs.readFileSync(target, "utf8"), "ours");
+  assert.equal(fs.existsSync(ours), false);
+});
+
+test("Windows: a delete-pending target's stat is retried too (the no-links fallback, and the displaced-file review)", (t) => {
+  const { target, held, tmp } = setup(t);
+  fs.writeFileSync(target, "foreign");
+  const counter = { busy: 0 };
+  failOnce(t, "statSync", "EPERM");
+  const r = displaceThenInstall(target, tmp("ours"), held.next, { noLinks: true, lastStamp: null, counter });
+  t.mock.restoreAll();
+  assert.equal(counter.busy, 1);
+  assert.deepEqual(r.displaced.map((d) => fs.readFileSync(d, "utf8")), ["foreign"]);
+  held.hold(r.displaced, null);
+  failOnce(t, "statSync", "EACCES");
+  const rev = held.review(() => true);
+  t.mock.restoreAll();
+  assert.deepEqual(rev.foreign.map((f) => f.bytes.toString()), ["foreign"]);
+});
+
+test("retryBusy gives up after its attempts, and never retries other errors", () => {
+  const counter = { busy: 0 };
+  const busy = () => {
+    throw winErr("EPERM");
+  };
+  assert.throws(() => retryBusy(busy, counter, 2), { code: "EPERM" });
+  assert.equal(counter.busy, 2);
+  let calls = 0;
+  const gone = () => {
+    calls++;
+    throw winErr("ENOENT");
+  };
+  assert.throws(() => retryBusy(gone, counter), { code: "ENOENT" });
+  assert.equal(calls, 1);
 });

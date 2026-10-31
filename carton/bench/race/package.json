@@ -5,6 +5,7 @@
   "description": "P10: the displace-then-install race harness (PLAN §6.4), run on the shipped @carton/cardboard code",
   "scripts": {
     "race": "node race.ts",
-    "smoke": "node race.ts --trials 1 --rounds 500"
+    "smoke": "node race.ts --trials 1 --rounds 500",
+    "test": "node --test race.test.ts"
   }
 }

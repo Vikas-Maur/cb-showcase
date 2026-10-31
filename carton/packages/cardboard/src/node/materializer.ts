@@ -569,7 +569,7 @@ export class Materializer {
    * footage), so it is read, hashed and parsed again only when its stamp changed.
    */
   private envelopeFile(): { env: Record<string, unknown> | null; hash: string; stamp: string } | null {
-    const stamp = statStamp(this.abs(PROJECT_FILE));
+    const stamp = statStamp(this.abs(PROJECT_FILE), this.busy);
     if (stamp === null) return null;
     if (this.envelopeCache?.stamp === stamp) return this.envelopeCache;
     const f = this.readFile(PROJECT_FILE);
@@ -662,7 +662,7 @@ export class Materializer {
       }
       throw e;
     }
-    const stamp = statStamp(target);
+    const stamp = statStamp(target, this.busy);
     for (const d of r.displaced) {
       let mtimeNs = 0n;
       try {
@@ -878,10 +878,10 @@ export class Materializer {
     for (const p of r.retired) this.origin.delete(p);
     const found: Found[] = r.foreign.map((d) => {
       const o = this.origin.get(d.path);
-      return { path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n, stamp: statStamp(d.path), ...(o?.viewGen !== undefined ? { viewGen: o.viewGen } : {}) };
+      return { path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n, stamp: statStamp(d.path, this.busy), ...(o?.viewGen !== undefined ? { viewGen: o.viewGen } : {}) };
     });
     for (const [p, q] of this.partials) {
-      const stamp = statStamp(p);
+      const stamp = statStamp(p, this.busy);
       if (stamp === null) this.partials.delete(p);
       else if (stamp !== q.stamp) {
         this.partials.delete(p);
