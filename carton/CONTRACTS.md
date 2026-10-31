@@ -102,7 +102,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. An envelope's `sha256` is
   the SHA-256 of its bytes (WebCrypto where there is one, else the portable hash: the same digest). `presence()`
   goes out at most 10 times a second (`PRESENCE_PER_SEC`), coalesced: the latest state always arrives, and one
-  still waiting when the handle closes (a leave, `null`) is sent before the close; the relay keeps none. A pending edit survives a
+  still waiting when the handle closes (a leave, `null`) is sent before the close; the relay keeps none. When this
+  replica's own connection closes (or it stops), every peer it showed gets a `presence` event with `state: null`: a
+  host that restarts keeps no one to send leaves for; a peer still there shows again with its next update. A pending edit survives a
   restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
   when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. Each stored edit keeps its
   causal base (the confirmed seq and the pending edits it was made on) and is rebuilt on it and rebased onto what was
