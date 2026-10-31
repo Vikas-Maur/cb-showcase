@@ -23,8 +23,10 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     }
     return api;
   };
-  // Who is acting. Main sets CARDBOARD_ACTOR for the agents it starts.
-  const actor = () => process.env.CARDBOARD_ACTOR || ${JSON.stringify(who)};
+  // Who is acting: the caller that started this write (as(), below), else CARDBOARD_ACTOR, which main sets for the
+  // agents it starts, else the default. The context follows the write through the store's own promise chain.
+  const acting = new (require("node:async_hooks").AsyncLocalStorage)();
+  const actor = () => acting.getStore() || process.env.CARDBOARD_ACTOR || ${JSON.stringify(who)};
   // The Carton part of the scope of the mutation being applied: set by the patched updateScoped while the mutation
   // runs (synchronously, inside applyMutation), read right after it.
   let scoped = null;
@@ -60,10 +62,10 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
       }
       last.set(id, out);
       if (!out?.doc || out.doc === res.document) return res;
-      // Someone else's change was merged in: the store and the queued write continue from head, and in the app the
-      // pages are told (main broadcasts it as a project change, which the editor adopts).
+      // The file gets head: the store and the queued write continue from it. When someone else's change was merged
+      // in, the pages are told too (main broadcasts it as a project change, which the editor adopts).
       if (entry && entry.document === res.document) store.byId.set(id, { ...entry, document: out.doc });
-      self.emit?.({ kind: "changed", id, bundlePath: entry?.bundlePath });
+      if (out.merged) self.emit?.({ kind: "changed", id, bundlePath: entry?.bundlePath });
       return { document: out.doc, changed: true };
     },
     // H1, H3: displace-then-install in place of rename(tmp, file).
@@ -97,9 +99,22 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
     // The apply's result gains carton: {status, ref, conflicts} when its write was committed; nothing when history
     // is off for the project.
     status: (id) => { const r = last.get(id); return r && r.status !== "off" ? { carton: { status: r.status, ref: r.ref, conflicts: r.conflicts?.length ?? 0 } } : {}; },
-    // H8 (worker only): the engine thread, the per-agent view watcher, and the worker's carton RPC namespace.
-    // emit sends a {kind:"carton"} change to main, which passes it to the tabs.
-    worker: (library, emit) => ((self.emit = emit), carton()?.worker({ library, emit }) ?? {}),
+    // Runs fn with every write it starts attributed to who.
+    as: (who, fn) => acting.run(who, fn),
+    // H8 (worker only): the worker's carton RPC namespace, and who the worker's own RPC writers are. A full project
+    // write through library:call is the editor's (createProject, updateProject), so the person's; a generation's
+    // fill is the generation's. emit sends a {kind:"carton"} change to main, which passes it to the tabs.
+    worker(library, emit) {
+      self.emit = emit;
+      const tag = (ns, method, who) => {
+        const f = library[ns]?.[method];
+        if (typeof f === "function") library[ns][method] = (...a) => acting.run(who, () => f.apply(library[ns], a));
+      };
+      tag("projects", "write", "person");
+      tag("timeline", "finishGeneration", "generation");
+      tag("timeline", "retireGenerationKey", "generation");
+      return carton()?.worker({ library, emit }) ?? {};
+    },
   };
   return self;
 })();

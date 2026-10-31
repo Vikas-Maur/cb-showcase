@@ -100,3 +100,10 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Return to 
   assert.deepEqual(t.state().timelineItems, [{ id: "a", endTime: 4 }]);
   assert.equal(t.c.stale, false);
 });
+
+test("the History panel's calls reach main with their arguments as given", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  await t.c.call("ui", [{ projectId: "p1", client: "c", message: { t: "hello" } }]);
+  assert.deepEqual(t.calls.at(-1), ["carton:call", "ui", { projectId: "p1", client: "c", message: { t: "hello" } }]);
+});

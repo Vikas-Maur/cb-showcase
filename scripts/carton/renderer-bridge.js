@@ -89,7 +89,7 @@ module.exports = String.raw`window.__carton = (() => {
     },
     get stale() { return stale; },
     // For the History panel (carton-ui.js): the worker's carton namespace, and its events for the tabs.
-    call: (method, args) => call(method, args),
+    call: (method, args) => call(method, ...(args ?? [])),
     onEvent: (f) => store.on("carton:event", f),
   };
 })();

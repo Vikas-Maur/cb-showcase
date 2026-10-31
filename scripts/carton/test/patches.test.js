@@ -189,6 +189,28 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   const u = cb(carton.cli, root, ["undo", "Demo", "--turn", "turn2"], real("director/chat1/turn3"));
   assert.equal(JSON.parse(u.out.replace(/^\[carton\][^\n]*\n/gm, "")).status, "conflicts", u.out);
   assert.equal(textId().fontSize, 90);
+  // An agent's timeline.tsx save that nothing applied yet (the app isn't running) is moved aside by the next cb
+  // write's regeneration of the file, then applied as the agent's (1.4.0 overwrote it).
+  fs.writeFileSync(path.join(b, "timeline.tsx"), fs.readFileSync(path.join(b, "timeline.tsx"), "utf8").replace(/fontSize=\{\d+\}/, "fontSize={77}"));
+  run(null, "project", "rename", "Demo", "Demo cut");
+  assert.equal(textId().fontSize, 77);
+  const left = fs.existsSync(path.join(b, ".carton", "displaced")) ? fs.readdirSync(path.join(b, ".carton", "displaced")) : [];
+  assert.deepEqual(left, []);
+  // A GUI save through the real worker: the editor's lossy serializer dropped the clip's autoReframe and rounded its
+  // times, but only the person's edit lands; Carton off (1.4.0) loses autoReframe (B10).
+  const gui = (name, extra) => {
+    const r2 = path.join(TMP, "lib-real-gui-" + name);
+    fs.rmSync(r2, { recursive: true, force: true });
+    fs.cpSync(root, r2, { recursive: true });
+    fs.rmSync(path.join(r2, "Demo.cardboard", ".carton"), { recursive: true, force: true });
+    const g = spawnSync(process.execPath, [path.join(__dirname, "worker-run.js"), carton.worker, r2], { env: env({ LOSSY: "1", ...extra }), encoding: "utf8", timeout: 120_000 });
+    assert.equal(g.status, 0, g.stderr);
+    return JSON.parse(g.stdout.trim().split("\n").pop());
+  };
+  const on = gui("on", real()), off = gui("off", { CARDBOARD_CARTON: "0" });
+  assert.equal(on.guiSave, 150);
+  assert.equal(on.video.autoReframe, true, JSON.stringify(on.video));
+  assert.equal(off.video.autoReframe, undefined);
   // Four agents at once on different titles: none loses its last edit (B1).
   const wroot = path.join(TMP, "lib-real-writers");
   fs.rmSync(wroot, { recursive: true, force: true });

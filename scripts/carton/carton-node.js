@@ -89,17 +89,25 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   const intent = meta?.intents?.length ? { gui: meta.intents } : undefined;
   const r = await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });
   if (r.status === "rejected") throw new Error("Carton rejected the change: " + r.reason);
-  if (r.status === "confirmed" && r.empty) return { ...r, doc };
+  const gui = meta?.base !== undefined && baseRef;
+  if (r.status === "confirmed" && r.empty && !gui) return { ...r, doc, merged: false };
   const head = await c.head();
-  // Nothing else was merged in: the writer's document is head.
   if (r.status === "confirmed" && !r.rebased) {
-    await setRev(lc, doc.stateUpdatedAt, r.ref);
-    return { ...r, doc };
+    // Nothing else was merged in. An agent's or the CLI's document is head as it stands. A GUI save is not: the
+    // editor rounds times and drops fields it can't show, which Carton kept (B10), so the file gets head, under the
+    // editor's own rev (its save's echo then only moves its base).
+    if (!gui) {
+      await setRev(lc, doc.stateUpdatedAt, r.ref);
+      return { ...r, doc, merged: false };
+    }
+    const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: doc.stateUpdatedAt };
+    await setRev(lc, out.stateUpdatedAt, head.ref);
+    return { ...r, doc: out, merged: false };
   }
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
   const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
   await setRev(lc, out.stateUpdatedAt, head.ref);
-  return { ...r, doc: out };
+  return { ...r, doc: out, merged: true };
 }
 
 // The project to write for head, with a fresh rev recorded against it: after a Carton command changed head. null when
@@ -155,28 +163,49 @@ async function install(tmp, file, seenStamp) {
   s.own = { bytes, stamp: statStamp(file) };
   s.files.endRound();
   if (!s.files.size) return;
+  // Review after the hold (never inside this write: applying a foreign timeline.tsx writes the project again). A
+  // foreign file keeps the process alive until it is applied, so a short cb call doesn't exit with it unapplied.
   clearTimeout(s.timer);
   s.timer = setTimeout(() => review(file, s).catch((e) => warnOnce("review:" + file, "review of displaced files failed: " + errText(e))), 300);
-  s.timer.unref?.();
+  if (!rest.length) s.timer.unref?.();
 }
 
+// A displaced file Carton didn't write is someone's save: a project.json is imported as an outside change, a
+// timeline.tsx is applied through Cardboard's own mirror (as its watcher would have), and only then is it deleted.
+// One that can't be applied yet stays in .carton/displaced/ and is reported: never lost, never silently dropped.
 async function review(file, s) {
-  const isProject = path.basename(file) === "project.json";
+  const bundle = path.dirname(file), isProject = path.basename(file) === "project.json";
   const parse = (b) => { try { return JSON.parse(b.toString("utf8")); } catch { return null; } };
-  const out = s.files.review((b) => (isProject ? parse(b) !== null : b.length > 0));
+  const out = s.files.review((b) => (isProject ? parse(b)?.project != null : b.length > 0));
   for (const f of out.foreign) {
-    const project = isProject ? parse(f.bytes)?.project : null;
-    const lc = project ? await open(path.dirname(file)) : null;
-    // A foreign save stays where it is until it is imported: never lost.
-    if (!lc) continue;
-    await lc.carton.commit({ doc: fromHost(project, (await lc.carton.head()).doc), author: actorOf("external:project.json") });
-    fs.rmSync(f.path, { force: true });
+    try {
+      if (isProject) {
+        const lc = await open(bundle);
+        if (!lc) throw new Error("no history for the project");
+        await lc.carton.commit({ doc: fromHost(parse(f.bytes).project, (await lc.carton.head()).doc), author: actorOf("external:project.json") });
+      } else {
+        const h = hostOf(bundle), id = h?.store.idForBundlePath?.(path.resolve(bundle));
+        if (!id) throw new Error("no mirror for the project in this process");
+        const r = await h.mirror.apply(id, f.bytes.toString("utf8"), { cartonActor: "external:timeline.tsx" });
+        if (!r?.applied) throw new Error("it doesn't apply: " + (r?.diagnostics?.[0]?.message ?? "unknown"));
+      }
+      s.files.release(f.path);
+    } catch (e) {
+      console.warn(`[carton] a save of ${path.basename(file)} by another program was moved aside and kept at ${f.path}: ${errText(e)}`);
+    }
   }
+  for (const f of out.partial) console.warn(`[carton] a save of ${path.basename(file)} that never finished was kept at ${f.path}`);
 }
 
 // ---------------------------------------------------------------- what the bridges call
+// The stores and mirrors of this process (one per library), for applying a foreign timeline.tsx Carton displaced.
+const hosts = [];
+const hostOf = (bundlePath) => hosts.find((h) => path.resolve(bundlePath).toLowerCase().startsWith(path.resolve(h.root).toLowerCase()));
+
 export const cardboard14 = {
-  attach() {},
+  attach({ root, store, mirror }) {
+    hosts.push({ root, store, mirror });
+  },
   commit,
   install,
   headProject,
