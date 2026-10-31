@@ -352,8 +352,8 @@ onto the packages' APIs, so a package API change touches only the facade.
   - H3: Carton's merge3 in the apply's preview. `rn` still makes the preview; the commit that follows merges with
     Carton. The "print it again" error is wired but has no test.
   - The engine thread: `engine-thread-main.js` is built but not used; the worker commits on its own thread.
-  - H1b has no hook of its own. Open Project, of a `.cbproj` or of a project folder (both go through the same staged
-    `prepare`), scrubs and seeds the staged copy (H11). A shared project's cloud pull is H13's. Cardboard's own cloud
+  - H1b has no hook of its own. Open Project of a `.cbproj` scrubs and seeds the staged copy (H11); a project folder's
+    copy keeps its history and files (both imports share Carton's release of the staged copy when `prepare` ends). A shared project's cloud pull is H13's. Cardboard's own cloud
     pull of an unshared project writes `project.json`, which the read path imports as an outside change (not tested
     for the cloud pull).
   - H12 is for the kit only: the service is dormant on desktop, so nothing is patched there.

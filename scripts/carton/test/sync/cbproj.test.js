@@ -117,11 +117,11 @@ function readOnlyCut(pc, pick) {
  * used here: `project open` refuses --root before importing (it shows the project in the running app), and without
  * --root it needs a signed-in account. `Za` is the chunk's library opener in Cardboard 1.4.0 (cb's `H`).
  */
-function cliOpen(pc, file, extra = {}) {
+function cliOpen(pc, file, extra = {}, method = "openArchive") {
   const chunk = pathToFileURL(path.join(b.cli, "chunks", "chunk-LL26E55H.mjs")).href;
   const code = `const m = await import(${JSON.stringify(chunk)});
 const lib = await m.Za({ root: ${JSON.stringify(pc.root)} });
-try { const p = await lib.projects.openArchive(${JSON.stringify(file)}); console.log(JSON.stringify({ ok: true, id: p?.id })); }
+try { const p = await lib.projects.${method}(${JSON.stringify(file)}); console.log(JSON.stringify({ ok: true, id: p?.id })); }
 catch (e) { console.log(JSON.stringify({ ok: false, error: String(e?.message ?? e) })); }`;
   const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], { env: { ...pc.env, ...extra }, encoding: "utf8", timeout: 120_000 });
   const line = (r.stdout ?? "").split("\n").reverse().find((l) => l.startsWith('{"ok"'));
@@ -432,4 +432,44 @@ test("Carton off, or a file without Carton's entry: 1.4.0's import and its error
   // And the app's copy says the same.
   await assert.rejects(alice.call("projects.openArchive", plain), /already exists in (your|this) library/);
   assert.equal((await text(alice)).textContent, "Alice's words", "nothing changed");
+});
+
+test("Open Project of a project folder is never scrubbed: on the same machine it keeps its history and every file (app, Carton on); cb's copy with Carton off keeps every file; another machine's history is set aside and the project starts its own", t, async () => {
+  // Bob's project folder, as he would open it from a backup or another drive: his history, his own files in
+  // .scratch/views/ and a view file of Carton's.
+  await bob.stopWorker();
+  plantViews(bundleOf(bob), S.cartonViewFiles("bobs-view"));
+  const history = (pc) => cbOk(pc, ["history", "Demo", "--limit", "100"]).json().versions.map((v) => v.by?.id ?? null);
+  const bobs = history(bob);
+  assert.ok(bobs.length > 2, JSON.stringify(bobs));
+  const files = (pc) => [...ownViews(), ...cartonViews("bobs-view")].filter((n) => !has(bundleOf(pc), n));
+  const backup = await S.computer("library-backup", b, { same: bob });
+  const ivan = await S.computer("cbproj-ivan", b), judy = await S.computer("cbproj-judy", b);
+  try {
+    // Bob's own machine, another library: the folder's history is his own, and comes along
+    await backup.startWorker();
+    assert.equal((await backup.call("projects.copyOpen", bundleOf(bob))).id, id);
+    await closedAfter(backup, "Bob's folder Open Project");
+    await backup.stopWorker();
+    assert.deepEqual(files(backup), [], "every file is kept");
+    assert.deepEqual(history(backup), bobs, "the history came along: every version, with its author");
+    // cb's copy with Carton off: nothing of Carton's is touched
+    const off = cliOpen(judy, bundleOf(bob), { CARDBOARD_CARTON: "" }, "copyOpen");
+    assert.equal(off.ok, true, off.error);
+    assert.deepEqual(files(judy), []);
+    assert.equal(fs.statSync(path.join(bundleOf(judy), ".carton", "carton.db")).size, fs.statSync(path.join(bundleOf(bob), ".carton", "carton.db")).size, "carton.db as it was");
+    // Another machine with Carton on: Bob's carton.db isn't this machine's replica, so the stores set it aside (kept,
+    // named after its machine) and the project starts its own history from project.json, instead of having none.
+    await ivan.startWorker();
+    assert.equal((await ivan.call("projects.copyOpen", bundleOf(bob))).id, id);
+    await closedAfter(ivan, "Ivan's folder Open Project");
+    await ivan.stopWorker();
+    assert.deepEqual(files(ivan), []);
+    assert.ok(fs.readdirSync(path.join(bundleOf(ivan), ".carton")).some((n) => /^carton\.from-.*\.db$/.test(n)), "Bob's history is kept aside");
+    assert.ok(history(ivan).length >= 1, "Ivan's copy has history of its own");
+  } finally {
+    backup.kill();
+    ivan.kill();
+    judy.kill();
+  }
 });

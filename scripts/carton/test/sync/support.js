@@ -82,9 +82,12 @@ async function startHost(dir, port, env = {}) {
 }
 
 /** One computer: its library, its app data, its library worker, and cb on that library. */
-async function computer(name, b) {
-  const home = path.join(TMP, name), root = path.join(home, "library");
-  fs.rmSync(home, { recursive: true, force: true });
+// `same`: another library on the same machine as that computer (its home and app data: its install key, sessions and
+// settings), as a second library folder of one person's.
+async function computer(name, b, { same } = {}) {
+  const home = same ? same.home : path.join(TMP, name), root = path.join(home, same ? name : "library");
+  if (!same) fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
   const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_DATA_HOME: path.join(home, "appdata"), LOCALAPPDATA: path.join(home, "appdata"), CARDBOARD_CARTON: "1", CARTON_DIR: b.carton, CARDBOARD_ACTOR: "", CLAUDECODE: "", CLAUDE_CODE_ENTRYPOINT: "" };
   const cb = (args, extra = {}) => {

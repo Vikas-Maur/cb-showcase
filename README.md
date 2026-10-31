@@ -344,15 +344,15 @@ it was already retried; the removal now retries the same way (adding `ENOTEMPTY`
 **With Carton off** (see "Carton" below), every Carton hook runs Cardboard's own code, except for three changes that
 apply whether Carton is on or off:
 - The staging folder's removal retries on Windows, as above.
-- Open Project, of a `.cbproj` or of a project folder, removes only what Carton itself wrote from the staged copy,
-  before Cardboard reads it: the `.carton\` folder, where Carton keeps a project's history, and Carton's view files in
-  `.scratch\views\`. A view file is Carton's when its name is a view's and its content is Carton's: a `.tsx` whose
-  `// cardboard:rev` line has the form only Carton writes (`main@3~5e1f0c2a b:…`; Cardboard's own is a bare number), or
-  a `.status` file in Carton's format. Anything else under `.scratch\views\`, a person's or an agent's own files,
-  stays. It only acts on projects that contain Carton's data, so a stock `.cbproj` or folder opens exactly as before.
-  It stops someone else's `carton.db` and views from landing silently in a Carton-off library and surfacing as foreign
-  history if Carton is switched on later. The `.cbproj` or folder itself is untouched, so nothing is lost.
-  (`scripts\carton\sync\patches\cbproj.js`)
+- Open Project of a `.cbproj` removes only what Carton itself wrote from the staged copy, before Cardboard reads it:
+  the `.carton\` folder, where Carton keeps a project's history, and Carton's view files in `.scratch\views\`. A view
+  file is Carton's when its name is a view's and its content is Carton's: a `.tsx` whose `// cardboard:rev` line has
+  the form only Carton writes (`main@3~5e1f0c2a b:…`; Cardboard's own is a bare number), or a `.status` file in
+  Carton's format. Anything else under `.scratch\views\`, a person's or an agent's own files, stays. It only acts on
+  archives that contain Carton's data, so a stock `.cbproj` opens exactly as before. It stops someone else's
+  `carton.db` and views from landing silently in a Carton-off library and surfacing as foreign history if Carton is
+  switched on later. The `.cbproj` itself is untouched, so nothing is lost. Opening a project folder is never
+  scrubbed: it is your own project, and keeps its history and every file. (`scripts\carton\sync\patches\cbproj.js`)
 - Save As of a `.cbproj` leaves the same files out, so a file never carries this computer's history database (local
   paths, this device's pins) or Carton's view files. Everything else in `.scratch\views\` goes in, as in Cardboard
   1.4.0. (`scripts\carton\store-bridge.js`)
