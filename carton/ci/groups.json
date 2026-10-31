@@ -1,0 +1,128 @@
+{
+  "$comment": "Carton CI's job groups (read by plan.mjs, fetch.mjs and run-tests.mjs). A step is {pkg} (its npm test) or {label, cwd, run} (cwd relative to carton/; {node} and {electron} are filled in). kind 'plain' = pass/fail by exit code, otherwise node:test TAP. forbidSkip: skip reasons that fail the group, because CI installed what the test asks for.",
+  "runners": { "linux": "ubuntu-latest", "windows": "windows-latest", "macos": "macos-latest" },
+  "groups": [
+    {
+      "name": "typecheck",
+      "os": ["linux"],
+      "timeout": 15,
+      "steps": [
+        { "label": "typecheck, every workspace", "kind": "plain", "shell": true, "run": ["npm", "run", "typecheck"] },
+        { "label": "typecheck, CI probes", "kind": "plain", "run": ["{node}", "node_modules/typescript/bin/tsc", "-p", "ci/tsconfig.json", "--noEmit"] }
+      ]
+    },
+    {
+      "name": "core",
+      "os": ["linux", "windows"],
+      "timeout": 20,
+      "steps": [{ "pkg": "core" }, { "pkg": "store-memory" }, { "pkg": "blob-memory" }, { "pkg": "server" }, { "pkg": "host-http" }]
+    },
+    {
+      "name": "stores",
+      "os": ["linux", "windows"],
+      "timeout": 30,
+      "needs": ["electron", "chromium"],
+      "steps": [
+        { "pkg": "store-sqlite" },
+        {
+          "label": "store-sqlite process tests under Electron 43.7.0's Node",
+          "cwd": "packages/store-sqlite",
+          "env": { "ELECTRON_RUN_AS_NODE": "1" },
+          "run": ["{electron}", "--test", "--test-concurrency=1", "test/xproc.test.ts", "test/import.test.ts", "test/move.test.ts"]
+        },
+        { "pkg": "store-idb" }
+      ],
+      "forbidSkip": ["Playwright not found", "Chromium did not start"]
+    },
+    {
+      "name": "hosts",
+      "os": ["linux", "windows"],
+      "timeout": 30,
+      "needs": { "linux": ["versitygw"] },
+      "steps": [
+        { "pkg": "blob-fs" },
+        { "label": "blob-fs: a held file and a long path (CI probe)", "cwd": "ci", "run": ["{node}", "--test", "probes/blob-fs.test.ts"] },
+        { "pkg": "blob-s3" },
+        { "pkg": "server-node" },
+        { "pkg": "server-cloudflare" }
+      ],
+      "forbidSkip": { "linux": ["VersityGW"] }
+    },
+    {
+      "name": "local",
+      "os": ["linux", "windows"],
+      "timeout": 35,
+      "steps": [
+        { "pkg": "cardboard" },
+        { "pkg": "local" },
+        { "pkg": "cli-mcp" },
+        { "label": "P10 displace/install race, small (bench/race)", "kind": "plain", "run": ["{node}", "ci/race.mjs", "--trials", "1", "--rounds", "2000"] }
+      ]
+    },
+    {
+      "name": "media",
+      "os": ["linux", "windows"],
+      "timeout": 25,
+      "needs": ["ffmpeg", "chromium"],
+      "steps": [{ "pkg": "media" }],
+      "forbidSkip": ["ffmpeg", "Chromium not found", "playwright or Chromium"]
+    },
+    {
+      "name": "react",
+      "os": ["linux", "windows"],
+      "timeout": 20,
+      "steps": [{ "pkg": "react" }]
+    },
+    {
+      "name": "conformance",
+      "os": ["linux", "windows"],
+      "timeout": 40,
+      "steps": [{ "pkg": "conformance" }]
+    },
+    {
+      "name": "cardboard-real",
+      "os": ["linux", "windows"],
+      "timeout": 30,
+      "needs": ["cardboard", "ffmpeg"],
+      "steps": [
+        {
+          "label": "conformance against Cardboard 1.4.0's CLI, renderer and fm∘sv",
+          "os": ["linux"],
+          "cwd": "packages/conformance",
+          "run": ["{node}", "--test", "--test-concurrency=2", "test/cardboard.test.ts", "test/engine-conformance.test.ts"]
+        },
+        {
+          "label": ".cbproj against Cardboard 1.4.0's CLI",
+          "os": ["linux"],
+          "cwd": "packages/cardboard",
+          "run": ["{node}", "--test", "test/cbproj-cardboard-compat.test.ts"]
+        },
+        {
+          "label": "the Windows build's Carton patches on Cardboard 1.4.0 (scripts/carton/test)",
+          "cwd": "..",
+          "run": ["{node}", "--test", "--test-concurrency=1", "scripts/carton/test/*.test.js"]
+        }
+      ],
+      "forbidSkip": ["Cardboard CLI", "Cardboard 1.4.0's CLI", "renderer bundle", "CARDBOARD_PRISTINE", "ffmpeg", "npm ci", "no python3"]
+    },
+    {
+      "name": "macos",
+      "os": ["macos"],
+      "timeout": 20,
+      "needs": ["electron"],
+      "steps": [
+        { "pkg": "blob-fs" },
+        { "label": "blob-fs: a held file and a long path (CI probe)", "cwd": "ci", "run": ["{node}", "--test", "probes/blob-fs.test.ts"] },
+        { "pkg": "store-sqlite" },
+        {
+          "label": "store-sqlite process tests under Electron 43.7.0's Node",
+          "cwd": "packages/store-sqlite",
+          "env": { "ELECTRON_RUN_AS_NODE": "1" },
+          "run": ["{electron}", "--test", "--test-concurrency=1", "test/xproc.test.ts", "test/import.test.ts", "test/move.test.ts"]
+        },
+        { "pkg": "cardboard" },
+        { "label": "P10 displace/install race on APFS, small (bench/race)", "kind": "plain", "run": ["{node}", "ci/race.mjs", "--trials", "1", "--rounds", "2000"] }
+      ]
+    }
+  ]
+}
