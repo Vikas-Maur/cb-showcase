@@ -13,7 +13,7 @@
 // the race, the in-memory model is rebuilt from the store and the commit is retried (its id makes the retry safe).
 
 import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreWrite, Transport } from "./plugins.ts";
-import type { Schema } from "./schema.ts";
+import type { FieldSpec, Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { ReplicaQueue, type HistoryFields, type QueuedChange } from "./sync/queue.ts";
@@ -333,6 +333,33 @@ const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.
 interface ProjectMeta {
   projectId: string;
   schemaVersion: number;
+  /** The document schema's fingerprint (`schemaFingerprint`), checked by every process that opens the project. */
+  schema?: string;
+}
+
+/**
+ * What decides how states hash, diff and merge: the collections (keys, field kinds, groups, parents, order), the root
+ * fields and the timeline's fields; the host's callbacks (validators, labels, shot rules) are left out. Two processes
+ * on one store with different fingerprints would compute different state hashes for the same rows, so refs and pins one
+ * makes the other can't check (`StateUnknown`).
+ */
+export function schemaFingerprint(schema: Schema): string {
+  const spec = (f: FieldSpec): unknown =>
+    f.kind === "leaf" ? ["leaf", !!f.atomic, !!f.text, !!f.blob]
+    : f.kind === "object" ? ["object", f.deep, f.only, fields(f.fields)]
+    : f.kind === "keyed" ? ["keyed", f.key, fields(f.fields)]
+    : ["ephemeral"];
+  const fields = (fs: Readonly<Record<string, FieldSpec>>) => Object.fromEntries(Object.entries(fs).map(([k, f]) => [k, spec(f)]));
+  const tl = schema.timeline;
+  return E.sha256Hex(
+    E.canonical({
+      root: fields(schema.root.fields),
+      collections: Object.fromEntries(
+        Object.entries(schema.collections).map(([n, c]) => [n, { key: c.key, seq: !!c.seq, only: !!c.only, parent: c.parent ?? null, groups: c.groups.map((g) => [g.name, [...g.fields]]), record: fields(c.record.fields) }]),
+      ),
+      timeline: tl && [tl.collection, tl.lanes, tl.lane, tl.start, tl.end, tl.source, tl.sourceEnd, tl.speed],
+    }),
+  );
 }
 
 export const Carton = {
@@ -450,7 +477,7 @@ class CartonImpl implements Carton {
       if ("join" in init) return this.#createFromJoin(init.join);
       const h = History.create(this.schema, init.asChange ? emptyDoc(this.schema) : init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
       const cut = h.cut(h.current)!;
-      meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion };
+      meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
       const ok = await s.write(
         [
           { table: T.meta, key: PROJECT, value: meta },
@@ -468,14 +495,28 @@ class CartonImpl implements Carton {
         return;
       }
     }
-    this.#meta = meta;
+    this.#meta = await this.#checkSchema(meta);
     await this.#rebuild();
+  }
+  /**
+   * Every process on a project must hash and merge its states alike (R2-03): one whose schema differs from the one the
+   * project was made with, at the same schema version, is refused here, rather than failing later on every ref the
+   * other makes ("rebuilt state does not match"). A project made before fingerprints gets this process's.
+   */
+  async #checkSchema(meta: ProjectMeta): Promise<ProjectMeta> {
+    const mine = schemaFingerprint(this.schema);
+    if (meta.schemaVersion !== this.#opts.adapter.schemaVersion || meta.schema === mine) return meta;
+    if (meta.schema === undefined) {
+      const next = { ...meta, schema: mine };
+      return (await this.store.write([{ table: T.meta, key: PROJECT, value: next }], [{ table: T.meta, key: PROJECT, expect: { equals: meta } }])) ? next : this.#checkSchema((await this.store.get<ProjectMeta>(T.meta, PROJECT))!);
+    }
+    throw new Error(`Carton.open: this project was made with another document schema than ${this.#opts.adapter.name}'s (schema version ${meta.schemaVersion}, fingerprint ${meta.schema.slice(0, 8)}, this process ${mine.slice(0, 8)}); its states would hash and merge differently here`);
   }
   async #createFromImport(pkg: ShallowExport): Promise<void> {
     const h = new History(this.schema, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, keyframeEvery: this.#opts.keyframeEvery });
     const res = h.importShallow(pkg);
     if (res.status !== "forked") throw new Error(`Carton.open: import gave ${res.status}`);
-    const meta: ProjectMeta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion };
+    const meta: ProjectMeta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
     const w: StoreWrite[] = [{ table: T.meta, key: PROJECT, value: meta }, { table: T.meta, key: CURRENT, value: h.current }, ...this.#knowledgeWrites(h)];
     for (const c of h.cuts()) w.push({ table: T.cuts, key: [c.id], value: c });
     if (!(await this.store.write(w, [{ table: T.meta, key: PROJECT, expect: "absent" }]))) return this.load();
@@ -488,7 +529,7 @@ class CartonImpl implements Carton {
     if (j.cut.sequencer.kind !== "server") throw new Error("Carton.open: `join` needs a cut a host sequences (sequencer kind \"server\")");
     if (!this.#opts.sync) throw new Error("Carton.open: `join` needs `sync` (the rows come from the host)");
     if (j.rootHash !== undefined && E.hashDoc(j.doc0, this.schema) !== j.rootHash) throw new Error("Carton.open: the joined cut's root doesn't match its hash");
-    const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion };
+    const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
     const ok = await this.store.write(
       [
         { table: T.meta, key: PROJECT, value: meta },
