@@ -1,0 +1,30 @@
+{
+  "name": "@carton/media",
+  "version": "0.1.0",
+  "description": "Media: 1 MiB-leaf SHA-256 manifests, tiers T0-T3, resumable multipart uploads, play-first-verify-after, collab proxy encoder chain, loopback range server.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0"
+  }
+}

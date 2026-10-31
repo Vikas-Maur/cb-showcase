@@ -1,0 +1,27 @@
+{
+  // Shared compiler settings for every @carton package.
+  // - Node 24 runs the .ts sources directly (type stripping), so only erasable syntax is allowed and relative imports
+  //   carry their .ts extension; tsc rewrites them to .js when it emits dist/.
+  // - The default lib is ES2023 + WebWorker: the platform APIs every target has (browsers, Cloudflare Workers, Node:
+  //   crypto.getRandomValues, TextEncoder, setTimeout, WebSocket, console...), with no DOM and no node:* types. Core
+  //   and the stores compile against it, so they can't reach for an API one of the targets lacks.
+  //   Node-only packages extend tsconfig.node.json; DOM packages (react, store-idb) extend tsconfig.dom.json.
+  "compilerOptions": {
+    "target": "ES2023",
+    "lib": ["ES2023", "WebWorker"],
+    "types": [],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "isolatedModules": true,
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
+    "noFallthroughCasesInSwitch": true,
+    "noImplicitOverride": true,
+    "declaration": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}
