@@ -60,6 +60,8 @@ export const words = {
   foldSome: (n: number, of: number) => `Fold in ${n} of ${of}`,
   foldSomeOfIt: "Fold in some of it",
   foldNothing: "Nothing to fold in. The cuts are the same.",
+  foldAllOrNothing: "These changes can only be folded in together.",
+  foldAllCards: "Bring it in with every difference shown as a card",
   foldRestLater: "You can fold in the rest later.",
   foldChanges: (n: number) => plural(n, "change", "changes"),
   foldConflicts: (n: number) => `${plural(n, "conflict card", "conflict cards")} to pick`,

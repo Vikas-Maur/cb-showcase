@@ -171,7 +171,8 @@ export interface CreditLine {
   /** The part, in editor words: "Added", "Timing", "Color", "Text". */
   readonly what: string;
   readonly author: Actor;
-  readonly at: number;
+  /** When, if the engine knows (core's credits() returns only the actor today). */
+  readonly at?: number;
   readonly versionId?: string;
 }
 
@@ -187,7 +188,8 @@ export interface UndoTurn {
   /** The turn's label, without the "Undo …:" prefix. */
   readonly label: string;
   readonly at: number;
-  readonly edits: number;
+  /** How many edits the turn made, when known. */
+  readonly edits?: number;
 }
 
 export interface Published {
@@ -224,6 +226,13 @@ export interface FoldPlan {
   readonly conflicts: readonly Conflict[];
   /** Soft-validator warnings on the result: overlaps, gaps, missing media (§4.1). */
   readonly warnings: readonly string[];
+  /** False when the changes can't be told apart by record, so the fold is all or nothing. */
+  readonly partial?: boolean;
+  /**
+   * §13: the copy builds on a version this project doesn't have. The text says so plainly; the only ways on are to ask
+   * the sender for their copy or to bring it in with every difference as a card (`planFold(…, { allCards: true })`).
+   */
+  readonly missingBase?: string;
 }
 
 export interface FoldResult {
@@ -286,13 +295,13 @@ export interface CartonUi {
   compare(a: string, b: string): Promise<Comparison>;
   credits(itemId: string): Promise<Credits>;
   shotDiff(a: string, b: string): Promise<ShotDiff>;
-  planFold(fromCutId: string, intoCutId: string): Promise<FoldPlan>;
+  planFold(fromCutId: string, intoCutId: string, opts?: { allCards?: boolean }): Promise<FoldPlan>;
 
   switchCut(cutId: string): Promise<void>;
   newCut(name: string, fromRef: string): Promise<Cut>;
   renameCut(cutId: string, name: string): Promise<void>;
   /** Fold `from` into `into`, leaving out the changes in `leaveOut` (partial accept). */
-  fold(fromCutId: string, intoCutId: string, opts: { leaveOut: readonly string[]; choices: Readonly<Record<string, ConflictChoice>> }): Promise<FoldResult>;
+  fold(fromCutId: string, intoCutId: string, opts: { leaveOut: readonly string[]; choices: Readonly<Record<string, ConflictChoice>>; allCards?: boolean }): Promise<FoldResult>;
   resolve(conflictId: string, choice: ConflictChoice): Promise<void>;
   restore(ref: string): Promise<void>;
   nameVersion(versionId: string, name: string): Promise<void>;

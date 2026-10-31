@@ -82,7 +82,7 @@ export function UndoTurnButton({ className }: { className?: string }) {
   return h(
     "span",
     { className: cx("carton-undo-wrap", className) },
-    h(Button, { className: "carton-undo", icon: "restore", busy, onClick: () => void undo(), title: words.turnEdits(turn.edits) }, label),
+    h(Button, { className: "carton-undo", icon: "restore", busy, onClick: () => void undo(), title: turn.edits != null ? words.turnEdits(turn.edits) : undefined }, label),
     note ? h("span", { className: "carton-undo-note", role: "alert" }, note) : null,
   );
 }
@@ -126,7 +126,9 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
                   { key: i, className: "carton-credit" },
                   h("span", { className: "carton-credit-what" }, l.what),
                   h("span", { className: "carton-credit-who" }, h(Avatar, { actor: l.author, size: 16 }), h(ActorName, { actor: l.author })),
-                  h("time", { className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), "data-carton-tip": exactTime(l.at, locale) }, when(l.at, now, locale, words.justNow)),
+                  l.at != null
+                    ? h("time", { className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), "data-carton-tip": exactTime(l.at, locale) }, when(l.at, now, locale, words.justNow))
+                    : h("span", { className: "carton-credit-when" }),
                 ),
               ),
             ),

@@ -282,6 +282,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-fold-warnings p){display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:#fcd77f}
 :where(${S}) :where(.carton-fold-warnings li){margin-top:4px;padding-left:20px;font-size:12px;line-height:16px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-later){font-size:12px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-fold-missing){padding:10px 12px;border-radius:8px;background:var(--cb-sunken);font-size:13px;line-height:19px;color:var(--cb-fg-1);text-wrap:pretty}
 
 /* ---------------------------------------------------------------- toolbar status: sync, published, undo, credits */
 :where(${S}) :where(.carton-sync){display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 8px;border-radius:6px;font-size:12px;font-weight:500;color:var(--cb-fg-2);white-space:nowrap}
