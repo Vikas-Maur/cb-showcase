@@ -108,8 +108,15 @@ already there, with the earlier object's info and nothing written. So a create-o
 client takes the info from either answer (or, reading only the status, heads the key after a 412). The host heads
 the key under the same per-key lock its other writes of the key take; a writer outside that lock that creates the
 key in between still loses nothing (the store's `ifAbsent` keeps the first object), and the answer is 412 whenever
-the kept object's size, digest or type differ from the body's. A host from before this answers 200 with an etag
-alone; `hostMediaBlobs` then reads back. A `hostMediaBlobs` from before this takes the 412 for an error.
+the kept object's size, digest or type differ from the body's. A `hostMediaBlobs` from before this takes the 412 for
+an error.
+
+Not every PUT answer holds that info, so a client decides by the answer, not by which host signed the URL. A URL a
+host presigns straight to its bucket (S3's or R2's presigned URLs, not `serveSignedBlob`) gets the bucket's answer:
+200 with an etag and no body, or 412 with an XML error. So does a host from before this (200 and an etag, whatever
+happened). `hostMediaBlobs.put` takes the info only from a JSON body holding a numeric `size`; without it, a
+create-only PUT reads back with `head` (after a 200 as after a 412), and a plain PUT reports its own bytes with the
+answer's etag. A client of its own should do the same.
 
 On Node, `blob-s3` and host-http's clients (`hostMediaBlobs`, `hostMessageBlobs`) send their requests through
 `@carton/http-node`, which uses `node:http` and `node:https` instead of the global `fetch`. When a server ended the

@@ -101,8 +101,10 @@ const rangeHeader = (r: ByteRange) => (r.length === undefined ? `bytes=${r.offse
 
 /**
  * A project's media through the host's HTTP API. It has no list or delete (the API offers neither to clients).
- * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically: 412 when the key was there. Either
- * answer carries the stored object's info, so `put` needs no read-back (only from an older host, which sent none).
+ * `put` with `ifAbsent` sends `If-None-Match: *`, which the host applies atomically: 412 when the key was there. A
+ * host's answer carries the stored object's info, so `put` needs no read-back. It decides by the answer, not by who
+ * signed the URL: a URL presigned straight to a bucket (S3, R2) gets the bucket's answer, and an older host's has no
+ * info either, so without a JSON body holding the info a create-only `put` reads back with `head`.
  * `put` with `sha256` sends it in `X-Carton-Sha256`: the host refuses a body that doesn't hash to it (400) and the
  * store keeps it, for `head`.
  */
@@ -167,7 +169,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
       if (!r.ok && !kept) await failed(r);
       const said = await storedInfo(r, key);
       if (said) return said;
-      // an older host answers 200 with an etag alone, whether or not the bytes went in, and 412 with no info
+      // no info: a bucket's own answer (a presigned URL), or an older host's (200 and an etag whatever happened)
       if (o.ifAbsent) {
         const stored = await store.head(key);
         if (stored) return stored;
