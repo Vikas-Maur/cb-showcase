@@ -79,6 +79,7 @@ export interface HistoryCommit {
   policy?: Policy;
   choices?: Choices;
   id?: ChangeId;
+  /** Unused (the prototype's flag): an empty commit is confirmed empty; an empty fold or undo is always recorded. */
   allowEmpty?: boolean;
   name?: string;
 }

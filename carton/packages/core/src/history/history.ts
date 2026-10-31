@@ -372,7 +372,7 @@ export class History {
     const ref = this.parseRef(refIn);
     if ("legacy" in ref) throw new StateUnknown(refIn, "a 1.4.0 timestamp rev has no Carton state");
     const br = this.#cuts.get(ref.branchId);
-    if (!br || br.rec.shallow) throw new StateUnknown(refIn, "unknown cut");
+    if (!br || br.rec.shallow) throw new StateUnknown(refIn, "unknown branch");
     if (ref.seq > br.log.length) throw new StateUnknown(refIn, "seq beyond head");
     const confirmed = this.stateOf(nodeId(ref.branchId, ref.seq))!;
     const h8 = ref.hash8 ?? ref.hash?.slice(0, 8);
@@ -386,10 +386,18 @@ export class History {
   }
 
   // ------------------------------------------------------------ commits (local sequencer, rebase on reject)
-  /** M4: did `author` create element `id` of the sequence at `seqKey` (a path key: `tracks`, `items/X/effects`)? */
+  /**
+   * M4: did `author` create element `id` of the sequence at `seqKey`? `seqKey` is the sequence's path key (`tracks`,
+   * `timelineItems/X/effects`); one whose first segment isn't a collection is a timeline item's keyed array in short
+   * form (`X/effects`, the prototype's form).
+   */
   own(author: Actor | string | null | undefined): (seqKey: string, id: string) => boolean {
     const a = actorKey(author);
-    return (seqKey, id) => this.#creators.get(`${seqKey}/${E.pathKey([id])}`) === a;
+    const tl = this.schema.timeline;
+    return (seqKey, id) => {
+      const full = this.schema.collections[seqKey.split("/")[0]!] || !tl ? seqKey : `${tl.collection}/${seqKey}`;
+      return this.#creators.get(`${full}/${E.pathKey([id])}`) === a;
+    };
   }
   /**
    * Commit a new state (or ops) made on `base` (a ref, a held state, or the head). Confirmed at once on a cut this
@@ -431,6 +439,9 @@ export class History {
       ...(o.name ? { name: o.name } : {}),
       ...extra,
     };
+    // nothing to record: a commit that changes nothing is confirmed empty at the head (system-v11 `store.commit`);
+    // a fold or an undo with no ops is still pushed: its merge edge, or the change it undoes, is history
+    if (!ops.length && !extra.mergeOf && !extra.reverts) return { status: "confirmed", seq: br.log.length, ref: this.#refAt(cutId, br.log.length), change: null, empty: true, rebased: 0, notices: [] };
     for (let rebase = 0; ; rebase++) {
       if (rebase > 8) throw new Error("rebase loop");
       const stored = remapAsOneOp(this.schema, baseDoc, ops, change.intent);
@@ -475,7 +486,7 @@ export class History {
       baseSeq = br.log.length;
       causal = [];
       mine = merged;
-      if (!ops.length && !o.allowEmpty) return { status: "confirmed", seq: baseSeq, ref: this.#refAt(cutId, baseSeq), change: null, empty: true, rebased: rebase + 1, notices: [] };
+      if (!ops.length && !extra.mergeOf && !extra.reverts) return { status: "confirmed", seq: baseSeq, ref: this.#refAt(cutId, baseSeq), change: null, empty: true, rebased: rebase + 1, notices: [] };
     }
   }
   #refAt(cutId: string, seq: number): StateRef {
@@ -638,7 +649,7 @@ export class History {
 
   // ------------------------------------------------------------ fold in, partial accept, revert, restore
   /** "Fold into …": a DAG merge of node `from` into cut `into`. */
-  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: unknown; retry?: (choices: Choices) => FoldResult } {
+  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult } {
     const { author = { kind: "human", id: this.name } as Actor, choices, prefer = "ours", missingBase = "dialog", remapPath = "first" } = opts;
     const x = this.head(into),
       y = this.canon(from);

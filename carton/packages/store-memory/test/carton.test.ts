@@ -38,6 +38,14 @@ test("open with init, commit, reopen from the same store sees the same history",
   assert.equal((await again.log())[0]!.author?.id, "alice");
 });
 
+test("§16 migration: init asChange records the existing project as main@1, one insert-all change", async () => {
+  const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), asChange: true }, actor: human });
+  const log = await c.log();
+  assert.deepEqual(log.map((v) => [v.ref.seq, v.kind]), [[1, "import"], [0, "root"]]);
+  assert.deepEqual((await c.head()).doc.items, doc0().items);
+  assert.equal((await c.credits(["items", "a"]))?.id, "import");
+});
+
 test("two handles on one store act like two processes: concurrent commits both land, none lost", async () => {
   const data = createMemoryData();
   const a = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), init: { doc: doc0() }, actor: human });
@@ -78,6 +86,16 @@ test("fork a cut, edit both, fold in: both edits kept; credits name the variant'
   assert.equal(item(head, "b")!.name, "Shorter");
   assert.equal((await c.credits(["items", "b"]))?.id, "bob");
   assert.equal((await c.fold(v.id)).status, "up-to-date");
+});
+
+test("a fold sees the source cut's changes made by another process", async () => {
+  const data = createMemoryData();
+  const a = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), init: { doc: doc0() }, actor: human });
+  const v = await a.fork("variant");
+  const b = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: bob });
+  await b.commit({ cut: v.id, ops: [set("d", "name", "from b")] });
+  assert.equal((await a.fold(v.id)).status, "confirmed");
+  assert.equal(item((await a.head()).doc, "d")!.name, "from b");
 });
 
 test("pin for an owner: its header checks out until the last owner releases it, then 'state unknown'", async () => {
