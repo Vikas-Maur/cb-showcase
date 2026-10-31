@@ -89,6 +89,14 @@ const refText = (r: StateRef | null | undefined): string | null => {
   return `${r.branchId.slice(0, 8)}@${r.seq}${r.hash8 ? `~${r.hash8}` : ""}`;
 };
 
+export const ALREADY_IN_PLACE = "already in place: an identical edit was already there, so this one changed nothing of its own";
+export const TOO_LARGE = "this edit is larger than the server accepts (its maximum message size), so it wasn't saved; the edits after it still went through. Split it into smaller edits.";
+
+/** A rejection as the cb result: "too large" (refused by the client before sending) explained for the one edit. */
+export function rejectedResult(id: ChangeId | undefined, reason: string, notices: Notice[]): CbResult {
+  return { status: "rejected", ...(id ? { id } : {}), reason, notices, ...(reason === "too large" ? { note: TOO_LARGE } : {}) };
+}
+
 /** Turn a core CommitResult into the cb result contract. */
 export function toCbResult(r: CommitResult | Record<string, any>, notices: Notice[], extra: Record<string, unknown> = {}): CbResult {
   const x = r as any;
@@ -96,7 +104,7 @@ export function toCbResult(r: CommitResult | Record<string, any>, notices: Notic
     case "confirmed": return { status: "confirmed", seq: x.seq, ref: refText(x.ref), notices, ...(x.empty ? { empty: true } : {}), ...(x.change?.id ? { id: x.change.id } : {}), ...extra };
     case "pending": return { status: "pending", id: x.id, ref: refText(x.ref), notices, online: false, ...extra };
     case "conflicts": return { status: "conflicts", conflicts: x.cards ?? [], ref: refText(x.ref), notices, ...extra };
-    case "rejected": return { status: "rejected", reason: x.reason ?? x.invalid?.error ?? "rejected", notices, ...extra };
+    case "rejected": return { ...rejectedResult(undefined, x.reason ?? x.invalid?.error ?? "rejected", notices), ...extra } as CbResult;
     default: return { status: "confirmed", seq: x.seq ?? 0, ref: refText(x.ref), notices, ...x, ...extra } as CbResult;
   }
 }
@@ -306,11 +314,13 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     // the shared cut's own answer: confirmed by the server, a late conflict, a rejection, or still pending
     const o = await carton.sync.waitFor(r.id, ms, destCut(op));
     if (o.status === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices });
+    // spent with no effect of its own: an identical edit was already there. Saved, in effect: never an error
+    if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true, note: ALREADY_IN_PLACE });
     if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
     // spent by a withdraw: an identical edit was confirmed first, so this one's effect is already at `seq`
     if (o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, absorbed: true });
     for (const x of await deliverNotices(carton, req.actor)) if (x.change !== r.id) notices.push(x);
-    return o.status === "rejected" ? { status: "rejected", id: r.id, reason: o.reason, notices } : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
+    return o.status === "rejected" ? rejectedResult(r.id, o.reason, notices) : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
   }
   const out = await outcomes.wait(r.id, ms);
   if (!out) return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
