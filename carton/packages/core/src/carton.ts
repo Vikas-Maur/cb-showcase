@@ -13,12 +13,12 @@
 // the race, the in-memory model is rebuilt from the store and the commit is retried (its id makes the retry safe).
 
 import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreWrite, Transport } from "./plugins.ts";
-import type { Schema } from "./schema.ts";
+import type { FieldSpec, Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
 import { ReplicaQueue, type HistoryFields, type QueuedChange } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
-import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type Tail } from "./history/common.ts";
+import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import type {
@@ -288,7 +288,8 @@ export interface Carton {
 
   /** `.cbproj` collaboration (§13). */
   exportShallow(opts?: { cut?: string; to?: string }): Promise<ShallowExport>;
-  importShallow(pkg: ShallowExport): Promise<{ status: string; cut?: string }>;
+  /** §13: `forked` (`cut`, `head`), `imported` (`head`), `other-project`, or `no-shared-lineage` with `newProjectId`. */
+  importShallow(pkg: ShallowExport): Promise<ShallowImport>;
 
   on(listener: (event: CartonEvent) => void): () => void;
   /** Present when opened with `sync`. */
@@ -333,6 +334,33 @@ const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.
 interface ProjectMeta {
   projectId: string;
   schemaVersion: number;
+  /** The document schema's fingerprint (`schemaFingerprint`), checked by every process that opens the project. */
+  schema?: string;
+}
+
+/**
+ * What decides how states hash, diff and merge: the collections (keys, field kinds, groups, parents, order), the root
+ * fields and the timeline's fields; the host's callbacks (validators, labels, shot rules) are left out. Two processes
+ * on one store with different fingerprints would compute different state hashes for the same rows, so refs and pins one
+ * makes the other can't check (`StateUnknown`).
+ */
+export function schemaFingerprint(schema: Schema): string {
+  const spec = (f: FieldSpec): unknown =>
+    f.kind === "leaf" ? ["leaf", !!f.atomic, !!f.text, !!f.blob]
+    : f.kind === "object" ? ["object", f.deep, f.only, fields(f.fields)]
+    : f.kind === "keyed" ? ["keyed", f.key, fields(f.fields)]
+    : ["ephemeral"];
+  const fields = (fs: Readonly<Record<string, FieldSpec>>) => Object.fromEntries(Object.entries(fs).map(([k, f]) => [k, spec(f)]));
+  const tl = schema.timeline;
+  return E.sha256Hex(
+    E.canonical({
+      root: fields(schema.root.fields),
+      collections: Object.fromEntries(
+        Object.entries(schema.collections).map(([n, c]) => [n, { key: c.key, seq: !!c.seq, only: !!c.only, parent: c.parent ?? null, groups: c.groups.map((g) => [g.name, [...g.fields]]), record: fields(c.record.fields) }]),
+      ),
+      timeline: tl && [tl.collection, tl.lanes, tl.lane, tl.start, tl.end, tl.source, tl.sourceEnd, tl.speed],
+    }),
+  );
 }
 
 export const Carton = {
@@ -360,8 +388,8 @@ class CartonImpl implements Carton {
   /** Store conditions every settling write carries (`connect({ conditions })`); `#fenced` once one failed. */
   #settleConds: StoreCondition[] = [];
   #fenced = false;
-  /** Pending rows being written: a settle waits for them, so it never runs before the row it settles exists. */
-  #inflight = new Set<Promise<unknown>>();
+  /** Pending rows being written, by change id: a settle waits for them, never running before a row it settles exists. */
+  #inflight = new Map<ChangeId, Promise<unknown>>();
   /**
    * The author of each change this handle queued, until its own outcome is settled: an earlier settlement may already
    * have dropped its pending row (it left the queue), and its notice must still go to its author.
@@ -450,7 +478,7 @@ class CartonImpl implements Carton {
       if ("join" in init) return this.#createFromJoin(init.join);
       const h = History.create(this.schema, init.asChange ? emptyDoc(this.schema) : init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
       const cut = h.cut(h.current)!;
-      meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion };
+      meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
       const ok = await s.write(
         [
           { table: T.meta, key: PROJECT, value: meta },
@@ -468,14 +496,28 @@ class CartonImpl implements Carton {
         return;
       }
     }
-    this.#meta = meta;
+    this.#meta = await this.#checkSchema(meta);
     await this.#rebuild();
+  }
+  /**
+   * Every process on a project must hash and merge its states alike (R2-03): one whose schema differs from the one the
+   * project was made with, at the same schema version, is refused here, rather than failing later on every ref the
+   * other makes ("rebuilt state does not match"). A project made before fingerprints gets this process's.
+   */
+  async #checkSchema(meta: ProjectMeta): Promise<ProjectMeta> {
+    const mine = schemaFingerprint(this.schema);
+    if (meta.schemaVersion !== this.#opts.adapter.schemaVersion || meta.schema === mine) return meta;
+    if (meta.schema === undefined) {
+      const next = { ...meta, schema: mine };
+      return (await this.store.write([{ table: T.meta, key: PROJECT, value: next }], [{ table: T.meta, key: PROJECT, expect: { equals: meta } }])) ? next : this.#checkSchema((await this.store.get<ProjectMeta>(T.meta, PROJECT))!);
+    }
+    throw new Error(`Carton.open: this project was made with another document schema than ${this.#opts.adapter.name}'s (schema version ${meta.schemaVersion}, fingerprint ${meta.schema.slice(0, 8)}, this process ${mine.slice(0, 8)}); its states would hash and merge differently here`);
   }
   async #createFromImport(pkg: ShallowExport): Promise<void> {
     const h = new History(this.schema, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, keyframeEvery: this.#opts.keyframeEvery });
     const res = h.importShallow(pkg);
     if (res.status !== "forked") throw new Error(`Carton.open: import gave ${res.status}`);
-    const meta: ProjectMeta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion };
+    const meta: ProjectMeta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
     const w: StoreWrite[] = [{ table: T.meta, key: PROJECT, value: meta }, { table: T.meta, key: CURRENT, value: h.current }, ...this.#knowledgeWrites(h)];
     for (const c of h.cuts()) w.push({ table: T.cuts, key: [c.id], value: c });
     if (!(await this.store.write(w, [{ table: T.meta, key: PROJECT, expect: "absent" }]))) return this.load();
@@ -488,7 +530,7 @@ class CartonImpl implements Carton {
     if (j.cut.sequencer.kind !== "server") throw new Error("Carton.open: `join` needs a cut a host sequences (sequencer kind \"server\")");
     if (!this.#opts.sync) throw new Error("Carton.open: `join` needs `sync` (the rows come from the host)");
     if (j.rootHash !== undefined && E.hashDoc(j.doc0, this.schema) !== j.rootHash) throw new Error("Carton.open: the joined cut's root doesn't match its hash");
-    const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion };
+    const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
     const ok = await this.store.write(
       [
         { table: T.meta, key: PROJECT, value: meta },
@@ -1207,7 +1249,7 @@ class CartonImpl implements Carton {
     });
     return pkg;
   }
-  async importShallow(pkg: ShallowExport): Promise<{ status: string; cut?: string }> {
+  async importShallow(pkg: ShallowExport): Promise<ShallowImport> {
     let res!: ReturnType<History["importShallow"]>;
     let prior!: ReturnType<History["knowledge"]>;
     let before!: Set<string>;
@@ -1227,7 +1269,8 @@ class CartonImpl implements Carton {
         idempotent: true,
       },
     );
-    return { status: res.status, ...("cut" in res ? { cut: res.cut } : {}) };
+    // all of it: the new project id a same-id file without shared lineage gets, and the head it brought (S3-3)
+    return res;
   }
 
   // ------------------------------------------------------------ shared cuts (§5.3, §6.2, §12): through SharedCut
@@ -1319,10 +1362,19 @@ class CartonImpl implements Carton {
    * handle. A write that fails leaves History where the store is, and the next event settles again.
    */
   #settle(cut: string, e: SharedCutEvent): Promise<void> {
-    // after any pending row still being written: a change settled at once (refused as too large before it was sent)
-    // must find its author there, and its row must not land after the settle removed it (it would come back pending)
+    // after every pending row still being written, checked again after each wait (a write that starts while the
+    // settle waits, of a change confirmed meanwhile, counts too): a change settled at once (refused before it was sent)
+    // must find its author there, and no row may land after the settle rewrote or removed it (it would come back
+    // pending). A few rounds at most, so a burst of commits can't hold the settle back for good: a later settle
+    // rewrites the pending rows again anyway.
     const run = async () => {
-      if (this.#inflight.size) await Promise.allSettled([...this.#inflight]);
+      const waited = new Set<Promise<unknown>>();
+      for (let round = 0; round < 8; round++) {
+        const busy = [...this.#inflight.values()].filter((w) => !waited.has(w));
+        if (!busy.length) break;
+        for (const w of busy) waited.add(w);
+        await Promise.allSettled(busy);
+      }
       return this.#settleShared(cut, e);
     };
     return (this.#queue = this.#queue.then(run, run).catch((err: unknown) => {
@@ -1376,9 +1428,17 @@ class CartonImpl implements Carton {
     // the store first: History only moves to what is saved. Under the holder's fence: a holder the lease has moved on
     // from records nothing more, reloads what the store holds and stops; its replacement settles the same answers once
     if (writes.length && !(await this.store.write(writes, this.#settleConds))) {
+      // Its queues already dropped outcomes it couldn't record: they go too, and a later connect (this handle under a
+      // new nonce) builds them again from the store, whose pending rows are pushed again and answered once more
       this.#fenced = true;
+      this.#connected = null;
       await this.#rebuild();
-      for (const s of this.#shared.values()) await s.disconnect();
+      for (const s of this.#shared.values()) {
+        await s.disconnect();
+        s.close();
+      }
+      this.#shared.clear();
+      this.#rq = null;
       this.#emit({ type: "sync", status: "stopped", waiting: 0 });
       return;
     }
@@ -1503,20 +1563,36 @@ class CartonImpl implements Carton {
     const at = this.#opts.clock?.() ?? Date.now();
     this.#authors.set(id, author);
     const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}) });
-    if (r.status === "confirmed") this.#authors.delete(id);
-    const seq = sc.queue.headSeq(cut);
     if (r.status === "confirmed") {
-      // nothing to record: the id is spent anyway, so its retry stays a no-op (here and in other processes)
-      this.#h.noteNoop(id, cut, seq);
-      return { status: "confirmed", seq, ref: this.#sharedRef(cut), change: null, empty: true, rebased: 0, notices: [] };
+      // nothing to record: the id is spent anyway (`#persistEnqueued` records it), named at the version History holds
+      this.#authors.delete(id);
+      const seq = this.#h.headSeq(cut);
+      return { status: "confirmed", seq, ref: { branchId: cut, seq, pending: [] }, change: null, empty: true, rebased: 0, notices: [] };
     }
     return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
   }
   /** Keep what `#enqueue` did: the pending row (in queue order), or the spent id of an empty write. */
   async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = []): Promise<CommitResult> {
     if (r.status === "confirmed") {
-      await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }, ...extra], [{ table: T.meta, key: ["noop", id], expect: "absent" }, { table: T.ids, key: [id], expect: "absent" }]);
-      return r;
+      // a no-op only if nobody answered this id meanwhile (a holder that replaced this one: the lease conditions), so a
+      // retry answers empty and never applies the edit later over someone else's; otherwise the store's answer is it
+      const ok = await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }, ...extra], [
+        { table: T.meta, key: ["noop", id], expect: "absent" },
+        { table: T.ids, key: [id], expect: "absent" },
+        { table: T.pending, key: [cut, id], expect: "absent" },
+        ...this.#settleConds,
+      ]);
+      if (!ok) {
+        await this.#refresh();
+        await this.#noopOf(id);
+        const won = this.#h.confirmedById(id);
+        if (won) return won;
+        if (await this.store.get(T.pending, [cut, id])) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
+        throw new Error("Carton: the store changed under this write (the sync lease moved to another holder)");
+      }
+      this.#h.noteNoop(id, cut, r.seq);
+      // the answer its retry gets too (the same version)
+      return this.#h.confirmedById(id)!;
     }
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
     const writes: StoreWrite[] = [];
@@ -1524,11 +1600,12 @@ class CartonImpl implements Carton {
     // started before anything can settle it: a settle waits for #inflight
     if (writes.length || extra.length) {
       const w = this.store.write([...writes, ...extra]);
-      this.#inflight.add(w);
+      const ids = [id, ...also];
+      for (const x of ids) this.#inflight.set(x, w);
       try {
         await w;
       } finally {
-        this.#inflight.delete(w);
+        for (const x of ids) if (this.#inflight.get(x) === w) this.#inflight.delete(x);
       }
     }
     if (!wait) return r;

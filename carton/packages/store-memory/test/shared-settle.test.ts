@@ -223,3 +223,105 @@ test("verify-ci #10: `sync.maxMessageBytes` matches a host set below 32 MiB: a c
   await c.close();
   w.host.close();
 });
+
+// local-cli's Stage F review round 2 requests (their notes, "Requests for foundation-core"), on Carton itself
+
+test("round-2 request 1: a pending row whose write starts while a settle waits never lingers once its change is confirmed", async () => {
+  const w = world();
+  const mem = createMemoryStore();
+  // every change's first pending-row write lands late, as on a busy carton.db
+  const first = new Set<string>();
+  const store: Store = Object.assign(Object.create(mem) as Store, {
+    write: async (ws: Parameters<Store["write"]>[0], c?: Parameters<Store["write"]>[1]) => {
+      const fresh = ws.filter((x) => x.table === "pending" && x.value !== undefined && !first.has(String(x.key[1])));
+      for (const x of fresh) first.add(String(x.key[1]));
+      if (fresh.length) await sleep(120);
+      return mem.write(ws, c);
+    },
+  });
+  const a = await shared(w, store);
+  const x = await a.commit({ ops: [set("a", "name", "x")] });
+  await sleep(30); // a settle is now waiting for x's row; y's write starts during that wait
+  const y = await a.commit({ ops: [set("b", "name", "y")] });
+  const ids = [x, y].map((r) => (r.status === "pending" ? r.id : assert.fail(r.status)));
+  for (const id of ids) assert.equal((await a.sync!.waitFor(id, 5000)).status, "confirmed");
+  await sleep(300);
+  assert.deepEqual((await mem.range("pending")).map((e) => e.key[1]), [], "no row left behind");
+  await a.close();
+  const again = await Carton.open({ adapter, store: mem, actor: alice, sync: w.sync("alice", false) });
+  assert.equal(again.sync!.state().pending, 0, "nothing re-queued after a restart");
+  await again.close();
+  w.host.close();
+});
+
+test("round-2 request 2: a fenced handle connected again under a new nonce pushes what it had pending, and its author hears", async () => {
+  const w = world();
+  const mem = createMemoryStore();
+  await mem.write([{ table: "lease", key: ["holder"], value: { nonce: "old" } }]);
+  // the lease moves to another holder exactly as this one settles the refusal: its queue has already dropped the change
+  let moveOnNotice = false;
+  const store: Store = Object.assign(Object.create(mem) as Store, {
+    write: async (ws: Parameters<Store["write"]>[0], c?: Parameters<Store["write"]>[1]) => {
+      if (moveOnNotice && ws.some((x) => x.table === "notices")) {
+        moveOnNotice = false;
+        await mem.write([{ table: "lease", key: ["holder"], value: { nonce: "new" } }]);
+      }
+      return mem.write(ws, c);
+    },
+  });
+  const a = await shared(w, store, alice, undefined, { nonce: "old", fence: () => true, conditions: [holder("old")] });
+  // bob's device owns rid "zz": a change under it is refused by the server
+  const b = await Carton.open({ adapter, store: await copyStore(mem), actor: bob, sync: w.sync("bob") });
+  await until(() => b.sync!.status === "up-to-date", 5000, "bob connected");
+  assert.equal((await b.commit({ id: "zz.1", ops: [set("b", "name", "bob's")], wait: 5000 })).status, "confirmed");
+  await b.close();
+  const stopped: string[] = [];
+  a.on((e) => void (e.type === "sync" && e.status === "stopped" && stopped.push("stopped")));
+  moveOnNotice = true;
+  const r = await a.commit({ id: "zz.2", ops: [set("c", "name", "agent's")], author: agent });
+  assert.equal(r.status, "pending");
+  await until(() => stopped.length > 0, 5000, "the fenced holder to stop");
+  assert.equal((await a.notices(agent)).length, 0, "the fenced holder recorded nothing");
+  assert.ok(await mem.get("pending", [a.cut, "zz.2"]), "its row stays");
+  // the lease comes back to this handle (the app's engine thread re-acquires)
+  await mem.write([{ table: "lease", key: ["holder"], value: { nonce: "back" } }]);
+  assert.ok(await a.sync!.connect({ nonce: "back", conditions: [holder("back")] }));
+  await until(async () => (await a.notices(agent)).some((n) => n.change === "zz.2"), 5000, "the author's notice");
+  assert.equal(await mem.get("pending", [a.cut, "zz.2"]), undefined, "and the row is gone");
+  await a.close();
+  w.host.close();
+});
+
+test("round-2 request 3: an empty shared save records a no-op only while nobody else answered its id", async () => {
+  const w = world();
+  const mem = createMemoryStore();
+  await mem.write([{ table: "lease", key: ["holder"], value: { nonce: "old" } }]);
+  const a = await shared(w, mem, alice, undefined, { nonce: "old", fence: () => true, conditions: [holder("old")] });
+  const saved = (await a.head()).doc;
+  // its id already queued by another holder: the answer is that, not a no-op beside it
+  await mem.write([{ table: "pending", key: [a.cut, "q1.1"], value: { id: "q1.1", author: alice, ops: [set("a", "name", "theirs")], at: 0, order: 0, intent: null, kinds: null, policy: "merge" } }]);
+  const queued = await a.commit({ id: "q1.1", doc: saved });
+  assert.equal(queued.status, "pending");
+  assert.equal(await mem.get("meta", ["noop", "q1.1"]), undefined);
+  // the lease moved to another holder: no no-op is recorded, and the write says so
+  await mem.write([{ table: "lease", key: ["holder"], value: { nonce: "new" } }]);
+  await assert.rejects(a.commit({ id: "q2.1", doc: saved }), /lease moved/);
+  assert.equal(await mem.get("meta", ["noop", "q2.1"]), undefined);
+  await a.close();
+  w.host.close();
+});
+
+test("round-2 request 4: an empty shared save names the same version on retry, with edits still waiting to sync", async () => {
+  const w = world();
+  const mem = createMemoryStore();
+  const a = await shared(w, mem);
+  await a.sync!.disconnect();
+  assert.equal((await a.commit({ ops: [set("a", "name", "waiting")] })).status, "pending");
+  const doc = (await a.head()).doc;
+  const first = await a.commit({ id: "e4.1", doc });
+  const retry = await a.commit({ id: "e4.1", doc });
+  assert.equal(first.status === "confirmed" && first.empty, true, JSON.stringify(first));
+  assert.deepEqual(retry, first, "the same answer, version and ref");
+  await a.close();
+  w.host.close();
+});
