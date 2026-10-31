@@ -610,7 +610,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // (a reader scoped to some cuts never gets here for another: process() refuses it first)
     const b = tables.branch(m.branchId);
     if (!b) return send(c, { type: "unknownBranch", branchId: m.branchId });
-    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `this client's documents are schema version ${m.schemaVersion}, newer than this server accepts (up to ${opts.schemaVersion}): update the server` });
+    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", code: "schema-too-new", reason: `this client's documents are schema version ${m.schemaVersion}, newer than this server accepts (up to ${opts.schemaVersion}): update the server` });
     const st = stateOf(c);
     if (m.envelopes === true && opts.blobs) st.envelopes = true;
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
@@ -897,7 +897,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 
   async function onFork(c: HostConnection, m: sync.ForkMsg) {
     if (!m.rec || m.rec.id !== m.branchId) return send(c, { type: "error", reason: "rec.id must be the branchId" }); // finding 1
-    if (!mayWrite(c, m.branchId)) return send(c, { type: "error", reason: "forbidden" }); // finding 4
+    if (!mayWrite(c, m.branchId)) return send(c, { type: "error", code: "forbidden", reason: "forbidden" }); // finding 4
     const parent = tables.branch(m.from);
     if (!parent) return send(c, { type: "unknownBranch", branchId: m.from });
     if (!(Number.isInteger(m.seq) && m.seq >= parent.root && m.seq <= tables.head(m.from))) return send(c, { type: "error", reason: `fork point ${m.seq} is outside ${m.from}` });
@@ -1007,8 +1007,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   async function process(c: HostConnection, msg: ClientMessage): Promise<void> {
-    if (opts.projectId !== undefined && c.auth.projectId !== opts.projectId) return send(c, { type: "error", reason: "this token is for another project" });
-    if (c.auth.expires < clock()) return send(c, { type: "error", reason: "token expired" });
+    if (opts.projectId !== undefined && c.auth.projectId !== opts.projectId) return send(c, { type: "error", code: "unauthorized", reason: "this token is for another project" });
+    if (c.auth.expires < clock()) return send(c, { type: "error", code: "unauthorized", reason: "token expired" });
     if (msg?.type === "blob") {
       const inner = await openEnvelope(c, msg);
       if (!inner) return;
@@ -1021,8 +1021,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // lookup, where SQLite would match the number 1.5 to the cut id "1.5" past the guard (stage review round 2).
     const named = (msg as { branchId?: unknown } | null)?.branchId;
     const from = (msg as { type?: unknown; from?: unknown } | null)?.type === "fork" ? (msg as { from?: unknown }).from : "";
-    if (typeof named !== "string" || typeof from !== "string") return send(c, { type: "error", reason: "a message must name its cut by a string id" });
-    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(named)) return send(c, { type: "error", reason: `this token can't read ${named}` });
+    if (typeof named !== "string" || typeof from !== "string") return send(c, { type: "error", code: "bad-request", reason: "a message must name its cut by a string id" });
+    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(named)) return send(c, { type: "error", code: "forbidden", reason: `this token can't read ${named}` });
     switch (msg?.type) {
       case "hello":
         return onHello(c, msg);
