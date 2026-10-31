@@ -53,9 +53,18 @@ export const createInvite = async ({ host, projectId, token, role, ttlMs, fetchF
 export const adminInvite = async ({ host, projectId, adminToken, role = "owner", fetchFn }) =>
   (await call(`${origin(host)}/api/admin/projects/${encodeURIComponent(projectId)}/invites`, { token: adminToken, body: { role }, fetchFn })).invite;
 
-/** A short-lived signed URL for one key of the project's media scope. */
-const sign = async ({ host, projectId, token, key, method, fetchFn }) =>
-  (await call(api(host, projectId, "/blobs/sign"), { token, body: { key, method, expiresIn: 300 }, fetchFn })).url;
+/**
+ * A short-lived signed URL for one key of the project's media scope, moved onto the origin this computer reaches the
+ * host by (as host-blobs.js does): the signature covers the path and query, not the origin, and a host behind a proxy
+ * signs with its own listen address.
+ */
+const sign = async ({ host, projectId, token, key, method, fetchFn }) => {
+  const u = new URL((await call(api(host, projectId, "/blobs/sign"), { token, body: { key, method, expiresIn: 300 }, fetchFn })).url, origin(host));
+  const b = new URL(origin(host));
+  u.protocol = b.protocol;
+  u.host = b.host;
+  return u.toString();
+};
 
 export async function putBlob({ host, projectId, token, key, bytes, contentType = "application/octet-stream", fetchFn = fetch }) {
   const url = await sign({ host, projectId, token, key, method: "PUT", fetchFn });

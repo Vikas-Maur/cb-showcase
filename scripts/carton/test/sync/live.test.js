@@ -110,6 +110,16 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
   const { url } = await bob.call("carton.liveMediaUrl", { mediaId });
   assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/m\/[0-9a-f]{64}\?t=/);
   assert.ok(Math.abs(S.probeDuration(url) - 3) < 0.2, "ffprobe reads the shared proxy by URL");
+  // And Cardboard's own tools do, through the same URL (patches/tools.js): Bob's agent grabs a frame of a clip whose file
+  // is only on Alice's computer.
+  const m = await bob.mcp();
+  try {
+    const g = await m.tool("grab_frame", { project: "Demo", media: mediaId, at: 1 });
+    assert.ok(!g.isError, g.text);
+    assert.ok(g.content.some((c) => c.type === "image" && c.data?.length > 100), "a frame came back: " + JSON.stringify(g.content).slice(0, 300));
+  } finally {
+    await m.close();
+  }
 });
 
 test("media before its upload finishes: Bob plays Alice's new clip from its first segments, and a tool follows it live", t, async () => {
@@ -177,13 +187,24 @@ test("cb on the shared project with the app open: the agent's edit goes through 
   // The agent edits the printed timeline as it is now (timeline.tsx follows project.json a moment later).
   const tsx = path.join(alice.root, "Demo.cardboard", "timeline.tsx");
   await S.until(() => /fontSize=\{90\}/.test(fs.readFileSync(tsx, "utf8")), 10_000, "alice's timeline.tsx at head");
+  const printed = fs.readFileSync(tsx, "utf8");
+  // Then Bob changes the title's text, and it reaches Alice: the agent's print is now one version behind.
+  await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Bob was here" } : null));
+  await S.until(async () => S.textOf(await S.projectOf(alice, id)).textContent === "Bob was here", 20_000, "bob's text at alice");
   const edit = path.join(alice.home, "edit3.tsx");
-  fs.writeFileSync(edit, fs.readFileSync(tsx, "utf8").replace(/fontSize=\{\d+\}/, "fontSize={77}"));
+  fs.writeFileSync(edit, printed.replace(/fontSize=\{\d+\}/, "fontSize={77}"));
   const r = alice.cb(["source", "apply", "Demo", edit], { CARDBOARD_ACTOR: "codex/c9" });
   assert.equal(r.code, 0, r.out + r.err);
   await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 77, 30_000, "the agent's edit at bob; cb said: " + r.out.replace(/\s+/g, " ").slice(-700) + " / " + r.err.slice(-300));
   const h = bob.cb(["history", "Demo"]);
   assert.equal(h.json().versions[0].by?.id, "codex/c9", "credited to the agent on Bob's computer");
+  // The holder merged the agent's edit onto Bob's: what cb wrote into Alice's project.json is that merge, not the
+  // agent's document from its older print (which would drop Bob's text from her file).
+  await S.sleep(1000);
+  for (const pc of [alice, bob]) {
+    const x = S.textOf(await S.projectOf(pc, id));
+    assert.deepEqual([x.fontSize, x.textContent], [77, "Bob was here"], pc.name + "'s project.json has both");
+  }
 });
 
 test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the pull brings Bob's edit in, the agent's edit reaches Bob, no whole-file PUT", t, async () => {
