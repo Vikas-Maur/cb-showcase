@@ -1,0 +1,5 @@
+{
+  // The browser code (the editor, the watch page, the Service Worker): DOM types, no Node.
+  "extends": "../../tsconfig.dom.json",
+  "include": ["src"]
+}

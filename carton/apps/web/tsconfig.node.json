@@ -1,0 +1,8 @@
+{
+  // The Node scripts (seed, Director bot, host), the tests, and the browser sources they import.
+  "extends": "../../tsconfig.node.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"]
+  },
+  "include": ["scripts", "test", "src", "../../e2e/web"]
+}
