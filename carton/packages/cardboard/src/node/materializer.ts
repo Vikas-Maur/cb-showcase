@@ -23,7 +23,7 @@ import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { Actor, ConflictCard, Doc } from "@carton/core";
 import type { OwnFn } from "@carton/core/plugins";
-import { displaceThenInstall, hardLinksWork, retryBusy, stampOf, statStamp, type BusyCounter } from "./displace.ts";
+import { BUSY_BUDGET_MS, displaceThenInstall, hardLinksWork, retryBusy, stampOf, statStamp, type BusyOptions } from "./displace.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
 import { findRev, renderRev, printNonce, REV_TAG, type Rev } from "../header.ts";
 import type { Project, TimelineCodec } from "../codec.ts";
@@ -152,6 +152,11 @@ export interface MaterializerOptions {
   writeProject?: boolean;
   /** Treat file names case-insensitively (default: on Windows and macOS, whose file systems fold case). */
   foldCase?: boolean;
+  /**
+   * On Windows, how long a file another process has open (EPERM, EBUSY, EACCES) is retried in all, in ms (default 5 s).
+   * The retries wait on timers: the worker's thread keeps serving everything else meanwhile.
+   */
+  busyBudgetMs?: number;
   /** Cards a save raised, for the human (conflict cards). */
   onCards?: (c: SaveCards) => void;
 }
@@ -235,7 +240,7 @@ export class Materializer {
   private readonly held: DisplacedFiles;
   private readonly tmpDir: string;
   private readonly noLinks: boolean;
-  private readonly busy: BusyCounter = {};
+  private readonly busy: BusyOptions;
   private queue: Promise<unknown> = Promise.resolve();
   private tmpSeq = 0;
   private readonly tmpTag = randomBytes(4).toString("hex");
@@ -289,12 +294,14 @@ export class Materializer {
       attributeMs: o.attributeMs ?? 30_000,
       writeProject: o.writeProject ?? true,
       foldCase: o.foldCase ?? (process.platform === "win32" || process.platform === "darwin"),
+      busyBudgetMs: o.busyBudgetMs ?? BUSY_BUDGET_MS,
     };
+    this.busy = { counter: {}, budgetMs: this.opts.busyBudgetMs };
     const carton = path.join(this.bundle, CARTON_DIR);
     this.tmpDir = path.join(carton, "tmp");
     fs.mkdirSync(this.tmpDir, { recursive: true });
     fs.mkdirSync(path.join(this.bundle, VIEWS_DIR), { recursive: true });
-    this.held = new DisplacedFiles(path.join(carton, "displaced"), { now: () => this.clock.now(), quietMs: this.opts.quietMs, holdMs: this.opts.quietMs, counter: this.busy });
+    this.held = new DisplacedFiles(path.join(carton, "displaced"), { now: () => this.clock.now(), quietMs: this.opts.quietMs, holdMs: this.opts.quietMs, ...this.busy });
     this.noLinks = !hardLinksWork(this.bundle);
   }
 
@@ -320,7 +327,7 @@ export class Materializer {
   adoptCurrentFiles(): Promise<void> {
     return this.run(async () => {
       for (const rel of [PROJECT_FILE, TIMELINE_FILE]) {
-        const f = this.readFile(rel);
+        const f = await this.readFile(rel);
         if (!f) continue;
         // that file's content is in the engine already: once an install moves it aside, it is a copy, not a save
         const ps = await this.pathState(rel);
@@ -551,7 +558,7 @@ export class Materializer {
     const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, seq: this.freeze.baseSeq, causal: this.freeze.causal, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
     if (cause === "remote") this.lastRemoteRewrite = this.clock.now();
     const body = refBodyOf(pinned);
-    const cur = this.readFile(TIMELINE_FILE);
+    const cur = await this.readFile(TIMELINE_FILE);
     if (!force && cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body) return; // unchanged
     const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
     const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
@@ -561,18 +568,18 @@ export class Materializer {
   }
 
   /** The project.json envelope of the file on disk (null if absent or unreadable). */
-  private readEnvelope(): Record<string, unknown> | null {
-    return this.envelopeFile()?.env ?? null;
+  private async readEnvelope(): Promise<Record<string, unknown> | null> {
+    return (await this.envelopeFile())?.env ?? null;
   }
   /**
    * The file on disk: its envelope, content hash and stamp. project.json can be large (thumbnail id lists grow with
    * footage), so it is read, hashed and parsed again only when its stamp changed.
    */
-  private envelopeFile(): { env: Record<string, unknown> | null; hash: string; stamp: string } | null {
-    const stamp = statStamp(this.abs(PROJECT_FILE));
+  private async envelopeFile(): Promise<{ env: Record<string, unknown> | null; hash: string; stamp: string } | null> {
+    const stamp = await statStamp(this.abs(PROJECT_FILE), this.busy);
     if (stamp === null) return null;
     if (this.envelopeCache?.stamp === stamp) return this.envelopeCache;
-    const f = this.readFile(PROJECT_FILE);
+    const f = await this.readFile(PROJECT_FILE);
     if (!f) return null;
     let env: Record<string, unknown> | null = null;
     try {
@@ -597,7 +604,7 @@ export class Materializer {
    */
   private async projectSource(): Promise<{ env: Record<string, unknown> | null; overlay: Overlay | null }> {
     const overlay = (await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"])) ?? null;
-    const f = this.envelopeFile();
+    const f = await this.envelopeFile();
     const fileEnv = f?.env ?? null;
     if (!overlay) return { env: fileEnv, overlay: null };
     const consumed = await this.engine.getMeta<string>(["file", PROJECT_FILE, "consumed"]);
@@ -618,7 +625,7 @@ export class Materializer {
     // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
     // unpatched tools, rare, and get the latest view as their base).
     const head = await this.engine.head();
-    const onDisk = this.readEnvelope();
+    const onDisk = await this.readEnvelope();
     const same = (x: unknown) => onDisk !== null && JSON.stringify(x) === JSON.stringify(onDisk);
     if (!fresh && this.projectPin && cur && same({ ...env, project: this.host.toProject(head, cur) })) return;
     await this.engine.release("project-file");
@@ -651,7 +658,7 @@ export class Materializer {
     fs.writeFileSync(tmp, bytes, { flag: "wx" });
     let r;
     try {
-      r = displaceThenInstall(target, tmp, () => this.held.next(rel), { counter: this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null });
+      r = await displaceThenInstall(target, tmp, () => this.held.next(rel), { ...this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null });
     } catch (e) {
       // a rename may have moved a file aside before the failure: hold whatever is in the folder unreviewed
       await this.recoverDisplaced();
@@ -662,7 +669,7 @@ export class Materializer {
       }
       throw e;
     }
-    const stamp = statStamp(target);
+    const stamp = await statStamp(target, this.busy);
     for (const d of r.displaced) {
       let mtimeNs = 0n;
       try {
@@ -749,11 +756,11 @@ export class Materializer {
     return view && !view.includes("/") ? viewPath(view) : null;
   }
 
-  private readFile(rel: string): { bytes: Buffer; hash: string; stamp: string } | null {
+  private async readFile(rel: string): Promise<{ bytes: Buffer; hash: string; stamp: string } | null> {
     const p = this.abs(rel);
     try {
-      const bytes = retryBusy(() => fs.readFileSync(p), this.busy);
-      const stamp = stampOf(fs.statSync(p, { bigint: true }));
+      const bytes = await retryBusy(() => fs.readFileSync(p), this.busy);
+      const stamp = stampOf(await retryBusy(() => fs.statSync(p, { bigint: true }), this.busy));
       return { bytes, hash: sha(bytes), stamp };
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
@@ -780,7 +787,7 @@ export class Materializer {
   }
 
   private async readEvent(rel: string): Promise<void> {
-    const f = this.readFile(rel);
+    const f = await this.readFile(rel);
     if (!f || (await this.isCurrent(rel, f.hash))) return;
     if (rel === TIMELINE_FILE) {
       this.freeze.lastForeign = this.clock.now();
@@ -804,7 +811,7 @@ export class Materializer {
       this.clock.setTimeout(() => {
         this.quietTimers.delete(rel);
         this.fire(async () => {
-          const f = this.readFile(rel);
+          const f = await this.readFile(rel);
           if (!f || (await this.isCurrent(rel, f.hash))) return;
           if (f.stamp !== stamp) return this.waitForQuiet(rel, f.stamp);
           if (await this.parses(rel, f.bytes)) return void (await this.readWithRetry(rel));
@@ -819,7 +826,7 @@ export class Materializer {
 
   /** A foreign save at `rel` that no watcher saw (written while the app was closed): applied before Carton writes it. */
   private async importUnseen(rel: string): Promise<void> {
-    const f = this.readFile(rel);
+    const f = await this.readFile(rel);
     if (!f || (await this.isCurrent(rel, f.hash))) return;
     if (!(await this.parses(rel, f.bytes))) return; // displaced by the install, then kept and reported if it never parses
     this.log.imported.push({ t: this.clock.now(), path: rel });
@@ -845,8 +852,8 @@ export class Materializer {
       let bytes: Buffer;
       let st: fs.BigIntStats;
       try {
-        bytes = retryBusy(() => fs.readFileSync(file), this.busy);
-        st = fs.statSync(file, { bigint: true });
+        bytes = await retryBusy(() => fs.readFileSync(file), this.busy);
+        st = await retryBusy(() => fs.statSync(file, { bigint: true }), this.busy);
       } catch {
         continue;
       }
@@ -854,7 +861,7 @@ export class Materializer {
       const stamp = stampOf(st);
       const hash = sha(bytes);
       if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || ps.applied.includes(stamp)) {
-        this.held.release(file); // Carton's own install, or a copy of a save already stored
+        await this.held.release(file); // Carton's own install, or a copy of a save already stored
         continue;
       }
       if (ps.failed.includes(stamp)) {
@@ -874,18 +881,19 @@ export class Materializer {
    * database), it and every file after it are held again and retried.
    */
   private async reviewDisplaced(): Promise<void> {
-    const r = this.held.review(() => true); // parsing may be async (an injected codec): checked below
+    const r = await this.held.review(() => true); // parsing may be async (an injected codec): checked below
     for (const p of r.retired) this.origin.delete(p);
-    const found: Found[] = r.foreign.map((d) => {
+    const found: Found[] = [];
+    for (const d of r.foreign) {
       const o = this.origin.get(d.path);
-      return { path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n, stamp: statStamp(d.path), ...(o?.viewGen !== undefined ? { viewGen: o.viewGen } : {}) };
-    });
+      found.push({ path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n, stamp: await statStamp(d.path, this.busy), ...(o?.viewGen !== undefined ? { viewGen: o.viewGen } : {}) });
+    }
     for (const [p, q] of this.partials) {
-      const stamp = statStamp(p);
+      const stamp = await statStamp(p, this.busy);
       if (stamp === null) this.partials.delete(p);
       else if (stamp !== q.stamp) {
         this.partials.delete(p);
-        found.push({ path: p, bytes: retryBusy(() => fs.readFileSync(p), this.busy), rel: q.rel, mtimeNs: q.mtimeNs, stamp, ...(q.viewGen !== undefined ? { viewGen: q.viewGen } : {}) });
+        found.push({ path: p, bytes: await retryBusy(() => fs.readFileSync(p), this.busy), rel: q.rel, mtimeNs: q.mtimeNs, stamp, ...(q.viewGen !== undefined ? { viewGen: q.viewGen } : {}) });
       }
     }
     found.sort((a, b) => (a.mtimeNs < b.mtimeNs ? -1 : a.mtimeNs > b.mtimeNs ? 1 : 0));
@@ -913,9 +921,9 @@ export class Materializer {
   private async reviewOne(d: Found): Promise<void> {
     const hash = sha(d.bytes);
     const ps = await this.pathState(d.rel);
-    const done = () => {
+    const done = async () => {
       this.origin.delete(d.path);
-      this.held.release(d.path);
+      await this.held.release(d.path);
     };
     if ((d.stamp && ps.applied.includes(d.stamp)) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done(); // a copy: that save is stored
     if (d.stamp && ps.failed.includes(d.stamp)) {
@@ -1157,7 +1165,7 @@ export class Materializer {
     // the sidecar is Carton's alone (agents only read it): temp + rename is enough
     const tmp = path.join(this.tmpDir, `${name}.status.${this.tmpTag}.${this.tmpSeq++}`);
     fs.writeFileSync(tmp, JSON.stringify(body));
-    retryBusy(() => fs.renameSync(tmp, file), this.busy);
+    await retryBusy(() => fs.renameSync(tmp, file), this.busy);
   }
 
   /** A view's change was confirmed, or came back with late conflicts: its sidecar follows. */

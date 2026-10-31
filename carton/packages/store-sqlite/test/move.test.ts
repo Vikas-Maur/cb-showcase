@@ -5,9 +5,10 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { spawn } from "node:child_process";
+import { spawn, execFileSync } from "node:child_process";
+import * as os from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { openProjectStore, openSqliteStore, MovedError, PlacementConflictError, isThisMachine, machineMark, FORMAT_VERSION } from "../src/index.ts";
+import { openProjectStore, openSqliteStore, MovedError, PlacementConflictError, UnwritableHistoryError, isThisMachine, machineMark, FORMAT_VERSION } from "../src/index.ts";
 import { scratch } from "./scratch.ts";
 
 const root = scratch("move");
@@ -216,8 +217,8 @@ test("a history Carton can't write is never copied as if it were frozen", { skip
   fs.chmodSync(dir, 0o555);
   try {
     p.startSyncing();
-    await assert.rejects(openProjectStore(p), /can't write/);
-    assert.ok(!fs.existsSync(p.inAppData), "nothing published at the new place");
+    await assert.rejects(openProjectStore(p), (e: unknown) => e instanceof UnwritableHistoryError && e.code === "CARTON_DB_UNWRITABLE" && e.path === p.inBundle);
+    assertNothingPublished(p);
   } finally {
     fs.chmodSync(dir, 0o755);
     fs.chmodSync(p.inBundle, 0o644);
@@ -379,5 +380,94 @@ test("a crash right after publishing an export's copy: the source's id was commi
   const b = await openProjectStore(p);
   assert.equal(b.store.path, p.inAppData);
   assert.deepEqual(await seqs(b.store), [1, 2], "the unconfirmed copy was redone from the source, with its later write");
+  await b.store.close();
+});
+
+// Nothing at the new place: no copy, and no partial file of one.
+function assertNothingPublished(p: ReturnType<typeof project>) {
+  assert.ok(!fs.existsSync(p.inAppData), "no copy at the new place");
+  const dir = path.dirname(p.inAppData);
+  const left = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => f.startsWith("carton.db")) : [];
+  assert.deepEqual(left, [], "no partial copy either");
+}
+
+// The read-only file case on every OS: on Windows chmod 0o444 sets the read-only attribute, which is exactly what CI
+// hit (BEGIN IMMEDIATE succeeds there; only the first real write is refused). Elsewhere it is the file's mode.
+test("a read-only carton.db in a writable folder is refused with UnwritableHistoryError before anything is copied", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    p.startSyncing();
+    let published = 0;
+    for (let i = 0; i < 2; i++) {
+      await assert.rejects(openProjectStore(p, { afterPublish: () => void published++ }), (e: unknown) => e instanceof UnwritableHistoryError && /read-only|writable/.test((e as Error).message));
+      assertNothingPublished(p);
+    }
+    assert.equal(published, 0, "refused before a copy was ever made, not cleaned up after");
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+  const b = await openProjectStore(p);
+  assert.equal(b.store.path, p.inAppData, "made writable again: it moves");
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+});
+
+test("a read-only exported carton.db (no file id yet) is refused before its id or anything else is written", { skip: process.getuid?.() === 0 ? "root ignores file permissions" : false }, async () => {
+  const p = project();
+  const elsewhere = await openSqliteStore(path.join(path.dirname(p.bundleDir), "elsewhere", "carton.db"));
+  await elsewhere.write(put(1));
+  await elsewhere.exportCopy(p.inBundle, []);
+  await elsewhere.close();
+  fs.chmodSync(p.inBundle, 0o444);
+  try {
+    p.startSyncing();
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assertNothingPublished(p);
+  } finally {
+    fs.chmodSync(p.inBundle, 0o644);
+  }
+  const check = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.equal(check.prepare(`SELECT count(*) AS n FROM "_carton"`).get()!.n, 0, "untouched: no id was written");
+  check.close();
+});
+
+// Windows: an ACL that denies writing (the attribute clear). SQLite then quietly opens the file read-only.
+test("Windows: a carton.db whose ACL denies writing is refused the same way", { skip: process.platform !== "win32" ? "Windows ACLs" : false }, async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  const user = `${process.env.USERDOMAIN ? process.env.USERDOMAIN + "\\" : ""}${os.userInfo().username}`;
+  execFileSync("icacls", [p.inBundle, "/deny", `${user}:(W)`], { stdio: "ignore", windowsHide: true });
+  try {
+    p.startSyncing();
+    await assert.rejects(openProjectStore(p), UnwritableHistoryError);
+    assertNothingPublished(p);
+  } finally {
+    execFileSync("icacls", [p.inBundle, "/remove:d", user], { stdio: "ignore", windowsHide: true });
+  }
+  const b = await openProjectStore(p);
+  assert.deepEqual(await seqs(b.store), [1]);
+  await b.store.close();
+});
+
+test("any failure after the copy is published (before the mark lands) takes the copy back; the source stays the history", async () => {
+  const p = project();
+  const a = await openProjectStore(p);
+  await a.store.write(put(1));
+  await a.store.close();
+  p.startSyncing();
+  await assert.rejects(openProjectStore(p, { afterPublish: () => { throw new Error("disk went away"); } }), /disk went away/);
+  assertNothingPublished(p);
+  const raw = new DatabaseSync(p.inBundle, { readOnly: true });
+  assert.equal(raw.prepare(`SELECT count(*) AS n FROM "_carton" WHERE k = 'movedTo'`).get()!.n, 0, "the source was never marked");
+  raw.close();
+  const b = await openProjectStore(p);
+  assert.equal(b.store.path, p.inAppData);
+  assert.deepEqual(await seqs(b.store), [1], "the next open moves it normally");
   await b.store.close();
 });

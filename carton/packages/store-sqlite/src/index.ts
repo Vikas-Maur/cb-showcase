@@ -6,7 +6,7 @@
 export { SqliteStore, openSqliteStore, type SqliteStoreOptions } from "./store.ts";
 export { FORMAT_VERSION, machineMark, isThisMachine, type MachineMark } from "./format.ts";
 export { BusyError } from "./db.ts";
-export { MovedError, PlacementConflictError, settlePlacement } from "./move.ts";
+export { MovedError, PlacementConflictError, UnwritableHistoryError, settlePlacement } from "./move.ts";
 export {
   locateCartonDb,
   detectCloudSync,

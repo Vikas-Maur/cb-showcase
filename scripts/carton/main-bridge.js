@@ -4,7 +4,9 @@
 //   and agent_type in the hook input). Stop and SubagentStop hand a late conflict back to the agent, once per conflict
 //   set (§6.2). Host Claude Code gets the same hooks through --settings, run by `cb carton-hook`.
 // - carton:call from the pages forwards to the library worker's `carton` namespace. (cb finds Carton's lease holder
-//   through carton.db's lease row, so Cardboard's control socket needs no Carton method.)
+//   through carton.db's lease row, so Cardboard's control socket needs no Carton method.) A method main itself must
+//   answer (the live-sync half, scripts/carton/sync: a dialog, a link) is added with handle(name, fn); fn gets the
+//   call's arguments and can reach the worker with forward(name, args).
 // With Carton off, each function hands back what it was given and adds nothing.
 module.exports = String.raw`var __cartonMain = (() => {
   const on = process.env.CARDBOARD_CARTON === "1";
@@ -39,6 +41,11 @@ module.exports = String.raw`var __cartonMain = (() => {
   // The Director's running turn per chat session, so its last version can be named when it ends (History shows
   // turns as the chat's checkpoints). The prompt goes only to the worker, into the project's own history: never logged.
   const running = new WeakMap();
+  const handlers = new Map();
+  const forward = (method, args) => {
+    if (!library) throw new Error("The library is not open yet");
+    return library.call("carton." + method, ...args);
+  };
   return {
     on,
     turnStarted(chat, projectId, bundlePath, turn, provider) {
@@ -61,9 +68,14 @@ module.exports = String.raw`var __cartonMain = (() => {
       if (method === "enabled") return on;
       if (!on) throw new Error("Carton is off (CARDBOARD_CARTON=1 turns it on)");
       if (!/^[a-zA-Z]+$/.test(method)) throw new Error("Unknown Carton method " + method);
-      if (!library) throw new Error("The library is not open yet");
-      return library.call("carton." + method, ...args);
+      if (handlers.has(method)) return handlers.get(method)(...args);
+      return forward(method, args);
     },
+    handle(name, fn) {
+      if (!/^[a-zA-Z]+$/.test(name) || name === "enabled") throw new Error("A Carton method name is letters only, and not enabled: " + name);
+      handlers.set(name, fn);
+    },
+    forward,
     agentEnv(env, provider, chatId) {
       return on ? { ...env, CARDBOARD_CARTON: "1", CARDBOARD_ACTOR: provider + "/" + chatId } : env;
     },

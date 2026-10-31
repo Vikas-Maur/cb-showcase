@@ -1,5 +1,5 @@
 // Component tests in a DOM. `npm test` runs this file twice: on React 19, then on preact/compat (test/preact-alias.ts).
-import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, runtime, type } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, renders, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -239,14 +239,14 @@ test(name("presence groups each person with their agents and subagents"), async 
 test(name("ghost layer draws remote drags without rendering through React"), async () => {
   const ui = createMockUi({ versions: 10 });
   const m = await render(wrap(ui, h("div", { style: { position: "relative" } }, h(GhostLayer, { timeToX: (t: number) => t * 10, trackBand: (id: string) => (id === "V1" ? { top: 40, height: 24 } : null) }))));
-  await act(() => new Promise((r) => setTimeout(r, 40)));
+  await waitFor(() => !!$(m.container, ".carton-ghost"), "the ghost to be drawn");
   const g = $(m.container, ".carton-ghost")!;
   assert.ok(g, "a ghost element");
   assert.equal(g.style.transform, "translate(125px, 40px)");
   assert.equal(g.style.width, "40px");
   assert.match(g.textContent ?? "", /Bob Okafor · B-roll city/);
   await act(() => ui.setGhosts([]));
-  await act(() => new Promise((r) => setTimeout(r, 40)));
+  await waitFor(() => !$(m.container, ".carton-ghost"), "the ghost to go");
   assert.equal($(m.container, ".carton-ghost"), null);
   await m.unmount();
 });
@@ -428,5 +428,45 @@ test(name("R4-1: a card that changed while the plan reloaded loses its pick too,
   assert.equal(go().disabled, true, "B changed during the reload: its old pick doesn't count");
   await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
   assert.equal(go().disabled, false);
+  await m.unmount();
+});
+
+// ---------------------------------------------------------------- Stage F: render counts under live sync (U6/U7)
+
+test(name("U6/U7: versions arriving and ghosts moving re-render only History; avatars, ghosts, cuts, published and sync stay put"), async () => {
+  const ui = createMockUi({ versions: 2000 });
+  const m = await render(
+    wrap(
+      ui,
+      h("div", { id: "bar" }, h(CutsMenu, {}), h(SyncStatusWords), h(PresenceAvatars), h(PublishedStatus)),
+      h("div", { style: { height: "600px" } }, h(HistoryPanel, { initialHeight: 600 })),
+      h("div", { style: { position: "relative", width: "800px", height: "200px" } }, h(GhostLayer, { timeToX: (t: number) => t * 20, trackBand: () => ({ top: 10, height: 30 }) })),
+    ),
+  );
+  await flush();
+  renders.clear();
+  const published = $(m.container, ".carton-published")!;
+  const pubMutations = await mutationsDuring(published, async () => {
+    // Each version moves the current cut's head and bumps the published cut's newer-edit count, as a commit does.
+    for (let i = 0; i < 10; i++) {
+      await act(() => void ui.addVersion({ author: people.bob }));
+      await act(() => ui.setGhosts([{ actorKey: people.bob.key, itemId: "x", trackId: "V1", start: i, end: i + 2 }]));
+      await flush(1);
+    }
+  });
+  const n = (name: string) => renders.get(name) ?? 0;
+  assert.equal(n("PresenceAvatars"), 0, "avatars don't re-render for versions or ghosts");
+  assert.equal(n("GhostLayer"), 0, "ghosts move without React");
+  assert.equal(n("CutsMenu"), 0, "a head moving doesn't re-render the Cuts menu");
+  assert.equal(n("PublishedStatus"), 0, "still 'newer edits exist': nothing it shows changed");
+  assert.equal(n("SyncStatusWords"), 0);
+  assert.equal(pubMutations, 0, "the published status's DOM is untouched");
+  assert.ok(n("HistoryPanel") >= 1 && n("HistoryPanel") <= 10, `History re-renders at most once per version (${n("HistoryPanel")})`);
+  assert.ok(n("VersionRow") <= 10 + 4, `only new rows render (${n("VersionRow")} for 10 versions)`);
+  // And when something it shows does change, it re-renders: publishing clears "newer edits exist".
+  await act(() => ui.publish("cut-main"));
+  await flush();
+  assert.equal(n("PublishedStatus"), 1);
+  assert.match(published.textContent ?? "", /The share link shows the newest version/);
   await m.unmount();
 });

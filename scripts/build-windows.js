@@ -16,6 +16,7 @@ const OUT = path.resolve(ROOT, argOut > 0 ? process.argv[argOut + 1] : "out");
 const APP = path.join(OUT, "Cardboard-win"), WORK = path.join(OUT, "work"), RES = path.join(APP, "resources");
 const BASELINE = process.argv.includes("--baseline");
 const CARTON = !BASELINE && !process.argv.includes("--no-carton");
+const SYNC = CARTON && fs.existsSync(path.join(ROOT, "scripts", "patch-carton-sync.js"));
 // The patch scripts read it from the environment they inherit.
 if (BASELINE) process.env.CB_BASELINE = "1";
 const INPUTS = {
@@ -93,12 +94,17 @@ const icnsPng = (icns) => {
     const workspace = path.join(ROOT, "carton");
     if (!fs.existsSync(path.join(workspace, "node_modules"))) run(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--no-audit", "--no-fund"], { cwd: workspace, shell: process.platform === "win32" });
     node("scripts/carton/build.js", RES, assets);
-    node("scripts/patch-carton.js", "--app", path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
+    const app = [path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js")];
+    node("scripts/patch-carton.js", "--app", ...app);
+    // The live-sync and sharing half (windows-sync) patches on top of Carton's; build.js put its files in
+    // resources\carton\sync.
+    if (SYNC) node("scripts/patch-carton-sync.js", "--app", ...app);
   }
   node(ASAR, "pack", src, path.join(RES, "app.asar"));
   node("scripts/patch-cli.js", path.join(RES, "cli", "cardboard.mjs"), path.join(WORK, "cardboard.orig.mjs"));
   node("scripts/patch-cli-media.js", path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"), path.join(WORK, "cli-media.orig.mjs"));
   if (CARTON) node("scripts/patch-carton.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"));
+  if (CARTON && SYNC) node("scripts/patch-carton-sync.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"));
 
   step("ffmpeg, ffprobe, uv, Claude Code");
   const bin = path.join(RES, "bin"), director = path.join(RES, "director");

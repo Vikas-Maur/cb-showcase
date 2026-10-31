@@ -45,6 +45,11 @@ export interface HttpDeps {
   adminToken?: string;
   // the largest part or signed PUT body accepted (Workers' request limit is 100 MB on the Free plan)
   maxBodyBytes?: number;
+  // the largest envelope upload accepted: the sequencer's maxEnvelopeBytes (default 64 MiB; a Durable Object host
+  // sets it lower, for its 128 MB of memory)
+  maxEnvelopeBytes?: number;
+  // after an envelope upload: a host whose sequencer sweeps on a schedule makes sure the sweep will run
+  onEnvelope?(projectId: string): Promise<void> | void;
 }
 
 const PROJECT = /^\/(?:api\/(?:admin\/)?projects|blob)\/([A-Za-z0-9._~-]{1,128})(\/.*)?$/;
@@ -163,7 +168,9 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
 // A client's envelope upload and the server's envelopes it reads: exactly the keys core's envelope code makes.
 const CLIENT_ENVELOPE = /^messages\/c\/\d{1,12}\/([0-9a-f]{64})-[0-9a-f]{8,64}$/;
 const SERVER_ENVELOPE = /^messages\/s\/\d{1,12}\/[0-9a-f]{64}$/;
-// The sequencer reads at most 64 MiB from one client envelope (createSequencer's maxEnvelopeBytes).
+// A client envelope's key hour may differ from the server's clock by this many hours (clock skew).
+const ENVELOPE_HOUR_SKEW = 2;
+// The sequencer reads at most 64 MiB from one client envelope by default (createSequencer's maxEnvelopeBytes).
 const MAX_ENVELOPE = 64 << 20;
 
 async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: HttpDeps, projectId: string): Promise<Response> {
@@ -172,11 +179,14 @@ async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: 
   if (req.method === "PUT") {
     const m = CLIENT_ENVELOPE.exec(key);
     if (!m) return err(404, "not a client envelope key");
+    // the key's hour decides when the sweep removes it: one far from now would never expire (or expire at once)
+    const hour = Number(key.split("/")[2]), now = Math.floor(Date.now() / 3600_000);
+    if (Math.abs(hour - now) > ENVELOPE_HOUR_SKEW) return err(400, "envelope key hour too far from the server's clock");
     // only writers send messages big enough to need one (pushes, adoptions, keyframes)
     if (!canPush(ctx)) return err(403, "read-only role");
     let data: Uint8Array;
     try {
-      data = await readBody(req, Math.min(deps.maxBodyBytes ?? MAX_ENVELOPE, MAX_ENVELOPE));
+      data = await readBody(req, deps.maxEnvelopeBytes ?? MAX_ENVELOPE);
     } catch (e) {
       if (e instanceof BodyTooLarge) return err(413, "envelope too large");
       throw e;
@@ -184,6 +194,7 @@ async function messageRoutes(req: Request, key: string, ctx: AuthContext, deps: 
     // the key names the message's SHA-256; a store that verifies (R2) refuses bytes that don't match, and the
     // sequencer checks the digest again when it reads the envelope
     await store.put(key, data, { contentType: "application/json", sha256: m[1]!, ifAbsent: true });
+    await deps.onEnvelope?.(projectId);
     return json({});
   }
   if (req.method === "GET") {

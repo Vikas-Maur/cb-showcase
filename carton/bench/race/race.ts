@@ -26,7 +26,8 @@
 // --style inplace makes writers write the view in place (open, truncate, write) instead of temp+rename.
 // --widen <µs> busy-waits inside each protocol's vulnerable step, to make rare interleavings common.
 // --settle 1|2 (displace only) re-reads displaced files that in-place writers may still be writing; see settle().
-// Windows: rename/link/unlink retry with backoff on EPERM/EBUSY/EACCES (another process has the file open).
+// Windows: rename/link/unlink, and the turn lock's mkdir/rmdir, retry with backoff on EPERM/EBUSY/EACCES (another
+// process has the file open, or the name is still being deleted).
 // fs.link is CreateHardLinkW there; FAT/exFAT have no hard links, so only `naive` can run on them.
 import fs from "node:fs";
 import fsp from "node:fs/promises";
@@ -34,7 +35,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { displaceThenInstall, retryBusy, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/node/displace.ts";
+import { BUSY_BUDGET_MS, displaceThenInstall, isBusy, stampOf, hardLinksWork, type BusyCounter } from "../../packages/cardboard/src/node/displace.ts";
 import { DisplacedFiles } from "../../packages/cardboard/src/node/displaced.ts";
 
 const SELF = fileURLToPath(import.meta.url);
@@ -52,6 +53,27 @@ const spin = (us: number): void => {
 // writes, so writers spin there instead.
 const pause = process.platform === "win32" ? (ms: number) => spin(ms * 1000) : sleep;
 const statStamp = (p: string): string => stampOf(fs.statSync(p, { bigint: true }));
+// The harness's own steps (the writers, and the control protocols' engine) wait out a busy file (Windows) synchronously,
+// with the shipped backoff and budget: each runs in a process of its own with nothing else to serve. The shipped code
+// (`displace`) waits on timers instead (`retryBusy`).
+interface BusyWait {
+  budgetMs?: number;
+  /** Whether busy errors are retried (default: on Windows); tests act out Windows. */
+  windows?: boolean;
+}
+function retrySync<T>(fn: () => T, counter: BusyCounter, o: BusyWait = {}): T {
+  const start = performance.now();
+  for (let i = 0; ; i++) {
+    try {
+      return fn();
+    } catch (e) {
+      const wait = Math.min(1 + i, 25);
+      if (!isBusy(e, o) || performance.now() - start + wait > (o.budgetMs ?? BUSY_BUDGET_MS)) throw e;
+      counter.busy = (counter.busy ?? 0) + 1;
+      sleep(wait);
+    }
+  }
+}
 const body = (tag: string, size: number): string => {
   const h = `{"tag":"${tag}","pad":"`;
   return h + "x".repeat(Math.max(0, size - h.length - 2)) + '"}';
@@ -169,12 +191,12 @@ function importFrom(E: Engine, buf: Buffer): void {
 // displace it and truncate and write the inode just after we read our own old bytes from it. A file is ours only if,
 // a round later, both its bytes and its install-time stamp are unchanged.
 const complete = (E: Engine, b: Buffer): boolean => whole(b, E.size);
-function settle(T: Trial, E: Engine, last = false): void {
+async function settle(T: Trial, E: Engine, last = false): Promise<void> {
   if (E.held) {
-    const r = E.held.review((b) => complete(E, b), { final: last });
+    const r = await E.held.review((b) => complete(E, b), { final: last });
     for (const f of r.foreign) {
       importFrom(E, f.bytes);
-      if (T.drop) E.held.release(f.path);
+      if (T.drop) await E.held.release(f.path);
     }
     return;
   }
@@ -192,11 +214,11 @@ const PROTO: Record<string, Proto> = {
     const t = writeTmp(T, E);
     const s = noent(() => fs.statSync(T.view, { bigint: true }));
     if (s && stampOf(s) !== E.lastStamp) {
-      const b = noent(() => retryBusy(() => fs.readFileSync(T.view), E));
+      const b = noent(() => retrySync(() => fs.readFileSync(T.view), E));
       if (b) importFrom(E, b);
     }
     if (T.widen) spin(T.widen);
-    retryBusy(() => fs.renameSync(t.p, T.view), E);
+    retrySync(() => fs.renameSync(t.p, T.view), E);
     E.lastStamp = t.stamp;
   },
   hardlink(T, E) {
@@ -204,15 +226,15 @@ const PROTO: Record<string, Proto> = {
     const prev = path.join(T.prevDir, String(E.k));
     let linked = true;
     try {
-      retryBusy(() => fs.linkSync(T.view, prev), E);
+      retrySync(() => fs.linkSync(T.view, prev), E);
     } catch (e) {
       if (code(e) !== "ENOENT") throw e;
       linked = false;
     }
     if (T.widen) spin(T.widen);
-    retryBusy(() => fs.renameSync(t.p, T.view), E);
+    retrySync(() => fs.renameSync(t.p, T.view), E);
     if (linked) {
-      if (statStamp(prev) === E.lastStamp) retryBusy(() => fs.unlinkSync(prev), E);
+      if (statStamp(prev) === E.lastStamp) retrySync(() => fs.unlinkSync(prev), E);
       else {
         importFrom(E, fs.readFileSync(prev));
         if (T.drop) fs.unlinkSync(prev);
@@ -221,10 +243,10 @@ const PROTO: Record<string, Proto> = {
     E.lastStamp = t.stamp;
   },
   // The shipped protocol.
-  displace(T, E) {
+  async displace(T, E) {
     const t = writeTmp(T, E);
     const next = E.held ? E.held.next : () => path.join(T.dispDir, String(E.n++));
-    const r = displaceThenInstall(T.view, t.p, next, { counter: E, between: T.widen ? () => spin(T.widen) : undefined });
+    const r = await displaceThenInstall(T.view, t.p, next, { counter: E, between: T.widen ? () => spin(T.widen) : undefined });
     E.eexist += r.eexist;
     hadd(E.gap, r.gapNs);
     hadd(E.gapTotal, r.gapTotalNs);
@@ -233,7 +255,7 @@ const PROTO: Record<string, Proto> = {
     } else {
       for (const d of r.displaced) {
         const b = fs.readFileSync(d);
-        if (E.lastContent && b.equals(E.lastContent)) retryBusy(() => fs.unlinkSync(d), E);
+        if (E.lastContent && b.equals(E.lastContent)) retrySync(() => fs.unlinkSync(d), E);
         else if (T.settle && !complete(E, b)) E.pending.push({ d });
         else {
           importFrom(E, b);
@@ -241,7 +263,7 @@ const PROTO: Record<string, Proto> = {
         }
       }
     }
-    settle(T, E);
+    await settle(T, E);
     E.held?.endRound();
     E.lastContent = t.c;
     E.lastInstall = { c: t.c, stamp: t.stamp };
@@ -287,6 +309,36 @@ const PROTO: Record<string, Proto> = {
 };
 
 // ---------------------------------------------------------------- child processes
+// Turn mode's lock is a folder: whoever creates it has the turn (EEXIST: someone else has it). On Windows a folder
+// that was just removed can stay "delete pending" while another process (an antivirus scanner, the indexer) still has
+// it open, and creating it again fails with EPERM or EACCES until that handle closes; removing it can fail with EBUSY
+// meanwhile. Both are the lock being freed, so they are retried (`retrySync`); a failure that outlasts the budget is
+// real and ends the writer.
+export interface TurnLockOptions extends BusyWait {
+  mkdir?: (p: string) => void;
+  rmdir?: (p: string) => void;
+}
+
+/** Waits for the turn; false once `stopped()` (the trial is over). */
+export function takeTurn(lock: string, stopped: () => boolean, counter: BusyCounter, o: TurnLockOptions = {}): boolean {
+  const mkdir = o.mkdir ?? ((p: string) => void fs.mkdirSync(p));
+  for (;;) {
+    if (stopped()) return false;
+    try {
+      retrySync(() => mkdir(lock), counter, o);
+      return true;
+    } catch (e) {
+      if (code(e) !== "EEXIST") throw e;
+      pause(0.05);
+    }
+  }
+}
+
+export function endTurn(lock: string, counter: BusyCounter, o: TurnLockOptions = {}): void {
+  const rmdir = o.rmdir ?? ((p: string) => fs.rmdirSync(p));
+  retrySync(() => rmdir(lock), counter, o);
+}
+
 interface ChildCfg {
   dir: string;
   size: number;
@@ -309,14 +361,14 @@ function writer(cfg: ChildCfg): void {
   while (!exists(go)) sleep(1);
   const write = (tag: string): string | null => {
     if (style === "inplace") {
-      retryBusy(() => fs.writeFileSync(view, body(tag, size)), out);
+      retrySync(() => fs.writeFileSync(view, body(tag, size)), out);
       return null;
     }
     const tmp = path.join(dir, `${VIEW}.${tag}.tmp`);
     fs.writeFileSync(tmp, body(tag, size));
     const st = mode === "turn" ? statStamp(tmp) : null;
     try {
-      retryBusy(() => fs.renameSync(tmp, view), out);
+      retrySync(() => fs.renameSync(tmp, view), out);
     } catch (e) {
       out.abandoned.push(tag);
       noent(() => fs.unlinkSync(tmp));
@@ -332,17 +384,7 @@ function writer(cfg: ChildCfg): void {
     }
   } else {
     outer: for (let seq = 0; ; seq++) {
-      for (;;) {
-        // take the turn
-        if (exists(stop)) break outer;
-        try {
-          fs.mkdirSync(lock);
-          break;
-        } catch (e) {
-          if (code(e) !== "EEXIST") throw e;
-          pause(0.05);
-        }
-      }
+      if (!takeTurn(lock, () => exists(stop), out)) break;
       if (jitter) spin(Math.random() * jitter);
       const tag = `F${w}-${seq}`;
       const mine = write(tag);
@@ -359,7 +401,7 @@ function writer(cfg: ChildCfg): void {
         }
         pause(0.02);
       }
-      fs.rmdirSync(lock);
+      endTurn(lock, out);
     }
   }
   fs.writeFileSync(path.join(ctl, `w${w}.json`), JSON.stringify(out));
@@ -411,16 +453,23 @@ const live = new Set<ChildProcess>();
 process.on("exit", () => {
   for (const p of live) p.kill();
 });
-function child(role: string, cfg: ChildCfg): { ready: Promise<unknown>; done: Promise<unknown> } {
+interface Kid {
+  name: string;
+  ready: Promise<unknown>;
+  /** The exit code (or signal). */
+  done: Promise<number | string>;
+}
+function child(role: string, cfg: ChildCfg): Kid {
   const p = spawn(process.execPath, [SELF, role, JSON.stringify(cfg)], { stdio: ["ignore", "pipe", "inherit"], windowsHide: true });
   live.add(p);
   p.once("exit", () => live.delete(p));
+  const name = role === "writer" ? `writer ${cfg.w}` : `reader (${cfg.kind})`;
   const ready = new Promise((res, rej) => {
     p.stdout!.once("data", res);
-    p.once("exit", (c) => rej(new Error(`${role} exited ${c}`)));
+    p.once("exit", (c) => rej(new Error(`${name} exited ${c}`)));
   });
-  const done = new Promise((res) => p.once("exit", res));
-  return { ready, done };
+  const done = new Promise<number | string>((res) => p.once("exit", (c, sig) => res(c ?? sig ?? "?")));
+  return { name, ready, done };
 }
 
 // ---------------------------------------------------------------- one trial
@@ -474,7 +523,7 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
   }
   await proto(T, E); // round 0: the first view
   const cfg: ChildCfg = { dir, size: o.size, ctl, mode: o.mode, style: o.style, jitter: o.jitter };
-  const kids: { ready: Promise<unknown>; done: Promise<unknown> }[] = [];
+  const kids: Kid[] = [];
   for (let w = 1; w <= o.writers; w++) kids.push(child("writer", { ...cfg, w }));
   const kinds = o.reader === "both" ? ["read", "stat"] : o.reader ? [o.reader === "stat" ? "stat" : "read"] : [];
   for (const kind of kinds) kids.push(child("reader", { ...cfg, kind }));
@@ -487,13 +536,15 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
   }
   const ms = Number(now() - t0) / 1e6;
   fs.writeFileSync(path.join(ctl, "stop"), "");
-  await Promise.all(kids.map((k) => k.done));
+  // a child that died (its error is on stderr above) wrote no results: say which, rather than fail reading them
+  const died = (await Promise.all(kids.map(async (k) => ({ k, c: await k.done })))).filter((x) => x.c !== 0);
+  if (died.length) throw new Error(`${died.map((x) => `${x.k.name} exited ${x.c}`).join(", ")} (${dir})`);
   if (oracle) {
     fs.writeFileSync(path.join(dir, ".stop"), "");
     await oracle.done;
   }
   const pendingAtEnd = E.held ? E.held.size : E.pending.length;
-  settle(T, E, true); // the engine's next round, after writers stopped
+  await settle(T, E, true); // the engine's next round, after writers stopped
 
   // Accounting. A foreign write is safe if it is the final view or the engine imported it: every foreign
   // file the engine moved aside was read and recorded at that moment.
@@ -541,7 +592,7 @@ export async function trial(o: Opts): Promise<Record<string, any>> {
   }
   if (oracle) Object.assign(res, replay(fs.readFileSync(oracle.log, "utf8"), landed, final, E.recorded, unaccounted, o.mode));
   if (!o.keep) {
-    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10 }); // Windows: EBUSY/EPERM while a scanner has a file open
     if (oracle) fs.rmSync(oracle.log, { force: true });
   }
   return res;

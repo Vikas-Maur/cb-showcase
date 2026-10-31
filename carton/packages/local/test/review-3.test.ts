@@ -134,7 +134,7 @@ test("Stage F: an absorbed change reads as confirmed, already in place; a too-la
   const { runWrite: rw, ALREADY_IN_PLACE, TOO_LARGE } = await import("../src/writes.ts");
   const mk = (outcome: any) => ({
     store: createMemoryStore(), schema: {} as any, cut: "cut1",
-    sync: { status: "up-to-date", waitFor: async () => outcome },
+    sync: { status: "up-to-date", state: () => ({ status: "up-to-date" }), waitFor: async () => outcome },
     on: () => () => {}, notices: async () => [],
     async cuts() { return [{ id: "cut1", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }]; },
     async head() { return { ref: { branchId: "cut1", seq: 3, pending: [] }, doc: {} }; },

@@ -9,11 +9,13 @@
 // - H6: ⌘Z and ⇧⌘Z undo and redo the person's actor group in Carton, never another writer's change.
 // - H7: ripple, gap and silence deletes and ripple trims record what they moved.
 // Main says whether Carton is on (carton:call "enabled"). Until it has, and whenever it's off, every hook does what
-// Cardboard does.
+// Cardboard does. A method the page answers itself (the live-sync half, scripts/carton/sync) is added with
+// handle(name, fn): call(name, args) then runs fn(...args) here instead of going to main.
 module.exports = String.raw`window.__carton = (() => {
   let on = false, store = null, sent = null, intents = [], stale = false, bypass = false;
   let settle;
   const ready = new Promise((r) => (settle = r));
+  const handlers = new Map();
   const TIMELINE = new Set(["tracks", "timelineItems", "aspectRatio"]);
   const PREVIEW = "Previewing an earlier version. Return to current to edit.";
   const call = (method, ...args) => store.invoke("carton:call", { method, args });
@@ -96,7 +98,8 @@ module.exports = String.raw`window.__carton = (() => {
     },
     get stale() { return stale; },
     // For the History panel (carton-ui.js): the worker's carton namespace, and its events for the tabs.
-    call: (method, args) => call(method, ...(args ?? [])),
+    call: (method, args) => (handlers.has(method) ? Promise.resolve().then(() => handlers.get(method)(...(args ?? []))) : call(method, ...(args ?? []))),
+    handle(name, fn) { handlers.set(name, fn); },
     onEvent: (f) => store.on("carton:event", f),
   };
 })();

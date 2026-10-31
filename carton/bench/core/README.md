@@ -88,3 +88,18 @@ Output: `<runDir>/summary.md` and `summary.json` (per cell: each build's median 
 carton/prototype ratio, Cardboard rn's median and merge3/rn from the same processes, loads, every round's median and
 every run), plus the sanity check, module sizes, change-row bytes and the compare result. These and the compare tables
 are copied to `results/` here. Completed jobs are appended to `<runDir>/jobs.jsonl`, so `--resume` continues a run.
+
+## open.ts: open-time scaling (Stage F4)
+
+```sh
+node carton/bench/core/open.ts [N...]      # default 1000 10000 30000; RUNS (default 5), OUT=<file>
+```
+
+How long `Carton.open` and the first `head()` take for a project whose main cut holds N changes (Cardboard-shaped docs
+from the P4 generator, 1,000 items; renames, moves, trims and style edits), opening from the newest keyframe against
+the same store with every keyframe after the root removed (every row replayed). The two alternate per run; every run,
+the medians and the load average around each run go to the JSON, and the script refuses to report if the two opens
+disagree on the head. It runs on store-sqlite (a real `carton.db`) where that package is implemented (the integration
+branch), else on store-memory, and says which. Opening still reads every row (History holds the log); keyframes remove
+the replay of their ops.
+

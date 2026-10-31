@@ -46,7 +46,11 @@ same header. `engine` is a `MaterializerEngine` over Carton and carton.db (`@car
   in between. Displaced files are held in `.carton/displaced/`: Carton's own install is deleted only if its bytes and
   install stamp are unchanged after a 150 ms hold, foreign saves are applied in the order they were written, and a
   half-written file is kept and reported to its writer. On FAT and exFAT, which have no hard links, it falls back to
-  stat-then-rename (L13). On Windows, busy files are retried.
+  stat-then-rename (L13). On Windows, a file another process has open, or a name still being deleted, fails with
+  EPERM, EBUSY or EACCES for a moment; every rename, link, unlink, read and stat on these paths is retried with a
+  growing backoff, for 5 s in all by default (`busyBudgetMs`). The retries wait on timers, so the worker's thread keeps
+  serving everything else; an install that needs none runs synchronously, so the path is missing for microseconds.
+  On Linux and macOS these codes are real permission errors and fail at once.
 - **The shared `timeline.tsx`** keeps 1.4.0's header contract: `// cardboard:rev main@57~3f9a1c0e b:<branch> p:<nonce>
   by <actor>`, regenerated after every applied save. While a local agent is active it shows the freeze view, and while
   the cut is shared remote changes rewrite it at most every 30 s.

@@ -312,3 +312,39 @@ test("exportCopy refuses its own database (also through a symlink or hard link) 
   assert.equal((await again.range("changes")).length, 1);
   await again.close();
 });
+
+test("WAL checkpoints never run inside a commit (no write-lock spikes), yet the WAL stays bounded", async () => {
+  const file = fresh();
+  const s = await openSqliteStore(file);
+  assert.equal((s.db.raw.prepare("PRAGMA wal_autocheckpoint").get() as { wal_autocheckpoint: number }).wal_autocheckpoint, 0);
+  // ~6 MB of WAL in one burst. Awaited writes that find no lock resolve without a macrotask, so the deferred
+  // checkpoint can't run during the loop: a WAL past SQLite's old 1,000-page trigger proves no commit checkpointed.
+  const blob = randomBytes(4500).toString("base64"); // ~6 KB of text: under the 8 KiB compression threshold
+  for (let i = 0; i < 1000; i++) await s.write([{ table: "changes", key: ["main", i], value: { blob, i } }]);
+  const walBytes = fs.statSync(`${file}-wal`).size;
+  assert.ok(walBytes > 1000 * 4096 * 1.2, `the WAL grew to ${walBytes} bytes during the burst`);
+  assert.equal(s.db.checkpoints, 0, "none ran inside a commit");
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(s.db.checkpoints >= 1, "then a checkpoint ran on its own turn of the event loop");
+  // Fully checkpointed, so the next write starts the WAL over: it holds a handful of frames, not thousands.
+  await s.write([{ table: "changes", key: ["main", 5000], value: 1 }]);
+  const after = s.db.raw.prepare("PRAGMA wal_checkpoint(PASSIVE)").get() as { log: number };
+  assert.ok(after.log < 50, `${after.log} frames in the WAL after the checkpoint`);
+  assert.equal((await s.range("changes", { prefix: ["main"] })).length, 1001, "and nothing was lost");
+  await s.close();
+});
+
+test("a WAL left large by other processes is checkpointed at open, not by a commit", async () => {
+  const file = fresh();
+  const w = await openSqliteStore(file);
+  const blob = randomBytes(4500).toString("base64");
+  // Another connection (a cb process) fills the WAL and stays open, so closing it doesn't checkpoint.
+  for (let i = 0; i < 900; i++) await w.write([{ table: "changes", key: ["x", i], value: { blob } }]);
+  const s = await openSqliteStore(file);
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+  assert.ok(s.db.checkpoints + w.db.checkpoints >= 1, "someone checkpointed it without a commit doing so");
+  await w.close();
+  await s.close();
+});

@@ -48,12 +48,16 @@ export class StoreNoticeBox implements NoticeBox {
     return (await this.rows(actorId)).filter((r) => r.value.blockedAt && !r.value.handedToHuman).map(this.toNotice);
   }
   // Each update is conditional on the row as read (casUpdate): a card resolved meanwhile, or a delivery mark, is
-  // never written back over.
-  async markBlockedAsync(actorId: string, ids: string[]): Promise<void> {
+  // never written back over. Returns the ids this call claimed: another hook call (or the hand-over to the person)
+  // that got there first keeps the others.
+  async markBlockedAsync(actorId: string, ids: string[]): Promise<string[]> {
     const at = this.now();
+    const claimed: string[] = [];
     for (const r of await this.rows(actorId)) {
-      if (ids.includes(idOf(r.key))) await casUpdate<Row>(this.store, TABLE, r.key, (cur) => (cur.blockedAt ? SKIP : { ...cur, blockedAt: at }), r.value);
+      if (!ids.includes(idOf(r.key))) continue;
+      if (await casUpdate<Row>(this.store, TABLE, r.key, (cur) => (cur.blockedAt || cur.handedToHuman ? SKIP : { ...cur, blockedAt: at }), r.value)) claimed.push(idOf(r.key));
     }
+    return claimed;
   }
   async handToHumanAsync(actorId: string, ids: string[]): Promise<void> {
     let n = 0;
@@ -77,19 +81,29 @@ export class StoreNoticeBox implements NoticeBox {
     }
   }
 
-  /** Load one actor's notices, run a synchronous hook decision against them, then write what it changed. */
+  /**
+   * Load one actor's notices, run a synchronous hook decision against them, then write what it changed. A decision to
+   * block holds only for the notices this call managed to claim: when a concurrent hook call claimed some first, it
+   * decides again on what it holds (often nothing: it lets the agent stop), so a conflict blocks once.
+   */
   async run<T>(actorId: string, fn: (box: NoticeBox) => T): Promise<T> {
     const fresh = await this.freshAsync(actorId), blocked = await this.blockedAsync(actorId);
-    const ops: (() => Promise<void>)[] = [];
-    const box: NoticeBox = {
-      freshConflicts: () => fresh,
+    const handOver: [string, string[]][] = [];
+    let claim: [string, string[]] | null = null;
+    const box = (f: ConflictNotice[], claiming: boolean): NoticeBox => ({
+      freshConflicts: () => f,
       blocked: () => blocked,
-      markBlocked: (a, ids) => void ops.push(() => this.markBlockedAsync(a, ids)),
-      handToHuman: (a, ids) => void ops.push(() => this.handToHumanAsync(a, ids)),
+      markBlocked: (a, ids) => { if (claiming) claim = [a, ids]; },
+      handToHuman: (a, ids) => void handOver.push([a, ids]),
       endTurn: (a) => this.onEndTurn?.(a),
-    };
-    const r = fn(box);
-    for (const op of ops) await op();
+    });
+    let r = fn(box(fresh, true));
+    if (claim) {
+      const [a, asked]: [string, string[]] = claim;
+      const got = await this.markBlockedAsync(a, asked);
+      if (got.length !== asked.length) r = fn(box(fresh.filter((n) => got.includes(n.id)), false));
+    }
+    for (const [a, ids] of handOver) await this.handToHumanAsync(a, ids);
     return r;
   }
 

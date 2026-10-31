@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, writeFileSync, utimesSync, existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { FsBlobStore, writeAll } from "../src/index.ts";
+import { FsBlobStore, writeAll, retrying } from "../src/index.ts";
 import { scratchDir } from "./scratch.ts";
 
 const fresh = () => mkdtempSync(join(scratchDir(), "fs-"));
@@ -137,4 +137,43 @@ test("complete holds one part open at a time (an upload may have thousands of pa
   assert.equal(info.size, 120 * 64);
   assert.ok(peak < 20, `${peak} more descriptors open during complete`);
   rmSync(dir, { recursive: true });
+});
+
+test("a 1024-byte key of capitals, under a deep store root, keeps the whole path under 1024 bytes and lists by prefix", async () => {
+  const root = fresh();
+  const dir = join(root, "deep", "a".repeat(100), "b".repeat(100), "c".repeat(100));
+  const s = new FsBlobStore({ root: dir });
+  const key = Array.from({ length: 5 }, () => "B".repeat(199)).join("/") + "/" + "C".repeat(24);
+  assert.equal(Buffer.byteLength(key), 1024);
+  await s.put(key, enc("max"));
+  const files: string[] = [];
+  const walk = (d: string) => { for (const e of readdirSync(d, { withFileTypes: true })) e.isDirectory() ? walk(join(d, e.name)) : files.push(join(d, e.name)); };
+  walk(join(dir, "objects"));
+  for (const f of files) assert.ok(Buffer.byteLength(f) < 1024, `${Buffer.byteLength(f)}-byte path`);
+  assert.equal(new TextDecoder().decode((await s.get(key))!), "max");
+  assert.deepEqual((await s.list("BBB")).blobs.map((b) => b.key), [key]);
+  assert.deepEqual((await s.list(key.slice(0, 400))).blobs.map((b) => b.key), [key], "a narrowed prefix finds a flat key");
+  await s.delete(key);
+  assert.equal(await s.head(key), null);
+  rmSync(root, { recursive: true, force: true });
+});
+
+test("Windows retries: a file held busy is retried within the budget, then the error surfaces", async () => {
+  let busyFor = 3, calls = 0;
+  const flaky = async () => {
+    calls++;
+    if (busyFor-- > 0) throw Object.assign(new Error("busy"), { code: "EPERM" });
+    return "ok";
+  };
+  assert.equal(await retrying(flaky, 2000, true), "ok");
+  assert.equal(calls, 4);
+  const start = Date.now();
+  await assert.rejects(retrying(async () => { throw Object.assign(new Error("held"), { code: "EBUSY" }); }, 300, true), /held/);
+  const took = Date.now() - start;
+  assert.ok(took >= 150 && took < 1500, `gave up after ${took} ms with a 300 ms budget`);
+  // not on Windows, or not a busy file: no retry
+  let once = 0;
+  await assert.rejects(retrying(async () => { once++; throw Object.assign(new Error("x"), { code: "EPERM" }); }, 2000, false));
+  await assert.rejects(retrying(async () => { once++; throw Object.assign(new Error("x"), { code: "ENOENT" }); }, 2000, true));
+  assert.equal(once, 2);
 });

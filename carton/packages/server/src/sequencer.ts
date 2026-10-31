@@ -303,8 +303,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
    * hostile hello can't ask for more); bases past that are reported in `uncheckedFrom`, never treated as unconfirmed:
    * the client asks again for those before acting on the list (review finding 10).
    */
-  function confirmedOf(branchId: string, claims: readonly PendingClaim[] | undefined): { list: ConfirmedId[]; uncheckedFrom: number | null } {
-    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null };
+  function confirmedOf(
+    branchId: string,
+    claims: readonly PendingClaim[] | undefined,
+    { after = -1, budget = Infinity }: { after?: number; budget?: number } = {},
+  ): { list: ConfirmedId[]; uncheckedFrom: number | null; checkedThrough: number | null } {
+    if (controls.confirmedList === false || !claims?.length) return { list: [], uncheckedFrom: null, checkedThrough: null };
     const head = tables.head(branchId);
     const want = new Set<string>();
     const bases = new Set<number>();
@@ -316,32 +320,51 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (bs.length) bases.add(Math.max(...bs));
       } else for (const b of bs) bases.add(b);
     }
-    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null };
+    if (!want.size || !bases.size) return { list: [], uncheckedFrom: null, checkedThrough: null };
     // merge the windows so overlapping claims never read a row twice; every base's window counts against the cap,
     // merged or not, so a message reads at most cap × (K + 1) seqs (round 2 finding 6: adjacent windows merged into one
     // range used to bypass it)
+    //
+    // The list is in seq order and stops at `budget` bytes (at least one id): it then says where to go on, the base its
+    // range began at and the seq checked through, and a continuation (`after`) reads only past it. One window can list
+    // up to K + 1 ids, so a page can end inside one (round 5 finding 2).
     const sorted = [...bases].sort((a, b) => a - b);
     const cap = controls.claimWindows ?? MAX_CLAIM_WINDOWS;
     const out: ConfirmedId[] = [];
-    let lo = -1, hi = -1, windows = 0;
-    const flush = () => {
-      if (hi > lo) for (const e of tables.idsIn(branchId, lo, hi)) if (want.has(e.id)) out.push(e);
+    let lo = -1, hi = -1, windows = 0, used = 0;
+    let cut: number | null = null;
+    /** Read the current range past `after`; false (and `cut`) when the budget runs out inside it. */
+    const flush = (): boolean => {
+      const from = Math.max(lo, after);
+      if (hi > from)
+        for (const e of tables.idsIn(branchId, from, hi)) {
+          if (!want.has(e.id)) continue;
+          const n = sync.jsonBytesBound(e, Infinity) + 1;
+          if (out.length && used + n > budget) {
+            cut = lo;
+            return false;
+          }
+          used += n;
+          out.push(e);
+        }
+      return true;
     };
+    const stopped = (): { list: ConfirmedId[]; uncheckedFrom: number; checkedThrough: number } => ({ list: out, uncheckedFrom: cut!, checkedThrough: out[out.length - 1]!.seq });
     for (const b of sorted) {
       if (++windows > cap) {
-        flush();
-        return { list: out, uncheckedFrom: b };
+        if (!flush()) return stopped();
+        return { list: out, uncheckedFrom: b, checkedThrough: null };
       }
       const top = Math.min(b + K + 1, head);
       if (b <= hi) hi = Math.max(hi, top);
       else {
-        flush();
+        if (!flush()) return stopped();
         lo = b;
         hi = top;
       }
     }
-    flush();
-    return { list: out, uncheckedFrom: null };
+    if (!flush()) return stopped();
+    return { list: out, uncheckedFrom: null, checkedThrough: null };
   }
 
   // ---------------------------------------------------------------- rows for catch-up (live and archived)
@@ -448,8 +471,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     rootSeq?: number;
     stateHash?: string;
     forkOf?: { branchId: string; seq: number };
-    /** An adoption's ancestry closure: shallow read-only tracking branches (§5.3, R4-07); existing ones are kept. */
-    closure?: readonly { branchId: string; rec: CutRecord; nodes: sync.AdoptMsg["closure"][number]["nodes"] }[];
+    /**
+     * An adoption's ancestry closure: shallow read-only tracking branches (§5.3, R4-07). A tracking branch another
+     * adoption made gains the new nodes and authors (lineage is immutable, so a union is safe); a real branch is kept.
+     */
+    closure?: readonly sync.ClosureEntry[];
   }
   /**
    * Create a branch atomically: the branch row, its root keyframe, its records, its rows and an adoption's ancestry
@@ -463,14 +489,18 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     let seq = root;
     for (const row of rows) if (row?.seq !== ++seq) throw new Error(`rows must be ${root + 1}..${root + rows.length} in order (got ${row?.seq} for ${seq})`);
     const where = init.doc0 !== null ? placeKeyframe(rec.id, root, init.doc0) : null;
-    if (where instanceof Promise) return where.then((w) => writeBranch(rec, init, rows, adoptKey, w, rids));
-    writeBranch(rec, init, rows, adoptKey, where, rids);
+    // the closure's carried states are keyframes of their tracking branches, placed (uploaded) before the transaction
+    const placed = (init.closure ?? []).flatMap((t) => (t.states ?? []).map((st) => ({ branch: t.branchId, seq: st.seq, hash: st.hash, where: placeKeyframe(t.branchId, st.seq, st.doc) })));
+    if (where instanceof Promise || placed.some((p) => p.where instanceof Promise))
+      return Promise.all([where, ...placed.map((p) => p.where)]).then(([w, ...ws]) => writeBranch(rec, init, rows, adoptKey, w ?? null, rids, placed.map((p, i) => ({ ...p, where: ws[i]! }))));
+    writeBranch(rec, init, rows, adoptKey, where, rids, placed as ClosureKeyframe[]);
   }
-  function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string): void {
+  type ClosureKeyframe = { branch: string; seq: number; hash: string; where: { blob: string } | { inline: string } };
+  function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string, closureKfs: readonly ClosureKeyframe[] = []): void {
     const root = init.rootSeq ?? 0;
     try {
       tables.transaction(() => {
-        tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey });
+        tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey, ...(init.closure?.length ? { closure: init.closure.map((t) => t.branchId) } : {}) });
         if (kf) tables.putKeyframe(rec.id, root, init.stateHash ?? "", kf);
         const doc = init.doc0 as Record<string, unknown> | null;
         if (doc) for (const coll of collections) for (const r of (doc[coll] as Rec[] | undefined) ?? []) {
@@ -484,9 +514,17 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) tables.bindRid(ridOf(row.id), rids);
         }
         for (const t of init.closure ?? []) {
-          if (tables.branch(t.branchId)) continue;
-          tables.insertBranch({ id: t.branchId, rec: t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: t.nodes });
+          const had = tables.branch(t.branchId);
+          if (had && !had.tracking) continue;
+          const nodes = new Map((had?.nodes ?? []).map((n) => [n.id, n]));
+          for (const n of t.nodes) if (!nodes.has(n.id)) nodes.set(n.id, n);
+          const authors = new Map(had?.authors ?? []);
+          for (const [n, a] of t.authors ?? []) if (!authors.has(n)) authors.set(n, a);
+          const b: StoredBranch = { id: t.branchId, rec: had?.rec ?? t.rec, forkOf: null, root: 0, since: 0, adoptKey: null, tracking: true, nodes: [...nodes.values()], ...(authors.size ? { authors: [...authors] } : {}) };
+          if (had) tables.putBranch(b);
+          else tables.insertBranch(b);
         }
+        for (const k of closureKfs) tables.putKeyframe(k.branch, k.seq, k.hash, k.where);
       });
     } catch (e) {
       tables.forget(rec.id);
@@ -574,7 +612,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       }
     }
     const head = tables.head(m.branchId);
-    const { list: confirmed, uncheckedFrom } = confirmedOf(m.branchId, m.pending);
+    const claimsAfter = Number.isInteger(m.claimsAfter) ? (m.claimsAfter as number) : -1;
+    const { list: confirmed, uncheckedFrom, checkedThrough } = confirmedOf(m.branchId, m.pending, { after: claimsAfter, budget: catchupBytes });
+    // the list isn't complete: the client acts on nothing until it is, so this page is the list alone (no rows, no
+    // keyframe, no subscription yet), within the page's budget
+    if (uncheckedFrom !== null) {
+      const partial: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows: [], confirmed, uncheckedFrom };
+      if (checkedThrough !== null) partial.checkedThrough = checkedThrough;
+      return send(c, partial);
+    }
     let from = Math.max(-1, Math.min(m.have, head));
     let keyframe: sync.KeyframeData | undefined;
     let budget = catchupBytes;
@@ -591,13 +637,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         from = k.seq;
       } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
+    budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
     const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
     const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
     if (keyframe) msg.keyframe = keyframe;
-    if (uncheckedFrom !== null) msg.uncheckedFrom = uncheckedFrom;
     // the client then never sends what would be refused unread (round 2 finding 2)
     if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
     if (last < head) msg.more = true;
@@ -619,7 +665,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const head0 = tables.head(m.branchId);
       if (Number.isInteger(ch.base?.seq) && head0 - ch.base.seq > K) {
         // the K cap (§6.3): no scan of the log, only the bounded id list for this push's changes
-        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })));
+        const r = controls.listOnBehind === false ? undefined : confirmedOf(m.branchId, m.changes.map((x) => ({ id: x.id, bases: [x.base?.seq ?? 0] })), { budget: catchupBytes });
         return reject(c, m.branchId, ch.id, "behind", m.epoch, r ? { confirmed: r.list, ...(r.uncheckedFrom !== null ? { uncheckedFrom: r.uncheckedFrom } : {}) } : {});
       }
       if (declarationTooLarge(ch)) return reject(c, m.branchId, ch.id, "too large", m.epoch);
@@ -732,6 +778,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const closure = Array.isArray(m.closure) ? m.closure : [];
     if (!mayWrite(c, m.branchId) || closure.some((t) => !mayWrite(c, t?.branchId))) return fail("forbidden"); // finding 4
     if (closure.some((t) => !t?.rec || t.rec.id !== t.branchId)) return fail("closure rec.id must be its branchId");
+    if (closure.some((t) => !Array.isArray(t.nodes) || (t.states !== undefined && (!Array.isArray(t.states) || t.states.some((st) => !Number.isInteger(st?.seq) || st.seq < 0 || typeof st.hash !== "string" || !SHA256.test(st.hash)))) || (t.authors !== undefined && !Array.isArray(t.authors))))
+      return fail("closure: bad nodes, states or authors");
     const key = `${m.branchId}|${m.n}|${m.stateHash}`;
     const b = tables.branch(m.branchId);
     if (b) {
@@ -756,6 +804,36 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     stats.adopts++;
     emit({ type: "adopt", branchId: m.branchId, n: m.n, repeat: false });
     send(c, { type: "adopted", branchId: m.branchId, since: m.n });
+  }
+
+  /**
+   * History a replica doesn't hold (Stage F): rows `(after, upTo]` paged like catch-up, and with `lineage` the
+   * branch's ancestry closure (its tracking branches with their carried states), for a joiner's log and credits.
+   */
+  async function onHistory(c: HostConnection, m: sync.HistoryMsg) {
+    const reply = (r: Pick<sync.HistoryReplyMsg, "rows" | "more" | "lineage" | "error">) => send(c, { type: "history", branchId: m.branchId, req: m.req, ...r });
+    const b = typeof m.branchId === "string" ? tables.branch(m.branchId) : null;
+    if (!b) return reply({ rows: [], error: "unknown branch" });
+    if (c.auth.branches && !c.auth.branches.includes(m.branchId)) return reply({ rows: [], error: "forbidden" });
+    const after = Math.max(b.root, Number.isInteger(m.after) ? m.after : 0);
+    const upTo = Math.min(tables.head(m.branchId), Number.isInteger(m.upTo) ? m.upTo : 0);
+    const rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
+    const last = rows.length ? rows[rows.length - 1]!.seq : after;
+    const lineage: sync.ClosureEntry[] = [];
+    if (m.lineage)
+      for (const id of b.closure ?? []) {
+        const t = tables.branch(id);
+        if (!t?.tracking) continue;
+        const states: NonNullable<sync.ClosureEntry["states"]> = [];
+        for (const n of t.nodes ?? []) {
+          const k = tables.keyframeAt(id, n.seq);
+          if (!k) continue;
+          const { keyframe } = await loadKeyframe(id, k);
+          states.push({ seq: n.seq, hash: keyframe.stateHash, doc: keyframe.doc });
+        }
+        lineage.push({ branchId: id, rec: t.rec, nodes: t.nodes ?? [], states, ...(t.authors?.length ? { authors: t.authors } : {}) });
+      }
+    reply({ rows, ...(last < upTo && rows.length ? { more: true } : {}), ...(m.lineage ? { lineage } : {}) });
   }
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
@@ -820,17 +898,60 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     return true;
   }
 
+  // The latest presence a connection had dropped by its cap, per branch, relayed when its bucket refills: a burst
+  // (updates that queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position
+  // or its `state: null` always reaches each branch's others. The rate itself stays per connection.
+  const presenceTrailing = new Map<string, Map<string, { msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>>();
+  function clearTrailing(id: string, branchId?: string): void {
+    const byBranch = presenceTrailing.get(id);
+    if (!byBranch) return;
+    for (const [b, t] of byBranch) {
+      if (branchId !== undefined && b !== branchId) continue;
+      clearTimeout(t.timer);
+      byBranch.delete(b);
+    }
+    if (byBranch.size === 0) presenceTrailing.delete(id);
+  }
+
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
     if (!stateOf(c).subs.includes(m.branchId)) return;
-    if (!presenceAllowed(c)) {
-      stats.presenceDropped++;
-      return;
-    }
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
+    if (!presenceAllowed(c)) {
+      stats.presenceDropped++;
+      const byBranch = presenceTrailing.get(c.id) ?? new Map();
+      presenceTrailing.set(c.id, byBranch);
+      const waiting = byBranch.get(m.branchId);
+      if (waiting) {
+        waiting.msg = msg;
+        return;
+      }
+      const b = presenceBuckets.get(c.id)!;
+      const ms = Math.max(1, Math.ceil(((1 - b.tokens) / PRESENCE_PER_SEC) * 1000));
+      const branchId = m.branchId;
+      const entry = {
+        msg,
+        timer: setTimeout(function relay() {
+          if (!conns.has(c.id) || !stateOf(c).subs.includes(branchId)) return clearTrailing(c.id, branchId);
+          // one token per relay, as any update; a connection with several branches waiting takes its turns
+          if (!presenceAllowed(c)) {
+            entry.timer = setTimeout(relay, Math.max(1, Math.ceil(1000 / PRESENCE_PER_SEC)));
+            (entry.timer as { unref?: () => void }).unref?.();
+            return;
+          }
+          byBranch.delete(branchId);
+          if (byBranch.size === 0) presenceTrailing.delete(c.id);
+          fanout(branchId, entry.msg, c.id);
+        }, ms),
+      };
+      (entry.timer as { unref?: () => void }).unref?.();
+      byBranch.set(branchId, entry);
+      return;
+    }
+    clearTrailing(c.id, m.branchId); // this newer state supersedes the one waiting on its branch
     fanout(m.branchId, msg, c.id);
   }
 
@@ -859,6 +980,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return onKeyframe(c, msg);
       case "presence":
         return onPresence(c, msg);
+      case "history":
+        return onHistory(c, msg);
       default:
         return send(c, { type: "error", reason: `unknown message type ${(msg as { type?: unknown })?.type}` });
     }
@@ -891,6 +1014,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       conns.delete(conn.id);
       outboxes.delete(conn.id);
       presenceBuckets.delete(conn.id);
+      clearTrailing(conn.id);
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
@@ -968,21 +1092,31 @@ function segmentRowBytes(r: Record<string, string | number | null>, body: Uint8A
   const bytes = (k: string) => (r[k] === null || r[k] === undefined ? 0 : enc.encode(String(r[k])).byteLength);
   return ROW_FIXED + 6 * enc.encode(branchId).byteLength + (body?.byteLength ?? 0) + bytes("author") + bytes("base") + bytes("paths") + bytes("reads") + 3 * bytes("spans") + 6 * (bytes("id") + bytes("hash") + bytes("policy"));
 }
+/** A blob read as a stream of ranged gets, `chunk` bytes at a time, fetched only as the reader pulls. */
+function rangedStream(blobs: BlobStore, key: string, chunk: number): ReadableStream<Uint8Array> {
+  let offset = 0;
+  return new ReadableStream<Uint8Array>({
+    async pull(ctl) {
+      const part = await blobs.get(key, { offset, length: chunk });
+      if (!part) return ctl.error(new Error(`segment ${key} is missing from the blob store`));
+      if (part.byteLength) ctl.enqueue(part);
+      offset += part.byteLength;
+      if (part.byteLength < chunk) ctl.close();
+    },
+  });
+}
 /** A reply row's keys, numbers and the defaults `Tables.toRow` adds (the rest is sized from its columns). */
 const ROW_FIXED = 256;
 
 /**
  * The rows of an archived segment (a gzip-compressed JSON array of row objects), one at a time, read as a stream: only
  * one row's text is held at once, so a page that stops early never decompresses or parses the rest (round 3 finding
- * 3). Uses the store's `getStream` when it has one.
+ * 3). Uses the store's `getStream` when it has one, else ranged gets of 64 KiB (round 4 finding 3: a whole-object get
+ * loads the segment before the page can stop it).
  */
 async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Record<string, string | number | null>> {
   let stream: ReadableStream<Uint8Array> | null = blobs.getStream ? await blobs.getStream(key) : null;
-  if (!stream) {
-    const stored = await blobs.get(key);
-    if (!stored) throw new Error(`segment ${key} is missing from the blob store`);
-    stream = new Blob([stored as Uint8Array<ArrayBuffer>]).stream();
-  }
+  if (!stream) stream = rangedStream(blobs, key, 64 * 1024);
   // (the lib types give these transforms a BufferSource writable side: a Uint8Array stream is one)
   if (key.endsWith(".gz")) stream = stream.pipeThrough(new DecompressionStream("gzip") as unknown as TransformStream<Uint8Array, Uint8Array>);
   const reader = stream.pipeThrough(new TextDecoderStream() as unknown as TransformStream<Uint8Array, string>).getReader();

@@ -15,16 +15,17 @@
 // - Archiving (§18) runs on a timer per open room, with the same defaults as the Durable Object.
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { mkdirSync, createReadStream, statSync } from "node:fs";
+import { mkdirSync, createReadStream, statSync, readdirSync, readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join, resolve, sep, extname } from "node:path";
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 import type { Duplex } from "node:stream";
 import type { AuthContext, BlobStore, SequencerHost } from "@carton/core/plugins";
-import type { sync } from "@carton/core";
+import { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, tokenFromRequest, WS_PROTOCOL } from "@carton/server";
 import { handleHttp, checkSession, type HttpAuth, type HttpDeps } from "@carton/host-http";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
-import { encodeSegment } from "@carton/blob-fs/keys";
+import { encodeSegment, decodeSegment } from "@carton/blob-fs/keys";
 import { acceptWebSocket, rejectUpgrade, type ServerWebSocket } from "./ws.ts";
 import { nodeSqliteStorage, type NodeSqliteStorage } from "./storage.ts";
 
@@ -55,6 +56,9 @@ export interface NodeHostOptions {
   maxMessageBytes?: number;
   /** The newest document schemaVersion this host's sequencer accepts in `hello` (default 1). */
   schemaVersion?: number;
+  /** The largest message carried as an envelope, read by the sequencer and taken by the upload route (default 64
+   * MiB, the sequencer's own). */
+  maxEnvelopeBytes?: number;
   durability?: "full" | "normal";
   onError?: (e: unknown) => void;
 }
@@ -66,6 +70,8 @@ export interface NodeHost extends SequencerHost {
   readonly port: number;
   /** The open rooms (tests and admin). */
   room(projectId: string): { sequencer: Sequencer; storage: NodeSqliteStorage; connections: number } | undefined;
+  /** Delete expired envelope blobs of every project this host knows, room open or not (runs hourly by itself). */
+  sweepEnvelopes(): Promise<number>;
 }
 
 interface Room {
@@ -85,6 +91,15 @@ const MAX_MESSAGE = 32 << 20;
 const WS_PATH = /^\/api\/projects\/([A-Za-z0-9._~-]{1,128})\/ws$/;
 const TYPES: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript", ".mjs": "text/javascript", ".css": "text/css", ".json": "application/json", ".svg": "image/svg+xml", ".png": "image/png", ".wasm": "application/wasm", ".ico": "image/x-icon", ".mp4": "video/mp4", ".webm": "video/webm" };
 
+// A room's database file name: the project id as blob-fs encodes a key segment (so `Proj` and `proj` never share a
+// file on a case-insensitive volume), or, when that would be long, `~` and the id's SHA-256. SQLite adds suffixes
+// (`-journal`, `-wal`) to the name, which must stay under 255 bytes, so a readable name is kept to 120.
+const ROOM_NAME_MAX = 120;
+function roomFileName(projectId: string): string {
+  const name = encodeSegment(projectId);
+  return name.length <= ROOM_NAME_MAX && !name.includes("~") ? name : "~" + createHash("sha256").update(projectId).digest("hex");
+}
+
 // node:http request → web Request (the body streams; GET and HEAD have none).
 function toRequest(req: IncomingMessage, origin: string): Request {
   const headers = new Headers();
@@ -99,6 +114,12 @@ function toRequest(req: IncomingMessage, origin: string): Request {
 }
 
 async function send(res: ServerResponse, r: Response): Promise<void> {
+  // the connection may be gone already (the client left, or the host closed it): its "close" event has fired, so
+  // nothing below would ever settle
+  if (res.destroyed) {
+    await r.body?.cancel().catch(() => {});
+    return;
+  }
   const headers: Record<string, string> = {};
   r.headers.forEach((v, k) => (headers[k] = v));
   res.writeHead(r.status, headers);
@@ -136,9 +157,23 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   function openRoom(projectId: string): Room {
     let room = rooms.get(projectId);
     if (room) return room;
-    const storage = nodeSqliteStorage(join(roomsDir, encodeSegment(projectId) + ".db"), opts.durability ? { durability: opts.durability } : {});
+    if (closing) throw new Error("the host is closing");
+    const name = roomFileName(projectId);
+    // a project id whose file name had to be hashed is kept beside it, so the sweep can name it
+    if (decodeSegment(name) === null) {
+      const idFile = join(roomsDir, name + ".id");
+      if (!existsSync(idFile)) writeFileSync(idFile, projectId);
+    }
+    const storage = nodeSqliteStorage(join(roomsDir, name + ".db"), opts.durability ? { durability: opts.durability } : {});
     const blobs = scoped(projectId, "seq");
-    const sequencer = createSequencer({ storage, auth: opts.auth, projectId, schemaVersion: opts.schemaVersion ?? 1, ...(blobs ? { blobs } : {}) });
+    const sequencer = createSequencer({
+      storage,
+      auth: opts.auth,
+      projectId,
+      schemaVersion: opts.schemaVersion ?? 1,
+      ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
+      ...(blobs ? { blobs } : {}),
+    });
     room = { projectId, storage, sequencer, conns: new Map(), idle: null, archive: null, pending: new Set(), closeWhenDrained: false };
     if (blobs) {
       const r = room;
@@ -218,14 +253,56 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     ws.on("close", () => {
       room.conns.delete(ws);
       room.sequencer.disconnect(conn);
-      if (room.conns.size === 0 && !closing) {
-        room.idle = setTimeout(() => {
-          if (room.conns.size === 0) closeRoom(room);
-        }, idleCloseMs);
-        room.idle.unref();
-      }
+      idleLater(room);
     });
   }
+
+  function idleLater(room: Room): void {
+    if (room.conns.size > 0 || closing || room.idle) return;
+    room.idle = setTimeout(() => {
+      room.idle = null;
+      if (room.conns.size === 0) closeRoom(room);
+    }, idleCloseMs);
+    room.idle.unref();
+  }
+
+  // Envelope blobs expire hours after they were made (core's envelopeExpired), longer than a room usually stays
+  // open, and an upload may come with no socket at all. So the sweep runs at the host, over every project with a
+  // room file, open or not; room maintenance (archiving) stays with the room.
+  async function sweepEnvelopes(): Promise<number> {
+    if (!opts.blobs) return 0;
+    const now = Date.now();
+    let swept = 0;
+    let files: string[] = [];
+    try {
+      files = readdirSync(roomsDir);
+    } catch {}
+    for (const f of files) {
+      if (!f.endsWith(".db")) continue;
+      let projectId = decodeSegment(f.slice(0, -3));
+      if (projectId === null) {
+        try {
+          projectId = readFileSync(join(roomsDir, f.slice(0, -3) + ".id"), "utf8");
+        } catch {
+          continue;
+        }
+      }
+      const store = scoped(projectId, "seq")!;
+      let cursor: string | undefined;
+      do {
+        const page = await store.list("messages/", cursor ? { cursor } : {});
+        for (const b of page.blobs)
+          if (sync.envelopeExpired(b.key, now)) {
+            await store.delete(b.key).catch(() => {});
+            swept++;
+          }
+        cursor = page.cursor;
+      } while (cursor);
+    }
+    return swept;
+  }
+  const sweeper = setInterval(() => void sweepEnvelopes().catch(onError), archiveEvery);
+  sweeper.unref();
 
   const server: Server = createServer();
   const listenHost = opts.host ?? "127.0.0.1";
@@ -246,13 +323,20 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     secret: opts.secret ?? new Uint8Array(32),
     blobsFor,
     sequencerBlobsFor: (projectId) => scoped(projectId, "seq"),
+    ...(opts.maxEnvelopeBytes !== undefined ? { maxEnvelopeBytes: opts.maxEnvelopeBytes } : {}),
+    // an upload gives the project a room file (opened briefly), so the host's sweep knows it even if no socket comes
+    onEnvelope: (projectId) => {
+      if (!closing) idleLater(openRoom(projectId));
+    },
     // a plain GET on the socket route (no Upgrade header): the upgrade itself goes through server.on("upgrade")
     upgrade: async () => new Response("expected a WebSocket upgrade", { status: 426 }),
   };
   if (opts.adminToken) deps.adminToken = opts.adminToken;
 
+  // requests still being answered: close waits for them, so none touches a room or the blob store after it resolves
+  const httpPending = new Set<Promise<void>>();
   server.on("request", (req, res) => {
-    void (async () => {
+    const work = (async () => {
       try {
         const r = await handleHttp(toRequest(req, origin), deps);
         if (r) return await send(res, r);
@@ -264,6 +348,8 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
         res.end("internal error");
       }
     })();
+    httpPending.add(work);
+    void work.finally(() => httpPending.delete(work));
   });
 
   server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
@@ -298,8 +384,10 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
       const r = rooms.get(projectId);
       return r && { sequencer: r.sequencer, storage: r.storage, connections: r.conns.size };
     },
+    sweepEnvelopes,
     async close() {
       closing = true;
+      clearInterval(sweeper);
       for (const room of rooms.values()) for (const ws of room.conns.keys()) ws.close(1001, "host shutting down");
       await new Promise<void>((ok) => {
         server.close(() => ok());
@@ -312,6 +400,8 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
         for (const ws of room.conns.keys()) ws.terminate();
         room.conns.clear();
       }
+      // HTTP requests in flight (an envelope upload whose blob write is slow, say) finish first: they may open a room
+      await Promise.allSettled([...httpPending]);
       // Sequencer work in flight finishes on its own database first, however long its blob store takes: closing the
       // database under it, or resolving while it still writes, would let a host restarted on the same data be
       // overwritten by the old write. No new work can start: sockets and timers are gone.

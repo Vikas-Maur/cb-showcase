@@ -24,7 +24,17 @@ const director = (turn: string): Actor => ({ kind: "agent", id: "director", name
 const explore = (turn: string): Actor => ({ kind: "subagent", id: "director", agentId: "ab12", agentType: "Explore", turn, chat: "c1", group: "alice@laptop" });
 const bob: Actor = { kind: "human", id: "bob", name: "Bob" };
 const set = (id: string, f: string, v: unknown) => ({ op: "set" as const, path: ["items", id, f], value: v });
-const settle = () => new Promise((r) => setTimeout(r, 80));
+// Every view model a test opens, so settle() waits for their own scheduled and running work, never a guessed time
+// (Windows wakes timers at about 15.6 ms; a fixed wait races the 50 ms refresh debounce: verify-ci #8).
+const live = new Set<ReturnType<typeof fromCarton>>();
+const make = (...a: Parameters<typeof fromCarton>) => {
+  const h = fromCarton(...a);
+  live.add(h);
+  return h;
+};
+const settle = async () => {
+  for (let i = 0; i < 3; i++) await Promise.all([...live].map((h) => h.settled()));
+};
 
 async function open() {
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), cutName: "Main cut" }, actor: alice });
@@ -35,7 +45,7 @@ async function open() {
     taps.push(l);
     return realOn(l);
   };
-  const ui = fromCarton(carton, { me: alice, clipName: (id) => id.toUpperCase() });
+  const ui = make(carton, { me: alice, clipName: (id) => id.toUpperCase() });
   await ui.ready;
   return { carton, ui, emit: (e: CartonEvent) => taps.forEach((l) => l(e)) };
 }
@@ -257,7 +267,13 @@ test("over the bridge: the renderer's rows ask for their summaries, the worker d
   assert.equal(h.count("all"), 31);
   assert.equal(h.at("all", 0)!.summary, "", "not described yet");
   for (let i = 0; i < 3; i++) h.at("all", i);
-  await settle();
+  // The request and the summaries travel through message hops: wait for them to arrive, not for a time.
+  const described = () => client.ui.history().at("all", 2)!.summary !== "";
+  await new Promise<void>((resolve, reject) => {
+    if (described()) return resolve();
+    const timer = setTimeout(() => (off(), reject(new Error("timed out waiting for the summaries"))), 5000);
+    const off = client.ui.subscribe("history", () => described() && (clearTimeout(timer), off(), resolve()));
+  });
   await settle();
   assert.match(client.ui.history().at("all", 0)!.summary, /c29/);
   assert.equal(client.ui.history().at("all", 20)!.summary, "", "rows nobody looked at stay undescribed");

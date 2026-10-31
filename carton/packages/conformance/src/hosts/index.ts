@@ -23,6 +23,9 @@ export interface HostFixture {
   rows?(): Promise<{ rowsRead: number; rowsWritten: number }>;
   /** The BlobStore a client of this host passes as `blobs`, so messages over 1 MiB travel as envelopes. */
   clientBlobs?(token: string): BlobStore;
+  /** The size of the big change the live suite sends as an envelope (default 33 MiB, over every WebSocket cap; a host
+   * with a smaller message cap, such as a Durable Object's, says what it carries). */
+  bigMessageBytes?: number;
 }
 
 // ------------------------------------------------------------------ AuthProvider
