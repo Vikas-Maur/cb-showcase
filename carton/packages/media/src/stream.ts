@@ -592,7 +592,7 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     // Finished. A report covers damage someone read; a part that is gone is caught here, whoever removed it (a host
     // that found it damaged removes it, and a reader that then saw it missing may not have reported it): one HEAD per
     // part, so the check still needs no listing. What's wrong is reported, so later checks stop at the report.
-    const wrong = await finishedWrong(store, p.stream, endBytes);
+    const wrong = await finishedWrong(store, p.stream, endBytes, now);
     if (wrong === null) return false;
     await reportDamage(store, p.stream, wrong);
     return true;
@@ -607,10 +607,45 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
   return now - latest > staleMs;
 }
 
+/**
+ * Finished streams found whole in this process, so the next check of the same stream skips the part checks: per store
+ * object (what one store holds says nothing about another), by stream id and a digest of its end entry's bytes (an end
+ * that changed, rot included, is checked anew), with when it was checked. A share asks up to 3 times (the clip's
+ * record, the proxy, the claim), and a long stream has thousands of parts. A damage report still counts at once (it is
+ * read before this); a part removed without one is found again after VERIFIED_MS. Bounded: the oldest entries go first.
+ */
+const verified = new WeakMap<BlobStore, Map<string, number>>();
+const VERIFIED_MS = 10 * 60_000;
+const VERIFIED_MAX = 1000;
+
+/**
+ * Stores whose `list` pages on the server (S3, R2): a page is one request, so a few pages beat thousands of HEADs. Not
+ * blob-fs or blob-memory: they gather and sort the whole prefix for every page, while their HEADs are cheap and local.
+ */
+const LISTS_BY_PAGE = new Set(["s3", "r2"]);
+
+/** Stores whose `list` failed on its first page: HEADs only from then on. */
+const cannotList = new WeakSet<BlobStore>();
+
 /** Why a finished stream can't be reused (its end unreadable, an entry or a part gone, sizes that don't add up), or null. */
-async function finishedWrong(store: BlobStore, stream: string, endBytes: Uint8Array): Promise<Record<string, unknown> | null> {
+async function finishedWrong(store: BlobStore, stream: string, endBytes: Uint8Array, now: number): Promise<Record<string, unknown> | null> {
   const end = asEnd(parseJson(endBytes));
   if (end === null) return { end: "unreadable" };
+  const memo = `${stream} ${toHex(new Uint8Array(await crypto.subtle.digest("SHA-256", endBytes as Uint8Array<ArrayBuffer>)))}`;
+  let mine = verified.get(store);
+  const seen = mine?.get(memo);
+  if (seen !== undefined && now - seen >= 0 && now - seen < VERIFIED_MS) return null;
+  const wrong = await partsWrong(store, stream, end);
+  if (wrong === null) {
+    if (!mine) verified.set(store, (mine = new Map()));
+    mine.delete(memo);
+    mine.set(memo, now);
+    if (mine.size > VERIFIED_MAX) mine.delete(mine.keys().next().value!);
+  }
+  return wrong;
+}
+
+async function partsWrong(store: BlobStore, stream: string, end: StreamEnd): Promise<Record<string, unknown> | null> {
   let parts = end.parts;
   if (parts === undefined) {
     // An end written before it listed its parts: the entries say what they are.
@@ -622,18 +657,54 @@ async function finishedWrong(store: BlobStore, stream: string, endBytes: Uint8Ar
     parts = [init.hash, ...segs.map((s) => s!.hash)];
   }
   const unique = [...new Set(parts)];
-  const sizes = new Map<string, number>();
-  const heads = await inBatches(unique, (h) => store.head(mediaKey(h)));
-  for (let i = 0; i < unique.length; i++) {
-    const head = heads[i];
-    if (head === null || head === undefined) return { hash: unique[i], missing: true };
-    sizes.set(unique[i]!, head.size);
-  }
+  const sizes = await partSizes(store, unique);
+  for (const h of unique) if (!sizes.has(h)) return { hash: h, missing: true };
   const total = parts.reduce((n, h) => n + sizes.get(h)!, 0);
   return total === end.size ? null : { size: total, expected: end.size };
 }
 
-/** `f` over `items`, at most 8 at a time, results in order. */
+/**
+ * The sizes of the parts that are in the store (a part that isn't has no entry). Parts are content-addressed objects
+ * (m/<hash>) shared by every stream and clip, not kept under the stream's prefix, so a listing covers all of the
+ * project's media: where the store pages its listing on the server (LISTS_BY_PAGE), a few pages (at most one per 250
+ * parts asked about, 1000 keys a page) settle the parts they show, and HEADs ask about the rest. Any other store (a
+ * Carton host's HTTP API has no list; blob-fs's is a local walk) gets HEADs only.
+ */
+async function partSizes(store: BlobStore, hashes: readonly string[]): Promise<Map<string, number>> {
+  const sizes = new Map<string, number>();
+  let rest: readonly string[] = hashes;
+  if (LISTS_BY_PAGE.has(store.kind) && typeof store.list === "function" && !cannotList.has(store)) {
+    const wanted = new Set(hashes);
+    let cursor: string | undefined;
+    let pages = 0;
+    const budget = Math.max(1, Math.ceil(hashes.length / 250));
+    try {
+      while (pages < budget) {
+        const page = await store.list("m/", { limit: 1000, ...(cursor === undefined ? {} : { cursor }) });
+        pages++;
+        for (const b of page.blobs) {
+          const h = b.key.startsWith("m/") ? b.key.slice(2) : "";
+          if (wanted.has(h)) sizes.set(h, b.size);
+        }
+        cursor = page.cursor;
+        if (cursor === undefined || sizes.size === wanted.size) break;
+      }
+    } catch {
+      if (pages === 0) cannotList.add(store); // no list here: don't ask again
+    }
+    // Parts the pages didn't show get a HEAD each, even after a complete listing: a listing is not a snapshot (a part
+    // put back while it ran may not be in it), and a false "missing" would end a sound stream. A whole stream leaves none.
+    rest = hashes.filter((h) => !sizes.has(h));
+  }
+  const heads = await inBatches(rest, (h) => store.head(mediaKey(h)));
+  rest.forEach((h, i) => {
+    const head = heads[i];
+    if (head) sizes.set(h, head.size);
+  });
+  return sizes;
+}
+
+/** `f` over `items`, at most 16 at a time, results in order. */
 async function inBatches<T, R>(items: readonly T[], f: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length);
   let next = 0;
@@ -643,7 +714,7 @@ async function inBatches<T, R>(items: readonly T[], f: (item: T) => Promise<R>):
       out[i] = await f(items[i]!);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(8, items.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(16, items.length) }, worker));
   return out;
 }
 
