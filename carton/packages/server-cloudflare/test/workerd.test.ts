@@ -7,7 +7,8 @@ import { join } from "node:path";
 import { blobStoreSuite, sequencerHostSuite, transportSuite, httpApiSuite, liveSyncSuite, hostSuite, type HostFixture } from "@carton/conformance";
 import { createHmacAuth } from "@carton/server";
 import { webSocketTransport } from "@carton/server-node";
-import { hostMessageBlobs } from "@carton/host-http/client";
+import { hostMessageBlobs, hostMediaBlobs } from "@carton/host-http/client";
+import { mediaHash, manifestKey, mediaKey, webCryptoHasher, LEAF_SIZE } from "@carton/media";
 import type { Role } from "@carton/core/plugins";
 import { doBlobStore } from "../src/blob-do.ts";
 import { R2_MIN_PART_SIZE } from "../src/blob-r2.ts";
@@ -87,4 +88,24 @@ test("envelope uploads: over the room's 24 MiB cap refused; an upload arms the s
   assert.ok(await alarm(), "the upload armed the room's sweep");
   await new Promise((r) => setTimeout(r, 4500)); // the alarm ran at least once; the young envelope is still there
   assert.ok(await alarm(), "the alarm was not re-armed while an envelope remains");
+});
+
+test("media through the Worker and R2 (hostMediaBlobs): ranged reads, and §11's repair removing only a damaged object", async () => {
+  const auth = createHmacAuth({ secret: SECRET });
+  const project = `media-${Date.now().toString(36)}`;
+  const token = await auth.issue({ account: "o", credential: "o/dev", role: "editor", projectId: project, ttlMs: 3600_000 });
+  const media = hostMediaBlobs({ origin: dev.origin, projectId: project, token });
+  const bytes = new Uint8Array(2 * LEAF_SIZE + 777).map((_, i) => (i * 13) & 0xff);
+  const m = await mediaHash(bytes, webCryptoHasher());
+  const key = mediaKey(m.hash);
+  await media.put(manifestKey(m.hash), m.bytes);
+  await media.put(key, bytes, { contentType: "video/mp4" });
+  assert.deepEqual(await media.get(key, { offset: LEAF_SIZE - 3, length: 6 }), bytes.subarray(LEAF_SIZE - 3, LEAF_SIZE + 3));
+  assert.deepEqual(await media.reportDamaged(key, 1), { damaged: false });
+  const bad = bytes.slice();
+  bad[LEAF_SIZE + 5] ^= 1; // a bad copy into the bucket: same size, one bit off in leaf 1
+  await media.put(key, bad);
+  assert.deepEqual(await media.reportDamaged(key, 0), { damaged: false }, "leaf 0 is fine");
+  assert.deepEqual(await media.reportDamaged(key, 1), { damaged: true, removed: true });
+  assert.equal(await media.head(key), null);
 });
