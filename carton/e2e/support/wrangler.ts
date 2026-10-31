@@ -10,7 +10,8 @@ import { createServer } from "node:net";
 import { join } from "node:path";
 import { pkg } from "./env.ts";
 
-export const WRANGLER = pkg("..", "node_modules", ".bin", process.platform === "win32" ? "wrangler.cmd" : "wrangler");
+// wrangler's own JS entry, run with this Node (no .cmd shim, no shell: paths with spaces or `&` pass as they are)
+export const WRANGLER = pkg("..", "node_modules", "wrangler", "bin", "wrangler.js");
 
 function freePort(): Promise<number> {
   return new Promise((ok, fail) => {
@@ -44,28 +45,36 @@ export async function startWrangler(o: { dir: string; vars: Record<string, strin
   const port = await freePort();
   let child: ChildProcess | null = null;
 
+  // POSIX: the whole process group (wrangler and the workerd it starts) goes, even when wrangler itself already exited;
+  // SIGTERM, then SIGKILL for whatever is still in the group after 5 s. Windows: taskkill of the tree.
+  const groupAlive = (pgid: number) => { try { process.kill(-pgid, 0); return true; } catch { return false; } };
   async function down(): Promise<void> {
     const c = child;
     child = null;
-    if (!c || c.exitCode !== null || c.signalCode !== null) return;
-    const gone = new Promise<void>((ok) => c.once("exit", () => ok()));
-    if (process.platform === "win32") spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
-    else try { process.kill(-c.pid!, "SIGTERM"); } catch { /* gone */ }
-    const hard = setTimeout(() => { try { if (process.platform !== "win32") process.kill(-c.pid!, "SIGKILL"); } catch { /* gone */ } }, 5000);
-    await gone;
-    clearTimeout(hard);
+    if (!c?.pid) return;
+    if (process.platform === "win32") {
+      if (c.exitCode !== null || c.signalCode !== null) return;
+      const gone = new Promise<void>((ok) => c.once("exit", () => ok()));
+      spawn("taskkill", ["/pid", String(c.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+      await gone;
+      return;
+    }
+    const pgid = c.pid;
+    try { process.kill(-pgid, "SIGTERM"); } catch { /* the group is gone */ }
+    const end = Date.now() + 5000;
+    while (groupAlive(pgid) && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+    if (groupAlive(pgid)) try { process.kill(-pgid, "SIGKILL"); } catch { /* gone meanwhile */ }
   }
 
   async function up(): Promise<void> {
     const inspector = await freePort();
     const args = ["dev", "--config", config, "--ip", "127.0.0.1", "--port", String(port), "--inspector-port", String(inspector), "--persist-to", join(o.dir, "state"), "--log-level", "warn", "--show-interactive-dev-session=false"];
     let log = "";
-    child = spawn(WRANGLER, args, {
+    child = spawn(process.execPath, [WRANGLER, ...args], {
       cwd: o.dir,
       env: { ...process.env, TMPDIR: tmp, TMP: tmp, TEMP: tmp, WRANGLER_SEND_METRICS: "false", CI: "1", NO_COLOR: "1" },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32",
-      shell: process.platform === "win32",
       windowsHide: true,
     });
     child.stdout!.on("data", (d) => (log = (log + d).slice(-20_000)));

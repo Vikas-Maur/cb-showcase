@@ -108,7 +108,7 @@ export function placeHostProxy(m: Machine, from: string): string {
 
 /** A machine's media process (support/s5-machine.ts). The store config goes in the environment: it may hold keys. */
 export async function startMachine(procs: Procs, name: string, home: string, store: string): Promise<Proc> {
-  const p = procs.start(name, [support("s5-machine.ts"), home], { env: { S5_STORE: store, FFPROBE } });
+  const p = procs.start(name, [support("s5-machine.ts"), home], { env: { S5_STORE: store, FFPROBE, FFMPEG } });
   await p.next((x) => x.ready, 30_000);
   return p;
 }

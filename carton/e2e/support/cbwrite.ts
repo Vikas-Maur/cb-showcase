@@ -7,11 +7,16 @@ import { openLocal, identify } from "@carton/local";
 import type { WriteOp } from "@carton/local";
 import { cardboardAdapter } from "@carton/cardboard";
 import type { HostAdapter } from "@carton/core";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { dataDirFor } from "./env.ts";
 
 const [bundle, projectId, json] = process.argv.slice(2);
 const arg = JSON.parse(json!);
 const req = (arg.op ? arg : { op: arg }) as { op: WriteOp; waitMs?: number; id?: string; helper?: { factory: string; config?: Record<string, unknown> } };
+// a live machine's helper config (support/live.ts writes it, standing in for B7's fix) unless the call brings its own
+const machineHelper = join(dirname(dataDirFor(bundle!)), "e2e-helper.json");
+if (!req.helper && existsSync(machineHelper)) req.helper = JSON.parse(readFileSync(machineHelper, "utf8"));
 const local = await openLocal({
   projectDir: bundle!,
   projectId,

@@ -27,6 +27,7 @@ export { HashScheduler, MemoryManifestCache, type HashJobOptions, type HashPrior
 export { damagedKey, manifestKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
 export {
   claimProxyStream,
+  usableProxy,
   findProxy,
   newStreamId,
   ProxyStreamReader,

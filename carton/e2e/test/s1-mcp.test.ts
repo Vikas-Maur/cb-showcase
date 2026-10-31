@@ -7,6 +7,7 @@ import { makeMachine, itemNamed, SAMPLE } from "../support/project.ts";
 import { Procs } from "../support/procs.ts";
 import { dataDirFor, support, until } from "../support/env.ts";
 import { CB_BIN, cbOk } from "../support/cb.ts";
+import { named, untilShown } from "../support/head.ts";
 
 test("S1 MCP over stdio: tools listed; cuts, fold --check, credits, history, publish and undo through the tools", { timeout: 180_000 }, async (t) => {
   const procs = new Procs();
@@ -48,8 +49,9 @@ test("S1 MCP over stdio: tools listed; cuts, fold --check, credits, history, pub
   assert.equal(pub.status, "confirmed", JSON.stringify(pub));
   assert.ok((await cbOk(m, ["cut", "list"])).cuts.some((c: any) => c.kind === "published" && c.name === "Sent to client"), "the published cut, as cb sees it");
   // undo_timeline as the person's group: the GUI edit goes (an agent and the person share the machine's undo group, §8)
+  const undoAt = Date.now();
   const u = await tool("undo_timeline");
   assert.equal(u.status, "confirmed", JSON.stringify(u));
-  await until(() => itemNamed(m, SAMPLE.title)?.fontSize === 96, 20_000, "the undo in project.json");
+  await untilShown(t, m, undoAt, (l) => named(l, SAMPLE.title)?.fontSize === 96, "the undo");
   mcp.p.stdin!.end();
 });
