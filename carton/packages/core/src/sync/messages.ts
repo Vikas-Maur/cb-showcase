@@ -236,6 +236,8 @@ export interface StatusMsg {
   adoptKey: string | null;
   since: number | null;
   head: number;
+  /** As `WelcomeMsg.maxMessageBytes`, for the upload a hand-off makes right after this answer (a server with blobs). */
+  maxMessageBytes?: number;
 }
 export interface AdoptedMsg {
   type: "adopted";
