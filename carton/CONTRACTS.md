@@ -61,6 +61,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   `"<cutId>@<seq>"`, or a cut id (its head). A ref that can't be rebuilt exactly throws `StateUnknown`.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have.
+- **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
+  file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
+  in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
+  already holds by the rows that extend it. The importer's own cuts are never touched. Returns `{ cuts }` taken.
 - **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
 - **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
@@ -76,6 +80,12 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
   the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. `carton.media` is null:
   `@carton/media` calls Carton, not the reverse.
+- **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
+  them), local or shared, even one that would change nothing: they change only by publishing again. A shared
+  Published cut's welcome carries `source: { branchId, at, head }` (`sync.WelcomeMsg`): the cut it came from, the
+  version published and that cut's head now, so a watch page can say "newer edits exist" (head > at) without reading
+  them. A watch link's invite is scoped to the Published cut (`createInvite(project, "viewer", ttl, [cut])`): a scoped
+  reader's hello for any other cut is refused before a row is sent.
 - **Processes and the sync lease (§6.2):** many processes open one `carton.db`; only the lease holder (Cardboard's
   library worker, or `@carton/local`'s headless helper) connects and pushes. A write to a shared cut must reach the
   holder: `@carton/local` routes every `cb` and MCP write by the cut it changes (a fold's `into`), and one that
