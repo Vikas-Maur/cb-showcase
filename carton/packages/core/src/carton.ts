@@ -26,6 +26,7 @@ import type {
   CartonEvent,
   ChangeId,
   Choices,
+  ConflictCard,
   CommitResult,
   ConfirmedChange,
   CutKind,
@@ -103,6 +104,11 @@ export interface CommitInput {
    * them as undone: `cb undo --turn` inverts a whole agent turn as one change.
    */
   undoOf?: ChangeId[];
+  /**
+   * Extra Store writes made from the cards `choices` decided, written in the same atomic batch as the append (so a
+   * caller that keeps those cards, e.g. as a notice for `cb resolve`, can't lose them to a crash after the append).
+   */
+  cardsWrite?: (cards: ConflictCard[], change: ConfirmedChange | null) => StoreWrite[];
 }
 
 /** A read-only preview of a state (§9 R2-16): Compare and the A/B toggle render it; editing is disabled. */
@@ -693,13 +699,14 @@ class CartonImpl implements Carton {
     // the base is fixed on the first attempt: a retry after losing a race must rebase on it, never treat what the other
     // process just wrote as something this commit removes
     let base = input.base;
+    let last: CommitResult | null = null;
     const r = await this.#mutate(
       input.id ? undefined : cut, // an explicit id: look for it on every cut (dedup by id)
       (): CommitResult => {
         const dup = this.#h.confirmedById(input.id);
         if (dup) return dup;
         base ??= { branchId: cut, seq: this.#h.headSeq(cut), pending: [] };
-        return this.#h.commit(cut, {
+        return (last = this.#h.commit(cut, {
           ...(input.doc ? { doc: input.doc } : {}),
           ...(input.ops ? { ops: input.ops } : {}),
           author,
@@ -712,9 +719,16 @@ class CartonImpl implements Carton {
           ...(input.name ? { name: input.name } : {}),
           ...(input.undoOf?.length ? { kind: "undo" as const, extra: { reverts: [...input.undoOf] } } : {}),
           id,
-        });
+        }));
       },
-      { conditions: input.conditions ?? [], idempotent: !input.conditions?.length, id },
+      {
+        conditions: input.conditions ?? [],
+        idempotent: !input.conditions?.length,
+        id,
+        ...(input.cardsWrite
+          ? { extra: () => { const x = last as (CommitResult & { resolved?: ConflictCard[] }) | null; return { writes: x?.status === "confirmed" && x.resolved?.length ? input.cardsWrite!(x.resolved, x.change) : [] }; } }
+          : {}),
+      },
     );
     const { retry: _r, ...out } = r as CommitResult & { retry?: unknown };
     this.#notices(out);
