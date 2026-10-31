@@ -7,17 +7,27 @@
 //
 // The store goes in the environment, not the command line, since it may hold keys. Store JSON: {kind:"fs", root} | {kind:"s3", endpoint, bucket, region, accessKeyId, secretAccessKey}
 //           | {kind:"http", baseUrl, projectId, token}
+//
+// An upload with `holdComplete` sends its parts but doesn't complete the object until `release`: prints
+// {completeHeld} when it gets there and {completeSent} once released, so "while it uploads" lasts as long as a test
+// needs, whatever the runner's speed. `project` reads the media records from this machine's own Carton (its head), as
+// the app finds what a teammate shared; `proxyOf` follows a source's proxy pointer in the store (§11).
 import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable } from "node:stream";
-import type { BlobStore, ProxyEncoder } from "@carton/core/plugins";
+import type { BlobStore, ByteRange, MultipartUpload, ProxyEncoder } from "@carton/core/plugins";
+import type { HostAdapter } from "@carton/core";
 import { createFsBlobStore } from "@carton/blob-fs";
 import { createS3BlobStore } from "@carton/blob-s3";
-import { mediaHash, MediaReader, serveMedia, toMediaRecord, uploadMedia, type RangeSource, type ReaderEvent } from "@carton/media";
+import { cardboardAdapter } from "@carton/cardboard";
+import { openLocal } from "@carton/local";
+import { COLLAB_PROXY_720P, mediaHash, MediaReader, proxyPointerKey, serveMedia, toMediaRecord, uploadMedia, type RangeSource, type ReaderEvent } from "@carton/media";
 import { FsLeafCache, FsUploadStateStore, fileSource, hashFile, hostProxyEncoder, nodeHasher, shareMedia, startRangeServer, type RangeServer, type ShareEvent } from "@carton/media/node";
+import { locateCartonDb } from "@carton/store-sqlite";
+import { assertInScratch, dataDirFor } from "./env.ts";
 import { HostBlobStore } from "./s5-host-store.ts";
 
 const [home] = process.argv.slice(2) as [string];
@@ -87,6 +97,39 @@ function localSource(path: string, hash: string): RangeSource {
   };
 }
 
+/** Opens the completions `holdCompletes` is holding back. */
+let releaseHeld: (() => void) | null = null;
+
+/** `s` with its multipart uploads' completion held until `releaseHeld()`; everything else goes straight through. */
+function holdCompletes(s: BlobStore): BlobStore {
+  const gate = new Promise<void>((r) => (releaseHeld = r));
+  const wrap = (up: MultipartUpload): MultipartUpload => ({
+    key: up.key,
+    uploadId: up.uploadId,
+    uploadPart: (n, data) => up.uploadPart(n, data),
+    listParts: () => up.listParts(),
+    abort: () => up.abort(),
+    complete: async (parts) => {
+      out({ completeHeld: up.key });
+      await gate;
+      out({ completeSent: up.key });
+      return up.complete(parts);
+    },
+  });
+  return {
+    kind: s.kind,
+    put: (key, data, opts) => s.put(key, data, opts),
+    get: (key, range) => s.get(key, range),
+    ...(s.getStream ? { getStream: (key: string, range?: ByteRange) => s.getStream!(key, range) } : {}),
+    head: (key) => s.head(key),
+    delete: (key) => s.delete(key),
+    list: (prefix, opts) => s.list(prefix, opts),
+    createMultipart: async (key, opts) => wrap(await s.createMultipart(key, opts)),
+    resumeMultipart: async (key, uploadId) => wrap(await s.resumeMultipart(key, uploadId)),
+    ...(s.signedUrl ? { signedUrl: (key: string, opts: { method: "GET" | "PUT"; expiresIn: number }) => s.signedUrl!(key, opts) } : {}),
+  };
+}
+
 /** The player's route: `GET /p/<hash>` answered by serveMedia, as protocol.handle("cardboard-media") would. */
 async function startPlayer(source: RangeSource): Promise<string> {
   const server = createServer((req, res) => {
@@ -143,7 +186,7 @@ async function run(c: Cmd): Promise<Record<string, unknown>> {
       const source = await fileSource(c.path);
       try {
         const result = await uploadMedia({
-          store,
+          store: c.holdComplete ? holdCompletes(store) : store,
           hasher: nodeHasher,
           source,
           manifest,
@@ -157,6 +200,28 @@ async function run(c: Cmd): Promise<Record<string, unknown>> {
       } finally {
         await source.close();
       }
+    }
+    case "release": {
+      const held = releaseHeld !== null;
+      releaseHeld?.();
+      return { released: held };
+    }
+    case "project": {
+      // the media records as this machine's own carton.db has them at head, opened as `cb` opens a project
+      const dataDir = dataDirFor(c.bundle);
+      assertInScratch(locateCartonDb({ bundleDir: c.bundle, projectId: c.projectId, appDataDir: dataDir }).dbPath, "carton.db");
+      const local = await openLocal({ projectDir: c.bundle, projectId: c.projectId, dataDir, adapter: cardboardAdapter as HostAdapter });
+      try {
+        const { doc } = await local.carton.head();
+        return { dbPath: local.dbPath, media: doc.media ?? [] };
+      } finally {
+        await local.close();
+      }
+    }
+    case "proxyOf": {
+      // the collab proxy made from source `hash` with the app's profile: the pointer keyed by (source hash, profile)
+      const b = await store.get(proxyPointerKey(c.hash, c.profile ?? COLLAB_PROXY_720P.id));
+      return { pointer: b ? JSON.parse(new TextDecoder().decode(b)) : null };
     }
     case "stat":
       return { stat: await reader.stat(c.hash) };
