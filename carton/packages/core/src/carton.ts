@@ -177,9 +177,10 @@ export interface Carton {
   /**
    * Pin a cut's head, or a held state (`doc`, e.g. a freeze view), for `owner` (a turn, view or MCP ref). `seq`: the
    * confirmed seq the held state was derived from (default: head), so a commit on it is checked against every change
-   * confirmed after that seq rather than treated as having seen them.
+   * confirmed after that seq rather than treated as having seen them. `causal`: the ids of changes after `seq` whose
+   * effect `doc` already holds (a freeze view's merged agent saves), so a commit on it doesn't meet them again.
    */
-  pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number }): Promise<Pin>;
+  pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number; causal?: ChangeId[] }): Promise<Pin>;
   /** M4: did `author` create element `id` of the sequence at `seqKey`? For host conversions (`HostAdapter.fromHost`'s `own`). */
   own(author: Actor): OwnFn;
   release(ref: StateRef, owner: string): Promise<void>;
@@ -724,7 +725,7 @@ class CartonImpl implements Carton {
   own(author: Actor): OwnFn {
     return this.#h.own(author);
   }
-  async pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number }): Promise<Pin> {
+  async pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number; causal?: ChangeId[] }): Promise<Pin> {
     const cut = opts.cut ?? this.#h.current;
     const now = this.#opts.clock?.() ?? Date.now();
     let ref!: StateRef;
@@ -736,7 +737,12 @@ class CartonImpl implements Carton {
     }
     await this.#mutate(cut, () => {
       // a state derived from an older seq (a freeze view) builds on that seq alone
-      const pending = sc && opts.seq === undefined && this.#h.headSeq(cut) === sc.queue.headSeq(cut) ? sc.queue.pending(cut).map((p) => ({ id: p.id, ops: p.versions[p.versions.length - 1]!.ops })) : [];
+      // `causal`: the caller's own list of what the held state already holds after `seq`
+      const pending = opts.causal?.length
+        ? opts.causal.map((id) => ({ id, ops: [] }))
+        : sc && opts.seq === undefined && this.#h.headSeq(cut) === sc.queue.headSeq(cut)
+          ? sc.queue.pending(cut).map((p) => ({ id: p.id, ops: p.versions[p.versions.length - 1]!.ops }))
+          : [];
       ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(pending.length ? { pending } : {}), ...(opts.doc ? { doc: opts.doc } : {}), ...(opts.seq !== undefined ? { seq: opts.seq } : {}) });
     }, {
       extra: () => {
