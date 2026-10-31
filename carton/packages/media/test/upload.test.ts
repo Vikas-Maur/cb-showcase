@@ -6,7 +6,7 @@ import { equalBytes } from "../src/bytes.ts";
 import type { BlobStore } from "../src/contracts.ts";
 import { bytesSource, hashSource } from "../src/hash.ts";
 import { damagedKey, manifestKey, mediaKey } from "../src/keys.ts";
-import { decodeManifest, LEAF_SIZE } from "../src/manifest.ts";
+import { decodeManifest, LEAF_SIZE, leafDigest, leafSpan } from "../src/manifest.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
 import { CountingMemoryStore, FaultyStore, LinkDroppedError } from "../src/testing.ts";
 import { MediaReader } from "../src/read.ts";
@@ -435,4 +435,59 @@ test("a report written while a repair is running still counts after it (the repa
   await uploadMedia(o);
   assert.equal(reported, true);
   assert.equal(await isDamaged(store, manifest.hash), true, "the later report isn't answered by this repair");
+});
+
+/**
+ * A Carton host in team mode (hosts-plugins S5-3), as media sees it: an object of the right size can't be overwritten,
+ * and `reportDamaged(key, leaf)` has the host verify that leaf against the manifest and remove the object only if it is
+ * damaged.
+ */
+class TeamHostStore extends CountingMemoryStore {
+  readonly hostReports: { key: string; leaf: number; damaged: boolean }[] = [];
+  override async put(key: string, data: Uint8Array, opts?: { ifAbsent?: boolean }) {
+    const old = this.objects.get(key);
+    if (key.startsWith("m/") && old && old.length === data.length) return { key, size: old.length }; // sound-looking: kept
+    return super.put(key, data, opts);
+  }
+  override async delete(): Promise<void> {
+    assert.fail("no delete through the host");
+  }
+  async reportDamaged(key: string, leaf: number): Promise<unknown> {
+    const hash = key.slice(2);
+    const m = await decodeManifest(this.objects.get(manifestKey(hash))!, nodeHasher, hash);
+    const { offset, length } = leafSpan(m.size, leaf);
+    const bytes = this.objects.get(key)!.subarray(offset, offset + length);
+    const damaged = !equalBytes(await nodeHasher.sha256(bytes), leafDigest(m, leaf));
+    this.hostReports.push({ key, leaf, damaged });
+    if (damaged) this.objects.delete(key);
+    return { damaged, removed: damaged };
+  }
+}
+
+test("in team mode the reader also reports damage to the host, which removes the object; the next upload puts it back", async () => {
+  const store = new TeamHostStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 53);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good) };
+  await uploadMedia(o);
+  store.objects.get(mediaKey(manifest.hash))![LEAF_SIZE + 2] ^= 255; // leaf 1
+  await assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).readVerified(manifest.hash, LEAF_SIZE, 9), LeafMismatchError);
+  assert.deepEqual(store.hostReports, [{ key: mediaKey(manifest.hash), leaf: 1, damaged: true }]);
+  assert.equal(store.objects.has(mediaKey(manifest.hash)), false, "the host removed it");
+  assert.equal(await isDamaged(store, manifest.hash), true, "our own record too");
+  // The owner's next share uploads it again and answers the report.
+  assert.ok((await uploadMedia(o)).bytesSent > 0);
+  assert.ok(equalBytes(await new MediaReader({ store, hasher: nodeHasher }).readVerified(manifest.hash, 0, good.length), good));
+  assert.equal(await isDamaged(store, manifest.hash), false);
+  assert.equal((await uploadMedia(o)).bytesSent, 0, "and dedups after that");
+});
+
+test("a reader told not to report damage doesn't ask the host either", async () => {
+  const store = new TeamHostStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 54);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  await uploadMedia({ store, hasher: nodeHasher, manifest, source: bytesSource(good) });
+  store.objects.get(mediaKey(manifest.hash))![2] ^= 255;
+  await assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1, reportDamage: false }).readVerified(manifest.hash, 0, 9), LeafMismatchError);
+  assert.deepEqual(store.hostReports, []);
 });

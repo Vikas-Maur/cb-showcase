@@ -241,8 +241,9 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
   const head = await withRetries(o, () => store.head(key));
   // A reader found leaves of the stored object that never verify (e2e S5-5): replace it rather than dedup on it.
   // A report a repair already answered (repaired/<hash>) doesn't count: reports are never deleted (damage.ts).
-  const report = head === null ? null : await withRetries(o, () => openReport(store, m.hash));
-  const damaged = report !== null;
+  // Read even when the object is gone: a host may have removed it for a report (team mode), which this upload answers.
+  const report = await withRetries(o, () => openReport(store, m.hash));
+  const damaged = head !== null && report !== null;
   if (head && head.size === m.size && !damaged) {
     await ensureManifest(o);
     if (state) {

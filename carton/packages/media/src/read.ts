@@ -20,7 +20,7 @@
 import { equalBytes } from "./bytes.ts";
 import type { LeafCache } from "./cache.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
-import { reportDamage } from "./damage.ts";
+import { reportDamage, reportToHost } from "./damage.ts";
 import { manifestKey, mediaKey } from "./keys.ts";
 import { decodeManifest, LEAF_SIZE, leafDigest, leafSpan, type Manifest } from "./manifest.ts";
 import { LeafMismatchError, type MediaStat, type RangeSource } from "./range-source.ts";
@@ -65,7 +65,8 @@ export interface MediaReaderOptions {
   /**
    * When a leaf still fails after its repair attempts, the store's copy is damaged (disk rot, a bad copy): write
    * bad/<hash> so the next upload of this media replaces the object instead of deduping on it (e2e S5-5). Default on;
-   * a reader without write access just fails to report.
+   * a reader without write access just fails to report. A store with a host check (`reportDamaged`, team mode) is
+   * also asked to verify and remove the object.
    */
   reportDamage?: boolean;
 }
@@ -261,7 +262,11 @@ export class MediaReader implements RangeSource {
       this.#o.onEvent?.({ type: "mismatch", hash, leaf: i, handedOut: false });
     }
     this.#o.onEvent?.({ type: "repair-failed", hash, leaf: i });
-    if (this.#o.reportDamage !== false) await reportDamage(this.#o.store, hash, { leaf: i });
+    if (this.#o.reportDamage !== false) {
+      // Our record (bad/<hash>), and the host's own check where the store has one (it removes a damaged object).
+      await reportDamage(this.#o.store, hash, { leaf: i });
+      await reportToHost(this.#o.store, hash, i);
+    }
     throw new LeafMismatchError(hash, i);
   }
 

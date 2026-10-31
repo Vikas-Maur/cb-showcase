@@ -11,7 +11,7 @@
 
 import { isMediaHash, toHex } from "./bytes.ts";
 import type { BlobStore } from "./contracts.ts";
-import { damagedKey } from "./keys.ts";
+import { damagedKey, mediaKey } from "./keys.ts";
 
 const utf8 = new TextEncoder();
 const fromUtf8 = new TextDecoder();
@@ -46,6 +46,23 @@ export async function openReport(store: BlobStore, id: string): Promise<Uint8Arr
 
 export async function isDamaged(store: BlobStore, id: string): Promise<boolean> {
   return (await openReport(store, id)) !== null;
+}
+
+/**
+ * A store whose host can check a damaged object itself and remove it: `@carton/host-http/client`'s
+ * `hostMediaBlobs(...).reportDamaged(key, leaf)` (POST /api/projects/<p>/blobs/damaged). In team mode (hosts-plugins
+ * S5-3) a sound-looking team object can't be overwritten, so re-uploading one of the right size changes nothing: only
+ * the host, having verified the leaf, can remove it, and the next upload then puts it back.
+ */
+export interface HostDamageReporting {
+  reportDamaged?(key: string, leaf: number): Promise<unknown>;
+}
+
+/** Asks the store's host to verify leaf `leaf` of `hash` and remove the object if it is damaged (a no-op without one). */
+export async function reportToHost(store: BlobStore, hash: string, leaf: number): Promise<void> {
+  const host = store as BlobStore & HostDamageReporting;
+  if (typeof host.reportDamaged !== "function") return;
+  await host.reportDamaged(mediaKey(hash), leaf).catch(() => {}); // best effort: 409 without a manifest, a read-only role
 }
 
 /** Records that `report` (as read before the repair) is answered: the object was replaced since. */
