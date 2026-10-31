@@ -65,6 +65,26 @@ test("History follows commits: newest first, lazy summaries, a Director turn as 
   ui.dispose();
 });
 
+test("subagents named as the identity sources write them (director/<chat>/<turn>/sub-<type>-<id>): agent, turn, undo label", async () => {
+  const { carton, ui } = await open();
+  const agent: Actor = { kind: "agent", id: "director/c9/t7", name: "Director", chat: "c9", turn: "t7", group: "alice@laptop" };
+  const sub: Actor = { kind: "subagent", id: "director/c9/t7/sub-captions-ab12", name: "Director › captions", agentId: "ab12", agentType: "captions", chat: "c9", turn: "t7", group: "alice@laptop" };
+  await carton.commit({ ops: [set("a", "name", "by the agent")], author: agent });
+  await carton.commit({ ops: [set("b", "name", "by its subagent")], author: sub, name: "tighter intro" });
+  await settle();
+  const top = ui.history().at("all", 0)!;
+  assert.equal(top.kind, "turn");
+  assert.equal(top.turn?.edits, 2, "the agent's and its subagent's edits are one turn");
+  assert.equal(top.author.parent, "agent/director/c9/t7", "the subagent's agent is found from its id");
+  assert.equal(ui.actor(top.author.parent!)?.name, "Director");
+  await settle();
+  const turn = ui.undoTurn()!;
+  assert.equal(turn.author.name, "Director", "the turn is undone as the agent's");
+  assert.equal(turn.label, "tighter intro");
+  assert.equal(turn.edits, 2);
+  ui.dispose();
+});
+
 test("name a version; it shows under Named and in the engine's log", async () => {
   const { carton, ui } = await open();
   await carton.commit({ ops: [set("a", "name", "Intro")] });

@@ -106,13 +106,23 @@ export function splitPathKey(key: string): string[] {
 }
 
 /** A UI actor from a core actor. Keys follow core's actorKey(); a subagent's parent is its agent. */
+/**
+ * The agent a subagent works for. The identity sources (`@carton/cardboard` parseActor, `@carton/local`) give a
+ * subagent the agent's id plus `/sub-<type>-<id>` (§10: `director/<chat>/<turn>/sub-Explore-ab12`); an id without
+ * that suffix is the agent's own (a subagent told apart by `agentId` only).
+ */
+const agentIdOf = (a: CoreActor): string => {
+  const i = a.id.lastIndexOf("/sub-");
+  return i > 0 ? a.id.slice(0, i) : a.id;
+};
+
 export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string): Actor {
   if (!a) return { key: "system/carton", kind: "system", name: "Carton" };
   const key = actorKey(a);
   const kind: Actor["kind"] = a.kind === "external" ? "agent" : a.kind;
   const isYou = key === actorKey(me) || (a.kind !== "human" && groupOf(a) === myGroup);
   const name = a.kind === "subagent" ? a.name ?? a.agentType ?? a.id : a.kind === "external" ? `${a.name ?? a.id} (terminal)` : a.name ?? a.id;
-  const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: a.id }) : a.kind !== "human" && isYou ? actorKey(me) : undefined;
+  const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: agentIdOf(a) }) : a.kind !== "human" && isYou ? actorKey(me) : undefined;
   return { key, kind, name, ...(parent ? { parent } : {}), ...(a.agentType ? { subagentType: a.agentType } : {}), ...(isYou ? { isYou } : {}) };
 }
 
@@ -201,7 +211,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     if (known && known.name === x.name && known.parent === x.parent) return known;
     actors.set(x.key, x);
     // A subagent's agent may never act itself: register it, so "Director › Explore" can be named.
-    if (a?.kind === "subagent" && x.parent && !actors.has(x.parent)) actors.set(x.parent, { key: x.parent, kind: "agent", name: a.id === "director" ? "Director" : a.id, parent: actorKey(opts.me), isYou: x.isYou });
+    if (a?.kind === "subagent" && x.parent && !actors.has(x.parent)) {
+      const agent = agentIdOf(a);
+      actors.set(x.parent, { key: x.parent, kind: "agent", name: agent === "director" || agent.startsWith("director/") ? "Director" : agent, parent: actorKey(opts.me), isYou: x.isYou });
+    }
     return x;
   };
   const me = ui(opts.me);
@@ -572,7 +585,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       let edits = 1;
       if (top.author.turn) for (edits = 0; edits < stack.length && stack[edits]!.author.turn === top.author.turn; edits++);
       const label = top.label.replace(/^Undo\s+(?:[^:]+:\s*)?/, "");
-      next = { id: top.changeId, author: ui(top.author), label, at: top.at, edits };
+      // a turn is the agent's, even when its newest edit was a subagent's: "Undo Director: tighter intro"
+      const who = ui(top.author);
+      const author = who.kind === "subagent" && top.author.turn && who.parent ? (actors.get(who.parent) ?? who) : who;
+      next = { id: top.changeId, author, label, at: top.at, edits };
     }
     if (next?.id !== undo?.id || next?.edits !== undo?.edits || next?.label !== undo?.label) {
       undo = next;
