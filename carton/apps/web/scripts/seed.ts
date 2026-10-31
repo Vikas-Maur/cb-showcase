@@ -43,12 +43,11 @@ export async function seedDemo(o: { baseUrl: string; adminToken: string; project
   const m = o.media ?? { generate: { clipsDir: join(process.env.HOME ?? ".", "gfv-scratch", "carton", "web-demo", "clips") } };
   if (m !== "none" && "given" in m) media = m.given;
   else if (m !== "none") {
-    // the media slice (clips.ts, upload-media.ts, http-blobs.ts) is loaded only when media are generated
-    const mod = <T,>(spec: string) => import(spec) as Promise<T>;
-    const { httpBlobStore } = await mod<{ httpBlobStore: (o: { baseUrl: string; projectId: string; token: () => Promise<string> }) => BlobStore }>(new URL("../src/http-blobs.ts", import.meta.url).href);
-    const blobs = httpBlobStore({ baseUrl: o.baseUrl, projectId, token: () => session.token() });
-    const { makeSampleClips } = await mod<{ makeSampleClips: (dir: string) => Promise<{ name: string }[]> }>(new URL("./clips.ts", import.meta.url).href);
-    const { uploadSampleMedia } = await mod<{ uploadSampleMedia: (o: { store: BlobStore; clips: unknown[] }) => Promise<{ hash: string; size: number; duration: number; poster?: string; filmstrip?: string }[]> }>(new URL("./upload-media.ts", import.meta.url).href);
+    // the media slice (ffmpeg, the HTTP blob store) is loaded only when media are generated
+    const { httpBlobStore } = await import("../src/http-blobs.ts");
+    const { makeSampleClips } = await import("./clips.ts");
+    const { uploadSampleMedia } = await import("./upload-media.ts");
+    const blobs: BlobStore = httpBlobStore({ baseUrl: o.baseUrl, projectId, token: () => session.token() });
     log("generating sample clips");
     const clips = await makeSampleClips(m.generate.clipsDir);
     log(`uploading ${clips.length} clips`);
