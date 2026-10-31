@@ -76,7 +76,7 @@ test("a scoped reader's push, withdraw and history for another cut are refused a
     ] as const) {
       viewer.inbox.length = 0;
       await seq.handle(viewer, msg as never);
-      assert.deepEqual(viewer.inbox, [{ type: "error", reason: `this token can't read ${cut}` }], `${msg.type} on ${cut}`);
+      assert.deepEqual(viewer.inbox, [{ type: "error", code: "forbidden", reason: `this token can't read ${cut}` }], `${msg.type} on ${cut}`);
     }
   }
 });
@@ -88,7 +88,7 @@ test("a cut named by anything but a string is refused before any lookup, directl
   // a private cut whose id reads as a number: SQLite would match 1.5 to "1.5"
   await seq.createBranch({ id: "1.5", name: "private", forkOf: `${BRANCH}@0`, owner: "alice", kind: "variant", sequencer: { kind: "server", since: 0 } } as never, { doc0: d0 as never, stateHash: "h0" });
   const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
-  const refused = { type: "error", reason: "a message must name its cut by a string id" };
+  const refused = { type: "error", code: "bad-request", reason: "a message must name its cut by a string id" };
   for (const msg of [
     { type: "hello", branchId: 1.5, have: -1, pending: [], rids: [], schemaVersion: 1 },
     { type: "branchStatus", branchId: 1.5 },
@@ -136,4 +136,30 @@ test("an unedited variant's publication stays at the variant's version 0 after a
   const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
   await seq.handle(viewer, hello(PUB));
   assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 2 }, "both edits since the publication count");
+});
+
+test("hello refusals carry a code a client can act on: schema-too-new, unauthorized, forbidden (REQ-9)", async () => {
+  const d0 = doc([clip("c0", 0, 5)]);
+  let now = Date.now();
+  const { seq } = await world(d0, { schemaVersion: 2, clock: () => now, projectId: "p" });
+  const codeOf = async (conn: ReturnType<typeof fakeConn>, msg: object) => {
+    conn.inbox.length = 0;
+    await seq.handle(conn, msg as never);
+    return (conn.inbox.find((m) => m.type === "error") as sync.ErrorMsg | undefined)?.code;
+  };
+  const editor = fakeConn("e/k");
+  editor.auth.projectId = "p";
+  assert.equal(await codeOf(editor, { ...hello(BRANCH), schemaVersion: 3 }), "schema-too-new");
+  assert.equal(await codeOf(editor, hello(BRANCH)), undefined, "a client at the server's version is welcome");
+  const other = fakeConn("o/k");
+  other.auth.projectId = "q";
+  assert.equal(await codeOf(other, hello(BRANCH)), "unauthorized", "another project's token");
+  const late = fakeConn("l/k");
+  late.auth.projectId = "p";
+  late.auth.expires = now - 1;
+  assert.equal(await codeOf(late, hello(BRANCH)), "unauthorized", "an expired token");
+  const watcher = fakeConn("w/k", "viewer", { branches: [PUB] });
+  watcher.auth.projectId = "p";
+  assert.equal(await codeOf(watcher, hello(BRANCH)), "forbidden", "outside the token's cuts");
+  now += 1;
 });
