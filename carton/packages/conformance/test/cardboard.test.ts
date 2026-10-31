@@ -30,6 +30,7 @@ import "../src/cardboard/system/review18.ts";
 import "../src/cardboard/system/review19.ts";
 import "../src/cardboard/system/review20.ts";
 import "../src/cardboard/system/invalid-records.ts";
+import "../src/cardboard/system/app-options.ts";
 import "../src/cardboard/system/hosts-schema.ts";
 import "../src/cardboard/cli-codec.test.ts";
 

@@ -10,7 +10,10 @@
 //                             print (same print nonce), else the header ref (R4-02)
 //   .scratch/views/<n>.status the status sidecar after each apply (R5-04)
 //   .carton/displaced/        what Carton moved off a path; held until reviewed (P10 settle-2). Each name carries the
-//                             path it came from, so a restart finds and finishes what an earlier process held.
+//                             path it came from, so a restart finds and finishes what an earlier process held. Another
+//                             folder with `displacedDir` (a host whose own files are there, the app's facade).
+//
+// With `writeProject: false` project.json is the host's: never watched, imported, recovered or written here.
 //
 // Every Carton write to a watched path goes through `displaceThenInstall`, so Carton never destroys a file it hasn't
 // seen, under the bundle's install lock (`.carton/install.lock/`, shared with the app's facade): the path is missing for
@@ -178,8 +181,18 @@ export interface MaterializerOptions {
   freezeIdleMs?: number;
   /** How long a hooked agent's announced write (`hookWrite`) waits for its save to land. */
   attributeMs?: number;
-  /** Write project.json as a view of head (H1). Off when the host writes it itself. */
+  /**
+   * Write project.json as a view of head (H1). Off when the host writes it itself: then project.json is the host's, and
+   * the materializer leaves it alone (no watch events, no imports of its saves, no recovery of displaced copies).
+   */
   writeProject?: boolean;
+  /**
+   * Where displaced files are held, absolute or relative to the bundle (default `.carton/displaced`). It must be on the
+   * bundle's volume (files are renamed into it), and this materializer's alone: at start every file in it is taken as
+   * one this materializer moved aside. A host with files of its own in `.carton/displaced` (the app's facade) gives
+   * another folder.
+   */
+  displacedDir?: string;
   /** Treat file names case-insensitively (default: on Windows and macOS, whose file systems fold case). */
   foldCase?: boolean;
   /**
@@ -380,6 +393,7 @@ export class Materializer {
       freezeIdleMs: o.freezeIdleMs ?? 60_000,
       attributeMs: o.attributeMs ?? 30_000,
       writeProject: o.writeProject ?? true,
+      displacedDir: path.resolve(o.bundle, o.displacedDir ?? path.join(CARTON_DIR, "displaced")),
       foldCase: o.foldCase ?? (process.platform === "win32" || process.platform === "darwin"),
       busyBudgetMs: o.busyBudgetMs ?? BUSY_BUDGET_MS,
     };
@@ -388,7 +402,7 @@ export class Materializer {
     this.tmpDir = path.join(carton, "tmp");
     fs.mkdirSync(this.tmpDir, { recursive: true });
     fs.mkdirSync(path.join(this.bundle, VIEWS_DIR), { recursive: true });
-    this.held = new DisplacedFiles(path.join(carton, "displaced"), { now: () => this.clock.now(), quietMs: this.opts.quietMs, holdMs: this.opts.quietMs, ...this.busy });
+    this.held = new DisplacedFiles(this.opts.displacedDir, { now: () => this.clock.now(), quietMs: this.opts.quietMs, holdMs: this.opts.quietMs, ...this.busy });
     this.noLinks = !hardLinksWork(this.bundle);
   }
 
@@ -416,7 +430,7 @@ export class Materializer {
    */
   adoptCurrentFiles(): Promise<void> {
     return this.run(async () => {
-      for (const rel of [PROJECT_FILE, TIMELINE_FILE]) {
+      for (const rel of this.opts.writeProject ? [PROJECT_FILE, TIMELINE_FILE] : [TIMELINE_FILE]) {
         const f = await this.readFile(rel);
         if (!f) continue;
         // that file's content is in the engine already: once an install moves it aside, it is a copy, not a save
@@ -1054,10 +1068,10 @@ export class Materializer {
     this.retryTimers.set(rel, timer);
   }
 
-  /** The canonical relative path of a watched file, or null. */
+  /** The canonical relative path of a watched file, or null. project.json only while Carton writes it (`writeProject`). */
   private watched(name: string): string | null {
     const n = this.opts.foldCase ? name.toLowerCase() : name;
-    if (n === TIMELINE_FILE || n === PROJECT_FILE) return n;
+    if (n === TIMELINE_FILE || (n === PROJECT_FILE && this.opts.writeProject)) return n;
     if (!n.startsWith(`${VIEWS_DIR}/`) || !n.endsWith(".tsx")) return null;
     const view = n.slice(VIEWS_DIR.length + 1, -4);
     return view && !view.includes("/") ? viewPath(view) : null;
@@ -1186,7 +1200,11 @@ export class Materializer {
     for (const n of names) {
       const file = path.join(this.held.dir, n);
       if (this.held.holds(file) || this.partials.has(file) || this.keptFiles.has(file)) continue;
-      const rel = this.watched(DisplacedFiles.tagOf(file) ?? "") ?? TIMELINE_FILE;
+      const tag = DisplacedFiles.tagOf(file);
+      // every install here tags its slot with the path: with project.json the host's, an untagged file, or one moved off
+      // project.json by an earlier run that wrote it, is left where it is
+      if (!this.opts.writeProject && (tag === null || (this.opts.foldCase ? tag.toLowerCase() : tag) === PROJECT_FILE)) continue;
+      const rel = this.watched(tag ?? "") ?? TIMELINE_FILE;
       let bytes: Buffer;
       let st: fs.BigIntStats;
       try {
