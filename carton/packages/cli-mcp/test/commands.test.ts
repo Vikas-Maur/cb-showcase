@@ -201,3 +201,16 @@ test("fold: a fold that landed and came back with late cards says so (shared cut
   assert.match(undecided.out, /^Not folded in: 1 card, nothing was saved\./);
   assert.match(undecided.out, /`cb fold <project> '\$\(touch x\) cut' --into main --keep mine` \(keep Main cut's\)/);
 });
+
+test("undo --turn: cards before anything was saved say nothing was undone; late cards on a landed undo say it landed", async () => {
+  const card = { kind: "group", path: "timelineItems/c1/#time", base: { endTime: 5 }, ours: { endTime: 6 }, theirs: { endTime: 4 } };
+  let answer: any;
+  const ctx = () => ({ project: { carton: { cut: "main0000-0000", cuts: async () => [] }, write: async () => answer }, actor: director("t9") }) as unknown as CbContext;
+  answer = { status: "conflicts", conflicts: [card], ref: null, notices: [] };
+  const before = await cb(ctx, ["undo", "--turn", "t9"]);
+  assert.equal(before.code, 1);
+  assert.match(before.out, /^Not undone: 1 thing the turn changed was changed again since, nothing was saved\.\n  #1 timelineItems\/c1\/#time/);
+  answer = { status: "conflicts", id: "r.7", conflicts: [card], ref: null, notices: [] };
+  const late = await cb(ctx, ["undo", "--turn", "t9"]);
+  assert.match(late.out, /^Undid turn t9: conflicts \(1 card; nothing else was lost\)/);
+});
