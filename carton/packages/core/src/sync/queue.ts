@@ -132,6 +132,13 @@ export interface RestoreInput extends CommitInput {
   sentBases: readonly number[];
   /** Refused here after a copy was sent: it waits for its withdraw, then is reported rejected with this. */
   rejecting?: string;
+  /** The confirmed seq its ops were made on; default: the queue's head. */
+  head?: number;
+  /**
+   * The pending changes its ops were made on, in queue order (its version's `base.pending`). Absent (a row from before
+   * they were kept): the changes restored before it on the same `head`.
+   */
+  basePending?: readonly string[];
 }
 
 export const last = <T>(a: readonly T[]): T => a[a.length - 1]!;
@@ -333,61 +340,113 @@ export class ReplicaQueue {
   }
 
   /**
-   * A pending change back in the queue after a restart, as it was (web-demo REQ-7): its latest version (ops relative
-   * to the confirmed head plus the changes queued before it, as the store keeps them) at its rebase count and with its
-   * supersedes, the cards each rebase raised (reported when it settles: `lateCards` up to the confirmed version, or all
-   * of them if it is absorbed), the bases it was sent on (claimed in hello; an emptied one is withdrawn, not dropped,
-   * since a copy may still be confirmed) and a refusal here that is waiting for its withdraw. Before, it came back as
-   * a fresh change: its cards were lost, and one a rebase had emptied was dropped. False: nothing to restore (already
-   * queued, or empty, never sent and with nothing to report).
+   * Pending changes back in the queue after a restart, in their queue order, as they were (web-demo REQ-7): each at
+   * its rebase count and with its supersedes, the cards each rebase raised (reported when it settles: `lateCards` up
+   * to the confirmed version, or all of them if it is absorbed), the bases it was sent on (claimed in hello; an
+   * emptied one is withdrawn, not dropped, since a copy may still be confirmed) and a refusal here that is waiting for
+   * its withdraw. Its stored ops were made on the confirmed state at its `head` plus the changes stored before it on
+   * that head: on an older head than this queue's, it is rebased onto what was confirmed since, as an integrate would
+   * have done (review SF2-2: another process's row, kept for the next holder, was applied as if made on the newer
+   * head). A head whose state this replica can't rebuild is taken as the current one. Returns the ids restored (not:
+   * already queued, or empty, never sent and with nothing to report).
    */
-  restore(b: string, ch: RestoreInput): boolean {
-    const queue = this.queues.get(b)!;
-    if (queue.some((p) => p.id === ch.id)) return false;
-    const reports = ch.cards.some((c) => c.cards.length > 0) || ch.rejecting !== undefined;
-    if (!ch.ops.length && !keepsWhenEmpty(ch.history) && !ch.sentBases.length && !reports) return false;
-    this.rids.add(ridOf(ch.id));
-    const o = this.optimistic(b);
-    const intent = ch.intent ?? null;
-    const decl = declare(this.schema, o.doc, ch.ops, intent);
-    const top: QueueVersion = {
-      k: ch.k,
-      base: { seq: this.headSeq(b), pending: queue.filter((p) => last(p.versions).ops.length).map((p) => p.id) },
-      baseDoc: o.doc,
-      ops: ch.ops,
-      intent,
-      kinds: ch.kinds ?? null,
-      policy: policyFor(ch.policy ?? "merge", decl),
-      hash: hashOps(ch.ops, intent),
-      decl,
-      supersedes: [...ch.supersedes],
-      cards: [],
-    };
-    // the earlier versions are gone; each stands in only for the cards its rebase raised (indexed by rebase count, as
-    // `confirmed` and `finishAbsorb` read them). The latest is the one pushed.
-    const byK = new Map(ch.cards.map((c) => [c.k, c.cards]));
-    const versions: QueueVersion[] = Array.from({ length: ch.k + 1 }, (_, k) => ({ ...top, k, cards: byK.get(k) ?? [] }));
-    this.versions.set(ch.id, versions);
-    const p: QueuedChange = {
-      id: ch.id,
-      author: ch.author,
-      branchId: b,
-      created: ch.at,
-      versions,
-      cards: [],
-      sentConn: null,
-      sentEpoch: -1,
-      sends: 0,
-      sentBases: [...ch.sentBases],
-      withdrawSent: null,
-      meta: ch.meta ?? {},
-      ...(ch.history ? { history: pickHistory(ch.history) } : {}),
-      ...(ch.rejecting !== undefined ? { rejecting: ch.rejecting } : {}),
-    };
-    queue.push(p);
-    this.invalidate(b);
-    this.emit({ type: "pending", branchId: b, change: p });
-    return true;
+  restoreAll(b: string, inputs: readonly RestoreInput[], stateAt?: (seq: number) => Doc | null): { restored: string[]; held: RestoreInput[] } {
+    const S = this.schema;
+    const out: string[] = [];
+    const held: RestoreInput[] = [];
+    // the stored ops of the changes restored so far (what a later row's base may include), and per recorded head the
+    // ids restored on it (a row from before rows kept their pending base is taken as made after them)
+    const storedOps = new Map<string, Op[]>();
+    const onHead = new Map<number, string[]>();
+    for (const ch of inputs) {
+      const queue = this.queues.get(b)!;
+      if (queue.some((p) => p.id === ch.id)) continue;
+      const reports = ch.cards.some((c) => c.cards.length > 0) || ch.rejecting !== undefined;
+      if (!ch.ops.length && !keepsWhenEmpty(ch.history) && !ch.sentBases.length && !reports) continue;
+      const head = this.headSeq(b);
+      const at = ch.head ?? head;
+      // made on a state past this queue's head: it can't be rebased back onto an older one, it waits (the owner puts the
+      // queue at its saved catch-up state first)
+      if (at > head) {
+        held.push(ch);
+        continue;
+      }
+      // its base: the confirmed state at `at` (this queue's, or the owner's: History, a saved catch-up state), never a
+      // guess; one nobody can rebuild waits, kept as stored (review SF3-1)
+      let baseState: Doc | null = null;
+      try {
+        baseState = this.confirmedState(b, at);
+      } catch {
+        // inside a stretch held only through a keyframe
+      }
+      baseState ??= stateAt?.(at) ?? null;
+      if (!baseState) {
+        held.push(ch);
+        continue;
+      }
+      this.rids.add(ridOf(ch.id));
+      const o = this.optimistic(b);
+      // ...plus the pending changes it was made on, as they were: restored before it here, or confirmed since (then they
+      // are its base, not concurrent: review SF3-3)
+      const deps = ch.basePending ?? onHead.get(at) ?? [];
+      const log = this.logs.get(b)!;
+      let baseDoc = baseState;
+      const inBase = new Set<string>();
+      for (const id of deps) {
+        const ops = storedOps.get(id) ?? (log.slice(at, head).find((r): r is ConfirmedChange => !r.placeholder && r.id === id)?.ops ?? null);
+        if (!ops) continue; // absorbed or refused meanwhile: in neither its base nor the head
+        if (ops.length) baseDoc = apply(fork(baseDoc, S), ops, S);
+        inBase.add(id);
+      }
+      storedOps.set(ch.id, ch.ops);
+      if (ch.ops.length) (onHead.get(at) ?? onHead.set(at, []).get(at)!).push(ch.id);
+      const exact = at === head && hashDoc(baseDoc, S) === hashDoc(o.doc, S);
+      const chain = exact ? null : { doc: baseDoc, ids: [...inBase] };
+      const intent = ch.intent ?? null;
+      const onBase = (baseDoc: Doc, base: ChangeBase, ops: Op[], i: Intent | null, k: number, supersedes: string[], cards: ConflictCard[]): QueueVersion => {
+        const decl = declare(S, baseDoc, ops, i);
+        return { k, base, baseDoc, ops, intent: i, kinds: ch.kinds ?? null, policy: policyFor(ch.policy ?? "merge", decl), hash: hashOps(ops, i), decl, supersedes, cards };
+      };
+      const byK = new Map(ch.cards.map((c) => [c.k, c.cards]));
+      const current = { seq: head, pending: queue.filter((p) => last(p.versions).ops.length).map((p) => p.id) };
+      let top: QueueVersion;
+      let rebased: QueueVersion | null = null;
+      if (chain) {
+        // as stored, on its own base; then rebased onto what was confirmed since (its own base's changes excepted) and
+        // the changes restored before it, as an integrate would have done
+        top = onBase(chain.doc, { seq: at, pending: chain.ids }, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
+        const concurrent = log.slice(at, head).filter((r): r is ConfirmedChange & { withdrawn?: boolean } => !r.placeholder && !(r as { withdrawn?: boolean }).withdrawn && !inBase.has(r.id));
+        const r = this.rebaseOne(top, o.doc, concurrent);
+        rebased = onBase(o.doc, current, r.ops, r.intent, ch.k + 1, [...top.supersedes, `${ch.id}#${ch.k}`], r.cards);
+        rebased.policy = policyFor(top.policy, rebased.decl);
+      } else top = onBase(o.doc, current, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
+      // the earlier versions are gone; each stands in only for the cards its rebase raised (indexed by rebase count, as
+      // `confirmed` and `finishAbsorb` read them). The last is the one pushed.
+      const versions: QueueVersion[] = [...Array.from({ length: ch.k }, (_, k) => ({ ...top, k, cards: byK.get(k) ?? [] })), top, ...(rebased ? [rebased] : [])];
+      // its own array: rebases append to both (review SF2-1: one shared array got every append twice)
+      this.versions.set(ch.id, [...versions]);
+      const p: QueuedChange = {
+        id: ch.id,
+        author: ch.author,
+        branchId: b,
+        created: ch.at,
+        versions,
+        cards: [],
+        sentConn: null,
+        sentEpoch: -1,
+        sends: 0,
+        sentBases: [...ch.sentBases],
+        withdrawSent: null,
+        meta: ch.meta ?? {},
+        ...(ch.history ? { history: pickHistory(ch.history) } : {}),
+        ...(ch.rejecting !== undefined ? { rejecting: ch.rejecting } : {}),
+      };
+      queue.push(p);
+      this.invalidate(b);
+      out.push(ch.id);
+      this.emit({ type: "pending", branchId: b, change: p });
+    }
+    return { restored: out, held };
   }
 
   // ---------------------------------------------------------------- integrating confirmed rows

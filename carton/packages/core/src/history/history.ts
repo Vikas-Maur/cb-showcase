@@ -285,7 +285,8 @@ export class History {
     let h = this.#hash.get(c);
     if (!h) {
       const d = this.stateOf(c);
-      if (!d) return null;
+      // a squashed version's state is gone, but not its identity (SF3-5)
+      if (!d) return this.changeAt(c)?.squashedHash ?? null;
       this.#hash.set(c, (h = E.hashDoc(d, this.schema)));
     }
     return h;
@@ -1158,13 +1159,22 @@ export class History {
   #unclash(pkg: ShallowExport): ShallowExport {
     const renamed = new Map<string, string>();
     const moved = new Set<NodeId>();
+    // the sender's first version on the cut that isn't ours names its copy: the same content, the same id, across later
+    // files from that sender; never the display name, which two copies share (review SF3-2)
+    const first = new Map<string, DagNode>();
     for (const n of pkg.nodes) {
       const br = this.#cuts.get(n.branchId);
       if (!br || br.rec.shallow) continue;
-      if (n.seq <= br.log.length && this.hashOf(nodeId(n.branchId, n.seq)) === n.hash) continue;
+      if (n.seq <= br.log.length) {
+        const ours = this.hashOf(nodeId(n.branchId, n.seq));
+        // ours, or one we can't compare (compacted before squashed versions kept their hash): taken as ours
+        if (ours === n.hash || ours === null) continue;
+      }
       moved.add(n.id);
-      if (!renamed.has(n.branchId)) renamed.set(n.branchId, `${n.branchId}.${E.sha256Hex(pkg.sender).slice(0, 8)}`);
+      const f = first.get(n.branchId);
+      if (!f || n.seq < f.seq) first.set(n.branchId, n);
     }
+    for (const [b, n] of first) renamed.set(b, `${b}.${n.hash.slice(0, 8)}`);
     if (!moved.size) return pkg;
     const map = (id: NodeId): NodeId => {
       if (!moved.has(id)) return id;
@@ -1191,6 +1201,8 @@ export class History {
       const br = this.#cuts.get(n.branchId);
       if (br && !br.rec.shallow) continue;
       const prev = this.#lineage.get(n.id);
+      // a node's identity never changes: one we hold under this id with another state is a different version (SF3-2)
+      if (prev && prev.hash !== n.hash) throw new Error(`shallow export: node ${n.id} is another version than the one held under that id`);
       const bn = branches[n.branchId]?.name;
       incoming.set(n.id, { ...n, ...(prev ? { parents: prev.parents } : {}), kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
     }
