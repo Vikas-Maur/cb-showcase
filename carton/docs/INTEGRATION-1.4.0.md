@@ -78,13 +78,24 @@ the hooks call, and it loads `carton-node.cjs` on first use. The bridges are the
 
 **The live-sync and sharing half** (H8's lease holder and sync client, Invite to edit and Join, H10, H11's "Bring in
 their changes", H13) lives in its own files, `scripts/carton/sync/**` and `scripts/patch-carton-sync.js`, and plugs in
-at three points:
+at four points:
 - **Worker services.** `scripts/carton/build.js` bundles `sync/worker.js` (when present) into `carton-node.cjs`, so it
   shares the facade's one copy of `@carton/*`. It calls the facade's `extend({worker(api)})`; in the library worker its
   services join the `carton` namespace beside the facade's own, never replacing one. `api` gives each project's open
   Carton (`carton(projectId)`, `open(bundlePath)`), `onOpen(fn)` for every Carton the worker opens, `emit`, and
   `materialize(projectId)`. An extension that throws is left out, logged once. `sync/ui.js` is bundled into
   `carton-ui.js` the same way, and the rest of `sync/` (but its tests) is copied to `resources\carton\sync`.
+- **Facade hooks** (each optional on the extension; one that throws is skipped, logged once). `openOptions({bundlePath,
+  projectId})` adds `openLocal` options for the project's handle: the worker's handle gets the project's sync connection,
+  the person's actor and the replica's name; cb's gets the headless helper that syncs. `commitShared(lc, {doc, base,
+  author, intent, gui})` takes a commit on a shared cut: the lease holder commits on its own handle (a stale save's
+  clashes keep head's value, the rest lands), anyone else hands it to the holder, never committing in-process (its
+  pending row would be lost at the holder's next settle). A `pending` result counts as a confirmation, `rebased` included,
+  and its `head` is what the file gets when the caller's handle can't read the holder's pending state.
+  `materializeDoc(next, {bundlePath, projectId, current})` fills in a record before head goes into `project.json` (a
+  teammate's new clip: where it plays from, its size and duration). Head goes into `project.json` with `description` and
+  with media through the store's own media scope (`ownedMediaIds` / `removedMediaIds`: 1.4.0's `updateScoped` never
+  takes media from `ownedFields`), in the worker and in cb (`headScope`).
 - **`carton:call` handlers.** `__cartonMain.handle(name, fn)` answers a method in main (it can still reach the worker
   with `__cartonMain.forward(name, args)`); `window.__carton.handle(name, fn)` answers one in the page. Off, none runs.
 - **Patches.** `build-windows.js` (and the tests' `stage.js`) runs `scripts/patch-carton-sync.js --app` and `--cli`

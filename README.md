@@ -534,7 +534,9 @@ with Carton off none of it runs at all.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
-  what they are doing. Offline you keep working; your changes go out when the host is back.
+  what they are doing. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
+  panel says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
+  message), access refused, the host out of reach.
 - **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
   through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
   (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
@@ -555,12 +557,12 @@ that live on the host (`media.js`), the agent's media tools (`tools.js`), `cb`'s
 Tests (Linux, Cardboard's own bundles; two libraries, each with its own app data and its own real library worker,
 syncing through a real host on 127.0.0.1): share with history, invite and join, concurrent edits, presence, media by
 range, by URL and through the agent's `grab_frame`, media while it uploads, offline and rejoin, `cb` with the app open
-(from a print one version behind), and with it closed in cloud mode; and `.cbproj` Save As, Open and "Bring in their
-changes" in both copies.
+(from a print one version behind), and with it closed in cloud mode, a host too old for the app; `.cbproj` Save As,
+Open and "Bring in their changes" in both copies; and the panel's words when sync fails (`ui.test.js`).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/ui.test.js
 ```
 
 Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview

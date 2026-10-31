@@ -21,13 +21,12 @@
 // them, and nothing here applies them.
 import fs from "node:fs";
 import path from "node:path";
-import { extend, cardboard14 } from "../carton-node.js";
+import { extend, cardboard14, headScope } from "../carton-node.js";
 import { Carton } from "@carton/core";
 import { cardboardAdapter } from "@carton/cardboard";
 import { readCbproj, bringInTheirChanges, SHALLOW_ENTRY, EXPORT_DIR } from "@carton/cardboard/node";
 import { openLocal, identify, nodeHasher } from "@carton/local";
 import { openProjectStore } from "@carton/store-sqlite";
-import { headScope } from "./scope.js";
 
 const errText = (e) => (e && e.message) || String(e);
 const warned = new Set();
@@ -143,7 +142,7 @@ async function materialize(store, id, bundle) {
   if (api) return api.materialize(id);
   const current = await store.read(id);
   const next = await cardboard14.headProject(bundle, current);
-  // Their new clips' records too (media goes through 1.4.0's media scope, not ownedFields: scope.js).
+  // Their new clips' records too (media goes through 1.4.0's media scope, not ownedFields: the facade's headScope).
   if (next) await store.updateScoped(next, headScope(current, next));
 }
 

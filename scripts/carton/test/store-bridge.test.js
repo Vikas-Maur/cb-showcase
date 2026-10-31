@@ -62,3 +62,46 @@ test("any other error fails at once", async () => {
   await assert.rejects(c.readFile(path.join(b, "project.json")), (e) => e.code !== "ENOENT");
   assert.ok(Date.now() - t0 < 3000, "it didn't wait for the install");
 });
+
+// A merged save's put-back: Carton's head, whose records core freezes, goes back into Cardboard's store, and
+// Cardboard's code edits its store's documents in place. In sloppy code (as 1.4.0's bundles may run) a write to a
+// frozen record is silently ignored: the edit would be lost with no error. The bridge hands the store a copy.
+test("a merged save's put-back is Cardboard's own copy: an in-place edit sticks", async () => {
+  const deepFreeze = (o) => { if (o && typeof o === "object" && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
+  // A facade whose commit merged someone else's change in: the document it hands back is head, frozen as core's are.
+  const dir = path.join(ROOT, "facade");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "carton-node.cjs"), `
+    const deepFreeze = ${deepFreeze.toString()};
+    exports.cardboard14 = { commit: async ({ doc }) => ({ status: "confirmed", rebased: 1, merged: true,
+      doc: deepFreeze({ ...doc, stateUpdatedAt: doc.stateUpdatedAt + 1, timelineItems: [{ id: "a", startTime: 0, endTime: 2 }, { id: "b", startTime: 2, endTime: 4 }] }) }) };
+  `);
+  const saved = process.env.CARTON_DIR;
+  process.env.CARTON_DIR = dir;
+  try {
+    const c = load(true);
+    const doc0 = { id: "p", stateUpdatedAt: 1, timelineItems: [{ id: "a", startTime: 0, endTime: 2 }] };
+    const store = {
+      options: { root: ROOT },
+      byId: new Map([["p", { bundlePath: path.join(ROOT, "p.cardboard"), document: doc0 }]]),
+      // 1.4.0's applyMutation: the mutation on the current document, the result kept as the entry's document.
+      async __cartonApplyMutation(id, mutate) {
+        const e = this.byId.get(id), next = mutate(e.document);
+        this.byId.set(id, { ...e, document: next });
+        return { document: next, changed: true };
+      },
+    };
+    const res = await c.applyMutation(store, "p", (d) => ({ ...d, stateUpdatedAt: 2, timelineItems: d.timelineItems.map((i) => ({ ...i })) }));
+    const kept = store.byId.get("p").document;
+    assert.equal(kept, res.document, "the store and the caller continue from the same document");
+    assert.equal(kept.timelineItems.length, 2, "head, with the merged change");
+    // Cardboard's next edit, in place, in sloppy code (a Function body without "use strict").
+    new Function("p", "p.timelineItems[1].startTime = 3; p.timelineItems.push({ id: 'c', startTime: 4, endTime: 5 }); p.name = 'Renamed';")(kept);
+    assert.equal(kept.timelineItems[1].startTime, 3, "the edit to a merged record sticks");
+    assert.equal(kept.timelineItems.length, 3, "and so does an added item");
+    assert.equal(kept.name, "Renamed");
+    assert.ok(!Object.isFrozen(kept) && !Object.isFrozen(kept.timelineItems[0]));
+  } finally {
+    if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
+  }
+});

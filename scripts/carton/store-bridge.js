@@ -88,9 +88,13 @@ module.exports = ({ dir, slice, who }) => String.raw`var __carton = (() => {
       if (!out?.doc || out.doc === res.document) return res;
       // The file gets head: the store and the queued write continue from it. When someone else's change was merged
       // in, the pages are told too (main broadcasts it as a project change, which the editor adopts).
-      if (entry && entry.document === res.document) store.byId.set(id, { ...entry, document: out.doc });
+      // Cardboard gets a copy: head's records are Carton's own, frozen (core), and Cardboard's code edits its store's
+      // documents in place, which on a frozen record is silently ignored in sloppy code, losing the edit. Once per
+      // merged save.
+      const doc = structuredClone(out.doc);
+      if (entry && entry.document === res.document) store.byId.set(id, { ...entry, document: doc });
       if (out.merged) self.emit?.({ kind: "changed", id, bundlePath: entry?.bundlePath });
-      return { document: out.doc, changed: true };
+      return { document: doc, changed: true };
     },
     // H1, H3: displace-then-install in place of rename(tmp, file).
     install: (tmp, file, seenStamp) => (carton() ? carton().install(tmp, file, seenStamp) : require("node:fs/promises").rename(tmp, file)),

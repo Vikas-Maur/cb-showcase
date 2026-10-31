@@ -49,7 +49,7 @@ function proc(file, args, env) {
 }
 
 let built = null;
-/** Stage the bundles (Windows patches, patch-carton, patch-carton-sync) and build carton-node.cjs with the sync half. */
+/** Stage the bundles (Windows patches, patch-carton, patch-carton-sync) and build Carton as build-windows.js does. */
 async function build() {
   if (built) return built;
   fs.mkdirSync(TMP, { recursive: true });
@@ -57,7 +57,8 @@ async function build() {
   const s = stage(PRISTINE, path.join(TMP, "stage"), { carton: true });
   const bundle = path.join(TMP, "bundle");
   fs.rmSync(bundle, { recursive: true, force: true });
-  await require("./shim.js").build(bundle, s.assets);
+  // The shipped build (CARTON_TEST_FREEZE=1: every document Carton returns deep-frozen, freeze.js).
+  await require("../../build.js").build(bundle, s.assets, process.env.CARTON_TEST_FREEZE === "1" ? { prelude: path.join(__dirname, "freeze.js") } : {});
   const clip = path.join(TMP, "clip.mp4");
   if (!fs.existsSync(clip)) execFileSync(process.env.CARDBOARD_FFMPEG ?? "ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip]);
   // A second clip, longer and different footage, for media that is still uploading (three ~2 s segments).
@@ -66,9 +67,9 @@ async function build() {
   return (built = { ...s, carton: path.join(bundle, "carton"), clip, clip2 });
 }
 
-async function startHost(dir, port) {
+async function startHost(dir, port, env = {}) {
   if (!port) fs.rmSync(dir, { recursive: true, force: true });
-  const h = proc(path.join(__dirname, "host.mjs"), [dir, String(port ?? 0)], process.env);
+  const h = proc(path.join(__dirname, "host.mjs"), [dir, String(port ?? 0)], { ...process.env, ...env });
   const r = await h.next((x) => x.ready);
   return { ...h, port: r.port, origin: r.origin, stop: async () => {
     h.send("exit");

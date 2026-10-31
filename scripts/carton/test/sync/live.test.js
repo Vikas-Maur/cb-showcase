@@ -5,7 +5,7 @@
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js
 // One scenario, in order (each step needs the one before): share with history, invite, join in the other library,
 // concurrent edits, presence, media, offline and rejoin, cb on the shared project with the app open, then with the
-// app closed in cb's cloud mode (a headless helper syncs; H13).
+// app closed in cb's cloud mode (a headless helper syncs; H13), and a host too old for the app (the panel says why).
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path");
@@ -158,6 +158,35 @@ test("media before its upload finishes: Bob plays Alice's new clip from its firs
     const m3u8 = await (await fetch(live.url)).text();
     assert.match(m3u8, /#EXT-X-MAP:URI="http:\/\/127\.0\.0\.1:\d+\/m\/[0-9a-f]{64}(\.m4s)?\?t=/);
     assert.doesNotMatch(m3u8, /#EXT-X-ENDLIST/, "a live playlist while it uploads");
+    // A segment that doesn't verify, read by a tool through the playlist: Bob's loopback server reports the stream as
+    // damaged on the host (bad/<stream>), so Alice's next share makes a new one. The clip is 6 s in 2 s segments: wait
+    // for all three, and spoil the last (Bob's player above read only the first), then put it back. The host keeps the
+    // object meanwhile: its own repair path would remove it, and then the range server's second read finds it missing
+    // and reports nothing for the stream (media's to fix: notes/windows-sync.md, "Questions for other agents").
+    const segUrls = await S.until(async () => {
+      // (the init segment's URL is in #EXT-X-MAP, so these lines are the media segments)
+      const urls = (await (await fetch(live.url)).text()).split("\n").filter((l) => /^http:\/\/127\.0\.0\.1:\d+\/m\/[0-9a-f]{64}/.test(l));
+      return urls.length >= 3 && urls;
+    }, 30_000, "all three segments in the playlist");
+    const segUrl = segUrls.at(-1), segHash = segUrl.match(/\/m\/([0-9a-f]{64})/)[1];
+    assert.match(segUrl, new RegExp(`[?&]s=${src.stream}(&|$)`), "the segment's URL names its stream");
+    const media = path.join(S.TMP, "host", "blobs", "objects", "projects", id, "media");
+    const obj = path.join(media, "m", segHash + "~b");
+    const orig = fs.readFileSync(obj), spoilt = Buffer.from(orig);
+    spoilt[spoilt.length >> 1] ^= 0xff;
+    host.send("keep-objects");
+    await host.next((x) => x.keep === true);
+    fs.writeFileSync(obj, spoilt);
+    try {
+      const r = await fetch(segUrl).then(async (res) => ({ status: res.status, bytes: (await res.arrayBuffer().catch(() => new ArrayBuffer(0))).byteLength }), (e) => ({ error: String(e) }));
+      assert.ok(r.error || r.status !== 200 || r.bytes < orig.length, `bytes that don't verify never reach the tool whole: ${JSON.stringify(r)}`);
+      const reports = await S.until(async () => { const d = path.join(media, "bad"); const f = fs.existsSync(d) ? fs.readdirSync(d).filter((n) => n.startsWith(src.stream)) : []; return f.length && f; }, 10_000, "bad/<stream> at the host");
+      assert.ok(reports.length >= 1);
+    } finally {
+      fs.writeFileSync(obj, orig);
+      host.send("remove-objects");
+      await host.next((x) => x.keep === false);
+    }
   } finally {
     host.send("release-ends");
   }
@@ -207,6 +236,31 @@ test("cb on the shared project with the app open: the agent's edit goes through 
   }
 });
 
+test("offline, cb with the app open from a print one version behind: Alice's file keeps Bob's change and the agent's", t, async () => {
+  const tsx = path.join(alice.root, "Demo.cardboard", "timeline.tsx");
+  await S.until(() => /fontSize=\{77\}/.test(fs.readFileSync(tsx, "utf8")), 10_000, "alice's timeline.tsx at head");
+  const printed = fs.readFileSync(tsx, "utf8");
+  await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Bob again" } : null));
+  await S.until(async () => S.textOf(await S.projectOf(alice, id)).textContent === "Bob again", 20_000, "bob's text at alice");
+  const port = host.port;
+  await host.stop();
+  await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "alice offline");
+  // The holder is offline, so the agent's edit stays pending, merged onto Bob's text in the holder. cb's own handle
+  // holds the confirmed rows only: what cb writes into project.json must be the holder's state, not its document from
+  // the older print (round 2 #2: that would drop Bob's text from Alice's file, with nothing to repair it offline).
+  const edit = path.join(alice.home, "edit4.tsx");
+  fs.writeFileSync(edit, printed.replace(/fontSize=\{\d+\}/, "fontSize={78}"));
+  const r = alice.cb(["source", "apply", "Demo", edit], { CARDBOARD_ACTOR: "codex/c11" });
+  assert.equal(r.code, 0, r.out + r.err);
+  await S.sleep(1500);
+  const disk = S.textOf(S.fileOf(alice)), store = S.textOf(await S.projectOf(alice, id));
+  assert.deepEqual([disk.fontSize, disk.textContent], [78, "Bob again"], "Alice's project.json has both while offline");
+  assert.deepEqual([store.fontSize, store.textContent], [78, "Bob again"], "and so does her app");
+  host = await S.startHost(path.join(S.TMP, "host"), port);
+  await S.until(async () => { const y = S.textOf(await S.projectOf(bob, id)); return y.fontSize === 78 && y.textContent === "Bob again" && y; }, 60_000, "the agent's offline edit at bob, with his text");
+  await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "up-to-date", 20_000, "alice up to date");
+});
+
 test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the pull brings Bob's edit in, the agent's edit reaches Bob, no whole-file PUT", t, async () => {
   await alice.stopWorker();
   await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, fontSize: 55 } : null));
@@ -231,4 +285,21 @@ test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the p
   }
   await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 66, 30_000, "the agent's edit at bob");
   assert.equal(bob.cb(["history", "Demo"]).json().versions[0].by?.id, "codex/c10", "credited to the agent on Bob's computer");
+});
+
+test("a host older than the app: Bob's panel says the host needs an update, instead of \"Syncing\" for ever", t, async () => {
+  const port = host.port;
+  await host.stop();
+  host = await S.startHost(path.join(S.TMP, "host"), port, { CARTON_TEST_SCHEMA_VERSION: "1" });
+  // (While the host restarts the problem is "unreachable"; once it answers, its refusal.)
+  const st = await S.until(async () => { const s = await bob.call("carton.liveStatus", { projectId: id }); return s.problem?.code === "update-server" && s; }, 30_000, "the host's refusal at bob");
+  assert.equal(st.problem.code, "update-server", JSON.stringify(st));
+  assert.match(st.problem.words, /needs an update/);
+  assert.match(st.problem.detail ?? "", /update the server/, "the host's own message, shown under the words");
+  const ev = bob.events().filter((e) => e.change?.topic === "live" && e.change.id === id).map((e) => e.change.live.problem).reverse()[0];
+  assert.equal(ev?.code, "update-server", "the Share panel was told too");
+  // A host that takes the app's schema again: the problem goes.
+  await host.stop();
+  host = await S.startHost(path.join(S.TMP, "host"), port);
+  await S.until(async () => { const s = await bob.call("carton.liveStatus", { projectId: id }); return !s.problem && s.status === "up-to-date"; }, 30_000, "bob back to up to date");
 });

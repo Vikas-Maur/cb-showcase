@@ -15,17 +15,17 @@
 import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
-import { extend, cardboard14 } from "../carton-node.js";
+import { extend, cardboard14, headScope } from "../carton-node.js";
 import { Carton, hashDoc } from "@carton/core";
 import { cardboardAdapter, materializeProject } from "@carton/cardboard";
 import { CartonHolderEngine, localGroup, nodeHasher, openLocal } from "@carton/local";
 import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 import { webSocketTransport } from "@carton/server-node";
+import { hostMessageBlobs } from "@carton/host-http/client";
 import * as host from "./host.js";
 import * as store from "./store.js";
 import { Live, caughtUp } from "./live.js";
 import * as media from "./media.js";
-import { headScope } from "./scope.js";
 import "./cbproj.js";
 
 const errText = (e) => (e && e.message) || String(e);
@@ -47,7 +47,19 @@ const transport = webSocketTransport();
  */
 function lazySync(bundlePath, projectId) {
   const session = store.sessionFor(bundlePath, projectId);
+  // A change or an upload bigger than the host takes in one message goes as an envelope through the host's blob routes
+  // (hosts-plugins' client, as local-cli's helper does), resolved at use like the connection.
+  let msgs = null, msgsHost = null;
+  const envelopes = () => {
+    const cfg = store.readConfig(bundlePath, projectId);
+    if (!cfg) throw new Error("This project isn't shared from this computer");
+    if (!msgs || msgsHost !== cfg.host) { msgs = hostMessageBlobs({ origin: host.origin(cfg.host), projectId, token: () => session.token() }); msgsHost = cfg.host; }
+    return msgs;
+  };
+  const METHODS = new Set(["put", "get", "head", "delete", "list", "createMultipart", "resumeMultipart"]);
+  const blobs = new Proxy({ kind: "host-messages" }, { get: (t, k) => (k === "kind" ? t.kind : METHODS.has(k) ? (...a) => envelopes()[k](...a) : undefined) });
   return {
+    blobs,
     transport: {
       connect(_url, o) {
         const cfg = store.readConfig(bundlePath, projectId);
@@ -207,25 +219,31 @@ async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
  * the holder's next settle).
  */
 async function commitShared(lc, { doc, base, author, intent }) {
+  const h = (d) => { try { return hashDoc(d, lc.carton.schema); } catch { return null; } };
+  // `rebased`: the state this edit landed in isn't the document the caller sent (another edit was merged in: a
+  // teammate's, or this computer's own still pending), so the facade writes that state, never the caller's document.
+  const rebasedFrom = (state) => (state && h(state) !== h(doc) ? 1 : 0);
   if (holding.get(lc)?.holds()) {
     let resolved = [];
     const r = await lc.carton.commit({ doc, ...(base ? { base } : {}), author, ...(intent ? { intent } : {}), choices: () => "ours" });
     if ((r.status === "pending" || r.status === "confirmed") && r.resolved?.length) resolved = r.resolved;
-    return resolved.length ? { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status } : r;
+    if (resolved.length) return { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status };
+    // Offline (pending), the holder's head is its optimistic state: what it merged this edit onto included.
+    if (r.status === "pending") return { ...r, rebased: rebasedFrom((await lc.carton.head()).doc) };
+    return r;
   }
-  const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}) }, { actor: author });
+  // Anyone else hands the commit to the holder. A pending answer (the holder offline, or the server slow) carries the
+  // holder's head (contract(local) `head`): this handle reads the confirmed rows only, which hold neither this edit nor
+  // the holder's other pending ones, so the state to write is the holder's (round 2 #2: the caller's document could
+  // land in project.json after the holder's, dropping what it had merged in, with no confirmation to repair it).
+  const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}), head: true }, { actor: author });
   if (w.status === "error") throw new Error(w.error);
   if (w.status === "rejected") return { status: "rejected", reason: w.reason };
-  const head = await lc.carton.head();
-  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: head.ref };
-  // The holder may have merged other edits in (a base older than its head): then this caller's document isn't head, and
-  // the facade must write head (`rebased`), never the document it sent. This handle reads the confirmed rows the holder
-  // wrote, so a confirmed result's head is exact. A pending one (the holder offline) isn't in this handle's head yet: the
-  // document as sent is the closest, and the holder writes its optimistic head into project.json right after (Live).
-  let same = false;
-  try { same = hashDoc(head.doc, lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch {}
-  const rebased = w.status !== "pending" && !same ? 1 : 0;
-  return { status: w.status === "pending" ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased, empty: !!w.empty, notices: [] };
+  const head = w.head?.doc ? w.head : await lc.carton.head();
+  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: head.ref, ...(w.head?.doc ? { head } : {}) };
+  // Confirmed: the holder wrote the confirmed rows before answering, so this handle's head is exact.
+  const pending = w.status === "pending";
+  return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...(w.head?.doc ? { head } : {}) };
 }
 
 /**
@@ -357,7 +375,7 @@ extend({
   async openOptions({ bundlePath, projectId }) {
     const cfg = projectId && store.readConfig(bundlePath, projectId);
     // S3-1: in a shared project the replica is named after the person (lineage, cut owners, dialogs).
-    const helper = cfg ? { name: cfg.name ?? cfg.account, helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } } : {};
+    const helper = cfg ? { name: cfg.name ?? cfg.account, helperFactory: helperFactory(), helperConfig: { cardboardSync: { bundlePath, projectId } } } : {};
     if (!inWorker) return helper;
     const actor = person(bundlePath, projectId);
     return { ...helper, sync: lazySync(bundlePath, projectId), ...(actor ? { actor } : {}) };
@@ -533,7 +551,7 @@ const cli = {
   async pull(lib, projectId) {
     const bundlePath = shared(lib, projectId);
     if (!bundlePath) return false;
-    const lc = await openLocal({ projectDir: bundlePath, projectId, helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } });
+    const lc = await openLocal({ projectDir: bundlePath, projectId, helperFactory: helperFactory(), helperConfig: { cardboardSync: { bundlePath, projectId } } });
     try {
       // Any write reaches the holder; a short pin is one that changes nothing (the holder catches up before it answers).
       const w = await lc.write({ kind: "pin", owner: "cloud-pull", ttlMs: 1000 });
