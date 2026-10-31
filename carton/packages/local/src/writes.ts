@@ -305,7 +305,9 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   if (carton.sync?.waitFor) {
     // the shared cut's own answer: confirmed by the server, a late conflict, a rejection, or still pending
     const o = await carton.sync.waitFor(r.id, ms, destCut(op));
-    if (o.status === "confirmed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices });
+    // absorbed: the server spent the change by a withdraw, its effect already being there; it is in place, like a
+    // confirmation (it has no cards of its own)
+    if (o.status === "confirmed" || o.status === "absorbed") return asConflicts({ status: "confirmed", id: r.id, seq: o.seq, ref: null, notices, ...(o.status === "absorbed" ? { absorbed: true } : {}) });
     if (o.status === "pending") return asConflicts({ ...toCbResult(r, notices), online: true } as CbResult);
     for (const x of await deliverNotices(carton, req.actor)) if (x.change !== r.id) notices.push(x);
     return o.status === "rejected" ? { status: "rejected", id: r.id, reason: o.reason, notices } : { status: "conflicts", id: r.id, conflicts: [...kept, ...o.cards], ref: null, notices, ...(o.absorbed ? { absorbed: true } : {}) };
