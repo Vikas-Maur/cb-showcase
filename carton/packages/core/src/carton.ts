@@ -251,7 +251,12 @@ export interface Carton {
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
   /** `id`: a stable cut id, so a retried call returns the cut it already made. */
   fork(name: string, opts?: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string }): Promise<CutRecord>;
-  switchTo(cut: string): Promise<void>;
+  /**
+   * Make `cut` the current cut, this handle's and the machine's (`meta ["current"]`, last writer wins). With
+   * `persist: false`, the handle's only, nothing written: for a process that adopts a switch another one stored, so a
+   * third process's switch in between is never overwritten by the adoption.
+   */
+  switchTo(cut: string, opts?: { persist?: boolean }): Promise<void>;
   /** Fold `from` (a cut id or a ref) into `into` (default: current cut). */
   /** With `check: true`, nothing is committed and `preview` tells what the fold would bring in. */
   fold(from: string | StateRef, opts?: FoldOptions & { into?: string }): Promise<FoldResult & { preview?: FoldPreview }>;
@@ -1187,10 +1192,10 @@ class CartonImpl implements Carton {
     );
     return rec;
   }
-  async switchTo(cut: string): Promise<void> {
+  async switchTo(cut: string, opts: { persist?: boolean } = {}): Promise<void> {
     await this.#refresh();
     this.#h.current = cut;
-    await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
+    if (opts.persist !== false) await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
   }
   async renameCut(cut: string, name: string): Promise<CutRecord> {
     let rec!: CutRecord;
