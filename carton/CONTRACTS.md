@@ -71,7 +71,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the
   author. Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
   shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
-  the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). `carton.media` is null:
+  the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
+  client's message limit is refused before it is sent (`rejected` / "too large", its author told; the edits after it
+  go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
+  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. `carton.media` is null:
   `@carton/media` calls Carton, not the reverse.
 - **Processes and the sync lease (§6.2):** many processes open one `carton.db`; only the lease holder (Cardboard's
   library worker, or `@carton/local`'s headless helper) connects and pushes. A write to a shared cut must reach the
