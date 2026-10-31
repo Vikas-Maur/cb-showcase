@@ -24,6 +24,7 @@ import { webSocketTransport } from "@carton/server-node";
 import * as host from "./host.js";
 import * as store from "./store.js";
 import { Live } from "./live.js";
+import "./cbproj.js";
 
 const errText = (e) => (e && e.message) || String(e);
 const warned = new Set();
