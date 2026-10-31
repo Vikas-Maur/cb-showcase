@@ -8,8 +8,8 @@
 // as `cb source apply` did in the verified prototype; the cards are kept as a notice for the actor, so `cb conflicts`
 // lists them and `cb resolve` can pick the other side later. Notices are marked delivered when a result carries them,
 // never deleted until resolved or handed to the person (the Stop hook and `cb resolve` still need them).
-import { merge3, resolve as resolveMerge } from "@carton/core";
-import type { Actor, Carton, CartonEvent, ChangeId, CommitInput, CommitResult, ConflictCard, Doc, MergeResult, Notice, PathKey, StateRef } from "@carton/core";
+import { merge3 } from "@carton/core";
+import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
 
@@ -176,40 +176,11 @@ export async function casUpdate<T>(store: Store, table: string, key: readonly (s
 /** The notice row a commit's cards live in: keyed by the request id, so a retried request finds the same row. */
 const cardsKey = (actor: Actor, requestId: ChangeId) => [actorKey(actor), 0, 0, `req:${requestId}`];
 
-/**
- * Add a pass's cards to the request's notice row (creating it if absent), conditionally on the row as read: cards the
- * actor resolved meanwhile stay resolved, and hook marks are kept. Written before the append that resolves them.
- */
-async function addCards(carton: Carton, actor: Actor, requestId: ChangeId, cards: readonly ConflictCard[]): Promise<void> {
-  const store = storeOf(carton);
-  if (!store || !cards.length) return;
-  const key = cardsKey(actor, requestId), to = actorKey(actor);
-  const text = (n: number) => `${n} conflict card${n === 1 ? "" : "s"} on your change ${requestId}: the other side's value was kept; pick with \`cb resolve\``;
-  for (let i = 0; i < 16; i++) {
-    const cur = await store.get<NoticeRow>("notices", key);
-    const at = Date.now();
-    if (cur === undefined) {
-      const fresh = { to, kind: "late-conflict" as const, text: text(cards.length), change: requestId, cards: [...cards], at, deliveredAt: at };
-      if (await store.write([{ table: "notices", key, value: fresh }], [{ table: "notices", key, expect: "absent" }])) return;
-      continue;
-    }
-    const have = new Set((cur.cards ?? []).map((c) => c.path));
-    const more = cards.filter((c) => !have.has(c.path));
-    if (!more.length) return;
-    const next = { ...cur, cards: [...(cur.cards ?? []), ...more], text: text((cur.cards?.length ?? 0) + more.length) };
-    if (await store.write([{ table: "notices", key, value: next }], [{ table: "notices", key, expect: { equals: cur } }])) return;
-  }
-}
-
-/** The save didn't land at all: its cards describe nothing, so they go (conditionally on what was written). */
-async function dropCards(carton: Carton, actor: Actor, requestId: ChangeId, cards: readonly ConflictCard[]): Promise<void> {
-  const store = storeOf(carton);
-  if (!store || !cards.length) return;
-  const paths = new Set(cards.map((c) => c.path));
-  await casUpdate<NoticeRow>(store, "notices", cardsKey(actor, requestId), (cur) => {
-    const left = (cur.cards ?? []).filter((c) => !paths.has(c.path));
-    return left.length === (cur.cards ?? []).length ? SKIP : left.length ? { ...cur, cards: left } : undefined;
-  });
+/** The notice row holding a save's cards, written in the same batch as the save's append (`cardsWrite`). */
+function cardsRow(actor: Actor, requestId: ChangeId, change: ChangeId | null, cards: readonly ConflictCard[]) {
+  const to = actorKey(actor), at = Date.now();
+  const text = `${cards.length} conflict card${cards.length === 1 ? "" : "s"} on your change ${change ?? requestId}: the other side's value was kept; pick with \`cb resolve\``;
+  return { table: "notices", key: cardsKey(actor, requestId), value: { to, kind: "late-conflict", text, change: change ?? requestId, cards: [...cards], at, deliveredAt: at } };
 }
 
 /** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
@@ -248,29 +219,19 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     }
     case "commit": {
       // A save whose merge raises cards: the rest lands, and each card keeps head's value until someone picks (nothing
-      // is lost). Each merge pass is resolved here ("ours" on every card, the pass's remap edges carried as core's own
-      // rebase does) and re-committed on that pass's head; a writer that slips in between makes another pass with its
-      // own cards. A pass's cards are written before the append that resolves them, so a holder that dies after the
-      // append leaves every card for the retry (deduplicated by the change id). The cards are exact: a resolved pass
-      // carries head's values on its card paths, so no later pass can apply the actor's value there.
-      let input: CommitInput & { id: ChangeId } = { id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name };
-      for (let pass = 0; ; pass++) {
-        r = await carton.commit(input);
-        if (r.status !== "conflicts") break;
-        if (pass >= 8 || !r.merge) {
-          // no merge result to resolve here (another Carton), or a writer that never stops: decide the cards in core
-          await addCards(carton, author, req.id, r.cards);
-          kept.push(...r.cards);
-          r = await carton.commit({ ...input, choices: () => "ours" as const });
-          break;
-        }
-        await addCards(carton, author, req.id, r.cards);
-        kept.push(...r.cards);
-        const merge = r.merge as MergeResult;
-        const intent = input.intent?.maps ? { ...input.intent, maps: merge.edges.ours } : input.intent;
-        input = { ...input, doc: resolveMerge(merge, () => "ours"), ops: undefined, base: r.ref, intent };
-      }
-      if (kept.length && r.status !== "confirmed" && r.status !== "pending") await dropCards(carton, author, req.id, kept);
+      // is lost). Core's own rebase loop decides every card "ours" (keeping its intents, inferred remaps and policy as
+      // it would for any rebase) and reports the cards it decided; they are written as a notice for `cb conflicts` /
+      // `cb resolve` in the same atomic batch as the append, so no crash or concurrent writer can separate them.
+      // The base is fixed once per request (default: head now): a retry after core lost its append race must merge
+      // from the same base, never re-apply the proposal on a newer head.
+      if (op.base === undefined) op.base = (await carton.head(op.cut)).ref as unknown as string;
+      const store = storeOf(carton);
+      r = await carton.commit({
+        id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
+        choices: () => "ours" as const,
+        ...(store ? { cardsWrite: (cards: ConflictCard[], change: ConfirmedChange | null) => [cardsRow(author, req.id, change?.id ?? null, cards)] } : {}),
+      });
+      if (r.status === "confirmed" && r.resolved?.length) kept = r.resolved;
       break;
     }
     case "fold": {
