@@ -141,6 +141,7 @@ function shareMediaOf(api, bundlePath, projectId, { only, force = false } = {}) 
       try {
         const r = await media.shareClip({ bundlePath, projectId, mediaId: m.id, envelope });
         if (!r) continue;
+        await recordShare(lc, bundlePath, projectId, m.id, r.record).catch((e) => warnOnce("record:" + m.id, `a clip of ${path.basename(bundlePath)} was shared, but its record didn't go into the project: ${errText(e)}`));
         done[m.id] = { size: st.size, mtimeMs: st.mtimeMs, hash: r.record.hash, proxy: r.record.proxy ?? null };
         out.push({ mediaId: m.id, hash: r.record.hash, proxy: r.record.proxy ?? null, skipped: r.skipped });
       } catch (e) {
@@ -180,7 +181,8 @@ async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
     const src = m.data?.src;
     if (src && src !== hostSrc(m.id)) return m; // a file on this computer
     if (src && m.data?.size !== undefined) return m; // filled already
-    const rec = await Promise.race([media.sharedRecord(bundlePath, projectId, m.id).catch(() => null), sleep(2000).then(() => null)]);
+    // The project's own record (S5-G2) when the clip's share is in it, else the host's.
+    const rec = m.shared ? { ...m.shared, fileName: m.data?.fileName } : await Promise.race([media.sharedRecord(bundlePath, projectId, m.id).catch(() => null), sleep(2000).then(() => null)]);
     const data = { ...m.data, src: hostSrc(m.id) };
     if (rec) {
       const from = { fileName: rec.fileName, size: rec.size, duration: rec.durationSec, width: rec.width, height: rec.height, frameRate: rec.fps, hasAudio: rec.hasAudio, codec: rec.codec };
@@ -190,6 +192,55 @@ async function fillTeammateMedia(next, { bundlePath, projectId, current }) {
     return { ...m, createdAt: m.createdAt ?? prev?.createdAt ?? now, addedAt: m.addedAt ?? prev?.addedAt ?? now, data };
   }));
   return { ...next, media: list };
+}
+
+/**
+ * R2: a commit on a shared cut. The lease holder (this worker's handle, while it holds) commits on its own handle, a
+ * stale save's clashes keeping head's value (the rest lands, the cards go to the author); anyone else hands it to the
+ * holder through @carton/local (a helper when the app is closed), never in-process (its pending row would be lost at
+ * the holder's next settle).
+ */
+async function commitShared(lc, { doc, base, author, intent }) {
+  if (holding.get(lc)?.holds()) {
+    let resolved = [];
+    const r = await lc.carton.commit({ doc, ...(base ? { base } : {}), author, ...(intent ? { intent } : {}), choices: () => "ours" });
+    if ((r.status === "pending" || r.status === "confirmed") && r.resolved?.length) resolved = r.resolved;
+    return resolved.length ? { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status } : r;
+  }
+  const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}) }, { actor: author });
+  if (w.status === "error") throw new Error(w.error);
+  if (w.status === "rejected") return { status: "rejected", reason: w.reason };
+  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: (await lc.carton.head()).ref };
+  return { status: w.status === "pending" ? "pending" : "confirmed", seq: w.seq, ref: (await lc.carton.head()).ref, rebased: 0, empty: !!w.empty, notices: [] };
+}
+
+/**
+ * S5-G2 (with cardboard-adapter's S5-G3): a clip's share goes into the project itself. Its media entry gets the content
+ * id (`contentHash`) and the shared record (`shared`: size, duration, picture, the proxy, T1 files, T3 state), as a
+ * change by the person who shared it, so every teammate's copy says where the clip plays from and what it is. Nothing
+ * is committed when the entry already says so (a share that changed nothing).
+ */
+async function recordShare(lc, bundlePath, projectId, mediaId, record) {
+  const head = await lc.carton.head();
+  const media = head.doc?.media;
+  if (!Array.isArray(media) || !record?.hash) return null;
+  const { id: _id, fileName: _f, hash, ...shared } = record;
+  const entry = media.find((m) => m.id === mediaId);
+  if (!entry || (entry.contentHash === hash && JSON.stringify(entry.shared ?? null) === JSON.stringify(shared))) return null;
+  const doc = { ...head.doc, media: media.map((m) => (m.id === mediaId ? { ...m, contentHash: hash, shared } : m)) };
+  return commitShared(lc, { doc, base: head.ref, author: person(bundlePath, projectId) ?? { kind: "human", id: "person" } });
+}
+
+/**
+ * A clip's shared record: the project's own (its media entry's `shared` and `contentHash`, S5-G2) once its proxy is
+ * complete, else the one on the host (published as soon as the proxy's stream is claimed, so it plays while it
+ * uploads).
+ */
+async function recordOf(api, bundlePath, projectId, mediaId) {
+  const lc = await api.open(bundlePath).catch(() => null);
+  const e = lc && (await lc.carton.head()).doc?.media?.find?.((m) => m.id === mediaId);
+  if (e?.shared?.proxy && (e.shared.proxy.hash || e.shared.proxy.size !== undefined)) return { id: mediaId, ...e.shared, hash: e.contentHash };
+  return media.sharedRecord(bundlePath, projectId, mediaId);
 }
 
 /** Wait for a cut's hand-off to finish (local → handing off → server), up to `ms`. */
@@ -262,19 +313,7 @@ extend({
   // R2: a commit on a shared cut. The worker's handle is the lease holder: commit there, a clash keeping head's value
   // (the rest lands; the cards go back as a conflicts result, which the facade keeps for the author). Anywhere else
   // (cb), hand it to the holder, or to a headless helper when the app is closed.
-  async commitShared(lc, { doc, base, author, intent }) {
-    if (holding.get(lc)?.holds()) {
-      let resolved = [];
-      const r = await lc.carton.commit({ doc, ...(base ? { base } : {}), author, ...(intent ? { intent } : {}), choices: () => "ours" });
-      if ((r.status === "pending" || r.status === "confirmed") && r.resolved?.length) resolved = r.resolved;
-      return resolved.length ? { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status } : r;
-    }
-    const w = await lc.write({ kind: "commit", doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}) }, { actor: author });
-    if (w.status === "error") throw new Error(w.error);
-    if (w.status === "rejected") return { status: "rejected", reason: w.reason };
-    if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, ref: (await lc.carton.head()).ref };
-    return { status: w.status === "pending" ? "pending" : "confirmed", seq: w.seq, ref: (await lc.carton.head()).ref, rebased: 0, empty: !!w.empty, notices: [] };
-  },
+  commitShared: (lc, o) => commitShared(lc, o),
   worker(api) {
     inWorker = true;
     // Every shared project the worker opens goes live: its holder takes the lease and connects.
@@ -394,7 +433,7 @@ extend({
         const projectId = await projectOfMedia(api, mediaId);
         const bundlePath = projectId && api.bundleOf(projectId);
         if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
-        const p = media.playable(await media.sharedRecord(bundlePath, projectId, mediaId).catch(() => null));
+        const p = media.playable(await recordOf(api, bundlePath, projectId, mediaId).catch(() => null));
         return p ? { bundlePath, projectId, mediaId, ...p } : null;
       },
       /**
@@ -405,7 +444,7 @@ extend({
         const projectId = await projectOfMedia(api, mediaId);
         const bundlePath = projectId && api.bundleOf(projectId);
         if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
-        const p = media.playable(await media.sharedRecord(bundlePath, projectId, mediaId));
+        const p = media.playable(await recordOf(api, bundlePath, projectId, mediaId));
         return p ? { url: await media.toolUrl(bundlePath, projectId, p), ...p } : null;
       },
       /** The person's presence while they edit (the pages send it at most once a second; null when idle). */

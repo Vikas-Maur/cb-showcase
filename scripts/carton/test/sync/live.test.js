@@ -86,6 +86,11 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
   assert.match(r.hash, /^[0-9a-f]{64}$/);
   const mediaId = r.mediaId;
   assert.ok((await S.projectOf(bob, id)).media.some((m) => m.id === mediaId), "Bob's copy lists the clip");
+  // S5-G2: the share is in the project itself, as a version by Alice: on Bob's computer, history shows it, and it gives
+  // the clip its content id and shared record (size, the proxy).
+  const v = await S.until(() => bob.cb(["history", "Demo"]).json().versions.find((x) => x.by?.id === "Alice"), 20_000, "alice's share version at bob");
+  const cmp = bob.cb(["compare", "Demo", `${v.version.split("@")[0]}@${Number(v.version.split("@")[1]) - 1}`, v.version]);
+  assert.match(cmp.out, /content|shared media/, cmp.out + cmp.err);
   // Bob has no file for it: main asks his worker where it lives, then answers cardboard-media:// from the range cache.
   const src = await bob.call("carton.liveMediaSource", { mediaId });
   assert.equal(src.stream, r.proxy.stream);
@@ -169,11 +174,14 @@ test("offline and rejoin: Bob edits while the host is down; his edit waits, then
 });
 
 test("cb on the shared project with the app open: the agent's edit goes through the worker's lease and reaches Bob", t, async () => {
+  // The agent edits the printed timeline as it is now (timeline.tsx follows project.json a moment later).
+  const tsx = path.join(alice.root, "Demo.cardboard", "timeline.tsx");
+  await S.until(() => /fontSize=\{90\}/.test(fs.readFileSync(tsx, "utf8")), 10_000, "alice's timeline.tsx at head");
   const edit = path.join(alice.home, "edit3.tsx");
-  fs.writeFileSync(edit, fs.readFileSync(path.join(alice.root, "Demo.cardboard", "timeline.tsx"), "utf8").replace(/fontSize=\{\d+\}/, "fontSize={77}"));
+  fs.writeFileSync(edit, fs.readFileSync(tsx, "utf8").replace(/fontSize=\{\d+\}/, "fontSize={77}"));
   const r = alice.cb(["source", "apply", "Demo", edit], { CARDBOARD_ACTOR: "codex/c9" });
   assert.equal(r.code, 0, r.out + r.err);
-  await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 77, 30_000, "the agent's edit at bob");
+  await S.until(async () => S.textOf(await S.projectOf(bob, id)).fontSize === 77, 30_000, "the agent's edit at bob; cb said: " + r.out.replace(/\s+/g, " ").slice(-700) + " / " + r.err.slice(-300));
   const h = bob.cb(["history", "Demo"]);
   assert.equal(h.json().versions[0].by?.id, "codex/c9", "credited to the agent on Bob's computer");
 });

@@ -18,6 +18,7 @@ const load = (name) => import(pathToFileURL(req.resolve(name)).href);
 const { createHmacAuth } = await load("@carton/server");
 const { startNodeHost } = await load("@carton/server-node");
 const { createFsBlobStore } = await load("@carton/blob-fs");
+const { CARDBOARD_SCHEMA_VERSION } = await load("@carton/cardboard");
 
 export const SECRET = "carton-sync-test-secret-0123456789abcdef";
 export const ADMIN = "carton-sync-test-admin";
@@ -45,6 +46,9 @@ const node = await startNodeHost({
   port: Number(port ?? 0),
   host: "127.0.0.1",
   durability: "normal",
+  // The newest document schema the app's adapter writes: an older one refuses the app's hello (and the app stays at
+  // "Syncing").
+  schemaVersion: CARDBOARD_SCHEMA_VERSION,
 });
 process.stdout.write(JSON.stringify({ ready: true, port: node.port, origin: node.httpUrl }) + "\n");
 setTimeout(() => process.exit(0), 600_000).unref();
