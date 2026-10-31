@@ -20,7 +20,12 @@ export interface DbOptions {
    * "normal" (default): WAL with synchronous=NORMAL. An app or OS crash never corrupts the database or loses a
    * committed change; a power cut can lose the last commits (they are then missing, never half-written, and a ref to
    * them fails loudly with "state unknown: re-print", §4.4). This is no weaker than Cardboard 1.4.0, which never
-   * fsyncs its project saves. "full" fsyncs every commit.
+   * fsyncs its project saves. §6.2's write-lock target (≤ 5 ms) is for this mode.
+   *
+   * "full" fsyncs every commit, and SQLite does that inside COMMIT: the write lock is held across the fsync, so how
+   * long it is held depends on the disk, and other processes' writes wait that long. On a GitHub runner it exceeded
+   * 5 ms in 5 of 14 benchmark runs (verify-ci, VERIFIED.md S3). It can't be otherwise: a commit has to be on disk
+   * before the lock is let go.
    */
   durability?: "normal" | "full";
   readOnly?: boolean;
