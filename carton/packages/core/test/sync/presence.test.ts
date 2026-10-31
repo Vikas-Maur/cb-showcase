@@ -105,3 +105,61 @@ test("presence after a quiet spell goes out at once; a leave right after a move 
   vt.advance(1000);
   assert.equal(presence().length, 3, "nothing after stop");
 });
+
+// hosts-plugins' request: a host that restarts, or a room evicted outright on a deploy, drops every socket and keeps no
+// one to send leaves for, so peers shown before would stay as ghosts. The client tells them gone when its own
+// connection closes (and when it stops); a peer still there shows again with its next update after the reconnect.
+test("when its connection closes, the client tells every peer it showed gone; after the reconnect a peer's next update shows it again", async () => {
+  const vt = virtualTime();
+  const q = new ReplicaQueue(schema);
+  q.addBranch({ id: "b", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
+  class Dropping extends Conn {
+    private closed: ((why: string) => void)[] = [];
+    override onClose(l?: (why: string) => void) {
+      if (l) this.closed.push(l);
+    }
+    lose(why: string) {
+      this.open = false;
+      for (const l of this.closed) l(why);
+    }
+  }
+  const conns: Dropping[] = [];
+  const events: { actor: unknown; state: unknown }[] = [];
+  const client = new SyncClient({
+    queue: q,
+    branchId: "b",
+    schemaVersion: 1,
+    connect: async () => (conns.push(new Dropping()), conns.at(-1)!),
+    timers: vt.timers,
+    clock: vt.clock,
+    defer: (fn) => queueMicrotask(fn),
+    onEvent: (e) => void (e.type === "presence" && events.push({ actor: e.actor, state: e.state })),
+  }).start();
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  await tick();
+  conns[0]!.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  const ann = { kind: "human" as const, id: "ann" },
+    bob = { kind: "human" as const, id: "bob" },
+    cat = { kind: "agent" as const, id: "cat" };
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 1 } });
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: bob, state: { at: 2 } });
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: cat, state: { at: 3 } });
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: bob, state: null }); // bob left: nothing to clear for him
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 4 } }); // ann moved: still one entry
+  events.length = 0;
+  conns[0]!.lose("host restarted");
+  assert.deepEqual(events, [{ actor: ann, state: null }, { actor: cat, state: null }], "each peer shown is told gone once");
+  // reconnect: nothing is told again until a peer's next update
+  vt.advance(1000);
+  await tick();
+  assert.equal(conns.length, 2, "reconnected");
+  conns[1]!.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  assert.equal(events.length, 2);
+  conns[1]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 5 } });
+  assert.deepEqual(events.at(-1), { actor: ann, state: { at: 5 } });
+  // stopping tells them gone too (this replica no longer sees anyone)
+  client.stop();
+  assert.deepEqual(events.slice(3), [{ actor: ann, state: null }]);
+  conns[1]!.lose("late close");
+  assert.equal(events.length, 4, "nothing after stop");
+});
