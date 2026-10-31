@@ -47,6 +47,7 @@ function parseTap(text) {
   // `# duration_ms`. A document without that end (the runner crashed or was killed) is incomplete.
   let documents = 0;
   let summaries = 0;
+  const testsPerDocument = []; // each document's own `# tests` count
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (/^TAP version \d+$/.test(line)) {
@@ -83,26 +84,28 @@ function parseTap(text) {
       continue;
     }
     m = /^# (tests|pass|fail|cancelled|skipped|todo) (\d+)$/.exec(line);
-    if (m) totals[m[1]] += Number(m[2]);
+    if (m) {
+      totals[m[1]] += Number(m[2]);
+      if (m[1] === "tests") testsPerDocument.push(Number(m[2]));
+    }
   }
   // a failed subtest fails its parents too: report the innermost ones
   const failures = fails.filter((f) => !fails.some((g) => g !== f && g.name.startsWith(f.name + " › ")));
-  return { totals, documents, summaries, failures, skips, todos };
+  return { totals, documents, summaries, testsPerDocument, failures, skips, todos };
 }
 
 // The YAML diagnostics block after a result line, trimmed to what helps: the error, its location and stack head.
-// In a group that runs Cardboard's code, an error can quote a line of it (a code frame, a minified source line), so
-// there only the location and the error's first line, cut short, are kept.
+// In a group that runs Cardboard's code, any error text can quote it (a code frame, a minified source line), so
+// there only the location and the error's class and code are kept; the message stays in the job's own log.
 function yaml(lines, from) {
   if (!/^\s*---$/.test(lines[from] ?? "")) return "";
   const out = [];
   for (let i = from + 1; i < lines.length && !/^\s*\.\.\.$/.test(lines[i]); i++) out.push(lines[i].trim());
-  const kept = out.filter((l) => !/^(duration_ms|type|failureType|code):/.test(l));
-  if (!group.proprietary) return kept.slice(0, 40).join("\n");
-  const at = kept.find((l) => l.startsWith("location:"));
-  const err = kept.findIndex((l) => l.startsWith("error:"));
-  const first = err < 0 ? "" : kept[err] === "error: |-" ? (kept[err + 1] ?? "") : kept[err].slice("error: ".length);
-  return [at, first && `error: ${first.slice(0, 160)}${first.length > 160 ? "…" : ""}`].filter(Boolean).join("\n");
+  if (group.proprietary)
+    return out
+      .filter((l) => /^(location|name|code|failureType): '?[\w.:\\/ -]{1,200}'?$/.test(l))
+      .join("\n");
+  return out.filter((l) => !/^(duration_ms|type|failureType|code):/.test(l)).slice(0, 40).join("\n");
 }
 
 // ---- running a step ----
@@ -179,13 +182,17 @@ function runStep(step, index) {
       if (code !== 0) problems.push(`exit ${code ?? signal ?? "unknown"}`);
       if (tap) {
         if (tap.documents !== expectedDocs || tap.summaries !== tap.documents) problems.push(`expected ${expectedDocs} complete node:test report(s), got ${tap.documents} started and ${tap.summaries} finished`);
-        if (tap.totals.tests === 0 && !step.allowEmpty) problems.push("no tests ran");
+        // per report: one `node --test` whose glob matched nothing must not hide behind another that ran tests
+        if (!step.allowEmpty && (tap.testsPerDocument.length !== tap.documents || tap.testsPerDocument.some((n) => n === 0))) problems.push("a node:test run had no tests");
         const failed = Math.max(tap.totals.fail + tap.totals.cancelled, tap.failures.length);
         if (failed > 0) problems.push(`${failed} failed`);
       }
       const badSkips = tap ? tap.skips.filter((s) => forbidden.some((re) => re.test(s.reason))) : [];
       if (badSkips.length) problems.push(`${badSkips.length} skipped for a missing tool CI installed`);
-      resolve({ label, cwd: path.relative(CARTON, cwd) || ".", command: [cmd, ...cmdArgs].join(" "), exit: code, signal, timedOut, ms, ok: problems.length === 0, problems, ...(tap ?? {}), badSkips, log: group.proprietary ? null : path.basename(logFile) });
+      // what leaves the job (summary, JSON): in a Cardboard group a skip reason keeps only its head, before any
+      // quoted detail (a path, an error message)
+      const out = (list) => (group.proprietary ? list.map((x) => ({ ...x, reason: x.reason.split(/[:(\n]/)[0].slice(0, 80) })) : list);
+      resolve({ label, cwd: path.relative(CARTON, cwd) || ".", command: [cmd, ...cmdArgs].join(" "), exit: code, signal, timedOut, ms, ok: problems.length === 0, problems, ...(tap ?? {}), ...(tap ? { skips: out(tap.skips), todos: out(tap.todos) } : {}), badSkips: out(badSkips), log: group.proprietary ? null : path.basename(logFile) });
     };
     let grace;
     const timer = setTimeout(() => {

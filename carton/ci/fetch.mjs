@@ -31,7 +31,9 @@ function run(cmd, args, opts = {}, quiet = false) {
   const stdio = quiet ? ["ignore", opts.stdio?.[1] ?? "ignore", "pipe"] : (opts.stdio ?? "inherit");
   const r = spawnSync(cmd, args, { shell: cmd === npm && OS === "windows", encoding: "utf8", ...opts, stdio });
   if (r.status !== 0) {
-    const why = quiet ? String(r.stderr ?? "").split("\n").find((l) => l.trim())?.trim().slice(0, 120) ?? "" : "";
+    // the error's own line (`SyntaxError: …`, `Error: ENOENT …`, `[error] …`), not the file name or code frame above it
+    const lines = String(r.stderr ?? "").split("\n").map((l) => l.trim()).filter(Boolean);
+    const why = quiet ? (lines.find((l) => /^(\[error\]\s*)?([\w.]*Error|ERR_[A-Z_]+)\b|^Error\b|^error\b/i.test(l)) ?? lines.at(-1) ?? "").slice(0, 160) : "";
     throw new Error(`${path.basename(cmd)} ${quiet ? path.basename(args[0] ?? "") : args.join(" ")} exited ${r.status ?? r.signal}${r.error ? ": " + r.error.message : ""}${why ? ": " + why : ""}`);
   }
   return r;

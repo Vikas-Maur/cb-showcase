@@ -65,7 +65,12 @@ const result = {
 // and 100) for every trial, each one accounted for (turn mode) and with foreign writes to lose.
 const shipped = rows.filter(renameRows("displace"));
 const problems = [];
-if (shipped.length !== 4 * Number(trials)) problems.push(`expected ${4 * Number(trials)} displace trials, got ${shipped.length} (no hard links on this volume?)`);
+for (const writers of [1, 4])
+  for (const widen of [0, 100]) {
+    const n = shipped.filter((x) => x.writers === writers && (x.widen ?? 0) === widen).length;
+    if (n !== Number(trials)) problems.push(`expected ${trials} displace trial(s) with ${writers} writer(s), widen ${widen}, got ${n}${n ? "" : " (no hard links on this volume?)"}`);
+  }
+if (shipped.length !== 4 * Number(trials)) problems.push(`expected ${4 * Number(trials)} displace trials, got ${shipped.length}`);
 const unaccounted = shipped.filter((x) => x.mode !== "turn" || !Number.isFinite(x.lostByEngine));
 if (unaccounted.length) problems.push(`${unaccounted.length} displace trial(s) without exact accounting`);
 const idle = shipped.filter((x) => !(x.landed > 0));

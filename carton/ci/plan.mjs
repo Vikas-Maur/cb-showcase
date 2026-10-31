@@ -13,7 +13,7 @@ const fromTag = (k) => new RegExp(`\\b${k}=([\\w,-]+)`).exec(tag)?.[1];
 const groups = list(process.env.CARTON_CI_GROUPS || fromTag("groups"));
 const oses = list(process.env.CARTON_CI_OS || fromTag("os"));
 for (const g of groups ?? []) if (!config.groups.some((x) => x.name === g)) throw new Error(`no group "${g}" in groups.json`);
-for (const os of oses ?? []) if (!config.runners[os]) throw new Error(`no system "${os}" (known: ${Object.keys(config.runners).join(", ")})`);
+for (const os of oses ?? []) if (!Object.hasOwn(config.runners, os)) throw new Error(`no system "${os}" (known: ${Object.keys(config.runners).join(", ")})`);
 
 const include = [];
 for (const g of config.groups)
