@@ -27,7 +27,7 @@ const host: MaterializerHost = {
 export async function createHolderEngine({ dbPath, config }: HelperFactoryOptions) {
   const store = await openSqliteStore(dbPath);
   const carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor: { kind: "system", id: "engine", name: "Engine" } });
-  const mz = new Materializer({ bundle: String(config.projectDir), engine: new CartonMaterializerEngine(carton, store), host, codec: jsonTimelineCodec });
+  const mz = new Materializer({ bundle: String(config.projectDir), engine: new CartonMaterializerEngine(carton), host, codec: jsonTimelineCodec });
   await mz.start();
   mz.watch();
   return { store, engine: new CartonHolderEngine(carton, { materializer: mz }), close: async () => { await mz.close(); await carton.close(); } };
