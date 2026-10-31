@@ -6,6 +6,7 @@
 import { merge3 } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
+import { hookDelivered, isFallbackActor } from "./identity.ts";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
 export type WriteOp =
@@ -19,6 +20,8 @@ export type WriteOp =
   | { kind: "switch"; cut: string }
   | { kind: "name"; ref: string; name: string }
   | { kind: "pin"; owner: string; cut?: string; ttlMs?: number }
+  /** `cb source print --view [name]`: the materializer prints a per-agent view (§6.4); needs a holder that runs one. */
+  | { kind: "printView"; name?: string }
   /** `cb resolve` closed a card: drop it from the actor's late-conflict notices. */
   | { kind: "closeCard"; change: ChangeId | null; path: PathKey };
 
@@ -74,13 +77,31 @@ export function waitOutcome(carton: Carton, id: ChangeId, ms: number): Promise<{
   });
 }
 
+/** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
+export interface ViewPrinter {
+  printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string }>;
+  onCb?(): Promise<void>;
+  onHeadChange?(cause: "local" | "gui" | "remote"): void;
+}
+
 /** Run one write on a Carton handle and answer with the cb result contract. */
-export async function runWrite(carton: Carton, req: WriteRequest, opts: { online?: () => boolean } = {}): Promise<CbResult> {
+export async function runWrite(carton: Carton, req: WriteRequest, opts: { online?: () => boolean; materializer?: ViewPrinter | null; viewName?: (actor: Actor, wanted?: string) => Promise<string> } = {}): Promise<CbResult> {
   const notices = await carton.notices(req.actor, { take: true });
   const op = req.op;
   const author = req.actor;
+  // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers)
+  await opts.materializer?.onCb?.();
   let r: any;
   switch (op.kind) {
+    case "printView": {
+      if (!opts.materializer) return { status: "error", error: "views need the app open (or a helper that materializes)", notices };
+      const name = opts.viewName ? await opts.viewName(author, op.name) : op.name ?? author.id.replace(/[^A-Za-z0-9._-]/g, "_");
+      // saves of the view are credited to its owner: a hooked or self-declared agent is itself; an unnamed terminal
+      // caller is the view file (two terminal agents on one machine look alike; their views don't, §6.4)
+      const owner: Actor = isFallbackActor(author) ? { kind: "external", id: `external:.scratch/views/${name}.tsx`, name: `${author.name ?? "Terminal"} (view ${name})`, group: author.group } : author;
+      const v = await opts.materializer.printView(name, owner, { hooked: hookDelivered(author) });
+      return { status: "confirmed", seq: 0, ref: v.ref, notices, view: v };
+    }
     case "commit":
       r = await carton.commit({ id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name });
       break;
@@ -100,6 +121,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "closeCard": return { status: "confirmed", seq: 0, ref: null, notices, closed: await closeCard(carton, author, op.change, op.path) };
     default: return { status: "error", error: `unknown write ${(op as any).kind}`, notices };
   }
+  if (r?.status === "confirmed" && !r.empty) opts.materializer?.onHeadChange?.("local");
   if (r?.status === "up-to-date") return { status: "confirmed", seq: 0, ref: null, notices, upToDate: true };
   if (r?.status === "missing-base" || r?.status === "compare") return { status: "conflicts", conflicts: r.cards ?? [], ref: null, notices, dialog: r.dialog };
   if (r?.status !== "pending") return toCbResult(r, notices, r?.entry ? { undid: r.entry } : {});

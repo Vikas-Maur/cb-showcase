@@ -143,5 +143,8 @@ export function identify(input: IdentifyInput = {}, sources: readonly IdentitySo
   return environmentIdentity.current(env)!;
 }
 
+/** The environment fallback (source 4): a terminal user or an agent CLI recognised only by its environment. */
+export const isFallbackActor = (a: Actor): boolean => a.id.startsWith("terminal:") || /^[a-z][a-z0-9-]*@/.test(a.id);
+
 /** True when the actor's late conflicts can be delivered by a Stop/SubagentStop hook (L1: Claude Code only). */
 export const hookDelivered = (a: Actor): boolean => a.provider === "claude-code" && (a.id.startsWith("director/") || a.id.startsWith("claude-code/"));

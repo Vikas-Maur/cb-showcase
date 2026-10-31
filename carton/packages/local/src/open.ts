@@ -18,7 +18,9 @@ import { Lease } from "./lease.ts";
 import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
 import { runWrite, WAIT_MS } from "./writes.ts";
-import type { CbResult, WriteOp, WriteRequest } from "./writes.ts";
+import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
+import { viewNameFor } from "@carton/cardboard/node";
+import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
 
 export interface LocalOptions {
@@ -124,13 +126,24 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
  */
 export class CartonHolderEngine implements HolderEngine {
   readonly carton: Carton;
+  readonly materializer: ViewPrinter | null;
   private off: (() => void) | null = null;
-  constructor(carton: Carton) { this.carton = carton; }
+  constructor(carton: Carton, opts: { materializer?: ViewPrinter | null } = {}) {
+    this.carton = carton;
+    this.materializer = opts.materializer ?? null;
+  }
 
   serve(req: unknown): Promise<unknown> {
     const r = req as WriteRequest;
     if (!r?.id || !r.actor || !r.op) return Promise.reject(Object.assign(new Error("bad carton.commit request"), { code: -32602 }));
-    return runWrite(this.carton, r, { online: () => this.carton.sync?.status === "up-to-date" });
+    return runWrite(this.carton, r, { online: () => this.carton.sync?.status === "up-to-date", materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) });
+  }
+
+  /** Hooked agents' views are named after their actor id; others get a fresh `agent-xxxx` (or the name they asked for). */
+  private async viewName(actor: Actor, wanted?: string): Promise<string> {
+    const store = (this.carton as unknown as { store: Store }).store;
+    const taken = new Set((await store.range("views", { prefix: ["view"] })).map((r) => String(r.key[1])));
+    return viewNameFor(actor, { hooked: hookDelivered(actor), wanted, taken: (n) => taken.has(n), random: () => randomBytes(2).toString("hex") });
   }
 
   async startSync(nonce: string, onFenced: () => void): Promise<void> {
