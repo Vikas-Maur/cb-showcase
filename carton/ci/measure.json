@@ -1388,6 +1388,65 @@
           }
         }
       ]
+    },
+    {
+      "id": "core-head-r4",
+      "agent": "foundation-core",
+      "claim": "round 4's deep-freeze fix (cb21eec: a WeakSet entry per frozen record) vs fb7f4e9: head() cost for repeat calls and the first call after a commit, at 1,000 and 10,000 items (carton/bench/core/head.ts, A = fb7f4e9, C = cb21eec)",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "check out A = fb7f4e9 and C = cb21eec as worktrees (by full SHA)",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; for s in \"$2\" \"$3\"; do git fetch --no-tags --depth=1 origin \"$s\"; done; git worktree add --detach \"$4/a\" \"$2\"; git worktree add --detach \"$4/c\" \"$3\"; git -C \"$4/a\" log -1 --format=\"A %H %s\"; git -C \"$4/c\" log -1 --format=\"C %H %s\"",
+            "_",
+            "..",
+            "fb7f4e9dec972f58b09604f4c5338a37eb471471",
+            "cb21eeceb51e9898fbc75fb4cdaae83777950894",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "npm ci in each build's carton/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; for d in \"$1/a/carton\" \"$1/c/carton\"; do (cd \"$d\" && npm ci --no-audit --no-fund); done",
+            "_",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "head.ts A (fb7f4e9) vs C (cb21eec), N=1000,10000, 11 runs x 200 calls (no lock: dedicated runner)",
+          "env": {
+            "N": "1000,10000",
+            "RUNS": "11",
+            "CALLS": "200",
+            "OUT": "{results}/head-bench.json"
+          },
+          "run": [
+            "{node}",
+            "--expose-gc",
+            "{tmp}/c/carton/bench/core/head.ts",
+            "A={tmp}/a/carton",
+            "C={tmp}/c/carton"
+          ],
+          "stdoutTo": "{results}/head-bench.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "head-bench.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^N=1000 items",
+            "^N=10000 items",
+            "after-commit median"
+          ]
+        }
+      ]
     }
   ]
 }
