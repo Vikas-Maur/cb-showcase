@@ -1,11 +1,12 @@
-// Regressions found by review round 11 (GPT 6.1 Sol), on the real engine, history and materializer: a freeze view
-// belongs to the cut it was pinned on (B6), and a pin can find a cut another process switched to.
+// Regressions found by review rounds 11 and 12 (GPT 6.1 Sol), on the real engine, history and materializer: a freeze
+// view belongs to the cut it was pinned on (B6), a pin or a head read can find a cut another process switched to, and a
+// save is a no-op only against the current cut's head.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import { Carton } from "@carton/core";
 import { cardboardAdapter, fromHost, toHost } from "@carton/cardboard";
-import { TIMELINE_FILE } from "@carton/cardboard/node";
+import { PROJECT_FILE, TIMELINE_FILE } from "@carton/cardboard/node";
 import { openWorld, clip, find, render, parseFile, BOB, type Item } from "./world.ts";
 
 async function commitOn(c: Carton, edit: (its: Item[]) => void): Promise<void> {
@@ -109,4 +110,72 @@ test("review 11 #1: a freeze starting after the handle switched cuts (before the
   assert.equal(find(shared, "y").name, "Cut B edit", "the freeze view is Cut B's, not main's state under Cut B's name");
   assert.deepEqual(w.mz.log.errors, []);
   await B.stop();
+});
+
+test("review 12 #1: a head-equal save is not taken as unchanged against an old cut's head when the cut keeps switching through every re-pin [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 10), clip("c", 15, 25)], tracks: ["V1", "T2"] });
+  const other = await Carton.open({ adapter: cardboardAdapter, store: w.carton.store, actor: BOB });
+  t.after(() => other.close());
+  const A = w.agent("director/c/t1", { hooked: true, actor: { turn: "t1" } });
+  const r0 = await A.read(); // freeze
+  const before = (await w.carton.head()).ref;
+  await w.remote((its) => void (find(its, "c").name = "main rename")); // hidden by the freeze
+  await w.tick(500);
+  // after each pin of the shared file's head, another process switches cuts: three cuts that have main's rename, then a
+  // fourth forked from before it; the materializer's re-pins run out on the third
+  const realPin = w.engine.pin.bind(w.engine);
+  let armed = false;
+  let n = 0;
+  let last: string | undefined;
+  w.engine.pin = async (o) => {
+    const p = await realPin(o);
+    if (armed && o.owner === "shared-file" && n < 4) {
+      n++;
+      const cut = n < 4 ? await other.fork(`Cut ${n}`) : await other.fork("Cut 4", { from: before });
+      await other.switchTo(cut.id);
+      if (n === 4) last = cut.id;
+      await w.carton.head();
+    }
+    return p;
+  };
+  armed = true;
+  // agent A makes the same rename as main's head: on Cut 4 it is a change
+  await A.write(TIMELINE_FILE, render(r0, r0.items.map((i) => (i.id === "c" ? { ...i, name: "main rename" } : i))));
+  await w.tick(500);
+  w.engine.pin = realPin;
+  assert.equal(n, 4);
+  assert.equal(w.carton.cut, last);
+  assert.equal(find(await w.head(), "c").name, "main rename", "A's save lands on Cut 4, not taken as unchanged against Cut 3's head");
+  assert.deepEqual(w.mz.log.errors, []);
+  await A.stop();
+});
+
+test("review 12 #1: a project.json save equal to head is committed on the cut found switched while head is read, not taken as unchanged [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 10), clip("c", 15, 25)], tracks: ["V1"] });
+  const other = await Carton.open({ adapter: cardboardAdapter, store: w.carton.store, actor: BOB });
+  t.after(() => other.close());
+  const before = (await w.carton.head()).ref;
+  const env = JSON.parse(fs.readFileSync(w.abs(PROJECT_FILE), "utf8")) as { project: { timelineItems: Item[] } };
+  await w.remote((its) => void (find(its, "c").name = "main rename"));
+  // while the materializer reads head to check the app's save, another process switches to a cut forked before the rename
+  const realHead = w.engine.head.bind(w.engine);
+  let cutB: string | undefined;
+  w.engine.head = async () => {
+    const d = await realHead();
+    if (!cutB) {
+      cutB = (await other.fork("Cut B", { from: before })).id;
+      await other.switchTo(cutB);
+      await w.carton.head();
+    }
+    return d;
+  };
+  // the app saves project.json with the same rename (made before it saw main's)
+  find(env.project.timelineItems, "c").name = "main rename";
+  w.writeAtomic(PROJECT_FILE, JSON.stringify(env));
+  await w.tick(100);
+  w.engine.head = realHead;
+  assert.ok(cutB);
+  assert.equal(w.carton.cut, cutB);
+  assert.equal(find(await w.head(), "c").name, "main rename", "the app's save lands on Cut B");
+  assert.deepEqual(w.mz.log.errors, []);
 });

@@ -1276,7 +1276,15 @@ export class Materializer {
     // during a freeze, head is pinned once: the save is compared with, and the freeze restarted from, the same state
     // (a commit from another process landing in between must stay hidden, R8-01)
     const frozenHead = !name && !resumed && !asBase && rel === TIMELINE_FILE && this.freeze.active ? await this.currentHead() : null;
-    const asHead = !name && !resumed && !asBase && sameDoc(saved, frozenHead ? frozenHead.baseDoc : await this.engine.head());
+    // a head-equal save is a no-op only against the current cut's head: if the cut is found switched while head is
+    // read (a pin or a read refreshes from the store; `currentHead` gave up re-pinning), the save is committed on the
+    // cut it lands on, as when the switch is seen a moment earlier (review 12 #1)
+    let asHead = false;
+    if (!name && !resumed && !asBase) {
+      const on = this.engine.cut?.();
+      const head = frozenHead ? frozenHead.baseDoc : await this.engine.head();
+      asHead = (frozenHead ? this.onCurrentCut(frozenHead) : on === this.engine.cut?.()) && sameDoc(saved, head);
+    }
     if (asBase || asHead) {
       // nothing to version: the file shows the state its header names, or head itself (another materializer's install
       // of carton.db's state, a takeover helper's while it held the lease, B11/B3; or a save that changed nothing). No
