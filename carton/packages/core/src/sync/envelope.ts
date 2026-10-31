@@ -16,6 +16,21 @@
 import type { BlobStore } from "../plugins.ts";
 import { sha256Hex } from "../engine/index.ts";
 
+// SHA-256 of the bytes as they are, with the platform's WebCrypto (Workers, browsers, Node): computed natively over
+// the bytes (WebCrypto takes one copy of its input), instead of the portable hash's re-encoded text and its padded
+// copy, two more payload-sized buffers a message near a Durable Object's 128 MB budget can't afford. Same digest as
+// sha256Hex of the text the bytes encode. A page without WebCrypto (`crypto.subtle` exists only in a secure context:
+// not on plain http from a LAN address) hashes the text the portable way, as before.
+type Subtle = { digest(algorithm: "SHA-256", data: Uint8Array<ArrayBuffer>): Promise<ArrayBuffer> };
+async function digestHex(bytes: Uint8Array, text?: string): Promise<string> {
+  const subtle = (globalThis as { crypto?: { subtle?: Subtle } }).crypto?.subtle;
+  if (!subtle) return sha256Hex(text ?? dec.decode(bytes));
+  const d = new Uint8Array(await subtle.digest("SHA-256", bytes as Uint8Array<ArrayBuffer>));
+  let s = "";
+  for (let i = 0; i < d.length; i++) s += d[i]!.toString(16).padStart(2, "0");
+  return s;
+}
+
 /** Messages whose JSON is over this many bytes travel as an envelope (1 MiB, the inline limit of a change body). */
 export const ENVELOPE_BYTES = 1 << 20;
 /** How long an envelope's blob is kept, in hour buckets: the sweep deletes buckets older than this many hours. */
@@ -126,7 +141,7 @@ export function envelopeExpired(key: string, now: number): boolean {
 
 /** Upload an oversized message's JSON and return the envelope that stands for it. */
 export async function seal(big: { text: string; bytes: Uint8Array }, blobs: BlobStore, keyOf: (sha256: string) => string): Promise<EnvelopeMsg> {
-  const sha256 = sha256Hex(big.text);
+  const sha256 = await digestHex(big.bytes, big.text);
   const key = keyOf(sha256);
   await blobs.put(key, big.bytes, { contentType: "application/json", sha256, ifAbsent: true });
   return { type: "blob", ref: { key, size: big.bytes.byteLength, sha256 } };
@@ -146,8 +161,8 @@ export async function unseal(ref: BlobRef, blobs: BlobStore, opts: { from: "clie
   const bytes = await blobs.get(ref.key, { offset: 0, length: ref.size + 1 });
   if (!bytes) throw new EnvelopeError("its blob is missing");
   if (bytes.byteLength !== ref.size) throw new EnvelopeError(`${bytes.byteLength} bytes, not ${ref.size}`);
+  if ((await digestHex(bytes)) !== ref.sha256) throw new EnvelopeError("its digest doesn't match");
   const text = dec.decode(bytes);
-  if (sha256Hex(text) !== ref.sha256) throw new EnvelopeError("its digest doesn't match");
   const msg = JSON.parse(text) as { type?: unknown };
   if (msg?.type === "blob") throw new EnvelopeError("an envelope inside an envelope");
   return msg;

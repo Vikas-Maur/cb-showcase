@@ -175,6 +175,16 @@ export interface HistoryMsg {
   after: number;
   upTo: number;
   lineage?: boolean;
+  /**
+   * With `lineage`, page it (SF1-8): where this page starts, `{entry: 0, state: 0}` for the first, then the previous
+   * reply's `lineageNext`. Without it the whole lineage comes in one reply (clients from before paging).
+   */
+  lineageFrom?: LineageCursor;
+}
+/** A place in a branch's lineage: the closure entry, and the state (an index into that entry's `nodes`). */
+export interface LineageCursor {
+  entry: number;
+  state: number;
 }
 /** A shared variant made on the server: O(1), no rows copied; it reads the parent at `seq` (§6.3). */
 export interface ForkMsg {
@@ -311,9 +321,16 @@ export interface PresenceFanoutMsg {
   actor: Actor;
   state: PresenceState | null;
 }
+export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request";
 export interface ErrorMsg {
   type: "error";
   reason: string;
+  /**
+   * What kind of refusal, for a client to act on (`reason` is for people): `schema-too-new` (the client's documents are
+   * newer than the server accepts: update the server), `unauthorized` (the token expired, or is for another project),
+   * `forbidden` (outside this token's cuts or role), `bad-request` (a malformed message). Absent: anything else.
+   */
+  code?: ErrorCode;
   /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */
   reconnect?: boolean;
 }
@@ -324,7 +341,15 @@ export interface HistoryReplyMsg {
   req: number;
   rows: ConfirmedChange[];
   more?: boolean;
+  /**
+   * The lineage, or with `lineageFrom` one page of it: entries in closure order within the server's catch-up byte
+   * budget, at least one state (or one entry with none) per page. An entry split across pages comes again with the
+   * same `branchId` and `rec`, its later states only (`nodes` empty; `nodes` and `authors` come with its first page):
+   * concatenate entries by `branchId`. A state may name a node added after that first page (a later adoption).
+   */
   lineage?: ClosureEntry[];
+  /** More lineage: ask again with `lineageFrom` set to this (rows and lineage page independently). */
+  lineageNext?: LineageCursor;
   error?: string;
 }
 

@@ -52,6 +52,23 @@ export function ownIndex(arr: Rec[], key: string): Map<unknown, number> {
   if (!e.owned) (e.map = new Map(e.map)), (e.owned = true);
   return e.map;
 }
+// Sealed collection arrays: every record in one is deeply frozen. Carton seals a state's arrays before it hands the
+// state out (head, checkout, resolve: documents are values), once per array; apply() keeps a sealed array sealed by
+// freezing what it writes into it, so a live head stays sealed at the cost of the records each change writes. An
+// array nobody sealed (a caller's own doc, a fork) is never frozen by apply, and fork() doesn't pass the seal on.
+const SEALED = new WeakSet<readonly Rec[]>();
+export function freezeDeep(v: unknown): void {
+  if (v === null || typeof v !== "object" || Object.isFrozen(v)) return;
+  Object.freeze(v);
+  for (const x of Object.values(v)) freezeDeep(x);
+}
+/** Freeze every record of a collection array; O(1) for an array already sealed. */
+export function seal(arr: readonly Rec[]): void {
+  if (SEALED.has(arr)) return;
+  for (const r of arr) freezeDeep(r);
+  SEALED.add(arr);
+}
+export const isSealed = (arr: readonly Rec[]): boolean => SEALED.has(arr);
 export function posOf(arr: readonly Rec[], key: string, id: unknown): number {
   let i = indexOf(arr, key).get(id);
   if (i !== undefined && arr[i]?.[key] !== id) {
@@ -73,6 +90,19 @@ export function fork(doc: Doc, schema: Schema): Doc {
       e.owned = false;
       INDEX.set(c, { map: e.map, owned: false });
     }
+  }
+  return out;
+}
+/**
+ * fork(), the copy of a sealed array sealed too: for a state core builds from a sealed one by applying changes (apply
+ * freezes what it writes), so it stays sealed without a walk. Never for a doc handed to a caller (Carton's `owned`
+ * uses fork: a caller's arrays aren't sealed, and apply doesn't freeze what they write).
+ */
+export function forkSealed(doc: Doc, schema: Schema): Doc {
+  const out = fork(doc, schema);
+  for (const name in schema.collections) {
+    const a = doc[name] as Rec[] | undefined;
+    if (Array.isArray(a) && SEALED.has(a)) SEALED.add(out[name] as Rec[]);
   }
   return out;
 }

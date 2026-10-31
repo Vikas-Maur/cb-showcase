@@ -39,7 +39,8 @@ export type SyncEvent =
   | { type: "reject"; id: string | undefined; reason: string; epoch: number }
   | { type: "rebase"; n: number }
   | { type: "stopped"; why: string }
-  | { type: "error"; error: string };
+  /** `code`: a refusal's machine code (`ErrorMsg.code`), or a transport's for a failed connect (`connect: …`). */
+  | { type: "error"; error: string; code?: string };
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -91,9 +92,33 @@ export interface SyncClientOptions {
   maxMessageBytes?: number;
 }
 
+/** The most presence updates a client sends a second (§12: 10–20 Hz while dragging). */
+export const PRESENCE_PER_SEC = 10;
+
 let CONN = 0;
 /** Refusals about the connection (its token, its branch), not the change: the same on every message it sends. */
 const CONNECTION_REASONS: ReadonlySet<string> = new Set(["forbidden", "read-only branch", "unknown branch", "foreign id"]);
+
+/**
+ * One page of a branch's lineage added to what came before (SF1-8): an entry split across pages comes again with the
+ * same branchId and rec, its later states only (`nodes` and `authors` with its first page), so entries concatenate by
+ * branchId, in closure order.
+ */
+function mergeLineage(have: ClosureEntry[], page: readonly ClosureEntry[]): ClosureEntry[] {
+  const out = have.slice();
+  for (const e of page) {
+    const i = out.findIndex((x) => x.branchId === e.branchId);
+    if (i < 0) {
+      out.push({ ...e, nodes: [...e.nodes], ...(e.states ? { states: [...e.states] } : {}), ...(e.authors ? { authors: [...e.authors] } : {}) });
+      continue;
+    }
+    const x = out[i]!;
+    const states = [...(x.states ?? []), ...(e.states ?? [])];
+    const authors = [...(x.authors ?? []), ...(e.authors ?? [])];
+    out[i] = { ...x, nodes: [...x.nodes, ...e.nodes], ...(states.length ? { states } : {}), ...(authors.length ? { authors } : {}) };
+  }
+  return out;
+}
 
 export class SyncClient {
   readonly queue: ReplicaQueue;
@@ -113,6 +138,9 @@ export class SyncClient {
   caughtUp = false;
   private quiesced = false;
   private retry: unknown = null;
+  private presenceAt = -Infinity;
+  private presenceNext: { actor: Change["author"]; state: PresenceState | null } | null = null;
+  private presenceTimer: unknown = null;
   private waiters: ((ok: boolean) => void)[] = [];
   private statusListeners: ((s: SyncStatus) => void)[] = [];
   private _status: SyncStatus = "offline";
@@ -179,6 +207,13 @@ export class SyncClient {
     this.unsubscribe?.();
     this.unsubscribe = null;
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
+    if (this.presenceTimer !== null) this.timers.clearTimeout(this.presenceTimer);
+    this.presenceTimer = null;
+    // a coalesced update still waiting goes out before the close: it is often the leave (`null`) a closing editor
+    // sends right after its last move, and peers have no other way to learn the person left (the relay keeps none)
+    const p = this.presenceNext;
+    this.presenceNext = null;
+    if (p && this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
     const c = this.conn;
     this.conn = null;
     c?.close();
@@ -226,8 +261,12 @@ export class SyncClient {
       let c: TransportConnection | null = null;
       try {
         c = await this.o.connect();
-      } catch {
+      } catch (e) {
         c = null;
+        // why it couldn't connect (a refused token, no host): an owner shows it (REQ-8)
+        // a transport that says why in a code (server-node's TransportError: unreachable, unauthorized, …) is read by it
+        const code = typeof (e as { code?: unknown } | null)?.code === "string" ? (e as { code: string }).code : undefined;
+        if (!this.stopped) this.emit({ type: "error", error: `connect: ${e instanceof Error ? e.message : String(e)}`, ...(code ? { code } : {}) });
       }
       if (this.stopped) {
         c?.close();
@@ -287,7 +326,9 @@ export class SyncClient {
   history(after: number, upTo: number, { lineage = false }: { lineage?: boolean } = {}): Promise<{ rows: ConfirmedChange[]; lineage?: ClosureEntry[] }> {
     if (!this.conn || this.stopped) return Promise.reject(new Error("history request: offline"));
     return new Promise((resolve, reject) => {
-      const m: HistoryMsg = { type: "history", branchId: this.branchId, req: ++this.reqN, after, upTo, ...(lineage ? { lineage: true } : {}) };
+      // the lineage paged by the server's byte budget (SF1-8); a server from before paging ignores the cursor and sends
+      // it whole in one reply, with no `lineageNext`
+      const m: HistoryMsg = { type: "history", branchId: this.branchId, req: ++this.reqN, after, upTo, ...(lineage ? { lineage: true, lineageFrom: { entry: 0, state: 0 } } : {}) };
       this.requests.set(m.req, { m, rows: [], resolve, reject });
       this.send(m);
     });
@@ -447,6 +488,9 @@ export class SyncClient {
         this.stats.rejects++;
         this.epoch++; // everything still in flight from the dead epoch is dropped by the server; resend all
         this.emit({ type: "reject", id: m.id, reason: m.reason, epoch: m.epoch });
+        // a refusal about this connection (its token, its cut) holds for every write it makes: an owner shows it as the
+        // sync's error too, not only as that change's outcome (review SF3-6)
+        if (CONNECTION_REASONS.has(m.reason)) this.emit({ type: "error", error: m.reason });
         if (VALIDATION_REASONS.has(m.reason)) {
           this.fenced(() => {
             const p = m.id ? this.queue.pending(b).find((x) => x.id === m.id) : undefined;
@@ -498,9 +542,19 @@ export class SyncClient {
           return r.reject(new Error(m.error));
         }
         r.rows.push(...m.rows);
-        if (m.lineage) r.lineage = m.lineage;
-        // the next page starts after the last row; a page with no row can't make progress, so it ends the request
-        if (m.more && m.rows.length) return this.send((r.m = { ...r.m, after: m.rows[m.rows.length - 1]!.seq, lineage: false }));
+        if (m.lineage) r.lineage = mergeLineage(r.lineage ?? [], m.lineage);
+        // rows and lineage page independently: the next rows start after the last one (a page with no row can't make
+        // progress, so it ends them); the next lineage at the reply's cursor (SF1-8)
+        const rowsLeft = !!m.more && m.rows.length > 0;
+        const from = r.m.lineageFrom,
+          next = m.lineageNext;
+        // a cursor that doesn't move would ask for the same page forever: what came is the answer
+        const lineageLeft = !!r.m.lineage && next !== undefined && !(from && next.entry === from.entry && next.state === from.state);
+        if (rowsLeft || lineageLeft) {
+          const { lineage: _l, lineageFrom: _f, ...base } = r.m;
+          const after = rowsLeft ? m.rows[m.rows.length - 1]!.seq : r.m.upTo;
+          return this.send((r.m = { ...base, after, ...(lineageLeft ? { lineage: true, lineageFrom: m.lineageNext! } : {}) }));
+        }
         this.requests.delete(m.req);
         return r.resolve({ rows: r.rows, ...(r.lineage ? { lineage: r.lineage } : {}) });
       }
@@ -514,7 +568,7 @@ export class SyncClient {
         return this.emit({ type: "error", error: m.reason });
       case "error":
         if (m.reconnect) this.drop(id, m.reason);
-        return this.emit({ type: "error", error: m.reason });
+        return this.emit({ type: "error", error: m.reason, ...(m.code ? { code: m.code } : {}) });
     }
   }
 
@@ -539,8 +593,30 @@ export class SyncClient {
     this.send(msg);
   }
 
+  /**
+   * Presence goes out at most PRESENCE_PER_SEC times a second: within the interval only the latest state is kept and
+   * sent when it ends, so a drag at 60 Hz costs the relay 10 messages a second and the last position always arrives.
+   * (The server also drops anything over a per-connection cap.)
+   */
   sendPresence(actor: Change["author"], state: PresenceState | null): void {
-    if (this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor, state });
+    if (!this.conn?.open) return;
+    const now = (this.o.clock ?? Date.now)();
+    const wait = this.presenceAt + 1000 / PRESENCE_PER_SEC - now;
+    if (wait <= 0 && this.presenceTimer === null) {
+      this.presenceAt = now;
+      this.send({ type: "presence", branchId: this.branchId, actor, state });
+      return;
+    }
+    this.presenceNext = { actor, state };
+    if (this.presenceTimer !== null) return;
+    this.presenceTimer = this.timers.setTimeout(() => {
+      this.presenceTimer = null;
+      const p = this.presenceNext;
+      this.presenceNext = null;
+      if (!p || !this.conn?.open) return;
+      this.presenceAt = (this.o.clock ?? Date.now)();
+      this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
+    }, Math.max(0, wait));
   }
 
   // ---------------------------------------------------------------- pushing
