@@ -3,17 +3,23 @@
 //     its proxy.
 //   - T1 files are hashed and uploaded (deduped, so a poster two clips share goes up once).
 //   - T2: a proxy a teammate already made for this source and profile is reused through its pointer (no encode, no
-//     upload). Else the host's own proxy is used as it is when it qualifies; else the encoder chain makes one into
-//     `workDir`. The proxy is hashed, uploaded, and its pointer written.
+//     upload). Else this share claims the pointer and makes the proxy as a segmented stream (stream.ts, e2e S5-1): the
+//     host's own proxy remuxed into segments when it qualifies, else the encoder chain encoding segments. Each segment
+//     goes up as soon as ffmpeg finishes it, so a teammate plays the first ones while the rest encode and upload; the
+//     stream id is reported (ShareEvent "streaming") before the first segment, for the app to publish.
+//     `proxyStreams: false` keeps the older whole-object proxy (encoded to `workDir`, hashed, uploaded, pointed at).
 //   - T3 only with the owner's opt-in or a teammate's request.
 
-import { stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { BlobStore, Hasher, ProxyEncoder } from "../contracts.ts";
 import { damagedKey, mediaKey, proxyPointerKey, type ProxyPointer } from "../keys.ts";
-import { findProxy } from "../stream.ts";
+import { claimProxyStream, findProxy, newStreamId, ProxyStreamReader, ProxyStreamWriter } from "../stream.ts";
+import { MediaReader } from "../read.ts";
 import type { Manifest } from "../manifest.ts";
-import { COLLAB_PROXY_720P, encodeProxy, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
+import { COLLAB_PROXY_720P, encodeProxy, ProxyChainError, type CollabProfile, type ProxyAttempt } from "../proxy.ts";
+import { CHAIN_ORDER, type FfmpegCodec } from "./ffmpeg-encoder.ts";
+import { encodeSegments } from "./segment-encoder.ts";
 import type { HashScheduler } from "../scheduler.ts";
 import { CONTEXT_CAP_BYTES, planShare, type MediaRecord, type SharePolicy, type T1Kind } from "../tiers.ts";
 import { SourceChangedError, uploadMedia, type UploadResult, type UploadStateStore } from "../upload.ts";
@@ -24,8 +30,21 @@ import { nodeHasher } from "./node-hasher.ts";
 export type ShareEvent =
   | { type: "hashed"; what: string; hash: string }
   | { type: "uploaded"; what: string; result: UploadResult }
-  | { type: "proxy"; how: "teammate's" | "host's" | "encoded"; hash: string; attempts?: ProxyAttempt[] }
+  /** "streaming": the proxy's stream is claimed and its first segment is on the way; the rest say how it was made. */
+  | { type: "proxy"; how: "teammate's" | "host's" | "encoded" | "streaming"; hash?: string; stream?: string; attempts?: ProxyAttempt[] }
   | { type: "skipped"; what: string; why: string };
+
+/** What makes a stream's segments (segment-encoder.ts's encodeSegments; tests pass a fake). */
+export type Segmenter = (o: {
+  input: string;
+  dir: string;
+  profile: CollabProfile;
+  codec: FfmpegCodec | "copy";
+  ffmpeg?: string | readonly string[];
+  signal?: AbortSignal;
+  onInit: (path: string) => Promise<void>;
+  onSegment: (s: { index: number; path: string; durationSec: number }) => Promise<void>;
+}) => Promise<{ segments: number; durationSec: number }>;
 
 export interface ShareMediaOptions {
   store: BlobStore;
@@ -45,6 +64,13 @@ export interface ShareMediaOptions {
   bytesPerSecond?: number;
   signal?: AbortSignal;
   onEvent?: (e: ShareEvent) => void;
+  /** Collab proxies as segmented streams a teammate plays while they upload (default), or one object (`false`). */
+  proxyStreams?: boolean;
+  /** The ffmpeg that segments (Cardboard's own on desktop). */
+  ffmpeg?: string | readonly string[];
+  segmenter?: Segmenter;
+  /** A claimed stream with no new segment for this long, and no end, is taken over by the next share. Default 10 min. */
+  staleMs?: number;
 }
 
 export interface ShareMediaResult {
@@ -165,7 +191,7 @@ export async function shareMedia(o: ShareMediaOptions): Promise<ShareMediaResult
         o.onEvent?.({ type: "skipped", what: "proxy", why: "the original is needed to key the proxy" });
         continue;
       }
-      record.proxy = await shareProxy(o, original, profile, hash, upload);
+      record.proxy = o.proxyStreams === false ? await shareProxy(o, original, profile, hash, upload) : await shareProxyStream(o, original, profile, hasher);
     } else if (step.tier === "T3") {
       await upload("original", o.local.original!, original!, record.mime);
       record.original = "shared";
@@ -216,4 +242,92 @@ async function shareProxy(
   await o.store.put(pointerKey, new TextEncoder().encode(JSON.stringify(pointer)), { contentType: "application/json" });
   o.onEvent?.({ type: "proxy", how, hash: m.hash, attempts });
   return { hash: m.hash, size: m.size, profile: profile.id, encoder };
+}
+
+/** T2 as a segmented stream (e2e S5-1): see the top of this file. */
+async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profile: CollabProfile, hasher: Hasher): Promise<NonNullable<MediaRecord["proxy"]>> {
+  const input = { path: o.local.original! };
+  // What can make the segments: Cardboard's own proxy, remuxed (no re-encode), then the ffmpeg encoders that run here.
+  let host: string | null = null;
+  for (const e of o.encoders) {
+    if (canReuse(e)) {
+      host = await e.reusable(input, { signal: o.signal });
+      if (host) break;
+    }
+  }
+  const candidates: { codec: FfmpegCodec | "copy"; name: string; input: string; usable: () => Promise<boolean> }[] = [];
+  if (host) candidates.push({ codec: "copy", name: "cardboard-proxy", input: host, usable: async () => true });
+  for (const e of o.encoders) {
+    if (canReuse(e) || !(CHAIN_ORDER as readonly string[]).includes(e.name)) continue; // only ffmpeg encoders segment
+    candidates.push({ codec: e.name as FfmpegCodec, name: e.name, input: input.path, usable: () => e.probe().catch(() => false) });
+  }
+  const attempts: ProxyAttempt[] = [];
+  let first: (typeof candidates)[number] | undefined;
+  for (const c of candidates) {
+    if (await c.usable()) {
+      first = c;
+      break;
+    }
+    attempts.push({ encoder: c.name, outcome: "unavailable" });
+  }
+  if (!first) throw new ProxyChainError(attempts);
+
+  const claim = await claimProxyStream(o.store, original.hash, profile.id, first.name, { staleMs: o.staleMs });
+  if (!claim.claimed) {
+    const p = claim.pointer;
+    if ("hash" in p) {
+      o.onEvent?.({ type: "proxy", how: "teammate's", hash: p.hash });
+      return { hash: p.hash, size: p.size, profile: profile.id, encoder: p.encoder };
+    }
+    // A teammate's stream, finished or still growing: theirs plays for everyone.
+    const end = await new ProxyStreamReader({ store: o.store, media: new MediaReader({ store: o.store, hasher }), id: p.stream }).end();
+    o.onEvent?.({ type: "proxy", how: "teammate's", stream: p.stream });
+    return { stream: p.stream, size: end?.size, profile: profile.id, encoder: p.encoder };
+  }
+
+  const segmenter = o.segmenter ?? encodeSegments;
+  const pointerKey = proxyPointerKey(original.hash, profile.id);
+  let stream = (claim.pointer as { stream: string }).stream;
+  for (const c of candidates.slice(candidates.indexOf(first))) {
+    if (c !== first) {
+      if (!(await c.usable())) {
+        attempts.push({ encoder: c.name, outcome: "unavailable" });
+        continue;
+      }
+      // A new stream for each attempt: the failed one's init segment belongs to its encoder. The pointer is ours.
+      stream = newStreamId();
+      const pointer: ProxyPointer = { stream, encoder: c.name, at: Date.now() };
+      await o.store.put(pointerKey, new TextEncoder().encode(JSON.stringify(pointer)), { contentType: "application/json" });
+    }
+    o.onEvent?.({ type: "proxy", how: "streaming", stream });
+    const writer = new ProxyStreamWriter({ store: o.store, hasher, id: stream, upload: { state: o.uploadState, bytesPerSecond: o.bytesPerSecond, signal: o.signal } });
+    const dir = join(o.workDir, `stream-${stream}`);
+    try {
+      await segmenter({
+        input: c.input,
+        dir,
+        profile,
+        codec: c.codec,
+        ffmpeg: o.ffmpeg,
+        signal: o.signal,
+        onInit: async (path) => void (await writer.init(new Uint8Array(await readFile(path)))),
+        onSegment: async (sg) => void (await writer.segment(new Uint8Array(await readFile(sg.path)), sg.durationSec)),
+      });
+      const end = await writer.end();
+      attempts.push({ encoder: c.name, outcome: "ok" });
+      o.onEvent?.({ type: "proxy", how: c.codec === "copy" ? "host's" : "encoded", stream, attempts });
+      return { stream, size: end.size, profile: profile.id, encoder: c.name };
+    } catch (e) {
+      if (o.signal?.aborted) throw o.signal.reason;
+      if (writer.segments > 0) {
+        // Teammates may be playing it already: don't switch it under them. Report it, so the next share replaces it.
+        await o.store.put(damagedKey(stream), new TextEncoder().encode(JSON.stringify({ unfinished: true, at: Date.now() })), { contentType: "application/json" }).catch(() => {});
+        throw e;
+      }
+      attempts.push({ encoder: c.name, outcome: "failed", error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+    }
+  }
+  throw new ProxyChainError(attempts);
 }

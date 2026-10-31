@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { chmodSync, truncateSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readdirSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import type { ProxyEncoder } from "../src/contracts.ts";
@@ -16,10 +16,17 @@ import { closeHashWorkers, hashFile } from "../src/node/hash-file.ts";
 import { hostProxyEncoder } from "../src/node/host-proxy.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
 import { startRangeServer } from "../src/node/range-server.ts";
-import { shareMedia, type ShareEvent } from "../src/node/share.ts";
+import { shareMedia, type Segmenter, type ShareEvent } from "../src/node/share.ts";
+import { findProxy, ProxyStreamReader } from "../src/stream.ts";
 import { FFMPEG, FFPROBE, haveFfmpeg, makeClip, scratchDir, xorshiftBytes } from "./helpers.ts";
 
 const s = scratchDir("share");
+async function until(ok: () => boolean, ms = 10_000): Promise<void> {
+  for (const t0 = Date.now(); !ok(); ) {
+    if (Date.now() - t0 > ms) throw new Error("timed out waiting");
+    await new Promise((r) => setTimeout(r, 5));
+  }
+}
 let original = "";
 let hostProxy = "";
 let poster = "";
@@ -49,7 +56,7 @@ test("sharing uploads T1 and an encoded proxy, keeps the original local, and a t
   const store = new CountingMemoryStore();
   const events: ShareEvent[] = [];
   const noHostProxy = hostProxyEncoder({ locate: () => null, ffprobe: FFPROBE });
-  const r = await shareMedia({
+  const r = await shareMedia({ proxyStreams: false,
     store,
     record: record(),
     local: { original, t1: { poster } },
@@ -72,7 +79,7 @@ test("sharing uploads T1 and an encoded proxy, keeps the original local, and a t
   // A teammate with the same footage: the proxy is found through its pointer, nothing is encoded or uploaded again.
   const up = store.counters.bytesUp;
   const events2: ShareEvent[] = [];
-  const r2 = await shareMedia({
+  const r2 = await shareMedia({ proxyStreams: false,
     store,
     record: toMediaRecord({ id: "m-bob", kind: "video", fileName: "same.mp4", size: 0 }),
     local: { original },
@@ -100,7 +107,7 @@ test("sharing uploads T1 and an encoded proxy, keeps the original local, and a t
 test("the host's own proxy is shared as it is when it qualifies; originals go up only when opted in", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
   const store = new CountingMemoryStore();
   const events: ShareEvent[] = [];
-  const r = await shareMedia({
+  const r = await shareMedia({ proxyStreams: false,
     store,
     record: record(),
     local: { original },
@@ -118,7 +125,7 @@ test("the host's own proxy is shared as it is when it qualifies; originals go up
 
 test("re-sharing a clip relinked to other footage replaces its proxy and original (review round 1, finding 3)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
   const store = new CountingMemoryStore();
-  const first = await shareMedia({
+  const first = await shareMedia({ proxyStreams: false,
     store,
     record: record(),
     local: { original, t1: { poster } },
@@ -131,7 +138,7 @@ test("re-sharing a clip relinked to other footage replaces its proxy and origina
   const other = makeClip(join(s.dir, "retake.mp4"), { seconds: 2, size: "640x360", faststart: true, kbps: 500 });
   const poster2 = join(s.dir, "poster2.jpg");
   writeFileSync(poster2, xorshiftBytes(30_000, 4));
-  const second = await shareMedia({
+  const second = await shareMedia({ proxyStreams: false,
     store,
     record: first.record,
     local: { original: other, t1: { poster: poster2 } },
@@ -242,4 +249,128 @@ test("a shared file a reader reported damaged is uploaded again by the next shar
   assert.equal((await reader.readVerified(first.record.hash!, 0, first.record.size)).length, first.record.size, "so does the original");
   assert.equal(store.objects.has(damagedKey(posterHash)), false);
   assert.ok(store.counters.bytesUp - up >= first.record.size, "both went up again");
+});
+
+
+// e2e S5-1: the proxy as a stream a teammate plays while it uploads. A fake segmenter stands in for ffmpeg here (the
+// real one is tested in segment-encoder.test.ts and below): it hands out an init segment and 4 segments, slowly.
+function fakeSegmenter(counts: { segments: number }, delayMs = 30, afterSegment?: (index: number) => Promise<void>): Segmenter {
+  return async (o) => {
+    mkdirSync(o.dir, { recursive: true });
+    const init = join(o.dir, "init.mp4");
+    writeFileSync(init, xorshiftBytes(800, 7));
+    await o.onInit(init);
+    for (let i = 0; i < counts.segments; i++) {
+      await new Promise((r) => setTimeout(r, delayMs));
+      const path = join(o.dir, `seg_${i}.m4s`);
+      writeFileSync(path, xorshiftBytes(50_000 + i, 200 + i));
+      await o.onSegment({ index: i, path, durationSec: 2 });
+      await afterSegment?.(i);
+    }
+    return { segments: counts.segments, durationSec: 2 * counts.segments };
+  };
+}
+const libx264Like: ProxyEncoder = { name: "libx264", hardware: false, probe: async () => true, encode: async () => ({ bytes: 0, durationMs: 0 }) };
+
+test("a teammate plays the proxy's first segments while the owner's share is still uploading the rest (S5-1)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  const store = new CountingMemoryStore();
+  let streamId = "";
+  let shareDone = false;
+  // The owner's encode holds after segment 1 until the teammate has played it: "played while the share was still
+  // running" then holds by construction, not by how fast this box schedules the two sides.
+  let teammateHasPlayed1!: () => void;
+  const played1 = new Promise<void>((r) => (teammateHasPlayed1 = r));
+  const sharing = shareMedia({
+    store,
+    record: record(),
+    local: { original },
+    policy: { originals: false },
+    encoders: [libx264Like],
+    workDir: s.dir,
+    segmenter: fakeSegmenter({ segments: 4 }, 1, (i) => (i === 1 ? played1 : Promise.resolve())),
+    onEvent: (e) => {
+      if (e.type === "proxy" && e.how === "streaming") streamId = e.stream!;
+    },
+  }).then((r) => ((shareDone = true), r));
+  await until(() => streamId !== "");
+  // The teammate finds the proxy the way a teammate would: from the source's id, through the pointer.
+  const pointer = await findProxy(store, (await hashFile(original)).hash, COLLAB_PROXY_720P.id);
+  assert.ok(pointer && "stream" in pointer && pointer.stream === streamId);
+  const reader = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher }), id: streamId, pollMs: 10 });
+  let sawBeforeDone = 0;
+  let total = 0;
+  for await (const part of reader.play()) {
+    if (part.part === "segment") {
+      total++;
+      if (!shareDone) sawBeforeDone++;
+      if (part.segment.index === 1) teammateHasPlayed1();
+    }
+  }
+  const r = await sharing;
+  assert.equal(total, 4);
+  assert.ok(sawBeforeDone >= 2, `the teammate played ${sawBeforeDone} segments before the share finished`);
+  assert.equal(r.record.proxy?.stream, streamId);
+  assert.equal(r.record.proxy?.encoder, "libx264");
+  assert.equal(r.record.proxy?.size, 800 + [0, 1, 2, 3].reduce((a, i) => a + 50_000 + i, 0));
+
+  // A second owner of the same footage reuses it: nothing encoded, nothing uploaded.
+  const up = store.counters.bytesUp;
+  const events: ShareEvent[] = [];
+  const again = await shareMedia({ store, record: record(), local: { original }, policy: { originals: false }, encoders: [libx264Like], workDir: s.dir, segmenter: async () => assert.fail("encoded again"), onEvent: (e) => events.push(e) });
+  assert.equal(again.record.proxy?.stream, streamId);
+  assert.ok(events.some((e) => e.type === "proxy" && e.how === "teammate's"));
+  assert.ok(store.counters.bytesUp - up < 1000, "only the pointer check went over the link");
+});
+
+test("a segmenter that fails before its first segment falls back to the next encoder; one that fails later reports its stream (S5-1)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  const store = new CountingMemoryStore();
+  const nvenc: ProxyEncoder = { ...libx264Like, name: "h264_nvenc", hardware: true };
+  const failingFirst: Segmenter = async (o) => {
+    if (o.codec === "h264_nvenc") throw new Error("OpenEncodeSessionEx failed: out of memory");
+    return fakeSegmenter({ segments: 2 }, 1)(o);
+  };
+  const r = await shareMedia({ store, record: record(), local: { original }, policy: { originals: false }, encoders: [nvenc, libx264Like], workDir: s.dir, segmenter: failingFirst });
+  assert.equal(r.record.proxy?.encoder, "libx264");
+  const p = await findProxy(store, (await hashFile(original)).hash, COLLAB_PROXY_720P.id);
+  assert.ok(p && "stream" in p && p.stream === r.record.proxy?.stream, "the pointer names the stream that finished");
+
+  const store2 = new CountingMemoryStore();
+  const failsLate: Segmenter = async (o) => {
+    await fakeSegmenter({ segments: 1 }, 1)(o);
+    throw new Error("the GPU driver reset");
+  };
+  let stream = "";
+  await assert.rejects(shareMedia({ store: store2, record: record(), local: { original }, policy: { originals: false }, encoders: [nvenc, libx264Like], workDir: s.dir, segmenter: failsLate, onEvent: (e) => { if (e.type === "proxy" && e.stream) stream = e.stream; } }), /driver reset/);
+  assert.ok(store2.objects.has(damagedKey(stream)), "a half-made stream is reported, so the next share replaces it");
+  const next = await shareMedia({ store: store2, record: record(), local: { original }, policy: { originals: false }, encoders: [libx264Like], workDir: s.dir, segmenter: fakeSegmenter({ segments: 2 }, 1) });
+  assert.notEqual(next.record.proxy?.stream, stream, "the next share made a new stream");
+});
+
+test("with real ffmpeg: the shared proxy is a stream a teammate plays and a tool reads through the live playlist (S5-1)", { skip: !haveFfmpeg() && "no ffmpeg" }, async () => {
+  const store = new CountingMemoryStore();
+  const events: ShareEvent[] = [];
+  const r = await shareMedia({ store, record: record(), local: { original }, policy: { originals: false }, encoders: [ffmpegEncoder("libx264", { ffmpeg: FFMPEG })], ffmpeg: FFMPEG, workDir: s.dir, onEvent: (e) => events.push(e) });
+  const stream = r.record.proxy?.stream;
+  assert.ok(stream, "the proxy is a stream");
+  assert.equal(r.record.proxy?.encoder, "libx264");
+  assert.ok(events.findIndex((e) => e.type === "proxy" && e.how === "streaming") < events.findIndex((e) => e.type === "proxy" && e.how === "encoded"), "the stream id was out before the encode ended");
+  const media = new MediaReader({ store, hasher: nodeHasher });
+  const reader = new ProxyStreamReader({ store, media, id: stream!, pollMs: 10 });
+  let segments = 0;
+  let bytes = 0;
+  for await (const p of reader.play()) {
+    bytes += p.bytes.length;
+    if (p.part === "segment") segments++;
+  }
+  assert.ok(segments >= 1);
+  assert.equal(bytes, r.record.proxy?.size, "init + segments add up to the recorded size");
+  const server = await startRangeServer({ source: media.toolSource(), playlist: async (id, urlFor) => (id === stream ? reader.playlist(urlFor) : null) });
+  try {
+    const { stdout } = await promisify(execFile)(FFPROBE, ["-v", "error", "-show_entries", "stream=codec_name,height", "-of", "csv=p=0", server.playlistUrl(stream!)], { timeout: 30_000 });
+    assert.match(stdout, /h264,540/);
+    assert.match(stdout, /aac/);
+  } finally {
+    await server.close();
+  }
+  assert.equal(readdirSync(s.dir).some((n) => n.startsWith("stream-")), false, "the working folder is cleaned up");
 });
