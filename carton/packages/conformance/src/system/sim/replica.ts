@@ -173,7 +173,7 @@ export class Replica {
     return this.branchId;
   }
   /** With the app closed nobody watches the files; the `cb` holder still displaces-then-installs (§6.4). */
-  headless(holder: Holder): Materializer {
+  headless(holder: Holder): MaterializerLike {
     if (this.worker?.materializer) return this.worker.materializer;
     holder.mz ??= new Materializer({ r: this, sim: this.sim, proc: holder.proc, onLocalCommit() {} }, { watch: "none", regenerateAfterSave: false });
     return holder.mz;
@@ -493,19 +493,41 @@ export interface WorkerOptions {
   adoptMode?: "h5" | "stock" | "no-base-move";
   materialize?: boolean;
   materializer?: Partial<MaterializerOptions>;
+  /**
+   * Replace the materializer model with another implementation (cardboard-adapter's real Materializer runs the
+   * file-level tests this way). It gets the worker (its replica, clock, processes) and the materializer options.
+   */
+  materializerFactory?: (worker: Worker, opts: Partial<MaterializerOptions>) => MaterializerLike;
   guiDebounceMs?: number;
   human?: SimActor | null;
 }
+/** What the worker and the replica call on a materializer (§6.4). The model below implements it. */
+export interface MaterializerLike {
+  start(): void;
+  onHeadChange(cause: string): void;
+  onCb(): void;
+  hookRead(actor: SimActor): void;
+  hookStop(actor: SimActor): void;
+  printShared(): string;
+  importUnseen(path: string): void;
+  displace(path?: string): void;
+  writeStatus(name: string, s: Record<string, any>, changeId?: string): void;
+}
+
 export class Worker {
   readonly r: Replica;
   readonly sim: Sim;
-  readonly opts: Required<Omit<WorkerOptions, "human">> & { human: SimActor | null };
+  readonly opts: Required<Omit<WorkerOptions, "human" | "materializerFactory">> & { human: SimActor | null };
   readonly proc: Proc;
   readonly socket: string;
   nonce: string | null = null;
   sync: SimSync | null = null;
   readonly syncs: SimSync[] = [];
   readonly window: string;
+  /**
+   * The materializer model, or a factory's implementation cast to it: the model's own counters (rewrites, displaced,
+   * superseded…) exist only on the model, and the tests that read them use the model.
+   */
   materializer: Materializer | null = null;
   gui: Gui | null = null;
   mz?: Materializer;
@@ -513,7 +535,9 @@ export class Worker {
   private blocked?: Map<string, { changeId?: string; cards?: unknown[] }[]>;
   touch?: () => void;
 
-  constructor(r: Replica, { pingOn = "engine", gui = true, adoptMode = "h5", materialize = true, materializer = {}, guiDebounceMs = 300, human = null }: WorkerOptions = {}) {
+  private readonly makeMaterializer: WorkerOptions["materializerFactory"];
+  constructor(r: Replica, { pingOn = "engine", gui = true, adoptMode = "h5", materialize = true, materializer = {}, guiDebounceMs = 300, human = null, materializerFactory }: WorkerOptions = {}) {
+    this.makeMaterializer = materializerFactory;
     this.r = r;
     this.sim = r.sim;
     this.opts = { pingOn, gui, adoptMode, materialize, materializer, guiDebounceMs, human };
@@ -527,7 +551,7 @@ export class Worker {
     this.r.world.ipc.listen(this.proc, this.socket, (m) => (m.type === "ping" ? pingThread : this.proc.engine), (m) => this.handle(m));
     await this.acquire();
     if (this.opts.materialize) {
-      this.materializer = new Materializer(this, this.opts.materializer);
+      this.materializer = this.makeMaterializer ? (this.makeMaterializer(this, this.opts.materializer) as Materializer) : new Materializer(this, this.opts.materializer);
       this.materializer.start();
     }
     if (this.opts.gui) {
