@@ -629,7 +629,8 @@
         },
         {
           "file": "hash-summary.json",
-          "kind": "json"
+          "kind": "json",
+          "lastJson": true
         }
       ]
     },
@@ -675,7 +676,8 @@
         },
         {
           "file": "resume-summary.json",
-          "kind": "json"
+          "kind": "json",
+          "lastJson": true
         }
       ]
     },

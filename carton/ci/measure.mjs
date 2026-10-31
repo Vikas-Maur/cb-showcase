@@ -69,10 +69,28 @@ function runOnce(step, stdoutFile, stderrFile, label) {
     let error = null;
     let killed = false;
     const child = spawn(cmd, a, { cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: OS !== "windows" });
+    // The run ends when its output closes. A process it started that escaped the kill can hold a pipe open, so after
+    // its own process exits, or after the deadline kill, the run is finished within GRACE_MS whatever its pipes do.
+    const GRACE_MS = 15_000;
+    let exited = null;
+    let finished = false;
+    let grace = null;
+    const finish = async (how) => {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timer);
+      clearTimeout(grace);
+      child.stdout.destroy();
+      child.stderr.destroy();
+      if (how) err.write(`\n[measure] ${how}\n`);
+      await Promise.all([done(out), done(err)]);
+      resolve({ code: exited?.code ?? null, signal: exited?.signal ?? null, ms: Date.now() - t, ...(killed ? { deadline: true } : {}), ...(error ? { error } : {}), ...(how ? { unfinishedOutput: true } : {}), text });
+    };
     const timer = setTimeout(() => {
       killed = true;
       err.write(`\n[measure] killed at the internal deadline\n`);
       killTree(child);
+      grace ??= setTimeout(() => finish("its processes kept their output open after the kill"), GRACE_MS);
     }, Math.max(0, deadline - Date.now()));
     child.stdout.on("data", (d) => {
       process.stdout.write(d);
@@ -88,10 +106,13 @@ function runOnce(step, stdoutFile, stderrFile, label) {
       error = e.message;
       err.write(`[measure] could not start ${cmd}: ${e.message}\n`);
     });
-    child.on("close", async (code, signal) => {
-      clearTimeout(timer);
-      await Promise.all([done(out), done(err)]);
-      resolve({ code, signal, ms: Date.now() - t, ...(killed ? { deadline: true } : {}), ...(error ? { error } : {}), text });
+    child.on("exit", (code, signal) => {
+      exited = { code, signal };
+      grace ??= setTimeout(() => finish("a process it started kept its output open"), GRACE_MS);
+    });
+    child.on("close", (code, signal) => {
+      exited ??= { code, signal };
+      finish(null);
     });
   });
 }
@@ -173,9 +194,19 @@ function report(rep) {
     try {
       value = JSON.parse(fs.readFileSync(f, "utf8"));
     } catch {
+      const text = fs.readFileSync(f, "utf8");
       const { rows, bad } = parseJsonLines(f);
-      if (bad) problems.push(`${bad} line(s) are not JSON`);
-      value = rows.length > 1 ? rows : (rows[0] ?? null);
+      if (rep.lastJson) {
+        // progress lines, then one pretty-printed JSON value: the value is what starts at the last line opening a `{`
+        try {
+          value = JSON.parse(text.slice(text.lastIndexOf("\n{") + 1));
+        } catch {
+          value = null;
+        }
+      } else {
+        if (bad) problems.push(`${bad} line(s) are not JSON`);
+        value = rows.length > 1 ? rows : (rows[0] ?? null);
+      }
     }
     if (value === null) problems.push("no JSON value");
     if (e.rows !== undefined && (Array.isArray(value) ? value.length : value === null ? 0 : 1) !== e.rows) problems.push(`expected ${e.rows} JSON value(s)`);
@@ -205,7 +236,9 @@ function report(rep) {
   if (e.rows !== undefined && c.rows !== e.rows) problems.push(`expected ${e.rows} rows, got ${c.rows}`);
   if (e.cells !== undefined && c.cells.length !== e.cells) problems.push(`expected ${e.cells} cells, got ${c.cells.length}`);
   if (e.runsPerCell !== undefined) for (const x of c.cells) if (x.runs !== e.runsPerCell) problems.push(`cell "${x.cell}" has ${x.runs} runs, expected ${e.runsPerCell}`);
-  for (const k of rep.groupBy ?? []) if (rows.some((r) => at(r, k) === undefined) && !(rep.optionalKeys ?? []).includes(k)) problems.push(`some rows lack the grouping key ${k}`);
+  // grouping keys are required on the rows the report uses (after `where`), not on a tool's other lines
+  const used = rows.filter((r) => Object.entries(rep.where ?? {}).every(([k, v]) => at(r, k) === v));
+  for (const k of rep.groupBy ?? []) if (used.some((r) => at(r, k) === undefined) && !(rep.optionalKeys ?? []).includes(k)) problems.push(`some rows lack the grouping key ${k}`);
   if (rep.noErrors) {
     const n = rows.filter((r) => Array.isArray(at(r, rep.noErrors)) && at(r, rep.noErrors).length).length;
     if (n) problems.push(`${n} row(s) with ${rep.noErrors}`);
