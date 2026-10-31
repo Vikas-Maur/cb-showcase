@@ -49,6 +49,29 @@ export interface StreamEnd {
   parts?: string[];
 }
 
+/**
+ * Waits for a damage report to settle (its errors ignored: reports are best effort) unless `signal` aborts first. The
+ * report itself goes on: cancelling a read stops waiting for it, not the report.
+ */
+async function whileNotAborted(report: Promise<unknown>, signal?: AbortSignal): Promise<void> {
+  const settled = report.then(
+    () => {},
+    () => {},
+  );
+  if (!signal) return settled;
+  if (signal.aborted) return;
+  let onAbort!: () => void;
+  const aborted = new Promise<void>((resolve) => {
+    onAbort = resolve;
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    await Promise.race([settled, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}
+
 /** A new stream id: 32 random bytes as hex (the same shape as a media hash, so URLs and keys check it the same way). */
 export function newStreamId(): string {
   return toHex(globalThis.crypto.getRandomValues(new Uint8Array(32)));
@@ -343,8 +366,9 @@ export class ProxyStreamReader {
       return await this.#o.media.readVerified(part.hash, 0, part.size, signal);
     } catch (e) {
       const name = (e as Error)?.name;
-      if (name === "LeafMismatchError") await this.#reportDamage({ hash: part.hash });
-      else if (name === "MediaMissingError") await this.reportPartDamage(part.hash, "missing").catch(() => false);
+      if (name === "LeafMismatchError") await whileNotAborted(this.#reportDamage({ hash: part.hash }), signal);
+      else if (name === "MediaMissingError") await whileNotAborted(this.reportPartDamage(part.hash, "missing"), signal);
+      signal?.throwIfAborted();
       throw e;
     }
   }
@@ -444,8 +468,9 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
             yield* opts.media.read(p.hash, from - at, to - from, signal);
           } catch (e) {
             const name = (e as Error)?.name;
-            if (name === "LeafMismatchError") await r.reportPartDamage(p.hash).catch(() => false);
-            else if (name === "MediaMissingError") await r.reportPartDamage(p.hash, "missing").catch(() => false);
+            if (name === "LeafMismatchError") await whileNotAborted(r.reportPartDamage(p.hash), signal);
+            else if (name === "MediaMissingError") await whileNotAborted(r.reportPartDamage(p.hash, "missing"), signal);
+            signal?.throwIfAborted();
             throw e;
           }
         }

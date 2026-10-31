@@ -66,7 +66,8 @@ async function toolReads(store: BlobStore, id: string): Promise<number[]> {
     },
     source: media.toolSource(),
     playlist: (_id, urlFor) => reader.playlist(urlFor),
-    reportDamage: (_stream, hash, why) => reader.reportPartDamage(hash, why),
+    reportDamage: (_stream, hash) => reader.reportPartDamage(hash),
+    reportMissing: (_stream, hash) => reader.reportPartDamage(hash, 'missing'),
   });
   try {
     const list = await (await fetch(server.playlistUrl(id))).text();
@@ -152,4 +153,78 @@ test('a part reported missing that is there is not reported, and a hash that is 
   assert.equal(await reader.reportPartDamage('ef'.repeat(32), 'missing'), false, 'not a part');
   assert.equal(store.objects.has(damagedKey(id)), false);
   assert.ok(await usableProxy(store, src, 'p1'));
+});
+
+for (const wiring of ['reportDamage only (wired before reportMissing existed)', 'reportDamage and reportMissing']) {
+  test(`a part missing at the read but back before the report doesn't mark the stream (review 1, ${wiring})`, async () => {
+    const store = new CountingMemoryStore();
+    const { id, segs } = await finishedStream(store);
+    const media = new MediaReader({ store, hasher: nodeHasher });
+    const reader = new ProxyStreamReader({ store, media, id });
+    await reader.known();
+    const key = mediaKey(segs[0]!.hash);
+    const bytes = store.objects.get(key)!;
+    store.objects.delete(key);
+    const head = store.head.bind(store);
+    let restore = true;
+    store.head = async (k) => {
+      const r = await head(k);
+      if (k === key && restore) {
+        restore = false; // another uploader puts it back right after the read's stat
+        store.objects.set(key, bytes);
+      }
+      return r;
+    };
+    let over!: () => void;
+    const ended = new Promise<void>((r) => (over = r));
+    const server = await startRangeServer({
+      onRequest: () => over(),
+      source: media.toolSource(),
+      reportDamage: (_stream, hash) => reader.reportPartDamage(hash),
+      ...(wiring.includes('reportMissing') ? { reportMissing: (_stream: string, hash: string) => reader.reportPartDamage(hash, 'missing') } : {}),
+    });
+    try {
+      const r = await fetch(`${server.url(segs[0]!.hash)}&s=${id}`);
+      await r.arrayBuffer();
+      assert.equal(r.status, 404);
+      await ended;
+    } finally {
+      await server.close();
+    }
+    assert.equal(store.objects.has(damagedKey(id)), false, 'not reported');
+    assert.ok(await usableProxy(store, src, 'p1'), 'still reused');
+  });
+}
+
+test('cancelling playback does not wait for the report of a missing part (review 2)', async () => {
+  const store = new CountingMemoryStore();
+  const { id } = await finishedStream(store);
+  const reader = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher }), id });
+  const init = (await reader.initPart())!;
+  const key = mediaKey(init.hash);
+  store.objects.delete(key);
+  let entered!: () => void;
+  const inHead = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  const held = new Promise<void>((r) => (release = r));
+  const head = store.head.bind(store);
+  store.head = async (k) => {
+    if (k === key) {
+      entered();
+      await held; // the confirming HEAD stalls
+    }
+    return head(k);
+  };
+  const ac = new AbortController();
+  const next = reader.play({ signal: ac.signal }).next();
+  await inHead;
+  ac.abort();
+  try {
+    await assert.rejects(
+      Promise.race([next, new Promise((_, reject) => setTimeout(() => reject(new Error('still waiting for the report')), 2000))]),
+      { name: 'AbortError' },
+    );
+  } finally {
+    release();
+  }
 });

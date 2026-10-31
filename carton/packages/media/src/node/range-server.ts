@@ -45,13 +45,19 @@ export interface RangeServerOptions {
    */
   playlist?: (id: string, urlFor: (hash: string) => string, signal: AbortSignal) => Promise<string | null>;
   /**
-   * A segment read through a playlist's URL (which names its stream) failed: it didn't verify (`"mismatch"`, on any
-   * attempt: a host that checks the damage removes the object, so the retry finds it gone), or it is gone
-   * (`"missing"`). Report the stream, so the next share makes a new one (e2e S5-5/S5-7: the reuse check reads
-   * bad/<stream>, it can't list part reports). Wire to `(stream, hash, why) => reader.reportPartDamage(hash, why)`,
-   * which ignores a hash that isn't one of the stream's parts and checks a "missing" one with a HEAD.
+   * A segment read through a playlist's URL (which names its stream) failed verification, on any attempt (a host that
+   * checks the damage removes the object, so the retry finds it gone, and still this is called): report the stream, so
+   * the next share makes a new one (e2e S5-5/S5-7: the reuse check reads bad/<stream>, it can't list part reports).
+   * Wire to `ProxyStreamReader.reportPartDamage`, which ignores a hash that isn't one of the stream's parts.
    */
-  reportDamage?: (stream: string, hash: string, why: "mismatch" | "missing") => Promise<unknown>;
+  reportDamage?: (stream: string, hash: string) => Promise<unknown>;
+  /**
+   * A segment read through a playlist's URL was not there (and no attempt failed verification). Wire to
+   * `(stream, hash) => reader.reportPartDamage(hash, "missing")`, which reports the stream only if a HEAD finds the part
+   * still gone: a part restored meanwhile isn't damage. Separate from `reportDamage`, so wiring made before it existed
+   * never reports a missing part without that check.
+   */
+  reportMissing?: (stream: string, hash: string) => Promise<unknown>;
 }
 
 export interface RangeRequestInfo {
@@ -247,9 +253,10 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   };
 
   const report = async (stream: string, hash: string, why: "mismatch" | "missing"): Promise<void> => {
-    if (opts.reportDamage && isMediaHash(stream)) {
+    const to = why === "mismatch" ? opts.reportDamage : opts.reportMissing;
+    if (to && isMediaHash(stream)) {
       try {
-        await opts.reportDamage(stream, hash, why);
+        await to(stream, hash);
       } catch {
         // best effort: the answer has gone out already
       }
