@@ -138,13 +138,16 @@ export interface Sequencer {
   cancelShare(branchId: string): void;
   /** Create a branch the server sequences from seq `rootSeq` (a host's admin path, and tests). */
   createBranch(rec: CutRecord, init: { doc0: Doc | null; rootSeq?: number; stateHash?: string; forkOf?: { branchId: string; seq: number } }): Promise<void>;
-  /** Move rows older than `head - keep` into blob segments (§6.3 archive). Needs `blobs`. */
+  /**
+   * Move rows older than `head - keep` into gzip-compressed blob segments of `segmentRows` rows (§6.3, §18: keep
+   * 10,000, one segment per 10,000). Needs `blobs`. Each archived row costs one DELETE (a row written on a DO).
+   */
   archive(branchId: string, opts?: { keep?: number; segmentRows?: number }): Promise<number>;
   /**
    * Periodic work, for a DO alarm or a Node timer: archive every branch's old rows to blob segments. Resolves with
    * the rows moved and when to call again. A no-op without `blobs`.
    */
-  maintain(): Promise<{ archived: number; nextAt: number | null }>;
+  maintain(opts?: { keep?: number; segmentRows?: number }): Promise<{ archived: number; nextAt: number | null }>;
   readonly stats: SequencerStats;
   /** The tables (read access for hosts' admin tools and tests). */
   readonly tables: Tables;
@@ -265,8 +268,9 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (after + 1 < firstLive && opts.blobs) {
       for (const seg of tables.segmentsAfter(branchId, after)) {
         if (seg.lo >= firstLive - 1 || out.length >= limit) break;
-        const bytes = await opts.blobs.get(seg.blob);
-        if (!bytes) throw new Error(`segment ${seg.blob} is missing from the blob store`);
+        const stored = await opts.blobs.get(seg.blob);
+        if (!stored) throw new Error(`segment ${seg.blob} is missing from the blob store`);
+        const bytes = seg.blob.endsWith(".gz") ? await gunzip(stored) : stored;
         const raw = JSON.parse(dec.decode(bytes)) as Record<string, string | number | null>[];
         for (const r of raw) {
           if (Number(r.seq) <= after || out.length >= limit) continue;
@@ -632,7 +636,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       queue = run.catch(() => {});
       return run;
     },
-    async archive(branchId, { keep = 4 * K, segmentRows = 1024 } = {}) {
+    async archive(branchId, { keep = ARCHIVE_KEEP, segmentRows = ARCHIVE_SEGMENT } = {}) {
       if (!opts.blobs) throw new Error("archive needs a blob store");
       const blobs = opts.blobs;
       const run = queue.then(async () => {
@@ -644,8 +648,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           const lo = first - 1, hi = lo + segmentRows;
           const raw = tables.rawRange(branchId, lo, hi);
           const json = raw.map((r) => ({ ...r, ops: r.ops instanceof Uint8Array ? dec.decode(r.ops) : r.ops }));
-          const key = `segments/${branchId}/${hi}`;
-          await blobs.put(key, enc.encode(JSON.stringify(json)), { contentType: "application/json" });
+          const key = `segments/${branchId}/${hi}.json.gz`;
+          await blobs.put(key, await gzip(enc.encode(JSON.stringify(json))), { contentType: "application/gzip" });
           const ids = raw.map((r) => [Number(r.seq), String(r.id), Number(r.flags ?? 0) & (FLAG_STRUCTURAL | FLAG_WITHDRAWN), Number(r.k ?? 0)] as [number, string, number, number]);
           tables.transaction(() => {
             tables.putSegment(branchId, lo, hi, key, ids);
@@ -657,10 +661,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       queue = run.then(() => {}, () => {});
       return run;
     },
-    async maintain() {
+    async maintain(o = {}) {
       if (!opts.blobs) return { archived: 0, nextAt: null };
       let archived = 0;
-      for (const id of tables.branchIds()) if (!tables.branch(id)?.tracking) archived += await this.archive(id);
+      for (const id of tables.branchIds()) if (!tables.branch(id)?.tracking) archived += await this.archive(id, o);
       return { archived, nextAt: clock() + MAINTAIN_EVERY_MS };
     },
     stats,
@@ -669,5 +673,18 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
 }
 
 const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
+/** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
+const ARCHIVE_KEEP = 10_000;
+const ARCHIVE_SEGMENT = 10_000;
+
+// gzip with the platform's CompressionStream (Workers, browsers and Node all have it)
+async function gzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new CompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+async function gunzip(bytes: Uint8Array): Promise<Uint8Array> {
+  const stream = new Blob([bytes as Uint8Array<ArrayBuffer>]).stream().pipeThrough(new DecompressionStream("gzip"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
 
 export type { AuthContext, Change, StoredBranch };

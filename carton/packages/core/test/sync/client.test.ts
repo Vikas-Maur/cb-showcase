@@ -53,11 +53,13 @@ class Scripted implements TransportConnection {
 }
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
+/** Let the client's deferred steps (resubmission after a reject, the push after a commit) run. */
+const flush = () => new Promise((r) => setTimeout(r, 0));
 async function setup(opts: { fence?: () => boolean } = {}) {
   const q = new ReplicaQueue(schema);
   q.addBranch({ id: B, name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
   const conns: Scripted[] = [];
-  const client = new SyncClient({ queue: q, branchId: B, schemaVersion: 1, connect: async () => { const c = new Scripted(); conns.push(c); return c; }, defer: (fn) => fn(), backoffMs: 1, ...opts }).start();
+  const client = new SyncClient({ queue: q, branchId: B, schemaVersion: 1, connect: async () => { const c = new Scripted(); conns.push(c); return c; }, defer: (fn) => queueMicrotask(fn), backoffMs: 1, ...opts }).start();
   await tick();
   const c = conns[0]!;
   c.feed({ type: "hello", branchId: B, head: 0, rows: [], confirmed: [] });
@@ -76,6 +78,7 @@ test("hello claims every pending id it sent with every base it was sent on (R10-
   // someone else's row arrives: the queue is rebased onto seq 1; a reject makes the client resend on the new base
   c.feed({ type: "changes", branchId: B, rows: [rowOf(q, "o.1", 1, [set("c2", "name", "o")])] });
   c.feed({ type: "reject", branchId: B, id: "r1.1", reason: "overlap", head: 1, concurrent: [{ seq: 1, id: "o.1" }], epoch: client.epoch });
+  await flush();
   assert.equal(c.last("push")!.changes[0]!.base.seq, 1);
   c.drop();
   await new Promise((r) => setTimeout(r, 10));
@@ -104,6 +107,7 @@ test("unpinned v12 rule, now pinned: on a keyframe catch-up, ids the server list
   await new Promise((r) => setTimeout(r, 10));
   const c2 = (client as unknown as { conn: Scripted }).conn;
   c2.feed({ type: "hello", branchId: B, head: 130, keyframe: { seq: 128, stateHash: hashDoc(kfDoc as Doc, schema), doc: kfDoc as Doc }, rows: [], confirmed: [{ id: "r1.1", seq: 1, rebase: 0 }] });
+  await flush();
   assert.deepEqual(rebased, ["r1.2"], "only the change not yet confirmed was rebased");
   assert.equal(q.pending(B).length, 1);
   assert.equal(q.versions.get("r1.1")!.length, 1, "the confirmed change has no rebased version");
@@ -119,6 +123,7 @@ test("an absorbed change that was sent is withdrawn and leaves the queue only on
   // Bob's merge-policy edit of the same leaf arrives first: the rebase cards it (head's value kept) and leaves nothing
   c.feed({ type: "changes", branchId: B, rows: [rowOf(q, "bob.1", 1, [set("c0", "opacity", 0.9)], { paths: ["timelineItems/c0/opacity"], reads: ["timelineItems/c0"] })] });
   c.feed({ type: "reject", branchId: B, id: "r1.1", reason: "overlap", head: 1, concurrent: [{ seq: 1, id: "bob.1" }], epoch: client.epoch });
+  await flush();
   const w = c.last("withdraw")!;
   assert.deepEqual([w.id, w.base], ["r1.1", 1]);
   assert.equal(q.pending(B).length, 1, "still queued until the server spends the id");
@@ -142,9 +147,11 @@ test("\"lww on structure\" is resubmitted as merge, never dropped (H2); a valida
   client.pump();
   assert.equal(c.last("push")!.changes[0]!.policy, "lww", "a leaf edit stays lww");
   c.feed({ type: "reject", branchId: B, id: "r1.1", reason: "lww on structure", head: 0, concurrent: [], epoch: client.epoch });
+  await flush();
   assert.equal(c.last("push")!.changes[0]!.policy, "merge", "resubmitted as merge");
   assert.equal(q.pending(B).length, 1, "not dropped");
   c.feed({ type: "reject", branchId: B, id: "r1.1", reason: "span missing", head: 0, concurrent: [], epoch: client.epoch });
+  await flush();
   assert.deepEqual(rejected, ["r1.1:span missing"]);
   assert.equal(q.pending(B).length, 0);
   // the client rule: lww asked for a timing edit is committed as merge
@@ -160,8 +167,10 @@ test("\"behind\": listed ids leave the queue, the rest is rebased onto head and 
   const rows = Array.from({ length: 5 }, (_, i) => rowOf(q, `o.${i + 1}`, i + 1, [set("c2", "name", `o${i}`)]));
   c.feed({ type: "changes", branchId: B, rows });
   c.feed({ type: "reject", branchId: B, id: "r1.2", reason: "behind", head: 6, concurrent: [], epoch: client.epoch, confirmed: [{ id: "r1.1", seq: 6, rebase: 0 }] });
+  await flush();
   assert.deepEqual(c.last("push")!.changes.map((x) => [x.id, x.base.seq]), [["r1.1", 5], ["r1.2", 5], ["r1.3", 5]], "seq 6 isn't held yet: r1.1 waits for its row");
   c.feed({ type: "reject", branchId: B, id: "r1.1", reason: "behind", head: 500, concurrent: [], epoch: client.epoch });
+  await flush();
   assert.equal(c.sent.at(-1)!.type, "hello", "500 is more than K past our head: catch up first");
   client.stop();
 });

@@ -95,3 +95,22 @@ test("a keyframe jump makes placeholders; a state inside the jumped stretch is u
   assert.throws(() => q.confirmedState(B, 5), /state unknown/);
   assert.equal(q.confirmedState(B, 10), d0);
 });
+
+test("a ripple stored as one remap op stays one op through a rebase, re-expressed in head's coordinates", async () => {
+  const { rippleDelete, apply, fork } = await import("../../src/engine/index.ts");
+  const q = new ReplicaQueue(schema);
+  const d: Doc = { tracks: [{ id: "V1", "#pos": "a" }], timelineItems: [clip("c0", 0, 5), clip("c1", 5, 10), clip("c2", 10, 15), clip("c3", 15, 20)] };
+  q.addBranch({ id: B, name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d);
+  // delete c1 and close its gap: one remap op moves everything from 10 on back by 5
+  q.commit(B, { id: "r.1", author: me, ops: [{ op: "remove", path: ["timelineItems", "c1"] }, { op: "remap", path: ["#remap"], maps: { V1: rippleDelete(5, 5) } }], at: 0 });
+  // concurrently Bob deleted the first 2 s of c0's slot as a ripple of his own (everything from 2 on moves back by 2)
+  const bobOps: Op[] = [{ op: "remap", path: ["#remap"], maps: { V1: rippleDelete(0, 2) } }];
+  q.integrate(B, [{ ...row("bob.1", 1, bobOps), intent: null }]);
+  const v = q.pending(B)[0]!.versions.at(-1)!;
+  assert.equal(v.ops.filter((o) => o.op === "remap").length, 1, "still one remap op");
+  assert.ok(v.ops.length <= 3, `not expanded into per-clip sets (${v.ops.length} ops)`);
+  const after = apply(fork(q.confirmedState(B, 1), schema), v.ops, schema) as { timelineItems: { id: string; startTime: number; endTime: number }[] };
+  const at = (id: string) => after.timelineItems.find((i) => i.id === id);
+  assert.equal(at("c1"), undefined);
+  assert.deepEqual([at("c2")!.startTime, at("c3")!.startTime], [3, 8], "both ripples applied once each");
+});
