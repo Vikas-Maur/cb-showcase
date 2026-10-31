@@ -118,7 +118,8 @@ test("review 17 #2: a save that is printed again, retried after a failure once i
   assert.equal(await w.engine.getMeta(["attempt", vb]), undefined, "finished");
   const row = (await w.engine.getMeta<ViewRow>(["view", name]))!;
   const printed = findRev(v0.text)!.rev as { nonce: string };
-  assert.deepEqual([row.reprinted, nonce(w, vb) === row.nonce, row.nonce !== printed.nonce], [[printed.nonce], true, true], "printed again, once");
+  assert.deepEqual([nonce(w, vb) === row.nonce, row.nonce !== printed.nonce], [true, true], "printed again");
+  assert.ok(await w.engine.getMeta(["reprinted", name, printed.nonce]), "the replaced print is marked");
   assert.equal(status(w, name).change, ids[0]);
   const second = structuredClone(first);
   find(second, "a").name = "second";

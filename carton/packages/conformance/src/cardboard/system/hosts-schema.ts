@@ -156,6 +156,9 @@ export function pinnedSchemaVersions(toml: string): { table: string; value: stri
   };
   const s = toml;
   let i = 0;
+  // read at `i` (sticky), any length (round 18 #5: a long bare key cut short lost the pins after it)
+  const BARE_KEY = /[A-Za-z0-9_-]+/y;
+  const BARE_VALUE = /[^\s,{}#[\]]+/y;
   const ws = () => {
     while (s[i] === " " || s[i] === "\t") i++;
   };
@@ -223,7 +226,8 @@ export function pinnedSchemaVersions(toml: string): { table: string; value: stri
       let part: string | null = null;
       if ((s[i] === '"' || s[i] === "'") && !s.startsWith(s[i]!.repeat(3), i)) part = str();
       else {
-        const m = /^[A-Za-z0-9_-]+/.exec(s.slice(i, i + 256));
+        BARE_KEY.lastIndex = i;
+        const m = BARE_KEY.exec(s);
         if (m) [part, i] = [m[0], i + m[0].length];
       }
       if (part === null) return null;
@@ -265,7 +269,8 @@ export function pinnedSchemaVersions(toml: string): { table: string; value: stri
       const v = str();
       return v !== null && (found(path, v), true);
     }
-    const m = /^[^\s,{}#[\]]+/.exec(s.slice(i, i + 256)); // a number, boolean or date
+    BARE_VALUE.lastIndex = i;
+    const m = BARE_VALUE.exec(s); // a number, boolean or date
     return !!m && ((i += m[0].length), found(path, m[0]), true);
   };
   let table: string[] = [];
@@ -363,4 +368,15 @@ test("H-SV: wrangler.toml's SCHEMA_VERSION after an array, in a multi-line strin
     { table: "vars", value: "\t2" },
     { table: "env.u.vars", value: "1" },
   ], "escapes, each read once");
+});
+
+test("H-SV: wrangler.toml's SCHEMA_VERSION after a bare key or value of any length (round 18 #5)", () => {
+  const long = "K".repeat(300);
+  assert.deepEqual(pinnedSchemaVersions(`vars = { ${long} = "x", SCHEMA_VERSION = "1" }`), [{ table: "vars", value: "1" }], "a long bare key");
+  assert.deepEqual(pinnedSchemaVersions(`[vars]\n${long}_2 = 1${"0".repeat(300)}\nSCHEMA_VERSION = 2`), [{ table: "vars", value: "2" }], "a long bare value");
+  // linear: a large config reads at once
+  const big = `[vars]\n${Array.from({ length: 20_000 }, (_, i) => `K${i} = "${"v".repeat(40)}"`).join("\n")}\nSCHEMA_VERSION = "3"\n`;
+  const t0 = performance.now();
+  assert.deepEqual(pinnedSchemaVersions(big), [{ table: "vars", value: "3" }]);
+  assert.ok(performance.now() - t0 < 5000, "a 1 MB config in under 5 s (linear; a quadratic scan takes minutes)");
 });

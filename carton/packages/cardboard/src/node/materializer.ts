@@ -202,10 +202,10 @@ export interface ViewRow {
   printGen?: number;
   /** The last applied save of this print: its parsed state, the base of the next save with the same nonce. */
   last?: { contentHash: string; nonce: string; held: HeldBase } | null;
-  /** Nonces of prints this view was printed again over at a save's commit (`reprintView`): a save on one is refused. */
-  reprinted?: string[];
   /** The change behind the sidecar now; a later update for another change (or after a print or an error) is stale. */
   lastChange?: string | null;
+  /** The print generation of the save the sidecar shows (none since this print: unset). */
+  savedGen?: number;
 }
 
 export interface StatusBody {
@@ -238,8 +238,6 @@ interface PathState {
 const KEEP_WRITTEN = 8;
 /** At most this many changes a save didn't see are read for it; past them it takes the exact path (round 15 #1). */
 const HIDDEN_SCAN = 256;
-/** The printed-over nonces a view row keeps (a buffer older than these resolves against its own header). */
-const REPRINTED_KEPT = 64;
 const KEEP_STAMPS = 32;
 
 type Record_ = { t: number; path: string; [k: string]: unknown };
@@ -253,6 +251,13 @@ type Attempt = { gen: string; base: string; hash?: string; id?: string; result?:
 /** A foreign project.json's envelope, kept for its unversioned fields until Carton's next write consumes it. */
 type Overlay = { id: string; envelope: Record<string, unknown>; mtimeNs?: string };
 type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null; viewGen?: number };
+/** `fromDisplaced`: from `.carton/displaced`; `viewGen`: the view's print generation the displaced file was moved off in. */
+type ApplyOptions = { fromDisplaced?: boolean; viewGen?: number };
+/** A view print replaced at a save's commit (`["reprinted", view, nonce]`): `hash` is that save's file. */
+interface Replaced {
+  hash: string;
+  at: number;
+}
 type Origin = { rel: string; mtimeNs: bigint; viewGen?: number };
 
 const sha = (b: Uint8Array | string): string => createHash("sha256").update(b).digest("hex");
@@ -754,7 +759,7 @@ export class Materializer {
       const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
       await this.install(rel, text, prev?.printGen ?? 0);
       // a print starts a new generation: late updates for an earlier save never reach this print's sidecar
-      const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), printGen: (prev?.printGen ?? 0) + 1, last: null, lastChange: null, ...(prev?.reprinted ? { reprinted: prev.reprinted } : {}) };
+      const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), printGen: (prev?.printGen ?? 0) + 1, last: null, lastChange: null };
       await this.engine.putMeta(["view", view], row);
       return { name: view, path: rel, ref: refBodyOf(p) };
     });
@@ -765,9 +770,11 @@ export class Materializer {
    * `repeatsHidden`), with a new nonce: its next save's base is that exact state. The same print generation, sidecar and
    * latest change: a late update for this save still reaches the sidecar. An agent's edit after it re-reads the file.
    * A later save written on the print it replaces (the agent's own buffer, or a save landing while this renders, which
-   * the install displaces) is refused "state unknown: re-print" (`reprinted`): no base describes it. Its saved content
-   * holds part of a change it never saw whole, so taking it as seen loses the rest without a card (round 17 #1), and
-   * taking the print's state counts the agent's own saved edits again (round 16 #2). The agent reads the file again.
+   * the install displaces) is refused "state unknown: re-print": no base describes it. Its saved content holds part of a
+   * change it never saw whole, so taking it as seen loses the rest without a card (round 17 #1), and taking the print's
+   * state counts the agent's own saved edits again (round 16 #2). The replaced print is marked (`["reprinted", view,
+   * nonce]`, one row each, never dropped) before the reprint, in the save's view block: a reprint that fails leaves it
+   * marked (round 18 #3, #4).
    */
   private async reprintView(view: string, row: ViewRow, res: SaveResult): Promise<void> {
     const p = await this.commitState(res, row.pinOwner);
@@ -775,7 +782,7 @@ export class Materializer {
     const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
     const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
     await this.install(viewPath(view), text, row.printGen ?? 0);
-    Object.assign(row, { header, nonce, last: null, reprinted: [...(row.reprinted ?? []), row.nonce].slice(-REPRINTED_KEPT) });
+    Object.assign(row, { header, nonce, last: null });
     await this.engine.putMeta(["view", view], row);
   }
 
@@ -1245,13 +1252,13 @@ export class Materializer {
         // (a file from an unknown print, recovered after a restart, counts as the latest)
         const name = viewName(d.rel);
         const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
-        if (name && row && (d.viewGen === undefined || d.viewGen === (row.printGen ?? 0))) await this.failView(name, row, { status: "error", error: text });
+        if (name && row && (d.viewGen === undefined || d.viewGen === (row.printGen ?? 0))) await this.failView(name, row, { status: "error", error: text }, d.viewGen);
         // only now: if the notice or the refusal failed (and threw), the next review reports it again
         this.reportedPartials.add(d.path);
       }
       return;
     }
-    if (await this.applySave(d.rel, d.bytes, hash, d.stamp, { fromDisplaced: true })) return done();
+    if (await this.applySave(d.rel, d.bytes, hash, d.stamp, { fromDisplaced: true, ...(d.viewGen !== undefined ? { viewGen: d.viewGen } : {}) })) return done();
     // a save that couldn't be applied (unknown base, never printed, rejected) stays in .carton/displaced
     this.origin.delete(d.path);
     this.keptFiles.add(d.path);
@@ -1279,7 +1286,7 @@ export class Materializer {
    * Applies a foreign save. Returns false when it couldn't be (no print, unknown base, doesn't parse, rejected): its
    * bytes are kept. Throws when the engine fails (the caller retries).
    */
-  private async applySave(rel: string, bytes: Buffer, hash: string, stamp: string | null, o: { fromDisplaced?: boolean } = {}): Promise<boolean> {
+  private async applySave(rel: string, bytes: Buffer, hash: string, stamp: string | null, o: ApplyOptions = {}): Promise<boolean> {
     const outer = !this.applying.has(rel);
     if (outer) this.applying.add(rel);
     try {
@@ -1288,7 +1295,7 @@ export class Materializer {
       if (outer) this.applying.delete(rel);
     }
   }
-  private async applySaveNow(rel: string, bytes: Buffer, hash: string, stamp: string | null, o: { fromDisplaced?: boolean }): Promise<boolean> {
+  private async applySaveNow(rel: string, bytes: Buffer, hash: string, stamp: string | null, o: ApplyOptions): Promise<boolean> {
     const ps = await this.pathState(rel);
     const failed = async () => {
       // tried and refused: the current generation at the path (if it is still there), and this file is never retried
@@ -1305,7 +1312,30 @@ export class Materializer {
       this.log.ignored.push({ t: this.clock.now(), path: rel, why: "never printed" }); // never applied without a print (R5-03)
       return failed();
     }
+    // a displaced view save from an earlier print generation (the agent printed again since), refused or applied, shows
+    // in the sidecar and the row only while no save of a later print does: the latest save of the view, displaced by the
+    // print, still finishes there (R7-02); an older one never replaces a newer save's outcome or stops its late updates
+    // (round 18 #2). A file of unknown generation (not displaced, or recovered after a restart) counts as the latest.
+    const fileGen = o.viewGen ?? row?.printGen ?? 0;
+    const current = !row || row.savedGen === undefined || fileGen >= row.savedGen;
+    const viewFailed = async (s: Partial<StatusBody> & { status: StatusBody["status"] }) => {
+      if (name && row && current) await this.failView(name, row, s, fileGen);
+    };
     const rev = rel === PROJECT_FILE ? null : (findRev(text)?.rev ?? null);
+    // a save already committed by an earlier attempt of this same file (a failure, or a crash, after its commit) is
+    // finished below from its recorded result, even though its content now equals head, or its print was replaced since
+    const earlier = await this.engine.getMeta<Attempt>(["attempt", rel]);
+    const resumed = !!earlier && earlier.gen === sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
+    // written on a print replaced at a save's commit (see reprintView): refused, unless it is that save itself (its bytes
+    // written again, or finished from its attempt; round 18 #1)
+    const replaced = name && rev?.kind === "carton" && rev.nonce && !resumed ? await this.engine.getMeta<Replaced>(["reprinted", name, rev.nonce]) : undefined;
+    if (replaced && replaced.hash === hash) {
+      if (!o.fromDisplaced) ps.last = hash;
+      if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
+      await this.saveState(rel);
+      this.log.applied.push({ t: this.clock.now(), path: rel, id: null, status: "unchanged", cards: 0, actor: actor.id, hash });
+      return true;
+    }
     let base: Rev | HeldBase;
     let held: HeldBase;
     try {
@@ -1316,8 +1346,8 @@ export class Materializer {
         if (!prev) throw new Error("state unknown: re-print (project.json was never written by Carton)");
         base = prev;
         held = await this.engine.resolve(prev);
-      } else if (rev?.kind === "carton" && rev.nonce && row?.reprinted?.includes(rev.nonce)) {
-        // written on a print this view was printed again over (see reprintView): no base describes it (rounds 16-17)
+      } else if (replaced) {
+        // no base describes it (rounds 16-18, see reprintView)
         throw new Error(`state unknown: re-print (${rel} was written on a print of it replaced at the commit of a save that repeated a change made after that print; print it again, cb source print --view ${name}, and redo this save's edits)`);
       } else if (row?.last && rev?.kind === "carton" && rev.nonce === row.nonce && row.last.nonce === row.nonce) {
         // R4-02: the same print as the last applied save: only the agent's new edits count
@@ -1332,7 +1362,7 @@ export class Materializer {
       if (!isStateUnknown(e)) throw e;
       const msg = (e as Error).message;
       await this.engine.notice(actor, { kind: "error", text: msg });
-      if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
+      await viewFailed({ status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       this.log.applied.push({ t: this.clock.now(), path: rel, error: msg });
       return failed();
     }
@@ -1346,13 +1376,9 @@ export class Materializer {
       this.log.unparsed.push({ t: this.clock.now(), path: rel });
       const msg = `${rel} doesn't parse; kept, not applied: ${(e as Error).message}`;
       await this.engine.notice(actor, { kind: "error", text: msg });
-      if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
+      await viewFailed({ status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
-    // a save already committed by an earlier attempt of this same file (a failure, or a crash, after its commit) is
-    // finished below from its recorded result, even though its content now equals head
-    const earlier = await this.engine.getMeta<Attempt>(["attempt", rel]);
-    const resumed = !!earlier && earlier.gen === sha(`${stamp ?? ""}\n${hash}`).slice(0, 24);
     const asBase = !name && !resumed && sameDoc(saved, baseDoc);
     // during a freeze, head is pinned once: the save is compared with, and the freeze restarted from, the same state
     // (a commit from another process landing in between must stay hidden, R8-01)
@@ -1413,7 +1439,7 @@ export class Materializer {
     };
     if (res.status === "rejected") {
       await this.engine.notice(actor, { kind: "error", text: `${rel}: rejected${res.reason ? `: ${res.reason}` : ""}; kept, not applied` });
-      if (name && row) await this.failView(name, row, { status: "rejected", error: res.reason ?? "rejected", ref: rev?.kind === "carton" ? rev.ref : null });
+      await viewFailed({ status: "rejected", error: res.reason ?? "rejected", ref: rev?.kind === "carton" ? rev.ref : null });
       await settle();
       return failed();
     }
@@ -1463,7 +1489,7 @@ export class Materializer {
       }
     }
     let reprint = false;
-    if (name && row) {
+    if (name && row && current) {
       // the saved content's causal past: its base's, plus this save's own change
       if (rev?.kind === "carton" && rev.nonce === row.nonce) {
         // the next save's base is this save: its base's causal past and its own change. A save that repeated an edit of
@@ -1472,9 +1498,12 @@ export class Materializer {
         // written on this print is refused (rounds 16-17, see reprintView)
         const causal = res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal;
         reprint = await this.repeatsHidden(baseDoc, saved, held.baseSeq, causal, res.cut, upTo(res));
+        // the print is marked replaced before anything below can fail (round 18 #3)
+        if (reprint) await this.engine.putMeta(["reprinted", name, row.nonce], { hash, at: this.clock.now() } satisfies Replaced);
         row.last = reprint ? null : { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal } };
       }
       row.lastChange = res.id ?? null;
+      row.savedGen = fileGen;
       await this.engine.putMeta(["view", name], row);
       const head = await this.engine.head();
       const status: StatusBody["status"] = cards.length ? "conflicts" : res.status;
@@ -1507,8 +1536,9 @@ export class Materializer {
   }
 
   /** A refused view save: its sidecar says so, and late updates for any earlier save no longer reach it. */
-  private async failView(name: string, row: ViewRow, s: Partial<StatusBody> & { status: StatusBody["status"] }): Promise<void> {
+  private async failView(name: string, row: ViewRow, s: Partial<StatusBody> & { status: StatusBody["status"] }, gen = row.printGen ?? 0): Promise<void> {
     row.lastChange = null;
+    row.savedGen = gen;
     await this.engine.putMeta(["view", name], row);
     await this.writeStatus(name, s, null, { immediate: true });
   }
