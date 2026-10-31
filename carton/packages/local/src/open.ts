@@ -9,7 +9,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Carton } from "@carton/core";
-import type { Actor, CartonEvent, Doc, HostAdapter, OpenOptions } from "@carton/core";
+import type { Actor, CartonEvent, HostAdapter, OpenOptions } from "@carton/core";
 import type { IdentitySource, Store } from "@carton/core/plugins";
 import { openProjectStore } from "@carton/store-sqlite";
 import type { SqliteStore } from "@carton/store-sqlite";
@@ -106,42 +106,37 @@ export function replicaName(given: string | undefined, actor?: Actor): string {
 }
 
 /**
- * A new project's starting state is `main@1`, one change by the import (`init.asChange`). Core writes the empty root
- * and then commits that change, in two steps: a process stopped between them (or a second process that opened the
- * project in that moment and then was the only one left) leaves an empty project at `main@0`, and core never imports
- * again, since the project exists. Opened again with `init`, the import is finished here: one change, by the import
- * actor, under core's own id for it (`import.<projectId>`), so a concurrent first open's commit and this one are one
- * change. Nothing happens to a project that has any change, cut or record. (Asked of foundation-core: make the two
- * steps one, or resume them in `Carton.open`; this goes then.)
- */
-async function finishImport(carton: Carton, doc: Doc): Promise<void> {
-  const empty = (d: Doc) => Object.values(d).every((v) => Array.isArray(v) && v.length === 0);
-  if (empty(doc)) return;
-  const cuts = await carton.cuts();
-  if (cuts.length !== 1) return;
-  const h = await carton.head(cuts[0]!.id);
-  if (h.ref.seq !== 0 || h.ref.pending?.length || !empty(h.doc)) return;
-  await carton.commit({ doc, base: h.ref, cut: cuts[0]!.id, author: { kind: "system", id: "import", name: "Import" }, id: `import.${carton.projectId}` });
-}
-
-/**
  * The starting version (`main@1`, the import) is a point every copy of the project shares: a teammate whose folder is
  * a copy of this one (carton.db and all) starts from it too. A `.cbproj` carries a cut's lineage compressed to its
  * root, forks, merges and exports, so without a mark their export would name only the empty root as what both copies
  * share, and bringing it in would fold from nothing: every record added on both sides, a field the copies hold at
  * different values a card with no base (e2e-qa S3-4, regressed by the import change). Core's own way to make a version
  * part of the lineage graph is an export of it (R4-01: the export node is persisted, its state kept as a keyframe), so
- * the starting version is exported once, while it is the head, to no one. Done again on a later open only if a stop
- * came between the import and the mark and nothing was written since. (Asked of foundation-core: carry an import
- * change in the lineage like a root; this goes then.)
+ * the starting version is exported once, while it is the head, to no one.
+ *
+ * Checked on every open, with or without `init` (a `cb` opens without it): a stop between the import and the mark is
+ * repaired by the next process to open the project, before it writes. If something was written meanwhile (a writer
+ * that doesn't open through here), the head is marked instead: a copy taken from then on shares that version, the
+ * newest both sides hold. An export of a version from the import on (a `.cbproj` sent) is such a point already, so
+ * then nothing is added; one of the empty root before it isn't. A copy taken in between still folds from the empty
+ * root: only core can make the import itself a lineage point (asked of foundation-core, request 8; this goes then).
+ *
+ * `exported` is what the store held before this handle loaded it: a handle knows the exports it loaded or made, never
+ * one another process wrote later (core's refresh doesn't reload them, request 9), and an export it doesn't know is
+ * missing from its own `.cbproj`s. A mark another process wrote meanwhile is made again here (one more row for a
+ * version, harmless). Best effort: an open never fails on it, and the next open tries again.
  */
-async function markStartingState(carton: Carton, store: Store): Promise<void> {
+async function markStartingState(carton: Carton, store: Store, exported: readonly string[]): Promise<void> {
   const at = await store.get<[string, number]>("ids", [`import.${carton.projectId}`]);
   if (!at || at[1] !== 1) return;
-  const [cut] = at;
-  if ((await carton.head(cut)).ref.seq !== 1) return; // written since: too late to mark it this way (and not needed for a new copy)
-  if ((await store.range("meta", { prefix: ["export", `${cut}@1`], limit: 1 })).length) return;
+  const [cut, seq] = at;
+  if (exported.some((node) => node.startsWith(`${cut}@`) && Number(node.slice(cut.length + 1)) >= seq)) return;
+  if (!(await carton.cuts()).some((c) => c.id === cut && c.sequencer.kind === "local")) return;
   await carton.exportShallow({ cut, to: STARTING_STATE });
+}
+/** The versions exported so far (lineage points): the export rows' keys are ["export", node, at, nonce], a handful. */
+async function exportedNodes(store: Store): Promise<string[]> {
+  return (await store.range("meta", { prefix: ["export"] })).map((r) => String(r.key[1]));
 }
 /** The recipient of the starting version's export (no one: it only makes that version a lineage point). */
 const STARTING_STATE = "carton:starting-state";
@@ -161,22 +156,16 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
   const adapter = opts.adapter ?? (await defaultAdapter());
   const name = replicaName(opts.name, actor);
   let carton: Carton;
+  let exported: string[] = [];
   try {
+    exported = await exportedNodes(store);
     carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor, name, init: opts.init ? { doc: opts.init.doc as any, projectId, cutName: opts.init.cutName, asChange: opts.init.asChange ?? true } : undefined, ...(opts.sync ? { sync: opts.sync } : {}) });
   } catch (e) {
     await store.close();
     throw e;
   }
-  if (opts.init && (opts.init.asChange ?? true)) {
-    try {
-      await finishImport(carton, opts.init.doc as Doc);
-      await markStartingState(carton, store);
-    } catch (e) {
-      await carton.close();
-      await store.close();
-      throw e;
-    }
-  }
+  // a project an older build left at its empty root gets its import in Carton.open (core, request 7: `d7b1f56`)
+  await markStartingState(carton, store, exported).catch(() => {});
   const lease = new Lease(store);
   const dbPath = location.dbPath;
   const factory = opts.helperFactory ?? defaultFactory();
@@ -289,7 +278,14 @@ export class CartonHolderEngine implements HolderEngine {
     // the written cut connected (catching up or up to date): wait up to 5 s for the ack; not: pending at once (L14)
     const online = (cut?: string) => { const st = this.carton.sync?.state(cut).status; return st === "up-to-date" || st === "syncing"; };
     const run = () => withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
-    return r.op.kind === "switch" ? this.cutLock(run) : run();
+    if (r.op.kind !== "switch") return run();
+    // told (the materializer printed it): the follower has nothing to tell about it. Switched but not told (it failed):
+    // the follower finds the handle on a cut never announced and tells it at its next look
+    return this.cutLock(async () => {
+      const out = await run();
+      if ((out as CbResult).status === "confirmed") this.follower?.served(this.carton.cut);
+      return out;
+    });
   }
 
   /** Hooked agents' views are named after their actor id; others get a fresh `agent-xxxx` (or the name they asked for). */
