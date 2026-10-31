@@ -123,8 +123,8 @@ export interface Host {
 }
 
 /** A server-node process serving `projectIds` (support/s5-host.ts); data under `dir`, so a restart keeps it. */
-export async function startHost(procs: Procs, dir: string, projectIds: string[], port = 0): Promise<Host> {
-  const proc = procs.start("host", [support("s5-host.ts"), dir, projectIds.join(","), String(port)]);
+export async function startHost(procs: Procs, dir: string, projectIds: string[], port = 0, team?: string): Promise<Host> {
+  const proc = procs.start("host", [support("s5-host.ts"), dir, projectIds.join(","), String(port)], team ? { env: { S5_TEAM: team } } : {});
   const r = await proc.next((x) => x.ready, 30_000);
   return { proc, port: r.port, httpUrl: r.httpUrl, blobRoot: r.blobRoot, tokens: r.tokens };
 }
@@ -183,7 +183,7 @@ export async function stopGateway(): Promise<void> {
 }
 
 /** The store `kind` for one test; a host serves `projectId` and any `moreProjects`. */
-export async function openSide(kind: StoreKind, procs: Procs, dir: string, projectId: string, moreProjects: string[] = []): Promise<StoreSide> {
+export async function openSide(kind: StoreKind, procs: Procs, dir: string, projectId: string, moreProjects: string[] = [], team?: string): Promise<StoreSide> {
   if (kind === "blob-fs") {
     const root = join(dir, "shared-drive");
     return {
@@ -210,7 +210,7 @@ export async function openSide(kind: StoreKind, procs: Procs, dir: string, proje
       },
     };
   }
-  const host = await startHost(procs, join(dir, "host"), [projectId, ...moreProjects]);
+  const host = await startHost(procs, join(dir, "host"), [projectId, ...moreProjects], 0, team);
   return {
     kind,
     target: host.port,

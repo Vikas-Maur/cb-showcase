@@ -105,7 +105,7 @@ interface World {
   link(rate?: number): Promise<Link | null>;
 }
 
-async function world(t: TestContext, kind: StoreKind, moreProjects: string[] = []): Promise<World> {
+async function world(t: TestContext, kind: StoreKind, moreProjects: string[] = [], team?: string): Promise<World> {
   const procs = new Procs();
   const dir = scratch(`s5-${kind}`);
   const owner = makeMachine("s5-owner");
@@ -116,7 +116,7 @@ async function world(t: TestContext, kind: StoreKind, moreProjects: string[] = [
     await Promise.all(links.map((l) => l.close()));
     if (!KEEP) for (const d of [dir, owner.home, mate.home]) rmSync(d, { recursive: true, force: true });
   });
-  const side = await openSide(kind, procs, dir, owner.projectId, moreProjects);
+  const side = await openSide(kind, procs, dir, owner.projectId, moreProjects, team);
   const link = async (rate = 0) => {
     if (side.target === null) return null;
     const l = await Link.open(side.target, { rate });
@@ -691,7 +691,6 @@ function flipByte(path: string, offset: number): void {
 
 test("S5-2 a signed media URL works at the address the client reached the host on (a reverse proxy, a port map, or a host listening on 0.0.0.0)", {
   timeout: 60_000,
-  todo: "S5-2, hosts-plugins (server-node): signed blob URLs are built from the host's listen address, not the address the client used",
 }, async (t) => {
   const w = await world(t, "host-http");
   const front = (await w.link())!; // what clients reach: another address than the one the host listens on
@@ -707,10 +706,11 @@ test("S5-2 a signed media URL works at the address the client reached the host o
 
 test("S5-3 the same footage shared in a second project of the same team uploads nothing (§11: dedup is whole-file, within a team)", {
   timeout: 120_000,
-  todo: "S5-3, hosts-plugins with media (plan decision): the hosts scope media per project (projects/<p>/media/), so the same clip in two projects of one team is uploaded and stored twice",
 }, async (t) => {
+  // team dedup is off by default (hosts-plugins, approved grant model): this host is configured with both projects in
+  // one team, as a team's deployment is
   const second = "s5-second-project";
-  const w = await world(t, "host-http", [second]);
+  const w = await world(t, "host-http", [second], "team-s5");
   const host = w.side.host!;
   const link = (await w.link())!;
   const one = await startMachine(w.procs, "owner-p1", w.owner.home, hostStore(host, w.owner.projectId, "owner", link));
