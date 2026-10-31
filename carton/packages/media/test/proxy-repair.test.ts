@@ -4,13 +4,13 @@ import { after, test } from 'node:test';
 import { scratchDir } from './helpers.ts';
 import { writeFile } from 'node:fs/promises';
 import { bytesSource, hashSource } from '../src/hash.ts';
-import { damagedKey, mediaKey, proxyPointerKey, streamSegmentKey } from '../src/keys.ts';
+import { damagedKey, mediaKey, proxyPointerKey, streamEndKey, streamSegmentKey } from '../src/keys.ts';
 import { LEAF_SIZE } from '../src/manifest.ts';
 import { nodeHasher } from '../src/node/node-hasher.ts';
 import { closeHashWorkers } from '../src/node/hash-file.ts';
 import { shareMedia } from '../src/node/share.ts';
 import { MediaReader } from '../src/read.ts';
-import { claimProxyStream, ProxyStreamReader, ProxyStreamWriter, usableProxy } from '../src/stream.ts';
+import { claimProxyStream, findProxy, ProxyStreamReader, ProxyStreamWriter, usableProxy } from '../src/stream.ts';
 import { startRangeServer } from '../src/node/range-server.ts';
 import { CountingMemoryStore } from '../src/testing.ts';
 import { MemoryUploadStateStore, uploadMedia } from '../src/upload.ts';
@@ -156,4 +156,146 @@ test('cancelling stops waiting for a stalled read-back read (finding 5)', async 
   release();
   await upload;
   assert.equal(afterAbort, 'AbortError', 'abort left the caller waiting for a read-only GET to answer');
+});
+
+// S5 review round 4 (the reviewer's reproductions, typed).
+const json = (x: unknown) => new TextEncoder().encode(JSON.stringify(x));
+const lostCompletion = (store: CountingMemoryStore) => {
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k: string) => {
+    const up = await create(k);
+    return {
+      ...up,
+      complete: async (parts: { partNumber: number; etag: string }[]) => {
+        await up.complete(parts);
+        throw Object.assign(new Error('NoSuchUpload'), { code: 'NoSuchUpload' });
+      },
+    };
+  };
+  const head = store.head.bind(store);
+  store.head = async (k: string) => {
+    const h = await head(k);
+    return h && { ...h, etag: 'stable' };
+  };
+};
+
+test('a pointer that keeps changing is not vouched for, even past the re-read limit (round 4, finding 1)', async () => {
+  const store = new CountingMemoryStore();
+  const ids = ['10', '11', '12', '13', '14', '15'].map((x) => x.repeat(32));
+  for (const id of ids.slice(0, -1)) {
+    await store.put(streamEndKey(id), json({ segments: 1, durationSec: 2, size: 2, at: Date.now() }));
+    await store.put(damagedKey(id), new Uint8Array([1]));
+  }
+  const key = proxyPointerKey(src, 'p1');
+  await store.put(key, json({ stream: ids[0], at: Date.now(), encoder: 'libx264' }));
+  const get = store.get.bind(store);
+  const replaced = new Set<string>();
+  let takingOver = false;
+  // Every read of the pointer races a takeover, which deletes the old stream's report.
+  store.get = async (k, r) => {
+    const got = await get(k, r);
+    if (k === key && got && !takingOver) {
+      const old = JSON.parse(new TextDecoder().decode(got)).stream as string;
+      const index = ids.indexOf(old);
+      if (index < ids.length - 1) {
+        takingOver = true;
+        assert.equal((await claimProxyStream(store, src, 'p1', 'libx264', { id: ids[index + 1] })).claimed, true);
+        replaced.add(old);
+        takingOver = false;
+      }
+    }
+    return got;
+  };
+  const found = await usableProxy(store, src, 'p1');
+  assert.ok(found === null || !('stream' in found) || !replaced.has(found.stream));
+});
+
+test('a claim that fails right after it is written is reported, so a retry takes it over (round 4, finding 2)', async () => {
+  const store = new CountingMemoryStore();
+  const get = store.get.bind(store);
+  let fail = true;
+  store.get = async (k, r) => {
+    if (k.startsWith('px/') && fail) {
+      fail = false;
+      throw new Error('transient GET failure');
+    }
+    return get(k, r);
+  };
+  await assert.rejects(claimProxyStream(store, src, 'p1', 'libx264'), /transient GET/);
+  const stranded = await findProxy(store, src, 'p1');
+  assert.ok(stranded && 'stream' in stranded);
+  const retry = await claimProxyStream(store, src, 'p1', 'libx264');
+  assert.equal(retry.claimed, true, 'not left waiting for a stream nobody writes');
+  assert.notEqual((retry.pointer as { stream: string }).stream, stranded.stream);
+});
+
+test('cancelling the read-back with a custom reason ends with that reason (round 4, finding 6)', async () => {
+  const store = new CountingMemoryStore();
+  const data = new Uint8Array(LEAF_SIZE + 1).fill(7);
+  const manifest = await hashSource(bytesSource(data), nodeHasher);
+  const options = { store, source: bytesSource(data), manifest, hasher: nodeHasher, state: new MemoryUploadStateStore(), partSize: LEAF_SIZE, retries: 0, concurrency: 1 };
+  await uploadMedia(options);
+  await store.put(damagedKey(manifest.hash), new Uint8Array([1]));
+  lostCompletion(store);
+  let entered!: () => void;
+  const firstRead = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const get = store.get.bind(store);
+  store.get = async (k, r) => {
+    if (k === mediaKey(manifest.hash)) {
+      entered();
+      await gate;
+    }
+    return get(k, r);
+  };
+  const ac = new AbortController();
+  const reason = new Error('share cancelled by caller');
+  const outcome = uploadMedia({ ...options, signal: ac.signal }).then((r) => ({ result: r, error: undefined }), (error: unknown) => ({ error }));
+  await firstRead;
+  ac.abort(reason);
+  const got = await outcome;
+  release();
+  assert.equal(got.error, reason);
+});
+
+test('cancelling during the read-back\'s last digest ends in AbortError, not success (round 4, finding 5)', async () => {
+  const store = new CountingMemoryStore();
+  const data = new Uint8Array(LEAF_SIZE + 1).fill(7);
+  const manifest = await hashSource(bytesSource(data), nodeHasher);
+  const options = { store, source: bytesSource(data), manifest, hasher: nodeHasher, partSize: LEAF_SIZE, retries: 0, concurrency: 1 };
+  await uploadMedia(options);
+  await store.put(damagedKey(manifest.hash), new Uint8Array([1]));
+  lostCompletion(store);
+  let lastRead = false;
+  const get = store.get.bind(store);
+  store.get = async (k, r) => {
+    const bytes = await get(k, r);
+    if (k === mediaKey(manifest.hash) && r?.offset === LEAF_SIZE) lastRead = true;
+    return bytes;
+  };
+  let entered!: () => void;
+  const hashing = new Promise<void>((r) => (entered = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  const hasher = {
+    name: 'abort-in-final-digest',
+    sha256: async (bytes: Uint8Array) => {
+      if (lastRead) {
+        entered();
+        await gate;
+      }
+      return nodeHasher.sha256(bytes);
+    },
+  };
+  const ac = new AbortController();
+  let outcome = 'pending';
+  const upload = uploadMedia({ ...options, hasher, signal: ac.signal }).then(() => void (outcome = 'success'), (e: Error) => void (outcome = e.name));
+  await hashing;
+  ac.abort();
+  await new Promise((r) => setImmediate(r));
+  const afterAbort = outcome;
+  release();
+  await upload;
+  assert.equal(afterAbort, 'AbortError');
 });

@@ -157,8 +157,10 @@ async function storedMatches(store: BlobStore, key: string, m: Manifest, hasher:
     signal?.throwIfAborted();
     const length = Math.min(LEAF_SIZE, m.size - at);
     const bytes = await untilAborted(store.get(key, { offset: at, length }), signal);
-    if (!bytes || bytes.length !== length || !equalBytes(await hasher.sha256(bytes), leafDigest(m, i))) return false;
+    if (!bytes || bytes.length !== length) return false;
+    if (!equalBytes(await untilAborted(hasher.sha256(bytes), signal), leafDigest(m, i))) return false;
   }
+  signal?.throwIfAborted();
   return true;
 }
 
@@ -369,6 +371,8 @@ async function uploadOnce(o: UploadOptions): Promise<UploadResult> {
     try {
       return await storedMatches(store, key, m, o.hasher, o.signal);
     } catch (e) {
+      // A cancellation, whatever its reason (a custom one, AbortSignal.timeout's), is not a failed verification.
+      if (o.signal?.aborted) throw o.signal.reason;
       if (isAbort(e)) throw e;
       return false;
     }

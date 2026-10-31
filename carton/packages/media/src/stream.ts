@@ -464,7 +464,7 @@ export async function usableProxy(
 /**
  * The pointer and whether it is usable. A takeover writes the new pointer, then deletes the old stream's report: a
  * check that read the old pointer just before may find the report gone. So a pointer found usable is read again, and
- * a changed one checked anew (a few times; a pointer that keeps changing is judged as last read).
+ * a changed one checked anew (a few times; a pointer that keeps changing is judged not usable).
  */
 async function check(
   store: BlobStore,
@@ -478,7 +478,9 @@ async function check(
     if (!there) return { there, usable: false };
     if (await replaceable(store, there, staleMs, now())) return { there, usable: false };
     const again = await findProxy(store, sourceHash, profileId);
-    if (round >= 3 || samePointer(again, there)) return { there, usable: true };
+    if (samePointer(again, there)) return { there, usable: true };
+    // Still changing after a few rounds: don't vouch for any of them (the caller makes or claims one anew).
+    if (round >= 3) return { there: again, usable: false };
     there = again;
   }
 }
@@ -510,9 +512,20 @@ export async function claimProxyStream(
   const key = proxyPointerKey(sourceHash, profileId);
   const mine: ProxyPointer = { stream: opts.id ?? newStreamId(), encoder, at: now() };
   const body = utf8.encode(JSON.stringify(mine));
+  const isMine = (p: ProxyPointer | null) => p !== null && "stream" in p && p.stream === (mine as { stream: string }).stream;
   await store.put(key, body, { contentType: "application/json", ifAbsent: true });
+  let first: ProxyPointer | null;
+  try {
+    first = await findProxy(store, sourceHash, profileId);
+  } catch (e) {
+    // The claim may be ours, yet the caller won't know it and nothing will write the stream: report it, so the next
+    // claim takes it over instead of waiting for it to go stale. (A stream id nobody points at costs nothing.)
+    await store.put(damagedKey((mine as { stream: string }).stream), utf8.encode(JSON.stringify({ unclaimed: true, at: now() })), { contentType: "application/json" }).catch(() => {});
+    throw e;
+  }
+  if (isMine(first)) return { claimed: true, pointer: mine };
   const { there, usable } = await check(store, sourceHash, profileId, opts.staleMs ?? STALE_MS, now);
-  if (there && "stream" in there && there.stream === (mine as { stream: string }).stream) return { claimed: true, pointer: mine };
+  if (isMine(there)) return { claimed: true, pointer: mine };
   if (there && usable) return { claimed: false, pointer: there };
   // Unreadable, abandoned or damaged: take it over. Two takers at once both write; the last one's pointer wins and the
   // other one's stream is simply never pointed at.
