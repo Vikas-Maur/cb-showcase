@@ -52,6 +52,8 @@ export class Db {
   #closed = false;
   /** Busy retries so far (writes and reads), for tests and benchmarks. */
   busyRetries = 0;
+  /** How long the last write held the write lock, BEGIN IMMEDIATE to COMMIT, in ms (§6.2's target is ≤ 5). */
+  lastLockMs = 0;
 
   /**
    * Open a connection and set it up. Waits asynchronously if another process is creating the same file. `verify`
@@ -111,6 +113,7 @@ export class Db {
   /** One attempt of `write`: throws SQLite's busy error instead of waiting. */
   writeNow<T>(fn: () => T): T {
     this.#begin.run();
+    const t0 = performance.now();
     let out: T;
     try {
       out = fn();
@@ -118,6 +121,8 @@ export class Db {
     } catch (e) {
       this.#rollback();
       throw e;
+    } finally {
+      this.lastLockMs = performance.now() - t0;
     }
     return out;
   }
