@@ -339,6 +339,12 @@ class CartonImpl implements Carton {
   #pinSnap = new Map<string, PinRow>();
   #ridSaved = false;
   #closed = false;
+  /** Joined cuts whose lineage is still to fetch from their server (meta ["join", cut]). */
+  #joining = new Set<string>();
+  /** History fetches running per cut (a joined cut's lineage, a keyframe catch-up's stretch). */
+  #fetching = new Map<string, Promise<void>>();
+  /** Rows a backfill fetched and checked, by cut and seq, for the next settlement to store in place of placeholders. */
+  #filled = new Map<string, Map<number, ConfirmedChange>>();
 
   constructor(opts: OpenOptions) {
     this.#opts = opts;
@@ -434,7 +440,6 @@ class CartonImpl implements Carton {
   // them on the sharer's machine, so from here on it opens like any shared cut (its rows arrive on connect).
   async #createFromJoin(j: JoinInit): Promise<void> {
     if (j.cut.sequencer.kind !== "server") throw new Error("Carton.open: `join` needs a cut a host sequences (sequencer kind \"server\")");
-    if (j.cut.forkOf) throw new Error("Carton.open: `join` takes a cut that isn't a fork (its state at seq 0 is its root)");
     if (!this.#opts.sync) throw new Error("Carton.open: `join` needs `sync` (the rows come from the host)");
     if (j.rootHash !== undefined && E.hashDoc(j.doc0, this.schema) !== j.rootHash) throw new Error("Carton.open: the joined cut's root doesn't match its hash");
     const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion };
@@ -442,8 +447,11 @@ class CartonImpl implements Carton {
       [
         { table: T.meta, key: PROJECT, value: meta },
         { table: T.meta, key: CURRENT, value: j.cut.id },
-        { table: T.cuts, key: [j.cut.id], value: j.cut },
+        // a fork's record gets its fork point once its lineage is here (a fork node's state comes with it): until then
+        // `doc0` is its root, as for any joined cut. ["join", cut] says the lineage is still to fetch (Stage F2).
+        { table: T.cuts, key: [j.cut.id], value: { ...j.cut, forkOf: null } },
         { table: T.keyframes, key: [j.cut.id, 0], value: j.doc0 },
+        { table: T.meta, key: ["join", j.cut.id], value: { forkOf: j.cut.forkOf ?? null } },
       ],
       [{ table: T.meta, key: PROJECT, expect: "absent" }],
     );
@@ -483,6 +491,7 @@ class CartonImpl implements Carton {
     for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
     const current = await s.get<string>(T.meta, CURRENT);
     if (current && byId.has(current)) h.current = current;
+    this.#joining = new Set((await s.range(T.meta, { prefix: ["join"] })).map((e) => e.key[1] as string));
     h.onConfirmed = (cut, change) => this.#confirmed.push({ cut, change });
     h.onNoop = (id, cut, seq) => this.#noops.push({ id, cut, seq });
     this.#h = h;
@@ -718,9 +727,13 @@ class CartonImpl implements Carton {
     const tail = sc && sc.queue.headSeq(cut) === this.#h.headSeq(cut) ? this.#tail(cut, sc) : undefined;
     const n = this.#h.headSeq(cut);
     const log = tail ? [...this.#h.changes(cut), ...tail.rows] : this.#h.changes(cut);
-    // an unnamed edit's label says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
+    // a named version's label is its name, given with the edit or after it (as a teammate who joined sees it, on the
+    // row); an unnamed edit's says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
+    const names = new Map(this.#h.names());
     return this.#h.undoStack(cut, group ?? groupOf(this.#actor()), tail).map((e) => {
       const c = log[e.seq - 1]!;
+      const name = e.seq <= n ? names.get(nodeId(cut, e.seq))?.name : undefined;
+      if (name) return { ...e, label: undoLabel(c, name) };
       if (c.name || c.intent?.kind) return e;
       const before = e.seq - 1 > n ? tail!.states[e.seq - n - 2] : this.#h.stateOf(nodeId(cut, e.seq - 1));
       const what = E.describe(c.ops, before ?? {}, this.schema, c.intent)[0];
@@ -1046,11 +1059,20 @@ class CartonImpl implements Carton {
     const q = this.#shared.get(cut)!.queue;
     return { branchId: cut, seq: q.headSeq(cut), pending: q.pending(cut).map((p) => p.id) };
   }
-  /** §5.3 hand-off: the rows the server adopts, keyed (cut, n, stateHash@n); the closure goes later (L5). */
+  /**
+   * §5.3 hand-off: the rows the server adopts, keyed (cut, n, stateHash@n), and the ancestry closure, shallow (lineage,
+   * fork, merge and export states, last authors). A name given to a version after the fact lives in this store's
+   * names table: it goes up on its row, so a teammate who joins sees it in the log.
+   */
   #adoptPayload(cut: string) {
     const rec = this.#h.cut(cut)!;
     const n = rec.sequencer.kind === "handingOff" ? rec.sequencer.n : this.#h.headSeq(cut);
-    return { rows: this.#h.changes(cut).slice(0, n) as ConfirmedChange[], rec, doc0: this.#h.stateOf(nodeId(cut, 0))!, closure: [] };
+    const names = new Map(this.#h.names());
+    const rows = this.#h.changes(cut).slice(0, n).map((r) => {
+      const name = names.get(nodeId(cut, r.seq))?.name;
+      return name && r.name !== name ? { ...r, name } : r;
+    });
+    return { rows, rec, doc0: this.#h.stateOf(nodeId(cut, 0))!, closure: this.#h.closure(cut, n) };
   }
   #onShared(cut: string, e: SharedCutEvent): void {
     switch (e.type) {
@@ -1065,6 +1087,7 @@ class CartonImpl implements Carton {
         break;
     }
     void this.#settle(cut, e);
+    if (e.type !== "error") this.#fetchHistory(cut);
   }
   /**
    * Confirmed rows go into the store and then History, pending rows are rewritten from the queue, late conflicts
@@ -1085,10 +1108,13 @@ class CartonImpl implements Carton {
     // rows the server confirmed (ours and others'), up to the first stretch known only through a keyframe
     const rows = q.rows(cut);
     const fresh: ConfirmedChange[] = [];
+    const filled = this.#filled.get(cut);
     for (let i = this.#h.headSeq(cut); i < rows.length; i++) {
       const r = rows[i]!;
-      if (r.placeholder) break;
-      fresh.push(r as ConfirmedChange);
+      // a stretch known only through a keyframe: the rows a backfill fetched and checked, or stop here
+      const f = r.placeholder ? filled?.get(r.seq) : (r as ConfirmedChange);
+      if (!f) break;
+      fresh.push(f);
     }
     for (const r of fresh) {
       writes.push({ table: T.changes, key: [cut, r.seq], value: r });
@@ -1120,9 +1146,93 @@ class CartonImpl implements Carton {
     if (handed) writes.push({ table: T.cuts, key: [cut], value: handed });
     if (writes.length) await this.store.write(writes); // the store first: History only moves to what is saved
     if (fresh.length) this.#h.load(cut, fresh);
+    if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs });
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     for (const n of notices) this.#emit({ type: "notice", notice: n });
+  }
+  /**
+   * History a connection makes available (Stage F): a joined cut's lineage (F2) and the rows a keyframe catch-up
+   * jumped over (F3). One fetch per cut at a time; one that fails (offline) is tried again on the next sync event.
+   */
+  #fetchHistory(cut: string): void {
+    if (this.#closed || this.#fetching.has(cut) || !(this.#joining.has(cut) || this.#gap(cut))) return;
+    const run = (async () => {
+      try {
+        if (this.#joining.has(cut)) await this.#joinLineage(cut);
+        if (this.#gap(cut)) await this.#backfill(cut);
+      } catch {
+        // not connected, or the server couldn't answer: the next event tries again
+      } finally {
+        this.#fetching.delete(cut);
+      }
+    })();
+    this.#fetching.set(cut, run);
+  }
+  /** The first stretch of placeholders (rows known only through a keyframe) above History's head: (lo, hi]. */
+  #gap(cut: string): { lo: number; hi: number } | null {
+    const q = this.#shared.get(cut)?.queue;
+    if (!q) return null;
+    const rows = q.rows(cut);
+    let i = this.#h.headSeq(cut);
+    while (i < rows.length && !rows[i]!.placeholder) i++;
+    if (i >= rows.length) return null;
+    let hi = i;
+    while (hi < rows.length && rows[hi]!.placeholder) hi++;
+    return { lo: i, hi };
+  }
+  /** F2: a joined cut's ancestry closure from its server, kept as tracking knowledge; a fork gets its fork point. */
+  async #joinLineage(cut: string): Promise<void> {
+    const sc = this.#shared.get(cut)!;
+    const j = await this.store.get<{ forkOf: NodeId | null }>(T.meta, ["join", cut]);
+    if (j) {
+      const { lineage = [] } = await sc.history(0, 0, { lineage: true });
+      let prior!: ReturnType<History["knowledge"]>, before!: Set<string>;
+      await this.#mutate(
+        undefined,
+        () => {
+          prior = this.#h.knowledge();
+          before = new Set(this.#h.cuts().map((c) => c.id));
+          this.#h.loadClosure(lineage);
+        },
+        {
+          extra: () => {
+            const w = this.#knowledgeWrites(this.#h, prior);
+            for (const c of this.#h.cuts()) if (!before.has(c.id)) w.push({ table: T.cuts, key: [c.id], value: c });
+            if (j.forkOf) w.push({ table: T.cuts, key: [cut], value: { ...this.#h.cut(cut)!, forkOf: j.forkOf } });
+            w.push({ table: T.meta, key: ["join", cut], value: undefined });
+            return { writes: w };
+          },
+          idempotent: true,
+        },
+      );
+      // the cut's record changed shape (its fork point): History is rebuilt from the store, behind every other write
+      if (j.forkOf) {
+        const p = this.#queue.then(() => this.#rebuild());
+        this.#queue = p.catch(() => {});
+        await p;
+      }
+    }
+    this.#joining.delete(cut);
+  }
+  /**
+   * F3: the rows of a stretch a keyframe catch-up jumped, from the server. They are checked to rebuild the keyframe's
+   * state exactly (its hash), then stored and loaded into History by the next settlement like any confirmed rows, so
+   * log, credits and diff work across the stretch.
+   */
+  async #backfill(cut: string): Promise<void> {
+    const sc = this.#shared.get(cut)!;
+    const gap = this.#gap(cut)!;
+    const { rows } = await sc.history(gap.lo, gap.hi);
+    let doc = E.fork(sc.queue.confirmedState(cut, gap.lo), this.schema);
+    rows.forEach((r, i) => {
+      if (r.seq !== gap.lo + 1 + i) throw new Error(`backfill: row ${r.seq} where ${gap.lo + 1 + i} was expected`);
+      doc = E.apply(doc, r.ops, this.schema);
+    });
+    if (rows.length !== gap.hi - gap.lo || E.hashDoc(doc, this.schema) !== E.hashDoc(sc.queue.confirmedState(cut, gap.hi), this.schema)) throw new Error("backfill: the rows don't rebuild the keyframe");
+    const m = this.#filled.get(cut) ?? this.#filled.set(cut, new Map()).get(cut)!;
+    for (const r of rows) m.set(r.seq, r);
+    await this.#settle(cut, { type: "remote", rows: [] });
   }
   /** Everything a shared write reads first: the cut's queue, the stored rows, other processes' ids, the caller's fence. */
   async #prepShared(cut: string, id: ChangeId, conditions: readonly StoreCondition[] = []): Promise<{ sc: SharedCut; done: CommitResult | null }> {

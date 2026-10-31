@@ -40,6 +40,7 @@ import type {
 import * as E from "../engine/index.ts";
 import { isEmptyMap } from "../engine/remap.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
+import type { ClosureEntry } from "../sync/messages.ts";
 import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type Tail } from "./common.ts";
 
 // ------------------------------------------------------------------ ids and keys
@@ -1049,41 +1050,7 @@ export class History {
     const list = this.#exportsMade.get(head) ?? [];
     list.push({ to, at: this.#clock() });
     this.#exportsMade.set(head, list);
-    const forkNodes = new Set<NodeId>();
-    for (const b of this.#cuts.values()) if (b.rec.forkOf) forkNodes.add(this.canon(b.rec.forkOf));
-    const nodes = new Map<NodeId, DagNode>();
-    const kindsOf = (id: NodeId): LineageKind[] => {
-      const k: LineageKind[] = [];
-      if (id === head) k.push("head");
-      const ln = this.#lineage.get(id);
-      if (ln) k.push(...ln.kinds.filter((x) => x !== "head"));
-      if (this.#exportsMade.has(id)) k.push("export");
-      if (this.changeAt(id)?.mergeOf) k.push("merge");
-      if (forkNodes.has(id)) k.push("fork");
-      if (!this.parents(id).length) k.push("root");
-      return [...new Set(k)];
-    };
-    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || this.parents(id).length !== 1 || forkNodes.has(id);
-    const queue = [head];
-    while (queue.length) {
-      const id = queue.pop()!;
-      if (nodes.has(id)) continue;
-      const { branchId: b, seq: s } = parseNode(id);
-      const owner = this.#lineage.get(id)?.owner ?? this.#cuts.get(b)?.rec.owner;
-      const rec: DagNode = { id, branchId: b, seq: s, hash: this.hashOf(id)!, kinds: kindsOf(id), parents: [], ...(owner ? { owner } : {}) };
-      nodes.set(id, rec);
-      for (const p0 of this.parents(id)) {
-        const maps = [this.edgeMap(p0, id)];
-        let p = p0;
-        while (!isStop(p)) {
-          const pp = this.parents(p)[0]!;
-          maps.push(this.edgeMap(pp, p));
-          p = pp;
-        }
-        rec.parents.push({ id: p, remap: E.composeMaps(...maps.reverse()) });
-        queue.push(p);
-      }
-    }
+    const nodes = this.#walkLineage([head], head);
     // carry: "fork-merge-export" (v6+), "export-only" (v5, for the R5-02 ablation), "head-only" (v4)
     const carried = (n: DagNode) =>
       n.kinds.includes("head") || (carry !== "head-only" && (n.kinds.includes("export") || (carry !== "export-only" && (n.kinds.includes("fork") || n.kinds.includes("merge")))));
@@ -1114,31 +1081,65 @@ export class History {
     };
   }
   /**
-   * Import: lineage nodes become read-only tracking knowledge; carried states are checked against their hash. A
-   * project you don't have forks a writable cut from the sender's head (§5.3).
+   * The lineage nodes reachable from `starts`, each edge compressed to the nearest fork, merge, export, root or known
+   * lineage node (a shallow export's graph, §13, and a hand-off's closure, §5.3). Nodes of `skip` (the cut a closure
+   * is for: its rows go up in full) end the walk and are left out.
    */
-  importShallow(pkg: ShallowExport): { status: "forked"; cut: string; head: NodeId } | { status: "imported"; head: NodeId } | { status: "other-project" } | { status: "no-shared-lineage"; newProjectId: string } {
-    if (pkg.format !== "carton-shallow/1") throw new Error("not a shallow export");
-    let fresh = false;
-    if (!this.#projectId || this.#cuts.size === 0) {
-      this.#projectId = pkg.projectId;
-      fresh = true;
-    } else if (this.#projectId !== pkg.projectId) return { status: "other-project" };
-    else {
-      const known = pkg.nodes.some((n) => this.#cuts.has(n.branchId) && !this.#cuts.get(n.branchId)!.rec.shallow) || pkg.nodes.some((n) => this.#lineage.has(n.id));
-      if (!known) return { status: "no-shared-lineage", newProjectId: randomHex(8) };
+  #walkLineage(starts: readonly NodeId[], head?: NodeId, skip?: string): Map<NodeId, DagNode> {
+    const forkNodes = new Set<NodeId>();
+    for (const b of this.#cuts.values()) if (b.rec.forkOf) forkNodes.add(this.canon(b.rec.forkOf));
+    const nodes = new Map<NodeId, DagNode>();
+    const kindsOf = (id: NodeId): LineageKind[] => {
+      const k: LineageKind[] = [];
+      if (id === head) k.push("head");
+      const ln = this.#lineage.get(id);
+      if (ln) k.push(...ln.kinds.filter((x) => x !== "head"));
+      if (this.#exportsMade.has(id)) k.push("export");
+      if (this.changeAt(id)?.mergeOf) k.push("merge");
+      if (forkNodes.has(id)) k.push("fork");
+      if (!this.parents(id).length) k.push("root");
+      return [...new Set(k)];
+    };
+    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || this.parents(id).length !== 1 || forkNodes.has(id);
+    const queue = [...starts];
+    while (queue.length) {
+      const id = queue.pop()!;
+      if (nodes.has(id)) continue;
+      const { branchId: b, seq: s } = parseNode(id);
+      if (b === skip) continue;
+      const owner = this.#lineage.get(id)?.owner ?? this.#cuts.get(b)?.rec.owner;
+      const rec: DagNode = { id, branchId: b, seq: s, hash: this.hashOf(id)!, kinds: kindsOf(id), parents: [], ...(owner ? { owner } : {}) };
+      nodes.set(id, rec);
+      for (const p0 of this.parents(id)) {
+        const maps = [this.edgeMap(p0, id)];
+        let p = p0;
+        while (!isStop(p)) {
+          const pp = this.parents(p)[0]!;
+          maps.push(this.edgeMap(pp, p));
+          p = pp;
+        }
+        rec.parents.push({ id: p, remap: E.composeMaps(...maps.reverse()) });
+        queue.push(p);
+      }
     }
-    if (!pkg.nodes.some((n) => n.id === pkg.head)) throw new Error("shallow export: its head is not one of its nodes");
+    return nodes;
+  }
+  /**
+   * Lineage from elsewhere (a `.cbproj`, a shared cut's closure) as read-only tracking knowledge: a node already known
+   * keeps its parents (lineage is immutable; an import only adds kinds), nodes of cuts held in full are ours, the graph
+   * must stay a DAG, and every carried state must match its hash. All of it is checked before anything is kept.
+   */
+  #takeLineage(nodes: readonly DagNode[], branches: Readonly<Record<string, { name: string; owner?: string }>>, states: readonly (readonly [string, Doc | undefined])[]): void {
     // what the lineage would be: a node already known keeps its parents (lineage is immutable; an import only adds
     // kinds), and nodes of cuts we hold in full are ours, not the sender's
     const incoming = new Map<NodeId, Lineage>();
-    for (const n of pkg.nodes) {
+    for (const n of nodes) {
       const at = parseNode(n.id);
       if (at.branchId !== n.branchId || at.seq !== n.seq) throw new Error(`shallow export: node ${n.id} says it is ${n.branchId}@${n.seq}`);
       const br = this.#cuts.get(n.branchId);
       if (br && !br.rec.shallow) continue;
       const prev = this.#lineage.get(n.id);
-      const bn = pkg.branches[n.branchId]?.name;
+      const bn = branches[n.branchId]?.name;
       incoming.set(n.id, { ...n, ...(prev ? { parents: prev.parents } : {}), kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
     }
     // it must stay a DAG, through our own history too (a lineage edge into a local node that descends from it would
@@ -1167,20 +1168,74 @@ export class History {
         stack.push([next, parentsOf(next)]);
       }
     }
-    const headState = (pkg.states[pkg.headHash] as { doc?: Doc } | undefined)?.doc;
+    const docs: [string, Doc][] = [];
+    for (const [hash, doc] of states) {
+      if (!doc || this.#states.has(hash)) continue;
+      if (E.hashDoc(doc, this.schema) !== hash) throw new Error(`carried state ${hash.slice(0, 8)} does not match its hash`);
+      docs.push([hash, doc]);
+    }
     for (const n of incoming.values()) {
-      if (!this.#cuts.has(n.branchId)) this.addCut({ id: n.branchId, name: pkg.branches[n.branchId]?.name ?? "?", owner: pkg.branches[n.branchId]?.owner ?? "?", shallow: true, tracking: true, forkOf: null });
+      if (!this.#cuts.has(n.branchId)) this.addCut({ id: n.branchId, name: branches[n.branchId]?.name ?? "?", owner: branches[n.branchId]?.owner ?? "?", shallow: true, tracking: true, forkOf: null });
       this.#lineage.set(n.id, n);
     }
-    for (const [hash, st] of Object.entries(pkg.states)) {
-      if (this.#states.has(hash)) continue;
-      const doc = "doc" in st ? st.doc : headState && E.apply(E.fork(headState, this.schema), st.delta, this.schema);
-      if (!doc) continue;
-      if (E.hashDoc(doc, this.schema) !== hash) throw new Error(`carried state ${hash.slice(0, 8)} does not match its hash`);
-      this.#states.set(hash, doc);
-    }
-    this.#importedAuthors.set(pkg.head, pkg.lastAuthor ?? {});
+    for (const [hash, doc] of docs) this.#states.set(hash, doc);
     this.#anc.clear();
+  }
+  /**
+   * A cut's ancestry closure for its hand-off (§5.3, R4-07): the lineage of what it forked and folded from, shallow
+   * (no micro-changes), with the states of its fork, merge and export nodes and the last authors at the nodes its
+   * credits stop at, by cut. Its own rows 1..`upTo` go up in full beside it.
+   */
+  closure(cutId: string, upTo: number = this.headSeq(cutId)): ClosureEntry[] {
+    const br = this.#mustCut(cutId);
+    const starts = new Set(br.log.slice(0, upTo).flatMap((c) => (c.mergeOf ? [this.canon(nodeId(c.mergeOf.branchId, c.mergeOf.seq))] : [])));
+    if (br.rec.forkOf) starts.add(this.canon(br.rec.forkOf));
+    const out = new Map<string, ClosureEntry>();
+    for (const n of this.#walkLineage([...starts], undefined, cutId).values()) {
+      let e = out.get(n.branchId);
+      if (!e) {
+        const rec: CutRecord = this.#cuts.get(n.branchId)?.rec ?? { id: n.branchId, name: this.#lineage.get(n.id)?.branchName ?? "?", forkOf: null, owner: n.owner ?? "?", kind: "variant", tracking: true, shallow: true, sequencer: { kind: "local" } };
+        out.set(n.branchId, (e = { branchId: n.branchId, rec, nodes: [], states: [] }));
+      }
+      e.nodes.push(n);
+      const d = n.kinds.some((k) => k === "fork" || k === "merge" || k === "export") ? this.stateOf(n.id) : null;
+      if (d) e.states!.push({ seq: n.seq, hash: n.hash, doc: JSON.parse(E.snapshot(d, this.schema)) });
+    }
+    for (const s of starts) {
+      const e = out.get(parseNode(s).branchId);
+      if (e) (e.authors ??= []).push([s, this.lastAuthorMap(s)]);
+    }
+    return [...out.values()];
+  }
+  /**
+   * A shared cut's closure from its server (Stage F): read-only shallow tracking cuts with their lineage, carried
+   * states and last authors, so a teammate who joined has the credits and fold bases from before the share point.
+   */
+  loadClosure(entries: readonly ClosureEntry[]): void {
+    const branches: Record<string, { name: string; owner?: string }> = {};
+    for (const e of entries) branches[e.branchId] = { name: e.rec.name, ...(e.rec.owner ? { owner: e.rec.owner } : {}) };
+    this.#takeLineage(entries.flatMap((e) => e.nodes), branches, entries.flatMap((e) => (e.states ?? []).map((st) => [st.hash, st.doc] as const)));
+    for (const e of entries) for (const [n, a] of e.authors ?? []) if (!this.#importedAuthors.has(n)) this.#importedAuthors.set(n, a);
+  }
+  /**
+   * Import: lineage nodes become read-only tracking knowledge; carried states are checked against their hash. A
+   * project you don't have forks a writable cut from the sender's head (§5.3).
+   */
+  importShallow(pkg: ShallowExport): { status: "forked"; cut: string; head: NodeId } | { status: "imported"; head: NodeId } | { status: "other-project" } | { status: "no-shared-lineage"; newProjectId: string } {
+    if (pkg.format !== "carton-shallow/1") throw new Error("not a shallow export");
+    let fresh = false;
+    if (!this.#projectId || this.#cuts.size === 0) {
+      this.#projectId = pkg.projectId;
+      fresh = true;
+    } else if (this.#projectId !== pkg.projectId) return { status: "other-project" };
+    else {
+      const known = pkg.nodes.some((n) => this.#cuts.has(n.branchId) && !this.#cuts.get(n.branchId)!.rec.shallow) || pkg.nodes.some((n) => this.#lineage.has(n.id));
+      if (!known) return { status: "no-shared-lineage", newProjectId: randomHex(8) };
+    }
+    if (!pkg.nodes.some((n) => n.id === pkg.head)) throw new Error("shallow export: its head is not one of its nodes");
+    const headState = (pkg.states[pkg.headHash] as { doc?: Doc } | undefined)?.doc;
+    this.#takeLineage(pkg.nodes, pkg.branches, Object.entries(pkg.states).map(([hash, st]) => [hash, "doc" in st ? st.doc : headState && E.apply(E.fork(headState, this.schema), st.delta, this.schema)]));
+    this.#importedAuthors.set(pkg.head, pkg.lastAuthor ?? {});
     if (fresh) {
       const b = this.fork(pkg.head, pkg.branches[parseNode(pkg.head).branchId]?.name ?? "main", { kind: "main" });
       this.#current = b;
