@@ -1,13 +1,17 @@
-// A machine's network link to the host, as a real TCP proxy on 127.0.0.1: `down()` drops every open connection and
-// refuses new ones (the laptop goes offline), `up()` lets them through again, `hold()` keeps connections open but
-// stops forwarding the machine's bytes (a push in flight that never arrives), `release()` sends what was held.
+// A machine's network link to the host, as a real TCP proxy on 127.0.0.1:
+//   down() / up()    drop every open connection and refuse new ones (the laptop goes offline), then let them through;
+//   hold()           the connections open now stop forwarding the machine's bytes (a push in flight that hasn't
+//                    arrived); new connections are not held. If the machine's process dies meanwhile, the held bytes
+//                    are still delivered on release(), as data already on the wire would be (a dead helper's late push);
+//   release()        deliver what was held, then close connections whose machine side is gone.
 import { createServer, connect, type Server, type Socket } from "node:net";
+
+interface Pair { client: Socket; upstream: Socket; held: Buffer[] | null; clientGone: boolean }
 
 export class Link {
   private server: Server;
-  private pairs = new Set<[Socket, Socket]>();
+  private pairs = new Set<Pair>();
   private isDown = false;
-  private held: { from: Socket; to: Socket; data: Buffer }[] | null = null;
   port = 0;
   readonly target: number;
 
@@ -31,18 +35,20 @@ export class Link {
   private accept(client: Socket): void {
     if (this.isDown) return void client.destroy();
     const upstream = connect(this.target, "127.0.0.1");
-    const pair: [Socket, Socket] = [client, upstream];
-    this.pairs.add(pair);
-    const end = () => { this.pairs.delete(pair); client.destroy(); upstream.destroy(); };
-    client.on("data", (d) => (this.held ? this.held.push({ from: client, to: upstream, data: d }) : upstream.write(d)));
-    upstream.on("data", (d) => client.write(d));
-    client.on("error", end).on("close", end);
-    upstream.on("error", end).on("close", end);
+    const p: Pair = { client, upstream, held: null, clientGone: false };
+    this.pairs.add(p);
+    const drop = () => { this.pairs.delete(p); client.destroy(); upstream.destroy(); };
+    client.on("data", (d) => (p.held ? p.held.push(d) : upstream.write(d)));
+    upstream.on("data", (d) => { if (!client.destroyed) client.write(d); });
+    // the machine side died: a held pair keeps its upstream open until release (its bytes are still "on the wire")
+    const clientEnd = () => { p.clientGone = true; if (!p.held) drop(); };
+    client.on("error", clientEnd).on("close", clientEnd);
+    upstream.on("error", drop).on("close", drop);
   }
 
   down(): void {
     this.isDown = true;
-    for (const [a, b] of this.pairs) { a.destroy(); b.destroy(); }
+    for (const p of this.pairs) { p.client.destroy(); p.upstream.destroy(); }
     this.pairs.clear();
   }
 
@@ -51,18 +57,24 @@ export class Link {
   }
 
   hold(): void {
-    this.held ??= [];
+    for (const p of this.pairs) p.held ??= [];
   }
 
   release(): void {
-    const h = this.held ?? [];
-    this.held = null;
-    for (const x of h) if (!x.to.destroyed) x.to.write(x.data);
+    for (const p of [...this.pairs]) {
+      if (!p.held) continue;
+      const h = p.held;
+      p.held = null;
+      for (const d of h) if (!p.upstream.destroyed) p.upstream.write(d);
+      if (p.clientGone) setTimeout(() => { this.pairs.delete(p); p.upstream.destroy(); }, 2000).unref();
+    }
   }
 
   /** Bytes held so far (a push waiting in the link). */
   get heldBytes(): number {
-    return (this.held ?? []).reduce((n, x) => n + x.data.length, 0);
+    let n = 0;
+    for (const p of this.pairs) for (const d of p.held ?? []) n += d.length;
+    return n;
   }
 
   async close(): Promise<void> {
