@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { Carton, LOCAL_TABLES, STORE_TABLES } from "@carton/core";
-import type { Actor, Doc } from "@carton/core";
+import type { Actor, Doc, ShallowExport } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import { createMemoryStore } from "@carton/store-memory";
 import { cardboardAdapter, fromHost, toHost } from "@carton/cardboard";
@@ -327,4 +327,78 @@ test(".cbproj S3-2: Bring in their changes takes a file's history too, then fold
   assert.deepEqual(r.history, { status: "imported", cuts: [alice.cut] });
   assert.equal(find(toHost((await bob.head()).doc).timelineItems as Item[], "c2").name, "the Director's edit");
   assert.ok((await bob.log({ cut: alice.cut })).some((v) => v.author?.id === "director/chatS2/turn1"), "and the version that made it, with its author");
+});
+
+// S3-4: a teammate whose project is a copy of yours (the bundle folder copied with its `.carton`: the same "Main cut"
+// id, the same log up to the copy) edits and sends a .cbproj. Core read past this replica's log for the sender's node on
+// that cut id and crashed (`TypeError … 'mergeOf'`), or took their states for ours ("up-to-date"). foundation-core is
+// making core take such a cut in as a cut of its own and fold it; until that lands, the adapter's fallback answers
+// with a reason. (Once it lands, these become "folds in as a separate cut" tests.)
+async function copyAll(from: Store): Promise<Store> {
+  const to = createMemoryStore();
+  for (const table of Object.values(STORE_TABLES)) {
+    const rows = await from.range(table);
+    if (rows.length) await to.write(rows.map((r) => ({ table, key: r.key, value: JSON.parse(JSON.stringify(r.value)) })));
+  }
+  return to;
+}
+
+for (const bothEdited of [false, true])
+  test(`.cbproj S3-4: a file from a copy of this project that ${bothEdited ? "both sides" : "only the sender"} edited: core can't bring it in yet, so the fallback says why, never a crash [real engine]`, async (t) => {
+    const project = { id: "proj-11", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
+    const sa = createMemoryStore();
+    const alice = await Carton.open({ adapter: cardboardAdapter, store: sa, init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
+    const bob = await Carton.open({ adapter: cardboardAdapter, store: await copyAll(sa), actor: BOB });
+    t.after(async () => {
+      await alice.close();
+      await bob.close();
+    });
+    assert.equal(bob.cut, alice.cut, "the copy holds the same cut id");
+    await edit(bob, BOB, (its) => void (find(its, "c1").name = "Bob's edit"));
+    if (bothEdited) await edit(alice, ALICE, (its) => void (find(its, "c2").name = "Alice's edit"));
+    const before = await alice.head();
+    const lineage = (await alice.cuts()).length;
+    const r = await bringInTheirChanges(alice, { shallow: await bob.exportShallow({ to: "alice" }) });
+    assert.equal(r.status, "diverged-copy", JSON.stringify(r));
+    assert.match(r.status === "diverged-copy" ? r.reason : "", /copy of this project/);
+    assert.deepEqual((await alice.head()).ref, before.ref, "nothing folded");
+    assert.equal((await alice.cuts()).length, lineage, "no cut added");
+  });
+
+// The fallback is only a fallback: with a file that clashes with one of this replica's own cuts, it answers only when
+// core refuses (a status it doesn't know), throws, or calls a clashing file up to date; a core that brings the copy in
+// (as a cut of its own) is left to do so. Without a clash, core's errors are core's.
+test(".cbproj S3-4: the diverged-copy answer is only a fallback for when core refuses or fails", async () => {
+  const pkg = { format: "carton-shallow/1", projectId: "p", sender: "s", head: "c1@3", headHash: "theirs", branches: {}, states: {}, lastAuthor: {}, nodes: [{ id: "c1@3", branchId: "c1", seq: 3, hash: "theirs", kinds: ["head"], parents: [] }] } as unknown as ShallowExport;
+  const target = (fold: () => Promise<{ status: string }>, clash = true) => ({
+    importShallow: async () => ({ status: "imported", head: "c1 (s)@3" }),
+    fold,
+    cuts: async () => [{ id: clash ? "c1" : "other", name: "Main cut", sequencer: { kind: "local" } }],
+    head: async () => ({ ref: { seq: 3 } }),
+    resolve: async () => ({ doc: {} }),
+    schema: cardboardAdapter.schema,
+  });
+  const ok = await bringInTheirChanges(target(async () => ({ status: "confirmed" })), { shallow: pkg });
+  assert.deepEqual(ok, { status: "folded", fold: { status: "confirmed" } }, "core brought the copy in: no fallback");
+  const threw = await bringInTheirChanges(target(async () => Promise.reject(new TypeError("Cannot read properties of undefined (reading 'mergeOf')"))), { shallow: pkg });
+  assert.equal(threw.status, "diverged-copy");
+  assert.match(threw.status === "diverged-copy" ? threw.reason : "", /copy of this project.*mergeOf/);
+  assert.equal((await bringInTheirChanges(target(async () => ({ status: "up-to-date" })), { shallow: pkg })).status, "diverged-copy", "a clashing file is never up to date");
+  await assert.rejects(bringInTheirChanges(target(async () => Promise.reject(new Error("database is locked")), false), { shallow: pkg }), /database is locked/, "no clash: core's error is core's");
+});
+
+test(".cbproj S3-4: a file naming newer versions of a shared cut than this replica has asks to sync first", async () => {
+  const pkg = { format: "carton-shallow/1", projectId: "p", sender: "s", head: "c1@5", headHash: "h", branches: {}, states: {}, lastAuthor: {}, nodes: [{ id: "c1@5", branchId: "c1", seq: 5, hash: "h", kinds: ["head"], parents: [] }] } as unknown as ShallowExport;
+  let imported = false;
+  const target = {
+    importShallow: async () => ((imported = true), { status: "imported", head: "c1@5" }),
+    fold: async () => ({ status: "confirmed" }),
+    cuts: async () => [{ id: "c1", name: "Main cut", sequencer: { kind: "server" } }],
+    head: async () => ({ ref: { seq: 2 } }),
+    resolve: async () => ({ doc: {} }),
+    schema: cardboardAdapter.schema,
+  };
+  const r = await bringInTheirChanges(target, { shallow: pkg });
+  assert.equal(r.status, "behind", JSON.stringify(r));
+  assert.equal(imported, false);
 });
