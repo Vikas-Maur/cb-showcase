@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
 import { openLocal } from "../src/open.ts";
+import { runWrite } from "../src/writes.ts";
 import { adapter, bundle, doc0 } from "./support/real.ts";
 
 const here = (f: string) => fileURLToPath(new URL(f, import.meta.url));
@@ -86,5 +87,33 @@ test("a pending commit that asks for it gets the holder's head: its edit merged 
   } finally {
     await local.close();
     for (const p of procs) if (p.exitCode === null) p.kill("SIGKILL");
+  }
+});
+
+test("a retried commit answered from its receipt gets the head of the cut it went to, not of the cut switched to since", async () => {
+  // windows-sync review round 5 #2: the receipt (a local cut's save that raised cards) didn't say its cut.
+  const { dir, projectId } = bundle("commit-head-retry");
+  const actor = { kind: "agent" as const, id: "codex/r" };
+  const lc = await openLocal({ projectDir: dir, projectId, adapter, actor, init: { doc: doc0() } });
+  try {
+    const c = lc.carton, main = c.cut, base = (await c.head()).ref;
+    await c.commit({ ops: [{ op: "set", path: ["name"], value: "Alice" }] } as any);
+    // made on the older base: the name clashes (a card), the description lands
+    const req = { id: "retry.1", actor, op: { kind: "commit" as const, base, ops: [{ op: "set", path: ["name"], value: "Mine" }, { op: "set", path: ["description"], value: "kept" }], head: true } };
+    const first = await runWrite(c, structuredClone(req) as any);
+    assert.equal(first.status, "conflicts", JSON.stringify(first).slice(0, 300));
+    assert.equal((first.head as any)?.ref.branchId, main);
+    const other = await c.fork("other");
+    await c.switchTo(other.id);
+    await c.commit({ ops: [{ op: "set", path: ["name"], value: "Other cut" }] } as any);
+    // the same request again (a retry after a lost answer): answered from its receipt, with the head of main
+    const again = await runWrite(c, structuredClone(req) as any);
+    assert.equal(again.status, "conflicts", JSON.stringify(again).slice(0, 300));
+    const head = again.head as { ref: { branchId: string }; doc: any } | undefined;
+    assert.equal(head?.ref.branchId, main, "the head of the cut the request went to");
+    assert.equal(head?.doc.description, "kept");
+    assert.notEqual(head?.doc.name, "Other cut");
+  } finally {
+    await lc.close();
   }
 });
