@@ -5,7 +5,7 @@
 //
 //   POST /api/projects/:p/join               {invite, account, installKey} → session
 //   POST /api/projects/:p/refresh            {token, installKey}           → session (same credential)
-//   POST /api/projects/:p/invites            {role, ttlMs?}   owner        → {invite}
+//   POST /api/projects/:p/invites            {role, ttlMs?, branches?}  owner  → {invite}
 //   POST /api/admin/projects/:p/invites      {role}  Bearer ADMIN_TOKEN    → {invite}   (bootstrap; off without one)
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
@@ -156,9 +156,12 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     if (rest === "/ws") return await deps.upgrade(req, ctx, projectId);
     if (req.method === "POST" && rest === "/invites") {
       if (!canInvite(ctx)) return err(403, "only the owner invites");
-      const b = await body<{ role?: string; ttlMs?: number }>(req);
+      const b = await body<{ role?: string; ttlMs?: number; branches?: string[] }>(req);
       if (!ROLES.has(String(b.role))) return err(400, "bad role");
-      return json({ invite: await invites().createInvite(projectId, b.role as AuthContext["role"], b.ttlMs) });
+      // `branches`: the cuts its sessions are scoped to (a Published cut's watch link reads that cut only). An owner
+      // whose own session is scoped invites only within that scope, never wider.
+      if (ctx.branches && !(Array.isArray(b.branches) && b.branches.every((x) => ctx.branches!.includes(x)))) return err(403, "an invite can't reach past your own cuts");
+      return json({ invite: await invites().createInvite(projectId, b.role as AuthContext["role"], b.ttlMs, b.branches) });
     }
     if (rest.startsWith("/messages/")) return await messageRoutes(req, rest.slice("/messages/".length), ctx, deps, projectId);
     const store = deps.blobsFor(projectId);
