@@ -89,4 +89,65 @@ test("history: a session scoped to a cut gets no lineage outside its scope, so a
   assert.deepEqual(teammate.lineage?.map((t) => t.branchId), ["variant"], "an unscoped reader still gets the lineage");
   const both = await ask(fakeConn("e/1", "editor", { branches: ["pub", "variant"] }));
   assert.deepEqual(both.lineage?.map((t) => t.branchId), ["variant"], "a scope that covers the ancestor reads it");
+  const writer = await ask(fakeConn("e/2", "editor", { branches: ["pub"] }));
+  assert.deepEqual(writer.lineage?.map((t) => t.branchId), ["variant"], "a scoped writer's join gets its cut's ancestry (its scope limits writes)");
+});
+
+test("history: with lineageFrom the lineage is paged by the catch-up byte budget; without it, whole (SF1-8)", async () => {
+  const seq = createSequencer({ storage: sqliteStorage(), auth: staticAuth, catchupLimit: 1, catchupBytes: 1024 });
+  const c = fakeConn("alice/1");
+  const big = doc([clip("c0", 0, 5)]);
+  (big.timelineItems[0] as { name?: string }).name = "x".repeat(2048);
+  const states = (b: string, n: number) => Array.from({ length: n }, (_, i) => ({ seq: i + 1, hash: H(String(i + 1)), doc: big as never }));
+  const nodes = (b: string, n: number) => Array.from({ length: n }, (_, i) => node(b, i + 1, i ? [`${b}@${i}`] : []));
+  const closure: sync.ClosureEntry[] = [
+    { branchId: "a", rec: rec("a"), nodes: nodes("a", 2), states: states("a", 2), authors: [["a@1", { "timelineItems/c0": author }]] },
+    { branchId: "b", rec: rec("b"), nodes: nodes("b", 1), states: states("b", 1) },
+  ];
+  await seq.handle(c, { type: "adopt", branchId: "child", n: 0, stateHash: H("c"), rows: [], rec: rec("child"), doc0: doc([clip("c0", 0, 5)]) as never, closure });
+  assert.ok(c.last("adopted"));
+  const ask = async (lineageFrom?: sync.LineageCursor) => {
+    await seq.handle(c, { type: "history", branchId: "child", req: 1, after: 0, upTo: 0, lineage: true, ...(lineageFrom ? { lineageFrom } : {}) });
+    return c.last("history")!;
+  };
+  const whole = await ask();
+  assert.deepEqual(whole.lineage!.map((t) => [t.branchId, t.states!.length]), [["a", 2], ["b", 1]], "a client from before paging gets it all");
+  assert.equal(whole.lineageNext, undefined);
+  // paged: each state is over the budget, so one per page; the client concatenates by branchId
+  const got = new Map<string, sync.ClosureEntry>();
+  let cursor: sync.LineageCursor | undefined = { entry: 0, state: 0 };
+  let pages = 0;
+  while (cursor) {
+    const r = await ask(cursor);
+    pages++;
+    for (const t of r.lineage!) {
+      const had = got.get(t.branchId);
+      if (!had) got.set(t.branchId, { ...t, states: [...t.states!] });
+      else had.states!.push(...t.states!), had.nodes.push(...t.nodes);
+    }
+    assert.ok(r.lineage!.reduce((n, t) => n + t.states!.length, 0) <= 1, "one state over the budget per page");
+    cursor = r.lineageNext;
+    assert.ok(pages < 10);
+  }
+  assert.equal(pages, 3);
+  assert.deepEqual([...got.values()].map((t) => [t.branchId, t.nodes.length, t.states!.map((s) => s.seq), !!t.authors]), [["a", 2, [1, 2], true], ["b", 1, [1], false]]);
+});
+
+test("history: a continuation page charges the entry's record again, so a long record still means one state a page (stage review round 3)", async () => {
+  const seq = createSequencer({ storage: sqliteStorage(), auth: staticAuth, catchupBytes: 4096 });
+  const c = fakeConn("alice/1");
+  const small = doc([clip("c0", 0, 5)]); // ~1 KB a state as loaded: several fit the budget
+  const long = { ...rec("a"), name: "n".repeat(6000) }; // the record alone is over it
+  const closure: sync.ClosureEntry[] = [{ branchId: "a", rec: long, nodes: [1, 2, 3].map((s) => node("a", s)), states: [1, 2, 3].map((s) => ({ seq: s, hash: H(String(s)), doc: small as never })) }];
+  await seq.handle(c, { type: "adopt", branchId: "child", n: 0, stateHash: H("c"), rows: [], rec: rec("child"), doc0: small as never, closure });
+  assert.ok(c.last("adopted"));
+  const perPage: number[] = [];
+  let cursor: sync.LineageCursor | undefined = { entry: 0, state: 0 };
+  while (cursor && perPage.length < 10) {
+    await seq.handle(c, { type: "history", branchId: "child", req: 1, after: 0, upTo: 0, lineage: true, lineageFrom: cursor });
+    const r = c.last("history")!;
+    perPage.push(r.lineage!.reduce((n, t) => n + t.states!.length, 0));
+    cursor = r.lineageNext;
+  }
+  assert.deepEqual(perPage, [1, 1, 1], "the record alone is over the budget: one state a page");
 });

@@ -598,14 +598,19 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const i = rec.forkOf.lastIndexOf("@");
     const at = Number(rec.forkOf.slice(i + 1));
     if (i < 1 || !Number.isInteger(at)) return null;
-    return { branchId: typeof rec.source === "string" ? rec.source : rec.forkOf.slice(0, i), at };
+    const forkCut = rec.forkOf.slice(0, i);
+    const source = typeof rec.source === "string" ? rec.source : forkCut;
+    // core names a version by the cut it was made on, so a source with no edits of its own when published has its
+    // parent's version as the fork point, the same one the source forked from: the publication is then the source's
+    // version 0 (SF1-9). Not the source's storage root, which a later shallow share moves (stage review round 3).
+    if (source !== forkCut && tables.branch(source)?.rec.forkOf === rec.forkOf) return { branchId: source, at: 0 };
+    return { branchId: source, at };
   }
   async function onHello(c: HostConnection, m: sync.HelloMsg) {
-    // a reader scoped to some cuts (a Published cut's watch link) reads only those: refused before anything is sent
-    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(m.branchId)) return send(c, { type: "error", reason: `this token can't read ${m.branchId}` });
+    // (a reader scoped to some cuts never gets here for another: process() refuses it first)
     const b = tables.branch(m.branchId);
     if (!b) return send(c, { type: "unknownBranch", branchId: m.branchId });
-    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `schemaVersion ${m.schemaVersion} is newer than this server's ${opts.schemaVersion}` });
+    if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", reason: `this client's documents are schema version ${m.schemaVersion}, newer than this server accepts (up to ${opts.schemaVersion}): update the server` });
     const st = stateOf(c);
     if (m.envelopes === true && opts.blobs) st.envelopes = true;
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
@@ -824,7 +829,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
    * branch's ancestry closure (its tracking branches with their carried states), for a joiner's log and credits.
    */
   async function onHistory(c: HostConnection, m: sync.HistoryMsg) {
-    const reply = (r: Pick<sync.HistoryReplyMsg, "rows" | "more" | "lineage" | "error">) => send(c, { type: "history", branchId: m.branchId, req: m.req, ...r });
+    const reply = (r: Pick<sync.HistoryReplyMsg, "rows" | "more" | "lineage" | "lineageNext" | "error">) => send(c, { type: "history", branchId: m.branchId, req: m.req, ...r });
     const b = typeof m.branchId === "string" ? tables.branch(m.branchId) : null;
     if (!b) return reply({ rows: [], error: "unknown branch" });
     if (c.auth.branches && !c.auth.branches.includes(m.branchId)) return reply({ rows: [], error: "forbidden" });
@@ -832,29 +837,57 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const upTo = Math.min(tables.head(m.branchId), Number.isInteger(m.upTo) ? m.upTo : 0);
     const rows = after < upTo ? (await readRows(m.branchId, after, catchup, catchupBytes, true)).filter((r) => r.seq <= upTo) : [];
     const last = rows.length ? rows[rows.length - 1]!.seq : after;
+    // The lineage: whole, or with `lineageFrom` paged like catch-up (SF1-8): entries in closure order within the
+    // catch-up byte budget, at least one state (or one entry with none) per page, `lineageNext` where the next starts.
     const lineage: sync.ClosureEntry[] = [];
-    if (m.lineage)
-      for (const id of b.closure ?? []) {
-        // a session scoped to some cuts (a Published cut's watch link) reads no ancestor outside them: a private
-        // variant partly folded into the cut carries states that were never published (web-demo review R3-1)
-        if (c.auth.branches && !c.auth.branches.includes(id)) continue;
+    let lineageNext: sync.LineageCursor | undefined;
+    if (m.lineage) {
+      const ids = b.closure ?? [];
+      const from = m.lineageFrom;
+      const paged = from !== undefined && from !== null;
+      const index = (x: unknown) => (Number.isSafeInteger(x) && (x as number) >= 0 ? (x as number) : 0);
+      let budget = paged ? catchupBytes : Infinity;
+      let taken = 0; // states in this page
+      let s = paged ? index(from.state) : 0;
+      page: for (let e = paged ? index(from.entry) : 0; e < ids.length; e++, s = 0) {
+        const id = ids[e]!;
+        // a reader scoped to some cuts (a Published cut's watch link) reads no ancestor outside them: a private variant
+        // partly folded into the cut carries states that were never published (web-demo review R3-1). A scoped writer
+        // reads every cut (hello), and a join needs its cut's ancestry.
+        if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(id)) continue;
         const t = tables.branch(id);
         if (!t?.tracking) continue;
-        const states: NonNullable<sync.ClosureEntry["states"]> = [];
-        for (const n of t.nodes ?? []) {
-          const k = tables.keyframeAt(id, n.seq);
-          if (!k) continue;
-          const { keyframe } = await loadKeyframe(id, k);
-          states.push({ seq: n.seq, hash: keyframe.stateHash, doc: keyframe.doc });
+        const nodes = t.nodes ?? [];
+        const entry: sync.ClosureEntry = { branchId: id, rec: t.rec, nodes: s === 0 ? nodes : [], states: [] };
+        if (s === 0 && t.authors?.length) entry.authors = t.authors;
+        // every page an entry is on carries its record (and the first, its nodes and authors): charged each time
+        // (stage review round 3); a page's first entry goes whatever its size, so every page makes progress
+        const head = sync.jsonBytesBound({ branchId: id, rec: t.rec, nodes: entry.nodes, authors: entry.authors ?? null }, Infinity);
+        if (lineage.length && head > budget) {
+          lineageNext = { entry: e, state: s };
+          break;
         }
-        lineage.push({ branchId: id, rec: t.rec, nodes: t.nodes ?? [], states, ...(t.authors?.length ? { authors: t.authors } : {}) });
+        budget -= head;
+        for (let i = s; i < nodes.length; i++) {
+          const k = tables.keyframeAt(id, nodes[i]!.seq);
+          if (!k) continue;
+          const { keyframe, bytes } = await loadKeyframe(id, k);
+          if (taken > 0 && bytes > budget) {
+            lineageNext = { entry: e, state: i };
+            if (s === 0 || entry.states!.length) lineage.push(entry);
+            break page;
+          }
+          entry.states!.push({ seq: nodes[i]!.seq, hash: keyframe.stateHash, doc: keyframe.doc });
+          taken++;
+          budget -= bytes;
+        }
+        lineage.push(entry);
       }
-    reply({ rows, ...(last < upTo && rows.length ? { more: true } : {}), ...(m.lineage ? { lineage } : {}) });
+    }
+    reply({ rows, ...(last < upTo && rows.length ? { more: true } : {}), ...(m.lineage ? { lineage } : {}), ...(lineageNext ? { lineageNext } : {}) });
   }
 
   function onBranchStatus(c: HostConnection, m: sync.BranchStatusMsg) {
-    // a reader scoped to some cuts learns nothing of others: not their existence, adoption key or head
-    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(m.branchId)) return send(c, { type: "error", reason: `this token can't read ${m.branchId}` });
     const b = tables.branch(m.branchId);
     const msg: sync.StatusMsg = { type: "status", branchId: m.branchId, adopted: !!b, adoptKey: b?.adoptKey ?? null, since: b?.since ?? null, head: b ? tables.head(m.branchId) : 0 };
     // a hand-off uploads right after this answer: it must know the largest message read before it (round 3 finding 6)
@@ -981,6 +1014,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (!inner) return;
       msg = inner;
     }
+    // A reader scoped to some cuts (a Published cut's watch link) learns nothing of any other: every message naming
+    // one is refused alike, before any lookup, so not its rows, head, adoption key, or even whether it exists. A
+    // scoped writer's scope limits its writes (mayWrite).
+    // Every message names its cut as a string (and a fork its parent): anything else is refused before it can reach a
+    // lookup, where SQLite would match the number 1.5 to the cut id "1.5" past the guard (stage review round 2).
+    const named = (msg as { branchId?: unknown } | null)?.branchId;
+    const from = (msg as { type?: unknown; from?: unknown } | null)?.type === "fork" ? (msg as { from?: unknown }).from : "";
+    if (typeof named !== "string" || typeof from !== "string") return send(c, { type: "error", reason: "a message must name its cut by a string id" });
+    if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(named)) return send(c, { type: "error", reason: `this token can't read ${named}` });
     switch (msg?.type) {
       case "hello":
         return onHello(c, msg);
