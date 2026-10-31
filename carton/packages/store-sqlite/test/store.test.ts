@@ -7,6 +7,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
+import { randomBytes } from "node:crypto";
 import { openSqliteStore, openProjectStore, BusyError, FORMAT_VERSION } from "../src/index.ts";
 import { scratch } from "./scratch.ts";
 
@@ -113,7 +114,8 @@ test("exportCopy: a full-history copy without the local tables, whose bytes hold
 test("reclaim gives the pages of pruned keyframes back to the disk", async () => {
   const file = fresh();
   const s = await openSqliteStore(file);
-  const big = { items: Array.from({ length: 200 }, (_, i) => ({ id: `i${i}`, text: "x".repeat(100) })) };
+  // Random content, so compression can't hide the pages: the shrink below is the vacuum's.
+  const big = { blob: randomBytes(20000).toString("base64") };
   for (let seq = 64; seq <= 64 * 100; seq += 64) await s.write([{ table: "keyframes", key: ["main", seq], value: big }]);
   s.db.raw.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   const before = fs.statSync(file).size;
@@ -204,4 +206,34 @@ test("closing twice is harmless; using a closed store rejects", async () => {
   await s.close();
   await assert.rejects(s.get("t", ["k"]));
   await assert.rejects(s.write([{ table: "t", key: ["k"], value: 1 }]));
+});
+
+test("large values (keyframes) are stored compressed and read back exactly; small ones stay text", async () => {
+  const file = fresh();
+  const s = await openSqliteStore(file);
+  const items = Array.from({ length: 1000 }, (_, i) => ({ id: `item-${i}`, trackId: `track-${i % 6}`, startTime: i * 0.5, endTime: i * 0.5 + 0.45, name: `Clip ${i}`, transform: { x: 0, y: 0, scale: 1 } }));
+  const kf = { name: "Promo", items };
+  await s.write([
+    { table: "keyframes", key: ["main", 64], value: kf },
+    { table: "keyframes", key: ["main", 128], value: { small: true } },
+    { table: "changes", key: ["main", 1], value: { id: "r.1", ops: [] } },
+  ]);
+  const kinds = (s.db.raw.prepare(`SELECT typeof(v) AS t, length(v) AS n FROM keyframes ORDER BY k`).all() as { t: string; n: number }[]);
+  assert.equal(kinds[0].t, "blob");
+  assert.ok(kinds[0].n * 5 < JSON.stringify(kf).length, `stored ${kinds[0].n} bytes for ${JSON.stringify(kf).length} of JSON`);
+  assert.equal(kinds[1].t, "text", "a small keyframe stays text");
+  assert.equal((s.db.raw.prepare(`SELECT typeof(v) AS t FROM changes`).get() as { t: string }).t, "text");
+  assert.deepEqual(await s.get("keyframes", ["main", 64]), kf);
+  assert.deepEqual((await s.range("keyframes", { prefix: ["main"], reverse: true, limit: 2 })).map((r) => r.key), [["main", 128], ["main", 64]]);
+  assert.deepEqual((await s.range("keyframes", { prefix: ["main"], lte: ["main", 64] }))[0].value, kf);
+  assert.equal(await s.write([{ table: "t", key: ["x"], value: 1 }], [{ table: "keyframes", key: ["main", 64], expect: { equals: { items, name: "Promo" } } }]), true, "equals sees through compression");
+  const big = { items: Array.from({ length: 12000 }, (_, i) => ({ ...items[i % 1000], id: `big-${i}` })) };
+  await s.write([{ table: "keyframes", key: ["main", 192], value: big }]);
+  assert.deepEqual(await s.get("keyframes", ["main", 192]), big, "a value over 1 MiB (deflated off the event loop) round-trips");
+  const out = path.join(root, "export-z", "copy.db");
+  await s.exportCopy(out, []);
+  const copy = await openSqliteStore(out, { readOnly: true });
+  assert.deepEqual(await copy.get("keyframes", ["main", 64]), kf, "the export carries compressed values as they are");
+  await copy.close();
+  await s.close();
 });

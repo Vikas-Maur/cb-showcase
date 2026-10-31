@@ -2,7 +2,7 @@
 //
 // Each Carton table (core's STORE_TABLES: changes, cuts, keyframes, pins, lease…) is one SQLite table
 // `(k TEXT PRIMARY KEY, v TEXT) WITHOUT ROWID`: the key encoded so that SQLite's text order is the contract's key
-// order (key.ts), the value as JSON text. Every `range` is then one primary-key range read, and a row costs one B-tree
+// order (key.ts), the value as JSON text, or compressed when it is large (value.ts). Every `range` is then one primary-key range read, and a row costs one B-tree
 // entry (no rowid index, as in the DO's DDL, §6.3).
 //
 // `write` is the cross-process compare-and-swap: conditions are checked and writes applied inside one
@@ -17,6 +17,7 @@ import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";
 import { Db, type DbOptions } from "./db.ts";
 import { encodeKey, decodeKey, prefixEnd } from "./key.ts";
+import { encodeValue, decodeValue } from "./value.ts";
 
 /** "CRTN": marks carton.db files, so Carton never mistakes another SQLite file for its own. */
 const APPLICATION_ID = 0x4352544e;
@@ -26,7 +27,7 @@ const META = "_carton";
 
 export interface SqliteStoreOptions extends DbOptions {}
 
-type Row = [string, string];
+type Row = [string, string | Uint8Array];
 
 export class SqliteStore implements Store {
   readonly info: StoreInfo = { kind: "sqlite", persistent: true, multiProcess: true };
@@ -59,8 +60,8 @@ export class SqliteStore implements Store {
     const k = encodeKey(key);
     return this.db.read(() => {
       if (!this.#exists(t)) return undefined;
-      const row = this.db.stmt(`SELECT v FROM "${t}" WHERE k = ?`).get(k) as { v: string } | undefined;
-      return row === undefined ? undefined : (JSON.parse(row.v) as T);
+      const row = this.db.stmt(`SELECT v FROM "${t}" WHERE k = ?`).get(k) as { v: string | Uint8Array } | undefined;
+      return row === undefined ? undefined : (decodeValue(row.v) as T);
     });
   }
 
@@ -93,7 +94,10 @@ export class SqliteStore implements Store {
       stmt.setReturnArrays(true);
       const rows = stmt.all(...args) as unknown as Row[];
       const out = new Array<{ key: StoreKey; value: T }>(rows.length);
-      for (let i = 0; i < rows.length; i++) out[i] = { key: decodeKey(rows[i][0]), value: JSON.parse(rows[i][1]) as T };
+      for (let i = 0; i < rows.length; i++) {
+        const v = rows[i][1];
+        out[i] = { key: decodeKey(rows[i][0]), value: (typeof v === "string" ? JSON.parse(v) : decodeValue(v)) as T };
+      }
       return out;
     });
   }
@@ -101,7 +105,8 @@ export class SqliteStore implements Store {
   async write(writes: readonly StoreWrite[], conditions: readonly StoreCondition[] = []): Promise<boolean> {
     // Encode and serialize before taking the lock: it is held only for the checks and the inserts (§6.2).
     const conds = conditions.map((c) => ({ t: tableName(c.table), k: encodeKey(c.key), expect: c.expect }));
-    const ops = writes.map((w) => ({ t: tableName(w.table), k: encodeKey(w.key), v: w.value === undefined ? undefined : json(w.value) }));
+    const ops: { t: string; k: string; v: string | Uint8Array | undefined }[] = [];
+    for (const w of writes) ops.push({ t: tableName(w.table), k: encodeKey(w.key), v: w.value === undefined ? undefined : await encodeValue(w.value) });
     const ok = await this.db.write(() => {
       for (const c of conds) if (!this.#holds(c.t, c.k, c.expect)) return false;
       for (const w of ops) {
@@ -182,10 +187,10 @@ export class SqliteStore implements Store {
   }
 
   #holds(t: string, k: string, expect: StoreCondition["expect"]): boolean {
-    const row = this.#exists(t) ? (this.db.stmt(`SELECT v FROM "${t}" WHERE k = ?`).get(k) as { v: string } | undefined) : undefined;
+    const row = this.#exists(t) ? (this.db.stmt(`SELECT v FROM "${t}" WHERE k = ?`).get(k) as { v: string | Uint8Array } | undefined) : undefined;
     if (expect === "absent") return row === undefined;
     if (expect === "present") return row !== undefined;
-    return row !== undefined && canonical(JSON.parse(row.v)) === canonical(expect.equals);
+    return row !== undefined && canonical(decodeValue(row.v)) === canonical(expect.equals);
   }
 
   #exists(t: string): boolean {
@@ -275,8 +280,3 @@ function tableName(table: string): string {
   return n;
 }
 
-function json(v: unknown): string {
-  const s = JSON.stringify(v);
-  if (s === undefined) throw new TypeError("store: value is not JSON");
-  return s;
-}
