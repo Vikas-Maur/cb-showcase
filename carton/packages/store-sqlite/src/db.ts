@@ -41,10 +41,54 @@ export function isBusy(e: unknown): boolean {
   return typeof code === "number" && ((code & 0xff) === SQLITE_BUSY || (code & 0xff) === SQLITE_LOCKED);
 }
 
-// SQLite's message for an I/O error is the same for every step; the extended code tells them apart.
+const SQLITE_IOERR = 10;
+const SQLITE_CANTOPEN = 14;
+/** How long an open on Windows retries an I/O error before DatabaseHeldError (see openRetrying). */
+export const OPEN_RETRY_MS = 500;
+
+/** carton.db couldn't be opened on Windows because something still held it or its -wal/-shm (see openRetrying). */
+export class DatabaseHeldError extends Error {
+  readonly code = "CARTON_DB_HELD";
+  readonly path: string;
+  constructor(path: string, cause: unknown) {
+    const c = cause as { message?: string; errcode?: number };
+    super(`${path} is held by another process (or a program such as an antivirus scanner) and couldn't be opened for ${OPEN_RETRY_MS} ms; try again (SQLite: ${c?.message ?? cause}${typeof c?.errcode === "number" ? `, errcode ${c.errcode}` : ""})`, { cause });
+    this.path = path;
+  }
+}
+
+// I/O errors, and "unable to open" (CreateFile on a file whose deletion is pending fails like a missing one).
+function isTransientOnWindows(e: unknown): boolean {
+  const code = ((e as { errcode?: number } | null)?.errcode ?? 0) & 0xff;
+  return code === SQLITE_IOERR || code === SQLITE_CANTOPEN;
+}
+
+/**
+ * Run an open (`attempt`: a fresh connection each time, which writes nothing until its first reads pass).
+ *
+ * Defence in depth for real Windows machines: an antivirus, the search indexer or a backup tool can hold a file (or
+ * its -wal/-shm) for a moment, as can a process being terminated whose handles aren't closed yet. SQLite's first
+ * reads then fail with "disk I/O error" or "unable to open". (verify-ci #22 looked like this, but its cause was a test
+ * reopening while a killed helper's handle was still open, fixed in that test.) Such failures are retried there, asynchronously with backoff, for up to OPEN_RETRY_MS, then reported as
+ * DatabaseHeldError. Elsewhere these errors aren't transient: reported at once, an I/O error with SQLite's extended
+ * code (the message is the same for every I/O step).
+ */
+export async function openRetrying<T>(path: string, attempt: () => Promise<T>, platform: NodeJS.Platform = process.platform): Promise<T> {
+  const t0 = Date.now();
+  for (let n = 0; ; n++) {
+    try {
+      return await attempt();
+    } catch (e) {
+      if (platform !== "win32" || !isTransientOnWindows(e)) throw withCode(e);
+      if (Date.now() - t0 >= OPEN_RETRY_MS) throw new DatabaseHeldError(path, e);
+      await sleep(Math.min(100, 10 << Math.min(n, 4))); // 10, 20, 40, 80, 100… ms
+    }
+  }
+}
+
 function withCode(e: unknown): unknown {
   const err = e as Error & { errcode?: number };
-  if (err instanceof Error && typeof err.errcode === "number" && (err.errcode & 0xff) === 10 && !err.message.includes("errcode")) err.message += ` (SQLite errcode ${err.errcode})`;
+  if (err instanceof Error && typeof err.errcode === "number" && (err.errcode & 0xff) === SQLITE_IOERR && !err.message.includes("errcode")) err.message += ` (SQLite errcode ${err.errcode})`;
   return err;
 }
 
@@ -91,13 +135,7 @@ export class Db {
    * runs first, before anything is written, so a file that isn't ours is refused untouched.
    */
   static async open(path: string, opts: DbOptions = {}, verify?: (raw: DatabaseSync) => void): Promise<Db> {
-    // A failure SQLite reports only generically ("disk I/O error") names its extended code, which says which step
-    // failed (verify-ci #22: an open on Windows right after another process's handle on the file was killed).
-    try {
-      return await Db.#open(path, opts, verify);
-    } catch (e) {
-      throw withCode(e);
-    }
+    return openRetrying(path, () => Db.#open(path, opts, verify));
   }
 
   static async #open(path: string, opts: DbOptions, verify?: (raw: DatabaseSync) => void): Promise<Db> {

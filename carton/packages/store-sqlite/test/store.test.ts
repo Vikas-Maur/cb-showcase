@@ -8,8 +8,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { DatabaseSync } from "node:sqlite";
 import { randomBytes } from "node:crypto";
-import { openSqliteStore, openProjectStore, BusyError, FORMAT_VERSION } from "../src/index.ts";
-import { Db } from "../src/db.ts";
+import { openSqliteStore, openProjectStore, BusyError, DatabaseHeldError, FORMAT_VERSION } from "../src/index.ts";
+import { Db, OPEN_RETRY_MS, openRetrying } from "../src/db.ts";
 import { scratch } from "./scratch.ts";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -381,17 +381,83 @@ test("a caller that never yields still gets checkpoints: the WAL stays bounded t
   await s.close();
 });
 
-// verify-ci #22: on Windows an open failed with SQLite's generic "disk I/O error". Its extended code says which I/O
-// step failed; the error is injected here through Db.open's verify step.
+// On Windows something else (an antivirus, the indexer, a backup tool, a process being terminated) can briefly hold
+// carton.db or its -wal/-shm: an open retries for a moment, then reports DatabaseHeldError. Tested with injected
+// errors (any OS) and, on Windows, with a sidecar really held.
 const sqliteError = (errcode: number, message: string) => Object.assign(new Error(message), { code: "ERR_SQLITE_ERROR", errcode });
+const ioerr = () => sqliteError(10 | (13 << 8), "disk I/O error"); // SQLITE_IOERR_SHMOPEN
 
-test("an I/O error at open names SQLite's extended code; other failures are reported unchanged", async () => {
+test("Windows: a held carton.db is retried on a fresh connection with backoff, without blocking the loop", async () => {
   const file = fresh();
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  await assert.rejects(Db.open(file, {}, () => { throw sqliteError(10 | (13 << 8), "disk I/O error"); }), (e: Error) => {
-    assert.equal(e.message, "disk I/O error (SQLite errcode 3338)");
+  const seen = new Set<unknown>();
+  const errors = [ioerr(), sqliteError(14, "unable to open database file"), ioerr()];
+  let beats = 0;
+  const beat = setInterval(() => beats++, 1);
+  const db = await openRetrying(file, () => Db.open(file, {}, (raw) => {
+    seen.add(raw);
+    const e = errors.shift();
+    if (e) throw e;
+  }), "win32");
+  clearInterval(beat);
+  try {
+    assert.equal(seen.size, 4, "four attempts, each on its own connection");
+    assert.ok(beats > 0, "the waits between them are asynchronous");
+    assert.equal((db.raw.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode, "wal", "and the open then finishes");
+  } finally {
+    db.close();
+  }
+});
+
+test("Windows: still held after the retry window, the open fails with DatabaseHeldError", async () => {
+  const t0 = Date.now();
+  let attempts = 0;
+  await assert.rejects(openRetrying("C:\\p\\carton.db", async () => { attempts++; throw ioerr(); }, "win32"), (e: DatabaseHeldError) => {
+    assert.ok(e instanceof DatabaseHeldError);
+    assert.equal(e.code, "CARTON_DB_HELD");
+    assert.equal(e.path, "C:\\p\\carton.db");
+    assert.match(e.message, /is held by another process .*errcode 3338/);
+    assert.equal((e.cause as { errcode: number }).errcode, 3338);
     return true;
   });
-  await assert.rejects(Db.open(file, {}, () => { throw sqliteError(14, "unable to open database file"); }), /^Error: unable to open database file$/);
-  await assert.rejects(Db.open(file, {}, () => { throw new Error("not a carton.db"); }), /^Error: not a carton.db$/);
+  const took = Date.now() - t0;
+  assert.ok(took >= OPEN_RETRY_MS && took < OPEN_RETRY_MS + 1000, `${took} ms`);
+  assert.ok(attempts >= 4 && attempts <= 12, `${attempts} attempts (backoff, not a spin)`);
+});
+
+test("other failures, and I/O errors off Windows, are reported at once (an I/O error with its extended code)", async () => {
+  let attempts = 0;
+  const failWith = (e: Error) => async () => { attempts++; throw e; };
+  await assert.rejects(openRetrying("x", failWith(new Error("not a carton.db")), "win32"), /^Error: not a carton.db$/);
+  await assert.rejects(openRetrying("x", failWith(sqliteError(1, "SQL logic error")), "win32"), /^Error: SQL logic error$/);
+  await assert.rejects(openRetrying("x", failWith(ioerr()), "linux"), /^Error: disk I\/O error \(SQLite errcode 3338\)$/);
+  await assert.rejects(openRetrying("x", failWith(sqliteError(14, "unable to open database file")), "darwin"), /^Error: unable to open database file$/);
+  assert.equal(attempts, 4);
+});
+
+test("Windows: a -wal or -shm held exclusively by another process gives DatabaseHeldError, and opens once let go", { skip: process.platform !== "win32" ? "Windows sharing modes" : false }, async () => {
+  for (const side of ["-wal", "-shm"]) {
+    const file = fresh();
+    const s = await openSqliteStore(file);
+    await s.write([{ table: "changes", key: ["main", 1], value: { id: "a" } }]);
+    await s.close();
+    // Another process opens the sidecar with no sharing at all (as a scanner can), by path from the environment.
+    const ps = path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const holder = spawn(ps, ["-NoProfile", "-NonInteractive", "-Command", "$f = [IO.File]::Open($env:CARTON_HOLD, 'OpenOrCreate', 'ReadWrite', 'None'); [Console]::Out.WriteLine('held'); [void][Console]::In.ReadLine(); $f.Close()"], { env: { ...process.env, CARTON_HOLD: file + side }, stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+    const exited = new Promise((r) => holder.once("close", r));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        holder.stdout!.on("data", (d) => String(d).includes("held") && resolve());
+        holder.once("error", reject);
+        holder.once("close", (c) => reject(new Error(`the holder ended (${c}) before holding ${side}`)));
+      });
+      await assert.rejects(openSqliteStore(file), DatabaseHeldError, `held ${side}`);
+    } finally {
+      holder.stdin!.end("\n");
+      await exited;
+    }
+    const again = await openSqliteStore(file);
+    assert.deepEqual((await again.range("changes")).map((r) => r.value), [{ id: "a" }], `opens once ${side} is let go`);
+    await again.close();
+  }
 });
