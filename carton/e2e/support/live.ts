@@ -4,10 +4,11 @@
 // server-node); machine B gets a copy of A's carton.db without local tables (support/clone.ts) and its own lease.
 import assert from "node:assert/strict";
 import type { test } from "node:test";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeMachine, itemNamed, SAMPLE, type Machine } from "./project.ts";
 import { Procs, runOnce, type Proc } from "./procs.ts";
-import { scratch, support, until } from "./env.ts";
+import { pkg, scratch, support, until } from "./env.ts";
 import { cbOk, cbWrite, setOp } from "./cb.ts";
 import { Link } from "./link.ts";
 import { startHost, type Host, type HostKind } from "./hosts.ts";
@@ -17,8 +18,17 @@ export const state = async (app: Proc) => (await app.ask({ cmd: "serve", req: { 
 
 export interface Side { m: Machine; app: Proc; link: Link }
 
+/** `@carton/local`'s default helper engine factory (what a plain `cb` starts). */
+export const LOCAL_FACTORY = pkg("local", "src", "factory.ts");
+/** The machine's helper config for shared cuts (see startApp). */
+export const helperConfigFile = (m: Machine): string => join(m.home, "e2e-helper.json");
+
 export async function startApp(procs: Procs, m: Machine, host: Host, account: string, link: Link, extra: Record<string, unknown> = {}): Promise<Proc> {
   const tokenFile = await host.tokenFile(m.home, account, m.projectId);
+  // what a helper a `cb` call starts needs to sync this machine's shared cut, read by support/cbwrite.ts. It stands in
+  // for B7's fix (the product records no sync config for a project, so a plain cb's helper can't sync): a helper that
+  // takes the lease from a busy app (B3, frequent on a loaded CI runner) must still push. The B7 test removes it.
+  writeFileSync(helperConfigFile(m), JSON.stringify({ factory: LOCAL_FACTORY, config: { sync: { url: link.url(m.projectId), tokenFile } } }));
   procs.watchHelpers(m.dbDir);
   const app = procs.start(`app-${account}`, [support("app.ts"), m.bundle, m.projectId, JSON.stringify({ sync: { url: link.url(m.projectId), tokenFile }, remoteRewriteMs: 200, ...extra })]);
   await app.next((x) => x.ready, 60_000);
