@@ -60,8 +60,10 @@ export class Live {
   #event(e) {
     switch (e.type) {
       case "change":
-        // Another replica's change (or one cb made through this holder), on the cut the app shows: into the file.
-        if (!e.local && e.branchId === this.lc.carton.cut) this.#materializeSoon();
+        // A change confirmed on the cut the app shows (another replica's, one cb made through this holder, or this
+        // handle's own once the host answers): head into the file. When the file shows head already, the facade
+        // writes nothing.
+        if (e.branchId === this.lc.carton.cut) this.#materializeSoon();
         break;
       case "sync":
         this.status = this.lc.carton.sync?.state() ?? this.status;

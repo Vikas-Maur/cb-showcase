@@ -16,7 +16,8 @@ export async function createHolderEngine({ dbPath, config, log }) {
   const { bundlePath, projectId } = config.sync ?? {};
   if (!bundlePath || !projectId || !sync.readConfig(bundlePath, projectId)) throw new Error("this project isn't shared from this computer");
   const store = await openSqliteStore(dbPath);
-  const carton = await Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, sync: lazySync(bundlePath, projectId) });
+  const cfg = sync.readConfig(bundlePath, projectId);
+  const carton = await Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, sync: lazySync(bundlePath, projectId), name: cfg.name ?? cfg.account });
   log?.({ type: "engine", project: projectId });
   return { store, engine: new CartonHolderEngine(carton), close: () => carton.close() };
 }

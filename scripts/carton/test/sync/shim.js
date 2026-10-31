@@ -4,6 +4,7 @@
 //   R1: open() merges each extension's openOptions({bundlePath, projectId}) into openLocal's options.
 //   R2: commit() on a shared cut asks the extension's commitShared(lc, {doc, base, author, intent, gui}), and treats
 //       `pending` like a confirmation that merged nothing in.
+//   R4: materializeIn writes media and description too (a teammate's new clip or content id reaches project.json).
 const fs = require("fs"), path = require("path");
 
 const ROOT = path.join(__dirname, "..", "..", "..", "..");
@@ -18,13 +19,16 @@ const once = (src, from, to) => {
 
 function patched() {
   let s = fs.readFileSync(FACADE, "utf8");
-  if (/openOptions/.test(s) && /commitShared/.test(s)) return null; // landed: no shim needed
+  if (/openOptions/.test(s) && /commitShared/.test(s) && /"description", "media"\]/.test(s)) return null; // landed: no shim needed
   s = once(s, "const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined });",
     "const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined, ...(await __shimOpenOptions({ bundlePath, projectId: id })) });");
   s = once(s, "const r = await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });",
     "const __ext = extensions.find((e) => e.commitShared), __shared = __ext && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind !== \"local\";\n" +
     "  const r = __shared ? await __ext.commitShared(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef }) : await c.commit({ doc: mine, ...(baseRef ? { base: baseRef } : {}), author: actorOf(actor), ...(intent ? { intent } : {}) });");
   s = once(s, "if (r.status === \"confirmed\" && !r.rebased) {", "if ((r.status === \"confirmed\" && !r.rebased) || r.status === \"pending\") {");
+  // R4: head goes into project.json with every versioned root field, media and description included.
+  s = once(s, 'await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name"], carton: { materialize: true } });',
+    'await library.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name", "description", "media"], carton: { materialize: true } });');
   s += `
 async function __shimOpenOptions(o) {
   let out = {};

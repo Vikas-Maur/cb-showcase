@@ -24,6 +24,7 @@ import { webSocketTransport } from "@carton/server-node";
 import * as host from "./host.js";
 import * as store from "./store.js";
 import { Live } from "./live.js";
+import * as media from "./media.js";
 import "./cbproj.js";
 
 const errText = (e) => (e && e.message) || String(e);
@@ -92,6 +93,68 @@ async function startLive(api, bundlePath, lc) {
   return p;
 }
 
+// ---------------------------------------------------------------- media (H10, media.js)
+// One media job at a time per project (hashing and proxies are heavy; two shares of one clip would upload it twice).
+// A clip already shared is skipped while its original's size and mtime are unchanged (media-shared.json in the
+// project's app-data folder), so nothing is hashed again for no reason.
+// The clip's content id is NOT committed into the project (e2e-qa S5-G2): Cardboard 1.4.0's project store drops
+// `contentHash` (and `data.content`) from media records, so it never reaches project.json, and every save made from
+// the file would then "remove" it again in Carton, credited to whoever saved. Teammates find a clip's shared record
+// by its media id (`carton/media/<id>.json` on the host). Asked of cardboard-adapter: carry such host-dropped fields
+// over from the base in fromHost; then the commit can come back.
+const mediaJobs = new Map(); // bundlePath → Promise
+const sharedFile = (bundlePath, projectId) => path.join(store.projectDir(bundlePath, projectId), "media-shared.json");
+const readShared = (bundlePath, projectId) => { try { return JSON.parse(fs.readFileSync(sharedFile(bundlePath, projectId), "utf8")); } catch { return {}; } };
+
+/**
+ * The project a media id belongs to. The store's index knows clips whose files are in a bundle; a teammate's clip has
+ * no file here, so the shared projects' records are looked through as well.
+ */
+async function projectOfMedia(api, mediaId) {
+  const known = api.library.projects.idForMedia?.(mediaId);
+  if (known) return known;
+  for (const p of await api.library.projects.list()) {
+    const bundlePath = api.bundleOf(p.id);
+    if (!bundlePath || !store.readConfig(bundlePath, p.id)) continue;
+    const doc = await api.library.projects.read(p.id).catch(() => null);
+    if (doc?.media?.some((m) => m.id === mediaId)) return p.id;
+  }
+  return null;
+}
+
+function shareMediaOf(api, bundlePath, projectId, { only, force = false } = {}) {
+  const run = async () => {
+    const lc = await api.open(bundlePath);
+    if (!lc || !store.readConfig(bundlePath, projectId)) return [];
+    const envelope = JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8"));
+    const done = readShared(bundlePath, projectId), out = [];
+    for (const m of envelope.project?.media ?? []) {
+      if (only && !only.includes(m.id)) continue;
+      const file = envelope.media?.find((x) => x.mediaId === m.id)?.nativePath;
+      let st;
+      try { st = file && fs.statSync(file); } catch { st = null; }
+      if (!st) continue; // a teammate's clip, or a missing file: not ours to share
+      const was = done[m.id];
+      if (!force && was && was.size === st.size && was.mtimeMs === st.mtimeMs) { out.push({ mediaId: m.id, hash: was.hash, proxy: was.proxy ?? null, skipped: "already shared" }); continue; }
+      try {
+        const r = await media.shareClip({ bundlePath, projectId, mediaId: m.id, envelope });
+        if (!r) continue;
+        done[m.id] = { size: st.size, mtimeMs: st.mtimeMs, hash: r.record.hash, proxy: r.record.proxy ?? null };
+        out.push({ mediaId: m.id, hash: r.record.hash, proxy: r.record.proxy ?? null, skipped: r.skipped });
+      } catch (e) {
+        out.push({ mediaId: m.id, error: errText(e) });
+        warnOnce("media:" + m.id, `a clip of ${path.basename(bundlePath)} wasn't shared: ${errText(e)}`);
+      }
+    }
+    fs.mkdirSync(path.dirname(sharedFile(bundlePath, projectId)), { recursive: true });
+    fs.writeFileSync(sharedFile(bundlePath, projectId), JSON.stringify(done));
+    return out;
+  };
+  const p = (mediaJobs.get(bundlePath) ?? Promise.resolve()).then(run, run);
+  mediaJobs.set(bundlePath, p.catch(() => {}));
+  return p;
+}
+
 /** Wait for a cut's hand-off to finish (local → handing off → server), up to `ms`. */
 async function handedOff(carton, cut, ms) {
   const end = Date.now() + ms;
@@ -149,7 +212,8 @@ extend({
   // R1: every process opens a shared project's Carton able to sync, but only the worker connects it (its holder).
   async openOptions({ bundlePath, projectId }) {
     const cfg = projectId && store.readConfig(bundlePath, projectId);
-    const helper = cfg ? { helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } } : {};
+    // S3-1: in a shared project the replica is named after the person (lineage, cut owners, dialogs).
+    const helper = cfg ? { name: cfg.name ?? cfg.account, helperFactory: helperFactory(), helperConfig: { sync: { bundlePath, projectId } } } : {};
     if (!inWorker) return helper;
     const actor = person(bundlePath, projectId);
     return { ...helper, sync: lazySync(bundlePath, projectId), ...(actor ? { actor } : {}) };
@@ -194,7 +258,7 @@ extend({
        * Invite to edit, step 1: share this project through a Carton host. `invite` is an owner invite from the host,
        * or `adminToken` makes one (the host operator's token; used once, never stored). The cut goes up with its history.
        */
-      async liveShare({ projectId, host: hostUrl, invite, adminToken, name }) {
+      async liveShare({ projectId, host: hostUrl, invite, adminToken, name, withMedia = true }) {
         const bundlePath = api.bundleOf(projectId), lc = await api.carton(projectId);
         if (!bundlePath || !lc) throw new Error("History isn't available for this project");
         if (!lc.carton.sync) throw new Error("This build can't share a project yet (its Carton opened without sync)");
@@ -212,6 +276,8 @@ extend({
         const rec = await handedOff(lc.carton, cut, 30_000);
         if (!rec) return { status: "sharing", note: "The host hasn't confirmed yet; the project finishes sharing when it is back" };
         await uploadDescriptor(bundlePath, projectId, lc, rec, await api.library.projects.read(projectId));
+        // The clips follow in the background (hashing and proxies take a while; editing never waits for them).
+        if (withMedia) void shareMediaOf(api, bundlePath, projectId).catch(() => {});
         return { status: "shared", host: h, cut: rec.id };
       },
       /** Invite to edit, step 2: an invite link for a role (owners only; the host checks). */
@@ -245,11 +311,18 @@ extend({
         try {
           const now = Date.now();
           const media = Object.values(d.media ?? {}).map((m) => ({ id: m.id, ...(m.contentHash ? { contentHash: m.contentHash } : {}), createdAt: new Date(now).toISOString(), addedAt: new Date(now).toISOString(), data: { ...m.data, src: `cardboard-media://media/${m.id}` } }));
-          const project = { id: d.projectId, name: d.name, createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), ...materializeProject(d.doc0, { media }), stateUpdatedAt: now };
+          // The file starts at the cut's root, with the clips' full records from the descriptor: head (once caught up)
+          // goes over it with those records kept by id, as the facade materializes any project.
+          const project = { id: d.projectId, name: d.name, createdAt: new Date(now).toISOString(), updatedAt: new Date(now).toISOString(), ...materializeProject(d.doc0, null), media, stateUpdatedAt: now };
           fs.writeFileSync(path.join(staging, "project.json"), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }, null, 2));
           // The shared cut, from its root; its rows come from the host once the worker connects.
           const { store: st } = await openProjectStore({ bundleDir: staging, projectId: d.projectId });
           const c = await Carton.open({ adapter: cardboardAdapter, store: st, hasher: nodeHasher, init: { join: { projectId: d.projectId, cut: d.cut, doc0: d.doc0, rootHash: d.rootHash } }, sync: { transport, url: "carton-sync:" + d.projectId, token: s.token, autoConnect: false } });
+          // That file is Carton's own (the root's state), not an outside save: its rev goes into the facade's rev map
+          // (carton.db's local `views` table, ["rev", ms] → ref and ["ref", cut, seq] → ms). Without it the worker
+          // would import the file as a foreign write the moment it reads it: a change taking the timeline back to the
+          // root, which then syncs to everyone.
+          await st.write([{ table: "views", key: ["rev", now], value: { branchId: d.cut.id, seq: 0, pending: [] } }, { table: "views", key: ["ref", d.cut.id, 0], value: now }]);
           await c.close();
           await st.close();
           store.writeConfig(final, { host: l.host, projectId: d.projectId, account, name: name || account, role: s.context.role, cut: d.cut.id });
@@ -268,6 +341,31 @@ extend({
         await api.open(final);
         return { projectId: d.projectId, name: d.name, bundlePath: final };
       },
+      /** Share the project's clips (all, or `mediaIds`) now; resolves when they are up. */
+      async liveShareMedia({ projectId, mediaIds, force }) {
+        const bundlePath = api.bundleOf(projectId);
+        if (!bundlePath || !store.readConfig(bundlePath, projectId)) throw new Error("Share this project first");
+        return shareMediaOf(api, bundlePath, projectId, { only: mediaIds, force });
+      },
+      /**
+       * Where main streams a clip that has no file on this computer: its shared proxy (or original) on the host, or
+       * null (not a shared project's clip, or not shared yet). main asks only after its own lookup found no file.
+       */
+      async liveMediaSource({ mediaId }) {
+        const projectId = await projectOfMedia(api, mediaId);
+        const bundlePath = projectId && api.bundleOf(projectId);
+        if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
+        const p = media.playable(await media.sharedRecord(bundlePath, projectId, mediaId).catch(() => null));
+        return p ? { bundlePath, projectId, mediaId, ...p } : null;
+      },
+      /** A loopback URL an ffmpeg-based tool can read a shared clip from (verified bytes only), or null. */
+      async liveMediaUrl({ mediaId }) {
+        const projectId = await projectOfMedia(api, mediaId);
+        const bundlePath = projectId && api.bundleOf(projectId);
+        if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
+        const p = media.playable(await media.sharedRecord(bundlePath, projectId, mediaId));
+        return p ? { url: await media.toolUrl(bundlePath, projectId, p.hash), hash: p.hash, size: p.size } : null;
+      },
       /** The person's presence while they edit (the pages send it at most once a second; null when idle). */
       async livePresence({ projectId, state }) {
         const bundlePath = api.bundleOf(projectId);
@@ -282,4 +380,4 @@ extend({
 
 // For the headless helper's factory (sync/factory.js loads this bundle): what it needs from the packages, from this
 // bundle's one copy of them.
-globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync };
+globalThis.__cartonSync = { Carton, CartonHolderEngine, cardboardAdapter, nodeHasher, openSqliteStore, transport, store, host, lazySync, media };

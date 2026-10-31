@@ -25,6 +25,11 @@ test.before(async () => {
   id = (await alice.call("projects.list"))[0].id;
 });
 test.after(async () => {
+  // Each computer's worker log, for a failure's post-mortem.
+  for (const pc of [alice, bob]) if (pc?.worker()) {
+    fs.writeFileSync(path.join(S.TMP, pc.name + "-worker.log"), pc.worker().stderr());
+    fs.writeFileSync(path.join(S.TMP, pc.name + "-events.jsonl"), pc.events().map((e) => JSON.stringify(e)).join("\n"));
+  }
   for (const pc of [alice, bob]) pc?.kill();
   await host?.stop().catch(() => {});
 });
@@ -69,6 +74,34 @@ test("presence: what Alice is doing shows on Bob's computer, and goes when she s
   assert.equal(peer.actor.id, "Alice");
   await alice.call("carton.livePresence", { projectId: id, state: null });
   await S.until(() => { const last = bob.events().filter((e) => e.change?.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]; return last && !last.some((p) => p.actor.id === "Alice"); }, 10_000, "alice gone at bob");
+});
+
+test("media: Alice's clips are shared (content id, collab proxy); Bob streams one by range and a tool reads it by URL", t, async () => {
+  // Sharing the project started sharing its clips in the background; this waits for that, and skips what is done.
+  const results = await alice.call("carton.liveShareMedia", { projectId: id });
+  const r = results.find((x) => x.proxy?.hash);
+  assert.ok(r, "a collab proxy went up: " + JSON.stringify(results));
+  assert.match(r.hash, /^[0-9a-f]{64}$/);
+  const mediaId = r.mediaId;
+  assert.ok((await S.projectOf(bob, id)).media.some((m) => m.id === mediaId), "Bob's copy lists the clip");
+  // Bob has no file for it: main asks his worker where it lives, then answers cardboard-media:// from the range cache.
+  const src = await bob.call("carton.liveMediaSource", { mediaId });
+  assert.equal(src.hash, r.proxy.hash);
+  const body = await S.asComputer(bob, async () => {
+    const res = await S.facade(b).media.serve(new Request(`cardboard-media://media/${mediaId}`, { headers: { range: "bytes=0-1023" } }), src);
+    assert.equal(res.status, 206);
+    assert.equal(res.headers.get("content-range"), `bytes 0-1023/${src.size}`);
+    const part = new Uint8Array(await res.arrayBuffer());
+    const all = new Uint8Array(await (await S.facade(b).media.serve(new Request(`cardboard-media://media/${mediaId}`), src)).arrayBuffer());
+    assert.deepEqual(part, all.subarray(0, 1024));
+    return all;
+  });
+  assert.equal(body.length, src.size);
+  assert.equal(Buffer.from(body.subarray(4, 8)).toString("latin1"), "ftyp", "an MP4");
+  // ffmpeg-based tools read it through the loopback range server (verified bytes, seeks by Range).
+  const { url } = await bob.call("carton.liveMediaUrl", { mediaId });
+  assert.match(url, /^http:\/\/127\.0\.0\.1:\d+\/m\/[0-9a-f]{64}\?t=/);
+  assert.ok(Math.abs(S.probeDuration(url) - 3) < 0.2, "ffprobe reads the shared proxy by URL");
 });
 
 test("offline and rejoin: Bob edits while the host is down; his edit waits, then reaches Alice when it is back", t, async () => {

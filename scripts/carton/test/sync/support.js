@@ -135,4 +135,18 @@ function seed(pc, b) {
   must(pc.cb(["source", "apply", "Demo", edit], { CARDBOARD_ACTOR: "director/chat1/turn2/sub-Explore-a1" }), "apply 2");
 }
 
-module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed };
+/** The built facade loaded in this process (as main loads it), with the sync half's globals. */
+function facade(b) {
+  require(path.join(b.carton, "carton-node.cjs"));
+  return globalThis.__cartonSync;
+}
+/** Run fn with this process's app data set to a computer's, as main on that computer would have it. */
+async function asComputer(pc, fn) {
+  const keep = { XDG_DATA_HOME: process.env.XDG_DATA_HOME, LOCALAPPDATA: process.env.LOCALAPPDATA };
+  Object.assign(process.env, { XDG_DATA_HOME: pc.env.XDG_DATA_HOME, LOCALAPPDATA: pc.env.LOCALAPPDATA });
+  try { return await fn(); } finally { for (const [k, v] of Object.entries(keep)) v === undefined ? delete process.env[k] : (process.env[k] = v); }
+}
+/** A media file's duration as ffprobe reads it (a path or a URL). */
+const probeDuration = (input) => Number(execFileSync(process.env.CARDBOARD_FFPROBE ?? "ffprobe", ["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", input], { encoding: "utf8", timeout: 60_000 }).trim());
+
+module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration };
