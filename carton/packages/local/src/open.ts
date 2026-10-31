@@ -306,15 +306,12 @@ export class CartonHolderEngine implements HolderEngine {
     const online = (cut?: string) => { const st = this.carton.sync?.state(cut).status; return st === "up-to-date" || st === "syncing"; };
     const run = () => withRaceRetry(IDEMPOTENT.has(r.op.kind), () => runWrite(this.carton, r, { online, materializer: this.materializer, viewName: (a, wanted) => this.viewName(a, wanted) }));
     if (r.op.kind !== "switch") return run();
+    // told (the materializer printed it): the follower has nothing to tell about it. Switched but not told (it failed):
+    // the follower finds the handle on a cut never announced and tells it at its next look
     return this.cutLock(async () => {
-      const was = this.carton.cut;
-      try {
-        return await run();
-      } catch (e) {
-        // switched, but the files didn't follow (the materializer failed): the follower tells it at its next look
-        if (this.carton.cut !== was) this.follower?.owe({ kind: "cut", cut: this.carton.cut });
-        throw e;
-      }
+      const out = await run();
+      if ((out as CbResult).status === "confirmed") this.follower?.served(this.carton.cut);
+      return out;
     });
   }
 

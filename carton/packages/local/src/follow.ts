@@ -61,11 +61,10 @@ export interface Follower {
   /** Look now (a nudge): resolves once the store has been compared and any listener called. */
   check(): Promise<void>;
   /**
-   * Tell this at the next look, as if a look had found it: the holder moved the handle itself (a served switch) but
-   * telling the materializer failed. Its own writes never move the store's stamp for this connection, so no look would
-   * find it otherwise.
+   * The holder switched the handle itself and told the materializer (a served switch that went through). A switch
+   * that failed to tell it isn't reported: the handle is then on a cut never announced, which the next look tells.
    */
-  owe(n: Notice): void;
+  served(cut: string): void;
   /** Stop: nothing is switched or told after this; resolves once a look in progress has finished. */
   stop(): Promise<void>;
 }
@@ -91,13 +90,19 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   });
   let running: Promise<void> | null = null;
   /**
+   * The cut the listeners were last told the handle is on: by this follower (a cut notice that went through) or by the
+   * holder (`served`). The handle can be on another one with nothing found in the store to say so: a switch served
+   * here whose printing failed, or core moving the handle while it reloads (another process made a cut and switched to
+   * it: any call that refreshes, this follower's own scan too, rebuilds the handle on the stored current cut). Every
+   * look ends by telling such a cut.
+   */
+  let announced = carton.cut;
+  /**
    * A notification whose listener failed: the stamp and the baselines have moved past what it reports, so it is kept
    * and told again at the next look (poll or nudge), after that look has read the store (a listener that keeps failing
-   * never holds up adopting a newer cut). It is what to tell, not a call to repeat: it is told for the cut the handle
-   * is on then, merged with what that look found (the larger of the two), and dropped once the handle has left its cut
-   * (whatever moved it told the materializer: an adoption, told as such, or a switch served here, which owes a notice of
-   * its own through `owe` when telling failed). Only a notice for the cut the handle is on is ever kept: a failed one for
-   * a cut it has left since (a served switch while the listener ran) never replaces what that switch owes.
+   * never holds up adopting a newer cut). It is what to tell, not a call to repeat, and only for the cut the handle is
+   * on: merged with what that look found (the larger of the two), dropped once the handle has left its cut (the cut it
+   * is on then is told as unannounced, or was announced).
    */
   let owed: Notice | null = null;
   const owe = (n: Notice): void => {
@@ -179,12 +184,17 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   const look = async (): Promise<void> => {
     if (!started) await start();
     let n = await scan();
-    // a served switch moved the handle while this look read the store: what it found is about a cut the handle has left
+    // the handle moved while this look read the store: what it found is about a cut the handle has left
     if (n && n.cut !== carton.cut) n = null;
+    // on a cut the listeners weren't told of, however it got there: the whole cut
+    if (carton.cut !== announced) n = { kind: "cut", cut: carton.cut };
     const left = owed;
     owed = null;
     if (left && left.cut === carton.cut && (!n || RANK[left.kind] > RANK[n.kind])) n = left;
-    if (n && !stopped) await tell(n);
+    if (!n || stopped) return;
+    await tell(n);
+    // told; unless the handle moved on meanwhile (and that move announced itself or is told next)
+    if (n.kind === "cut" && carton.cut === n.cut) announced = n.cut;
   };
   // one look at a time; a check asked for during one runs once more after it (it may have missed that write)
   const check = (): Promise<void> => {
@@ -217,8 +227,13 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     });
   };
   // the first look records where the store is; moves are what changes after it
+  const served = (cut: string): void => {
+    if (carton.cut !== cut) return;
+    announced = cut;
+    if (owed && owed.cut !== cut) owed = null;
+  };
   tick();
-  return { check, stop, owe };
+  return { check, stop, served };
 }
 
 /** What a look tells: a cut switch (the whole cut to show), the head moved, or some other write. */
