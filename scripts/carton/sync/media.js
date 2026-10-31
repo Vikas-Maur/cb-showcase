@@ -208,6 +208,8 @@ export async function toolUrl(bundlePath, projectId, src) {
       // damaged on the host (bad/<stream>), so the sharer's next share makes a new one. The reader ignores a hash that
       // isn't one of its parts.
       reportDamage: (stream, hash) => streamOf(bundlePath, projectId, stream).reportPartDamage(hash),
+      // A part simply gone from the host (media d9f9a5f): the reader reports the stream only if a HEAD finds it still gone.
+      reportMissing: (stream, hash) => streamOf(bundlePath, projectId, stream).reportPartDamage(hash, "missing"),
       unref: true,
     });
     servers.set(bundlePath, s);

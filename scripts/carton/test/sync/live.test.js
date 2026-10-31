@@ -162,9 +162,9 @@ test("media before its upload finishes: Bob plays Alice's new clip from its firs
     assert.doesNotMatch(m3u8, /#EXT-X-ENDLIST/, "a live playlist while it uploads");
     // A segment that doesn't verify, read by a tool through the playlist: Bob's loopback server reports the stream as
     // damaged on the host (bad/<stream>), so Alice's next share makes a new one. The clip is 6 s in 2 s segments: wait
-    // for all three, and spoil the last (Bob's player above read only the first), then put it back. The host keeps the
-    // object meanwhile: its own repair path would remove it, and then the range server's second read finds it missing
-    // and reports nothing for the stream (media's to fix: notes/windows-sync.md, "Questions for other agents").
+    // for all three, and spoil the last (Bob's player above read only the first). The host as shipped: its repair path
+    // removes the spoilt object, and the range server's retry, finding it gone, still reports the stream (media
+    // d9f9a5f). The object (bytes and sidecar) is put back afterwards for the rest of the step.
     const segUrls = await S.until(async () => {
       // (the init segment's URL is in #EXT-X-MAP, so these lines are the media segments)
       const urls = (await (await fetch(live.url)).text()).split("\n").filter((l) => /^http:\/\/127\.0\.0\.1:\d+\/m\/[0-9a-f]{64}/.test(l));
@@ -174,10 +174,9 @@ test("media before its upload finishes: Bob plays Alice's new clip from its firs
     assert.match(segUrl, new RegExp(`[?&]s=${src.stream}(&|$)`), "the segment's URL names its stream");
     const media = path.join(S.TMP, "host", "blobs", "objects", "projects", id, "media");
     const obj = path.join(media, "m", segHash + "~b");
-    const orig = fs.readFileSync(obj), spoilt = Buffer.from(orig);
+    const side = path.join(media, "m", segHash + "~m");
+    const orig = fs.readFileSync(obj), origSide = fs.existsSync(side) ? fs.readFileSync(side) : null, spoilt = Buffer.from(orig);
     spoilt[spoilt.length >> 1] ^= 0xff;
-    host.send("keep-objects");
-    await host.next((x) => x.keep === true);
     fs.writeFileSync(obj, spoilt);
     try {
       const r = await fetch(segUrl).then(async (res) => ({ status: res.status, bytes: (await res.arrayBuffer().catch(() => new ArrayBuffer(0))).byteLength }), (e) => ({ error: String(e) }));
@@ -186,8 +185,7 @@ test("media before its upload finishes: Bob plays Alice's new clip from its firs
       assert.ok(reports.length >= 1);
     } finally {
       fs.writeFileSync(obj, orig);
-      host.send("remove-objects");
-      await host.next((x) => x.keep === false);
+      if (origSide) fs.writeFileSync(side, origSide);
     }
   } finally {
     host.send("release-ends");

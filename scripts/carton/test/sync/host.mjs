@@ -24,15 +24,12 @@ export const SECRET = "carton-sync-test-secret-0123456789abcdef";
 export const ADMIN = "carton-sync-test-admin";
 const auth = createHmacAuth({ secret: SECRET });
 let hold = null; // {promise, release} while ends are held
-let keep = false; // media objects the host's repair path would remove are kept ("keep-objects")
 const END = /(^|\/)ps\/[0-9a-f]{64}\/end$/;
-const OBJECT = /(^|\/)m\/[0-9a-f]{64}$/;
 const fsBlobs = createFsBlobStore({ root: path.join(dir, "blobs"), durable: false });
 const blobs = new Proxy(fsBlobs, {
   get(t, k) {
     const v = Reflect.get(t, k);
     if (typeof v !== "function") return v;
-    if (k === "delete") return async (key, ...a) => (keep && typeof key === "string" && OBJECT.test(key) ? undefined : v.call(t, key, ...a));
     if (!String(k).startsWith("put")) return v.bind(t);
     return async (...a) => {
       if (typeof a[0] === "string" && END.test(a[0]) && hold) await hold.promise;
@@ -63,9 +60,6 @@ for await (const line of createInterface({ input: process.stdin })) {
     let release;
     hold = { promise: new Promise((r) => (release = r)), release };
     process.stdout.write(JSON.stringify({ held: true }) + "\n");
-  } else if (cmd === "keep-objects" || cmd === "remove-objects") {
-    keep = cmd === "keep-objects";
-    process.stdout.write(JSON.stringify({ keep }) + "\n");
   } else if (cmd === "release-ends") {
     hold?.release();
     hold = null;
