@@ -23,7 +23,7 @@ import type { Duplex } from "node:stream";
 import type { AuthContext, BlobStore, SequencerHost } from "@carton/core/plugins";
 import { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, tokenFromRequest, WS_PROTOCOL } from "@carton/server";
-import { handleHttp, checkSession, type HttpAuth, type HttpDeps } from "@carton/host-http";
+import { handleHttp, checkSession, projectMediaStore, type HttpAuth, type HttpDeps } from "@carton/host-http";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { encodeSegment, decodeSegment } from "@carton/blob-fs/keys";
 import { acceptWebSocket, rejectUpgrade, type ServerWebSocket } from "./ws.ts";
@@ -38,6 +38,10 @@ export interface NodeHostOptions {
   secret?: string | Uint8Array;
   /** Media, keyframes and archived segments (blob-fs or blob-s3); each project sees its own `projects/<id>/` scope. */
   blobs?: BlobStore;
+  /** The team a project belongs to, for media dedup within a team (PLAN §11): its media bytes and manifests are kept
+   * once under `teams/<team>/media/`, and a project reads only the hashes it was granted (host-http's team.ts). No
+   * team (the default): each project's media stays in its own scope. */
+  teamOf?: (projectId: string) => string | null | undefined;
   /** 0 picks a free port. */
   port?: number;
   host?: string;
@@ -156,9 +160,10 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
   let nextId = 0, closing = false;
 
   // Two scopes per project that no route can cross: the sequencer's keyframes, segments and large change bodies, and
-  // the media the HTTP API signs and uploads (an editor can write media, never the sequencer's records).
-  const scoped = (projectId: string, scope: "seq" | "media") => (opts.blobs ? scopedBlobStore(opts.blobs, `projects/${projectId}/${scope}/`) : undefined);
-  const blobsFor = (projectId: string) => scoped(projectId, "media");
+  // the media the HTTP API signs and uploads (an editor can write media, never the sequencer's records). With a team,
+  // media bytes and manifests sit in the team's scope instead, behind the project's grants (projectMediaStore).
+  const scoped = (projectId: string, scope: "seq") => (opts.blobs ? scopedBlobStore(opts.blobs, `projects/${projectId}/${scope}/`) : undefined);
+  const blobsFor = (projectId: string) => (opts.blobs ? projectMediaStore(opts.blobs, projectId, opts.teamOf?.(projectId)) : undefined);
 
   function openRoom(projectId: string): Room {
     let room = rooms.get(projectId);

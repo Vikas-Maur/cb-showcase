@@ -9,7 +9,8 @@
 //   POST /api/admin/projects/:p/invites      {role}  Bearer ADMIN_TOKEN    → {invite}   (bootstrap; off without one)
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
-//   GET  /api/projects/:p/blobs/head?key=                                  → BlobInfo | 404
+//   GET  /api/projects/:p/blobs/head?key=                                  → BlobInfo | 404  (an editor's head of a
+//                                            team object claims it for the project: team.ts)
 //   POST /api/projects/:p/blobs/damaged      {key: "m/<hash>", leaf}       → {damaged, removed?}  (§11 repair path)
 //   POST /api/projects/:p/uploads            {key, contentType?}  editor   → {uploadId}
 //   PUT  /api/projects/:p/uploads/:id/:n?key=  part bytes          editor   → {partNumber, etag}
@@ -24,12 +25,16 @@
 // The two message routes carry the sync protocol's envelopes (core/src/sync/envelope.ts): a message over 1 MiB
 // travels through the sequencer's own blob scope, and these routes reach exactly the two envelope key patterns of
 // that scope, nothing else in it (keyframes, segments).
+//
+// A host may give a project's media API a team store (team.ts, `projectMediaStore`): media bytes and manifests are
+// then kept once per team, and a project reads only the hashes it was granted.
 
 import type { AuthContext, AuthProvider, BlobStore } from "@carton/core/plugins";
 import { type HmacAuth, AuthError, tokenFromRequest, canPush, canInvite } from "@carton/server";
 import { createBlobUrlSigner, serveSignedBlob, readBody, BodyTooLarge, type BlobUrlSigner } from "@carton/blob-memory/signed";
 import { BlobError, MAX_PARTS } from "@carton/blob-memory/rules";
 import { decodeManifest, leafSpan, manifestKey, verifyLeaf, webCryptoHasher } from "@carton/media";
+import { isTeamMediaStore } from "./team.ts";
 
 // Any AuthProvider serves sessions; the invite routes need the demo's invite flow (HmacAuth). With another provider
 // (Cardboard's accounts) those routes answer 501 and sessions come from that provider.
@@ -57,6 +62,8 @@ export interface HttpDeps {
 const PROJECT = /^\/(?:api\/(?:admin\/)?projects|blob)\/([A-Za-z0-9._~-]{1,128})(\/.*)?$/;
 const MAX_JSON = 64 * 1024;
 const ROLES = new Set(["owner", "editor", "commenter", "viewer"]);
+
+export { teamMediaStore, projectMediaStore, isTeamMediaStore, type TeamMediaStore, type TeamMediaOptions } from "./team.ts";
 
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json", "cache-control": "no-store" } });
 const err = (status: number, message: string) => json({ error: message }, status);
@@ -257,6 +264,8 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
     return checkDamaged(store, String(b.key ?? ""), Number(b.leaf));
   }
   if (req.method === "GET" && rest === "/blobs/head") {
+    // an editor could reference this hash in the document anyway; claiming it here lets an upload find a teammate's copy
+    if (canPush(ctx) && isTeamMediaStore(store)) await store.claim(key);
     const info = await store.head(key);
     return info ? json(info) : err(404, "no such blob");
   }

@@ -1,5 +1,6 @@
 // The media API as a client uses it (e2e-qa S5): hostMediaBlobs over server-node, the §11 repair path (a damaged
-// object reported, checked by the host, removed, shared again), and signed URLs built for the address the client used.
+// object reported, checked by the host, removed, shared again), signed URLs built for the address the client used,
+// and media dedup within a team (S5-3).
 import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -7,7 +8,7 @@ import { request } from "node:http";
 import { createHmacAuth } from "@carton/server";
 import { createFsBlobStore } from "@carton/blob-fs";
 import { hostMediaBlobs } from "@carton/host-http/client";
-import { mediaHash, manifestKey, mediaKey, webCryptoHasher, LEAF_SIZE } from "@carton/media";
+import { mediaHash, manifestKey, mediaKey, webCryptoHasher, uploadMedia, bytesSource, LEAF_SIZE } from "@carton/media";
 import { startNodeHost, type NodeHost, type NodeHostOptions } from "../src/index.ts";
 import { scratch } from "./scratch.ts";
 
@@ -115,4 +116,43 @@ test("S5-2: signed URLs carry the address the client used, a configured public o
   await plain.media.put("m/x", fill(10, 1));
   u.hostname = "127.0.0.1";
   assert.equal((await fetch(u)).status, 200);
+});
+
+test("S5-3: a team keeps one copy of a file its projects share; a project reads only what it was granted", async () => {
+  const dir = scratch("media-team");
+  const blobs = createFsBlobStore({ root: join(dir, "blobs"), durable: false });
+  const teams: Record<string, string> = { a: "studio", b: "studio", c: "studio", x: "other" };
+  const h = await startNodeHost({ dataDir: join(dir, "data"), auth, secret: SECRET, blobs, durability: "normal", teamOf: (p) => teams[p] });
+  hosts.push(h);
+  const client = async (projectId: string, role: "editor" | "viewer" = "editor") =>
+    hostMediaBlobs({ origin: h.httpUrl, projectId, token: await auth.issue({ account: "o", credential: "o/dev", role, projectId, ttlMs: 3600_000 }) });
+  const hasher = webCryptoHasher();
+  const bytes = fill(2 * LEAF_SIZE + 5, 11);
+  const manifest = await mediaHash(bytes, hasher);
+  const key = mediaKey(manifest.hash);
+  // a's editor shares the file: uploaded once, into the team's scope
+  const a = await client("a");
+  const first = await uploadMedia({ store: a, hasher, source: bytesSource(bytes), manifest, partSize: LEAF_SIZE });
+  assert.equal(first.deduped, false);
+  assert.ok(await blobs.head(`teams/studio/media/${key}`));
+  assert.equal(await blobs.head(`projects/a/media/${key}`), null);
+  // c never brought it in: its viewer can't see it or read it, not even through a signed URL
+  const cView = await client("c", "viewer");
+  assert.equal(await cView.head(key), null);
+  assert.equal((await fetch(await cView.signedUrl(key, { method: "GET", expiresIn: 60 }))).status, 404);
+  assert.equal(await cView.head(manifestKey(manifest.hash)), null);
+  // b's editor shares the same file: the upload finds the team's copy and sends nothing
+  const b = await client("b");
+  const second = await uploadMedia({ store: b, hasher, source: bytesSource(bytes), manifest });
+  assert.equal(second.deduped, true);
+  assert.equal(second.bytesSent, 0);
+  // and b's viewers read it
+  const bView = await client("b", "viewer");
+  assert.deepEqual(await bView.get(key, { offset: LEAF_SIZE - 4, length: 8 }), bytes.subarray(LEAF_SIZE - 4, LEAF_SIZE + 4));
+  // another team's editor finds nothing; c still holds no grant
+  assert.equal(await (await client("x")).head(key), null);
+  assert.equal(await cView.head(key), null);
+  // a write from b can't replace the sound team copy
+  await b.put(key, fill(bytes.length, 1));
+  assert.deepEqual(await blobs.get(`teams/studio/media/${key}`, { offset: 0, length: 16 }), bytes.subarray(0, 16));
 });
