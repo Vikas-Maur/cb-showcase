@@ -92,7 +92,8 @@ for (const kind of ["node", "cloudflare"] as const) {
       env: { CARDBOARD_ACTOR: "director/chatB/turn2" },
       input: JSON.stringify({ hook_event_name: "SubagentStop", session_id: "sess-b", agent_id: "x1", agent_type: "editor", stop_hook_active: active, cwd: b.m.bundle }),
     });
-    await t.test("B9: SubagentStop blocks once with the late conflict of the subagent's absorbed change", { todo: "B9, foundation-core + sync-sequencer: the late-conflict notice of an absorbed shared change goes to the lease holder's actor, not the change's author" }, async () => {
+    // (B9, fixed in foundation 35c6776: the notice was addressed to the lease holder's actor, not the change's author)
+    await t.test("SubagentStop blocks once with the late conflict of the subagent's absorbed change; the card goes to the person after", async () => {
       const first = JSON.parse((await hook(false)).stdout.trim() || "{}");
       if (first.decision !== "block") {
         const st = await openSqliteStore(join(b.m.dbDir, "carton.db"));

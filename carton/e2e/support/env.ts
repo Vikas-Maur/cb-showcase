@@ -11,15 +11,43 @@ export const WORKSPACE = join(E2E, "..");
 export const pkg = (name: string, ...rest: string[]): string => join(WORKSPACE, "packages", name, ...rest);
 export const support = (file: string): string => join(E2E, "support", file);
 
+/** The real home folder of the run (read before the scratch profile below replaces HOME). */
+export const REAL_HOME = process.env.CARTON_E2E_REAL_HOME ?? homedir();
+
 export function scratchRoot(): string {
-  const box = join(homedir(), "gfv-scratch");
+  const box = join(REAL_HOME, "gfv-scratch");
   const dir = process.env.CARTON_E2E_TMP ?? (existsSync(box) ? join(box, "carton", "e2e-qa", "run") : join(tmpdir(), "carton-e2e"));
   mkdirSync(dir, { recursive: true });
   return dir;
 }
 
-/** The real home folder of the test run (children get a scratch HOME, see procs.ts). */
-export const REAL_HOME = homedir();
+/**
+ * One scratch profile for the whole run, this process and every process it starts: HOME, app data and the XDG folders
+ * inside scratch, so nothing (Carton's app-data placement, wrangler, ffmpeg) reads or writes the user's real profile.
+ * One for all, because store-sqlite tells machines apart by the home folder (its machine mark): a test process and its
+ * children with different homes would treat each other's carton.db as another machine's. What the processes need
+ * from the real home is passed explicitly (the 1.4.0 CLI, the scratch root).
+ */
+export function scratchProfile(): Record<string, string> {
+  const root = scratchRoot();
+  const home = join(root, "home");
+  mkdirSync(home, { recursive: true });
+  const env: Record<string, string> = {
+    CARTON_E2E_TMP: root,
+    CARTON_E2E_REAL_HOME: REAL_HOME,
+    HOME: home,
+    USERPROFILE: home,
+    LOCALAPPDATA: join(home, "AppData", "Local"),
+    APPDATA: join(home, "AppData", "Roaming"),
+    XDG_DATA_HOME: join(home, ".local", "share"),
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_CACHE_HOME: join(home, ".cache"),
+  };
+  const cli = join(REAL_HOME, ".t3", "projects", "cardboard-showcase", "_inspect", "cardboard-1.4.0", "cli", "cardboard.mjs");
+  if (!process.env.CARTON_CARDBOARD_CLI && existsSync(cli)) env.CARTON_CARDBOARD_CLI = cli;
+  return env;
+}
+Object.assign(process.env, scratchProfile());
 
 /**
  * A machine's app-data folder (`<machine home>/appdata`), from its bundle `<machine home>/lib/<Name>.cardboard`: where
