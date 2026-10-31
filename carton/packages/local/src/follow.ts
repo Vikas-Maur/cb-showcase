@@ -144,7 +144,9 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
       // for during that read stops it
       const now = await store.get<string>("meta", ["current"]);
       if (stopped || carton.cut !== mine || now !== stored) return null;
-      await carton.switchTo(stored);
+      // the handle only: the stored row is already this cut, and writing it again would undo a switch a third process
+      // stored after the read (request 6, foundation `fb7f4e9`)
+      await carton.switchTo(stored, { persist: false });
       return stored;
     });
   };
