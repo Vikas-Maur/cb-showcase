@@ -1,49 +1,77 @@
-// Media (PLAN §11): mediaHash = SHA-256(size ‖ SHA-256 per 1 MiB leaf), with the leaf list as the manifest; lazy
-// hashing; tiers T0–T3; one blob per media variant, resumable multipart with per-upload part size (8–64 MiB, equal
-// parts, ≤ 10,000); play first, verify each leaf as it completes, refetch on mismatch; the collab proxy encoder chain;
-// the loopback range server for ffmpeg-based tools. Nothing happens for solo local projects. Owner: media.
-import type { BlobStore, Hasher, ProxyEncoder } from "@carton/core/plugins";
+// @carton/media (PLAN §11): content ids, lazy hashing, tiers, resumable uploads and verified range reads through any
+// BlobStore, the range cache, and the collab proxy encoder chain. This entry runs everywhere (browsers, Workers, Node);
+// `@carton/media/node` adds worker-thread file hashing, the disk cache, the loopback range server and the ffmpeg
+// encoders. Nothing here does anything for a solo local project: it all starts when a project is shared.
 
-const todo = (what: string): never => {
-  throw new Error(`not implemented: ${what}`);
-};
+import { equalBytes } from "./bytes.ts";
+import type { Hasher } from "./contracts.ts";
+import { blobSource, bytesSource, hashSource, type ByteSource, type HashOptions } from "./hash.ts";
+import { leafDigest, type Manifest } from "./manifest.ts";
 
-/** L = 1 MiB (P6). */
-export const LEAF_SIZE = 1024 * 1024;
+export { fromHex, isMediaHash, toHex } from "./bytes.ts";
+export {
+  decodeManifest,
+  DIGEST_SIZE,
+  LEAF_SIZE,
+  leafCountOf,
+  leafDigest,
+  leafSpan,
+  leavesCovering,
+  ManifestBuilder,
+  ManifestError,
+  manifestFromDigests,
+  type Manifest,
+} from "./manifest.ts";
+export { blobSource, bytesSource, hashSource, webCryptoHasher, type ByteSource, type HashOptions } from "./hash.ts";
+export { HashScheduler, MemoryManifestCache, type HashJobOptions, type HashPriority, type HashSchedulerOptions, type HashTarget, type ManifestCache } from "./scheduler.ts";
+export { manifestKey, mediaKey, proxyPointerKey, type ProxyPointer } from "./keys.ts";
+export {
+  cancelUpload,
+  choosePartSize,
+  FAST_PART_SIZE,
+  MAX_PARTS,
+  MemoryUploadStateStore,
+  MIN_PART_SIZE,
+  SourceChangedError,
+  uploadMedia,
+  type CompletedPart,
+  type UploadOptions,
+  type UploadProgress,
+  type UploadResult,
+  type UploadState,
+  type UploadStateStore,
+} from "./upload.ts";
+export { MemoryLeafCache, type LeafCache } from "./cache.ts";
+export { MediaMissingError, MediaReader, type MediaReaderOptions, type ReaderEvent } from "./read.ts";
+export { LeafMismatchError, type MediaStat, type RangeSource } from "./range-source.ts";
+export {
+  CONTEXT_CAP_BYTES,
+  planShare,
+  sourceFor,
+  T1_KINDS,
+  toMediaRecord,
+  type Availability,
+  type LocalMedia,
+  type MediaRecord,
+  type MediaUse,
+  type SharedObject,
+  type SharePolicy,
+  type ShareStep,
+  type T1Kind,
+  type Tier,
+  type UseSource,
+} from "./tiers.ts";
 
-export interface MediaManifest {
-  hash: string;
-  size: number;
-  leafSize: number;
-  leaves: string[];
+/** The manifest (and so the media hash) of a Blob, bytes, or any ByteSource. Identical in browsers and Node (P6). */
+export function mediaHash(source: Blob | Uint8Array | ByteSource, hasher: Hasher, opts?: HashOptions): Promise<Manifest> {
+  const src = source instanceof Uint8Array ? bytesSource(source) : typeof Blob !== "undefined" && source instanceof Blob ? blobSource(source) : (source as ByteSource);
+  return hashSource(src, hasher, opts);
 }
 
-/** Hash a media source in leaves (byte-identical in browsers and Node, P6). */
-export async function mediaHash(source: Blob | AsyncIterable<Uint8Array>, hasher: Hasher, opts?: { size?: number }): Promise<MediaManifest> {
-  return todo("mediaHash");
+/** Checks one leaf against the manifest. */
+export async function verifyLeaf(manifest: Manifest, index: number, bytes: Uint8Array, hasher: Hasher): Promise<boolean> {
+  return equalBytes(await hasher.sha256(bytes), leafDigest(manifest, index));
 }
 
-/** Part size for one upload: 8 MiB on slow links up to 64 MiB on fast ones, equal parts, at most 10,000. */
-export function partSizeFor(size: number, linkBytesPerSec?: number): number {
-  return todo("partSizeFor");
-}
-
-export interface UploadProgress {
-  uploaded: number;
-  total: number;
-}
-
-/** Upload one media variant as one blob, resuming from completed parts. */
-export async function uploadMedia(blobs: BlobStore, key: string, source: Blob, opts?: { uploadId?: string; onProgress?: (p: UploadProgress) => void; signal?: AbortSignal }): Promise<{ key: string; uploadId?: string }> {
-  return todo("uploadMedia");
-}
-
-/** The first encoder in the chain whose 1-frame probe succeeds (NVENC → QSV → AMF → libx264). */
-export async function pickEncoder(chain: readonly ProxyEncoder[]): Promise<ProxyEncoder | null> {
-  return todo("pickEncoder");
-}
-
-/** Verify a fetched leaf against the manifest (play-first, verify-when-the-leaf-completes). */
-export async function verifyLeaf(manifest: MediaManifest, index: number, bytes: Uint8Array, hasher: Hasher): Promise<boolean> {
-  return todo("verifyLeaf");
-}
+/** @deprecated The contracts skeleton's name; use choosePartSize. */
+export { choosePartSize as partSizeFor } from "./upload.ts";
