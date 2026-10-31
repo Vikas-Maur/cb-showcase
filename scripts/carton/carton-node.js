@@ -236,7 +236,7 @@ const markSeen = async (file, hash) => {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LOCK_BUSY = Symbol("busy");
 // Test seams (scripts/carton/test): `between` runs between the displace and the link, as displaceThenInstall's does.
-const testHooks = { between: null };
+const testHooks = { between: null, installed: null, lockWaitMs: null };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 function takeOverIfAbandoned(dir) {
   const owner = path.join(dir, "owner");
@@ -254,7 +254,7 @@ async function withInstallLock(bundle, fn) {
     try { fs.mkdirSync(dir); fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, me })); break; } catch (e) {
       if (e.code !== "EEXIST") throw e;
       takeOverIfAbandoned(dir);
-      if (Date.now() - t0 > 30_000) return LOCK_BUSY;
+      if (Date.now() - t0 > (testHooks.lockWaitMs ?? 30_000)) return LOCK_BUSY;
       await sleep(5);
     }
   }
@@ -303,11 +303,13 @@ async function install(tmp, file, seenStamp) {
     // ours. It is put back below, under the lock taken again, only if it is still newer than what is on disk then.
     if (!mine()) recover = r.displaced.at(-1) ?? null, installed = false;
     await markSeen(file, sha(bytes));
-    // The file to put back isn't held yet: a review before the put-back would delete it as Carton's own.
+    // The file to put back isn't held yet: a review before the put-back would delete it as Carton's own. It is
+    // journaled now, so a later sweep finds it if this process exits before the put-back decides.
     await settle(file, s, r.displaced.filter((p) => p !== recover), journal, { seenStamp });
-    if (recover) s.mine.add(recover);
+    if (recover) s.mine.add(recover), (journal[path.basename(recover)] = { at: Date.now(), stamp: await statStamp(recover, BUSY) });
     await writeJournal(bundle, journal);
-    s.own = { bytes: fs.readFileSync(file), stamp: await statStamp(file, BUSY) };
+    if (testHooks.installed) await testHooks.installed(file);
+    s.own = await ownAfter(file, bytes);
     s.files.endRound();
     reviewLater(file, s);
     return installed;
@@ -357,8 +359,8 @@ async function putBack(lc, file, from) {
   const done = await withInstallLock(bundle, async (mine) => {
     const journal = readJournal(bundle);
     try {
-      let back, now;
-      try { back = await refOf(lc, revIn(file, fs.readFileSync(from))); } catch { return; }
+      let back, now, bytes;
+      try { bytes = fs.readFileSync(from), (back = await refOf(lc, revIn(file, bytes))); } catch { return; }
       try { now = await refOf(lc, revIn(file, fs.readFileSync(file))); } catch {}
       const head = (await lc.carton.head()).ref;
       if (!back || back.branchId !== head.branchId || (now && now.branchId === head.branchId && now.seq >= back.seq) || !mine()) return;
@@ -366,7 +368,7 @@ async function putBack(lc, file, from) {
       fs.copyFileSync(from, tmp);
       const r = await displaceThenInstall(file, tmp, s.files.next, { ...BUSY, noLinks: s.noLinks });
       await settle(file, s, r.displaced, journal);
-      s.own = { bytes: fs.readFileSync(file), stamp: await statStamp(file, BUSY) };
+      s.own = await ownAfter(file, bytes);
     } finally {
       if (fs.existsSync(from)) await settle(file, s, [from], journal, { firstOwn: null });
       await writeJournal(bundle, journal);
@@ -374,8 +376,20 @@ async function putBack(lc, file, from) {
       reviewLater(file, s);
     }
   });
-  // The lock stayed busy: the file waits in .carton/displaced/ for a later sweep.
-  if (done === LOCK_BUSY) s.mine.delete(from);
+  // The lock stayed busy (its holder is installing): no put-back. The file is held and reviewed as any displaced file
+  // is (Carton's goes after the hold, someone's save is imported); its journal entry is the install's.
+  if (done === LOCK_BUSY && fs.existsSync(from)) {
+    await settle(file, s, [from], {}, { firstOwn: null });
+    s.files.endRound();
+    reviewLater(file, s);
+  }
+}
+
+// What Carton just installed, as the proof a later hold compares with: the file's stamp and bytes, kept only if those
+// bytes are the ones installed. A save that landed since (an await may have let one in) is someone's, never Carton's.
+async function ownAfter(file, bytes) {
+  const stamp = await statStamp(file, BUSY), b = fs.readFileSync(file);
+  return b.equals(bytes) ? { bytes: b, stamp } : null;
 }
 
 // When each displaced file was moved aside and its stamp then (.carton/displaced.json), written under the install
