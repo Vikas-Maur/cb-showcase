@@ -329,6 +329,101 @@ test(".cbproj S3-2: Bring in their changes takes a file's history too, then fold
   assert.ok((await bob.log({ cut: alice.cut })).some((v) => v.author?.id === "director/chatS2/turn1"), "and the version that made it, with its author");
 });
 
+test(".cbproj windows-sync: a later file's history comes in before its shallow import: the cut held read-only grows in order, no `<cut>.<hash8>` starting point [real engine]", async (t) => {
+  const project = { id: "proj-13", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
+  const sa = createMemoryStore();
+  const alice = await Carton.open({ adapter: cardboardAdapter, store: sa, init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
+  const theirs = alice.cut;
+  const dir = bundle(t, "history-first", project);
+  const tmpDir = fs.mkdtempSync(path.join(SCRATCH, "history-tmp-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const sendWithHistory = async (n: number) => {
+    const out = path.join(dir, "..", `history-first-${n}-${Date.now()}.cbproj`);
+    t.after(() => fs.rmSync(out, { force: true }));
+    await exportCbproj({ bundle: dir, out, shallow: await alice.exportShallow({ to: "bob" }), fullHistory: (to) => writeHistory(sa, to) });
+    return out;
+  };
+  await edit(alice, ALICE, (its) => void (find(its, "c0").name = "Alice's title"));
+  await alice.name((await alice.log({ limit: 1 }))[0]!.ref, "First file");
+  const first = await sendWithHistory(1);
+  // Bob opens the first file (Open Project: a cut forked from theirs, then their history: their cut read-only)
+  const bob = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { import: (await readCbproj(first)).shallow! }, actor: BOB });
+  t.after(async () => {
+    await alice.close();
+    await bob.close();
+  });
+  assert.equal((await importFullHistory(bob, first, { openStore: openHistory, tmpDir })).status, "imported");
+  assert.ok((await bob.cuts()).find((c) => c.id === theirs)?.tracking, "their cut, read-only");
+  // Alice goes on, and sends a second file with history
+  await edit(alice, DIRECTOR, (its) => void (find(its, "c1").name = "the Director's cut"));
+  await edit(alice, ALICE, (its) => void (find(its, "c2").name = "Alice again"));
+  await alice.name((await alice.log({ limit: 1 }))[0]!.ref, "Second file");
+  const second = await sendWithHistory(2);
+  const r = await bringInTheirChanges(bob, await readCbproj(second), { history: { file: second, openStore: openHistory, tmpDir } });
+  assert.equal(r.status, "folded", JSON.stringify(r));
+  assert.equal(r.history?.status, "imported");
+  const cuts = await bob.cuts();
+  assert.deepEqual(cuts.filter((c) => c.id.startsWith(`${theirs}.`)).map((c) => c.id), [], "no separate starting point for their newer versions");
+  const want = (await alice.log({ cut: theirs })).map((v) => [v.ref.seq, v.author?.id ?? null, v.name ?? null]);
+  const got = (await bob.log({ cut: theirs })).map((v) => [v.ref.seq, v.author?.id ?? null, v.name ?? null]);
+  assert.deepEqual(got, want, "their cut, read-only, has every version with its author and name, in order");
+  const head = toHost((await bob.head()).doc).timelineItems as Item[];
+  assert.deepEqual([find(head, "c0").name, find(head, "c1").name, find(head, "c2").name], ["Alice's title", "the Director's cut", "Alice again"]);
+});
+
+test(".cbproj windows-sync: a file of a same-id project with no shared lineage brings neither its lineage nor its history in [real engine]", async (t) => {
+  const project = { id: "proj-14", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
+  const sa = createMemoryStore();
+  const alice = await Carton.open({ adapter: cardboardAdapter, store: sa, init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
+  const bob = await Carton.open({ adapter: cardboardAdapter, store: createMemoryStore(), init: { doc: fromHost(project, null), projectId: project.id }, actor: BOB });
+  t.after(async () => {
+    await alice.close();
+    await bob.close();
+  });
+  await edit(alice, ALICE, (its) => void (find(its, "c0").name = "Alice's title"));
+  const dir = bundle(t, "unrelated-history", project);
+  const out = path.join(dir, "..", `unrelated-history-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  await exportCbproj({ bundle: dir, out, shallow: await alice.exportShallow({ to: "bob" }), fullHistory: (to) => writeHistory(sa, to) });
+  const tmpDir = fs.mkdtempSync(path.join(SCRATCH, "history-tmp-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const before = (await bob.cuts()).map((c) => c.id);
+  const r = await bringInTheirChanges(bob, await readCbproj(out), { history: { file: out, openStore: openHistory, tmpDir } });
+  assert.equal(r.status, "no-shared-lineage", JSON.stringify(r));
+  assert.equal(r.history, undefined, "its history isn't taken");
+  assert.deepEqual((await bob.cuts()).map((c) => c.id), before, "no cut of theirs came in");
+});
+
+test(".cbproj windows-sync: a file with history from a copy of this project (S3-4) still folds in, their cut a cut of its own [real engine]", async (t) => {
+  const project = { id: "proj-15", name: "Film", aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0 }], timelineItems: clips(3) };
+  const sa = createMemoryStore();
+  const alice = await Carton.open({ adapter: cardboardAdapter, store: sa, init: { doc: fromHost(project, null), projectId: project.id }, actor: ALICE });
+  const sb = await copyAll(sa);
+  const bob = await Carton.open({ adapter: cardboardAdapter, store: sb, actor: BOB });
+  t.after(async () => {
+    await alice.close();
+    await bob.close();
+  });
+  await edit(bob, BOB, (its) => void (find(its, "c1").name = "Bob's edit"));
+  await edit(alice, ALICE, (its) => void (find(its, "c2").name = "Alice's edit"));
+  const mine = alice.cut;
+  const dir = bundle(t, "copy-history", project);
+  const out = path.join(dir, "..", `copy-history-${Date.now()}.cbproj`);
+  t.after(() => fs.rmSync(out, { force: true }));
+  await exportCbproj({ bundle: dir, out, shallow: await bob.exportShallow({ to: "alice" }), fullHistory: (to) => writeHistory(sb, to) });
+  const tmpDir = fs.mkdtempSync(path.join(SCRATCH, "history-tmp-"));
+  t.after(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+  const r = await bringInTheirChanges(alice, await readCbproj(out), { history: { file: out, openStore: openHistory, tmpDir } });
+  assert.equal(r.status, "folded", JSON.stringify(r));
+  assert.equal(r.status === "folded" ? r.fold.status : "", "confirmed");
+  const items = toHost((await alice.head()).doc).timelineItems as Item[];
+  assert.deepEqual([find(items, "c1").name, find(items, "c2").name], ["Bob's edit", "Alice's edit"]);
+  assert.equal(alice.cut, mine, "on Alice's own cut");
+  const theirs = (await alice.cuts()).filter((c) => c.id !== mine && c.id.startsWith(mine));
+  assert.equal(theirs.length, 1, `their same-id cut came in as a cut of its own: ${JSON.stringify((await alice.cuts()).map((c) => c.id))}`);
+  assert.deepEqual(r.history, { status: "imported", cuts: [] }, "its history leaves Alice's own cut alone; the copy's comes in from the shallow export");
+});
+
 // S3-4: a teammate whose project is a copy of yours (the bundle folder copied with its `.carton`: the same "Main cut"
 // id, the same log up to the copy) edits and sends a .cbproj. Core read past this replica's log for the sender's node on
 // that cut id and crashed (`TypeError … 'mergeOf'`), or took their states for ours ("up-to-date"). Core (foundation
