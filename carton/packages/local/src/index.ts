@@ -13,12 +13,13 @@ export * from "./identity.ts";
 export * from "./hooks.ts";
 export * from "./writes.ts";
 export * from "./engine-thread.ts";
+export * from "./follow.ts";
 export { nodeHasher } from "./hasher.ts";
 export * from "./notices.ts";
 export * from "./hook-cli.ts";
 export * from "./materializer-engine.ts";
 export { openLocal, readProjectId, nextChangeId, defaultFactory, CartonHolderEngine } from "./open.ts";
-export type { LocalOptions, LocalCarton } from "./open.ts";
+export type { LocalOptions, LocalCarton, HolderEngineOptions } from "./open.ts";
 
 // The materializer (project.json, the shared timeline.tsx, per-agent views and their `.status` sidecars),
 // displace-then-install and `.cbproj` are `@carton/cardboard/node`'s (agreed with cardboard-adapter); re-exported here so

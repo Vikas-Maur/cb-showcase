@@ -17,6 +17,14 @@ import { adapter, bundle, doc0 } from "./support/real.ts";
 const here = (f: string) => fileURLToPath(new URL(f, import.meta.url));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const set = (id: string, f: string, v: unknown) => ({ op: "set" as const, path: ["timelineItems", id, f], value: v });
+/** Wait until a killed process is gone (on Windows its handles on carton.db close a moment after the kill: an open in
+ * between can fail with "disk I/O error", verify-ci #22). */
+async function gone(pid: number, ms = 10_000) {
+  for (const end = Date.now() + ms; Date.now() < end; await sleep(25)) {
+    try { process.kill(pid, 0); } catch { return; }
+  }
+  throw new Error(`process ${pid} still running ${ms} ms after SIGKILL`);
+}
 async function until<T>(f: () => Promise<T | null | false | undefined>, ms = 30_000, what = "condition"): Promise<T> {
   for (const end = Date.now() + ms; ; await sleep(50)) {
     const v = await f();
@@ -53,6 +61,7 @@ test("B7: a plain cb write on a shared cut, the app closed, starts a helper that
     // that helper goes away (crash, or idle exit): nothing holds the lease
     helperPid = (await setup.lease.read())!.pid;
     process.kill(helperPid, "SIGKILL");
+    await gone(helperPid);
     await setup.close();
     // a plain cb call, no helper setup: it starts the recorded recipe, not local's default factory without sync
     const plain = await openLocal({ projectDir: dir, projectId, adapter, actor: { kind: "agent", id: "codex/b7", name: "Codex" } });
