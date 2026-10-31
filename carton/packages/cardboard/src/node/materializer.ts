@@ -743,8 +743,9 @@ export function viewName(rel: string): string | null {
  * A view name for an actor (§6.4 "Distinct names"): a hooked agent's actor id with `/` made safe; otherwise the name it
  * asked for, or a fresh `agent-<4 random chars>` that no view uses yet.
  */
-export function viewNameFor(actor: Actor | null, wanted: string | null, taken: (name: string) => boolean, random: () => string): string {
-  if (actor?.turn && actor.id) return actor.id.replace(/[^A-Za-z0-9._-]/g, "_");
+export function viewNameFor(actor: Actor | null, opts: { hooked: boolean; wanted?: string | null; taken: (name: string) => boolean; random: () => string }): string {
+  const { hooked, wanted, taken, random } = opts;
+  if (hooked && actor?.id) return actor.id.replace(/[^A-Za-z0-9._-]/g, "_");
   if (wanted) return wanted;
   for (;;) {
     const n = `agent-${random()}`;
