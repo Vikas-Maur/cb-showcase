@@ -191,6 +191,10 @@ export class SharedCut {
   }
   /** An outcome older than the log: what the confirmed log says (a withdraw row is no confirmation, finding 7). */
   private fromLog(id: string): WriteOutcome | null {
+    // a change refused here is decided even when no version of it is known (a keyframe skipped its withdraw row: round 5
+    // finding 1)
+    const reason = this.queue.refusedReason(this.branchId, id);
+    if (reason !== undefined) return { status: "rejected", id, reason };
     const v = this.queue.versionId(this.branchId, id);
     if (!v || v.provisional) return null;
     const seq = Number(v.id.slice(v.id.lastIndexOf("@") + 1));
