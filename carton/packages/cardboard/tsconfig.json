@@ -1,6 +1,6 @@
 {
+  // The platform-free entry (schema, host conversion, projection, header, identity): ES2023 + WebWorker, no node:*.
   "extends": "../../tsconfig.base.json",
-  "include": [
-    "src"
-  ]
+  "include": ["src"],
+  "exclude": ["src/node"]
 }

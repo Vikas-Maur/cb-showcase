@@ -1,0 +1,77 @@
+{
+  "applied": true,
+  "ops": [
+    {
+      "op": "updateItem",
+      "id": "30ff46b4-c367-44a3-ac22-505b9777a940",
+      "changes": {
+        "color": "#ffd166"
+      }
+    },
+    {
+      "op": "updateItem",
+      "id": "c52c2e81-ec41-4608-8883-97f5a81279f5",
+      "changes": {
+        "colorGrade": {
+          "wheels": {
+            "lift": {
+              "r": 0.02,
+              "b": -0.02
+            },
+            "gamma": {
+              "y": 0.08
+            }
+          },
+          "curves": {
+            "master": [
+              [
+                0,
+                0
+              ],
+              [
+                0.5,
+                0.55
+              ],
+              [
+                1,
+                1
+              ]
+            ]
+          },
+          "saturation": 1.1
+        }
+      }
+    },
+    {
+      "op": "updateItem",
+      "id": "ea445e63-36cc-4cba-a675-0babce7390cb",
+      "changes": {
+        "effects": [
+          {
+            "id": "fx-blur-1",
+            "type": "blur",
+            "radius": 6
+          }
+        ]
+      }
+    }
+  ],
+  "conflicts": [
+    {
+      "kind": "item",
+      "id": "30ff46b4-c367-44a3-ac22-505b9777a940"
+    }
+  ],
+  "diagnostics": [],
+  "ingested": [],
+  "wouldIngest": [],
+  "matched": [],
+  "importedLuts": [],
+  "wouldImportLuts": [],
+  "rev": 1793425013007,
+  "summary": {
+    "errors": 0,
+    "warnings": 0,
+    "ops": 3
+  }
+}

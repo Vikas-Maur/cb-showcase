@@ -12,7 +12,7 @@
 // each commit the cut's tail is re-read, so changes another process appended are seen; if another process still wins
 // the race, the in-memory model is rebuilt from the store and the commit is retried (its id makes the retry safe).
 
-import type { BlobStore, Hasher, HostAdapter, IdentitySource, ProxyEncoder, Store, StoreCondition, StoreWrite, Transport } from "./plugins.ts";
+import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreWrite, Transport } from "./plugins.ts";
 import type { Schema } from "./schema.ts";
 import type { PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
@@ -169,8 +169,20 @@ export interface Carton {
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
   resolve(ref: StateRef | string): Promise<{ doc: Doc; seq: number; causal: ChangeId[] }>;
   commit(input: CommitInput): Promise<CommitResult>;
-  /** Pin a cut's head, or a held state (`doc`, e.g. a freeze view), for `owner` (a turn, view or MCP ref). */
-  pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string }): Promise<Pin>;
+  /**
+   * Pin a cut's head, or a held state (`doc`, e.g. a freeze view), for `owner` (a turn, view or MCP ref). `seq`: the
+   * confirmed seq the held state was derived from (default: head), so a commit on it is checked against every change
+   * confirmed after that seq rather than treated as having seen them. `causal`: the ids of changes after `seq` whose
+   * effect `doc` already holds (a freeze view's merged agent saves), so a commit on it doesn't meet them again.
+   */
+  pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number; causal?: ChangeId[] }): Promise<Pin>;
+  /** M4: did `author` create element `id` of the sequence at `seqKey`? For host conversions (`HostAdapter.fromHost`'s `own`). */
+  own(author: Actor): OwnFn;
+  /**
+   * A fresh change id of this replica (`<rid>.<n>`), for a caller that must record it before committing so a retry
+   * commits with the same id and gets the original confirmation back (dedup by id) instead of a second change.
+   */
+  newChangeId(): ChangeId;
   release(ref: StateRef, owner: string): Promise<void>;
 
   cuts(): Promise<CutRecord[]>;
@@ -685,11 +697,17 @@ class CartonImpl implements Carton {
     await this.#saveNotices(out);
     return out;
   }
-  async pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string }): Promise<Pin> {
+  own(author: Actor): OwnFn {
+    return this.#h.own(author);
+  }
+  newChangeId(): ChangeId {
+    return `${this.#rid}.${++this.#n}`;
+  }
+  async pin(opts: { owner: string; cut?: string; ttlMs?: number; doc?: Doc; by?: string; seq?: number; causal?: ChangeId[] }): Promise<Pin> {
     const cut = opts.cut ?? this.#h.current;
     const now = this.#opts.clock?.() ?? Date.now();
     let ref!: StateRef;
-    await this.#mutate(cut, () => (ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(opts.doc ? { doc: opts.doc } : {}) })), {
+    await this.#mutate(cut, () => (ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(opts.doc ? { doc: opts.doc } : {}), ...(opts.seq !== undefined ? { seq: opts.seq } : {}), ...(opts.causal?.length ? { pending: opts.causal.map((id) => ({ id, ops: [] })) } : {}) })), {
       extra: () => {
         const pw = this.#pinWrite(ref);
         return { writes: [pw.write], conds: [pw.cond] };
