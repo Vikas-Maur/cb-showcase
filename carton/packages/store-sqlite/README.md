@@ -46,5 +46,7 @@ was renamed `carton.from-<host>-<time>.db` and a fresh history started. Offer it
 
 ## Windows
 
-Paths may be non-ASCII; renames retry while antivirus holds a new file; sync roots come from `reg export`
+Paths may be non-ASCII; renames retry while antivirus holds a new file; an I/O error on a file's first reads at
+open (a handle a scanner or a terminated process still has on it) is retried on a fresh connection for up to 2 s,
+asynchronously, then reported with SQLite's extended code; sync roots come from `reg export`
 (UTF-16) and are cached for 10 minutes in app data; mapped network drives are detected through their UNC path.
