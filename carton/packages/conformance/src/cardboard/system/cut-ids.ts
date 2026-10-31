@@ -7,9 +7,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
-import { branchToken, findRev } from "@carton/cardboard";
+import { branchToken, findRev, toHost } from "@carton/cardboard";
 import { TIMELINE_FILE, statusPath } from "@carton/cardboard/node";
-import { openWorld, clip, find } from "./world.ts";
+import { openWorld, clip, find, type Item } from "./world.ts";
 
 const CASES: [string, string | undefined, string][] = [
   ["a dot in its first 8 characters", "b6b.alt", "Alt"],
@@ -50,5 +50,39 @@ for (const [label, id, name] of CASES) {
     assert.equal(w.carton.cut, cut.id);
     assert.deepEqual([find(head, "Y").name, find(head, "X").name, find(head, "X").opacity], ["first", "second", 0.5]);
     assert.deepEqual(w.mz.log.errors, []);
+  });
+}
+
+for (const after of ["", "rename", "switch"] as const) {
+  const how = after === "rename" ? ", the printed one renamed after the print" : after === "switch" ? ", the other one current when it is read" : "";
+  test(`cut ids (review 14 #5): two cuts with one b: token and one name${how}: the print resolves on the cut it was made on [real engine]`, async (t) => {
+    const w = await openWorld(t, { items: [clip("X", 0, 10), clip("Y", 10, 20)], tracks: ["V1"] });
+    assert.equal(branchToken("b6b.alt"), branchToken("fa91abc4-other"), "the two ids share a token");
+    const twin = await w.carton.fork("Alt", { id: "fa91abc4-other" });
+    const cut = await w.carton.fork("Alt", { id: "b6b.alt" });
+    await w.carton.switchTo(cut.id);
+    await w.mz.onCutSwitch(cut.id);
+    await w.gui((its) => void (find(its, "X").opacity = 0.5)); // its seq is past the other cut's head
+    await w.tick(1000);
+    const agent = w.agent("director/c2/t2", { hooked: true, actor: { turn: "t2", chat: "c2" } });
+    const { path: rel, name: view } = await w.mz.printView("v", agent.actor, { hooked: true });
+    if (after === "rename") await w.carton.renameCut(cut.id, "Alt renamed");
+    if (after === "switch") {
+      // the twin is current now (preferring the current cut would pick it): the printed header still names b6b.alt's
+      // state (a commit from it onto the twin then follows core's rule for a base on another cut)
+      await w.carton.switchTo(twin.id);
+      const rev = findRev(fs.readFileSync(w.abs(rel), "utf8"))!.rev!;
+      const held = await w.engine.resolve(rev);
+      assert.equal(find(toHost(held.baseDoc).timelineItems as Item[], "X").opacity, 0.5, "the state printed on b6b.alt");
+      return;
+    }
+    await agent.read(rel);
+    await agent.editUntilDone(rel, (its) => void (find(its, "Y").name = "saved"));
+    await w.tick(2000);
+    const status = JSON.parse(fs.readFileSync(w.abs(statusPath(view)), "utf8"));
+    assert.equal(status.status, "confirmed", JSON.stringify(status));
+    assert.equal(find(await w.head(), "Y").name, "saved", "the save lands on the current cut");
+    assert.deepEqual(w.mz.log.errors, []);
+    await agent.stop();
   });
 }

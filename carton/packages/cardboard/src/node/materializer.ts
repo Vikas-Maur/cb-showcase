@@ -87,6 +87,12 @@ export interface MaterializerEngine {
    * `id`, a commit whose id is already confirmed returns that confirmation (and its cards), never a second change.
    */
   commit(input: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string }; id?: string }): Promise<SaveResult>;
+  /**
+   * The confirmed changes on the current cut after `seq`, oldest first (at most the newest 64), each with the states
+   * just before and after it: which ones a save made itself (the same edit as a change it never saw), so a state built
+   * on the save names them in its causal past (rounds 13, 14).
+   */
+  changesSince?(seq: number): Promise<{ id: string; seq: number; before: Doc; after: Doc }[]>;
   /** A fresh change id, recorded before committing so a retry commits with the same id (dedup by id). */
   newChangeId?(): string;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
@@ -532,13 +538,26 @@ export class Materializer {
     this.freeze.causal = [...h.causal];
     this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
   }
-  /** What the freeze hides now: the changes from the freeze view to its cut's head (null: unknown, or the cut moved). */
-  private async hiddenChanges(): Promise<Set<string> | null> {
-    const on = this.engine.cut?.() ?? null;
-    if (!this.host.changes || on !== this.freeze.cut) return null;
-    const head = await this.engine.head();
-    const view = this.freeze.view;
-    return view && (this.engine.cut?.() ?? null) === on ? new Set(this.host.changes(view, head)) : null;
+  /**
+   * The confirmed changes after `seq` (outside `causal`) that a save made itself: every edit of the change is one the save
+   * made from its base (an agent saving the same ripple a remote made). A state built on the save holds them, so its
+   * causal past must name them (rounds 13, 14). A change that only matches the save by chance without the save making
+   * it (one undoing another) isn't. `partial`: a change the save made only part of; `at`: the states after each change.
+   */
+  private async madeByTheSave(base: Doc, saved: Doc, seq: number, causal: readonly string[]): Promise<{ ids: string[]; partial: boolean; at: Map<number, Doc> }> {
+    const out = { ids: [] as string[], partial: false, at: new Map<number, Doc>() };
+    if (!this.engine.changesSince || !this.host.changes) return out;
+    const own = new Set(this.host.changes(base, saved));
+    if (!own.size) return out;
+    for (const c of await this.engine.changesSince(seq)) {
+      out.at.set(c.seq, c.after);
+      if (causal.includes(c.id)) continue;
+      const effect = this.host.changes(c.before, c.after);
+      const made = effect.filter((e) => own.has(e)).length;
+      if (effect.length && made === effect.length) out.ids.push(c.id);
+      else if (made) out.partial = true;
+    }
+    return out;
   }
   /** Whether `h` was pinned on the current cut (or the engine has no cuts). */
   private onCurrentCut(h: HeldBase): boolean {
@@ -1333,8 +1352,6 @@ export class Materializer {
       slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
       await this.engine.putMeta(attemptKey, slot);
     }
-    // what the freeze hides just before this save lands (its own change isn't in head yet)
-    const hidden = !slot.result && this.freeze.active && this.freeze.view && rel !== PROJECT_FILE ? await this.hiddenChanges() : null;
     const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
     if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res });
     const settle = async () => {
@@ -1371,14 +1388,20 @@ export class Materializer {
       const cut = this.freeze.cut;
       await this.freezeOnCurrentCut();
       if (cut === this.freeze.cut) {
-        if (hidden?.size && this.host.changes!(baseDoc, saved).some((c) => hidden.has(c))) {
-          // the save made an edit the freeze hides (an agent saving the ripple a remote made, alone or with edits of
-          // its own): merged in, the view would hold it without its change's id, and core would map later saves
-          // through it again. The freeze restarts from head, with head's causal past (round 13; review 9 #1 in general)
-          this.restartFreeze(await this.currentHead());
+        // a save that made an edit the freeze hides (an agent saving the ripple a remote made, alone or with edits of its
+        // own) holds that change: the view names it in its causal past, or core maps later saves through it again
+        // (review 9 #1; rounds 13, 14). Read from the log after the commit, so a retry and a change landing just before
+        // this one are seen alike, and nothing else is revealed.
+        const own = res.id ? [res.id] : [];
+        const made = await this.madeByTheSave(baseDoc, saved, this.freeze.baseSeq, [...this.freeze.causal, ...own]);
+        const at = made.partial && res.seq !== undefined ? made.at.get(res.seq) : undefined;
+        if (at) {
+          // it made only part of a hidden change, which no causal past can say: the freeze restarts at this save's own
+          // commit, so it shows what was confirmed up to it and still hides what came after (R8-01)
+          this.restartFreeze({ baseDoc: at, baseSeq: res.seq!, causal: [], ...(this.engine.cut ? { cut: this.engine.cut() } : {}) });
         } else {
           this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
-          if (res.id && !this.freeze.causal.includes(res.id)) this.freeze.causal.push(res.id);
+          for (const id of [...own, ...made.ids]) if (!this.freeze.causal.includes(id)) this.freeze.causal.push(id);
         }
       }
     }
@@ -1394,7 +1417,13 @@ export class Materializer {
     }
     if (name && row) {
       // the saved content's causal past: its base's, plus this save's own change
-      if (rev?.kind === "carton" && rev.nonce === row.nonce) row.last = { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal: res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal } };
+      if (rev?.kind === "carton" && rev.nonce === row.nonce) {
+        // the next save's base is this save, with what it holds: its base's causal past, its own change, and any change
+        // it made itself as someone else did first (review 14 #4: else that change is mapped through again)
+        const causal = res.id && !held.causal.includes(res.id) ? [...held.causal, res.id] : held.causal;
+        const made = await this.madeByTheSave(baseDoc, saved, held.baseSeq, causal);
+        row.last = { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal: [...causal, ...made.ids] } };
+      }
       row.lastChange = res.id ?? null;
       await this.engine.putMeta(["view", name], row);
       const head = await this.engine.head();
