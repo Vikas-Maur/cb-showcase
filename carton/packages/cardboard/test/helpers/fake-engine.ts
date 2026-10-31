@@ -116,14 +116,15 @@ export class FakeEngine implements MaterializerEngine {
     fn(d);
     this.log.push({ doc: d, id, causal: [] });
   }
-  async pin({ owner, doc }: { owner: string; doc?: Doc; ttlMs: number }) {
+  async pin({ owner, doc, seq }: { owner: string; doc?: Doc; seq?: number; ttlMs: number }) {
     const d = doc ? clone(doc) : await this.head();
     const h8 = hash8(JSON.stringify(d));
-    const ref = `main@${this.headSeq}~${h8}`;
-    const p = this.pins.get(ref) ?? { doc: d, seq: this.headSeq, owners: new Set<string>(), causal: this.log.slice(1).map((x) => x.id) };
+    const at = seq ?? this.headSeq;
+    const ref = `main@${at}~${h8}`;
+    const p = this.pins.get(ref) ?? { doc: d, seq: at, owners: new Set<string>(), causal: this.log.slice(1, at + 1).map((x) => x.id) };
     p.owners.add(owner);
     this.pins.set(ref, p);
-    return { ref, branchId: "b7e1c2d3-0000-4000-8000-000000000000", doc: clone(d) };
+    return { ref, branchId: "b7e1c2d3-0000-4000-8000-000000000000", seq: at, doc: clone(d) };
   }
   async release(owner: string): Promise<void> {
     for (const [ref, p] of this.pins) {

@@ -9,20 +9,23 @@
 //                             explicit print by their owner; the base of a save is the last applied save of the same
 //                             print (same print nonce), else the header ref (R4-02)
 //   .scratch/views/<n>.status the status sidecar after each apply (R5-04)
-//   .carton/displaced/        what Carton moved off a path; held until reviewed (P10 settle-2)
+//   .carton/displaced/        what Carton moved off a path; held until reviewed (P10 settle-2). Each name carries the
+//                             path it came from, so a restart finds and finishes what an earlier process held.
 //
 // Every Carton write to a watched path goes through `displaceThenInstall`, so Carton never destroys a file it hasn't
 // seen. A foreign save is read on every watch event and applied at once when it parses; content that doesn't parse
 // yet (an in-place writer mid-write) waits for 150 ms of quiet, and a file that never parses is kept and reported.
+// A displaced save is deleted only once its change is stored; one that can't be applied stays in `.carton/displaced`.
 //
 // All work runs one task at a time (the engine thread's order), so two saves never interleave.
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import type { Actor, ConflictCard, Doc } from "@carton/core";
+import type { OwnFn } from "@carton/core/plugins";
 import { displaceThenInstall, hardLinksWork, retryBusy, stampOf, statStamp, type BusyCounter } from "./displace.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
-import { findRev, renderRev, printNonce, type Rev } from "../header.ts";
+import { findRev, renderRev, printNonce, REV_TAG, type Rev } from "../header.ts";
 import type { Project, TimelineCodec } from "../codec.ts";
 
 export const PROJECT_FILE = "project.json";
@@ -32,6 +35,7 @@ export const CARTON_DIR = ".carton";
 export const viewPath = (name: string): string => `${VIEWS_DIR}/${name}.tsx`;
 export const statusPath = (name: string): string => `${VIEWS_DIR}/${name}.status`;
 const DAY = 86_400_000;
+const REV_PREFIX = `// ${REV_TAG} `;
 
 /** A commit's base when Carton holds the doc: a view's last applied save, with its causal past. */
 export interface HeldBase {
@@ -49,12 +53,23 @@ export interface SaveResult {
   reason?: string;
 }
 
-/** What the materializer needs from the engine. `@carton/local` implements it over `Carton` and carton.db. */
+/** A pinned state: the ref token core prints (`<cut>@<seq>~<hash8>`), its cut, its seq, and its doc. */
+export interface Pinned {
+  ref: string;
+  branchId: string;
+  seq: number;
+  doc: Doc;
+}
+
+/** What the materializer needs from the engine. `cartonMaterializerEngine` implements it over `Carton`. */
 export interface MaterializerEngine {
   /** The current cut's optimistic head. */
   head(): Promise<Doc>;
-  /** Pins the head, or `doc` (a state not in the log: the freeze view), for `owner`. `ref` is the printable token. */
-  pin(opts: { owner: string; doc?: Doc; ttlMs: number }): Promise<{ ref: string; branchId: string; doc: Doc }>;
+  /**
+   * Pins the head, or `doc` (a state not in the log: the freeze view) for `owner`. `seq` is the confirmed seq `doc`
+   * was derived from, so a commit on it is checked against everything confirmed since (default: head).
+   */
+  pin(opts: { owner: string; doc?: Doc; seq?: number; ttlMs: number }): Promise<Pinned>;
   /** Releases every pin `owner` holds (a turn ended). */
   release(owner: string): Promise<void>;
   /** A printed ref -> its exact state and causal past. Throws "state unknown: re-print" when it can't (§4.4). */
@@ -62,6 +77,8 @@ export interface MaterializerEngine {
   /** Commits `doc` made on `base`; cards keep head's value and are reported (late conflicts arrive as notices). */
   commit(input: { doc: Doc; base: Rev | HeldBase; author: Actor; meta: { file: string; view?: string } }): Promise<SaveResult>;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
+  /** M4: did `author` create sequence element `id`? Keeps one author's run of inserts contiguous across saves. */
+  own?(author: Actor): OwnFn;
   /** Local metadata (carton.db's `views` table), shared by every process on this machine. */
   getMeta<T>(key: readonly string[]): Promise<T | undefined>;
   putMeta(key: readonly string[], value: unknown): Promise<void>;
@@ -71,8 +88,8 @@ export interface MaterializerEngine {
 
 /** The host's document conversions the materializer needs (Cardboard's are in `@carton/cardboard`). */
 export interface MaterializerHost {
-  /** A parsed project -> engine doc, keyed against `base` (LCS move recovery). */
-  fromProject(project: Project, base: Doc | null): Doc;
+  /** A parsed project -> engine doc, keyed against `base` (LCS move recovery; `own` keeps an author's run together). */
+  fromProject(project: Project, base: Doc | null, own?: OwnFn): Doc;
   /** Engine doc -> the project to print or write, keeping `current`'s unversioned fields. */
   toProject(doc: Doc, current: Project | null): Project;
   /** Three-way merge of docs; used to gather agents' saves into the freeze view (R8-01). */
@@ -96,6 +113,15 @@ const realClock: Clock = {
   clearTimeout: (h) => clearTimeout(h as ReturnType<typeof setTimeout>),
 };
 
+/** Cards a save raised (head's value kept): data for the human's conflict cards, and stored under `["cards", id]`. */
+export interface SaveCards {
+  change: string | null;
+  file: string;
+  actor: Actor;
+  cards: ConflictCard[];
+  at: number;
+}
+
 export interface MaterializerOptions {
   bundle: string;
   engine: MaterializerEngine;
@@ -116,6 +142,10 @@ export interface MaterializerOptions {
   attributeMs?: number;
   /** Write project.json as a view of head (H1). Off when the host writes it itself. */
   writeProject?: boolean;
+  /** Treat file names case-insensitively (default: on Windows and macOS, whose file systems fold case). */
+  foldCase?: boolean;
+  /** Cards a save raised, for the human (conflict cards). */
+  onCards?: (c: SaveCards) => void;
 }
 
 export interface ViewRow {
@@ -127,6 +157,7 @@ export interface ViewRow {
   printedAt: number;
   /** The last applied save of this print: its parsed state, the base of the next save with the same nonce. */
   last?: { contentHash: string; nonce: string; held: HeldBase } | null;
+  /** The change behind the sidecar now; a later update for another change (or after a print or an error) is stale. */
   lastChange?: string | null;
 }
 
@@ -141,12 +172,36 @@ export interface StatusBody {
   error?: string;
 }
 
+/**
+ * What Carton knows about one watched path, kept in carton.db so every process (worker, helper) agrees:
+ * - `last`: the content now considered current at the path (Carton's install, or the foreign save last applied or
+ *   tried). A watch event or an unread-save check only acts on content that differs from it: an undo back to an
+ *   earlier text is a new save, never "seen before".
+ * - `written`: Carton's recent installs (content hash and install stamp), so a restart can tell its own displaced
+ *   files from foreign ones.
+ * - `applied`, `failed`: stamps of foreign files whose save was stored, or tried and refused; a displaced file with one
+ *   of those stamps is that same file, moved.
+ */
+interface PathState {
+  last: string | null;
+  written: { hash: string; stamp: string }[];
+  applied: string[];
+  failed: string[];
+}
+const KEEP_WRITTEN = 8;
+const KEEP_STAMPS = 32;
+
 type Record_ = { t: number; path: string; [k: string]: unknown };
+type Found = { path: string; bytes: Buffer; rel: string; mtimeNs: bigint; stamp: string | null };
 
 const sha = (b: Uint8Array | string): string => createHash("sha256").update(b).digest("hex");
-// Windows and macOS file systems are case-insensitive: an agent's `Timeline.tsx` is our `timeline.tsx`.
-const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
-const SEEN_KEEP = 32;
+const push = <T>(list: T[], x: T, keep: number): void => {
+  list.push(x);
+  if (list.length > keep) list.splice(0, list.length - keep);
+};
+/** The ref string core resolves (`<cut>@<seq>~<hash8> b:<branch8>`) for a pin. */
+const refBodyOf = (p: { ref: string; branchId: string }): string => renderRev({ ref: p.ref, branchId: p.branchId }).slice(REV_PREFIX.length);
+const revOf = (body: string): Rev | null => findRev(REV_PREFIX + body)?.rev ?? null;
 
 export class Materializer {
   readonly bundle: string;
@@ -154,7 +209,8 @@ export class Materializer {
   private readonly host: MaterializerHost;
   private readonly codec: TimelineCodec;
   private readonly clock: Clock;
-  private readonly opts: Required<Omit<MaterializerOptions, "bundle" | "engine" | "host" | "codec" | "clock">>;
+  private readonly opts: Required<Omit<MaterializerOptions, "bundle" | "engine" | "host" | "codec" | "clock" | "onCards">>;
+  private readonly onCards: ((c: SaveCards) => void) | null;
   private readonly held: DisplacedFiles;
   private readonly tmpDir: string;
   private readonly noLinks: boolean;
@@ -163,11 +219,14 @@ export class Materializer {
   private tmpSeq = 0;
   private readonly tmpTag = randomBytes(4).toString("hex");
   private envelopeCache: { stamp: string; env: Record<string, unknown> | null } | null = null;
-  /** Content hashes Carton wrote or applied, per path: anything else at a watched path is an unseen foreign save. */
-  private readonly seen = new Map<string, string[]>();
+  private readonly state = new Map<string, PathState>();
   private readonly lastInstall = new Map<string, OwnInstall & { hash: string }>();
   /** Displaced foreign files that don't parse (yet): re-read when their stamp changes. */
   private readonly partials = new Map<string, { rel: string; stamp: string | null; mtimeNs: bigint }>();
+  /** Half-written displaced files already reported to their writer. */
+  private readonly reportedPartials = new Set<string>();
+  /** Displaced files kept because their save was refused (state unknown, never printed, rejected). */
+  private readonly keptFiles = new Set<string>();
   /** Writes hooked agents announced, per path, oldest first (see `hookWrite`). */
   private readonly announced = new Map<string, { actor: Actor; at: number }[]>();
   /** Where each held displaced file came from. */
@@ -177,8 +236,10 @@ export class Materializer {
   private watchers: fs.FSWatcher[] = [];
   private closed = false;
 
-  // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active
-  readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, timer: null as unknown };
+  // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active. `baseSeq` is
+  // the confirmed seq the freeze view was derived from: its pin carries it, so a save from it meets every change since.
+  readonly freeze = { hooked: new Map<string, Actor>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, timer: null as unknown };
+  /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
   private lastRemoteRewrite = -Infinity;
   private remoteTimer: unknown = null;
@@ -187,7 +248,7 @@ export class Materializer {
   private projectPin: string | null = null;
 
   /** What happened, for tests and the activity log (never file contents). */
-  readonly log = { eexist: 0, errors: [] as Record_[], kept: [] as Record_[], applied: [] as Record_[], displaced: [] as Record_[], unparsed: [] as Record_[], imported: [] as Record_[], rewrites: [] as Record_[], ignored: [] as Record_[] };
+  readonly log = { eexist: 0, errors: [] as Record_[], kept: [] as Record_[], applied: [] as Record_[], displaced: [] as Record_[], unparsed: [] as Record_[], imported: [] as Record_[], rewrites: [] as Record_[], ignored: [] as Record_[], recovered: [] as Record_[], cards: [] as SaveCards[] };
 
   constructor(o: MaterializerOptions) {
     this.bundle = path.resolve(o.bundle);
@@ -195,6 +256,7 @@ export class Materializer {
     this.host = o.host;
     this.codec = o.codec;
     this.clock = o.clock ?? realClock;
+    this.onCards = o.onCards ?? null;
     this.opts = {
       printedBy: o.printedBy ?? "carton",
       quietMs: o.quietMs ?? 150,
@@ -203,6 +265,7 @@ export class Materializer {
       freezeIdleMs: o.freezeIdleMs ?? 60_000,
       attributeMs: o.attributeMs ?? 30_000,
       writeProject: o.writeProject ?? true,
+      foldCase: o.foldCase ?? (process.platform === "win32" || process.platform === "darwin"),
     };
     const carton = path.join(this.bundle, CARTON_DIR);
     this.tmpDir = path.join(carton, "tmp");
@@ -214,23 +277,33 @@ export class Materializer {
 
   // ------------------------------------------------------------------ lifecycle
 
-  /** Imports saves made while nobody watched, then writes the shared file (and project.json) from head. */
+  /**
+   * Finishes what an earlier process left in `.carton/displaced`, imports saves made while nobody watched, then writes
+   * project.json and the shared file from head.
+   */
   start(): Promise<void> {
     return this.run(async () => {
+      await this.recoverDisplaced();
+      await this.reviewDisplaced();
       if (this.opts.writeProject) await this.writeProjectNow("start");
       await this.writeSharedNow("start");
     });
   }
 
   /**
-   * Marks what is on disk now as seen without applying it: after importing an existing project as `main@1` (§16), its
-   * project.json and timeline.tsx are that state, not foreign saves.
+   * Marks what is on disk now as current without applying it: after importing an existing project as `main@1` (§16),
+   * its project.json and timeline.tsx are that state, not foreign saves.
    */
   adoptCurrentFiles(): Promise<void> {
     return this.run(async () => {
       for (const rel of [PROJECT_FILE, TIMELINE_FILE]) {
         const f = this.readFile(rel);
-        if (f) await this.markSeen(rel, f.hash);
+        if (!f) continue;
+        // that file's content is in the engine already: once an install moves it aside, it is a copy, not a save
+        const ps = await this.pathState(rel);
+        ps.last = f.hash;
+        push(ps.applied, f.stamp, KEEP_STAMPS);
+        await this.saveState(rel);
       }
     });
   }
@@ -248,13 +321,23 @@ export class Materializer {
     on(path.join(this.bundle, VIEWS_DIR), `${VIEWS_DIR}/`);
   }
 
-  /** Waits for queued work, final review of displaced files, stops timers and watchers. */
+  /**
+   * Stops watching, applies the displaced saves that are ready, and stops the timers. Files still in their hold stay in
+   * `.carton/displaced` for the next start to finish.
+   */
   async close(): Promise<void> {
-    this.closed = true;
+    if (this.closed) return this.queue.then(() => undefined);
     for (const w of this.watchers) w.close();
     this.watchers = [];
+    await this.run(() => this.reviewDisplaced()).catch(() => undefined);
+    this.closed = true;
     for (const t of [this.reviewTimer, this.remoteTimer, this.localTimer, this.projectTimer, this.freeze.timer, ...this.quietTimers.values()]) if (t) this.clock.clearTimeout(t);
     await this.queue;
+  }
+
+  /** What is held right now (displaced files under review, their origins, half-written and refused files). */
+  stats(): { held: number; origins: number; partials: number; kept: number } {
+    return { held: this.held.size, origins: this.origin.size, partials: this.partials.size, kept: this.keptFiles.size };
   }
 
   /** Resolves when every task queued so far has finished. */
@@ -358,8 +441,12 @@ export class Materializer {
   private async updateFreeze(): Promise<void> {
     const f = this.frozenNow();
     if (f && !this.freeze.active) {
+      // the freeze starts from what the shared file shows, and remembers the seq that state was derived from
+      const shown = this.sharedRef ? await this.resolveOrNull(this.sharedRef) : null;
+      const start = shown ?? (await this.pinnedHead("shared-file"));
       this.freeze.active = true;
-      this.freeze.view = this.sharedRef ? (await this.resolveOrNull(this.sharedRef)) ?? (await this.engine.head()) : await this.engine.head();
+      this.freeze.view = start.baseDoc;
+      this.freeze.baseSeq = start.baseSeq;
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
       this.freeze.view = null;
@@ -375,14 +462,19 @@ export class Materializer {
       }, end - this.clock.now() + 1);
     }
   }
-  private async resolveOrNull(ref: string): Promise<Doc | null> {
-    const rev = findRev(`// cardboard:rev ${ref}`)?.rev;
+  private async resolveOrNull(body: string): Promise<HeldBase | null> {
+    const rev = revOf(body);
     if (!rev) return null;
     try {
-      return (await this.engine.resolve(rev)).baseDoc;
+      return await this.engine.resolve(rev);
     } catch {
       return null;
     }
+  }
+  /** Head, pinned for `owner`, as a held state with its seq. */
+  private async pinnedHead(owner: string): Promise<HeldBase> {
+    const p = await this.engine.pin({ owner, ttlMs: 7 * DAY });
+    return { baseDoc: p.doc, baseSeq: p.seq, causal: [] };
   }
 
   // ------------------------------------------------------------------ Carton's writes
@@ -390,44 +482,56 @@ export class Materializer {
   /** `cb source print` with the app open: the shared file shows head; a freeze view restarts from it. */
   printShared(): Promise<string> {
     return this.run(async () => {
-      if (this.freeze.active) this.freeze.view = await this.engine.head();
+      if (this.freeze.active) {
+        const h = await this.pinnedHead("shared-file");
+        this.freeze.view = h.baseDoc;
+        this.freeze.baseSeq = h.baseSeq;
+      }
       await this.writeSharedNow("print", true);
       return this.sharedRef!;
     });
   }
 
+  /** A view's canonical name: the same file on a case-insensitive file system is the same view. */
+  private canonView(name: string): string {
+    return this.opts.foldCase ? name.toLowerCase() : name;
+  }
+
   /**
    * `cb source print --view <name>`: pins head for its owner, prints the view with a new nonce (displacing an unapplied
-   * save, which is applied first), and records the print.
+   * save, which is applied first), and records the print. `ref` is the header's ref as core resolves it.
    */
   printView(name: string, owner: Actor, opts: { hooked?: boolean } = {}): Promise<{ name: string; path: string; ref: string }> {
     return this.run(async () => {
       if (!/^[A-Za-z0-9._-]+$/.test(name)) throw new Error(`invalid view name ${JSON.stringify(name)}`);
-      const rel = viewPath(name);
+      const view = this.canonView(name);
+      const rel = viewPath(view);
       await this.importUnseen(rel);
-      const pinOwner = opts.hooked ? turnOwner(owner) : `view:${name}`;
-      const { ref, branchId, doc } = await this.engine.pin({ owner: pinOwner, ttlMs: 7 * DAY });
+      const pinOwner = opts.hooked ? turnOwner(owner) : `view:${view}`;
+      const p = await this.engine.pin({ owner: pinOwner, ttlMs: 7 * DAY });
       const nonce = printNonce();
-      const header = renderRev({ ref, branchId, nonce, by: this.opts.printedBy });
-      const text = await this.codec.print(this.host.toProject(doc, await this.currentProject()), header.slice("// cardboard:rev ".length));
+      const header = renderRev({ ref: p.ref, branchId: p.branchId, nonce, by: this.opts.printedBy });
+      const text = await this.codec.print(this.host.toProject(p.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
       await this.install(rel, text);
+      // a print starts a new generation: late updates for an earlier save never reach this print's sidecar
       const row: ViewRow = { owner, pinOwner, header, nonce, printedAt: this.clock.now(), last: null, lastChange: null };
-      await this.engine.putMeta(["view", name], row);
-      return { name, path: rel, ref };
+      await this.engine.putMeta(["view", view], row);
+      return { name: view, path: rel, ref: refBodyOf(p) };
     });
   }
 
   private async writeSharedNow(cause: string, force = false): Promise<void> {
     await this.importUnseen(TIMELINE_FILE);
-    const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
+    const pinned = this.freeze.active && this.freeze.view ? await this.engine.pin({ owner: "shared-view", doc: this.freeze.view, seq: this.freeze.baseSeq, ttlMs: 7 * DAY }) : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY });
     if (cause === "remote") this.lastRemoteRewrite = this.clock.now();
+    const body = refBodyOf(pinned);
     const cur = this.readFile(TIMELINE_FILE);
-    if (!force && cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === pinned.ref) return; // unchanged
+    if (!force && cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body) return; // unchanged
     const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
-    const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice("// cardboard:rev ".length));
-    this.sharedRef = pinned.ref;
+    const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
+    this.sharedRef = body;
     await this.install(TIMELINE_FILE, text);
-    this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: pinned.ref, frozen: this.freeze.active });
+    this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
   }
 
   /** The project.json envelope of the file on disk (null if absent or unreadable). */
@@ -449,24 +553,29 @@ export class Materializer {
     return env;
   }
   private async currentProject(): Promise<Project | null> {
-    return (this.readEnvelope()?.project as Project | undefined) ?? null;
+    const overlay = await this.engine.getMeta<Record<string, unknown>>(["file", PROJECT_FILE, "overlay"]);
+    return ((overlay ?? this.readEnvelope())?.project as Project | undefined) ?? null;
   }
 
   private async writeProjectNow(cause: string): Promise<void> {
     await this.importUnseen(PROJECT_FILE);
-    const env = this.readEnvelope() ?? { format: "cardboard-project", version: 1, media: [] };
+    // A foreign project.json applied since the last write (from the path, or moved aside by an install) is the source
+    // of the unversioned fields: Cardboard's own data lives there, not in the engine (§6.4's ephemeral side).
+    const overlay = await this.engine.getMeta<Record<string, unknown>>(["file", PROJECT_FILE, "overlay"]);
+    const env = overlay ?? this.readEnvelope() ?? { format: "cardboard-project", version: 1, media: [] };
     const cur = (env.project as Project | undefined) ?? null;
     // project.json has one base: Carton's latest materialization of it. Only that state stays pinned for it (the
     // shared timeline.tsx keeps every print's pin for its stale writers, R7-01; project.json's foreign writers are
     // unpatched tools, rare, and get the latest view as their base).
     const head = await this.engine.head();
-    if (this.projectPin && cur && JSON.stringify(this.host.toProject(head, cur)) === JSON.stringify(cur)) return;
+    if (!overlay && this.projectPin && cur && JSON.stringify(this.host.toProject(head, cur)) === JSON.stringify(cur)) return;
     await this.engine.release("project-file");
-    const { ref, doc } = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
-    if (this.projectPin === ref && cur) return;
-    const next = this.host.toProject(doc, cur);
-    if (cur && JSON.stringify(next) === JSON.stringify(cur)) {
-      this.projectPin = ref;
+    const p = await this.engine.pin({ owner: "project-file", ttlMs: 7 * DAY });
+    const body = refBodyOf(p);
+    const next = this.host.toProject(p.doc, cur);
+    if (!overlay && cur && JSON.stringify(next) === JSON.stringify(cur)) {
+      this.projectPin = body;
+      await this.engine.putMeta(["file", PROJECT_FILE, "pin"], body);
       return;
     }
     // 1.4.0's rev: stateUpdatedAt is forced monotonic, max(now, prev + 1) (writeTimeline)
@@ -474,18 +583,32 @@ export class Materializer {
     const now = this.clock.now();
     const project = { ...next, stateUpdatedAt: Math.max(now, prev + 1), updatedAt: new Date(now).toISOString() };
     await this.install(PROJECT_FILE, JSON.stringify({ ...env, project }, null, 2));
-    this.projectPin = ref;
-    await this.engine.putMeta(["file", PROJECT_FILE, "pin"], ref);
-    this.log.rewrites.push({ t: now, path: PROJECT_FILE, cause, ref });
+    this.projectPin = body;
+    await this.engine.putMeta(["file", PROJECT_FILE, "pin"], body);
+    if (overlay) await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], undefined);
+    this.log.rewrites.push({ t: now, path: PROJECT_FILE, cause, ref: body });
   }
 
   /** Displace, then install: never replaces a name, so a foreign save at `rel` is moved aside and imported. */
   private async install(rel: string, content: string): Promise<void> {
     const target = this.abs(rel);
     const bytes = Buffer.from(content, "utf8");
+    const hash = sha(bytes);
     const tmp = path.join(this.tmpDir, `${path.basename(rel)}.${this.tmpTag}.${this.tmpSeq++}`);
     fs.writeFileSync(tmp, bytes, { flag: "wx" });
-    const r = displaceThenInstall(target, tmp, this.held.next, { counter: this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null });
+    let r;
+    try {
+      r = displaceThenInstall(target, tmp, () => this.held.next(rel), { counter: this.busy, noLinks: this.noLinks, lastStamp: this.lastInstall.get(rel)?.stamp ?? null });
+    } catch (e) {
+      // a rename may have moved a file aside before the failure: hold whatever is in the folder unreviewed
+      await this.recoverDisplaced();
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // not created, or already linked and removed
+      }
+      throw e;
+    }
     const stamp = statStamp(target);
     for (const d of r.displaced) {
       let mtimeNs = 0n;
@@ -498,10 +621,37 @@ export class Materializer {
     }
     this.held.hold(r.displaced, this.lastInstall.get(rel) ?? null);
     if (r.eexist) this.log.eexist += r.eexist;
-    if (stamp) this.lastInstall.set(rel, { bytes, stamp, hash: sha(bytes) });
-    await this.markSeen(rel, sha(bytes));
+    if (stamp) {
+      this.lastInstall.set(rel, { bytes, stamp, hash });
+      const st = await this.pathState(rel);
+      push(st.written, { hash, stamp }, KEEP_WRITTEN);
+    }
+    await this.setLast(rel, hash);
     this.held.endRound();
     await this.reviewDisplaced();
+  }
+
+  // ------------------------------------------------------------------ what Carton knows about each path
+
+  private async pathState(rel: string): Promise<PathState> {
+    let s = this.state.get(rel);
+    if (!s) {
+      s = (await this.engine.getMeta<PathState>(["file", rel, "state"])) ?? { last: null, written: [], applied: [], failed: [] };
+      this.state.set(rel, s);
+    }
+    return s;
+  }
+  private async saveState(rel: string): Promise<void> {
+    await this.engine.putMeta(["file", rel, "state"], await this.pathState(rel));
+  }
+  private async setLast(rel: string, hash: string): Promise<void> {
+    const s = await this.pathState(rel);
+    s.last = hash;
+    await this.saveState(rel);
+  }
+  /** Content at the path that is the current generation already (installed, applied or tried): nothing to do. */
+  private async isCurrent(rel: string, hash: string): Promise<boolean> {
+    return (await this.pathState(rel)).last === hash;
   }
 
   // ------------------------------------------------------------------ foreign saves
@@ -515,10 +665,10 @@ export class Materializer {
 
   /** The canonical relative path of a watched file, or null. */
   private watched(name: string): string | null {
-    const n = FOLD_CASE ? name.toLowerCase() : name;
+    const n = this.opts.foldCase ? name.toLowerCase() : name;
     if (n === TIMELINE_FILE || n === PROJECT_FILE) return n;
     if (!n.startsWith(`${VIEWS_DIR}/`) || !n.endsWith(".tsx")) return null;
-    const view = name.slice(VIEWS_DIR.length + 1, -4);
+    const view = n.slice(VIEWS_DIR.length + 1, -4);
     return view && !view.includes("/") ? viewPath(view) : null;
   }
 
@@ -533,29 +683,6 @@ export class Materializer {
       if (code === "ENOENT" || code === "EISDIR") return null; // mid-install, or gone
       throw e;
     }
-  }
-
-  private isSeen(rel: string, hash: string): boolean {
-    return this.seen.get(rel)?.includes(hash) ?? false;
-  }
-  /** Applied, written by Carton, or already tried and reported: nothing more to do for this content at `rel`. */
-  private isKnown(rel: string, hash: string): boolean {
-    return this.isSeen(rel, hash) || this.isSeen(rel, `failed:${hash}`);
-  }
-  private async loadSeen(rel: string): Promise<string[]> {
-    let s = this.seen.get(rel);
-    if (!s) {
-      s = (await this.engine.getMeta<string[]>(["file", rel, "seen"])) ?? [];
-      this.seen.set(rel, s);
-    }
-    return s;
-  }
-  private async markSeen(rel: string, hash: string): Promise<void> {
-    const s = await this.loadSeen(rel);
-    if (s.includes(hash)) return;
-    s.push(hash);
-    if (s.length > SEEN_KEEP) s.splice(0, s.length - SEEN_KEEP);
-    await this.engine.putMeta(["file", rel, "seen"], s);
   }
 
   private async parses(rel: string, bytes: Buffer): Promise<boolean> {
@@ -576,16 +703,15 @@ export class Materializer {
   }
 
   private async readEvent(rel: string): Promise<void> {
-    await this.loadSeen(rel);
     const f = this.readFile(rel);
-    if (!f || this.isKnown(rel, f.hash)) return;
+    if (!f || (await this.isCurrent(rel, f.hash))) return;
     if (rel === TIMELINE_FILE) {
       this.freeze.lastForeign = this.clock.now();
       await this.updateFreeze();
     }
     await this.flushHeld(rel); // displaced saves of this path were written earlier: they go first
     if (await this.parses(rel, f.bytes)) {
-      await this.applySave(rel, f.bytes, f.hash);
+      await this.applySave(rel, f.bytes, f.hash, f.stamp);
       return;
     }
     this.waitForQuiet(rel, f.stamp);
@@ -602,10 +728,10 @@ export class Materializer {
         this.quietTimers.delete(rel);
         this.fire(async () => {
           const f = this.readFile(rel);
-          if (!f || this.isKnown(rel, f.hash)) return;
+          if (!f || (await this.isCurrent(rel, f.hash))) return;
           if (f.stamp !== stamp) return this.waitForQuiet(rel, f.stamp);
-          if (await this.parses(rel, f.bytes)) return void (await this.applySave(rel, f.bytes, f.hash));
-          await this.markSeen(rel, `failed:${f.hash}`); // reported once; the file stays where its writer put it
+          if (await this.parses(rel, f.bytes)) return void (await this.applySave(rel, f.bytes, f.hash, f.stamp));
+          await this.setLast(rel, f.hash); // reported once; the file stays where its writer put it
           this.log.unparsed.push({ t: this.clock.now(), path: rel });
           await this.engine.notice(await this.actorOf(rel), { kind: "error", text: `${rel} doesn't parse; kept, not applied` });
         });
@@ -615,67 +741,128 @@ export class Materializer {
 
   /** A foreign save at `rel` that no watcher saw (written while the app was closed): applied before Carton writes it. */
   private async importUnseen(rel: string): Promise<void> {
-    await this.loadSeen(rel);
     const f = this.readFile(rel);
-    if (!f || this.isKnown(rel, f.hash)) return;
+    if (!f || (await this.isCurrent(rel, f.hash))) return;
     if (!(await this.parses(rel, f.bytes))) return; // displaced by the install, then kept and reported if it never parses
     this.log.imported.push({ t: this.clock.now(), path: rel });
-    await this.applySave(rel, f.bytes, f.hash);
+    await this.applySave(rel, f.bytes, f.hash, f.stamp);
+  }
+
+  /**
+   * Picks up files in `.carton/displaced` that no review holds: left by an earlier process (a crash, or a close during
+   * a hold), or moved aside by an install that failed half-way. Carton's own installs (content and stamp it recorded)
+   * are deleted; the rest are reviewed as foreign saves of the path their name carries.
+   */
+  private async recoverDisplaced(): Promise<void> {
+    let names: string[];
+    try {
+      names = fs.readdirSync(this.held.dir);
+    } catch {
+      return;
+    }
+    for (const n of names) {
+      const file = path.join(this.held.dir, n);
+      if (this.held.holds(file) || this.partials.has(file) || this.keptFiles.has(file)) continue;
+      const rel = this.watched(DisplacedFiles.tagOf(file) ?? "") ?? TIMELINE_FILE;
+      let bytes: Buffer;
+      let st: fs.BigIntStats;
+      try {
+        bytes = retryBusy(() => fs.readFileSync(file), this.busy);
+        st = fs.statSync(file, { bigint: true });
+      } catch {
+        continue;
+      }
+      const ps = await this.pathState(rel);
+      const stamp = stampOf(st);
+      const hash = sha(bytes);
+      if (ps.written.some((w) => w.hash === hash && w.stamp === stamp) || ps.applied.includes(stamp)) {
+        this.held.release(file); // Carton's own install, or a copy of a save already stored
+        continue;
+      }
+      if (ps.failed.includes(stamp)) {
+        this.keptFiles.add(file); // tried and refused before: kept, not retried
+        continue;
+      }
+      this.origin.set(file, { rel, mtimeNs: st.mtimeNs });
+      this.held.holdForeign(file);
+      this.log.recovered.push({ t: this.clock.now(), path: rel, file: n });
+    }
   }
 
   /**
    * Reviews held displaced files: deletes Carton's own (bytes and stamp unchanged after the hold), applies foreign
-   * saves in the order they were written, and keeps foreign files that don't parse, telling their writer once.
+   * saves in the order they were written, and keeps foreign files that don't parse, telling their writer once. A file
+   * leaves the hold only when its change is stored, it is known, or it was refused; if applying throws (a locked
+   * database), it and every file after it are held again and retried.
    */
   private async reviewDisplaced(): Promise<void> {
     const r = this.held.review(() => true); // parsing may be async (an injected codec): checked below
-    const found: { path: string; bytes: Buffer; rel: string; mtimeNs: bigint }[] = r.foreign.map((d) => {
+    for (const p of r.retired) this.origin.delete(p);
+    const found: Found[] = r.foreign.map((d) => {
       const o = this.origin.get(d.path);
-      this.origin.delete(d.path);
-      return { path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n };
+      return { path: d.path, bytes: d.bytes, rel: o?.rel ?? TIMELINE_FILE, mtimeNs: o?.mtimeNs ?? 0n, stamp: statStamp(d.path) };
     });
     for (const [p, q] of this.partials) {
       const stamp = statStamp(p);
       if (stamp === null) this.partials.delete(p);
       else if (stamp !== q.stamp) {
         this.partials.delete(p);
-        found.push({ path: p, bytes: retryBusy(() => fs.readFileSync(p), this.busy), rel: q.rel, mtimeNs: q.mtimeNs });
+        found.push({ path: p, bytes: retryBusy(() => fs.readFileSync(p), this.busy), rel: q.rel, mtimeNs: q.mtimeNs, stamp });
       }
     }
     found.sort((a, b) => (a.mtimeNs < b.mtimeNs ? -1 : a.mtimeNs > b.mtimeNs ? 1 : 0));
-    for (const d of found) {
-      const hash = sha(d.bytes);
-      if (!this.partials.has(d.path) && !this.isKnown(d.rel, hash)) this.log.displaced.push({ t: this.clock.now(), path: d.rel });
-      if (this.isSeen(d.rel, hash)) {
-        this.held.release(d.path); // already applied (or Carton's own bytes): a copy
-        continue;
-      }
-      if (this.isSeen(d.rel, `failed:${hash}`)) {
-        this.log.kept.push({ t: this.clock.now(), path: d.rel, file: path.basename(d.path) }); // tried and reported: kept
-        continue;
-      }
-      if (!(await this.parses(d.rel, d.bytes))) {
-        // the in-place writer's half-written file: kept on disk; its writer is told once; imported if it completes
-        const first = !this.partials.has(d.path);
-        this.partials.set(d.path, { rel: d.rel, stamp: statStamp(d.path), mtimeNs: d.mtimeNs });
-        if (first && !this.isSeen(d.rel, `partial:${hash}`)) {
-          await this.markSeen(d.rel, `partial:${hash}`);
-          this.log.unparsed.push({ t: this.clock.now(), path: d.rel, displaced: true });
-          await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text: `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied` });
+    for (let i = 0; i < found.length; i++) {
+      const d = found[i]!;
+      try {
+        await this.reviewOne(d);
+      } catch (e) {
+        for (const rest of found.slice(i)) {
+          this.origin.set(rest.path, { rel: rest.rel, mtimeNs: rest.mtimeNs });
+          this.held.holdForeign(rest.path);
         }
-        continue;
+        this.log.errors.push({ t: this.clock.now(), path: d.rel, error: e instanceof Error ? e.message : String(e) });
+        break;
       }
-      // a save that couldn't be applied (unknown base, never printed) stays in .carton/displaced: never destroyed
-      if (await this.applySave(d.rel, d.bytes, hash)) this.held.release(d.path);
-      else this.log.kept.push({ t: this.clock.now(), path: d.rel, file: path.basename(d.path) });
     }
-    // own installs wait out their hold; partials are only re-checked now and then
+    // own installs wait out their hold; failed imports retry soon; partials are only re-checked now and then
     const delay = this.held.size ? this.opts.quietMs : this.partials.size ? 5_000 : 0;
     if (delay && !this.reviewTimer && !this.closed)
       this.reviewTimer = this.clock.setTimeout(() => {
         this.reviewTimer = null;
         this.fire(() => this.reviewDisplaced());
       }, delay);
+  }
+  private async reviewOne(d: Found): Promise<void> {
+    const hash = sha(d.bytes);
+    const ps = await this.pathState(d.rel);
+    const done = () => {
+      this.origin.delete(d.path);
+      this.held.release(d.path);
+    };
+    if ((d.stamp && ps.applied.includes(d.stamp)) || ps.written.some((w) => w.hash === hash && w.stamp === d.stamp)) return done(); // a copy: that save is stored
+    if (d.stamp && ps.failed.includes(d.stamp)) {
+      this.origin.delete(d.path);
+      this.keptFiles.add(d.path);
+      this.log.kept.push({ t: this.clock.now(), path: d.rel, file: path.basename(d.path) }); // tried and refused: kept
+      return;
+    }
+    if (!this.partials.has(d.path)) this.log.displaced.push({ t: this.clock.now(), path: d.rel });
+    if (!(await this.parses(d.rel, d.bytes))) {
+      // the in-place writer's half-written file: kept on disk; its writer is told once; imported if it completes
+      this.origin.delete(d.path);
+      this.partials.set(d.path, { rel: d.rel, stamp: d.stamp, mtimeNs: d.mtimeNs });
+      if (!this.reportedPartials.has(d.path)) {
+        this.reportedPartials.add(d.path);
+        this.log.unparsed.push({ t: this.clock.now(), path: d.rel, displaced: true });
+        await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text: `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied` });
+      }
+      return;
+    }
+    if (await this.applySave(d.rel, d.bytes, hash, d.stamp, { fromDisplaced: true })) return done();
+    // a save that couldn't be applied (unknown base, never printed, rejected) stays in .carton/displaced
+    this.origin.delete(d.path);
+    this.keptFiles.add(d.path);
+    this.log.kept.push({ t: this.clock.now(), path: d.rel, file: path.basename(d.path) });
   }
   private async flushHeld(rel: string): Promise<void> {
     if (![...this.origin.values()].some((o) => o.rel === rel) && ![...this.partials.values()].some((o) => o.rel === rel)) return;
@@ -695,10 +882,17 @@ export class Materializer {
     return who ?? { kind: "external", id: `external:${rel}`, name: rel };
   }
 
-  /** Applies a foreign save. Returns false when it couldn't be (no print, unknown base, doesn't parse): keep its bytes. */
-  private async applySave(rel: string, bytes: Buffer, hash: string): Promise<boolean> {
+  /**
+   * Applies a foreign save. Returns false when it couldn't be (no print, unknown base, doesn't parse, rejected): its
+   * bytes are kept. Throws when the engine fails (the caller retries).
+   */
+  private async applySave(rel: string, bytes: Buffer, hash: string, stamp: string | null, o: { fromDisplaced?: boolean } = {}): Promise<boolean> {
+    const ps = await this.pathState(rel);
     const failed = async () => {
-      await this.markSeen(rel, `failed:${hash}`);
+      // tried and refused: the current generation at the path (if it is still there), and this file is never retried
+      if (!o.fromDisplaced) ps.last = hash;
+      if (stamp) push(ps.failed, stamp, KEEP_STAMPS);
+      await this.saveState(rel);
       return false;
     };
     const text = bytes.toString("utf8");
@@ -716,7 +910,7 @@ export class Materializer {
       if (rel === PROJECT_FILE) {
         // project.json carries no header: its writer read Carton's last materialization of it
         const pin = await this.engine.getMeta<string>(["file", PROJECT_FILE, "pin"]);
-        const prev = pin ? findRev(`// cardboard:rev ${pin}`)?.rev : null;
+        const prev = pin ? revOf(pin) : null;
         if (!prev) throw new Error("state unknown: re-print (project.json was never written by Carton)");
         base = prev;
         held = await this.engine.resolve(prev);
@@ -731,14 +925,16 @@ export class Materializer {
     } catch (e) {
       const msg = (e as Error).message;
       await this.engine.notice(actor, { kind: "error", text: msg });
-      if (name) await this.writeStatus(name, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null }, null);
+      if (name && row) await this.failView(name, row, { status: "error", error: msg, ref: rev?.kind === "carton" ? rev.ref : null });
       this.log.applied.push({ t: this.clock.now(), path: rel, error: msg });
       return failed();
     }
     const baseDoc = held.baseDoc;
+    let parsed: Project;
     let saved: Doc;
     try {
-      saved = this.host.fromProject(await this.parseSave(rel, text), baseDoc);
+      parsed = await this.parseSave(rel, text);
+      saved = this.host.fromProject(parsed, baseDoc, this.engine.own?.(actor));
     } catch (e) {
       this.log.unparsed.push({ t: this.clock.now(), path: rel });
       await this.engine.notice(actor, { kind: "error", text: `${rel} doesn't parse; kept, not applied: ${(e as Error).message}` });
@@ -747,20 +943,30 @@ export class Materializer {
     const res = await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) } });
     if (res.status === "rejected") {
       await this.engine.notice(actor, { kind: "error", text: `${rel}: rejected${res.reason ? `: ${res.reason}` : ""}; kept, not applied` });
-      if (name) await this.writeStatus(name, { status: "rejected", error: res.reason ?? "rejected", ref: rev?.kind === "carton" ? rev.ref : null }, null);
+      if (name && row) await this.failView(name, row, { status: "rejected", error: res.reason ?? "rejected", ref: rev?.kind === "carton" ? rev.ref : null });
       return failed();
     }
-    await this.markSeen(rel, hash); // before the regeneration below reads the path again
+    // stored: before the regeneration below reads the path again
+    if (!o.fromDisplaced) ps.last = hash;
+    if (stamp) push(ps.applied, stamp, KEEP_STAMPS);
+    await this.saveState(rel);
+    if (rel === PROJECT_FILE) {
+      // the file's unversioned fields (Cardboard's own data) are the source for the next project.json Carton writes
+      await this.engine.putMeta(["file", PROJECT_FILE, "overlay"], JSON.parse(text));
+    }
     const cards = res.cards ?? [];
     this.log.applied.push({ t: this.clock.now(), path: rel, id: res.id ?? null, status: res.status, cards: cards.length, actor: actor.id, hash });
-    if (rel === TIMELINE_FILE) {
-      if (this.freeze.active && this.freeze.view) {
-        // R8-01: the freeze view gathers every local agent's applied saves, each merged with that save's own base
-        this.freeze.view = this.host.merge3(baseDoc, this.freeze.view, saved);
-      }
+    if (cards.length) await this.reportCards({ change: res.id ?? null, file: rel, actor, cards, at: this.clock.now() }, !name);
+    if (this.freeze.active && this.freeze.view && rel !== PROJECT_FILE) {
+      // R8-01: the freeze view gathers every local agent's applied saves (shared file and views), each merged with
+      // that save's own base
+      this.freeze.view = this.host.merge3(baseDoc, this.freeze.view, saved);
+    }
+    if (rel === TIMELINE_FILE || (name && this.freeze.active)) {
       // R7-01: regenerate after every applied save, so the base of any later save is that save's own header ref
       await this.writeSharedNow("save");
-    } else if (name && row) {
+    }
+    if (name && row) {
       // the saved content's causal past: its base's, plus this save's own change
       if (rev?.kind === "carton" && rev.nonce === row.nonce) row.last = { contentHash: hash, nonce: row.nonce, held: { baseDoc: saved, baseSeq: held.baseSeq, causal: res.id ? [...held.causal, res.id] : held.causal } };
       row.lastChange = res.id ?? null;
@@ -768,21 +974,43 @@ export class Materializer {
       const head = await this.engine.head();
       const status: StatusBody["status"] = cards.length ? "conflicts" : res.status;
       const pinned = await this.engine.pin({ owner: row.pinOwner, ttlMs: 7 * DAY });
-      await this.writeStatus(name, { status, seq: res.seq ?? null, conflicts: cards, diagnostics: this.host.diagnose(saved, head), ref: pinned.ref, ...(res.reason ? { error: res.reason } : {}) }, res.id ?? null);
+      await this.writeStatus(name, { status, seq: res.seq ?? null, conflicts: cards, diagnostics: this.host.diagnose(saved, head), ref: refBodyOf(pinned), ...(res.reason ? { error: res.reason } : {}) }, res.id ?? null, { immediate: true });
     }
     this.onHeadChange("local");
     return true;
   }
 
+  /** Cards are data: stored, given to the human, and told to the actor when it has no sidecar to read them in. */
+  private async reportCards(c: SaveCards, notifyActor: boolean): Promise<void> {
+    this.log.cards.push(c);
+    if (c.change) await this.engine.putMeta(["cards", c.change], c);
+    this.onCards?.(c);
+    if (notifyActor)
+      await this.engine.notice(c.actor, {
+        kind: "conflicts",
+        text: `Your save of ${c.file} conflicted with changes made since you read it; the newer values were kept, yours are in the cards: ${c.cards.map((x) => x.path).join(", ")}`,
+        ...(c.change ? { change: c.change } : {}),
+      });
+  }
+
+  /** A refused view save: its sidecar says so, and late updates for any earlier save no longer reach it. */
+  private async failView(name: string, row: ViewRow, s: Partial<StatusBody> & { status: StatusBody["status"] }): Promise<void> {
+    row.lastChange = null;
+    await this.engine.putMeta(["view", name], row);
+    await this.writeStatus(name, s, null, { immediate: true });
+  }
+
   // ------------------------------------------------------------------ status sidecar (R5-04)
 
   /**
-   * Writes `.scratch/views/<name>.status` after each apply, and when that change's state changes later (confirmed,
-   * late conflicts: call `onChangeUpdate`). An update for an older save of the view never overwrites a newer one.
+   * Writes `.scratch/views/<name>.status`. Immediate writes follow an apply or a refusal; a later update (confirmed,
+   * late conflicts: `onChangeUpdate`) is written only while its change is still the view's latest save.
    */
-  private async writeStatus(name: string, s: Partial<StatusBody> & { status: StatusBody["status"] }, changeId: string | null): Promise<void> {
-    const row = await this.engine.getMeta<ViewRow>(["view", name]);
-    if (changeId && row?.lastChange && row.lastChange !== changeId) return;
+  private async writeStatus(name: string, s: Partial<StatusBody> & { status: StatusBody["status"] }, changeId: string | null, o: { immediate?: boolean } = {}): Promise<void> {
+    if (!o.immediate) {
+      const row = await this.engine.getMeta<ViewRow>(["view", name]);
+      if (!changeId || row?.lastChange !== changeId) return;
+    }
     const file = this.abs(statusPath(name));
     let prev: Partial<StatusBody> | null = null;
     try {
@@ -800,7 +1028,7 @@ export class Materializer {
 
   /** A view's change was confirmed, or came back with late conflicts: its sidecar follows. */
   onChangeUpdate(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; ref?: string; reason?: string }): Promise<void> {
-    return this.run(() => this.writeStatus(view, { status: s.status, seq: s.seq ?? null, conflicts: s.conflicts ?? [], ref: s.ref ?? null, ...(s.reason ? { error: s.reason } : {}) }, changeId));
+    return this.run(() => this.writeStatus(this.canonView(view), { status: s.status, seq: s.seq ?? null, conflicts: s.conflicts ?? [], ref: s.ref ?? null, ...(s.reason ? { error: s.reason } : {}) }, changeId));
   }
 }
 

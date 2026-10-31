@@ -9,6 +9,7 @@ import "../src/cardboard/system/time-group.ts";
 import "../src/cardboard/system/r3-01-ripple-once.ts";
 import "../src/cardboard/system/cbproj.ts";
 import "../src/cardboard/system/real-codec.ts";
+import "../src/cardboard/system/review1.ts";
 import "../src/cardboard/cli-codec.test.ts";
 
 await cardboardSuite();
