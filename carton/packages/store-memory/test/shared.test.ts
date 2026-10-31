@@ -5,44 +5,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton, type Actor, type CartonEvent } from "@carton/core";
-import type { AuthContext, AuthProvider, Store } from "@carton/core/plugins";
-import { createInProcessHost } from "@carton/server";
-import { sqliteStorage } from "../../conformance/src/system/sqlite.ts";
 import { createMemoryStore } from "../src/index.ts";
-import { adapter, schema, doc0, set, item } from "./fixture.ts";
+import { adapter, doc0, set, item } from "./fixture.ts";
+import { copyStore, until, world } from "./world.ts";
 
 const alice: Actor = { kind: "human", id: "alice", group: "alice@laptop" };
 const bob: Actor = { kind: "human", id: "bob", group: "bob@desk" };
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-async function until(pred: () => boolean | Promise<boolean>, ms = 5000, what = "condition"): Promise<void> {
-  const end = Date.now() + ms;
-  while (!(await pred())) {
-    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`);
-    await sleep(10);
-  }
-}
-
-function world() {
-  const tokens = new Map<string, AuthContext>();
-  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
-  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
-  const token = (name: string) => {
-    tokens.set(`tok-${name}`, { account: name, credential: `${name}/install`, role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
-    return `tok-${name}`;
-  };
-  const sync = (name: string, autoConnect = true) => ({ transport: host.transport, url: host.url, token: token(name), autoConnect });
-  return { host, sync };
-}
-/** A copy of a store's tables (another machine that got the project with its shared cut). */
-async function copyStore(from: Store): Promise<Store> {
-  const to = createMemoryStore();
-  const data = (from as unknown as { data: { tables: Map<string, unknown> } }).data;
-  for (const t of data.tables.keys()) {
-    const rows = await from.range(t);
-    if (rows.length) await to.write(rows.map((r) => ({ table: t, key: r.key, value: JSON.parse(JSON.stringify(r.value)) })));
-  }
-  return to;
-}
 
 test("share hands a local cut to the server; commits then go pending and come back confirmed", async () => {
   const w = world();
@@ -115,7 +83,6 @@ test("fold a local variant into a shared cut: one fold change, with its merge ed
   assert.equal(head.kind, "merge");
   assert.equal(item((await c.head(main)).doc, "d")!.name, "variant edit");
   assert.equal((await c.fold(v.id, { into: main })).status, "up-to-date", "the merge edge is recorded");
-  await assert.rejects(c.undo(undefined, { cut: main }), /not available on a shared cut yet/);
   await c.close();
   w.host.close();
 });

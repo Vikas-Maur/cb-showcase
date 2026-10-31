@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { defineSchema } from "../../src/schema.ts";
 import { timeAlgebra } from "../../src/engine/index.ts";
 import { KeyframeMismatch, ReplicaQueue, SharedCut, type ClientMessage, type ServerMessage, type Timers } from "../../src/sync/index.ts";
-import type { TransportConnection } from "../../src/plugins.ts";
+import type { BlobStore, TransportConnection } from "../../src/plugins.ts";
 import type { ConfirmedChange, Doc, Op } from "../../src/types.ts";
 
 const TL = { collection: "timelineItems", lanes: "tracks", lane: "trackId", start: "startTime", end: "endTime", source: "trimStart", sourceEnd: "trimEnd", speed: "playbackSpeed" };
@@ -47,11 +47,13 @@ class Scripted implements TransportConnection {
 }
 const rowOf = (id: string, seq: number, ops: Op[], over: Partial<ConfirmedChange & { withdrawn: boolean }> = {}): ConfirmedChange => ({ id, hash: "h", author: me, branchId: B, base: { seq: seq - 1, pending: [] }, ops, intent: null, kinds: null, policy: "merge", at: 0, paths: [], reads: [], spans: [], trackOrder: [], rebase: 0, seq, ...over });
 
+/** A client that reads envelopes has a blob store; these tests' messages stay under 1 MiB, so it is never used. */
+const unusedBlobs = new Proxy({ kind: "unused" }, { get: (t, k) => (k in t ? t[k as "kind"] : () => Promise.reject(new Error("unused"))) }) as unknown as BlobStore;
 /** A SharedCut on a scripted connection, caught up at seq 0; `welcome` adds fields to the server's first answer. */
 async function rig(welcome: Partial<Extract<ServerMessage, { type: "hello" }>> = {}, client: Record<string, unknown> = {}) {
   const conns: Scripted[] = [];
   const transport = { connect: async () => { const c = new Scripted(); conns.push(c); return c; } };
-  const cut = new SharedCut({ schema, branch, doc0: d0, transport, url: "x", token: "t", schemaVersion: 1, client: { defer: (fn) => queueMicrotask(fn), ...client } });
+  const cut = new SharedCut({ schema, branch, doc0: d0, transport, url: "x", token: "t", schemaVersion: 1, client: { defer: (fn) => queueMicrotask(fn), blobs: unusedBlobs, ...client } });
   const joined = cut.connect({ nonce: "n" });
   await tick();
   conns[0]!.feed({ type: "hello", branchId: B, head: 0, rows: [], confirmed: [], ...welcome });
@@ -80,7 +82,7 @@ test("round 2 finding 2: pushes over the limit together go in several messages, 
   assert.ok(pushes.length >= 2, `${pushes.length} messages`);
   assert.deepEqual(pushes.flatMap((p) => p.changes.map((ch) => ch.id)), ["r1.1", "r1.2", "r1.3", "r1.4", "r1.5", "r1.6"]);
   assert.equal(new Set(pushes.map((p) => p.epoch)).size, 1);
-  for (const p of pushes) assert.ok(new TextEncoder().encode(JSON.stringify(p)).byteLength <= 8192 + 512, "each within the limit (plus its envelope fields)");
+  for (const p of pushes) assert.ok(new TextEncoder().encode(JSON.stringify(p)).byteLength <= 8192, "each whole message within the limit");
   cut.close();
 });
 

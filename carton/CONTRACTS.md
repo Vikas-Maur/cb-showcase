@@ -63,8 +63,26 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   this machine doesn't have.
 - **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
-- **Shared cuts** (`sequencer.kind !== "local"`) and `carton.sync` are wired by the sync client (sync-sequencer);
-  until then they throw. `carton.media` is null: `@carton/media` calls Carton, not the reverse.
+- **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
+  sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
+  cut's ancestry closure (`history` request) and loads it as read-only lineage.
+- **Shared cuts** (`sequencer.kind !== "local"`) go through `SharedCut` (sync-sequencer's queue and client): `commit`,
+  `fold`, `foldSome`, `undo`, `revert` and `restore` all queue an ordinary change with its intent, kind and `reverts`
+  under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the
+  author. Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
+  shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
+  the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). `carton.media` is null:
+  `@carton/media` calls Carton, not the reverse.
+- **Keyframes (§5.4):** a cut's state is stored every K confirmed changes (`keyframeEvery`, default 64) or after
+  1 MiB of ops, in the same batch as the row, and at every named, fold, export and Published version. A new periodic
+  keyframe replaces the previous periodic one; milestone ones stay. Opening reads each cut's newest keyframe and
+  replays only the rows after it. A replica that caught up through a server keyframe fetches the rows it jumped and
+  checks that they rebuild it before History takes them.
+- **Retention (§5.4):** changes are kept forever. `compact({ cut?, olderThanDays = 90 })` is optional: on local cuts it
+  squashes each old auto-version's micro-changes (a run of one actor group and turn) into its last change. Named,
+  fold, export, Published, undo, revert and restore versions, what they undid, fork points, folded-in and pinned
+  versions, and the last K changes are never squashed. Seqs and ids stay; a squashed version leaves the log and its
+  state is no longer held (`StateUnknown`).
 
 ## Using it
 
@@ -84,3 +102,27 @@ await carton.undo();                                             // ⌘Z for the
 
 The engine functions (`merge3`, `diff`, `apply`, `shotDiff`, `describe`…) are exported from `@carton/core` for code
 that works on docs directly.
+
+## Size
+
+`node scripts/size.mjs` checks the **history bundle** (esbuild minify, ESM, platform-neutral, gzip 9, bundling
+`core/src/history/index.ts` so engine parts History doesn't use are tree-shaken, exactly as P4 measured the
+prototype's 19.3 KB) against a **30 KB min+gz budget**. `node scripts/size-attr.mjs packages/core/src <scratch>`
+prints what each feature costs by stubbing it out. At `7e2f3f7` (UNVERIFIED, bytes min+gz; deterministic, not
+load-dependent):
+
+| Feature in the history bundle | min+gz | In the prototype's 19.3 KB? |
+|---|---|---|
+| Local sequencer, v11 rule (sync-sequencer's `evaluatePush`, shared with the server) | 4,069 | the v5 rule was 947 |
+| `.cbproj` shallow/full export and import, last authors | 1,814 | yes |
+| Fold-some (atomic pre-check, inverse) | 587 | yes, without the pre-check |
+| Undo by actor group, remaps inverted | 550 | no |
+| Portable SHA-256 (browsers and Workers have no sync digest) | 469 | no (node:crypto) |
+| Pins with owner sets | 390 | simpler pins |
+| Views (R4-02) | 236 | yes |
+| Log, names, restore | 216 | no |
+| Remap stored as one op (P5) | 191 | no |
+| Soft warnings on confirm (§4.1) | 128 | no |
+
+The whole bundle is 28.6 KB: 3.1 KB over the prototype is the v11 rule, the rest is the behaviour the plan and the
+five review rounds require (stable ids and no-op ids, Published-cut guard, lineage checks, atomic fold-some).

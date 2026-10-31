@@ -10,7 +10,7 @@
 //   their id lists, so the confirmed-id list never reads an archived blob, §6.3).
 
 import type { SequencerStorage, SqlValue } from "@carton/core/plugins";
-import type { ConfirmedChange, CutRecord, DagNode, Span } from "@carton/core";
+import type { Actor, ConfirmedChange, CutRecord, DagNode, NodeId, PathKey, Span } from "@carton/core";
 import type { sequencer, sync } from "@carton/core";
 
 type TailRow = sequencer.TailRow;
@@ -50,6 +50,10 @@ export interface StoredBranch {
   /** A read-only tracking branch from a hand-off's ancestry closure: lineage nodes, no log (§5.3). */
   tracking?: boolean;
   nodes?: DagNode[];
+  /** A tracking branch's last author per record at its nodes (credits from before a shared cut's fork point). */
+  authors?: [NodeId, Record<PathKey, Actor>][];
+  /** An adopted branch's ancestry closure: the tracking branches `history` returns as its lineage (Stage F). */
+  closure?: string[];
 }
 
 // The columns the rule reads are their own; everything else of a change goes in the body.
@@ -271,13 +275,16 @@ export class Tables {
   /**
    * At most how many bytes of reply JSON each of the next `limit` rows after `after` takes, without reading their
    * bodies (SQLite keeps a BLOB's length in its record header): a catch-up page stops at its byte budget before it
-   * loads a row (§6.3). Text columns count 3 bytes a character (UTF-8, and spans grow from `[t, lo, hi]` to objects); a
-   * body in the blob store isn't counted here (the caller measures it once fetched).
+   * loads a row (§6.3). Every column is counted in bytes (`length(CAST(… AS BLOB))`: a text's `length` counts characters
+   * and stops at a NUL, round 3 finding 5). The JSON columns go back out as they are stored, spans grow from
+   * `[t, lo, hi]` to objects (at most 3×), and the raw strings (`id`, `hash`, `policy`) are escaped (at most 6×). A body in
+   * the blob store isn't counted here (the caller measures it once fetched).
    */
   rowSizes(branch: string, after: number, limit: number): number[] {
-    const fixed = 256 + 3 * branch.length; // the keys, the defaults toRow adds, branchId
+    const fixed = 256 + 6 * new TextEncoder().encode(branch).byteLength; // the keys, the defaults toRow adds, branchId
+    const b = (col: string) => `coalesce(length(CAST(${col} AS BLOB)), 0)`;
     return this.all<{ n: number }>(
-      "SELECT coalesce(length(ops), 0) + 3 * (length(id) + coalesce(length(hash), 0) + length(author) + length(base) + length(paths) + length(reads) + coalesce(length(spans), 0) + coalesce(length(policy), 0)) AS n FROM changes WHERE branch = ? AND seq > ? ORDER BY seq LIMIT ?",
+      `SELECT coalesce(length(ops), 0) + ${b("author")} + ${b("base")} + ${b("paths")} + ${b("reads")} + 3 * ${b("spans")} + 6 * (${b("id")} + ${b("hash")} + ${b("policy")}) AS n FROM changes WHERE branch = ? AND seq > ? ORDER BY seq LIMIT ?`,
       branch,
       after,
       limit,
