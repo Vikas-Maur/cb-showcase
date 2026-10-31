@@ -285,6 +285,7 @@ for (const [n, step] of m.steps.entries()) {
     if (r.code !== 0 && step.failPattern) r.explained = new RegExp(step.failPattern).test(text);
     s.runs.push(r);
     record("running");
+    if (r.unfinishedOutput) break; // no more repeats beside a process that may still be running
   }
   console.log("::endgroup::");
   const failed = s.runs.filter((r) => r.code !== 0);
