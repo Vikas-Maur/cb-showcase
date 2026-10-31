@@ -86,6 +86,25 @@ test("the token is asked for on every request; a 401 is retried once with a newe
   await assert.rejects(stuck.head("tok"), (e: HttpBlobError) => e.status === 401);
 });
 
+test("keys are opaque over HTTP: case, unicode, spaces, reserved characters", async () => {
+  // the conformance suite's list, minus its 1024-byte key (see the todo test below)
+  const keys = ["Clip.MP4", "clip.mp4", "dir/Ünïcødé 名前.mov", "a b+c%20d?e#f&g=h", "CON", "nul.txt", "trailing.", "~tilde~b", ".hidden", "...", "deep/b/c"];
+  const s = store();
+  for (const [i, key] of keys.entries()) await s.put(`opaque/${key}`, new TextEncoder().encode(`v${i}`));
+  for (const [i, key] of keys.entries()) {
+    assert.equal(new TextDecoder().decode((await s.get(`opaque/${key}`))!), `v${i}`, key);
+    assert.equal((await s.head(`opaque/${key}`))?.size, `v${i}`.length, key);
+  }
+});
+
+// scopedBlobStore checks the caller's key against the 1024-byte limit and then hands `projects/<p>/media/<key>` to
+// the inner store, which checks it again with the prefix included: keys between 1024 minus the prefix and 1024 bytes
+// pass the first check and fail the second. Not an HTTP problem: the host's own scoped store refuses them too.
+test("a 1024-byte key fits in a project's media scope", { todo: "blob-memory scoped.ts: the prefix counts against the limit" }, async () => {
+  const key = "k/" + "L".repeat(1022);
+  await th.mediaScope("p1").put(key, new Uint8Array([1]));
+});
+
 test("put with ifAbsent keeps the first bytes", async () => {
   const s = store();
   await s.put("once", seededBytes(8, 4));
