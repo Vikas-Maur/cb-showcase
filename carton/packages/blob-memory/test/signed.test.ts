@@ -32,6 +32,14 @@ test("a signed URL is bound to its method, key and expiry", async () => {
   assert.equal((await local("https://carton.test/api/blob/clip.mp4")).status, 403, "unsigned");
 });
 
+test("a URL signed under one scope (one project's route) is refused under another, though the key and secret match", async () => {
+  const a = createBlobUrlSigner({ secret: "test-secret-test-secret-test-secret!", baseUrl: "https://carton.test/blob/project-a" });
+  const b = createBlobUrlSigner({ secret: "test-secret-test-secret-test-secret!", baseUrl: "https://carton.test/blob/project-b" });
+  const url = await a.sign("GET", "media/clip.mp4", 60);
+  assert.equal(await a.verify(new URL(url), "GET"), "media/clip.mp4");
+  assert.equal(await b.verify(new URL(url.replace("/blob/project-a/", "/blob/project-b/")), "GET"), null);
+});
+
 test("ranges: a-b, a-, -n, unsatisfiable, and multi-range served whole", async () => {
   assert.deepEqual(parseRange("bytes=0-9", 100), { offset: 0, length: 10 });
   assert.deepEqual(parseRange("bytes=90-", 100), { offset: 90, length: 10 });
@@ -51,4 +59,14 @@ test("ranges: a-b, a-, -n, unsatisfiable, and multi-range served whole", async (
   assert.equal(ok.status, 206);
   assert.equal(ok.headers.get("content-range"), "bytes 97-99/100");
   assert.deepEqual([...new Uint8Array(await ok.arrayBuffer())], [97, 98, 99]);
+});
+
+test("list pages in code-point order across the BMP / astral boundary (U+E000 sorts before U+10000)", async () => {
+  const st = new MemoryBlobStore();
+  await st.put("u/\uE000", new Uint8Array([1]));
+  await st.put("u/\u{10000}", new Uint8Array([2]));
+  const first = await st.list("u/", { limit: 1 });
+  assert.deepEqual(first.blobs.map((b) => b.key), ["u/\uE000"]);
+  const second = await st.list("u/", { limit: 1, cursor: first.cursor! });
+  assert.deepEqual(second.blobs.map((b) => b.key), ["u/\u{10000}"]);
 });

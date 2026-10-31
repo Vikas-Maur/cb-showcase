@@ -266,6 +266,19 @@ export function blobStoreSuite(name: string, make: () => Promise<BlobStore>, opt
       await assert.rejects(done.uploadPart(2, bytes(10, 43)));
     });
 
+    test("multipart: an upload is bound to its key: another key can't list, complete or abort it", async () => {
+      const up = await store.createMultipart(k("mp/bound"));
+      const p1 = await up.uploadPart(1, bytes(100, 61));
+      const other = await store.resumeMultipart(k("mp/other"), up.uploadId);
+      await assert.rejects(other.listParts(), "listParts under another key");
+      await assert.rejects(other.complete([p1]), "complete under another key");
+      await other.abort().catch(() => {}); // may refuse or do nothing, but must not touch the upload
+      assert.deepEqual((await up.listParts()).map((p) => p.partNumber), [1], "the upload survived");
+      await up.complete([p1]);
+      eq(await store.get(k("mp/bound")), bytes(100, 61));
+      assert.equal(await store.head(k("mp/other")), null);
+    });
+
     test("multipart: a bogus upload id or part number is refused", async () => {
       await assert.rejects((await store.resumeMultipart(k("mp/bogus"), "no-such-upload")).listParts());
       const up = await store.createMultipart(k("mp/num"));
