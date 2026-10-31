@@ -91,12 +91,7 @@ export interface SyncClientOptions {
   maxMessageBytes?: number;
 }
 
-/** The most presence updates a client sends a second (§12: 10–20 Hz while dragging). */
-export const PRESENCE_PER_SEC = 10;
-
 let CONN = 0;
-/** Refusals about the connection (its token, its branch), not the change: the same on every message it sends. */
-const CONNECTION_REASONS: ReadonlySet<string> = new Set(["forbidden", "read-only branch", "unknown branch", "foreign id"]);
 
 export class SyncClient {
   readonly queue: ReplicaQueue;
@@ -116,9 +111,6 @@ export class SyncClient {
   caughtUp = false;
   private quiesced = false;
   private retry: unknown = null;
-  private presenceAt = -Infinity;
-  private presenceNext: { actor: Change["author"]; state: PresenceState | null } | null = null;
-  private presenceTimer: unknown = null;
   private waiters: ((ok: boolean) => void)[] = [];
   private statusListeners: ((s: SyncStatus) => void)[] = [];
   private _status: SyncStatus = "offline";
@@ -185,9 +177,6 @@ export class SyncClient {
     this.unsubscribe?.();
     this.unsubscribe = null;
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
-    if (this.presenceTimer !== null) this.timers.clearTimeout(this.presenceTimer);
-    this.presenceTimer = null;
-    this.presenceNext = null;
     const c = this.conn;
     this.conn = null;
     c?.close();
@@ -327,7 +316,7 @@ export class SyncClient {
    * hello (§6.3, R10-01, R10-02): what we have, every pending id we sent with every base we sent it on (so the server
    * lists those it already confirmed, scanning (b, b + K + 1] per base), and every rid this replica has used.
    */
-  private hello(onlyFrom = -1, after?: number): ClientMessage {
+  private hello(onlyFrom = -1): ClientMessage {
     const b = this.branchId;
     const pending: PendingClaim[] = [];
     for (const p of this.queue.pending(b)) {
@@ -338,7 +327,6 @@ export class SyncClient {
     }
     const m: ClientMessage = { type: "hello", branchId: b, have: this.queue.headSeq(b), pending, rids: [...this.queue.rids], schemaVersion: this.o.schemaVersion, protocol: PROTOCOL };
     if (this.noKeyframe) m.noKeyframe = true;
-    if (after !== undefined) m.claimsAfter = after;
     if (this.o.blobs) m.envelopes = true;
     return m;
   }
@@ -396,7 +384,7 @@ export class SyncClient {
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
             // the server checked only part of our claims: keep what it found, ask for the rest, act on nothing yet
             this.confirmedSoFar.push(...m.confirmed);
-            return this.send(this.hello(m.uncheckedFrom, m.checkedThrough));
+            return this.send(this.hello(m.uncheckedFrom));
           }
           const confirmed = m.type === "hello" ? [...this.confirmedSoFar.splice(0), ...m.confirmed] : [];
           if (m.type === "changes" && m.rows.length && m.rows[0]!.seq > this.queue.headSeq(b) + 1) return this.resync("a gap in the rows");
@@ -457,18 +445,9 @@ export class SyncClient {
         this.epoch++; // everything still in flight from the dead epoch is dropped by the server; resend all
         this.emit({ type: "reject", id: m.id, reason: m.reason, epoch: m.epoch });
         if (VALIDATION_REASONS.has(m.reason)) {
+          // can't be fixed by resubmitting: it leaves the queue as rejected; the rest is rebased without it
           this.fenced(() => {
-            const p = m.id ? this.queue.pending(b).find((x) => x.id === m.id) : undefined;
-            if (p && this.queue.isEmpty(p)) {
-              // an emptied change (absorbed, or refused here) is only withdrawn: nothing about it is decided by a
-              // refusal, since a copy sent earlier may still be confirmed (round 4 finding 1). One this connection may
-              // not make (its token, its branch) isn't sent again on it; any other answered a push refused for its
-              // content, and the change is withdrawn in the new epoch.
-              if (CONNECTION_REASONS.has(m.reason)) {
-                p.withdrawRefused = this.connId;
-                this.emit({ type: "error", error: `withdraw of ${m.id} refused (${m.reason}): it stays pending` });
-              }
-            } else if (m.id) this.queue.rejectPending(b, m.id, m.reason); // the rest is rebased without it
+            if (m.id) this.queue.rejectPending(b, m.id, m.reason);
             this.defer(() => this.pump(), 1);
           });
           return;
@@ -548,30 +527,8 @@ export class SyncClient {
     this.send(msg);
   }
 
-  /**
-   * Presence goes out at most PRESENCE_PER_SEC times a second: within the interval only the latest state is kept and
-   * sent when it ends, so a drag at 60 Hz costs the relay 10 messages a second and the last position always arrives.
-   * (The server also drops anything over a per-connection cap.)
-   */
   sendPresence(actor: Change["author"], state: PresenceState | null): void {
-    if (!this.conn?.open) return;
-    const now = (this.o.clock ?? Date.now)();
-    const wait = this.presenceAt + 1000 / PRESENCE_PER_SEC - now;
-    if (wait <= 0 && this.presenceTimer === null) {
-      this.presenceAt = now;
-      this.send({ type: "presence", branchId: this.branchId, actor, state });
-      return;
-    }
-    this.presenceNext = { actor, state };
-    if (this.presenceTimer !== null) return;
-    this.presenceTimer = this.timers.setTimeout(() => {
-      this.presenceTimer = null;
-      const p = this.presenceNext;
-      this.presenceNext = null;
-      if (!p || !this.conn?.open) return;
-      this.presenceAt = (this.o.clock ?? Date.now)();
-      this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
-    }, Math.max(0, wait));
+    if (this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor, state });
   }
 
   // ---------------------------------------------------------------- pushing
@@ -598,11 +555,7 @@ export class SyncClient {
         continue;
       }
       if (p.withdrawSent?.conn === this.connId && p.withdrawSent.epoch === this.epoch) continue;
-      if (p.withdrawRefused === this.connId) continue;
       p.withdrawSent = { conn: this.connId, epoch: this.epoch };
-      // a withdraw lands in (head, head + K + 1] like a push: its base joins the claims a reconnect makes, so a lost
-      // answer is found again rather than spent twice (round 4 finding 2)
-      if (!p.sentBases.includes(head)) p.sentBases.push(head);
       this.stats.withdraws++;
       this.emit({ type: "withdraw", id: p.id, epoch: this.epoch });
       this.send({ type: "withdraw", branchId: b, id: p.id, base: head, epoch: this.epoch });

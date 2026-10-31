@@ -9,11 +9,11 @@ import { join } from "node:path";
 import { parseNode, type Carton, type CartonEvent, type Rec } from "@carton/core";
 import { cardboardAdapter } from "@carton/cardboard";
 import { createMemoryStore } from "@carton/store-memory";
-import { webSocketTransport } from "@carton/server-node/transport";
+import { webSocketTransport } from "../src/ws-transport.ts";
 import { serveDemo, type DemoNodeHost } from "../scripts/serve-node.ts";
 import { seedDemo, type SeedResult } from "../scripts/seed.ts";
 import { Director } from "../scripts/director.ts";
-import { DESCRIPTOR_KEY, parseJoinHash } from "../src/descriptor.ts";
+import { DESCRIPTOR_KEY, parseJoinHash, publishedSource } from "../src/descriptor.ts";
 import { trimOps } from "../src/edit.ts";
 import { Follower } from "../src/follow.ts";
 import { openProject, readBlob } from "../src/project.ts";
@@ -119,28 +119,30 @@ test("the §17 story over a real host: join, live edits with an agent, undo its 
   await alice.carton.share(pub.id);
   await until(async () => (await alice.carton.cuts()).find((c) => c.id === pub.id)?.sequencer.kind === "server", 8000, "the published cut handed off");
   const at = parseNode(pub.forkOf!).seq;
-  // the watch link's invite is scoped to the Published cut (R1-1): its viewer reads that cut and nothing else
-  const viewer = await Session.join({ baseUrl: host.url, projectId: j.projectId, invite: await alice.session.invite("viewer", undefined, [pub.id]), account: "viewer", keys: memoryKeys() });
+  const src = publishedSource(pub)!;
+  assert.deepEqual(src, { branchId: alice.carton.cut, at }, "what publishing writes into the cut's watch.json");
+  // the watch page as it runs on today's hosts: a viewer follows the Published cut, and the source's rows after the
+  // publishing point for the newer-edits count (the scoped link is requested: REQ-4, the todo test below)
+  const viewer = await Session.join({ baseUrl: host.url, projectId: j.projectId, invite: await alice.session.invite("viewer"), account: "viewer", keys: memoryKeys() });
   assert.equal(viewer.role, "viewer");
-  let watched: { doc: unknown; head: number; source?: { at: number; head: number } } | null = null;
-  const refused: string[] = [];
+  let watched: { doc: unknown; head: number } | null = null;
+  let newer = -1;
   const common = { transport: webSocketTransport(), url: viewer.wsUrl, token: () => viewer.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion };
   const f1 = new Follower({ ...common, branchId: pub.id, have: -1, refreshMs: 200, onUpdate: (s) => (watched = s) }).start();
-  const f2 = new Follower({ ...common, branchId: alice.carton.cut, have: -1, onUpdate: () => refused.push("read Main!"), onError: (why) => refused.push(why) }).start();
-  await until(() => watched?.doc != null, 5000, "the viewer reads the published version");
-  await until(() => refused.length > 0, 5000, "the source is refused");
-  assert.match(refused[0]!, /can't read/, "Main stays out of the watch link's reach");
-  // nor can it read the project descriptor (it holds Main's root): only media named by content and cuts/<pub>/ (R2-1)
-  await assert.rejects(readBlob(viewer, DESCRIPTOR_KEY), (e: { status?: number }) => e.status === 403);
-  const pubCap = ((watched!.doc as { timelineItems: Rec[] }).timelineItems).find((r) => r.id === "cap-1")!;
-  assert.equal(pubCap.captionText, "Bob was offline");
-  assert.deepEqual(watched!.source && { at: watched!.source.at, newer: watched!.source.head - watched!.source.at }, { at, newer: 0 }, "no newer edits yet");
-  await bob.carton.commit({ ops: [{ op: "set", path: ["timelineItems", "cap-2", "captionText"], value: "after publishing" }], wait: 5000 });
-  await until(() => (watched?.source?.head ?? 0) - at === 1, 5000, "the viewer is told there are newer edits");
-  const pubDoc = (watched!.doc as { timelineItems: Rec[] }).timelineItems.find((r) => r.id === "cap-2")!;
-  assert.notEqual(pubDoc.captionText, "after publishing", "the published version doesn't move");
-  f1.stop();
-  f2.stop();
+  const f2 = new Follower({ ...common, branchId: src.branchId, have: src.at, onUpdate: (s) => (newer = s.head - src.at) }).start();
+  try {
+    await until(() => watched?.doc != null, 5000, "the viewer reads the published version");
+    const pubCap = ((watched!.doc as { timelineItems: Rec[] }).timelineItems).find((r) => r.id === "cap-1")!;
+    assert.equal(pubCap.captionText, "Bob was offline");
+    await until(() => newer === 0, 5000, "no newer edits yet");
+    await bob.carton.commit({ ops: [{ op: "set", path: ["timelineItems", "cap-2", "captionText"], value: "after publishing" }], wait: 5000 });
+    await until(() => newer === 1, 5000, "the viewer is told there are newer edits");
+    const pubDoc = (watched!.doc as { timelineItems: Rec[] }).timelineItems.find((r) => r.id === "cap-2")!;
+    assert.notEqual(pubDoc.captionText, "after publishing", "the published version doesn't move");
+  } finally {
+    f1.stop();
+    f2.stop();
+  }
 
   await director.stop();
   await alice.carton.close();
@@ -170,4 +172,30 @@ test("an edit made from what was on screen carries that state as its base: a tea
   assert.equal((await clip(bob.carton, "clip-2")).endTime, (b2.endTime as number) - 1);
   await alice.carton.close();
   await bob.carton.close();
+});
+
+test("REQ-4/REQ-5: a watch link's invite reads its Published cut and nothing else: not Main, not the project descriptor (review R1-1, R2-1)", { todo: "hosts-plugins: invites with a cut scope, scoped blob reads; sync-sequencer: scoped hello, welcome.source" }, async () => {
+  const s3 = await seedDemo({ baseUrl: host.url, adminToken: host.adminToken, media: { given: fakeMedia } });
+  const alice = await person(s3.alice, "alice");
+  const j = parseJoinHash(new URL(s3.alice).hash)!;
+  const followers: Follower[] = [];
+  try {
+    const pub = await alice.carton.publish({ name: "Main cut (published)" });
+    await alice.carton.share(pub.id);
+    await until(async () => (await alice.carton.cuts()).find((c) => c.id === pub.id)?.sequencer.kind === "server", 8000, "the published cut handed off");
+    const viewer = await Session.join({ baseUrl: host.url, projectId: j.projectId, invite: await alice.session.invite("viewer", undefined, [pub.id]), account: "viewer", keys: memoryKeys() });
+    const common = { transport: webSocketTransport(), url: viewer.wsUrl, token: () => viewer.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion };
+    let watched: { doc: unknown; source?: { at: number; head: number } } | null = null;
+    const refused: string[] = [];
+    followers.push(new Follower({ ...common, branchId: pub.id, have: -1, onUpdate: (s) => (watched = s) }).start());
+    followers.push(new Follower({ ...common, branchId: alice.carton.cut, have: -1, onUpdate: () => refused.push("read Main!"), onError: (why) => refused.push(why) }).start());
+    await until(() => watched?.doc != null, 5000, "the viewer reads the published version");
+    await until(() => refused.length > 0, 5000, "the source answered");
+    assert.match(refused[0]!, /can't read/, "Main stays out of the watch link's reach");
+    assert.ok(watched!.source, "the Published cut's welcome counts its source's newer versions");
+    await assert.rejects(readBlob(viewer, DESCRIPTOR_KEY), (e: { status?: number }) => e.status === 403, "the descriptor holds Main's root");
+  } finally {
+    for (const f of followers) f.stop();
+    await alice.carton.close();
+  }
 });

@@ -7,7 +7,7 @@ import { createRoot } from "react-dom/client";
 import type { Doc } from "@carton/core";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 import { cardboardAdapter } from "@carton/cardboard";
-import { webSocketTransport } from "@carton/server-node/transport";
+import { webSocketTransport } from "./ws-transport.ts";
 import { parseWatchDescriptor, parseWatchHash, watchKey, type WatchDescriptor } from "./descriptor.ts";
 import { Follower } from "./follow.ts";
 import { ImageCache } from "./images.ts";
@@ -83,7 +83,23 @@ async function main(): Promise<void> {
   const render = () => root.render(h(WatchPage, { descriptor, state: { ...state }, images, mediaUrl }));
   media.ready.then(() => ((mediaReady = true), render()), () => {});
   const common = { transport: webSocketTransport(), url: session.wsUrl, token: () => session.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion, onError: (why: string) => ((state.error = why), render()) };
-  // the Published cut alone (the link's token reads nothing else); its welcome counts the source's newer versions
+  // The Published cut, and the count of newer edits in the cut it came from. A host whose welcome on a Published cut
+  // carries `source` (requested of sync-sequencer, REQ-2) gives the count with it, and then a link's token needs to read
+  // nothing else. Without it, the source cut is followed for its rows after the publishing point (no document).
+  let sourceFollower: Follower | null = null;
+  const followSource = (src: { branchId: string; at: number }) => {
+    sourceFollower = new Follower({
+      ...common,
+      onError: () => {}, // a token that may read only the Published cut: no count, the cut still plays
+      branchId: src.branchId,
+      have: src.at,
+      onUpdate: (s) => {
+        state.newer = Math.max(0, s.head - src.at);
+        render();
+      },
+    });
+    sourceFollower.start();
+  };
   new Follower({
     ...common,
     branchId: link.cut,
@@ -92,6 +108,7 @@ async function main(): Promise<void> {
     onUpdate: (s) => {
       state.doc = s.doc;
       if (s.source) state.newer = Math.max(0, s.source.head - s.source.at);
+      else if (!sourceFollower && descriptor.source) followSource(descriptor.source);
       render();
     },
   }).start();

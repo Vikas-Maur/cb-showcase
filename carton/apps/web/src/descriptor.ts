@@ -38,12 +38,27 @@ export interface WatchDescriptor {
   v: 1;
   name: string;
   media: Record<string, SampleMedia>;
+  /**
+   * The cut it was published from and that cut's version at publishing, so the watch page can count the newer edits
+   * there. (Until the host's welcome on a Published cut says this itself: request REQ-2 in the web-demo notes.)
+   */
+  source?: { branchId: string; at: number };
 }
 export const watchKey = (cutId: string) => `cuts/${cutId}/watch.json`;
 export function parseWatchDescriptor(text: string): WatchDescriptor {
   const d = JSON.parse(text) as WatchDescriptor;
   if (d?.v !== 1 || typeof d.name !== "string" || typeof d.media !== "object" || !d.media) throw new Error("this published cut's watch data is unreadable");
+  if (d.source !== undefined && (typeof d.source?.branchId !== "string" || !Number.isInteger(d.source.at) || d.source.at < 0)) delete d.source;
   return d;
+}
+
+/** A Published cut's source: the cut it came from (`source`) and the version its fork node names (`<cut>@<n>`). */
+export function publishedSource(rec: { kind?: string; forkOf: string | null; source?: string }): { branchId: string; at: number } | undefined {
+  if (rec.kind !== "published" || typeof rec.forkOf !== "string") return undefined;
+  const i = rec.forkOf.lastIndexOf("@");
+  const at = Number(rec.forkOf.slice(i + 1));
+  if (i < 1 || !Number.isInteger(at) || at < 0) return undefined;
+  return { branchId: typeof rec.source === "string" ? rec.source : rec.forkOf.slice(0, i), at };
 }
 
 export interface JoinLink {

@@ -126,23 +126,23 @@ export function isStructural(ops: readonly Op[], intent: unknown, timeline: Time
   return false;
 }
 
-/** The field of a malformed change ("bad change"'s detail), or null. */
 function shapeError(ch: Pushed): string | null {
-  if (!ch || typeof ch !== "object") return "change";
-  if (typeof ch.id !== "string" || ch.id.lastIndexOf(".") < 1) return "id";
-  if (!ch.base || !Number.isInteger(ch.base.seq) || ch.base.seq < 0 || !Array.isArray(ch.base.pending)) return "base";
-  if (ch.policy !== "merge" && ch.policy !== "lww") return "policy";
-  if (!Array.isArray(ch.ops)) return "ops";
+  if (!ch || typeof ch !== "object") return "not an object";
+  if (typeof ch.id !== "string" || ch.id.lastIndexOf(".") < 1) return "bad id";
+  if (!ch.base || !Number.isInteger(ch.base.seq) || ch.base.seq < 0 || !Array.isArray(ch.base.pending)) return "bad base";
+  if (ch.policy !== "merge" && ch.policy !== "lww") return "bad policy";
+  if (!Array.isArray(ch.ops)) return "ops not an array";
   for (const k of ["paths", "reads", "trackOrder"] as const) {
     const a = ch[k];
-    if (!Array.isArray(a) || a.some((p) => typeof p !== "string" || !p)) return k;
+    if (!Array.isArray(a)) return `${k} not an array`;
+    for (const p of a) if (typeof p !== "string" || !p) return `bad ${k} entry`;
   }
-  if (!Array.isArray(ch.spans)) return "spans";
+  if (!Array.isArray(ch.spans)) return "spans not an array";
   for (const s of ch.spans) {
-    if (!s || typeof s.track !== "string" || typeof s.lo !== "number" || !(s.hi === null || (typeof s.hi === "number" && s.hi >= s.lo))) return "spans";
+    if (!s || typeof s.track !== "string" || typeof s.lo !== "number" || !(s.hi === null || (typeof s.hi === "number" && s.hi >= s.lo))) return "bad span";
   }
   for (const op of ch.ops) {
-    if (!op || typeof op.op !== "string" || !Array.isArray(op.path) || op.path.length < 1) return "ops";
+    if (!op || typeof op.op !== "string" || !Array.isArray(op.path) || op.path.length < 1) return "bad op";
   }
   return null;
 }
@@ -156,40 +156,36 @@ function shapeError(ch: Pushed): string | null {
  * - a time a change sets is finite, and a start or trim start it sets is ≥ 0;
  * - a change that sets both edges of an item (or both trims) keeps them in order.
  * Invariants that need the record's other fields (an end moved alone below the start) are the clients' merge and the
- * local sequencer's to enforce, as the plan has it: the server keeps no document state. The detail is the record (or
- * field) and what is wrong with it: `set` (a record-level set), `value`, `times`, `trims`, `track`, `NaN`, `< 0`.
+ * local sequencer's to enforce, as the plan has it: the server keeps no document state.
  */
 function invalidValues(ch: Pushed, tl: TimelineConfig): string | null {
-  const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
-  // a start (≥ 0) and an end after it: a clip's times or its trims
-  const ordered = (a: unknown, b: unknown) => num(a) && num(b) && a >= 0 && b > a;
-  // the record an op is on, built only for a detail (never per op on the accept path)
-  const at = (op: Op) => `${String(op.path[0])}/${String(op.path[1])}`;
+  const num = (v: unknown) => typeof v === "number" && Number.isFinite(v);
   const edges = new Map<string, Record<string, unknown>>();
   for (const op of ch.ops) {
     const coll = op.path[0];
-    if ((coll === tl.collection || coll === tl.lanes) && op.path.length === 2 && (op.op === "set" || op.op === "unset")) return `${at(op)}: set`;
+    if ((coll === tl.collection || coll === tl.lanes) && op.path.length === 2 && (op.op === "set" || op.op === "unset")) return `${coll}/${String(op.path[1])}: replace a record by remove and insert`;
     if (coll !== tl.collection) continue;
     if (op.path.length === 2 && op.op === "insert") {
       const v = op.value as Record<string, unknown> | undefined;
-      if (!v || typeof v !== "object") return `${at(op)}: value`;
-      if (!ordered(v[tl.start], v[tl.end])) return `${at(op)}: times`;
-      if (!ordered(v[tl.source], v[tl.sourceEnd])) return `${at(op)}: trims`;
-      if (typeof v[tl.lane] !== "string") return `${at(op)}: track`;
+      if (!v || typeof v !== "object") return `${coll}/${String(op.path[1])}: not a record`;
+      const s0 = v[tl.start], e0 = v[tl.end];
+      if (!num(s0) || !num(e0) || (s0 as number) < 0 || !((e0 as number) > (s0 as number))) return `${coll}/${String(op.path[1])}: bad times`;
+      const ts = v[tl.source], te = v[tl.sourceEnd];
+      if (!num(ts) || !num(te) || (ts as number) < 0 || !((te as number) > (ts as number))) return `${coll}/${String(op.path[1])}: bad trims`;
+      if (typeof v[tl.lane] !== "string") return `${coll}/${String(op.path[1])}: no track`;
     } else if (op.path.length === 3 && op.op === "set") {
       const f = String(op.path[2]);
       if (f === tl.start || f === tl.end || f === tl.source || f === tl.sourceEnd) {
-        if (!num(op.value)) return `${at(op)}/${f}: NaN`;
-        if ((f === tl.start || f === tl.source) && op.value < 0) return `${at(op)}/${f}: < 0`;
+        if (!num(op.value)) return `${coll}/${String(op.path[1])}/${f}: not a number`;
+        if ((f === tl.start || f === tl.source) && (op.value as number) < 0) return `${coll}/${String(op.path[1])}/${f}: negative`;
         const id = String(op.path[1]);
         (edges.get(id) ?? edges.set(id, {}).get(id)!)[f] = op.value;
       }
     }
   }
-  // both edges set by the change: in order (a start set here is already finite and ≥ 0)
   for (const [id, e] of edges) {
-    if (e[tl.start] !== undefined && e[tl.end] !== undefined && !ordered(e[tl.start], e[tl.end])) return `${tl.collection}/${id}: times`;
-    if (e[tl.source] !== undefined && e[tl.sourceEnd] !== undefined && !ordered(e[tl.source], e[tl.sourceEnd])) return `${tl.collection}/${id}: trims`;
+    if (e[tl.start] !== undefined && e[tl.end] !== undefined && !((e[tl.end] as number) > (e[tl.start] as number))) return `${tl.collection}/${id}: end before start`;
+    if (e[tl.source] !== undefined && e[tl.sourceEnd] !== undefined && !((e[tl.sourceEnd] as number) > (e[tl.source] as number))) return `${tl.collection}/${id}: trim end before trim start`;
   }
   return null;
 }
@@ -197,8 +193,7 @@ function invalidValues(ch: Pushed, tl: TimelineConfig): string | null {
 /**
  * Every op is covered by a declared path, a grouped field declares its group path, a reorder its track, and the
  * existence reads the overlap test relies on are declared: the record a field write is under, and the track an item is
- * placed on or moved to (review finding 7: otherwise omitting a read hides a concurrent delete). The detail is the op's
- * path, with what it lacks: nothing (no path covers it), `#<group>`, `#order`, or `read`.
+ * placed on or moved to (review finding 7: otherwise omitting a read hides a concurrent delete).
  */
 function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, field: string) => string | undefined, declared: ReadonlySet<string>): string | null {
   const order = new Set(ch.trackOrder);
@@ -212,18 +207,21 @@ function undeclared(ch: Pushed, tl: TimelineConfig, groupOf: (coll: string, fiel
     if (!covered) return p;
     if (op.path.length >= 3) {
       const coll = String(op.path[0]), field = String(op.path[2]);
-      // the record's own key is the op's key up to its second separator: no re-escaping per op
-      const rec = p.slice(0, p.indexOf("/", p.indexOf("/") + 1));
       const g = groupOf(coll, field);
-      if (g !== undefined && !declared.has(`${rec}/#${g}`)) return `${p} #${g}`;
-      if (coll === tl.lanes && field === "#pos" && !order.has(String(op.path[1]))) return `${p} #order`;
+      if (g !== undefined) {
+        // the record's own key is the op's key up to its second separator: no re-escaping per op
+        const rec = p.slice(0, p.indexOf("/", p.indexOf("/") + 1));
+        if (!declared.has(`${rec}/#${g}`)) return `${p} (group #${g})`;
+      }
+      if (coll === tl.lanes && field === "#pos" && !order.has(String(op.path[1]))) return `${p} (track order)`;
       if (coll === tl.collection || coll === tl.lanes) {
-        if (!reads.has(rec)) return `${p} read`;
-        if (coll === tl.collection && field === tl.lane && op.op === "set" && !reads.has(lanePath(op.value))) return `${p} read`;
+        const rec = p.slice(0, p.indexOf("/", p.indexOf("/") + 1));
+        if (!reads.has(rec)) return `${p} (read of ${rec})`;
+        if (coll === tl.collection && field === tl.lane && op.op === "set" && !reads.has(lanePath(op.value))) return `${p} (read of its track)`;
       }
     } else if (op.path.length === 2 && op.op === "insert" && op.path[0] === tl.collection) {
       const lane = (op.value as Record<string, unknown> | undefined)?.[tl.lane];
-      if (!reads.has(lanePath(lane))) return `${p} read`;
+      if (!reads.has(lanePath(lane))) return `${p} (read of its track)`;
     }
   }
   return null;
@@ -303,7 +301,7 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   const bad = shapeError(ch);
   if (bad) return { kind: "reject", reason: "bad change", detail: bad };
   const head = view.head();
-  if (ch.base.seq > head) return { kind: "reject", reason: "base unknown", detail: `${ch.base.seq} > ${head}` };
+  if (ch.base.seq > head) return { kind: "reject", reason: "base unknown", detail: `base ${ch.base.seq} > head ${head}` };
   if (head - ch.base.seq > K) return { kind: "reject", reason: "behind" };
 
   // One read of the tail since the base (≤ K rows) serves dedup, the causal-past check and the overlap test.
@@ -316,7 +314,7 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
   if (past.size) {
     let found = 0;
     for (const row of tail) if (past.has(row.id)) found++;
-    if (found !== past.size) return { kind: "reject", reason: "base unknown", detail: "pending" };
+    if (found !== past.size) return { kind: "reject", reason: "base unknown", detail: "a pending id it builds on isn't confirmed" };
   }
   // a fold whose result equals its first parent has no ops but is still a DAG node (its merge edge must be recorded,
   // or a later fold of the same cut finds an older base); an undo whose effect is already at the head still marks its
@@ -357,9 +355,8 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
 
   // existence: no insert of a live id; the track an item is placed on must exist (or be inserted by this change)
   const records = new Map<string, RecordWrite>();
-  const key = (coll: string, id: string) => `${coll}\u0000${id}`;
   const liveNow = (coll: string, id: string): boolean => {
-    const w = records.get(key(coll, id));
+    const w = records.get(`${coll}\u0000${id}`);
     return w ? w.alive : view.record(coll, id)?.alive === true;
   };
   for (const op of ch.ops) {
@@ -368,15 +365,15 @@ export function evaluatePush(view: SequencerView, ch: Pushed, cfg: RulesConfig):
     if (op.op === "insert") {
       if (liveNow(coll, id)) return { kind: "reject", reason: "exists", detail: `${coll}/${id}` };
       const lane = coll === tl.collection ? String((op.value as Record<string, unknown>)?.[tl.lane]) : undefined;
-      records.set(key(coll, id), lane === undefined ? { coll, id, alive: true } : { coll, id, alive: true, lane });
+      records.set(`${coll}\u0000${id}`, lane === undefined ? { coll, id, alive: true } : { coll, id, alive: true, lane });
     } else if (liveNow(coll, id)) {
-      records.set(key(coll, id), { coll, id, alive: false });
+      records.set(`${coll}\u0000${id}`, { coll, id, alive: false });
     }
   }
   for (const op of ch.ops) {
     if (op.path[0] !== tl.collection || op.path.length !== 3 || op.path[2] !== tl.lane || op.op !== "set") continue;
     const id = String(op.path[1]);
-    if (liveNow(tl.collection, id)) records.set(key(tl.collection, id), { coll: tl.collection, id, alive: true, lane: String(op.value) });
+    if (liveNow(tl.collection, id)) records.set(`${tl.collection}\u0000${id}`, { coll: tl.collection, id, alive: true, lane: String(op.value) });
   }
   const lanePrefix = `${escapeSegment(tl.lanes)}/`;
   for (const r of ch.reads) {

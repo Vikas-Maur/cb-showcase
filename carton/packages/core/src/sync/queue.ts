@@ -79,8 +79,6 @@ export interface QueuedChange {
   withdrawSent: { conn: number; epoch: number } | null;
   /** Refused here (too large to send) after a copy was sent: emptied, withdrawn, then reported rejected with this. */
   rejecting?: string;
-  /** The connection that refused its withdraw (its token or branch): not withdrawn again on it. */
-  withdrawRefused?: number;
   meta: Record<string, unknown>;
   history?: HistoryFields;
 }
@@ -150,8 +148,6 @@ export class ReplicaQueue {
   readonly statesByVersion = new Map<number, Doc>();
   /** Ids confirmed through a server list inside a stretch held only as placeholders: branch → id → seq (finding 18). */
   private readonly listed = new Map<string, Map<string, number>>();
-  /** `branch\0id` → why: changes refused here whose ids a withdraw spent (rare: kept for the queue's life). */
-  private readonly refused = new Map<string, string>();
   /** The highest placeholder seq per branch: rows above it are all held, so the client can check them itself. */
   private readonly placeholderTop = new Map<string, number>();
   /** Every replica id (process) that committed here; claimed in `hello` (R10-02). */
@@ -522,12 +518,8 @@ export class ReplicaQueue {
       this.queues.set(b, queue.filter((x) => x !== p));
       this.invalidate(b);
     }
-    // a change refused here whose withdraw is now answered: rejected, with the reason it was refused for, and
-    // remembered, so its withdraw row is never read as an absorption later (round 4 finding 4)
-    if (p.rejecting !== undefined) {
-      this.refused.set(`${b}\u0000${p.id}`, p.rejecting);
-      return this.emit({ type: "rejected", branchId: b, change: p, reason: p.rejecting });
-    }
+    // a change refused here whose withdraw is now answered: rejected, with the reason it was refused for
+    if (p.rejecting !== undefined) return this.emit({ type: "rejected", branchId: b, change: p, reason: p.rejecting });
     const cards = p.versions.slice(1).flatMap((v) => v.cards);
     this.emit({ type: "absorbed", branchId: b, change: p, cards, withdrawn });
   }
@@ -540,10 +532,6 @@ export class ReplicaQueue {
     this.rebaseAll(b);
     this.emit({ type: "rejected", branchId: b, change: p, reason });
     return p;
-  }
-  /** Why a change whose withdraw row is in the log was refused here, if it was (it was never absorbed). */
-  refusedReason(b: string, id: string): string | undefined {
-    return this.refused.get(`${b}\u0000${id}`);
   }
   /**
    * Refuse a pending change here (too large to send). Never sent: rejected at once. Sent before, a copy may still be

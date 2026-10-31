@@ -6,10 +6,11 @@ import type { Root } from "react-dom/client";
 import type { Actor, Carton, CutRecord, Doc } from "@carton/core";
 import { fromCarton, CartonProvider } from "@carton/react";
 import { openIdbStore } from "@carton/store-idb";
-import { webSocketTransport } from "@carton/server-node/transport";
+import { webSocketTransport } from "./ws-transport.ts";
 import { App } from "./app.ts";
 import { describeCardWith } from "./cards.ts";
-import { parseDescriptor, watchHash, watchKey, type WatchDescriptor } from "./descriptor.ts";
+import { parseDescriptor, watchHash } from "./descriptor.ts";
+import { ensureWatchFile } from "./watch-file.ts";
 import { ImageCache } from "./images.ts";
 import { LiveDoc } from "./live-doc.ts";
 import { startMedia } from "./media-client.ts";
@@ -56,11 +57,17 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   // Publishing gives a watch link: the Published cut is handed to the host as its own shared cut, and a viewer
   // invite (owners only) lets anyone with the link watch it (§0.1 "Published cut: what the share link shows").
   const links = new Map<string, string>();
+  const watchFile = (rec: CutRecord) =>
+    ensureWatchFile(rec, descriptor, { read: (k) => readBlob(session, k), put: (k, b, t) => putBlob(session, k, b, t), checkout: (c) => carton.checkout(c), keys });
   const watchLink = async (rec: CutRecord): Promise<string | undefined> => {
     if (!rec.forkOf || session.role !== "owner") return undefined;
+    // the cut must be on the host before anyone can watch it (a publish whose hand-off didn't finish)
+    if (rec.sequencer.kind === "local") await carton.share(rec.id);
+    await watchFile(rec);
     const saved = keys.get(`carton.watch.${rec.id}`);
     if (saved) return saved;
-    // a viewer invite scoped to the Published cut: the link reads that cut and nothing else (§14)
+    // asked scoped to the Published cut; today's hosts drop the scope, so the link reads the project like any viewer
+    // (requests REQ-4, REQ-5 in the web-demo notes)
     const invite = await session.invite("viewer", 30 * 24 * 3600_000, [rec.id]);
     const url = `${baseUrl}/watch.html${watchHash({ projectId: session.projectId, cut: rec.id, invite })}`;
     keys.set(`carton.watch.${rec.id}`, url);
@@ -69,12 +76,7 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const publishing: Carton["publish"] = async (opts) => {
     const rec = await carton.publish(opts);
     await carton.share(rec.id);
-    // what the watch page may read besides the cut: its name and only the media its document uses (review R2-1)
-    const doc = await carton.checkout(rec.id);
-    const used = new Set(((doc.timelineItems ?? []) as { mediaItemId?: string }[]).map((r) => r.mediaItemId).filter((x): x is string => !!x));
-    const watch: WatchDescriptor = { v: 1, name: String(doc.name ?? descriptor.name), media: Object.fromEntries(Object.entries(descriptor.media).filter(([id]) => used.has(id))) };
-    await putBlob(session, watchKey(rec.id), new TextEncoder().encode(JSON.stringify(watch)), "application/json");
-    const url = await watchLink(rec);
+    const url = await watchLink((await carton.cuts()).find((c) => c.id === rec.id) ?? rec);
     if (url) links.set(rec.id, url);
     return rec;
   };
@@ -90,7 +92,7 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
       return typeof v === "function" ? v.bind(t) : v;
     },
   });
-  for (const c of await carton.cuts()) if (c.kind === "published") void watchLink(c).then((u) => u && links.set(c.id, u));
+  for (const c of await carton.cuts()) if (c.kind === "published") void watchLink(c).then((u) => u && links.set(c.id, u), () => {}); // retried on the next open
 
   const ui = fromCarton(handle, {
     me,

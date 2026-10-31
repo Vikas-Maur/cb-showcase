@@ -11,7 +11,7 @@ import { Carton, hashDoc, type CutRecord } from "@carton/core";
 import type { BlobStore } from "@carton/core/plugins";
 import { cardboardAdapter } from "@carton/cardboard";
 import { createMemoryStore } from "@carton/store-memory";
-import { webSocketTransport } from "@carton/server-node/transport";
+import { webSocketTransport } from "../src/ws-transport.ts";
 import { demoDoc, type SampleMedia } from "../src/demo-doc.ts";
 import { DESCRIPTOR_KEY, joinHash, type ProjectDescriptor } from "../src/descriptor.ts";
 import { putBlob } from "../src/project.ts";
