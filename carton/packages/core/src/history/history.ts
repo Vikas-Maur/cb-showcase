@@ -99,6 +99,7 @@ export class History {
   #rid: string;
   #n = 0;
   #clock: () => number;
+  #nextId: () => string;
   #projectId: string | null;
   #current = "";
   readonly #cuts = new Map<string, Cut>();
@@ -116,10 +117,11 @@ export class History {
   /** Called after a change is confirmed on a cut this replica sequences (Carton persists it). */
   onConfirmed: ((cutId: string, change: ConfirmedChange) => void) | null = null;
 
-  constructor(schema: Schema, { name = "replica", rid = randomHex(12), clock = () => Date.now(), projectId = null, keyframeEvery = 64 }: HistoryOptions = {}) {
+  constructor(schema: Schema, { name = "replica", rid = randomHex(12), clock = () => Date.now(), projectId = null, keyframeEvery = 64, nextId }: HistoryOptions = {}) {
     this.schema = schema;
     this.name = name;
     this.#rid = rid;
+    this.#nextId = nextId ?? (() => `${this.#rid}.${++this.#n}`);
     this.#clock = clock;
     this.#projectId = projectId;
     this.K = keyframeEvery;
@@ -148,13 +150,6 @@ export class History {
   }
   get rid(): string {
     return this.#rid;
-  }
-  /** The next change number of this replica (persisted so ids never repeat after a reopen with the same rid). */
-  get counter(): number {
-    return this.#n;
-  }
-  set counter(n: number) {
-    this.#n = Math.max(this.#n, n);
   }
   get local() {
     return this.#local;
@@ -281,6 +276,19 @@ export class History {
     if (c.sq) c.sq.load(fresh);
     else (c.log as ConfirmedChange[]).push(...fresh);
     for (const r of fresh) this.#confirmed(c, r);
+  }
+
+  /** What an import taught this replica (lineage nodes, carried states, last authors, exports made), to persist. */
+  knowledge(): { lineage: DagNode[]; states: [string, Doc][]; authors: [NodeId, Record<PathKey, Actor>][]; exports: [NodeId, { to: string; at: number }[]][] } {
+    return { lineage: [...this.#lineage.values()], states: [...this.#states], authors: [...this.#importedAuthors], exports: [...this.#exportsMade] };
+  }
+  /** Restore persisted knowledge (before the cuts that fork from lineage nodes). */
+  loadKnowledge(k: Partial<ReturnType<History["knowledge"]>>): void {
+    for (const n of k.lineage ?? []) this.#lineage.set(n.id, n);
+    for (const [h, d] of k.states ?? []) this.#states.set(h, d);
+    for (const [n, a] of k.authors ?? []) this.#importedAuthors.set(n, a);
+    for (const [n, e] of k.exports ?? []) this.#exportsMade.set(n, e);
+    this.#anc.clear();
   }
 
   // ------------------------------------------------------------ refs and pins (§5.2)
@@ -412,7 +420,7 @@ export class History {
       if (!isEmptyMap(maps)) intent = { maps, inferred: true };
     }
     const change = {
-      id: o.id ?? `${this.#rid}.${++this.#n}`,
+      id: o.id ?? this.#nextId(),
       author: o.author,
       branchId: cutId,
       intent,
