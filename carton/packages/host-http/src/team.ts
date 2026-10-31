@@ -13,9 +13,10 @@
 //
 // A team object can't be overwritten by another project once it is sound: a write of `mf/<hash>` must verify against
 // the hash, and a write of `m/<hash>` whose stored object already has the manifest's size is a no-op (media's own
-// upload replaces only a wrong-sized object, and the §11 repair path removes a damaged one). Proxy pointers (`px/`)
-// and everything else stay per project: a pointer isn't self-verifying, so one project could otherwise steer
-// another's proxy reuse.
+// upload replaces only a wrong-sized object, and the §11 repair path removes a damaged one). Bytes come after their
+// manifest, as media's upload already does it: an `m/<hash>` write needs the team's verified manifest, and its size
+// (a PUT's body, a multipart upload's parts) must be the manifest's. Proxy pointers (`px/`) and everything else stay
+// per project: a pointer isn't self-verifying, so one project could otherwise steer another's proxy reuse.
 //
 // Grants live outside the media scope (`grants` is a host-only store), so no client can write one. They are never
 // revoked: a project that drops a media record keeps the right to the bytes it once had.
@@ -84,6 +85,12 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
     if (key.startsWith("mf/")) return m ? info : null;
     return m && m.size === info.size ? info : null;
   };
+  // the team's verified manifest, which a write of `m/<hash>` needs
+  const manifestFor = async (hash: string): Promise<Manifest> => {
+    const m = await manifestOf(hash);
+    if (!m) throw new BlobError("PreconditionFailed", `no verified manifest for ${hash}: write mf/${hash} first`);
+    return m;
+  };
   const wrap = (u: MultipartUpload, hash: string): MultipartUpload => ({
     key: u.key,
     uploadId: u.uploadId,
@@ -96,6 +103,10 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
         await u.abort().catch(() => {});
         return kept;
       }
+      const m = await manifestFor(hash);
+      const sizes = new Map((await u.listParts()).map((p) => [p.partNumber, p.size]));
+      const total = parts.reduce((n, p) => n + (sizes.get(p.partNumber) ?? Number.NaN), 0);
+      if (total !== m.size) throw new BlobError("InvalidPart", `the parts hold ${total} bytes; the manifest says ${m.size}`);
       return u.complete(parts);
     },
     abort: () => u.abort(),
@@ -122,6 +133,10 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
       await grant(hash);
       const kept = await keeper(key, hash);
       if (kept) return kept;
+      if (key.startsWith("m/")) {
+        const m = await manifestFor(hash);
+        if (data.byteLength !== m.size) throw new BlobError("InvalidPart", `${data.byteLength} bytes; the manifest says ${m.size}`);
+      }
       return team.put(key, data, opts);
     },
     async get(key: string, range?: ByteRange) {
@@ -145,6 +160,9 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
     async createMultipart(key, opts) {
       const hash = shared(key);
       if (!hash) return project.createMultipart(key, opts);
+      // a manifest is small and written whole; bytes need their manifest first (and multipart is only for bytes)
+      if (key.startsWith("mf/")) throw new BlobError("InvalidKey", "a manifest is written whole, with put");
+      await manifestFor(hash);
       await grant(hash);
       return wrap(await team.createMultipart(key, opts), hash);
     },
