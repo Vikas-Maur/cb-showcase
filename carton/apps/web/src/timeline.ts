@@ -208,7 +208,12 @@ interface ClipProps {
   onCancel: () => void;
 }
 
+// A bench (bench/burst.ts) sets this object to count clip renders under live sync; otherwise it is absent.
+const renders = () => (globalThis as { __cartonRenders?: { clip?: number } }).__cartonRenders;
+
 const Clip = memo(function Clip(c: ClipProps) {
+  const count = renders();
+  if (count) count.clip = (count.clip ?? 0) + 1;
   const isCaption = c.rec.type === "caption";
   const label = isCaption ? String(c.rec.captionText ?? "") : String(c.rec.name ?? c.rec.id);
   const strip = c.strip;
