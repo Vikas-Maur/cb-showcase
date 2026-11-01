@@ -250,13 +250,18 @@ module.exports = ({ dir, slice, who, codec }) => {
       if (out.merged) self.emit?.({ kind: "changed", id, bundlePath: entry?.bundlePath });
       return { document: doc, changed: true };
     },
-    // H1, H3: displace-then-install in place of rename(tmp, file).
-    install: (tmp, file, seenStamp) => (carton() ? carton().install(tmp, file, seenStamp) : require("node:fs/promises").rename(tmp, file)),
+    // H1, H3: displace-then-install in place of rename(tmp, file). rev: project.json's stateUpdatedAt as writeNow wrote
+    // it (the install then needn't parse the file for it).
+    install: (tmp, file, seenStamp, rev) => (carton() ? carton().install(tmp, file, seenStamp, rev) : require("node:fs/promises").rename(tmp, file)),
     // H8 (worker): the bundle's timeline.tsx is the Materializer's (sync/views.js): Cardboard's watcher hands a change
     // of it over instead of applying it.
     // (a facade without them never owns it: Cardboard's own apply runs)
     timelineOwned: (dir) => { const c = carton(); return typeof c?.timelineOwned === "function" && !!c.timelineOwned(dir); },
     timelineEvent: (dir) => carton()?.timelineEvent?.(dir),
+    // H8: after a save, Cardboard's mirror prints timeline.tsx and writes it (sync) only where the file is its own. Where
+    // the Materializer prints it, the facade's install dropped that print unread; now it isn't made. (A facade without
+    // mirrorOwned never owns it: Cardboard's own sync runs.)
+    mirrorOwned: async (dir) => { const c = carton(); return typeof c?.mirrorOwned === "function" && !!(await c.mirrorOwned(dir)); },
     // H3: timeline.tsx is written the same way, from a temp file next to it (not at all where the Materializer writes
     // it: the facade's install drops it).
     async writeFile(file, text) {

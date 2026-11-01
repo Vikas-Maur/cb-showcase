@@ -31,10 +31,36 @@ const errText = (e) => (e && e.message) || String(e);
 
 // Cardboard's own GUI save projection, cut out of the editor bundle at build time (scripts/carton/fmsv.js).
 let gui = null;
-const P = () => (gui ??= (() => {
+const P = () => (gui ??= remembered((() => {
   try { return require(path.join(__dirname, "fmsv.cjs")); }
   catch (e) { warnOnce("fmsv", "the editor's save projection is missing; GUI saves are diffed as they are: " + errText(e)); return (i) => i; }
-})());
+})()));
+// projectGuiSave projects every item of the save's base through P, on every GUI save: with a few hundred items that was
+// most of the save's work (P copies each item through JSON). P is a pure function of the item's values, and the base's
+// items are Carton's own records, deep-frozen and kept by identity while they don't change, so each one's projection
+// is computed once and reused: a save then projects only the items changed since the base it was made on. Only a
+// deep-frozen item is remembered (one that can never change); anything else is projected each time, as before. The
+// projection kept is frozen too, so nothing that reads it can change what the next save compares against.
+const frozenDeep = new WeakSet(), projections = new WeakMap();
+const isFrozenDeep = (v) => {
+  if (v === null || typeof v !== "object" || frozenDeep.has(v)) return true;
+  if (!Object.isFrozen(v)) return false;
+  for (const x of Object.values(v)) if (!isFrozenDeep(x)) return false;
+  frozenDeep.add(v); // its values can't change, so neither can the answer
+  return true;
+};
+const freezeAll = (v) => {
+  if (v !== null && typeof v === "object" && !Object.isFrozen(v)) { Object.freeze(v); for (const x of Object.values(v)) freezeAll(x); }
+  return v;
+};
+function remembered(p) {
+  return (item) => {
+    if (item === null || typeof item !== "object" || !isFrozenDeep(item)) return p(item);
+    let out = projections.get(item);
+    if (out === undefined) projections.set(item, (out = freezeAll(p(item))));
+    return out;
+  };
+}
 
 // ---------------------------------------------------------------- one Carton per bundle
 const opened = new Map(); // bundlePath → Promise<LocalCarton | null>
@@ -164,6 +190,15 @@ function timelineEvent(bundlePath) {
 async function workerWritesTimeline(lc) {
   if (inWorker) return false;
   try { const row = await lc.lease.read(); return row?.kind === "worker" && row.expires > Date.now(); } catch { return false; }
+}
+// Whether Cardboard's mirror leaves timeline.tsx to Carton after a save (the store bridge's mirrorOwned): the same test
+// install() makes before it drops Cardboard's print of the file, made before the print, so the print isn't made at all.
+// In the worker that is the Materializer running for the bundle; in cb, the worker holding the lease.
+async function mirrorOwned(bundlePath) {
+  if (timelineOwned(bundlePath)) return true;
+  if (inWorker) return false;
+  const lc = await open(bundlePath);
+  return !!lc && (await workerWritesTimeline(lc));
 }
 async function extOpenOptions(o) {
   let out = {};
@@ -373,10 +408,13 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 const readSeen = (file) => { try { return JSON.parse(fs.readFileSync(seenFile(file), "utf8")); } catch { return {}; } };
 // What Carton wrote at each path, shared by every process on the machine: a displaced file with one of these hashes is
 // Carton's own and goes; anything else is held as a foreign save. Losing an entry to a race only keeps a file.
-const markSeen = async (file, hash) => {
-  const all = readSeen(file), name = path.basename(file);
+// `held`: the install's own copy of seen.json, read once when it took the bundle's install lock (every writer of the
+// file holds that lock, so the copy stays current while it is held; it is updated here and written whole, as before).
+// Under the lock .carton/ exists (the lock is a folder in it). Without one, the file is read and the folder made here.
+const markSeen = async (file, hash, held) => {
+  const all = held ?? readSeen(file), name = path.basename(file);
   all[name] = [hash, ...(all[name] ?? []).filter((h) => h !== hash)].slice(0, SEEN_KEEP);
-  fs.mkdirSync(path.dirname(seenFile(file)), { recursive: true });
+  if (!held) fs.mkdirSync(path.dirname(seenFile(file)), { recursive: true });
   const tmp = seenFile(file) + "." + process.pid + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(all));
   // On Windows a reader (another process, an indexer) holding the old file makes the rename fail busy for a moment.
@@ -431,7 +469,9 @@ const revIn = (file, bytes) => {
   return m ? Number(m[1]) : undefined;
 };
 
-async function install(tmp, file, seenStamp) {
+// `rev`: the rev the caller wrote into the file (the store's writeNow passes project.json's stateUpdatedAt), so a large
+// project.json isn't parsed again on every save just to read it back; without one, it is read from the file.
+async function install(tmp, file, seenStamp, rev) {
   const bundle = path.dirname(file);
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   const lc = await open(bundle);
@@ -443,7 +483,7 @@ async function install(tmp, file, seenStamp) {
     const bytes = fs.readFileSync(tmp);
     // A writer whose state is no longer head (another process committed and installed after it) doesn't install: the
     // newer state is, or is about to be, on disk. It returns false, so the store reads the disk again.
-    const ref = await refOf(lc, revIn(file, bytes));
+    const ref = await refOf(lc, Number.isFinite(rev) && path.basename(file) === "project.json" ? rev : revIn(file, bytes));
     if (ref) {
       const head = (await lc.carton.head()).ref;
       if (ref.branchId !== head.branchId || ref.seq < head.seq) return fs.rmSync(tmp, { force: true }), false;
@@ -454,17 +494,20 @@ async function install(tmp, file, seenStamp) {
       installs.set(file, s);
     }
     const journal = readJournal(bundle);
-    await sweep(file, s, journal);
+    // seen.json once per install, not once per step (sweep, markSeen, settle each read it): a save's install reads it
+    // once and writes it once
+    const seen = readSeen(file);
+    await sweep(file, s, journal, seen);
     // Taken over while waiting (this process was stalled): the new holder installs.
     if (!mine()) return fs.rmSync(tmp, { force: true }), false;
     const r = await displaceThenInstall(file, tmp, s.files.next, { ...BUSY, noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null, ...(testHooks.between ? { between: testHooks.between } : {}) });
     // Taken over while installing (stalled for a minute): the last file displaced may be the successor's, newer than
     // ours. It is put back below, under the lock taken again, only if it is still newer than what is on disk then.
     if (!mine()) recover = r.displaced.at(-1) ?? null, installed = false;
-    await markSeen(file, sha(bytes));
+    await markSeen(file, sha(bytes), seen);
     // The file to put back isn't held yet: a review before the put-back would delete it as Carton's own. It is
     // journaled now, so a later sweep finds it if this process exits before the put-back decides.
-    await settle(file, s, r.displaced.filter((p) => p !== recover), journal, { seenStamp });
+    await settle(file, s, r.displaced.filter((p) => p !== recover), journal, { seenStamp, held: seen });
     if (recover) s.mine.add(recover), (journal[path.basename(recover)] = { at: Date.now(), stamp: await statStamp(recover, BUSY) });
     await writeJournal(bundle, journal);
     if (testHooks.installed) await testHooks.installed(file);
@@ -484,8 +527,8 @@ async function install(tmp, file, seenStamp) {
 // Carton wrote (its hash in seen.json) goes only if its bytes and stamp are still the same after the hold. An in-place
 // writer that opened it just before and writes after is caught then (P10 settle-2); anything else is a foreign save,
 // imported by the review. Each is journaled with when it was moved and its stamp then, for the sweep.
-async function settle(file, s, paths, journal, { seenStamp = null, firstOwn = s.own } = {}) {
-  const seen = new Set(readSeen(file)[path.basename(file)] ?? []);
+async function settle(file, s, paths, journal, { seenStamp = null, firstOwn = s.own, held } = {}) {
+  const seen = new Set((held ?? readSeen(file))[path.basename(file)] ?? []);
   for (const [i, p] of paths.entries()) {
     s.mine.add(p);
     const b = fs.readFileSync(p), st = await statStamp(p, BUSY);
@@ -493,7 +536,7 @@ async function settle(file, s, paths, journal, { seenStamp = null, firstOwn = s.
     const h = sha(b), mine = (i === 0 && seenStamp && st === seenStamp) || seen.has(h);
     if (!mine) s.foreign = true;
     // The file the writer read is known from now on, so a later process can sweep it if this one exits first.
-    else if (!seen.has(h)) await markSeen(file, h);
+    else if (!seen.has(h)) await markSeen(file, h, held);
     s.files.hold([p], mine ? { bytes: b, stamp: st } : i === 0 ? firstOwn : null);
   }
 }
@@ -564,12 +607,14 @@ const writeJournal = async (bundle, j) => {
 // Files an earlier process displaced and exited before its hold ended: one moved aside over 10 s ago, untouched since
 // (its stamp is the one journaled then) and holding a state Carton wrote, goes; anything else stays for a person to
 // look at (importing an old file now would revert newer changes). Runs under the install lock.
-async function sweep(file, s, journal) {
+async function sweep(file, s, journal, held) {
   const dir = path.join(path.dirname(file), ".carton", "displaced");
   let names;
   try { names = fs.readdirSync(dir); } catch { return; }
-  const seen = new Set(readSeen(file)[path.basename(file)] ?? []), now = Date.now();
-  for (const n of Object.keys(journal)) if (!names.includes(n)) delete journal[n];
+  const seen = new Set((held ?? readSeen(file))[path.basename(file)] ?? []), now = Date.now();
+  // (a set: a burst of saves leaves hundreds of files here until their review, and this runs at every install)
+  const present = new Set(names);
+  for (const n of Object.keys(journal)) if (!present.has(n)) delete journal[n];
   for (const n of names) {
     const p = path.join(dir, n), j = journal[n];
     if (s.mine.has(p) || !j || now - j.at < 10_000) continue;
@@ -621,6 +666,7 @@ export const cardboard14 = {
   install,
   timelineOwned,
   timelineEvent,
+  mirrorOwned,
   // H11: which files in .scratch/views/ are Carton's (the store bridge's Save As walk and Open Project scrub)
   cartonViewFile,
   headProject,
