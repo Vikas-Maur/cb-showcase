@@ -73,6 +73,18 @@ export class Session {
     return s;
   }
 
+  /**
+   * Make a new project on a host with open creation, with this install as its first owner (no invite, no token): the
+   * host claims the id once, so an id already in use answers 409.
+   */
+  static async create(o: { baseUrl: string; projectId: string; account: string; keys: KeyStore; fetch?: typeof fetch }): Promise<Session> {
+    const f = o.fetch ?? fetch.bind(globalThis);
+    const r = await post<{ token: string; context: AuthContext }>(`${o.baseUrl}/api/projects/${o.projectId}/create`, { account: o.account, installKey: Session.installKey(o.keys) }, f);
+    const s = new Session(o.baseUrl, o.projectId, r.token, r.context, o.keys, f, slotKey(o.projectId));
+    s.#save();
+    return s;
+  }
+
   /** The session this install saved for the project, refreshed if it is close to expiry; null when there is none. */
   static async resume(o: { baseUrl: string; projectId: string; keys: KeyStore; fetch?: typeof fetch; slot?: string }): Promise<Session | null> {
     const raw = o.keys.get(slotKey(o.projectId, o.slot));

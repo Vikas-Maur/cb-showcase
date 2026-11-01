@@ -1,6 +1,6 @@
 // Serve the web demo from server-node (PLAN §3.1: the same client against the Node host, proving the plug-in
 // boundary): the HTTP API, the WebSocket sequencer, blob-fs media, and the built client as static files.
-//   node scripts/serve-node.ts [--port 8787] [--data <dir>] [--static <dir>] [--max-ms 7200000]
+//   node scripts/serve-node.ts [--port 8787] [--data <dir>] [--static <dir>] [--max-ms 7200000] [--open-create]
 // Prints one JSON line: {"url": "...", "adminToken": "..."}. Local use only. The auth secret and admin token come from
 // CARTON_AUTH_SECRET / CARTON_ADMIN_TOKEN, else they are made once per data dir (never in code).
 
@@ -29,13 +29,13 @@ function secretIn(dir: string, name: string, env: string | undefined): string {
 }
 
 /** `schemaVersion`: only for a test of an older host (the host's default is Cardboard's schema version). */
-export async function serveDemo(o: { dataDir: string; staticDir: string; port?: number; host?: string; sessionTtlMs?: number; schemaVersion?: number }): Promise<DemoNodeHost> {
+export async function serveDemo(o: { dataDir: string; staticDir: string; port?: number; host?: string; sessionTtlMs?: number; schemaVersion?: number; openCreate?: boolean | { perDay?: number }; maxUploadBytes?: number }): Promise<DemoNodeHost> {
   mkdirSync(o.dataDir, { recursive: true });
   const secret = secretIn(o.dataDir, "auth-secret", process.env.CARTON_AUTH_SECRET);
   const adminToken = secretIn(o.dataDir, "admin-token", process.env.CARTON_ADMIN_TOKEN);
   const auth = createHmacAuth({ secret, ...(o.sessionTtlMs ? { sessionTtlMs: o.sessionTtlMs } : {}) });
   const blobs = createFsBlobStore({ root: join(o.dataDir, "blobs"), durable: false });
-  const host = await startNodeHost({ dataDir: o.dataDir, auth, secret, blobs, port: o.port ?? 0, host: o.host ?? "127.0.0.1", staticDir: o.staticDir, adminToken, ...(o.schemaVersion !== undefined ? { schemaVersion: o.schemaVersion } : {}), onError: (e) => console.error("host error:", e) });
+  const host = await startNodeHost({ dataDir: o.dataDir, auth, secret, blobs, port: o.port ?? 0, host: o.host ?? "127.0.0.1", staticDir: o.staticDir, adminToken, ...(o.openCreate ? { openCreate: o.openCreate } : {}), ...(o.maxUploadBytes ? { maxUploadBytes: o.maxUploadBytes } : {}), ...(o.schemaVersion !== undefined ? { schemaVersion: o.schemaVersion } : {}), onError: (e) => console.error("host error:", e) });
   return { host, url: host.httpUrl, adminToken, close: () => host.close() };
 }
 
@@ -46,7 +46,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   const dataDir = resolve(arg("--data", join(process.env.HOME ?? ".", "gfv-scratch", "carton", "web-demo", "node-host"))!);
   const staticDir = resolve(arg("--static", join(here, "..", "dist"))!);
   const maxMs = Number(arg("--max-ms", "7200000"));
-  const d = await serveDemo({ dataDir, staticDir, port: Number(arg("--port", "8787")) });
+  const d = await serveDemo({ dataDir, staticDir, port: Number(arg("--port", "8787")), ...(args.includes("--open-create") ? { openCreate: true } : {}) });
   console.log(JSON.stringify({ url: d.url, adminToken: d.adminToken }));
   const stop = async () => {
     await d.close();

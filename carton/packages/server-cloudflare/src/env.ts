@@ -35,4 +35,10 @@ export interface Env {
   // store's claim and grant check), and Cloudflare limits a Worker request's subrequests, R2 calls included. The
   // client asks again for the rest, so a lower value costs requests, never answers.
   BLOB_HEADS_PER_REQUEST?: string;
+  // Open creation (the free web demo): "1" lets anyone who opens the site make a project and be its owner, with no
+  // admin token. Off unless set. OPEN_CREATE_PER_DAY caps the projects one IP address makes per UTC day (default 10).
+  OPEN_CREATE?: string;
+  OPEN_CREATE_PER_DAY?: string;
+  // the largest file one upload stores, in bytes (default: none; 200 MiB when OPEN_CREATE is on)
+  MAX_UPLOAD_BYTES?: string;
 }

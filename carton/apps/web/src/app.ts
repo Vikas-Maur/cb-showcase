@@ -32,7 +32,8 @@ import {
   type Cut,
   type Side,
 } from "@carton/react";
-import { ITEMS, type SampleMedia } from "./demo-doc.ts";
+import { ITEMS, mediaOf, type SampleMedia } from "./demo-doc.ts";
+import type { Uploads } from "./upload.ts";
 import { clipOf, fieldOps } from "./edit.ts";
 import type { ImageCache } from "./images.ts";
 import type { LiveDoc } from "./live-doc.ts";
@@ -51,7 +52,13 @@ export interface AppProps {
   session: Session;
   me: Actor;
   name: string;
+  /** The descriptor's media; clips added since come from the document (mediaOf). */
   media: Record<string, SampleMedia>;
+  /** Uploads from this page, and adding a video file (checked, on the timeline at once, then up). */
+  uploads: Uploads;
+  addVideo: (file: File) => Promise<void>;
+  /** A clip this page plays from its own file while it uploads. */
+  localUrl: (hash: string) => string | undefined;
   presence: PresenceSender;
   images: ImageCache;
   mediaUrl: (hash: string) => string;
@@ -78,7 +85,7 @@ export function App(p: AppProps) {
   );
   const previewDoc = useStore(p.previewDoc);
   const mediaReady = useStore(p.mediaReady);
-  const mediaUrl = useCallback((hash: string) => (mediaReady ? p.mediaUrl(hash) : ""), [mediaReady, p.mediaUrl]);
+  const mediaUrl = useCallback((hash: string) => p.localUrl(hash) ?? (mediaReady ? p.mediaUrl(hash) : ""), [mediaReady, p.mediaUrl, p.localUrl]);
   const preview = usePreview();
   const waiting = useStore(p.waiting);
   useSyncExternalStore(
@@ -86,6 +93,7 @@ export function App(p: AppProps) {
     () => p.images.version,
   );
   const doc = previewDoc ?? head;
+  const media = useMemo(() => mediaOf(doc, p.media), [doc, p.media]);
   // a preview is read-only (§9 R2-16), and so is a tab that doesn't hold this person's push lock
   const readOnly = !!previewDoc || waiting;
   const [time, setTime] = useState(0);
@@ -130,13 +138,48 @@ export function App(p: AppProps) {
   );
   const onBlocked = useCallback(() => (waiting ? setError("This project is open in another tab. Edit it there, or close that tab: this one takes over.") : ui.blockEdit()), [ui, waiting]);
 
+  const canAdd = (p.session.role === "owner" || p.session.role === "editor") && !readOnly;
+  const addFiles = useCallback(
+    async (files: Iterable<File>) => {
+      for (const f of files) {
+        try {
+          await p.addVideo(f);
+        } catch (e) {
+          setError((e as Error).message);
+        }
+      }
+    },
+    [p.addVideo],
+  );
+  // drop video files anywhere on the editor
+  const [dropping, setDropping] = useState(false);
+  const dragHasFiles = (e: DragEvent) => !!e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  const dropHandlers = canAdd
+    ? {
+        onDragOver: (e: DragEvent) => {
+          if (!dragHasFiles(e)) return;
+          e.preventDefault();
+          setDropping(true);
+        },
+        onDragLeave: (e: DragEvent) => {
+          if (!e.relatedTarget) setDropping(false);
+        },
+        onDrop: (e: DragEvent) => {
+          if (!dragHasFiles(e)) return;
+          e.preventDefault();
+          setDropping(false);
+          void addFiles([...(e.dataTransfer?.files ?? [])]);
+        },
+      }
+    : {};
+
   const clip = selected ? clipOf(doc, selected) : undefined;
   const length = useMemo(() => Math.max(0, ...((doc[ITEMS] ?? []) as Rec[]).map((r) => r.endTime as number)), [doc]);
 
   return h(
     "div",
-    { className: "cb-app", "data-carton-skin": "cardboard" },
-    h(TopBar, { ...p, onFoldIn: (from: Cut, into: Cut) => setFold({ from, into }) }),
+    { className: "cb-app", "data-carton-skin": "cardboard", ...dropHandlers },
+    h(TopBar, { ...p, canAdd, onFiles: addFiles, onFoldIn: (from: Cut, into: Cut) => setFold({ from, into }) }),
     waiting ? h("div", { className: "cb-banner", role: "status" }, "This project is open in another tab. Edit it there; this tab is read-only and takes over once that one closes.") : null,
     h(
       "div",
@@ -148,7 +191,7 @@ export function App(p: AppProps) {
           "div",
           { className: "cb-viewer" },
           h(PreviewBanner, { className: "cb-preview-banner" }),
-          h(Player, { doc, media: p.media, time, playing, onTime: setTime, onPause: () => setPlaying(false), mediaUrl, poster: (k: string) => p.images.get(k) }),
+          h(Player, { doc, media, time, playing, onTime: setTime, onPause: () => setPlaying(false), mediaUrl, poster: (k: string) => p.images.get(k) }),
           h(
             "div",
             { className: "cb-transport" },
@@ -157,7 +200,7 @@ export function App(p: AppProps) {
             preview ? h("span", { className: "cb-dim" }, `Previewing ${preview.label}: read-only`) : null,
           ),
         ),
-        h(Inspector, { clip, readOnly, onEdit, base: () => p.live.base(), onBlocked, media: p.media }),
+        h(Inspector, { clip, readOnly, onEdit, base: () => p.live.base(), onBlocked, media }),
       ),
       h(
         "aside",
@@ -172,11 +215,15 @@ export function App(p: AppProps) {
     h(
       "div",
       { className: "cb-bottom" },
-      h(Timeline, { doc, media: p.media, time, onSeek: (t: number) => (setPlaying(false), setTime(t)), selected, onSelect: setSelected, onEdit, base: () => p.live.base(), presence: p.presence, readOnly, onBlocked, image: (k: string) => p.images.get(k),
+      ((doc[ITEMS] ?? []) as Rec[]).length === 0
+        ? h("div", { className: "cb-empty-timeline", "data-testid": "empty-timeline" }, canAdd ? "Add video to start: drop files here, or use Add video at the top." : "Nothing on the timeline yet.")
+        : null,
+      h(Timeline, { doc, media, time, onSeek: (t: number) => (setPlaying(false), setTime(t)), selected, onSelect: setSelected, onEdit, base: () => p.live.base(), presence: p.presence, readOnly, onBlocked, image: (k: string) => p.images.get(k),
         rulerOverlay: (timeToX: (t: number) => number, layoutKey: unknown) => h(CommentMarkers, { comments: p.comments, timeToX, layoutKey, selected: thread, onSelect: selectThread, className: "cb-tl-comments" }),
       }),
     ),
-    watch ? h(WatchDialog, { ...watch, carton: p.carton, media: p.media, images: p.images, onClose: () => setWatch(null) }) : null,
+    dropping ? h("div", { className: "cb-drop", "aria-hidden": true }, "Drop video to add it to the timeline") : null,
+    watch ? h(WatchDialog, { ...watch, carton: p.carton, media, images: p.images, onClose: () => setWatch(null) }) : null,
     fold ? h(FoldInDialog, { fromCutId: fold.from.id, intoCutId: fold.into.id, onClose: () => setFold(null) }) : null,
     error ? h(Toast, { text: error, onClose: () => setError(null) }) : null,
   );
@@ -190,11 +237,46 @@ function SideTabs({ side, setSide, comments }: { side: "history" | "comments"; s
   return h("div", { role: "tablist", className: "cb-side-tabs" }, tab("history", "History"), tab("comments", open ? `Comments (${open})` : "Comments"));
 }
 
-function TopBar(p: AppProps & { onFoldIn: (from: Cut, into: Cut) => void }) {
+/** Uploads from this page: a chip each while it goes up (and when one failed), with how much is up. */
+function UploadChips({ uploads }: { uploads: Uploads }) {
+  const jobs = useStore(uploads).filter((j) => j.phase !== "done");
+  if (!jobs.length) return null;
+  return h(
+    "span",
+    { className: "cb-uploads", role: "status", "data-testid": "upload-progress" },
+    jobs.map((j) => {
+      const pct = j.total ? Math.min(100, Math.floor((j.done / j.total) * 100)) : 0;
+      return h(
+        "span",
+        { key: j.id, className: "cb-upload", "data-phase": j.phase, "data-pct": pct, title: j.error ?? j.name },
+        h("span", { className: "cb-upload-name" }, j.phase === "checking" ? `Adding ${j.name}` : j.phase === "failed" ? `${j.name} didn't upload` : `Uploading ${j.name}`),
+        j.phase === "uploading" ? h("span", { className: "cb-upload-bar", "aria-hidden": true }, h("span", { style: { width: `${pct}%` } })) : null,
+        j.phase === "uploading" ? h("span", null, `${pct}%`) : null,
+      );
+    }),
+  );
+}
+
+function AddVideoButton({ onFiles }: { onFiles: (files: File[]) => void }) {
+  const input = useRef<HTMLInputElement>(null);
+  return h(
+    "span",
+    null,
+    h("input", { ref: input, type: "file", accept: "video/mp4,video/webm,video/*", multiple: true, hidden: true, "data-testid": "add-video-input", onChange: (e: Event) => {
+      const el = e.target as HTMLInputElement;
+      const files = [...(el.files ?? [])];
+      el.value = "";
+      if (files.length) onFiles(files);
+    } }),
+    h(Btn, { "data-testid": "add-video", onClick: () => input.current?.click() }, "Add video"),
+  );
+}
+
+function TopBar(p: AppProps & { canAdd: boolean; onFiles: (files: File[]) => void; onFoldIn: (from: Cut, into: Cut) => void }) {
   const status = useSyncStatus();
   const problem = shownProblem(useStore(p.syncProblem));
   const [offline, setOffline] = useState(p.isOffline());
-  const [invite, setInvite] = useState<string | null>(null);
+  const [invite, setInvite] = useState(false);
   const shared = status.kind !== "local";
   return h(
     "header",
@@ -207,7 +289,9 @@ function TopBar(p: AppProps & { onFoldIn: (from: Cut, into: Cut) => void }) {
       ? h("span", { className: "carton-sync cb-sync-problem", "data-state": "error", role: "alert", "data-testid": "sync-problem", "data-code": problem.code, title: problem.message }, syncProblemWords(problem))
       : h(SyncStatusWords),
     h("span", { className: "cb-flex" }),
+    h(UploadChips, { uploads: p.uploads }),
     h(PresenceAvatars),
+    p.canAdd ? h(AddVideoButton, { onFiles: p.onFiles }) : null,
     shared
       ? h(
           Btn,
@@ -227,10 +311,10 @@ function TopBar(p: AppProps & { onFoldIn: (from: Cut, into: Cut) => void }) {
     h(PublishedStatus, { onOpen: (url: string) => window.open(url, "_blank") }),
     h(PublishButton),
     p.session.role === "owner"
-      ? h(Btn, { "data-testid": "invite", onClick: async () => setInvite(`${location.origin}${location.pathname}#join=${p.session.projectId}.${await p.session.invite("editor")}`) }, "Invite to edit")
+      ? h(Btn, { "data-testid": "invite", onClick: () => setInvite(true) }, "Invite to edit")
       : null,
     h("span", { className: "cb-me", title: `You: ${p.name} (${p.session.account})` }, p.name),
-    invite ? h(InviteDialog, { link: invite, onClose: () => setInvite(null) }) : null,
+    invite ? h(InviteDialog, { session: p.session, onClose: () => setInvite(false) }) : null,
   );
 }
 
@@ -259,15 +343,44 @@ function PublishButton() {
   );
 }
 
-function InviteDialog({ link, onClose }: { link: string; onClose: () => void }) {
+const INVITE_ROLES = [
+  { role: "editor", label: "Can edit", words: "Anyone with this link can edit this cut with you, live." },
+  { role: "commenter", label: "Can comment", words: "Anyone with this link can watch and comment, but not edit." },
+  { role: "viewer", label: "Can watch", words: "Anyone with this link can watch the project and read its comments." },
+] as const;
+
+/** Invite to edit: a link for the role chosen (edit, comment, watch). Each link is made by the host for this project. */
+function InviteDialog({ session, onClose }: { session: Session; onClose: () => void }) {
+  const [role, setRole] = useState<(typeof INVITE_ROLES)[number]["role"]>("editor");
+  const [links, setLinks] = useState<Record<string, string>>({});
   const [copied, setCopied] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    setCopied(false);
+    if (links[role]) return;
+    let live = true;
+    session.invite(role).then(
+      (inv) => live && setLinks((l) => ({ ...l, [role]: `${location.origin}${location.pathname}#join=${session.projectId}.${inv}` })),
+      (e) => live && setError((e as Error).message),
+    );
+    return () => void (live = false);
+  }, [role]);
+  const link = links[role] ?? "";
+  const pick = INVITE_ROLES.find((r) => r.role === role)!;
   return h(Dialog, {
     title: "Invite to edit",
     onClose,
     children: [
-      h("p", { key: "p", className: "cb-dim" }, "Anyone with this link can edit this cut with you, live. The watch-only share link is what Publish gives."),
-      h("input", { key: "i", className: "cb-input cb-link", readOnly: true, value: link, "data-testid": "invite-link", onFocus: (e: FocusEvent) => (e.target as HTMLInputElement).select() }),
-      h("div", { key: "a", className: "cb-dialog-actions" }, h(Btn, { onClick: async () => (await navigator.clipboard?.writeText(link).catch(() => {}), setCopied(true)) }, copied ? "Copied" : "Copy link"), h(Btn, { onClick: onClose }, "Done")),
+      h(
+        "div",
+        { key: "r", className: "cb-invite-row" },
+        h("span", { className: "cb-dim" }, "People with the link"),
+        h("select", { className: "cb-select", value: role, "data-testid": "invite-role", onChange: (e: Event) => setRole((e.target as HTMLSelectElement).value as typeof role) }, INVITE_ROLES.map((r) => h("option", { key: r.role, value: r.role }, r.label))),
+      ),
+      h("p", { key: "p", className: "cb-dim" }, `${pick.words} The watch-only share link of a finished cut is what Publish gives.`),
+      h("input", { key: "i", className: "cb-input cb-link", readOnly: true, value: link, placeholder: "Making the link…", "data-testid": "invite-link", "data-role": link ? role : "", onFocus: (e: FocusEvent) => (e.target as HTMLInputElement).select() }),
+      error ? h("p", { key: "e", className: "cb-error", role: "alert" }, error) : null,
+      h("div", { key: "a", className: "cb-dialog-actions" }, h(Btn, { disabled: !link, onClick: async () => (await navigator.clipboard?.writeText(link).catch(() => {}), setCopied(true)) }, copied ? "Copied" : "Copy link"), h(Btn, { onClick: onClose }, "Done")),
     ],
   });
 }

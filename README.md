@@ -618,8 +618,10 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the "Share" icon in the title bar): enter the host and the invite you were given (the host's owner gets
-  one with its admin token). The project goes up with its whole history and authors. Its clips go up too: each clip's
+- **Share** (the "Share" icon in the title bar): enter the host's address and your name. A host with open creation
+  (the free web demo's) needs nothing else: you become the project's owner. Any other host asks for the invite you were
+  given (the host's owner gets one with its admin token); the form shows that field only when the host asks for it.
+  The project goes up with its whole history and authors. Its clips go up too: each clip's
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
   proxy) go up as they are, up to 200 MB and 50 MB.

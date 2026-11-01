@@ -27,6 +27,11 @@ export class ImageCache {
       .finally(() => this.#loading.delete(key));
     return undefined;
   }
+  /** Images that weren't there before may be now (this page just put them up): views ask again. */
+  bump(): void {
+    this.version++;
+    for (const l of this.#listeners) l();
+  }
   subscribe(l: () => void): () => void {
     this.#listeners.add(l);
     return () => this.#listeners.delete(l);

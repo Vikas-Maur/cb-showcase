@@ -188,6 +188,7 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
         assert.deepEqual(mediaFromNetwork, [], "no media request bypassed the Service Worker");
       }
       await alice.getByTestId("invite").click();
+      await alice.locator("[data-testid=invite-link][data-role=editor]").waitFor();
       const link = await alice.getByTestId("invite-link").inputValue();
       assert.match(link, /#join=/);
       await alice.keyboard.press("Escape");
