@@ -209,28 +209,29 @@ that works on docs directly.
 `core/src/history/index.ts` so engine parts History doesn't use are tree-shaken, exactly as P4 measured the
 prototype's 19.3 KB) against a **30 KB min+gz budget**. `node scripts/size-attr.mjs packages/core/src <scratch>`
 prints what each feature costs by stubbing it out (marginal bytes: a helper shared by two features counts only when both
-are stubbed). At the dedupe commit after `cb21eec` (UNVERIFIED, bytes; deterministic, not load-dependent): the bundle
-is 82,015 min, 29,938 min+gz.
+are stubbed). At `46f4b34` (UNVERIFIED, bytes; deterministic, not load-dependent; each stubbed copy keeps the package's
+`package.json`, so `sideEffects: false` applies as in the real package): the bundle is 82,084 min, 29,963 min+gz.
 
 | Feature in the history bundle | min | min+gz | In the prototype's 19.3 KB? |
 |---|---|---|---|
 | Local sequencer, v11 rule (sync-sequencer's `evaluatePush`, shared with the server) | 11,890 | 3,977 | the v5 rule was 947 |
-| `.cbproj` export/import and the hand-off closure, with the lineage walk they share | 5,446 | 1,686 | export/import yes |
-| of which `.cbproj` alone (last authors, knowledge, copied-folder ids) | 4,265 | 1,308 | yes, without the last two |
-| of which the hand-off closure alone (Stage F2/F3) | 1,046 | 321 | no |
-| Undo by actor group, remaps inverted | 1,926 | 616 | no |
-| Fold-some (atomic pre-check, inverse) | 1,913 | 621 | yes, without the pre-check |
-| Portable SHA-256 (browsers and Workers have no sync digest) | 819 | 473 | no (node:crypto) |
-| Pins with owner sets | 1,354 | 408 | simpler pins |
-| Revert, restore, log, names | 1,185 | 336 | no |
-| Refs: print, parse, any cut id | 729 | 324 | no |
-| Views (R4-02) | 741 | 262 | yes |
-| Credits (last author per record) | 846 | 254 | no |
-| Remap stored as one op (P5) | 479 | 188 | no |
-| Soft warnings on confirm (§4.1) | 413 | 137 | no |
-| Frozen records handed out | 118 | 31 | no |
-| Keyframe milestones | 120 | 33 | no |
+| `.cbproj` export/import and the hand-off closure, with the lineage walk they share | 5,473 | 1,691 | export/import yes |
+| of which `.cbproj` alone (last authors, knowledge, copied-folder ids) | 4,292 | 1,317 | yes, without the last two |
+| of which the hand-off closure alone (Stage F2/F3) | 1,046 | 308 | no |
+| Undo by actor group, remaps inverted | 1,927 | 620 | no |
+| Fold-some (atomic pre-check, inverse) | 1,913 | 610 | yes, without the pre-check |
+| Portable SHA-256 (browsers and Workers have no sync digest) | 819 | 468 | no (node:crypto) |
+| Pins with owner sets | 1,354 | 411 | simpler pins |
+| Revert, restore, log, names | 1,185 | 329 | no |
+| Refs: print, parse, any cut id | 771 | 333 | no |
+| Views (R4-02) | 741 | 254 | yes |
+| Credits (last author per record) | 846 | 236 | no |
+| Remap stored as one op (P5) | 479 | 187 | no |
+| Soft warnings on confirm (§4.1) | 413 | 128 | no |
+| Frozen records handed out | 118 | 29 | no |
+| Keyframe milestones | 120 | 29 | no |
 
-The rest, about 20.6 KB, is cuts, commit and rebase, fold and the merge DAG, states, and the merge engine (merge3,
-remaps, diff, apply, hashing). Since the budget was set (`7e2f3f7`, 28,558) the bundle grew by the shared-cut stages
-(F1–F4), the review rounds and the e2e-qa and kit-docs fixes; one path-escaping helper replaces three copies (−58).
+The rest, about 20.7 KB (the bundle less these rows; gzip savings don't add exactly), is cuts, commit and rebase,
+fold and the merge DAG, states, and the merge engine (merge3, remaps, diff, apply, hashing). Since the budget was set
+(`c1d5488`, 28,571) the bundle grew by the shared-cut stages (F1–F4), the review rounds and the e2e-qa and kit-docs
+fixes; one path-escaping helper replaces three copies (−58).
