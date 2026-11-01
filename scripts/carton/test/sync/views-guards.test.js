@@ -231,12 +231,12 @@ test("a View released while it is still starting doesn't take the lease or timel
   class Materializer { constructor() { this.freeze = {}; } async start() { reached = true; await starting; } async close() {} }
   class CartonHolderEngine { async serve() {} async startSync() {} }
   const keepLease = () => ({ start: async () => { leaseStarted = true; }, stop: async () => { leaseStopped = true; } });
-  const load = new Function("fs", "path", "AsyncLocalStorage", "extend", "cardboardFilesHost", "Materializer", "CARTON_DIR", "VIEWS_DIR", "TIMELINE_FILE", "keepLease", "holderSocketPath", "CartonHolderEngine", "cartonMaterializerEngine", "preToolUse", "parseActorId", "fence", "caughtUp", "cutOfChange", src + ";return { viewOf };");
+  const load = new Function("fs", "path", "AsyncLocalStorage", "extend", "cardboardFilesHost", "Materializer", "CARTON_DIR", "VIEWS_DIR", "TIMELINE_FILE", "keepLease", "holderSocketPath", "CartonHolderEngine", "cartonMaterializerEngine", "preToolUse", "parseActorId", "fence", "nextChangeId", "caughtUp", "cutOfChange", src + ";return { viewOf };");
   const saved = globalThis.__cartonTimelineCodec;
   globalThis.__cartonTimelineCodec = {};
   try {
     const bundle = path.join(DIR, "closing.cardboard");
-    const mod = load(fs, path, require("node:async_hooks").AsyncLocalStorage, (e) => (ext = e), {}, Materializer, ".carton", ".scratch/views", "timeline.tsx", keepLease, () => path.join(DIR, "stub.sock"), CartonHolderEngine, () => ({}), () => ({}), () => null, () => ({}), async () => {}, async () => null);
+    const mod = load(fs, path, require("node:async_hooks").AsyncLocalStorage, (e) => (ext = e), {}, Materializer, ".carton", ".scratch/views", "timeline.tsx", keepLease, () => path.join(DIR, "stub.sock"), CartonHolderEngine, () => ({}), () => ({}), () => null, () => ({}), () => "test.1", async () => {}, async () => null);
     const api = { bundleOf: () => bundle, onOpen: (f) => (open = f) };
     ext.worker(api);
     const store = { range: async () => [], get: async () => undefined, write: async () => {} };
