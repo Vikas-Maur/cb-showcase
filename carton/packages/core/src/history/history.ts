@@ -1024,29 +1024,77 @@ export class History {
   /**
    * The undo stack of an actor group on a cut, newest first: the group's own changes that a later undo hasn't
    * reverted. A change belongs to the group in its author's `group` (else the author itself). Undo changes are not
-   * in the stack (they are undone by redo, not by ⌘Z). Remote teammates are never in your group.
+   * in the stack (they are undone by redo, not by ⌘Z). Remote teammates are never in your group. `scope` narrows it to
+   * what the app's Ctrl+Z sees (UndoScope).
    */
-  undoStack(cutId: string, group: string, tail?: Tail): UndoEntry[] {
+  undoStack(cutId: string, group: string, tail?: Tail, scope: UndoScope = {}): UndoEntry[] {
     const log = this.#log(cutId, tail);
-    const undone = new Set<ChangeId>();
-    for (const c of log) if (c.kind === "undo") for (const id of Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : []) undone.add(id);
+    const undone = undoneIn(log);
     const out: UndoEntry[] = [];
     for (let i = log.length - 1; i >= 0; i--) {
       const c = log[i]!;
-      if (c.kind === "undo" || c.squashedInto || undone.has(c.id) || groupOf(c.author) !== group) continue;
+      if (c.kind === "undo" || c.squashedInto || undone.has(c.id) || !inScope(c, group, scope)) continue;
       out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: undoLabel(c), author: c.author, at: c.at });
     }
     return out;
+  }
+  /**
+   * The redo stack of an actor group on a cut, newest first: its undo changes that no redo has re-applied yet, above
+   * its newest edit that is still in effect (a new edit clears redo, as an editor's does). A redo is a revert of one of
+   * those undo changes (`redo`): it re-applies exactly what the undo took back, as a new change, and is itself the next
+   * ⌘Z. Read in the same `scope` as the undo stack.
+   */
+  redoStack(cutId: string, group: string, tail?: Tail, scope: UndoScope = {}): UndoEntry[] {
+    const log = this.#log(cutId, tail);
+    const byId = new Map(log.map((c) => [c.id, c]));
+    const undone = undoneIn(log);
+    const redone = new Set<ChangeId>();
+    const out: UndoEntry[] = [];
+    for (let i = log.length - 1; i >= 0; i--) {
+      const c = log[i]!;
+      if (c.squashedInto || !inScope(c, group, scope)) continue;
+      const target = c.kind === "revert" && typeof c.reverts === "string" ? byId.get(c.reverts) : undefined;
+      // a redo: its undo is used up, whether or not a later ⌘Z took the redo back (that ⌘Z is then the entry)
+      if (target?.kind === "undo") {
+        redone.add(target.id);
+        continue;
+      }
+      if (c.kind === "undo") {
+        if (!redone.has(c.id)) out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: redoLabel(c, byId), author: c.author, at: c.at });
+        continue;
+      }
+      // an edit an undo took back is what that undo's redo brings back; any other edit is newer than what redo has
+      if (undone.has(c.id)) continue;
+      break;
+    }
+    return out;
+  }
+  /** Redo for an actor group: re-apply what the newest undo on its redo stack took back (a revert of that undo). */
+  redo(cutId: string, group: string, { author, id, scope }: { author?: Actor; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
+    const done = this.#done(id);
+    if (done) return done;
+    const p = this.planRedo(cutId, group, { ...(author ? { author } : {}), ...(scope ? { scope } : {}) });
+    if (!p) return this.#empty(id, cutId, this.headSeq(cutId));
+    if ("status" in p) return p;
+    const { entry, ...c } = p;
+    return { ...this.commit(cutId, { ...c, ...(id ? { id } : {}) }), entry };
+  }
+  /** What redo for an actor group would do, without doing it (a shared cut queues it); null when nothing is to redo. */
+  planRedo(cutId: string, group: string, { author, tail, scope }: { author?: Actor; tail?: Tail; scope?: UndoScope } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+    const top = this.redoStack(cutId, group, tail, scope)[0];
+    if (!top) return null;
+    const p = this.planRevert(cutId, top.changeId, { ...(author ? { author } : { author: top.author }), tail });
+    return "status" in p ? p : { ...p, entry: top };
   }
   /**
    * ⌘Z for an actor group: invert the newest entry of its stack at the head. An agent turn (entries sharing
    * `author.turn` with the newest) is undone as one. A path an outsider has since changed that would make the result
    * invalid comes back as conflicts, never silently.
    */
-  undo(cutId: string, group: string, { author, turn = true, id }: { author?: Actor; turn?: boolean; id?: ChangeId } = {}): CommitResult & { entry?: UndoEntry } {
+  undo(cutId: string, group: string, { author, turn = true, id, scope }: { author?: Actor; turn?: boolean; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
     const done = this.#done(id);
     if (done) return done;
-    const p = this.planUndo(cutId, group, { ...(author ? { author } : {}), turn });
+    const p = this.planUndo(cutId, group, { ...(author ? { author } : {}), turn, ...(scope ? { scope } : {}) });
     if (!p) return this.#empty(id, cutId, this.headSeq(cutId));
     if ("status" in p) return p;
     const { entry, ...c } = p;
@@ -1056,8 +1104,8 @@ export class History {
    * What ⌘Z for an actor group would do, without doing it (a shared cut queues it): the inverse of the newest entry of
    * its stack (an agent turn as one) at the head, or the cards that stop it; null when the stack is empty.
    */
-  planUndo(cutId: string, group: string, { author, turn = true, tail }: { author?: Actor; turn?: boolean; tail?: Tail } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
-    const stack = this.undoStack(cutId, group, tail);
+  planUndo(cutId: string, group: string, { author, turn = true, tail, scope }: { author?: Actor; turn?: boolean; tail?: Tail; scope?: UndoScope } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+    const stack = this.undoStack(cutId, group, tail, scope);
     const top = stack[0];
     if (!top) return null;
     const log = this.#log(cutId, tail);
@@ -1477,6 +1525,28 @@ const firstParentMap = (c: ConfirmedChange): RemapMaps | undefined => (c.mergeOf
  * (default: the change's name, intent or kind). The person's own edits, typed in a terminal included (`external`), and
  * the system's say no one.
  */
+/**
+ * What the app's Ctrl+Z sees of an actor group (§8): `app`, only changes made from the app (the person at the editor, an
+ * agent turn started there: `Actor.app`), never a terminal's `cb`; `since` (ms), only changes made since the editor's
+ * session began, so it never goes back past it. Neither: the whole group, as `cb undo` and History's Undo see it.
+ */
+export interface UndoScope {
+  since?: number;
+  app?: boolean;
+}
+const inScope = (c: ConfirmedChange, group: string, scope: UndoScope): boolean => groupOf(c.author) === group && (!scope.app || c.author.app === true) && (scope.since === undefined || c.at >= scope.since);
+/** The changes an undo change took back, from every undo change in the log. */
+function undoneIn(log: readonly ConfirmedChange[]): Set<ChangeId> {
+  const undone = new Set<ChangeId>();
+  for (const c of log) if (c.kind === "undo") for (const id of Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : []) undone.add(id);
+  return undone;
+}
+/** "Redo Director: tighter intro": what the undo took back, worded as its undo was. */
+function redoLabel(u: ConfirmedChange, byId: ReadonlyMap<ChangeId, ConfirmedChange>): string {
+  const ids = Array.isArray(u.reverts) ? u.reverts : u.reverts ? [u.reverts] : [];
+  const first = byId.get(ids[ids.length - 1] ?? "");
+  return (first ? undoLabel(first) : undoLabel(u)).replace(/^Undo\b/, "Redo");
+}
 export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {
   const a = c.author;
   const agent = a.kind === "agent" || a.kind === "subagent" ? agentName(a) : "";
