@@ -336,9 +336,11 @@ export class Comments {
   /** Read everything stored; on a reload, only what changed is rebuilt (the rest keep their objects). */
   async #load(): Promise<void> {
     const snap = await this.#store.load();
-    // another handle reset the stream since: an id and seq may now be another comment's, so nothing cached is kept
+    // another handle reset the stream since: an id and seq may now be another comment's, so nothing cached is kept,
+    // and the connection starts again from the store's position (what it would still send is the old stream's)
     const sameStream = snap.epoch === this.#epoch;
     this.#epoch = snap.epoch;
+    if (!sameStream) this.#sync?.restart();
     const first = this.#view.size === 0 && this.#confirmed.size === 0 && this.#pending.size === 0;
     const changed = new Set<string>();
     const seen = new Set<string>();
@@ -518,9 +520,12 @@ export class Comments {
           const me = self.me().id;
           return [...self.#pending.values()].filter((p) => p.patch.author.id === me || p.patch.author.id === PERSON);
         }),
-      take: (rows, head, reset) => self.#run(() => self.#take(rows, head, reset === true)),
-      answered: (sent, row, head) => self.#run(() => self.#answered(sent, row, head)),
-      refused: (sent, refused, reason) => self.#run(() => self.#refused(sent, refused, reason)),
+      // each only while its connection is still the sync's: a reload that saw another process's reset restarts it,
+      // and what the old connection sent belongs to the stream before (a pending row left is sent again; its op id
+      // makes that harmless)
+      take: (rows, head, reset, current) => self.#run(async () => void (current() && (await self.#take(rows, head, reset)))),
+      answered: (sent, row, head, current) => self.#run(async () => void (current() && (await self.#answered(sent, row, head)))),
+      refused: (sent, refused, reason, current) => self.#run(async () => void (current() && (await self.#refused(sent, refused, reason)))),
       status: (s) => self.#emit({ type: "sync", status: s }),
     });
     this.#sync.start();

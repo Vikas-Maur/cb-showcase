@@ -130,6 +130,46 @@ test("a reset never keeps a row another handle wrote while it scanned; that hand
   await assert.rejects(b.write({ rows: [row("later", 4)], epoch: "" }), CommentStreamChanged);
 });
 
+/** A Store whose `get` of one key runs `during` once, right after it read (another handle's write lands there). */
+function interleaved(raw: Store, table: string, key: string, during: () => Promise<void>): Store {
+  let armed = true;
+  return new Proxy(raw, {
+    get(t, k) {
+      if (k === "get")
+        return async (tb: string, ky: unknown[]) => {
+          const r = await t.get(tb, ky as never);
+          if (armed && tb === table && ky[0] === key) {
+            armed = false;
+            await during();
+          }
+          return r;
+        };
+      const v = Reflect.get(t, k);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as Store;
+}
+
+test("an answer's pending drop, with its row already stored, never goes through a reset that happened meanwhile", async () => {
+  const raw = createMemoryStore();
+  const other = cartonCommentStore(raw);
+  const p = pend("x", 1);
+  assert.ok(await other.write({ rows: [row("x", 5)], head: 5, put: [{ row: p, prev: null }], epoch: "" }));
+  // this handle reads the stored row; another handle resets the stream right then (its new stream has no "x" yet)
+  const a = cartonCommentStore(interleaved(raw, COMMENT_TABLES.comments, "x", async () => void (await other.write({ rows: [row("n", 1)], head: 1, reset: "e2" }))));
+  await assert.rejects(a.write({ rows: [row("x", 5)], head: 5, drop: [p], epoch: "" }), CommentStreamChanged);
+  assert.deepEqual((await other.pending()).map((q) => q.id), ["x"], "the pending patch stays, to be sent again");
+});
+
+test("load never pairs one generation's head with another's rows", async () => {
+  const raw = createMemoryStore();
+  const other = cartonCommentStore(raw);
+  assert.ok(await other.write({ rows: [row("x", 5)], head: 5, epoch: "" }));
+  const a = cartonCommentStore(interleaved(raw, COMMENT_TABLES.meta, "head", async () => void (await other.write({ rows: [row("n", 1)], head: 1, reset: "e2" }))));
+  const snap = await a.load();
+  assert.deepEqual([snap.epoch, snap.head, snap.comments.map((c) => c.id)], ["e2", 1, ["n"]]);
+});
+
 test("in carton.db the comments are tables of their own beside the history, never document changes", async () => {
   const s = await openSqliteStore(path.join(scratch("tables"), "carton.db"));
   try {

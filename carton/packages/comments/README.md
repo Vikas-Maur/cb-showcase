@@ -74,7 +74,9 @@ keyframe) is placed all the same.
   server rows and the read position are written against what is stored (newer by `seq` only, forward only, each
   write conditioned on a revision every such write bumps), so the app and `cb` can both write comments to one
   carton.db. A stream reset starts a new generation (`epoch`): a handle still writing the old stream's rows gets
-  `CommentStreamChanged`, reloads and asks the server again. A plug-in implements `load`, `write`, `pending` and
+  `CommentStreamChanged`, reloads and asks the server again; a handle whose reload (or `refresh()`) finds another
+  process's reset drops its connection and asks again from the store's position, and nothing its old connection still
+  sends is written. A plug-in implements `load`, `write`, `pending` and
   `read`.
 - **`CommentSync`**: how they are shared. Its own connection through the project's `Transport` to the project's host,
   with the project's token. Nothing in the document sync changes.

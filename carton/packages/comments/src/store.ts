@@ -62,7 +62,7 @@ export class CommentStreamChanged extends Error {
  * - `write` is atomic: when a `put` or `drop` condition fails nothing is written and it resolves false (another
  *   process edited that comment meanwhile: reload and try again); rows and the head never make it fail;
  * - `load` reads the head, then the pending rows, then the rows: a comment answered meanwhile is in one or the other,
- *   and every row up to the head is there;
+ *   and every row up to the head is there; all of one generation (a reset meanwhile: it reads again);
  * - `load`, `read` and `pending` see every write that resolved before them, including another process's.
  */
 export interface CommentStore {
@@ -103,11 +103,18 @@ export function cartonCommentStore(store: Store): CommentStore {
   return {
     async load() {
       // the head first, the rows last: every row the head claims is there (a row written meanwhile comes with a
-      // later head); the pending rows before the rows: a comment answered meanwhile is in one or the other
-      const [head, epoch] = await Promise.all([store.get<number>(T.meta, ["head"]), store.get<string>(T.meta, ["epoch"])]);
-      const pending = await store.range<PendingPatch>(T.pending);
-      const rows = await store.range<Comment>(T.comments);
-      return { comments: rows.map((r) => r.value), pending: pending.map((r) => r.value), head: head ?? 0, epoch: epoch ?? "" };
+      // later head); the pending rows before the rows: a comment answered meanwhile is in one or the other. Only a
+      // reset removes rows: the generation read before and after tells if one came in between (then read again;
+      // resets are rare, so this never starves)
+      for (let attempt = 0; ; attempt++) {
+        const epoch = await store.get<string>(T.meta, ["epoch"]);
+        const head = await store.get<number>(T.meta, ["head"]);
+        const pending = await store.range<PendingPatch>(T.pending);
+        const rows = await store.range<Comment>(T.comments);
+        if ((await store.get<string>(T.meta, ["epoch"])) === epoch)
+          return { comments: rows.map((r) => r.value), pending: pending.map((r) => r.value), head: head ?? 0, epoch: epoch ?? "" };
+        if (attempt >= 32) throw new Error("comments: carton.db's comment stream kept being reset while it was read");
+      }
     },
     async pending() {
       return (await store.range<PendingPatch>(T.pending)).map((r) => r.value);
@@ -149,8 +156,11 @@ export function cartonCommentStore(store: Store): CommentStore {
         }
         const nextHead = w.reset !== undefined ? (w.head ?? 0) : w.head !== undefined && w.head > (head ?? 0) ? w.head : undefined;
         if (nextHead !== undefined && nextHead !== head) writes.push({ table: T.meta, key: ["head"], value: nextHead });
-        if (writes.length === base.length) return base.length ? store.write(base, baseConds) : true;
-        writes.push({ table: T.meta, key: ["rev"], value: (rev ?? 0) + 1 });
+        // nothing of the stream to write (all stored already): the pending rows' writes still hold only if nothing
+        // changed since the reads above (a reset in between would leave neither the row nor the pending patch)
+        if (writes.length === base.length) {
+          if (!base.length) return true;
+        } else writes.push({ table: T.meta, key: ["rev"], value: (rev ?? 0) + 1 });
         if (await store.write(writes, conds)) return true;
         if (!(await pendingHolds(w))) return false;
         if (attempt >= 32) throw new Error("comments: carton.db kept changing under this write");

@@ -215,3 +215,24 @@ test("another process resets the stream under a syncing handle: it reloads, asks
   await until(() => !!a.get(next.id) && !!a.get(real.id) && !a.get("ghost"), 5000, "alice has the server's rows only");
   await Promise.all([a.close(), b.comments.close()]);
 });
+
+test("refresh after another process wrote a reset's first page: the connection starts again, nothing is skipped", async () => {
+  const host = commentHost();
+  const b = await client(host, BOB);
+  const made: Awaited<ReturnType<typeof b.comments.add>>[] = [];
+  for (let i = 0; i < 4; i++) made.push(await b.comments.add({ body: `note ${i}`, range: [i, i + 1] }));
+  assert.ok(await b.comments.settled());
+  const carton = await openCarton(items());
+  const a = await Comments.open({ carton, me: ME, sync: { transport: host.transport, url: host.url, token: host.token("editor", "alice") } });
+  await until(() => made.every((c) => !!a.get(c.id)) && a.syncStatus()?.state === "up-to-date", 3000, "alice caught up");
+  // another process's reset wrote its first page (one row, head 1) and exited
+  const first = (await cartonCommentStore(carton.store).read([made[0]!.id]))[0]!;
+  await cartonCommentStore(carton.store).write({ rows: [first], head: 1, reset: "elsewhere" });
+  await a.refresh();
+  const later = await b.comments.add({ body: "later", range: [9, 10] });
+  await until(() => [...made, later].every((c) => !!a.get(c.id)), 5000, "alice has the rest of that catch-up and the new one");
+  await a.close();
+  const again = await Comments.open({ carton, me: ME });
+  assert.deepEqual(again.all().map((c) => c.id).sort(), [...made, later].map((c) => c.id).sort(), "and so has the store");
+  await Promise.all([again.close(), b.comments.close()]);
+});
