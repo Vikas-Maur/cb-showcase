@@ -6,8 +6,10 @@ import { createElement as h, useEffect, useState } from "react";
 import { createRoot } from "react-dom/client";
 import type { Doc } from "@carton/core";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
+import { CommentsPanel, injectCommentsSkin, type CommentsUiHandle } from "@carton/react";
 import { cardboardAdapter } from "@carton/cardboard";
 import { webSocketTransport } from "@carton/server-node/transport";
+import { FollowedVersion, openWatchComments } from "./comments.ts";
 import { parseWatchDescriptor, parseWatchHash, watchKey, type WatchDescriptor } from "./descriptor.ts";
 import { Follower } from "./follow.ts";
 import { ImageCache } from "./images.ts";
@@ -22,6 +24,7 @@ import { docLength } from "./edit.ts";
 
 const keys: KeyStore = { get: (k) => localStorage.getItem(k), set: (k, v) => localStorage.setItem(k, v) };
 injectCardboardSkin(document);
+injectCommentsSkin(document);
 const style = document.createElement("style");
 style.textContent = appCss;
 document.head.append(style);
@@ -31,6 +34,8 @@ interface State {
   doc: Doc | null;
   newer: number;
   error: string | null;
+  /** The Published cut's comments, read only (the host gives a watch link no other cut's, and no account ids). */
+  comments: CommentsUiHandle | null;
 }
 
 function WatchPage(p: { descriptor: WatchDescriptor; state: State; images: ImageCache; mediaUrl: (hash: string) => string }) {
@@ -57,6 +62,7 @@ function WatchPage(p: { descriptor: WatchDescriptor; state: State; images: Image
             h("div", { className: "cb-transport" }, h(Btn, { "data-testid": "play", onClick: () => (playing ? setPlaying(false) : (time >= length - 0.05 && setTime(0), setPlaying(true))) }, playing ? "❚❚ Pause" : "▶ Play"), h("span", { className: "cb-time" }, `${formatTime(time)} / ${formatTime(length)}`)),
           )
         : h("p", { className: "cb-dim" }, "Loading the published version…"),
+      p.state.comments ? h(CommentsPanel, { className: "cb-watch-comments", comments: p.state.comments, onSeek: (t: number) => (setPlaying(false), setTime(t)) }) : null,
     ),
   );
 }
@@ -79,7 +85,7 @@ async function main(): Promise<void> {
   let mediaReady = false;
   const mediaUrl = (hash: string) => (mediaReady ? media.url(hash) : "");
   session.onToken(() => media.refreshToken());
-  const state: State = { doc: null, newer: 0, error: null };
+  const state: State = { doc: null, newer: 0, error: null, comments: null };
   const render = () => root.render(h(WatchPage, { descriptor, state: { ...state }, images, mediaUrl }));
   media.ready.then(() => ((mediaReady = true), render()), () => {});
   const common = { transport: webSocketTransport(), url: session.wsUrl, token: () => session.token(), schema: cardboardAdapter.schema, schemaVersion: cardboardAdapter.schemaVersion, onError: (why: string) => ((state.error = `Can't sync: ${why}`), render()) };
@@ -100,6 +106,21 @@ async function main(): Promise<void> {
     });
     sourceFollower.start();
   };
+  // the comments open on the first version that arrives, then follow it
+  let version: FollowedVersion | null = null;
+  const showComments = (seq: number, doc: Doc) => {
+    if (version) return version.show(seq, doc);
+    version = new FollowedVersion(link.cut, cardboardAdapter.schema, seq, doc);
+    openWatchComments({ version, sync: { transport: common.transport, url: session.wsUrl, token: () => session.token() } }).then(
+      ({ comments, ui }) => {
+        state.comments = ui;
+        Object.assign(window, { __watchComments: comments });
+        ui.subscribe(render);
+        render();
+      },
+      () => {}, // no comments: the cut still plays
+    );
+  };
   new Follower({
     ...common,
     branchId: link.cut,
@@ -107,6 +128,7 @@ async function main(): Promise<void> {
     refreshMs: 5_000,
     onUpdate: (s) => {
       state.doc = s.doc;
+      if (s.doc) showComments(s.head, s.doc);
       if (s.source) state.newer = Math.max(0, s.source.head - s.source.at);
       else if (!sourceFollower && descriptor.source) followSource(descriptor.source);
       render();
