@@ -3,14 +3,18 @@
 // absorbed cards with no plumbing of its own, and the worker's own saves are the holder's.
 // - The holder is @carton/local's: `keepLease` runs a Holder of kind "worker" around `CartonHolderEngine(lc.carton)`.
 //   It takes the lease (asking a headless helper to hand over first, §6.2), serves `cb` writes on its control socket,
-//   connects sync under its nonce, and takes the lease back 2 s after being fenced.
+//   connects sync under its nonce, and takes the lease back 2 s after being fenced. It is the project's View's
+//   (views.js: the one holder per project, with the Materializer as its printer), and Live's own only when the project
+//   has no View (its Materializer didn't start); then project.json follows here too.
 // - Not on an engine thread (documented deviation from §6.2): the facade's handle lives on the worker's main loop,
 //   so the holder's pings are answered there. A `cb` call that finds the main loop stalled past 100 ms takes over with
 //   a helper; fencing stops this holder, and keepLease takes the lease back by handover. With the cut shared, cb hands
 //   its writes to the holder, so the worker is carton.db's one writer and a stall is CPU, never a SQLite lock wait.
 // - What other replicas confirm (and what cb writes through this holder) goes into project.json at once, and the
 //   pages adopt it (H5's Carton path: no undo entry, the pending save goes first).
-// - Status and presence also go to the pages as `{kind: "carton", id, topic: "live"}` events for the Share panel.
+// - Status and presence also go to the pages as `{kind: "carton", id, topic: "live"}` events for the Share panel, with
+//   why sync is failing when it is (core's `sync-error`, foundation's REQ-8: a host too old for this app, a refused
+//   token, an unreachable host), in plain words, instead of "Syncing" for ever.
 // - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut.
 import path from "node:path";
 import { keepLease, holderSocketPath, CartonHolderEngine } from "@carton/local";
@@ -20,8 +24,9 @@ const PEER_IDLE_MS = 30_000;
 const ON_CHANGE_MS = 2000;
 
 export class Live {
-  constructor({ api, bundlePath, projectId, lc, log, onChange }) {
+  constructor({ api, bundlePath, projectId, lc, log, onChange, view }) {
     this.onChange = onChange ?? null;
+    this.owner = view ?? null; // the project's View (views.js): its holder, and project.json follows there
     this.changeTimer = null;
     this.api = api;
     this.bundlePath = bundlePath;
@@ -33,6 +38,7 @@ export class Live {
     this.timer = null;
     this.peers = new Map(); // actor key → {actor, cut, activity, at}
     this.status = lc.carton.sync?.state() ?? { status: "offline", pending: 0, label: "Offline" };
+    this.error = lc.carton.sync?.error?.() ?? null;
     this.stopped = false;
   }
 
@@ -40,6 +46,13 @@ export class Live {
     const { lc } = this;
     // Events first, so nothing the first connection brings is missed.
     this.off = lc.carton.on((e) => this.#event(e));
+    if (this.owner) {
+      // the View's holder connects now (an unshared project's never does)
+      await this.owner.connectSync();
+      this.#materializeSoon();
+      this.#publish();
+      return;
+    }
     const engine = new CartonHolderEngine(lc.carton);
     // A cb write this holder serves changes head: project.json follows, pending or confirmed (core says nothing until
     // the server answers, and offline that is never).
@@ -92,6 +105,12 @@ export class Live {
         this.status = this.lc.carton.sync?.state() ?? this.status;
         this.#publish();
         break;
+      case "sync-error":
+        if (e.branchId !== this.lc.carton.cut) break;
+        this.error = e.error ?? null;
+        if (this.error) this.log({ type: "sync-error", code: this.error.code, message: this.error.message });
+        this.#publish();
+        break;
       case "presence": {
         // `who` is the person behind it, as the sender knows them (their account on the host): the handle's own actor
         // is fixed when it opens, which for the sharer was before the share.
@@ -106,6 +125,7 @@ export class Live {
   }
 
   #materializeSoon() {
+    if (this.owner) return this.owner.materializeSoon();
     if (this.timer || this.stopped) return;
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -115,6 +135,7 @@ export class Live {
 
   /** This handle is the lease holder right now (not fenced, not stopped): its own writes are the pusher's. */
   holds() {
+    if (this.owner) return !this.stopped && this.owner.holds();
     const h = this.lease?.current;
     return !this.stopped && !!h && !h.stopped && !!h.nonce;
   }
@@ -123,7 +144,7 @@ export class Live {
   view() {
     const now = Date.now();
     const peers = [...this.peers.values()].map((p) => ({ actor: p.actor, cut: p.cut, activity: p.activity, idle: now - p.at > PEER_IDLE_MS }));
-    return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers };
+    return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers, problem: problemOf(this.error) };
   }
   #publish() {
     this.api.emit({ kind: "carton", id: this.projectId, topic: "live", live: this.view() });
@@ -139,9 +160,21 @@ export class Live {
     clearTimeout(this.timer);
     clearTimeout(this.changeTimer);
     this.off?.();
+    // the View's holder is the View's to stop
     await this.lease?.stop().catch(() => {});
   }
 }
+
+// Why sync is failing, in the words the Share panel shows (null when it isn't).
+const PROBLEM = {
+  "update-server": "The host is older than this app: it needs an update before this project can sync.",
+  unauthorized: "The host refused this computer's access: ask for a new invite.",
+  unreachable: "The host can't be reached. Edits wait here and go out when it can.",
+  "unknown-cut": "The host doesn't have this project's cut.",
+  "too-large": "A change is too big for this host.",
+  server: "The host had a problem.",
+};
+export const problemOf = (err) => (err ? { code: err.code, words: PROBLEM[err.code] ?? PROBLEM.server, detail: err.message ?? null } : null);
 
 export const actorKey = (a) => [a?.kind, a?.id, a?.agentId].filter(Boolean).join("/");
 

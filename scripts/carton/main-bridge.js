@@ -3,6 +3,10 @@
 //   The Director's Bash hook adds the running turn and, inside a subagent, the subagent (Claude Code puts agent_id
 //   and agent_type in the hook input). Stop and SubagentStop hand a late conflict back to the agent, once per conflict
 //   set (§6.2). Host Claude Code gets the same hooks through --settings, run by `cb carton-hook`.
+// - H8: the Director's hook events reach the library worker's Materializer for the project (sync/views.js, the
+//   `carton.agentHook` service): a Read of timeline.tsx (or a Bash command naming it) freezes the shared file for the
+//   turn, a Write/Edit of it is credited to the turn, and a stop the late-conflict hook lets through, or the turn's
+//   end, lets go of the freeze and the turn's pins.
 // - carton:call from the pages forwards to the library worker's `carton` namespace. (cb finds Carton's lease holder
 //   through carton.db's lease row, so Cardboard's control socket needs no Carton method.) A method main itself must
 //   answer (the live-sync half, scripts/carton/sync: a dialog, a link) is added with handle(name, fn); fn gets the
@@ -24,16 +28,24 @@ module.exports = String.raw`var __cartonMain = (() => {
   // Commands that reach Carton: cb, cardboard, or a script under the bundle that runs them. Others keep the actor
   // main gave the process (director/<chat>), so a script that calls cb is still the Director's, just without the turn.
   const reachesCarton = (cmd) => /(^|[\s;&|(\x60])(cb|cardboard)(\.cmd)?(\s|$)/.test(cmd);
-  const notices = async (ctx, input) => {
-    try { return await library?.call("carton.notices", { bundlePath: ctx.project.bundlePath, actor: directorActor(ctx, input), take: true }) ?? []; }
-    catch { return []; }
+  // H8: a hook event for the worker's Materializer, waited for up to 3 s (the agent's tool call waits on it; a worker
+  // that doesn't answer in time leaves the file as it is, never the agent stuck).
+  const agentHook = (ctx, actor, event, input) => {
+    if (!library || !ctx?.project?.bundlePath) return Promise.resolve();
+    const call = library.call("carton.agentHook", { bundlePath: ctx.project.bundlePath, actor, event, input }).catch(() => {});
+    return Promise.race([call, new Promise((r) => setTimeout(r, 3000).unref?.())]);
   };
+  // Block once per conflict set: whatever the agent leaves unresolved becomes a card for the person (the worker's
+  // stopHook: @carton/local's, as host Claude Code's cb carton-hook runs it, so the agent's own cards stay for cb
+  // conflicts and cb resolve). A stop that goes through ends the agent's hold on the shared file (H8); a blocked one goes
+  // on with the turn.
   const stop = (ctx) => async (input) => {
-    // Block once per conflict set: whatever the agent leaves unresolved becomes a card for the person.
-    if (input?.stop_hook_active) return {};
-    const list = await notices(ctx, input);
-    if (!list.length) return {};
-    return { decision: "block", reason: list.map((n) => n.text ?? String(n)).join("\n") };
+    const actor = directorActor(ctx, input);
+    let out = {};
+    try { out = (await library?.call("carton.stopHook", { bundlePath: ctx.project.bundlePath, actor, input })) ?? {}; } catch {}
+    if (out.decision === "block") return out;
+    await agentHook(ctx, actor, "stop");
+    return {};
   };
   // Gate G2 (§6.2): with CARDBOARD_CARTON_TIMING=<file>, every GUI save's round trip to the library worker (the
   // commit and the write) is appended to <file> as a JSON line, Carton on or off, for comparing the two.
@@ -55,6 +67,8 @@ module.exports = String.raw`var __cartonMain = (() => {
       const t = on ? running.get(chat) : null;
       if (!t) return;
       running.delete(chat);
+      // H8: the turn and its subagents stop holding the shared file, however the turn ended (a stop, an interrupt).
+      void agentHook({ project: { bundlePath: t.bundlePath } }, "director/" + safe(chat.chatId) + "/" + safe(t.turn), "endTurn");
       if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt }).catch(() => {});
     },
     time(p) {
@@ -94,6 +108,8 @@ module.exports = String.raw`var __cartonMain = (() => {
         const out = r?.hookSpecificOutput;
         if (out?.permissionDecision === "deny") return r;
         const tool = { ...input.tool_input, ...out?.updatedInput };
+        // H8: a command that reads the shared file freezes it for the turn, as a Read of it does.
+        if (typeof tool.command === "string" && /timeline\.tsx/i.test(tool.command)) await agentHook(ctx, directorActor(ctx, input), "pre-tool-use", { ...input, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: ctx.project?.bundlePath });
         if (typeof tool.command !== "string" || !reachesCarton(tool.command)) return r;
         return { ...r, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", ...out, updatedInput: { ...tool, command: "export CARDBOARD_ACTOR=" + shQuote(directorActor(ctx, input)) + "; " + tool.command } } };
       };
@@ -101,11 +117,44 @@ module.exports = String.raw`var __cartonMain = (() => {
     stopHooks(ctx) {
       return on ? { Stop: [{ hooks: [stop(ctx)] }], SubagentStop: [{ hooks: [stop(ctx)] }] } : {};
     },
+    // H8 (item 4): every agent's appended system prompt (Cardboard's ju: the Director, host Claude Code, Codex, the
+    // others) gains Carton's view flow with Carton on; with Carton off nothing is added.
+    viewPrompt(project) {
+      if (!on) return [];
+      const q = (x) => "\x60" + x + "\x60", id = project?.id ?? "<project>";
+      return ["Other people may edit this project while you work (Carton is on). Edit your own copy of the timeline: " + q("cb source print " + id + " --view <name>") +
+        " prints it and answers with the file to edit and its status file. Save it as you would " + q("timeline.tsx") + "; each save is applied as your change, and the status file says how it landed: " +
+        q("confirmed") + ", " + q("conflicts") + " (someone else changed the same thing: what is there was kept, and the cards say what) or " + q("rejected") + " (with why). " +
+        q("timeline.tsx") + " keeps showing the state your turn started from until your turn ends. " + q("cb conflicts " + id) + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person."];
+    },
+    // H8: the Director's file tools, beside its Bash hook: a Read or Write/Edit of timeline.tsx reaches the worker's
+    // Materializer, and a Write/Edit of project.json is refused with a pointer to the agent's own view (PLAN §6.4). The
+    // worker decides as host Claude Code's hooks decide (@carton/local's preToolUse); its only decision is that deny.
+    fileHooks(ctx) {
+      if (!on) return [];
+      return [{ matcher: "Read|Write|Edit|MultiEdit", hooks: [async (input) => {
+        if (input?.hook_event_name !== "PreToolUse") return {};
+        const r = await agentHook(ctx, directorActor(ctx, input), "pre-tool-use", { ...input, cwd: input.cwd ?? ctx.project?.bundlePath });
+        return r?.output?.hookSpecificOutput?.permissionDecision === "deny" ? r.output : {};
+      }] }];
+    },
     hostSettings() {
       if (!on) return [];
       const hook = (event) => [{ type: "command", command: "cb carton-hook " + event }];
+      // H8: the file tools the holder's Materializer hears of (a Read, Write or Edit of timeline.tsx: freeze, credit)
+      // and the Write/Edit of project.json the hook refuses. Each behind Claude Code's "if" condition (permission-rule
+      // syntax, checked inside Claude Code): a call on any other file starts no process, where a bare matcher started
+      // cb for every Read and Edit an agent made. One entry per tool and file: a rule names one tool (Edit's covers
+      // neither Write nor MultiEdit) and one pattern. "**/" matches the file at any depth, and outside the project too
+      // (cb then answers nothing), in any case on Windows. A Claude Code without "if" runs them on every call: slower,
+      // same answers.
+      const files = (tool, names) => ({ matcher: tool, hooks: names.map((f) => ({ ...hook("pre-tool-use")[0], if: tool + "(**/" + f + ")" })) });
       return ["--settings", JSON.stringify({ hooks: {
-        PreToolUse: [{ matcher: "Bash", hooks: hook("pre-tool-use") }],
+        PreToolUse: [
+          { matcher: "Bash", hooks: hook("pre-tool-use") },
+          files("Read", ["timeline.tsx"]),
+          ...["Write", "Edit", "MultiEdit"].map((tool) => files(tool, ["timeline.tsx", "project.json"])),
+        ],
         Stop: [{ hooks: hook("stop") }],
         SubagentStop: [{ hooks: hook("subagent-stop") }],
       } })];

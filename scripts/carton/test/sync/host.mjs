@@ -3,7 +3,8 @@
 // (share descriptors, media). State lives under <dir>, so a restart on the same port and dir is the same host.
 // Prints one JSON line {ready, port, origin} when it listens; `exit` on stdin stops it. It never outlives 10 minutes.
 // `hold-ends` makes it hold every segmented proxy's end entry (ps/<stream>/end) until `release-ends`, so a test can
-// read a proxy that is still uploading (answers {held} / {released}).
+// read a proxy that is still uploading (answers {held} / {released}). `{"heads": <tag>}` answers {tag, heads}: the
+// keys of the blobs asked about (HEAD) since the last one, so a test can see what a share checked.
 //   node host.mjs <dir> [port]
 // Test-only secrets: the host's signing secret and admin token are fixed strings, for a host on loopback.
 import path from "node:path";
@@ -24,12 +25,14 @@ export const SECRET = "carton-sync-test-secret-0123456789abcdef";
 export const ADMIN = "carton-sync-test-admin";
 const auth = createHmacAuth({ secret: SECRET });
 let hold = null; // {promise, release} while ends are held
+let heads = []; // the blob keys asked about since the last {heads}
 const END = /(^|\/)ps\/[0-9a-f]{64}\/end$/;
 const fsBlobs = createFsBlobStore({ root: path.join(dir, "blobs"), durable: false });
 const blobs = new Proxy(fsBlobs, {
   get(t, k) {
     const v = Reflect.get(t, k);
     if (typeof v !== "function") return v;
+    if (k === "head") return async (key, ...a) => (typeof key === "string" && heads.push(key), v.call(t, key, ...a));
     if (!String(k).startsWith("put")) return v.bind(t);
     return async (...a) => {
       if (typeof a[0] === "string" && END.test(a[0]) && hold) await hold.promise;
@@ -46,9 +49,9 @@ const node = await startNodeHost({
   port: Number(port ?? 0),
   host: "127.0.0.1",
   durability: "normal",
-  // The newest document schema the app's adapter writes: an older one refuses the app's hello (and the app stays at
-  // "Syncing").
-  schemaVersion: CARDBOARD_SCHEMA_VERSION,
+  // The newest document schema the app's adapter writes (CARTON_TEST_SCHEMA_VERSION plays a host older than the app,
+  // which refuses its hello).
+  schemaVersion: Number(process.env.CARTON_TEST_SCHEMA_VERSION) || CARDBOARD_SCHEMA_VERSION,
 });
 process.stdout.write(JSON.stringify({ ready: true, port: node.port, origin: node.httpUrl }) + "\n");
 setTimeout(() => process.exit(0), 600_000).unref();
@@ -60,6 +63,9 @@ for await (const line of createInterface({ input: process.stdin })) {
     let release;
     hold = { promise: new Promise((r) => (release = r)), release };
     process.stdout.write(JSON.stringify({ held: true }) + "\n");
+  } else if (typeof cmd?.heads === "string") {
+    process.stdout.write(JSON.stringify({ tag: cmd.heads, heads }) + "\n");
+    heads = [];
   } else if (cmd === "release-ends") {
     hold?.release();
     hold = null;

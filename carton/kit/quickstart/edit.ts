@@ -25,8 +25,8 @@ try {
   const items = doc.timelineItems as Record<string, unknown>[];
   const at = items.findIndex((i) => i.id === clip || String(i.name).toLowerCase() === clip.toLowerCase());
   if (at < 0) throw new Error(`no clip "${clip}"`);
-  // Documents are values: replace the record you change, never edit it in place. Carton shares unchanged records
-  // between versions, so an in-place edit would also change the version you started from, and nothing would differ.
+  // Documents are values, and frozen: an edit in place throws. Replace the record you change (a copy of it, in a copy
+  // of its array); Carton shares unchanged records between versions.
   const item = { ...items[at] };
   for (const s of sets) {
     const [field, raw] = s.split("=");

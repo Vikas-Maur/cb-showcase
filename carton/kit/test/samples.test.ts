@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import { Carton, LOCAL_TABLES, StateUnknown, type Actor, type Doc, type Rec } from "@carton/core";
 import type { AuthContext, AuthProvider } from "@carton/core/plugins";
 import { cardboardAdapter, createCardboardAdapter, fromHost, materializeProject, projectGuiSave, standInProjection } from "@carton/cardboard";
-import { excludedFromExport, exportCbproj, extractFullHistory, readCbproj } from "@carton/cardboard/node";
+import { bringInTheirChanges, excludedFromExport, exportCbproj, extractFullHistory, readCbproj } from "@carton/cardboard/node";
 import { register } from "@carton/cli-mcp";
 import { authProviderSuite } from "@carton/conformance";
 import { hookSettings, identify, nodeHasher, openLocal, readProjectId, runWrite } from "@carton/local";
@@ -82,11 +82,12 @@ test("H1: each mutation commits against its own base; a stale base is rebased, a
     const file = materializeProject(head, project);
     assert.equal(file.id, "demo-project");
     assert.equal((file.timelineItems as Rec[]).find((i) => i.id === "outro")!.textContent, "B");
-    // in-place edits are invisible: the record is shared with the base
-    const shared = (await carton.head()).doc;
-    (shared.timelineItems as Rec[])[0]!.textContent = "edited in place";
-    const r = await carton.commit({ doc: shared });
-    assert.equal(r.status === "confirmed" && r.empty, true, "an in-place edit is not a change (copy the record)");
+    // documents are values and frozen: an in-place edit throws; replacing the record is the edit
+    const current = (await carton.head()).doc;
+    assert.throws(() => { (current.timelineItems as Rec[])[0]!.textContent = "edited in place"; }, TypeError);
+    const r = await carton.commit({ doc: withClip(current, "intro", { textContent: "replaced" }) });
+    assert.equal(r.status === "confirmed" && !r.empty, true, "replacing the record and committing makes the change");
+    assert.equal(clip((await carton.head()).doc, "intro").textContent, "replaced");
   } finally {
     await carton.close();
     await store.close();
@@ -264,6 +265,16 @@ test("H11: a .cbproj with \"Include history\" is read back with importHistory: t
     await theirs.close();
     await received.close();
     await mine.close();
+  }
+  // or "Bring in their changes" with its `history` option, which imports the same history
+  const mine2 = await openSqliteStore(join(scratch("h11-history-bring-in"), "carton.db"));
+  const received2 = await Carton.open({ adapter: cardboardAdapter, store: mine2, hasher: nodeHasher, init: { import: contents.shallow! } });
+  try {
+    const r = await bringInTheirChanges(received2, contents, { history: { file: out, openStore: (p) => openSqliteStore(p, { readOnly: true }) } });
+    assert.equal(r.history?.status, "imported", JSON.stringify(r));
+  } finally {
+    await received2.close();
+    await mine2.close();
   }
 });
 

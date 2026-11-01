@@ -4,13 +4,15 @@
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/patches.test.js
 // They check that:
 // - with Carton off, the patched cb behaves as our Windows build does: the same output and the same files;
-// - a .cbproj never carries .carton/ or .scratch/views/, with Carton on or off;
+// - a .cbproj never carries .carton/ or Carton's view files, and carries anything else in .scratch/views/, with Carton
+//   on or off;
 // - with Carton on, every hook reaches the facade with the right arguments (a recording fake stands in for Carton);
 // - the library worker runs patched, off and on: a GUI save, an agent's timeline.tsx, the carton RPC namespace.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), os = require("os"), path = require("path"), { spawnSync, execFileSync } = require("child_process");
 const { stage } = require("./stage.js");
+const S = require("./sync/support.js");
 
 const PRISTINE = process.env.CARDBOARD_PRISTINE;
 const skip = !PRISTINE || !fs.existsSync(path.join(PRISTINE ?? "", "app-asar")) ? "set CARDBOARD_PRISTINE to Cardboard 1.4.0's unpacked app and cli" : false;
@@ -87,18 +89,21 @@ test("Carton off: cb's output and files are the Windows build's", { skip }, () =
   assert.deepEqual(files(path.join(TMP, "lib-off")), files(path.join(TMP, "lib-win")));
 });
 
-test(".cbproj leaves out .carton/ and .scratch/views/, on or off", { skip }, () => {
+test(".cbproj leaves out .carton/ and Carton's view files, and keeps everything else in .scratch/views/, on or off", { skip }, () => {
+  const views = (files) => Object.keys(files).map((n) => ".scratch/views/" + n);
   for (const [name, extra] of [["off", { CARDBOARD_CARTON: "0" }], ["on", withFake(fakeLog("cbproj"))]]) {
     const root = path.join(TMP, "lib-cbproj-" + name);
     session(carton.cli, root, extra);
     const b = path.join(root, "Demo.cardboard");
-    for (const f of [".carton/carton.db", ".scratch/views/agent-x.tsx", ".scratch/keep.tsx"]) fs.mkdirSync(path.dirname(path.join(b, f)), { recursive: true }), fs.writeFileSync(path.join(b, f), "x");
+    const put = (f, d) => (fs.mkdirSync(path.dirname(path.join(b, f)), { recursive: true }), fs.writeFileSync(path.join(b, f), d));
+    for (const f of [".carton/carton.db", ".scratch/keep.tsx"]) put(f, "x");
+    for (const [n, d] of Object.entries({ ...S.cartonViewFiles("agent-x"), ...S.ownViewFiles() })) put(".scratch/views/" + n, d);
     const out = path.join(TMP, name + ".cbproj");
     fs.rmSync(out, { force: true });
     assert.equal(cb(carton.cli, root, ["project", "save-as", "Demo", out], extra).code, 0);
     const names = zipNames(out);
-    assert.ok(names.includes(".scratch/keep.tsx") && names.includes("project.json"), names.join(" "));
-    assert.ok(!names.some((n) => n.startsWith(".carton/") || n.startsWith(".scratch/views/")), names.join(" "));
+    for (const n of [".scratch/keep.tsx", "project.json", ...views(S.ownViewFiles())]) assert.ok(names.includes(n), n + ": " + names.join(" "));
+    for (const n of names) assert.ok(!n.startsWith(".carton/") && !views(S.cartonViewFiles("agent-x")).includes(n), n);
   }
 });
 

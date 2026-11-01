@@ -5,6 +5,8 @@
 //   <host>/#join=<projectId>.<invite>
 // The invite rides in the fragment, so it never reaches a server log.
 
+import { hostMediaBlobs } from "@carton/host-http/client";
+
 export const DESCRIPTOR_KEY = "carton/project.json";
 
 /** `http(s)://host[:port][/…]#join=<projectId>.<invite>` → its parts, or null. */
@@ -54,30 +56,34 @@ export const adminInvite = async ({ host, projectId, adminToken, role = "owner",
   (await call(`${origin(host)}/api/admin/projects/${encodeURIComponent(projectId)}/invites`, { token: adminToken, body: { role }, fetchFn })).invite;
 
 /**
- * A short-lived signed URL for one key of the project's media scope, moved onto the origin this computer reaches the
- * host by (as host-blobs.js does): the signature covers the path and query, not the origin, and a host behind a proxy
- * signs with its own listen address.
+ * The project's media scope on the host, as a BlobStore: hosts-plugins' client over the HTTP media API
+ * (`@carton/host-http/client`: resumable multipart uploads, signed URLs for small objects and ranged reads, the §11
+ * repair report). `token` is a string or a function returning a fresh one. Signed URLs are moved onto the origin this
+ * computer reaches the host by: the signature covers the path and query, not the origin, and a host behind a reverse
+ * proxy signs with its own listen address (e2e-qa S5-2, still open on the host side).
  */
-const sign = async ({ host, projectId, token, key, method, fetchFn }) => {
-  const u = new URL((await call(api(host, projectId, "/blobs/sign"), { token, body: { key, method, expiresIn: 300 }, fetchFn })).url, origin(host));
-  const b = new URL(origin(host));
-  u.protocol = b.protocol;
-  u.host = b.host;
-  return u.toString();
-};
+export function mediaStore({ host, projectId, token, fetchFn = (u, i) => fetch(u, i) }) {
+  const pub = origin(host);
+  return hostMediaBlobs({ origin: pub, projectId, token, fetch: (u, i) => fetchFn(ontoOrigin(pub, u), i) });
+}
 
-export async function putBlob({ host, projectId, token, key, bytes, contentType = "application/octet-stream", fetchFn = fetch }) {
-  const url = await sign({ host, projectId, token, key, method: "PUT", fetchFn });
-  const r = await fetchFn(url, { method: "PUT", headers: { "content-type": contentType }, body: bytes });
-  if (!r.ok) throw new Error(`The host refused the upload of ${key} (${r.status})`);
+/**
+ * A signed media URL (`/blob/…`) on `origin`, the one this computer reaches the host by: scheme, host and port. The
+ * whole origin, never the host alone: a host behind TLS termination signs http://<same host>, which must not go out as
+ * plain http (review round 3 #6). Anything else is left as it is.
+ */
+export function ontoOrigin(origin, u) {
+  const pub = new URL(origin), url = new URL(String(u instanceof Request ? u.url : u));
+  if (!url.pathname.startsWith("/blob/") || url.origin === pub.origin) return u;
+  url.protocol = pub.protocol;
+  url.hostname = pub.hostname;
+  url.port = pub.port;
+  return url.toString();
 }
-export async function getBlob({ host, projectId, token, key, fetchFn = fetch }) {
-  const url = await sign({ host, projectId, token, key, method: "GET", fetchFn });
-  const r = await fetchFn(url);
-  if (r.status === 404) return null;
-  if (!r.ok) throw new Error(`The host refused the download of ${key} (${r.status})`);
-  return new Uint8Array(await r.arrayBuffer());
-}
+
+export const putBlob = ({ host, projectId, token, key, bytes, contentType = "application/octet-stream", fetchFn }) =>
+  mediaStore({ host, projectId, token, fetchFn }).put(key, bytes, { contentType });
+export const getBlob = ({ host, projectId, token, key, fetchFn }) => mediaStore({ host, projectId, token, fetchFn }).get(key);
 
 /**
  * What a joiner needs beyond the token (the web client's format, `carton/apps/web/src/descriptor.ts`): the shared cut

@@ -15,7 +15,7 @@
 //     reports only what comes after it.
 // A `cb` that wrote without the holder also nudges it over the control socket (`carton.nudge`), so the app looks at
 // once; the poll is what guarantees it.
-import type { Carton, CartonEvent } from "@carton/core";
+import type { Actor, Carton, CartonEvent } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 
 /** How often the app looks for writes by other processes (ms). */
@@ -37,10 +37,18 @@ export function externalStamp(store: Store): (() => Promise<number>) | null {
 }
 
 export interface FollowOptions {
-  /** The current cut's head moved under this handle (another process wrote it). */
-  onHead(cut: string): void | Promise<void>;
+  /**
+   * The current cut's head moved under this handle (another process wrote it). `authors`: who made those changes, one
+   * entry per change (null: a change with no author); none when it can't tell (merged with a notice that couldn't).
+   */
+  onHead(cut: string, authors?: readonly (Actor | null)[]): void | Promise<void>;
   /** This machine's current cut is another one now (another process switched it); this handle has switched too. */
   onCut(cut: string): void | Promise<void>;
+  /**
+   * Another connection committed, but no change row of another process on the current cut says so (its write was on
+   * another cut, a pending change or a notice, or the app's own sync): told when nothing else was.
+   */
+  onMoved?(cut: string): void | Promise<void>;
   /** Poll interval (ms). 0: no polling, only `check()` (a nudge). Default FOLLOW_MS. */
   intervalMs?: number;
   /**
@@ -55,6 +63,14 @@ export interface FollowOptions {
 export interface Follower {
   /** Look now (a nudge): resolves once the store has been compared and any listener called. */
   check(): Promise<void>;
+  /**
+   * The handle was switched in this process and its listeners know (CartonHolderEngine calls it for a switch it served
+   * and printed). Whoever switches a followed handle in-process says so here: a cut never announced is told at the
+   * next look as a cut switch, however the handle got there (a switch made here that nobody announced, one whose
+   * printing failed, or core moving the handle while it reloads), so a missing call costs a repeated notice, never a
+   * lost one.
+   */
+  served(cut: string): void;
   /** Stop: nothing is switched or told after this; resolves once a look in progress has finished. */
   stop(): Promise<void>;
 }
@@ -79,13 +95,43 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (known.size > KNOWN_MAX) known.delete(known.values().next().value!);
   });
   let running: Promise<void> | null = null;
+  /**
+   * The cut the listeners were last told the handle is on: by this follower (a cut notice that went through) or by the
+   * holder (`served`). The handle can be on another one with nothing found in the store to say so: a switch served
+   * here whose printing failed, or core moving the handle while it reloads (another process made a cut and switched to
+   * it: any call that refreshes, this follower's own scan too, rebuilds the handle on the stored current cut). Every
+   * look ends by telling such a cut.
+   */
+  let announced = carton.cut;
+  /**
+   * A notification whose listener failed: the stamp and the baselines have moved past what it reports, so it is kept
+   * and told again at the next look (poll or nudge), after that look has read the store (a listener that keeps failing
+   * never holds up adopting a newer cut). It is what to tell, not a call to repeat, and only for the cut the handle is
+   * on: merged with what that look found (the larger of the two), dropped once the handle has left its cut (the cut it
+   * is on then is told as unannounced, or was announced).
+   */
+  let owed: Notice | null = null;
+  const owe = (n: Notice): void => {
+    if (stopped || n.cut !== carton.cut) return;
+    if (!owed || owed.cut !== n.cut || RANK[n.kind] > RANK[owed.kind]) owed = n;
+  };
+  const tell = async (n: Notice): Promise<void> => {
+    try {
+      if (n.kind === "cut") await o.onCut(n.cut);
+      else if (n.kind === "head") await o.onHead(n.cut, n.authors);
+      else await o.onMoved?.(n.cut);
+    } catch (e) {
+      owe(n);
+      throw e;
+    }
+  };
   let again = false;
   let timer: NodeJS.Timeout | null = null;
 
   /** Rows past the baseline on `cut` (the baseline moves past them). */
-  const newRows = async (cut: string): Promise<{ id: string }[]> => {
+  const newRows = async (cut: string): Promise<Row[]> => {
     const from = baseline.get(cut);
-    const rows = await store.range<{ id: string; seq: number }>("changes", from === undefined ? { prefix: [cut] } : { prefix: [cut], gt: [cut, from] });
+    const rows = await store.range<Row & { seq: number }>("changes", from === undefined ? { prefix: [cut] } : { prefix: [cut], gt: [cut, from] });
     if (rows.length) baseline.set(cut, Math.max(from ?? 0, ...rows.map((r) => Number(r.key[1]))));
     else if (from === undefined) baseline.set(cut, 0);
     return rows.map((r) => r.value);
@@ -105,35 +151,60 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     const stored = await store.get<string>("meta", ["current"]);
     if (!stored || stored === mine || !(await carton.cuts()).some((c) => c.id === stored)) return null;
     return exclusive(async () => {
-      // under the lock, read again: a switch served (or made by the app) since the first read wins
-      if (stopped || carton.cut !== mine || (await store.get<string>("meta", ["current"])) !== stored) return null;
-      await carton.switchTo(stored);
+      // under the lock, read again: a switch served (or made by the app) since the first read wins, and a stop asked
+      // for during that read stops it
+      const now = await store.get<string>("meta", ["current"]);
+      if (stopped || carton.cut !== mine || now !== stored) return null;
+      // the handle only: the stored row is already this cut, and writing it again would undo a switch a third process
+      // stored after the read (request 6, foundation `fb7f4e9`)
+      await carton.switchTo(stored, { persist: false });
       return stored;
     });
   };
 
-  const look = async (): Promise<void> => {
-    if (!started) await start();
+  /** What the store says changed since the last look (null: nothing another connection committed). */
+  const scan = async (): Promise<Notice | null> => {
     const s = await stamp();
-    if (s === lastStamp) return;
+    if (s === lastStamp) return null;
+    // the first look only records where the store is
+    const first = lastStamp === null;
     lastStamp = s;
     const switched = await adoptCut();
-    if (stopped) return;
+    if (stopped) return null;
     // every cut's rows move its baseline; only the current cut's rows from elsewhere are news
     const cut = carton.cut;
-    let mine: string[] = [];
+    let mine: Row[] = [];
     for (const c of await carton.cuts()) {
-      const ids = (await newRows(c.id)).map((r) => r.id);
-      if (c.id === cut) mine = ids;
-      else for (const id of ids) known.delete(id);
+      const rows = await newRows(c.id);
+      if (c.id === cut) mine = rows;
+      else for (const r of rows) known.delete(r.id);
     }
-    let foreign = mine.filter((id) => !known.has(id));
+    let foreign = mine.filter((r) => !known.has(r.id));
     // a commit of this handle emits its event right after its write: one turn later it is known if it is ours
-    if (foreign.length) { await new Promise((r) => setImmediate(r)); foreign = foreign.filter((id) => !known.has(id)); }
-    for (const id of mine) known.delete(id);
-    if (stopped) return;
-    if (switched) await o.onCut(switched);
-    else if (foreign.length) await o.onHead(cut);
+    if (foreign.length) { await new Promise((r) => setImmediate(r)); foreign = foreign.filter((r) => !known.has(r.id)); }
+    for (const r of mine) known.delete(r.id);
+    if (switched) return { kind: "cut", cut: switched };
+    if (foreign.length) return { kind: "head", cut, authors: foreign.map((r) => r.author ?? null) };
+    return !first && o.onMoved ? { kind: "moved", cut } : null;
+  };
+  const look = async (): Promise<void> => {
+    if (!started) await start();
+    let n = await scan();
+    // the handle moved while this look read the store: what it found is about a cut the handle has left
+    if (n && n.cut !== carton.cut) n = null;
+    // on a cut the listeners weren't told of, however it got there: the whole cut
+    if (carton.cut !== announced) n = { kind: "cut", cut: carton.cut };
+    const left = owed;
+    owed = null;
+    if (left && left.cut === carton.cut) {
+      if (!n || RANK[left.kind] > RANK[n.kind]) n = left;
+      // both about other processes' changes: whose they were, all of them (one that can't tell makes it unknown)
+      else if (left.kind === "head" && n.kind === "head") n = { ...n, authors: left.authors && n.authors ? [...left.authors, ...n.authors] : undefined };
+    }
+    if (!n || stopped) return;
+    await tell(n);
+    // told; unless the handle moved on meanwhile (and that move announced itself or is told next)
+    if (n.kind === "cut" && carton.cut === n.cut) announced = n.cut;
   };
   // one look at a time; a check asked for during one runs once more after it (it may have missed that write)
   const check = (): Promise<void> => {
@@ -166,9 +237,24 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     });
   };
   // the first look records where the store is; moves are what changes after it
+  const served = (cut: string): void => {
+    if (carton.cut !== cut) return;
+    announced = cut;
+    if (owed && owed.cut !== cut) owed = null;
+  };
   tick();
-  return { check, stop };
+  return { check, stop, served };
 }
+
+/**
+ * What a look tells: a cut switch (the whole cut to show), the head moved, or some other write. `authors` (head): who
+ * made the changes that moved it.
+ */
+export type Notice = { kind: "cut" | "head" | "moved"; cut: string; authors?: readonly (Actor | null)[] };
+/** A change row as the follower reads it (core's ConfirmedChange, the fields it needs). */
+type Row = { id: string; author?: Actor | null };
+/** A switch shows the whole cut, head included; a head move tells all a write elsewhere would. */
+const RANK: Record<Notice["kind"], number> = { moved: 0, head: 1, cut: 2 };
 
 /** The store (or Carton on it) was closed under the follower: nothing more to follow. */
 function isClosed(e: unknown): boolean {

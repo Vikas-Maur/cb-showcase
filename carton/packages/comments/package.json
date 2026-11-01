@@ -1,0 +1,43 @@
+{
+  "name": "@carton/comments",
+  "version": "0.1.0",
+  "description": "Timecoded comments for Carton: anchored to a version and a place on the timeline, followed to later versions (exact, moved, may be outdated), kept beside the project's history and shared through its host. Never versions.",
+  "type": "module",
+  "license": "UNLICENSED",
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server.ts"
+  },
+  "publishConfig": {
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "./server": {
+        "types": "./dist/server.d.ts",
+        "default": "./dist/server.js"
+      }
+    }
+  },
+  "files": [
+    "dist",
+    "src"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "test": "node --test --test-concurrency=2 \"test/**/*.test.ts\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
+    "bench": "node bench/reanchor.ts"
+  },
+  "dependencies": {
+    "@carton/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/cardboard": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/server-node": "0.1.0",
+    "@carton/store-memory": "0.1.0",
+    "@carton/store-sqlite": "0.1.0"
+  }
+}

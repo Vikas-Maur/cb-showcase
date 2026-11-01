@@ -141,6 +141,14 @@ const tapArgs = (a) => (a.includes("--test") && !a.some((x) => x.startsWith("--t
 function runStep(step, index) {
   const label = step.label ?? `${step.pkg}: npm test`;
   const cwd = path.resolve(CARTON, step.pkg ? path.join("packages", step.pkg) : (step.cwd ?? "."));
+  // On one agent's branch (carton-agent.yml sets CARTON_CI_AGENT) a group may name a package or folder that branch
+  // doesn't have: that step is reported as not run, not as a crash. On ci/carton every one must exist.
+  const missing = step.pkg ? !fs.existsSync(path.join(cwd, "package.json")) : !fs.existsSync(cwd);
+  if (missing && process.env.CARTON_CI_AGENT) {
+    const why = `not in this checkout (${path.relative(CARTON, cwd)}): not run`;
+    console.log(`::notice::${label}: ${why}`);
+    return Promise.resolve({ label, cwd: path.relative(CARTON, cwd), command: "", exit: null, signal: null, timedOut: false, ms: 0, ok: true, notRun: why, problems: [] });
+  }
   // A package step runs its `test` script's commands as npm would (they are plain `node --test …` lines joined by
   // &&), each with the TAP reporter added.
   const script = step.pkg && JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")).scripts.test;
@@ -246,7 +254,7 @@ let md = `### ${group.name} on ${OS}\n\n${info.cpu}, ${info.cores} cores, ${info
 md += "| step | result | tests | pass | fail | skipped | todo | time |\n|---|---|---|---|---|---|---|---|\n";
 for (const r of results) {
   const t = r.totals;
-  md += `| ${esc(r.label)} | ${r.ok ? "✅" : "❌ " + esc(r.problems.join(", "))} | ${t?.tests ?? "–"} | ${t?.pass ?? "–"} | ${t ? t.fail + t.cancelled : "–"} | ${t?.skipped ?? "–"} | ${t?.todo ?? "–"} | ${fmtMs(r.ms)} |\n`;
+  md += `| ${esc(r.label)} | ${r.notRun ? "➖ " + esc(r.notRun) : r.ok ? "✅" : "❌ " + esc(r.problems.join(", "))} | ${t?.tests ?? "–"} | ${t?.pass ?? "–"} | ${t ? t.fail + t.cancelled : "–"} | ${t?.skipped ?? "–"} | ${t?.todo ?? "–"} | ${fmtMs(r.ms)} |\n`;
 }
 for (const r of results) {
   if (r.failures?.length) {
@@ -267,7 +275,7 @@ summary(md);
 for (const r of results) for (const f of (r.failures ?? []).slice(0, 10)) console.log(`::error title=${esc(group.name)} (${OS}): ${esc(r.label)}::${esc(f.name)}`);
 fs.writeFileSync(path.join(dirs.results, `${groupName}-${OS}.json`), JSON.stringify({ group: groupName, machine: info, at: new Date().toISOString(), sha: process.env.GITHUB_SHA ?? null, results }, null, 1));
 
-console.log("\n" + results.map((r) => `${r.ok ? "PASS" : "FAIL"} ${r.label} (${fmtMs(r.ms)})${r.ok ? "" : ": " + r.problems.join(", ")}`).join("\n"));
+console.log("\n" + results.map((r) => `${r.notRun ? "NOT RUN" : r.ok ? "PASS" : "FAIL"} ${r.label} (${fmtMs(r.ms)})${r.ok ? "" : ": " + r.problems.join(", ")}`).join("\n"));
 for (const r of results)
   for (const f of r.failures ?? []) console.log(`\n--- failed: ${r.label} › ${f.name}\n${f.detail}`);
 process.exitCode = results.every((r) => r.ok) ? 0 : 1;

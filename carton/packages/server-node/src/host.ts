@@ -126,10 +126,70 @@ function toRequest(req: IncomingMessage, origin: string): Request {
   const method = req.method ?? "GET";
   const init: RequestInit & { duplex?: "half" } = { method, headers };
   if (method !== "GET" && method !== "HEAD") {
-    init.body = Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>;
+    init.body = bodyOf(req);
     init.duplex = "half";
   }
   return new Request(new URL(req.url ?? "/", origin), init);
+}
+
+// A request's body as a web stream. A reader that stops early (a body over its budget, handleHttp's 413) only stops
+// reading. Cancelling Readable.toWeb's own stream destroys the request, and node's parser stops reading the socket for
+// a destroyed request (its push is refused): the rest of the body then sat unread in the kernel, the client stalled,
+// and the staged close (`closeInStages`) could only end in a reset (Windows CI, a chunked 413). Kept alive, the
+// request lets the staged close drop the rest.
+function bodyOf(req: IncomingMessage): ReadableStream<Uint8Array> {
+  const reader = (Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>).getReader();
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(c) {
+        const { done, value } = await reader.read();
+        if (done) c.close();
+        else c.enqueue(value);
+      },
+      cancel() {
+        reader.releaseLock();
+      },
+    },
+    { highWaterMark: 0 },
+  );
+}
+
+// What the staged close drops of a body after the answer: until the client closes its side, or this much, or this long.
+const LINGER_BYTES = 16 << 20;
+const LINGER_MS = 5000;
+
+/**
+ * An answer given before its request's body was read whole (a 413 at the body budget) can't leave the rest on the
+ * connection: it closes (`connection: close`), in stages (RFC 9112 §9.6). Closing a socket with unread bytes in its
+ * receive buffer resets the connection at once, and on Windows the reset loses the answer before the client reads it
+ * (`fetch failed`; CI on Windows). So once the answer is written, the host half-closes (FIN after the answer), then
+ * reads and drops what the client still sends (never kept) until the client closes its side, LINGER_BYTES have come
+ * or LINGER_MS have passed, and only then closes. node:http ends a `connection: close` answer's socket with
+ * `destroySoon` (end, then destroy once written); on this one socket that becomes the staged close.
+ */
+function closeInStages(req: IncomingMessage, res: ServerResponse): void {
+  res.setHeader("connection", "close");
+  const socket = res.socket;
+  if (!socket) return;
+  socket.destroySoon = () => {
+    if (socket.destroyed) return;
+    let dropped = 0;
+    const done = () => {
+      clearTimeout(timer);
+      socket.destroy();
+    };
+    const timer = setTimeout(done, LINGER_MS);
+    timer.unref?.();
+    socket.once("close", () => clearTimeout(timer));
+    socket.once("end", done);
+    // the body's reader (Readable.toWeb's, paused) no longer takes it: dropped as it comes, and counted
+    req.removeAllListeners("data");
+    req.on("data", (b: Buffer) => {
+      if ((dropped += b.byteLength) > LINGER_BYTES) done();
+    });
+    req.resume();
+    socket.end();
+  };
 }
 
 async function send(res: ServerResponse, r: Response, req?: IncomingMessage): Promise<void> {
@@ -141,10 +201,9 @@ async function send(res: ServerResponse, r: Response, req?: IncomingMessage): Pr
   }
   const headers: Record<string, string> = {};
   r.headers.forEach((v, k) => (headers[k] = v));
-  // answered before its body was read whole (a 413 at the budget, which cancelled the read): the rest of the body is
-  // still on the connection, so it can't carry another request. Without this the client keeps it in its pool, and a
-  // later request on it fails (ECONNRESET).
-  if (req && !req.complete) headers.connection = "close";
+  // answered before its body was read whole (a 413 at the budget): the rest of the body is still on the connection, so
+  // it can't carry another request (a client that kept it in its pool got ECONNRESET on its next request there)
+  if (req && !req.complete) closeInStages(req, res);
   res.writeHead(r.status, headers);
   if (!r.body) return void res.end();
   const body = Readable.fromWeb(r.body as unknown as import("node:stream/web").ReadableStream<Uint8Array>);
@@ -395,7 +454,10 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
         res.writeHead(404, { "content-type": "text/plain" }).end("not found");
       } catch (e) {
         onError(e);
-        if (!res.headersSent) res.writeHead(500, { "content-type": "text/plain" });
+        if (!res.headersSent) {
+          if (!req.complete) closeInStages(req, res);
+          res.writeHead(500, { "content-type": "text/plain" });
+        }
         res.end("internal error");
       }
     })();

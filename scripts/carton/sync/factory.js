@@ -5,7 +5,7 @@
 // "Before any print, the lease holder pulls" (§6.2): the first call waits, up to 3 s, for the connection to catch up,
 // so an agent never edits a state older than the host's; offline it goes on at once and answers `pending`.
 // build.js copies this file to resources/carton/sync/; it loads carton-node.cjs beside it for the packages (one copy).
-//   config: { projectDir, projectId, sync: { bundlePath, projectId } }  (no secret: the session is in app data)
+//   config: { projectDir, projectId, cardboardSync: { bundlePath, projectId } }  (no secret: the session is in app data)
 import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -16,22 +16,12 @@ const CATCH_UP_MS = 3000;
 
 export async function createHolderEngine({ dbPath, config, log }) {
   const { Carton, cardboardAdapter, nodeHasher, lazySync, openSqliteStore, CartonHolderEngine, caughtUp, store: syncStore } = globalThis.__cartonSync;
-  const { bundlePath, projectId } = config.sync ?? {};
+  // `cardboardSync`, not `sync`: local's own factory reads `sync` as {url, tokenFile} (local-cli's `carton --server`).
+  const { bundlePath, projectId } = config.cardboardSync ?? {};
   const cfg = bundlePath && projectId ? syncStore.readConfig(bundlePath, projectId) : null;
   if (!cfg) throw new Error("this project isn't shared from this computer");
   const store = await openSqliteStore(dbPath);
-  // A connection that fails says why in helper.log (once per distinct reason): core retries quietly.
-  const sync = lazySync(bundlePath, projectId);
-  let lastError = null;
-  const failed = (what) => (e) => {
-    const error = `${what}: ${String(e?.message ?? e)}`;
-    if (error !== lastError) log?.({ type: "connect-failed", error: (lastError = error) });
-    throw e;
-  };
-  const connect = sync.transport.connect.bind(sync.transport), token = sync.token;
-  sync.transport = { ...sync.transport, connect: (...a) => Promise.resolve().then(() => connect(...a)).catch(failed("connect")) };
-  sync.token = () => Promise.resolve().then(token).catch(failed("token"));
-  const carton = await Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, sync, name: cfg.name ?? cfg.account });
+  const carton = await Carton.open({ adapter: cardboardAdapter, store, hasher: nodeHasher, sync: lazySync(bundlePath, projectId), name: cfg.name ?? cfg.account });
   const engine = new CartonHolderEngine(carton);
   // The spawner sends its call as soon as the lease row names this helper's socket, which is before the holder has
   // started sync: so the wait starts now, and ends when the connection has caught up (or after CATCH_UP_MS).
@@ -40,9 +30,11 @@ export async function createHolderEngine({ dbPath, config, log }) {
     started = r;
     setTimeout(r, CATCH_UP_MS).unref?.();
   });
-  // Status changes go to helper.log (beside carton.db), for a post-mortem of a session nobody watched.
+  // Status changes, and why sync fails (core's sync-error: one event per change of reason), go to helper.log beside
+  // carton.db, for a post-mortem of a session nobody watched.
   let last = null;
   carton.on((e) => {
+    if (e.type === "sync-error") return log?.({ type: "sync-error", ...(e.error ? { code: e.error.code, message: e.error.message } : { cleared: true }) });
     if (e.type !== "sync") return;
     const s = carton.sync?.state();
     if (s && s.status !== last) log?.({ type: "sync", status: (last = s.status), pending: s.pending });

@@ -11,6 +11,13 @@ const WORKSPACE = path.join(__dirname, "..", "..", "..", "..", "carton");
 const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
 // Never /tmp (a small shared tmpfs on the build box).
 const TMP = process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync", "test");
+// Fail fast instead of hanging (CI kills a whole step after 20 minutes, with nothing said about which test hung): a
+// test fails after TEST_MS, a file's setup (staging Cardboard's bundles, starting the libraries' workers) after
+// SETUP_MS, its teardown after STOP_MS. Generous next to the slowest runs (a test ~15 s on Linux, a few times that on
+// a Windows runner); CARTON_TEST_MS / CARTON_SETUP_MS raise them for a slow machine.
+const TEST_MS = Number(process.env.CARTON_TEST_MS) || 150_000;
+const SETUP_MS = Number(process.env.CARTON_SETUP_MS) || 600_000;
+const STOP_MS = 60_000;
 const ADMIN = "carton-sync-test-admin";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -49,7 +56,7 @@ function proc(file, args, env) {
 }
 
 let built = null;
-/** Stage the bundles (Windows patches, patch-carton, patch-carton-sync) and build carton-node.cjs with the sync half. */
+/** Stage the bundles (Windows patches, patch-carton, patch-carton-sync) and build Carton as build-windows.js does. */
 async function build() {
   if (built) return built;
   fs.mkdirSync(TMP, { recursive: true });
@@ -57,7 +64,8 @@ async function build() {
   const s = stage(PRISTINE, path.join(TMP, "stage"), { carton: true });
   const bundle = path.join(TMP, "bundle");
   fs.rmSync(bundle, { recursive: true, force: true });
-  await require("./shim.js").build(bundle, s.assets);
+  // The shipped build (CARTON_TEST_FREEZE=1: every document Carton returns deep-frozen, freeze.js).
+  await require("../../build.js").build(bundle, s.assets, process.env.CARTON_TEST_FREEZE === "1" ? { prelude: path.join(__dirname, "freeze.js") } : {});
   const clip = path.join(TMP, "clip.mp4");
   if (!fs.existsSync(clip)) execFileSync(process.env.CARDBOARD_FFMPEG ?? "ffmpeg", ["-loglevel", "error", "-f", "lavfi", "-i", "testsrc=size=320x180:rate=30", "-f", "lavfi", "-i", "sine=frequency=440", "-t", "3", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip]);
   // A second clip, longer and different footage, for media that is still uploading (three ~2 s segments).
@@ -66,9 +74,9 @@ async function build() {
   return (built = { ...s, carton: path.join(bundle, "carton"), clip, clip2 });
 }
 
-async function startHost(dir, port) {
+async function startHost(dir, port, env = {}) {
   if (!port) fs.rmSync(dir, { recursive: true, force: true });
-  const h = proc(path.join(__dirname, "host.mjs"), [dir, String(port ?? 0)], process.env);
+  const h = proc(path.join(__dirname, "host.mjs"), [dir, String(port ?? 0)], { ...process.env, ...env });
   const r = await h.next((x) => x.ready);
   return { ...h, port: r.port, origin: r.origin, stop: async () => {
     h.send("exit");
@@ -81,9 +89,12 @@ async function startHost(dir, port) {
 }
 
 /** One computer: its library, its app data, its library worker, and cb on that library. */
-async function computer(name, b) {
-  const home = path.join(TMP, name), root = path.join(home, "library");
-  fs.rmSync(home, { recursive: true, force: true });
+// `same`: another library on the same machine as that computer (its home and app data: its install key, sessions and
+// settings), as a second library folder of one person's.
+async function computer(name, b, { same } = {}) {
+  const home = same ? same.home : path.join(TMP, name), root = path.join(home, same ? name : "library");
+  if (!same) fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
   const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_DATA_HOME: path.join(home, "appdata"), LOCALAPPDATA: path.join(home, "appdata"), CARDBOARD_CARTON: "1", CARTON_DIR: b.carton, CARDBOARD_ACTOR: "", CLAUDECODE: "", CLAUDE_CODE_ENTRYPOINT: "" };
   const cb = (args, extra = {}) => {
@@ -91,8 +102,9 @@ async function computer(name, b) {
     return { code: r.status, out: r.stdout, err: r.stderr, json: () => JSON.parse(r.stdout.replace(/^\[carton\][^\n]*\n/gm, "")) };
   };
   let w = null, n = 0;
-  const startWorker = async () => {
-    w = proc(path.join(__dirname, "worker-proc.js"), [b.worker, root], env);
+  // `extra`: more environment for this worker run only (e.g. CARTON_CBPROJ_HISTORY for the app's Save As).
+  const startWorker = async (extra = {}) => {
+    w = proc(path.join(__dirname, "worker-proc.js"), [b.worker, root], { ...env, ...extra });
     await w.next((x) => x.ready, 60_000);
   };
   const call = async (method, ...args) => {
@@ -130,7 +142,18 @@ async function computer(name, b) {
   };
   return {
     name, home, root, env, cb, mcp, call, events, startWorker,
-    stopWorker: async () => { if (!w) return; w.send({ method: "exit" }); await new Promise((ok) => (w.p.exitCode !== null ? ok() : w.p.once("exit", ok))); w = null; },
+    // the worker asked to exit; killed if it hasn't after 5 s (a handle left open must not hang the run)
+    stopWorker: async () => {
+      if (!w) return;
+      const p = w.p;
+      w.send({ method: "exit" });
+      await new Promise((ok) => {
+        if (p.exitCode !== null || p.signalCode !== null) return ok();
+        const k = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, 5000);
+        p.once("exit", () => (clearTimeout(k), ok()));
+      });
+      w = null;
+    },
     kill: () => { try { w?.p.kill("SIGKILL"); } catch {} },
     worker: () => w,
   };
@@ -184,4 +207,41 @@ function killHelpers() {
 /** A project's file as it is on a computer's disk (its worker may be stopped). */
 const fileOf = (pc, bundle = "Demo") => JSON.parse(fs.readFileSync(path.join(pc.root, bundle + ".cardboard", "project.json"), "utf8")).project;
 
-module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf };
+/** A .cbproj's members (Cardboard writes a stored zip), and a member's bytes. */
+function zipOf(file) {
+  const buf = fs.readFileSync(file);
+  let e = buf.length - 22;
+  while (e >= 0 && buf.readUInt32LE(e) !== 0x06054b50) e--;
+  if (e < 0) throw new Error("no zip end record in " + file);
+  const entries = new Map();
+  for (let i = 0, n = buf.readUInt16LE(e + 10), at = buf.readUInt32LE(e + 16); i < n; i++) {
+    const len = buf.readUInt16LE(at + 28), extra = buf.readUInt16LE(at + 30), comment = buf.readUInt16LE(at + 32);
+    entries.set(buf.toString("utf8", at + 46, at + 46 + len), { size: buf.readUInt32LE(at + 20), local: buf.readUInt32LE(at + 42) });
+    at += 46 + len + extra + comment;
+  }
+  return {
+    names: [...entries.keys()],
+    read(name) {
+      const x = entries.get(name), start = x.local + 30 + buf.readUInt16LE(x.local + 26) + buf.readUInt16LE(x.local + 28);
+      return buf.subarray(start, start + x.size);
+    },
+  };
+}
+
+/**
+ * The view files Carton's materializer writes in `.scratch/views/` for view `name` (H11): the print, under Carton's
+ * header line, and its status sidecar. views.test.js checks these read as Carton's, as the materializer's own do.
+ */
+const cartonViewFiles = (name) => ({
+  [name + ".tsx"]: "// Cardboard timeline. Edit and save it.\n// cardboard:rev main@3~5e1f0c2a b:b7e1c2d3 p:ad2f48ea by director/c/t1\nexport default (<timeline aspect=\"16:9\" />);\n",
+  [name + ".status"]: JSON.stringify({ status: "confirmed", ref: "main@3~5e1f0c2a b:b7e1c2d3", seq: 3, conflicts: [], diagnostics: [], change: "c1", at: 1730000000000 }),
+});
+/** A person's or an agent's own files in `.scratch/views/`: never Carton's. */
+const ownViewFiles = () => ({
+  "plan.md": "An agent's own notes, in .scratch/views/\n",
+  // Cardboard 1.4.0's own print: its rev is a bare number
+  "mine.tsx": "// cardboard:rev 1730000000000\nexport default (<timeline aspect=\"16:9\" />);\n",
+  "todo.status": JSON.stringify({ status: "done", next: "trim the intro" }),
+});
+
+module.exports = { skip, noBuild, TMP, TEST_MS, SETUP_MS, STOP_MS, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf, cartonViewFiles, ownViewFiles };

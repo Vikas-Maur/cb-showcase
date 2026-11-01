@@ -22,9 +22,12 @@ module.exports = String.raw`var __cartonCli = (() => {
     return { id: p.id, bundlePath: lib.projects?.bundlePathFor?.(p.id) ?? path.dirname(lib.timeline.pathFor(p.id)), lib };
   };
   // Head into project.json through the store (the store bridge writes it without committing a second change).
-  const after = async ({ id, bundlePath, lib }) => {
-    const next = await carton().headProject(bundlePath, await lib.projects.read(id));
-    if (next) await lib.projects.updateScoped(next, { ownedFields: ["tracks", "timelineItems", "aspectRatio", "name"], carton: { materialize: true } });
+  // (R4: description, and media through Cardboard's media scope: the facade's headScope.) head: the state the write
+  // made when it is still pending on a shared cut (the holder's, which this process can't read itself).
+  const after = async ({ id, bundlePath, lib }, head) => {
+    const current = await lib.projects.read(id);
+    const next = await carton().headProject(bundlePath, current, head);
+    if (next) await lib.projects.updateScoped(next, carton().headScope(current, next));
   };
   // Tools Carton serves in place of Cardboard's own when on.
   const CARTON_TOOLS = new Set(["timeline_history", "undo_timeline"]);

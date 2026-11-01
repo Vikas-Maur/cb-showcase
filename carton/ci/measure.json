@@ -1245,11 +1245,11 @@
           ]
         },
         {
-          "label": "transport.ts: 7 runs per mode, alternating fetch / node, 5 uploads + downloads per run, no lock (dedicated runner)",
+          "label": "transport.ts: 15 runs per mode, alternating fetch / node, 5 uploads + downloads per run, no lock (dedicated runner)",
           "env": {
             "CARTON_BENCH_CLIP": "{tmp}/clips/big.mp4",
             "CARTON_BENCH_OUT": "{results}/transport-raw.log",
-            "CARTON_BENCH_RUNS": "7"
+            "CARTON_BENCH_RUNS": "15"
           },
           "run": [
             "{node}",
@@ -1265,6 +1265,184 @@
           "mustMatch": [
             "^fetch: upload MB/s",
             "^node: upload MB/s"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core-head",
+      "agent": "foundation-core",
+      "claim": "head() hands out frozen records (a2d2f04) at no cost: C (fb7f4e9) is no slower than A (fd07cc8, before the freeze) for repeat head() calls and for the first call after a commit, at 1,000 and 10,000 items (carton/bench/core/head.ts, 36738b9: one process, builds interleaved, order reversed every other run)",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "check out A = fd07cc8 and C = fb7f4e9 as worktrees (by full SHA)",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; for s in \"$2\" \"$3\"; do git fetch --no-tags --depth=1 origin \"$s\"; done; git worktree add --detach \"$4/a\" \"$2\"; git worktree add --detach \"$4/c\" \"$3\"; git -C \"$4/a\" log -1 --format=\"A %H %s\"; git -C \"$4/c\" log -1 --format=\"C %H %s\"",
+            "_",
+            "..",
+            "fd07cc8cab69de8aa01efac318349367e172e8c3",
+            "fb7f4e9dec972f58b09604f4c5338a37eb471471",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "npm ci in each build's carton/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; for d in \"$1/a/carton\" \"$1/c/carton\"; do (cd \"$d\" && npm ci --no-audit --no-fund); done",
+            "_",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "head.ts A vs C, N=1000,10000, 11 runs x 200 calls (no lock: dedicated runner)",
+          "env": {
+            "N": "1000,10000",
+            "RUNS": "11",
+            "CALLS": "200",
+            "OUT": "{results}/head-bench.json"
+          },
+          "run": [
+            "{node}",
+            "--expose-gc",
+            "{tmp}/c/carton/bench/core/head.ts",
+            "A={tmp}/a/carton",
+            "C={tmp}/c/carton"
+          ],
+          "stdoutTo": "{results}/head-bench.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "head-bench.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^N=1000 items",
+            "^N=10000 items",
+            "after-commit median"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "media-reuse-check",
+      "agent": "media",
+      "claim": "reuse check of a finished 2,000-part stream proxy (bench/media/reuse-check.ts, 4fa7f80: the reuse check uses the host's batch heads) vs before (d9f9a5f): the first check is faster through the host and on blob-fs with request delay; a repeat check on the same store object is far faster; plain blob-fs with no delay is slightly slower on the first check (media raw: reuse-check-4fa7f80.jsonl)",
+      "timeout": 45,
+      "steps": [
+        {
+          "label": "before = git archive d9f9a5f carton/packages/media/src, with a node_modules symlink to this checkout's",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; git fetch --no-tags --depth=1 origin \"$2\"; mkdir -p \"$3/before\"; git archive \"$2\" carton/packages/media/src | tar -x -C \"$3/before\"; ln -s \"$PWD/carton/node_modules\" \"$3/before/carton/node_modules\"; ls \"$3/before/carton/packages/media/src\" | head -3",
+            "_",
+            "..",
+            "d9f9a5f1cad6ea69b40ef97af4c48a943b47b0cb",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "reuse-check.ts run 3 rounds, 2,000 parts, before vs after x host/fs x rtt 0/20 (lock on an uncontended temp file; gate relaxed: dedicated runner)",
+          "env": {
+            "GFV_LOCK": "{tmp}/cpu.lock",
+            "LOAD_MAX": "4",
+            "GATE_WAIT_S": "15"
+          },
+          "run": [
+            "{node}",
+            "bench/media/reuse-check.ts",
+            "run",
+            "3",
+            "{results}/reuse-check.jsonl",
+            "{tmp}/before/carton/packages/media/src",
+            "2000"
+          ],
+          "stdoutTo": "{results}/reuse-check-summary.log"
+        }
+      ],
+      "reports": [
+        {
+          "file": "reuse-check.jsonl",
+          "groupBy": [
+            "id"
+          ],
+          "ignore": [
+            "round",
+            "parts",
+            "rttMs",
+            "firstRequests",
+            "againRequests",
+            "otherCoresBefore",
+            "gateWaitS",
+            "wallS",
+            "at"
+          ],
+          "expect": {
+            "cells": 8,
+            "runsPerCell": 3
+          }
+        }
+      ]
+    },
+    {
+      "id": "core-head-r4",
+      "agent": "foundation-core",
+      "claim": "round 4's deep-freeze fix (cb21eec: a WeakSet entry per frozen record) vs fb7f4e9: head() cost for repeat calls and the first call after a commit, at 1,000 and 10,000 items (carton/bench/core/head.ts, A = fb7f4e9, C = cb21eec)",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "check out A = fb7f4e9 and C = cb21eec as worktrees (by full SHA)",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; for s in \"$2\" \"$3\"; do git fetch --no-tags --depth=1 origin \"$s\"; done; git worktree add --detach \"$4/a\" \"$2\"; git worktree add --detach \"$4/c\" \"$3\"; git -C \"$4/a\" log -1 --format=\"A %H %s\"; git -C \"$4/c\" log -1 --format=\"C %H %s\"",
+            "_",
+            "..",
+            "fb7f4e9dec972f58b09604f4c5338a37eb471471",
+            "cb21eeceb51e9898fbc75fb4cdaae83777950894",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "npm ci in each build's carton/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; for d in \"$1/a/carton\" \"$1/c/carton\"; do (cd \"$d\" && npm ci --no-audit --no-fund); done",
+            "_",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "head.ts A (fb7f4e9) vs C (cb21eec), N=10000 only, 21 runs x 200 calls (repeat: run 1 spread 5.5-8.8 ms after-commit)",
+          "env": {
+            "N": "10000",
+            "RUNS": "21",
+            "CALLS": "200",
+            "OUT": "{results}/head-bench.json"
+          },
+          "run": [
+            "{node}",
+            "--expose-gc",
+            "{tmp}/c/carton/bench/core/head.ts",
+            "A={tmp}/a/carton",
+            "C={tmp}/c/carton"
+          ],
+          "stdoutTo": "{results}/head-bench.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "head-bench.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^N=10000 items",
+            "after-commit median"
           ]
         }
       ]

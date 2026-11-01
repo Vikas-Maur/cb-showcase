@@ -17,7 +17,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { COLLAB_PROXY_720P, MediaReader, ProxyStreamReader, serveMedia, streamRangeSource, toMediaRecord } from "@carton/media";
 import { shareMedia, hostProxyEncoder, defaultEncoderChain, FsLeafCache, FsUploadStateStore, startRangeServer, nodeHasher } from "@carton/media/node";
-import { hostBlobStore } from "./host-blobs.js";
+import { mediaStore } from "./host.js";
 import * as store from "./store.js";
 
 export const recordKey = (mediaId) => `carton/media/${encodeURIComponent(mediaId)}.json`;
@@ -34,12 +34,29 @@ function tool(name) {
 }
 const cacheRoot = () => path.join(store.syncRoot(), "cache");
 
-/** The host's media scope for a shared project, with the session's token (refreshed as needed). */
+/**
+ * The host's media scope for a shared project, with the session's token (refreshed as needed). One client per bundle,
+ * project and host in this process: media's reuse check remembers a stream it found whole per client object (10 min,
+ * media fd87449), so a share after another doesn't check every part of a stream it reuses again. The token is asked for
+ * at each request, so a kept client never holds a stale one. A folder Cardboard is done with lets its clients go
+ * (forget, from the facade's release).
+ */
+const clients = new Map(); // `${bundle}|${projectId}|${host}` → {bundlePath, client}
 export function storeFor(bundlePath, projectId) {
   const cfg = store.readConfig(bundlePath, projectId);
   if (!cfg) throw new Error("This project isn't shared from this computer");
-  const session = store.sessionFor(bundlePath, projectId);
-  return hostBlobStore({ origin: cfg.host, projectId, token: () => session.token() });
+  const key = `${path.resolve(bundlePath)}|${projectId}|${cfg.host}`;
+  let c = clients.get(key);
+  if (!c) {
+    const session = store.sessionFor(bundlePath, projectId);
+    c = { bundlePath, client: mediaStore({ host: cfg.host, projectId, token: () => session.token() }) };
+    clients.set(key, c);
+  }
+  return c.client;
+}
+/** The clients of the bundles `inside(bundlePath)` says are in a folder Cardboard is done with go. */
+export function forget(inside) {
+  for (const [key, c] of clients) if (inside(c.bundlePath)) clients.delete(key);
 }
 
 const readEnvelope = (bundlePath) => JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8"));
@@ -204,6 +221,12 @@ export async function toolUrl(bundlePath, projectId, src) {
       // Only ids a clip's record named as a stream are streams; anything else is a whole object.
       source: streamRangeSource({ streams: (id) => streams.get(streamKey(bundlePath, projectId, id)) ?? null, media: tools }),
       playlist: (id, urlFor) => streamOf(bundlePath, projectId, id).playlist(urlFor),
+      // A segment a tool read through a playlist (its URL names the stream) that doesn't verify: the stream is reported
+      // damaged on the host (bad/<stream>), so the sharer's next share makes a new one. The reader ignores a hash that
+      // isn't one of its parts.
+      reportDamage: (stream, hash) => streamOf(bundlePath, projectId, stream).reportPartDamage(hash),
+      // A part simply gone from the host (media d9f9a5f): the reader reports the stream only if a HEAD finds it still gone.
+      reportMissing: (stream, hash) => streamOf(bundlePath, projectId, stream).reportPartDamage(hash, "missing"),
       unref: true,
     });
     servers.set(bundlePath, s);

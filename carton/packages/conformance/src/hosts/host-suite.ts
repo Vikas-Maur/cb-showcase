@@ -434,6 +434,166 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       assert.equal(m.type, "error", "the woken room still caps the socket");
     });
 
+    // Comments (REQ-C1, @carton/comments): their own messages and tables beside the sequencer's, never changes. Every
+    // test is in the one project the suite shares, so each uses cuts and comment ids of its own.
+    type CommentRow = { id: string; cut: string; body: string; seq?: number; author: { id: string; name: string } };
+    let commentN = 0;
+    const commentId = () => `cm-${Date.now().toString(36)}-${(++commentN).toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const subscribe = async (c: Client, branchId: string) => {
+      c.conn.send({ type: "comments", branchId, since: 0 } as unknown as sync.ClientMessage);
+      return c.wait((m) => m.type === ("comments" as string) && (m as { reply?: boolean }).reply === true, "the comments catch-up");
+    };
+    /** Every row the catch-up from 0 holds, page by page. */
+    const catchUp = async (c: Client, branchId: string): Promise<CommentRow[]> => {
+      const rows: CommentRow[] = [];
+      let since = 0;
+      for (let i = 0; i < 50; i++) {
+        const seen = c.got.length;
+        c.conn.send({ type: "comments", branchId, since } as unknown as sync.ClientMessage);
+        await c.wait((m) => c.got.indexOf(m) >= seen && m.type === ("comments" as string) && (m as { reply?: boolean }).reply === true, "a comments page");
+        const page = c.got.slice(seen).find((m) => m.type === ("comments" as string) && (m as { reply?: boolean }).reply === true) as unknown as { rows: CommentRow[]; head: number; more?: boolean; retryMs?: number };
+        if (page.retryMs) {
+          await new Promise((r) => setTimeout(r, page.retryMs));
+          continue;
+        }
+        rows.push(...page.rows);
+        if (!page.more) return rows;
+        since = page.head;
+      }
+      throw new Error("the catch-up never ended");
+    };
+    let opN = 0;
+    const post = async (c: Client, branchId: string, id: string, patch: Record<string, unknown>) => {
+      const n = ++opN;
+      c.conn.send({ type: "comment", branchId, n, id, patch: { at: Date.now(), author: { id: "claimed", name: "Claimed" }, ...patch }, op: `op-${n}-${Math.random().toString(36).slice(2, 8)}` } as unknown as sync.ClientMessage);
+      return (await c.wait((m) => m.type === ("commentAnswer" as string) && (m as { n?: number }).n === n, `the answer to comment ${id}`)) as unknown as { row?: CommentRow; refused?: string; retryMs?: number };
+    };
+    const fannedOut = (id: string, pred: (r: CommentRow) => boolean = () => true) => (m: Msg) =>
+      m.type === ("comments" as string) && !(m as { reply?: boolean }).reply && ((m as unknown as { rows: CommentRow[] }).rows ?? []).some((r) => r.id === id && pred(r));
+
+    test("comments: a comment reaches every connection that asked for them, the writer's answer holds the row under its session's account; only the author edits; a viewer reads and can't write", async () => {
+      const cut = newBranch();
+      const [a, b, v, quiet] = await Promise.all([fx.token("editor"), fx.token("editor"), fx.token("viewer"), fx.token("editor")].map(async (t) => connect(await t)));
+      for (const c of [a, b, v]) await subscribe(c, cut);
+      const id = commentId();
+      const made = await post(a, cut, id, { add: { body: "Trim the intro", cut, at: 1 } });
+      assert.ok(made.row, JSON.stringify(made));
+      assert.notEqual(made.row.author.id, "claimed", "the author is the session's account, never the claim");
+      for (const c of [b, v]) await c.wait(fannedOut(id), "the comment, fanned out");
+      // the viewer reads, and is refused writing
+      assert.equal((await post(v, cut, commentId(), { add: { body: "x", cut, at: 1 } })).refused, "forbidden");
+      // only the author edits
+      assert.equal((await post(b, cut, id, { body: "not mine to change" })).refused, "forbidden");
+      const edited = await post(a, cut, id, { body: "Trim the intro by 2 s" });
+      assert.equal(edited.row?.body, "Trim the intro by 2 s");
+      await b.wait(fannedOut(id, (r) => r.body === "Trim the intro by 2 s"), "the edit, fanned out");
+      // a connection that never asked for comments gets none
+      assert.equal(quiet.got.some((m) => m.type === ("comments" as string)), false);
+    });
+
+    // A watch link learns no account id from comments, as from the people record (privacy first): its rows name each
+    // author by display name only.
+    test("comments: a reader scoped to a Published cut (a watch link) reads only that cut's comments, in its catch-up and as they come, and never an account id", async (t) => {
+      if (!fx.tokenFor) return t.skip("needs tokenFor");
+      const pub = newBranch(), other = newBranch();
+      const watch = await connect(await fx.tokenFor({ credential: `w${ridOf().slice(0, 8)}/watch`, role: "viewer", branches: [pub] }));
+      watch.conn.send({ type: "comments", branchId: other, since: 0 } as unknown as sync.ClientMessage);
+      const refused = await watch.wait((m) => m.type === "error" || m.type === ("comments" as string), "the answer to another cut");
+      if (refused.type !== "error") return t.skip("the fixture's tokenFor doesn't scope tokens to cuts");
+      // editors with account ids no comment text contains: one the people record names, one it doesn't
+      const named = `cn${ridOf().slice(0, 10)}`, unnamed = `cu${ridOf().slice(0, 10)}`;
+      const a = await connect(await fx.tokenFor({ credential: `${named}/dev`, account: named }));
+      const b = await connect(await fx.tokenFor({ credential: `${unnamed}/dev`, account: unnamed }));
+      identify(a, pub, named, "Pat Q."); // handled before a's comments: a project's messages go in turn
+      const onPub = commentId(), onOther = commentId();
+      assert.ok((await post(a, pub, onPub, { add: { body: "on the published cut", cut: pub, at: 1 } })).row);
+      assert.ok((await post(a, other, onOther, { add: { body: "on Main", cut: other, at: 1 } })).row);
+      const seen = (await catchUp(watch, pub)).map((r) => r.id);
+      assert.ok(seen.includes(onPub), "its cut's comment");
+      assert.ok(!seen.includes(onOther), "never another cut's");
+      const later = commentId(), laterOther = commentId();
+      await post(a, other, laterOther, { add: { body: "later, on Main", cut: other, at: 2 } });
+      await post(a, pub, later, { add: { body: "later, published", cut: pub, at: 2 } });
+      await watch.wait(fannedOut(later), "its cut's new comment");
+      assert.equal(watch.got.some(fannedOut(laterOther)), false, "another cut's new comment never reaches it");
+      assert.equal(watch.got.some(fannedOut(onOther)), false);
+      // a reply by the editor the people record doesn't name, and an edit
+      const reply = commentId();
+      assert.ok((await post(b, pub, reply, { add: { replyTo: onPub, body: "agreed", cut: pub, at: 3 } })).row);
+      assert.ok((await post(a, pub, onPub, { body: "on the published cut, edited" })).row);
+      await watch.wait(fannedOut(reply), "the reply");
+      await watch.wait(fannedOut(onPub, (r) => r.body === "on the published cut, edited"), "the edit");
+      const caught = await catchUp(watch, pub);
+      const traffic = JSON.stringify([...watch.got, ...caught]);
+      for (const account of [named, unnamed]) assert.equal(traffic.includes(account), false, `account id ${account} reached a watch link`);
+      // each author as the link sees them: the people record's name, else "Teammate N", under the same `teammate:N`
+      // wherever they appear (catch-up, fan-out), never the name a patch claims
+      const rows = [...watch.got.flatMap((m) => (m.type === ("comments" as string) ? ((m as unknown as { rows?: CommentRow[] }).rows ?? []) : [])), ...caught];
+      const byA = rows.filter((r) => r.id === onPub || r.id === later), byB = rows.filter((r) => r.id === reply);
+      assert.ok(byA.length >= 4 && byB.length >= 2, `rows seen: ${byA.length} by the named editor, ${byB.length} by the other`);
+      const idsOf = (rs: CommentRow[]) => [...new Set(rs.map((r) => r.author.id))];
+      const [aId, ...aMore] = idsOf(byA), [bId, ...bMore] = idsOf(byB);
+      assert.deepEqual([aMore, bMore], [[], []], "one label per person");
+      assert.match(aId!, /^teammate:\d+$/);
+      assert.match(bId!, /^teammate:\d+$/);
+      assert.notEqual(aId, bId);
+      for (const r of byA) assert.equal(r.author.name, "Pat Q.", "the people record's name");
+      for (const r of byB) assert.equal(r.author.name, `Teammate ${bId!.slice("teammate:".length)}`, "no people name: Teammate N");
+    });
+
+    // The room's bucket (10 at once, then 2 a second) refills while the host works through a burst, so a loaded host
+    // may rightly take all of one (review C1: 14 sent together were taken by a host slowed to 1 s a commit). The time
+    // the client saw bounds the host's: from the first send to the last answer it takes at most 10 + 2 a second of
+    // it, under any load. A burst that took long enough for the refill to cover it shows nothing and is sent again on
+    // a fresh connection; the core's own tests show the cap with a fixed clock.
+    test("comments: a burst past a connection's cap is refused `rate-limited`, saying when to retry; others' are unaffected", async (t) => {
+      const cut = newBranch();
+      const BURST = 20;
+      for (let attempt = 1; ; attempt++) {
+        const [a, b] = await Promise.all([fx.token("editor"), fx.token("editor")].map(async (tok) => connect(await tok)));
+        const t0 = Date.now();
+        const answers = await Promise.all(Array.from({ length: BURST }, (_, i) => post(a, cut, commentId(), { add: { body: `burst ${i}`, cut, at: i } })));
+        const tookMs = Date.now() - t0 + 2; // each clock's millisecond
+        const taken = answers.filter((x) => x.row).length;
+        const limited = answers.filter((x) => x.refused === "rate-limited");
+        const seen = `${JSON.stringify(answers.map((x) => x.refused ?? "ok"))} in ${tookMs} ms`;
+        assert.equal(taken + limited.length, BURST, seen);
+        assert.ok(taken >= 10, `the burst's first ten: ${seen}`);
+        assert.ok(taken <= 10 + Math.floor((tookMs / 1000) * 2), `more than the cap and its refill: ${seen}`);
+        if (limited.length) {
+          assert.ok(limited.every((x) => (x.retryMs ?? 0) > 0), `saying when to retry: ${seen}`);
+          assert.ok((await post(b, cut, commentId(), { add: { body: "another connection", cut, at: 1 } })).row);
+          return;
+        }
+        if (attempt === 3) return t.skip(`each burst of ${BURST} took the host over ${(BURST - 10) / 2} s, so the refill covered it: too loaded to show the cap`);
+      }
+    });
+
+    test("comments are kept by the host: after a hibernation a subscription still gets others' comments; after a restart the rows are still there", async (t) => {
+      if (!fx.hibernate && !fx.restart) return t.skip("needs hibernate or restart");
+      const cut = newBranch();
+      const [a, b] = await Promise.all([fx.token("editor"), fx.token("editor")].map(async (t) => connect(await t)));
+      await subscribe(a, cut);
+      const first = commentId(), second = commentId();
+      assert.ok((await post(b, cut, first, { add: { body: "before", cut, at: 1 } })).row);
+      await a.wait(fannedOut(first), "the comment before");
+      if (fx.hibernate) {
+        // subscribed just now (well within the host's activity grain), then the host sleeps: the subscription rides in
+        // what the host keeps with the socket
+        await fx.hibernate();
+        assert.ok((await post(b, cut, second, { add: { body: "after the wake", cut, at: 2 } })).row);
+        await a.wait(fannedOut(second), "a comment after the wake");
+      }
+      if (fx.restart) {
+        await fx.restart();
+        await a.waitClose(30_000);
+        const again = await connect(await fx.token("viewer"));
+        const ids = (await catchUp(again, cut)).map((r) => r.id);
+        assert.ok(ids.includes(first), "kept across the restart");
+        if (fx.hibernate) assert.ok(ids.includes(second));
+      }
+    });
+
     test("a duplicate push is acked with the original seq", async () => {
       const b = newBranch();
       const c = await connect(await fx.token("editor"));
@@ -471,6 +631,34 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       await hello(c, b, 2, [rid]);
       after = await fx.rows();
       assert.equal(after.rowsWritten - before.rowsWritten, 0, "a second hello with the same rids");
+    });
+
+    test("a comment costs 4 rows written, new or changed (its row, its place in the stream, the old place's delete or the count, the op); a person's first, 5", async (t) => {
+      if (!fx.rows) return t.skip("the host can't count rows");
+      const cut = newBranch();
+      const c = await connect(await fx.token("editor"));
+      assert.ok((await post(c, cut, commentId(), { add: { body: "warm-up: the tables exist", cut, at: 1 } })).row);
+      const id = commentId();
+      let before = await fx.rows();
+      assert.ok((await post(c, cut, id, { add: { body: "a new comment", cut, at: 1 } })).row);
+      let after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 4, "a new comment");
+      before = after;
+      assert.equal((await post(c, cut, id, { body: "edited" })).row?.body, "edited");
+      after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 4, "an edit");
+      // a person's first comment numbers them for watch links (`teammate:N`): one row more, once
+      if (!fx.tokenFor) return;
+      const fresh = `cr${ridOf().slice(0, 10)}`;
+      const d = await connect(await fx.tokenFor({ credential: `${fresh}/dev`, account: fresh }));
+      before = await fx.rows();
+      assert.ok((await post(d, cut, commentId(), { add: { body: "a person's first", cut, at: 1 } })).row);
+      after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 5, "a person's first comment");
+      before = after;
+      assert.ok((await post(d, cut, commentId(), { add: { body: "their second", cut, at: 1 } })).row);
+      after = await fx.rows();
+      assert.equal(after.rowsWritten - before.rowsWritten, 4, "their second");
     });
 
     test("restart-safe: after a restart the head, the rows and duplicate detection are the same", async (t) => {

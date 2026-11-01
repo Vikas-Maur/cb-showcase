@@ -1,0 +1,334 @@
+// The Comments panel (PLAN §9, C6): threads pinned to moments of the edit, each saying where it sits on the version
+// shown ("Moved", "May be outdated", "Clip removed"), with replies, resolve and reopen, and edit and delete for one's
+// own. Unstyled; the look comes from the skin (comments/skin.ts). Works under preact/compat: public hooks only.
+//
+// A thread re-renders only when its own view object changes (memo by identity; the view model keeps identities), so a
+// project with 1,000 threads costs one thread's render per change. Typing in the panel never reaches the editor's
+// shortcuts: key events stop at the panel's text fields.
+
+import { createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { actorColor, initials } from "../actors.ts";
+import { exactTime, when } from "../format.ts";
+import { useLocale, useNow } from "../hooks.ts";
+import { Button, cx } from "../components/ui.ts";
+import type { Actor } from "../model.ts";
+import type { CommentPerson, CommentView, CommentsUi, ThreadView } from "./model.ts";
+import { commentWords, type CommentWords } from "./words.ts";
+
+export type CommentsFilter = "open" | "resolved" | "all";
+
+export interface CommentsPanelProps {
+  comments: CommentsUi;
+  /**
+   * Where a new comment goes, read when it is posted: a range (the selection), a moment (the playhead), or null (the
+   * whole version). Default: the whole version.
+   */
+  at?: () => readonly [number, number] | number | null;
+  /** A timecode was clicked: move the playhead there. */
+  onSeek?: (t: number) => void;
+  /** The selected thread (also shown on the timeline markers). */
+  selected?: string | null;
+  onSelect?: (threadId: string | null) => void;
+  initialFilter?: CommentsFilter;
+  words?: Partial<CommentWords>;
+  className?: string;
+}
+
+/** The comments view model's threads, re-rendering only when they change. */
+export function useCommentThreads(ui: CommentsUi): readonly ThreadView[] {
+  return useSyncExternalStore(ui.subscribe, ui.threads, ui.threads);
+}
+
+function useCommentsValue<T>(ui: CommentsUi, read: () => T): T {
+  const ref = useRef(read);
+  ref.current = read;
+  const get = useCallback(() => ref.current(), []);
+  return useSyncExternalStore(ui.subscribe, get, get);
+}
+
+const asActor = (p: CommentPerson, you: boolean): Actor => ({ key: `human/${p.id}`, kind: "human", name: p.name, ...(you ? { isYou: true } : {}) });
+
+/** A person's avatar in the presence colours, without needing a CartonProvider. */
+export function PersonAvatar({ person, size = 20 }: { person: CommentPerson; size?: number }) {
+  const color = actorColor(asActor(person, false));
+  const letters = initials(person.name);
+  return h(
+    "span",
+    { className: "carton-avatar", "data-kind": "human", role: "img", "aria-label": person.name, style: { width: size, height: size, fontSize: Math.max(7, Math.round(size * 0.4)), ["--carton-actor" as string]: color } },
+    h("span", { className: "carton-avatar-initials" }, size < 20 ? (Array.from(letters)[0] ?? "?") : letters),
+  );
+}
+
+/** Stop key events in a text field from reaching the editor's shortcuts (space plays, Delete removes a clip…). */
+const keepKeys = (e: KeyboardEvent) => e.stopPropagation();
+
+function TextBox(p: { initial?: string; placeholder: string; submitLabel: string; cancelLabel?: string; onSubmit: (text: string) => Promise<unknown>; onCancel?: () => void; onFocus?: () => void; autoFocus?: boolean; label: string; className?: string }) {
+  const [text, setText] = useState(p.initial ?? "");
+  const [busy, setBusy] = useState(false);
+  const ref = useRef<HTMLTextAreaElement>(null);
+  useEffect(() => {
+    if (p.autoFocus) ref.current?.focus();
+  }, []);
+  const submit = async () => {
+    const t = text.trim();
+    if (!t || busy) return;
+    setBusy(true);
+    try {
+      await p.onSubmit(text);
+      setText("");
+    } finally {
+      setBusy(false);
+    }
+  };
+  return h(
+    "form",
+    {
+      className: cx("carton-comment-box", p.className),
+      onSubmit: (e: { preventDefault(): void }) => {
+        e.preventDefault();
+        void submit();
+      },
+    },
+    h("textarea", {
+      ref,
+      className: "carton-input carton-comment-text",
+      value: text,
+      rows: 2,
+      placeholder: p.placeholder,
+      "aria-label": p.label,
+      maxLength: 10_000,
+      disabled: busy,
+      onFocus: p.onFocus,
+      // React fires onChange on every keystroke; preact/compat maps it to the input event, so both behave the same.
+      onChange: (e: { currentTarget: HTMLTextAreaElement }) => setText(e.currentTarget.value),
+      onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => {
+        keepKeys(e);
+        if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          void submit();
+        } else if (e.key === "Escape" && p.onCancel) {
+          e.preventDefault();
+          p.onCancel();
+        }
+      },
+    }),
+    h(
+      "div",
+      { className: "carton-comment-box-actions" },
+      p.onCancel ? h(Button, { variant: "ghost", onClick: p.onCancel }, p.cancelLabel) : null,
+      h(Button, { type: "submit", variant: "primary", disabled: !text.trim(), busy }, p.submitLabel),
+    ),
+  );
+}
+
+interface RowProps {
+  c: CommentView;
+  thread: ThreadView;
+  isRoot: boolean;
+  w: CommentWords;
+  now: number;
+  locale: string | undefined;
+  ui: CommentsUi;
+  onSeek: ((t: number) => void) | undefined;
+  /** This session may write (edit and delete its own too); a viewer's own old comments are read only. */
+  can: boolean;
+}
+
+function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek, can }: RowProps) {
+  const [editing, setEditing] = useState(false);
+  const who = c.mine ? w.you : c.author.name;
+  const name = c.author.agent ? w.forAgent(who, c.author.agent) : who;
+  const p = thread.placement;
+  const statusKey = p ? (p.status === "outdated" && p.why === "trimmed" ? "trimmed" : p.status) : "exact";
+  const status = isRoot && p ? w.status[statusKey] : "";
+  const hint = statusKey === "exact" || statusKey === "general" ? undefined : w.statusHint[statusKey];
+  const head: ReactNode[] = [
+    h(PersonAvatar, { key: "a", person: c.author, size: 18 }),
+    h("span", { key: "n", className: "carton-comment-name", title: name }, name),
+    h("time", { key: "t", className: "carton-comment-when", dateTime: new Date(c.at).toISOString(), "data-carton-tip": exactTime(c.at, locale) }, when(c.at, now, locale, w.justNow)),
+  ];
+  if (isRoot) {
+    const range = p?.range ?? null;
+    if (range && p?.status !== "general")
+      head.push(
+        h(
+          "button",
+          { key: "at", type: "button", className: "carton-comment-at", "data-status": p?.status, onClick: onSeek ? () => onSeek(range[0]) : undefined, disabled: !onSeek, "aria-label": w.seekTo(w.at(range)) },
+          w.at(range),
+        ),
+      );
+    else if (p?.status === "general") head.push(h("span", { key: "at", className: "carton-comment-at", "data-status": "general" }, w.wholeVersion));
+    if (status) head.push(h("span", { key: "s", className: "carton-badge", "data-tone": statusKey === "moved" ? "info" : "warning", "data-carton-tip": hint }, status));
+  }
+  if (c.pending) head.push(h("span", { key: "p", className: "carton-badge", "data-tone": "muted", "data-carton-tip": w.pendingHint }, w.pending));
+  if (can && c.mine && !c.deleted && !editing)
+    head.push(
+      h(
+        "span",
+        { key: "m", className: "carton-comment-mine", role: "group", "aria-label": w.actions },
+        h(Button, { variant: "ghost", size: "sm", icon: "pencil", label: w.edit, title: w.edit, onClick: () => setEditing(true) }),
+        h(Button, { variant: "ghost", size: "sm", icon: "x", label: w.delete, title: w.delete, onClick: () => void ui.remove(c.id) }),
+      ),
+    );
+  return h(
+    "div",
+    { className: "carton-comment", "data-pending": c.pending ? "" : undefined, "data-deleted": c.deleted ? "" : undefined },
+    h("div", { className: "carton-comment-head" }, ...head),
+    editing && can
+      ? h(TextBox, {
+          initial: c.body,
+          placeholder: w.placeholder,
+          label: w.edit,
+          submitLabel: w.save,
+          cancelLabel: w.cancel,
+          autoFocus: true,
+          onCancel: () => setEditing(false),
+          onSubmit: async (text) => {
+            await ui.edit(c.id, text);
+            setEditing(false);
+          },
+        })
+      : h(
+          "p",
+          { className: "carton-comment-body" },
+          c.deleted ? h("span", { className: "carton-comment-gone" }, w.deleted) : c.body,
+          c.editedAt !== undefined && !c.deleted ? h("span", { className: "carton-comment-edited" }, ` (${w.edited})`) : null,
+        ),
+  );
+}
+
+interface ThreadProps {
+  t: ThreadView;
+  selected: boolean;
+  w: CommentWords;
+  ui: CommentsUi;
+  onSeek: ((t: number) => void) | undefined;
+  onSelect: ((id: string | null) => void) | undefined;
+  can: boolean;
+}
+
+const Thread = memo(function Thread({ t, selected, w, ui, onSeek, onSelect, can }: ThreadProps) {
+  const now = useNow();
+  const locale = useLocale();
+  const [replying, setReplying] = useState(false);
+  const at = t.placement?.range && t.placement.status !== "general" ? w.at(t.placement.range) : w.wholeVersion;
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (selected) ref.current?.scrollIntoView?.({ block: "nearest" });
+  }, [selected]);
+  const row = (c: CommentView, isRoot: boolean) => h(CommentRow, { key: c.id, c, thread: t, isRoot, w, now, locale, ui, onSeek, can });
+  return h(
+    "article",
+    {
+      ref,
+      role: "listitem",
+      className: "carton-thread",
+      "data-selected": selected ? "" : undefined,
+      "data-status": t.placement?.status,
+      "data-resolved": t.resolved ? "" : undefined,
+      "aria-label": w.threadLabel(t.root.mine ? w.you : t.root.author.name, at),
+      onClick: onSelect ? (e: { target: EventTarget | null }) => !(e.target as HTMLElement | null)?.closest?.("button, textarea, a") && onSelect(t.id) : undefined,
+    },
+    row(t.root, true),
+    t.replies.length ? h("div", { className: "carton-thread-replies" }, t.replies.map((r) => row(r, false))) : null,
+    t.resolved ? h("p", { className: "carton-thread-resolved" }, w.resolvedBy(t.resolved.by.id === ui.me().id ? w.you : t.resolved.by.name)) : null,
+    replying
+      ? h(TextBox, {
+          placeholder: w.replyPlaceholder,
+          label: w.reply,
+          submitLabel: w.reply,
+          cancelLabel: w.cancel,
+          autoFocus: true,
+          onCancel: () => setReplying(false),
+          onSubmit: async (text) => {
+            await ui.reply(t.id, text);
+            setReplying(false);
+          },
+        })
+      : can
+        ? h(
+            "div",
+            { className: "carton-thread-actions" },
+            h(Button, { variant: "ghost", size: "sm", onClick: () => setReplying(true) }, w.reply),
+            h(Button, { variant: "ghost", size: "sm", icon: t.resolved ? undefined : "check", onClick: () => void ui.resolve(t.id, !t.resolved) }, t.resolved ? w.reopen : w.resolve),
+          )
+        : null,
+  );
+});
+
+/** Threads in timeline order: placed ones by where they sit now, then whole-version ones, by when they were made. */
+function ordered(threads: readonly ThreadView[], filter: CommentsFilter): ThreadView[] {
+  const list = threads.filter((t) => (filter === "all" ? true : filter === "open" ? !t.resolved : !!t.resolved));
+  const key = (t: ThreadView) => (t.placement?.range && t.placement.status !== "general" ? t.placement.range[0] : Infinity);
+  return list.sort((a, b) => key(a) - key(b) || a.root.at - b.root.at || (a.id < b.id ? -1 : 1));
+}
+
+export function CommentsPanel(p: CommentsPanelProps) {
+  const w = useMemo(() => (p.words ? { ...commentWords, ...p.words } : commentWords), [p.words]);
+  const ui = p.comments;
+  const threads = useCommentThreads(ui);
+  const status = useCommentsValue(ui, ui.status);
+  const notice = useCommentsValue(ui, ui.notice);
+  const [filter, setFilter] = useState<CommentsFilter>(p.initialFilter ?? "open");
+  const shown = useMemo(() => ordered(threads, filter), [threads, filter]);
+  const counts = useMemo(() => {
+    let open = 0;
+    for (const t of threads) if (!t.resolved) open++;
+    return { open, resolved: threads.length - open, all: threads.length };
+  }, [threads]);
+  const can = ui.canComment();
+  // a new comment is pinned where the playhead (or selection) was when writing began, as in a review tool: read when
+  // the box gets focus, kept until it is posted
+  const read = (): readonly [number, number] | null => {
+    const v = p.at?.() ?? null;
+    return v === null ? null : typeof v === "number" ? [v, v] : v;
+  };
+  const [pin, setPin] = useState<{ at: readonly [number, number] | null } | null>(null);
+  const tabs = (["open", "resolved", "all"] as const).map((f) =>
+    h(
+      "button",
+      { key: f, type: "button", role: "tab", className: "carton-comments-tab", "aria-selected": filter === f, onClick: () => setFilter(f) },
+      w.filterCount(w.filters[f], counts[f]),
+    ),
+  );
+  const line =
+    status.state === "unsupported"
+      ? w.unsupported
+      : status.waiting > 0 && status.state !== "local"
+        ? w.syncWaiting(status.waiting)
+        : null;
+  return h(
+    "section",
+    { className: cx("carton-comments", p.className), "aria-label": w.comments },
+    h("header", { className: "carton-comments-head" }, h("h2", { className: "carton-comments-title" }, w.comments), h("div", { role: "tablist", className: "carton-comments-tabs" }, ...tabs)),
+    notice
+      ? h(
+          "div",
+          { role: "alert", className: "carton-comments-notice" },
+          h("span", null, notice),
+          h(Button, { variant: "ghost", size: "sm", icon: "x", label: w.dismiss, title: w.dismiss, onClick: () => ui.dismissNotice() }),
+        )
+      : null,
+    line ? h("p", { role: "status", className: "carton-comments-status", "data-state": status.state }, line) : null,
+    can
+      ? h(TextBox, {
+          className: "carton-comments-compose",
+          placeholder: pin?.at ? w.placeholderAt(w.at(pin.at)) : w.placeholder,
+          label: w.comment,
+          submitLabel: w.comment,
+          onFocus: () => setPin((x) => x ?? { at: read() }),
+          onSubmit: async (text) => {
+            await ui.add(text, pin ? pin.at : read());
+            setPin(null);
+          },
+        })
+      : h("p", { className: "carton-muted carton-comments-readonly" }, w.readOnly),
+    shown.length
+      ? h(
+          "div",
+          { role: "list", className: "carton-comments-list" },
+          shown.map((t) => h(Thread, { key: t.id, t, selected: p.selected === t.id, w, ui, onSeek: p.onSeek, onSelect: p.onSelect, can })),
+        )
+      : h("p", { className: "carton-empty" }, filter === "resolved" ? w.emptyResolved : w.empty),
+  );
+}

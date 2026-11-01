@@ -237,6 +237,24 @@ every host runs the same function. The host:
      same project see the names. A later option is to send a watch link only the display names of the authors in its
      cut, keyed by the rids of that cut's rows and never with account ids, so its viewers see who made the cut without
      learning the team's accounts or anyone outside the cut.
+   - **Comments** (REQ-C1, `@carton/comments`). The sequencer routes two more message kinds to the comment room of
+     `@carton/comments/server`, in turn with everything else and after the checks every message passes (a cut named
+     by a string; a scoped reader only its own cuts; a live token): `comments {branchId, since}` subscribes the
+     connection and answers a page of rows, and `comment {branchId, n, id, patch, op?}` is checked, stored, answered
+     and sent to every subscriber that may read its cut. A host needs nothing more: the room keeps its own tables in
+     the sequencer's storage (`comments`, `comment_log`, `comment_ops`, `comment_people`, `comment_meta`, created on
+     first use), the Durable Object's included, and the subscription rides in `ConnectionState.comments`, which a host
+     that hibernates keeps with the socket (server-cloudflare's attachment). The room's rules: owners, editors and
+     commenters comment, viewers read; a scoped session (a watch link) reads, and with a commenting role writes, only
+     its cuts' comments; only a comment's author (the session's account, never a claim) edits or deletes it; a scoped
+     session never learns an account id, as with the people record: every other author, and whoever resolved a
+     thread, comes to it as `{id: "teammate:N", name}`, the name being the people record's display name or "Teammate
+     N" (N fixed per project at the person's first comment), while its own comments keep its id; per connection 10
+     comments at once then 2 a second, and 20 catch-up pages then 5 a second (in memory: a Durable Object hibernates
+     only after about 10 s without a message, longer than either takes to refill); an op is applied once; at most
+     100,000 comments a project. The conformance host suite checks the fan-out, the roles and authorship, a watch link's
+     scope and that no account id reaches it in comment traffic (names only: the people record's, else "Teammate N"),
+     the rate limit, and that a subscription and the rows survive a hibernation and a restart.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from
@@ -270,9 +288,14 @@ every host runs the same function. The host:
    its sync client's `blobs`, and `hostMediaBlobs({ origin, projectId, token })` as `@carton/media`'s store: signed
    ranged reads and PUTs, resumable multipart through the session's routes, `reportDamaged(key, leaf)`, and
    `heads(keys)`.
-   `handleHttp` stops reading a body at its budget and answers 413 with the rest of the body unread: a host on
-   `node:http` must then close the connection (server-node answers `connection: close`), or a client that keeps it
-   in its pool sends its next request on it and gets ECONNRESET.
+   `handleHttp` stops reading a body at its budget and answers 413 with the rest of the body unread. A host on
+   `node:http` must then close the connection, or a client that keeps it in its pool sends its next request on it
+   and gets ECONNRESET; and it must close in stages (RFC 9112 §9.6), never at once: closing a socket with unread bytes
+   resets the connection, and on Windows the reset loses the 413 before the client reads it. server-node answers
+   `connection: close`, half-closes after the answer, then reads and drops the rest (never kept) until the client
+   closes its side, 16 MiB have come or 5 s have passed. The body's reader must stop without destroying the request
+   (cancelling `Readable.toWeb(req)` does): node's parser stops reading the socket for a destroyed request, so a
+   chunked body's rest sits unread and the close ends in a reset.
 
    **Many heads at once (REQ-11).** Media parts live in one flat namespace (`m/<hash>`), so checking that a long
    stream's parts are all there took one HEAD each, about 2,000 requests for a 2,000-part stream.
@@ -387,6 +410,7 @@ add none of their own. Measured in a local `ProjectRoom`, with wrangler dev coun
 | A device's first `hello` (its replica-id claim) | 1, once |
 | A later `hello` | 0 |
 | Presence | 0 (relayed, never stored; a client sends at most 10 a second, coalesced, and the sequencer drops anything over 20 a second per connection) |
+| A comment written, edited, resolved or deleted | 4 (its row, its place in the stream, the old place's delete or, for a new one, the count, and the op it applied); a person's first comment 5 (the number links show them by), and one more when the people record's name for them has changed; the host suite checks the 4 and the 5 |
 | Archiving a change to a blob segment | +1 (a DELETE is billed like an INSERT) |
 
 Archiving is the line to watch: every archived row costs one more row written. `maintain()` follows §18 (rows

@@ -76,6 +76,23 @@ function Join({ bridge }) {
     error ? h("p", { className: "text-xs text-destructive", role: "alert" }, error) : null);
 }
 
+// The "Live" section of a shared project: status words, why sync fails when it does, who is here.
+export function LiveStatus({ st }) {
+  return h("section", { className: "flex flex-col gap-2" },
+    h("div", { className: "flex items-center justify-between" },
+      h("h3", { className: "text-sm font-medium" }, "Live"),
+      h("span", { className: "carton-sync text-xs", role: "status", "aria-live": "polite", "data-state": st.status }, statusWords(st))),
+    // Why sync stopped (core's sync-error): plain words for the reason, then the host's own message (H-SV's
+    // "…newer than this server accepts (up to N): update the server"), so nobody is left at "Syncing".
+    st.problem
+      ? h("div", { className: "carton-sync-problem flex flex-col gap-1 text-xs", role: "alert", "data-code": st.problem.code },
+          h("p", { className: "text-destructive" }, st.problem.words),
+          st.problem.detail && st.problem.detail !== st.problem.words ? h("p", { className: "carton-sync-detail text-muted-foreground" }, st.problem.detail) : null)
+      : null,
+    h("p", { className: "text-xs text-muted-foreground" }, `Shared through ${st.host} as ${st.name}.`),
+    h(Peers, { peers: st.peers }));
+}
+
 export function SharePanel({ projectId, active, bridge }) {
   const [st, setSt] = useState(null);
   useEffect(() => { injectCardboardSkin(document); }, []);
@@ -89,15 +106,10 @@ export function SharePanel({ projectId, active, bridge }) {
   if (!active || !st) return null;
   return h("div", { className: "carton-share flex h-full flex-col gap-5 overflow-y-auto p-4", "data-carton-skin": "cardboard" },
     st.shared
-      ? h("section", { className: "flex flex-col gap-2" },
-          h("div", { className: "flex items-center justify-between" },
-            h("h3", { className: "text-sm font-medium" }, "Live"),
-            h("span", { className: "carton-sync text-xs", role: "status", "aria-live": "polite", "data-state": st.status }, statusWords(st))),
-          h("p", { className: "text-xs text-muted-foreground" }, `Shared through ${st.host} as ${st.name}.`),
-          h(Peers, { peers: st.peers }))
+      ? h(LiveStatus, { st })
       : h(ShareForm, { projectId, bridge, onShared: () => bridge.call("liveStatus", [{ projectId }]).then(setSt) }),
     st.shared && st.role === "owner" ? h(Invite, { projectId, bridge }) : null,
     h(Join, { bridge }));
 }
 
-window.__cartonSyncUi = { SharePanel };
+window.__cartonSyncUi = { SharePanel, LiveStatus };
