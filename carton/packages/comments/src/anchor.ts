@@ -66,7 +66,7 @@ export interface IndexChanges {
  */
 export class TimelineIndex {
   readonly byId = new Map<string, Layer>();
-  readonly byMedia = new Map<string, Layer[]>();
+  #byMedia: Map<string, Layer[]> | null = null;
   readonly #sorted: Layer[] = [];
   readonly #blockEnd: number[] = [];
   readonly #schema: Schema;
@@ -122,11 +122,6 @@ export class TimelineIndex {
           cache.set(it, l);
         }
         this.byId.set(l.id, l);
-        if (l.media !== undefined) {
-          const list = this.byMedia.get(l.media);
-          if (list) list.push(l);
-          else this.byMedia.set(l.media, [l]);
-        }
         if (l.visible) this.#sorted.push(l);
         if (l.e > dur) dur = l.e;
       }
@@ -139,6 +134,19 @@ export class TimelineIndex {
       for (let j = i; j < Math.min(i + B, this.#sorted.length); j++) m = Math.max(m, this.#sorted[j]!.e);
       this.#blockEnd.push(m);
     }
+  }
+
+  /** Items by media, made on first use (only a clip that nothing else finds is looked for by its media). */
+  get byMedia(): ReadonlyMap<string, readonly Layer[]> {
+    if (this.#byMedia) return this.#byMedia;
+    const m = new Map<string, Layer[]>();
+    for (const l of this.byId.values()) {
+      if (l.media === undefined) continue;
+      const list = m.get(l.media);
+      if (list) list.push(l);
+      else m.set(l.media, [l]);
+    }
+    return (this.#byMedia = m);
   }
 
   /** Visible items under `[s, e]` (a moment when `s === e`: the items showing at `s`). */
