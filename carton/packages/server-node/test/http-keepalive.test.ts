@@ -47,12 +47,15 @@ test("a request refused before its body was read closes its connection; the clie
 // What a client sees on the wire: the 413, then the host's FIN (a half-close), and the rest of its body taken without
 // a reset. Closing at once instead reset the connection as the client went on sending (on Linux a write error after
 // the answer; on Windows the answer itself was lost). With a declared length the host answers at once; a chunked body
-// is answered once the reader passes the route's budget (1 MiB), which stops reading without destroying the request
-// (cancelling node's own web stream did: the request then stopped reading its socket, and the rest sat unread).
+// is answered once the reader passes the route's budget (1 MiB), which stops reading without destroying the request.
+// Cancelling node's own web stream destroyed it, node's parser then stopped reading the socket, the rest sat unread
+// once the kernel's buffers were full, and the close ended in a reset after 5 s (Windows CI at 3 MiB; Linux's larger
+// buffers hid it until 12 MiB).
 for (const framing of ["content-length", "chunked"] as const) {
   test(`the close is staged (${framing}): the 413, then a half-close, and the rest of the body is taken (dropped) without a reset`, async () => {
     const { origin, token } = await started();
-    const total = 3 << 20;
+    // more than loopback's kernel buffers hold (Linux's few MiB; Windows' far less), under the 16 MiB the close drops
+    const total = 12 << 20;
     const sock = connect({ host: "127.0.0.1", port: Number(new URL(origin).port), allowHalfOpen: true });
     await new Promise<void>((r) => sock.once("connect", () => r()));
     let answer = "", ended = false, error: Error | null = null;
@@ -95,23 +98,28 @@ test("a chunked body over the budget gets its 413, and the client's next request
 });
 
 // The staged close never takes an unbounded body: what it drops is counted, and past 16 MiB the host closes anyway.
-test("the staged close drops at most 16 MiB of what follows the answer, then closes", async () => {
-  const { origin, token } = await started();
-  const total = 256 << 20;
-  const sock = connect({ host: "127.0.0.1", port: Number(new URL(origin).port), allowHalfOpen: true });
-  await new Promise<void>((r) => sock.once("connect", () => r()));
-  let answer = "";
-  sock.on("data", (b: Buffer) => void (answer += b.toString("latin1")));
-  sock.on("error", () => {});
-  sock.write(`POST /api/projects/p/blobs/heads HTTP/1.1\r\nhost: x\r\nauthorization: Bearer ${token}\r\ncontent-length: ${total}\r\n\r\n`);
-  const chunk = Buffer.alloc(256 * 1024, 0x78);
-  let sent = 0;
-  while (sent < total && !sock.destroyed && sock.writable) {
-    sent += chunk.byteLength;
-    if (!sock.write(chunk)) await new Promise((r) => (sock.once("drain", r), sock.once("close", r)));
-  }
-  if (!sock.destroyed) sock.end(); // a host without the cap took it all
-  await new Promise<void>((r) => (sock.destroyed ? r() : sock.once("close", () => r())));
-  assert.match(answer, /^HTTP\/1\.1 413 /);
-  assert.ok(sent < 64 << 20, `the host took ${sent >> 20} MiB before closing`);
-});
+for (const framing of ["content-length", "chunked"] as const) {
+  test(`the staged close drops at most 16 MiB of what follows the answer, then closes (${framing})`, async () => {
+    const { origin, token } = await started();
+    const total = 256 << 20;
+    const sock = connect({ host: "127.0.0.1", port: Number(new URL(origin).port), allowHalfOpen: true });
+    await new Promise<void>((r) => sock.once("connect", () => r()));
+    let answer = "";
+    sock.on("data", (b: Buffer) => void (answer += b.toString("latin1")));
+    sock.on("error", () => {});
+    sock.write(`POST /api/projects/p/blobs/heads HTTP/1.1\r\nhost: x\r\nauthorization: Bearer ${token}\r\n${framing === "chunked" ? "transfer-encoding: chunked" : `content-length: ${total}`}\r\n\r\n`);
+    const chunk = Buffer.alloc(256 * 1024, 0x78);
+    const framed = framing === "chunked" ? Buffer.concat([Buffer.from(`${chunk.byteLength.toString(16)}\r\n`), chunk, Buffer.from("\r\n")]) : chunk;
+    const t0 = Date.now();
+    let sent = 0;
+    while (sent < total && !sock.destroyed && sock.writable) {
+      sent += chunk.byteLength;
+      if (!sock.write(framed)) await new Promise((r) => (sock.once("drain", r), sock.once("close", r)));
+    }
+    if (!sock.destroyed) sock.end(); // a host without the cap took it all
+    await new Promise<void>((r) => (sock.destroyed ? r() : sock.once("close", () => r())));
+    assert.match(answer, /^HTTP\/1\.1 413 /);
+    assert.ok(sent < 64 << 20, `the host took ${sent >> 20} MiB before closing`);
+    assert.ok(Date.now() - t0 < 4000, "by the byte cap, not the 5 s one");
+  });
+}
