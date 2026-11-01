@@ -621,8 +621,6 @@ class CartonImpl implements Carton {
   /** The rebuild running, and one asked for meanwhile, which starts the moment it settles (#rebuild). */
   #rebuilding: Promise<void> | null = null;
   #nextRebuild: { p: Promise<void>; ok: () => void; fail: (e: unknown) => void } | null = null;
-  /** Bumped by every cut switch: a rebuild that read the stored current cut before one keeps the switch. */
-  #switches = 0;
   /** A background load's failure that no call was waiting for (#whole throws it to the next one). */
   #loadErr: { e: unknown } | null = null;
   /** A call waits for the older rows: the rest are read at once, not a page at a time. */
@@ -887,22 +885,26 @@ class CartonImpl implements Carton {
     const kfState = new Map<string, { periodic: number; bytes: number }>();
     for (const c of cuts) await add(c);
     for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) h.nameVersion(nodeId(e.key[0] as string, e.key[1] as number), e.value.name, e.value.by);
-    await this.#loadPins(h);
+    const pinSnap = await this.#loadPins(h);
     for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
-    const switches = this.#switches,
-      current = await s.get<string>(T.meta, CURRENT);
+    const current = await s.get<string>(T.meta, CURRENT);
     if (current && byId.has(current)) h.current = current;
-    this.#joining = new Set((await s.range(T.meta, { prefix: ["join"] })).map((e) => e.key[1] as string));
-    await this.#loadPeople();
+    const joining = new Set((await s.range(T.meta, { prefix: ["join"] })).map((e) => e.key[1] as string));
+    const people = await this.#readPeople();
     this.#kf = kfState;
     h.onConfirmed = (cut, change) => this.#confirmed.push({ cut, change });
     h.onNoop = (id, cut, seq) => this.#noops.push({ id, cut, seq });
-    // creators the History this replaces took in live while it loaded keep their precedence (as on a whole replica);
-    // a cut switch made since the stored current cut was read stays
+    // creators the History this replaces took in live while it loaded keep their precedence (as on a whole replica).
+    // The handle's own current cut stands (switchTo; another process's switch is followed by asking for it, as
+    // local-cli's follow does); the stored one is for opening, or when the handle's cut is gone. Everything read is
+    // set together, so a rebuild that fails leaves the handle as it was
     const late = this.#h?.late;
-    if (switches !== this.#switches && h.cut(this.#h.current)) h.current = this.#h.current;
+    if (this.#h && h.cut(this.#h.current)) h.current = this.#h.current;
     this.#h = h;
     this.#exportsSeen = exportsSeen;
+    this.#pinSnap = pinSnap;
+    this.#joining = joining;
+    people();
     if (late) h.relive(late);
     this.#rest = rest.length ? { h, cuts: rest } : null;
     this.#loadErr = null;
@@ -966,10 +968,10 @@ class CartonImpl implements Carton {
     }
   }
   // Pins as the store holds them (other processes pin too), and a snapshot to condition our pin writes on.
-  async #loadPins(h: History): Promise<void> {
+  async #loadPins(h: History): Promise<Map<string, PinRow>> {
     const rows = await this.store.range<PinRow>(T.pins);
     h.setPins(rows.map((e) => e.value));
-    this.#pinSnap = new Map(rows.map((e) => [e.key.join("|"), e.value]));
+    return new Map(rows.map((e) => [e.key.join("|"), e.value]));
   }
   // Re-read the tail of a cut (another process may have appended), any new cuts, and the pins.
   // `exports` (before every write): also the exports other processes made since (#newExports); head() and reads skip
@@ -995,7 +997,7 @@ class CartonImpl implements Carton {
     }
     // another process's rows: its replica id and what it learnt of people may be new too
     if (loaded) await this.#loadPeople();
-    await this.#loadPins(this.#h);
+    this.#pinSnap = await this.#loadPins(this.#h);
     if (exports) await this.#newExports();
   }
   /**
@@ -1009,11 +1011,16 @@ class CartonImpl implements Carton {
   }
   /** People as the store holds them (any process may add to them): the server's, this replica's, this store's rids. */
   async #loadPeople(): Promise<void> {
+    (await this.#readPeople())();
+  }
+  /** People, this replica's identity and this store's replica ids as stored; the function sets them on the handle. */
+  async #readPeople(): Promise<() => void> {
     const s = this.store;
     await this.#peopleSaved;
-    this.#people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
-    this.#me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
-    this.#ownRids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
+    const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
+    const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
+    const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
+    return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids));
   }
   /** A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite. */
   #pinWrite(ref: StateRef): { write: StoreWrite; cond: StoreCondition } {
@@ -1538,7 +1545,6 @@ class CartonImpl implements Carton {
   async switchTo(cut: string, opts: { persist?: boolean } = {}): Promise<void> {
     await this.#refresh();
     this.#h.current = cut;
-    this.#switches++;
     if (opts.persist !== false) await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
   }
   async renameCut(cut: string, name: string): Promise<CutRecord> {
