@@ -21,6 +21,7 @@ import type {
   Doc,
   FullExport,
   Intent,
+  Lineage as Splits,
   LineageKind,
   MergeResult,
   NodeId,
@@ -39,12 +40,15 @@ import type {
 } from "../types.ts";
 import * as E from "../engine/index.ts";
 import { isEmptyMap } from "../engine/remap.ts";
+import { forkSealed } from "../engine/doc.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
-import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type Tail } from "./common.ts";
+import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
 
 // ------------------------------------------------------------------ ids and keys
 
+/** A DAG edge as a fold reads it: the remaps recorded along it, and the splits (old id -> pieces) made along it. */
+type Edge = { maps?: RemapMaps; lineage?: Splits };
 /** `n` random bytes as hex (crypto.getRandomValues: Node, browsers, Workers). */
 export function randomHex(n: number): string {
   const b = new Uint8Array(n);
@@ -69,6 +73,15 @@ const SYSTEM: Actor = { kind: "system", id: "carton" };
 /** Changes inverted at a cut's head: the state and the remap the inversion applies there, or the cards that stop it. */
 export type Inverted = { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult };
 const REF_RE = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
+/**
+ * A cut's `b:` token in a printed header: 8 lowercase hex characters, the only form the header's parser reads. The id's
+ * first 8 characters when they are lowercase hex (every id core makes: a UUID, `cb cut new`'s 24 hex + `.n`, a renamed
+ * copy's `<id>.<hash8>`), so those headers are as they always were; otherwise the first 8 of the SHA-256 of the id (an
+ * id from a `.cbproj` or another host: `b6b.alt`, `ab-cdef0…`, non-ASCII), so its header still reads back. Tokens can
+ * collide (a renamed copy shares its original's): `parseRef` tells the cuts apart. The one definition: the adapter's
+ * header prints this.
+ */
+export const branchToken = (id: string): string => (/^[0-9a-f]{8}/.test(id) ? id : E.sha256Hex(id)).slice(0, 8);
 
 interface Cut {
   rec: CutRecord;
@@ -115,6 +128,10 @@ export class History {
   readonly #pins = new Map<string, Pin>(); // `${cut}|${seq}|${hash8}`
   readonly #views = new Map<string, View>();
   readonly #creators = new Map<PathKey, string>(); // sequence element path -> author key (M4 nesting)
+  // change id -> its row, the first cut that holds it (a write retried with its id is found without a scan of every log)
+  readonly #byId = new Map<ChangeId, ConfirmedChange>();
+  readonly #holes = new Set<string>(); // cuts loadFrom left rows out of, until fill brings them
+  #late: [PathKey, string][] | null = null; // creators set live while #holes (loaded() .. the last fill)
   readonly #names = new Map<NodeId, { name: string; at: number; by?: Actor }>();
   readonly #local = { pathMap: {} as Record<string, string>, notices: [] as Notice[], ephemeral: {} as Record<string, unknown>, lease: null as unknown };
   readonly #anc = new Map<NodeId, Map<string, number>>();
@@ -250,7 +267,25 @@ export class History {
   }
   /** The state at a node; null when it isn't held (a shallow node whose state wasn't carried). Never the live head. */
   stateOf(id: NodeId): Doc | null {
-    id = this.canon(id);
+    return this.#stateOf(id, false);
+  }
+  /**
+   * The same state as History holds it, the live head itself rather than a fork: read-only, for a caller that forks
+   * it anyway (Carton's head and checkout) or only reads it. Changing it changes History.
+   */
+  viewOf(id: NodeId): Doc | null {
+    return this.#stateOf(id, true);
+  }
+  #stateOf(id: NodeId, live: boolean): Doc | null {
+    const c = this.canon(id);
+    const d = this.#stateAt(c, live);
+    if (d) return d;
+    // a version whose state is gone (compacted after a fork was made from it, in another process or behind a handle
+    // that hadn't seen the compaction: review SF1-1) is still the state its fork keeps a copy of
+    for (const cut of this.#cuts.values()) if (cut.root && cut.rec.forkOf && this.canon(cut.rec.forkOf) === c) return cut.root;
+    return null;
+  }
+  #stateAt(id: NodeId, live = false): Doc | null {
     const { branchId: b, seq: s } = parseNode(id);
     const br = this.#cuts.get(b);
     if (!br || br.rec.shallow) {
@@ -258,26 +293,29 @@ export class History {
       return ln ? this.#states.get(ln.hash) ?? null : null;
     }
     if (s > br.log.length || s < 0) return null;
-    if (br.sq && s === br.log.length) return E.fork(br.sq.head, this.schema); // never hand out the live head
+    const row = br.log[s - 1];
+    if (s > 0 && (!row || row.squashedInto)) return null; // compacted away (§5.4), or not loaded yet (loadFrom)
+    if (br.sq && s === br.log.length) return live ? br.sq.head : E.fork(br.sq.head, this.schema); // stateOf never hands out the live head
     let k = s;
     while (!br.kf.has(k)) k--;
     let doc = br.kf.get(k)!;
     if (k < s) {
-      doc = E.fork(doc, this.schema);
+      doc = forkSealed(doc, this.schema); // a sealed keyframe's rebuild stays sealed (engine/doc.ts)
       for (let i = k; i < s; i++) E.apply(doc, br.log[i]!.ops, this.schema);
       if (s % this.K === 0) br.kf.set(s, doc);
     }
     return doc;
   }
   hashOf(id: NodeId): string | null {
-    id = this.canon(id);
-    const ln = this.#lineage.get(id);
+    const c = this.canon(id);
+    const ln = this.#lineage.get(c);
     if (ln) return ln.hash;
-    let h = this.#hash.get(id);
+    let h = this.#hash.get(c);
     if (!h) {
-      const d = this.stateOf(id);
-      if (!d) return null;
-      this.#hash.set(id, (h = E.hashDoc(d, this.schema)));
+      const d = this.stateOf(c);
+      // a squashed version's state is gone, but not its identity (SF3-5)
+      if (!d) return this.changeAt(c)?.squashedHash ?? null;
+      this.#hash.set(c, (h = E.hashDoc(d, this.schema)));
     }
     return h;
   }
@@ -288,42 +326,115 @@ export class History {
   }
   /** Where a change id was confirmed, on any cut this replica holds. */
   findChange(id: ChangeId): ConfirmedChange | null {
-    for (const c of this.#cuts.values()) for (let i = c.log.length - 1; i >= 0; i--) if (c.log[i]!.id === id) return c.log[i]!;
-    return null;
+    return this.#byId.get(id) ?? null;
   }
   #mustCut(cutId: string): Cut {
     const c = this.#cuts.get(cutId);
     if (!c) throw new Error(`no cut ${cutId}`);
     return c;
   }
-  /** Confirmed rows from elsewhere (another process on the same carton.db, or an import), appended in order. */
-  load(cutId: string, rows: readonly ConfirmedChange[]): void {
+  /**
+   * Confirmed rows from elsewhere (another process on the same carton.db, or an import), appended in order.
+   * `keyframes`: persisted states after some of these rows (§5.4); the newest the batch reaches is where the sequencer
+   * starts, instead of replaying every row before it, and each is a keyframe for `stateOf`.
+   */
+  load(cutId: string, rows: readonly ConfirmedChange[], keyframes: readonly (readonly [number, Doc])[] = []): void {
     const c = this.#mustCut(cutId);
     const fresh = rows.filter((r) => r.seq > c.log.length);
     if (!fresh.length) return;
-    if (c.sq) c.sq.load(fresh);
+    const top = fresh[fresh.length - 1]!.seq;
+    let kf: readonly [number, Doc] | undefined;
+    for (const k of keyframes) if (k[0] > c.log.length && k[0] <= top && (!kf || k[0] > kf[0])) kf = k;
+    for (const [s, d] of keyframes) if (s > c.log.length && s <= top) c.kf.set(s, d);
+    if (c.sq) c.sq.load(fresh, kf && { seq: kf[0], doc: kf[1] });
     else (c.log as ConfirmedChange[]).push(...fresh);
     // keyframes of a batch are rebuilt lazily by stateOf: the sequencer's head is already past them
     for (const r of fresh) this.#confirmed(c, r, false);
+  }
+
+  /**
+   * Open from a keyframe (§5.4, F1): a local cut's rows from the keyframe's own row on, the rows before it held back
+   * for `fill`. Its head and seq are whole at once; an older version is readable only after `fill`.
+   */
+  loadFrom(cutId: string, rows: readonly ConfirmedChange[], kf: readonly [number, Doc]): void {
+    const c = this.#mustCut(cutId);
+    c.sq!.skipTo(kf[0] - 1);
+    c.kf.set(kf[0], kf[1]);
+    c.sq!.load(rows, { seq: kf[0], doc: kf[1] });
+    for (const r of rows) this.#confirmed(c, r, false);
+    this.#holes.add(cutId);
+  }
+  /** The rows read at open are in (but for loadFrom's): a creator set from now on, until fill ends, arrived live. */
+  loaded(): void {
+    if (this.#holes.size) this.#late = [];
+  }
+  /** Creators set live while rows were still loading, in their order (null once none are loading). */
+  get late(): readonly [PathKey, string][] | null {
+    return this.#late;
+  }
+  /** Creators another History took in live while it loaded, set again here: this one replaces it. */
+  relive(late: readonly [PathKey, string][]): void {
+    for (const [k, a] of late) this.#creators.set(k, a);
+  }
+  /**
+   * Rows `loadFrom` held back, newest first: each batch the consecutive rows just below the oldest it holds, down to
+   * seq 1. false, taking nothing, if a compaction squashed some of them into a row read before it (the batches came
+   * from both sides of it): read the history again. A name the names table gave a version stays (renamed since). Once
+   * every cut is whole, creators are worked out again in load order, as a whole load at open gives them, and what
+   * arrived live since is applied again in its order.
+   */
+  fill(cutId: string, rows: readonly ConfirmedChange[]): boolean {
+    const c = this.#mustCut(cutId);
+    const lo = rows[0]?.seq ?? 0,
+      hi = lo + rows.length - 1;
+    if (!lo || rows.some((r, i) => r.seq !== lo + i) || c.log[lo - 1] || !c.log[hi]) throw new Error(`history load: ${cutId}'s rows changed`);
+    for (const r of rows) {
+      if (!(r.squashedInto! > hi)) continue;
+      // squashed into a row above this page: that row must be held as the squash that covers it (not missing, not as it
+      // was before the compaction)
+      const t = c.log[r.squashedInto! - 1];
+      if (!t || t.squashedInto || !(t.squashedFrom! <= r.seq)) return false;
+    }
+    c.sq!.fill(rows);
+    const late = this.#late;
+    this.#late = null;
+    for (const r of rows) {
+      const n = r.name ? nodeId(c.rec.id, r.seq) : "",
+        named = n && this.#names.get(n);
+      this.#confirmed(c, r, false, false); // creators: worked out once every cut is whole
+      if (named) this.#names.set(n, named);
+    }
+    this.#late = late;
+    this.#anc.clear();
+    if (lo > 1 || !this.#holes.delete(cutId) || this.#holes.size) return true;
+    this.#creators.clear();
+    for (const b of this.#cuts.values()) for (const r of b.log) for (const op of r?.ops ?? []) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), actorKey(r!.author));
+    for (const [k, a] of late ?? []) this.#creators.set(k, a);
+    this.#late = null;
+    return true;
   }
 
   /** What an import taught this replica (lineage nodes, carried states, last authors, exports made), to persist. */
   knowledge(): { lineage: DagNode[]; states: [string, Doc][]; authors: [NodeId, Record<PathKey, Actor>][]; exports: [NodeId, { to: string; at: number }[]][] } {
     return { lineage: [...this.#lineage.values()], states: [...this.#states], authors: [...this.#importedAuthors], exports: [...this.#exportsMade] };
   }
-  /** Restore persisted knowledge (before the cuts that fork from lineage nodes). */
+  /** Restore persisted knowledge (before the cuts that fork from lineage nodes); exports add to those held, once each. */
   loadKnowledge(k: Partial<ReturnType<History["knowledge"]>>): void {
     for (const n of k.lineage ?? []) this.#lineage.set(n.id, n);
     for (const [h, d] of k.states ?? []) this.#states.set(h, d);
     for (const [n, a] of k.authors ?? []) this.#importedAuthors.set(n, a);
-    for (const [n, e] of k.exports ?? []) this.#exportsMade.set(n, e);
+    for (const [n, e] of k.exports ?? []) {
+      const l = this.#exportsMade.get(n) ?? [];
+      for (const x of e) if (!l.some((y) => y.at === x.at && y.to === x.to)) l.push(x);
+      this.#exportsMade.set(n, l);
+    }
     this.#anc.clear();
   }
 
   // ------------------------------------------------------------ refs and pins (§5.2)
   refString(cutId: string, seq: number, hash: string, extra: { printNonce?: string; by?: string } = {}): string {
     const br = this.#mustCut(cutId);
-    let s = `${br.rec.name}@${seq}~${hash.slice(0, 8)} b:${cutId.slice(0, 8)}`;
+    let s = `${br.rec.name}@${seq}~${hash.slice(0, 8)} b:${branchToken(cutId)}`;
     if (extra.printNonce) s += ` p:${extra.printNonce}`;
     if (extra.by) s += ` by ${extra.by}`;
     return s;
@@ -393,10 +504,18 @@ export class History {
   parseRef(ref: string | StateRef): (StateRef & { printNonce?: string; by?: string }) | { legacy: number } {
     if (typeof ref !== "string") return ref;
     if (/^\d{13}$/.test(ref)) return { legacy: Number(ref) }; // a 1.4.0 timestamp rev
+    // a node id, `<cutId>@<seq>`, as checkout, diff and restore take it (kit-docs: commit's base refused it)
+    const node = /^([^~\s]+)@(\d+)$/.exec(ref.trim());
+    if (node && this.#cuts.has(node[1]!)) return { branchId: node[1]!, seq: Number(node[2]) };
     const m = REF_RE.exec(ref.trim());
     if (!m) throw new StateUnknown(ref, "unparseable ref");
-    const br = [...this.#cuts.values()].find((b) => b.rec.id.startsWith(m[4]!));
-    const out: StateRef & { printNonce?: string; by?: string } = { branchId: br?.rec.id ?? m[4]!, seq: Number(m[2]), hash8: m[3]! };
+    // the cut whose token `b:` is (branchToken). Two with one token (a renamed copy and its original; foreign ids whose
+    // hashes meet) are told apart by which has the header's state at its seq (confirmed or pinned), then by the
+    // header's cut name: a cut renamed since the print keeps its headers when another takes its old name (0760ef2)
+    const seq = Number(m[2]);
+    const rank = (b: Cut) => (seq <= b.log.length && (this.hashOf(nodeId(b.rec.id, seq))!.startsWith(m[3]!) || this.#pins.has(`${b.rec.id}|${seq}|${m[3]}`)) ? 2 : 0) + (b.rec.name === m[1] ? 1 : 0);
+    const br = [...this.#cuts.values()].filter((b) => branchToken(b.rec.id) === m[4]).sort((x, y) => rank(y) - rank(x))[0];
+    const out: StateRef & { printNonce?: string; by?: string } = { branchId: br?.rec.id ?? m[4]!, seq, hash8: m[3]! };
     if (m[5]) out.printNonce = m[5];
     if (m[6]) out.by = m[6];
     return out;
@@ -506,14 +625,11 @@ export class History {
       }
       // rebase: merge3(base, head, mine) with the concurrent changes' recorded remaps and kinds
       const head = br.sq.head;
-      const conc = res.missing.filter((c) => !causal.includes(c.id));
-      const rec = conc.filter((c) => !isEmptyMap(c.intent?.maps));
-      const concMaps = rec.length ? { maps: E.composeMaps(...rec.map((c) => c.intent!.maps)) } : undefined;
-      const concKinds: Record<string, NonNullable<Change["kinds"]>[string]> = {};
-      for (const c of conc) for (const [id, k] of Object.entries(c.kinds ?? {})) concKinds[id] = k;
+      // the concurrent changes' maps, lineage (a split records lineage only: kit-docs) and kinds
+      const conc = E.sideOf(res.missing.filter((c) => !causal.includes(c.id)));
       const m = E.merge3(baseDoc, head, mine, this.schema, {
-        remaps: { ours: concMaps, theirs: isEmptyMap(change.intent?.maps) ? undefined : (change.intent as { maps: RemapMaps }) },
-        kinds: { ours: concKinds, theirs: change.kinds ?? {} },
+        remaps: { ours: conc.remap, theirs: E.intentRemap(change.intent) },
+        kinds: { ours: conc.kinds, theirs: change.kinds ?? {} },
         rekeys: "ours",
       });
       let merged = m.doc;
@@ -534,6 +650,11 @@ export class History {
       mine = merged;
       if (!ops.length && !extra.mergeOf && !extra.reverts) return { ...this.#empty(o.id, cutId, baseSeq), rebased: rebase + 1, ...(resolved.length ? { resolved } : {}) };
     }
+  }
+  /** A version a keyframe is kept for (§5.4): named, a fold, exported, or on a Published cut. */
+  milestone(id: NodeId): boolean {
+    const { branchId: b } = parseNode(id);
+    return this.#names.has(id) || !!this.changeAt(id)?.mergeOf || this.#exportsMade.has(id) || this.#cuts.get(b)?.rec.kind === "published";
   }
   /** A write retried with the id it already confirmed under: that confirmation, never a second change. */
   #done(id: ChangeId | undefined): (CommitResult & { status: "confirmed" }) | null {
@@ -557,10 +678,17 @@ export class History {
     if (h) (ref.hash = h), (ref.hash8 = h.slice(0, 8));
     return ref;
   }
-  #confirmed(br: Cut, c: ConfirmedChange, keyframe = true): void {
+  #confirmed(br: Cut, c: ConfirmedChange, keyframe = true, creators = true): void {
+    if (!this.#byId.has(c.id)) this.#byId.set(c.id, c);
     const a = actorKey(c.author);
-    for (const op of c.ops) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), a);
-    if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? E.fork(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
+    if (creators)
+      for (const op of c.ops)
+        if (op.op === "insert" && op.nb) {
+          const k = E.pathKey(op.path);
+          this.#creators.set(k, a);
+          this.#late?.push([k, a]);
+        }
+    if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? forkSealed(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
     if (c.name) this.#names.set(nodeId(br.rec.id, c.seq), { name: c.name, at: c.at, by: c.author });
     if (c.mergeOf) this.#anc.clear();
   }
@@ -572,6 +700,7 @@ export class History {
     const out: Version[] = [];
     for (let s = Math.min(before === undefined ? br.log.length : before - 1, br.log.length); s >= 0 && out.length < limit; s--) {
       const c = s > 0 ? br.log[s - 1]! : null;
+      if (c?.squashedInto) continue;
       const id = nodeId(cutId, s);
       const named = this.#names.get(id);
       const v: Version = {
@@ -686,32 +815,44 @@ export class History {
   }
   /** Recorded remaps along one DAG path from ancestor `from` to `to` (first parent preferred), composed. */
   pathRemap(from: NodeId, to: NodeId, { prefer = "first" }: { prefer?: "first" | "second" } = {}): RemapMaps {
+    return E.composeMaps(...this.#path(from, to, prefer).map((e) => e.maps));
+  }
+  /** Split lineage (§7: old id -> its pieces) along one DAG path from ancestor `from` to `to`, composed; null: none. */
+  pathLineage(from: NodeId, to: NodeId): Splits | null {
+    if (this.canon(from) !== this.canon(to) && !this.isAncestor(from, to)) return null;
+    return E.sideOf(this.#path(from, to, "first").map((intent) => ({ intent }))).remap?.lineage ?? null;
+  }
+  /** The recorded edges (maps, split lineage) along one DAG path from ancestor `from` to `to`, in order. */
+  #path(from: NodeId, to: NodeId, prefer: "first" | "second"): Edge[] {
     from = this.canon(from);
-    const steps: RemapMaps[] = [];
+    const steps: Edge[] = [];
     let cur = this.canon(to);
     while (cur !== from) {
       const ps = this.parents(cur);
       const order = prefer === "second" && ps.length > 1 ? [ps[1]!, ps[0]!] : ps;
       const p = order.find((q) => q === from || this.isAncestor(from, q));
       if (p === undefined) throw new Error(`no path ${from} -> ${to}`);
-      steps.push(this.edgeMap(p, cur));
+      steps.push(this.#edge(p, cur));
       cur = p;
     }
-    return E.composeMaps(...steps.reverse());
+    return steps.reverse();
   }
-  /** Edge maps: a change's intent maps; a fold's per-parent edge maps; an imported lineage edge's map. */
-  edgeMap(parent: NodeId, child: NodeId): RemapMaps {
+  /** An edge: a change's intent; a fold's per-parent maps and lineage; an imported lineage edge's. */
+  #edge(parent: NodeId, child: NodeId): Edge {
     const ln = this.#lineage.get(child);
-    if (ln) return ln.parents.find((p) => this.canon(p.id) === parent)?.remap ?? {};
+    if (ln) {
+      const p = ln.parents.find((p) => this.canon(p.id) === parent);
+      return { maps: p?.remap, lineage: p?.lineage };
+    }
     const c = this.changeAt(child);
-    if (!c) return {};
-    if (c.mergeOf) return this.canon(refNode(c.mergeOf)) === parent && this.canon(nodeId(c.branchId, c.seq - 1)) !== parent ? c.mergeEdges?.second ?? {} : c.mergeEdges?.first ?? {};
-    return c.intent?.maps ?? {};
+    if (!c?.mergeOf) return c?.intent ?? {};
+    const second = this.canon(refNode(c.mergeOf)) === parent && this.canon(nodeId(c.branchId, c.seq - 1)) !== parent;
+    return { maps: c.mergeEdges?.[second ? "second" : "first"], lineage: c.mergeEdges?.lineage?.[+second] };
   }
 
   // ------------------------------------------------------------ fold in, partial accept, revert, restore
   /** "Fold into …": a DAG merge of node `from` into cut `into`. */
-  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult; doc?: Doc } {
+  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult; doc?: Doc; edges?: ConfirmedChange["mergeEdges"] } {
     const { author = { kind: "human", id: this.name } as Actor, choices, prefer = "ours", missingBase = "dialog", remapPath = "first" } = opts;
     const done = opts.check ? null : this.#done(opts.id);
     if (done) return done;
@@ -744,27 +885,32 @@ export class History {
       return r;
     }
     const baseNode = base.node ?? base.nodes![0]!;
-    const Mo = this.pathRemap(baseNode, x, { prefer: remapPath }),
-      Mt = this.pathRemap(baseNode, y, { prefer: remapPath });
+    // each side's recorded maps and split lineage since the base, so an edit of a clip the other side split reaches
+    // every piece (kit-docs: a fold used the maps only)
+    const side = (to: NodeId) => E.sideOf(this.#path(baseNode, to, remapPath).map((intent) => ({ intent }))).remap,
+      Ro = side(x),
+      Rt = side(y);
     const ours = this.stateOf(x)!,
       theirs = this.stateOf(y);
     if (!theirs) return { status: "missing-base", dialog: { text: "The version to fold in isn't held here.", options: ["ask", "all-cards"], lca: y } };
     const m = E.merge3(base.doc!, ours, theirs, this.schema, {
       prefer,
-      remaps: { ours: isEmptyMap(Mo) ? undefined : { maps: Mo }, theirs: isEmptyMap(Mt) ? undefined : { maps: Mt } },
+      remaps: { ours: Ro, theirs: Rt },
     });
     const unseen = opts.unchosen === "prefer" ? [] : unseenCards(m.conflicts, choices);
     if (m.conflicts.length && (!choices || unseen.length))
       return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(into, this.headSeq(into)), merge: m, base, ...(choices ? { unseen: unseen.map((c) => c.path) } : {}), retry: (ch: Choices) => this.fold(into, from, { ...opts, choices: ch }) };
     const doc = m.conflicts.length ? E.resolve(m, choices!) : m.doc;
-    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m, base, doc };
+    // the fold's edges: each parent's maps, and the split lineage of the side it brings in (theirs onto ours, first)
+    const edges = { first: m.edges.ours, second: m.edges.theirs, ...(Ro?.lineage || Rt?.lineage ? { lineage: [Rt?.lineage ?? {}, Ro?.lineage ?? {}] as [Splits, Splits] } : {}) };
+    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m, base, doc, edges };
     const r = this.commit(into, {
       doc,
       author,
       allowEmpty: true,
       kind: "merge",
       ...(opts.id ? { id: opts.id } : {}),
-      extra: { mergeOf: parseNode(y), mergeEdges: { first: m.edges.ours, second: m.edges.theirs }, mergeBase: base.node ? [base.node] : base.nodes! },
+      extra: { mergeOf: parseNode(y), mergeEdges: edges, mergeBase: base.node ? [base.node] : base.nodes! },
     });
     this.#anc.clear();
     if (r.status === "confirmed" && r.change) this.#mergeAuthors(r.change, y);
@@ -843,7 +989,7 @@ export class History {
     let done: RemapMaps = {};
     for (let i = changes.length - 1; i >= 0; i--) {
       const c = changes[i]!;
-      const before = this.#stateIn(cutId, c.seq - 1, tail),
+      const before = this.#stateIn(cutId, (c.squashedFrom ?? c.seq) - 1, tail),
         after = this.#stateIn(cutId, c.seq, tail);
       const inv = E.invertMaps(firstParentMap(c));
       const since = E.composeMaps(...log.slice(c.seq).map(firstParentMap), done);
@@ -886,7 +1032,7 @@ export class History {
     const out: UndoEntry[] = [];
     for (let i = log.length - 1; i >= 0; i--) {
       const c = log[i]!;
-      if (c.kind === "undo" || undone.has(c.id) || groupOf(c.author) !== group) continue;
+      if (c.kind === "undo" || c.squashedInto || undone.has(c.id) || groupOf(c.author) !== group) continue;
       out.push({ changeId: c.id, seq: c.seq, branchId: cutId, label: undoLabel(c), author: c.author, at: c.at });
     }
     return out;
@@ -1041,9 +1187,9 @@ export class History {
 
   // ------------------------------------------------------------ shallow .cbproj export / import (§13)
   /**
-   * The lineage graph: the head, roots, fork, merge and export nodes, and imported lineage nodes. Each lineage edge
-   * carries the composition of the recorded remaps along it (merge edges use the merge's per-parent edge map). States
-   * of fork, merge and export nodes are carried (R5-02), delta-encoded against the head.
+   * The lineage graph: the head, roots, fork, merge, export and import nodes, and imported lineage nodes. Each lineage
+   * edge carries the composition of the recorded remaps along it (merge edges use the merge's per-parent edge map).
+   * States of fork, merge, export and import nodes are carried (R5-02), delta-encoded against the head.
    */
   exportShallow(cutId: string, { to = "someone", carry = "fork-merge-export", encoding = "delta" }: { to?: string; carry?: "fork-merge-export" | "export-only" | "head-only"; encoding?: "delta" | "full" } = {}): ShallowExport {
     const head = this.head(cutId);
@@ -1053,7 +1199,7 @@ export class History {
     const nodes = this.#walkLineage([head], head);
     // carry: "fork-merge-export" (v6+), "export-only" (v5, for the R5-02 ablation), "head-only" (v4)
     const carried = (n: DagNode) =>
-      n.kinds.includes("head") || (carry !== "head-only" && (n.kinds.includes("export") || (carry !== "export-only" && (n.kinds.includes("fork") || n.kinds.includes("merge")))));
+      n.kinds.includes("head") || (carry !== "head-only" && (n.kinds.includes("export") || n.kinds.includes("import") || (carry !== "export-only" && (n.kinds.includes("fork") || n.kinds.includes("merge")))));
     const headDoc = this.stateOf(head)!;
     const states: ShallowExport["states"] = {};
     for (const n of nodes.values()) {
@@ -1081,26 +1227,30 @@ export class History {
     };
   }
   /**
-   * The lineage nodes reachable from `starts`, each edge compressed to the nearest fork, merge, export, root or known
-   * lineage node (a shallow export's graph, §13, and a hand-off's closure, §5.3). Nodes of `skip` (the cut a closure
+   * The lineage nodes reachable from `starts`, each edge compressed to the nearest fork, merge, export, import, root or
+   * known lineage node (a shallow export's graph, §13, and a hand-off's closure, §5.3). Nodes of `skip` (the cut a closure
    * is for: its rows go up in full) end the walk and are left out.
    */
   #walkLineage(starts: readonly NodeId[], head?: NodeId, skip?: string): Map<NodeId, DagNode> {
     const forkNodes = new Set<NodeId>();
     for (const b of this.#cuts.values()) if (b.rec.forkOf) forkNodes.add(this.canon(b.rec.forkOf));
     const nodes = new Map<NodeId, DagNode>();
+    // the §16 import (`init.asChange`: the project as it was, over the empty root) is a lineage point like an export,
+    // so a shallow export carries it and two copies of the project fold from it, not from nothing (S3-4, request 8)
+    const imported = (id: NodeId) => this.changeAt(id)?.kind === "import";
     const kindsOf = (id: NodeId): LineageKind[] => {
       const k: LineageKind[] = [];
       if (id === head) k.push("head");
       const ln = this.#lineage.get(id);
       if (ln) k.push(...ln.kinds.filter((x) => x !== "head"));
       if (this.#exportsMade.has(id)) k.push("export");
+      if (imported(id)) k.push("import");
       if (this.changeAt(id)?.mergeOf) k.push("merge");
       if (forkNodes.has(id)) k.push("fork");
       if (!this.parents(id).length) k.push("root");
       return [...new Set(k)];
     };
-    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || this.parents(id).length !== 1 || forkNodes.has(id);
+    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || imported(id) || this.parents(id).length !== 1 || forkNodes.has(id);
     const queue = [...starts];
     while (queue.length) {
       const id = queue.pop()!;
@@ -1111,18 +1261,57 @@ export class History {
       const rec: DagNode = { id, branchId: b, seq: s, hash: this.hashOf(id)!, kinds: kindsOf(id), parents: [], ...(owner ? { owner } : {}) };
       nodes.set(id, rec);
       for (const p0 of this.parents(id)) {
-        const maps = [this.edgeMap(p0, id)];
+        const es = [this.#edge(p0, id)];
         let p = p0;
         while (!isStop(p)) {
           const pp = this.parents(p)[0]!;
-          maps.push(this.edgeMap(pp, p));
+          es.push(this.#edge(pp, p));
           p = pp;
         }
-        rec.parents.push({ id: p, remap: E.composeMaps(...maps.reverse()) });
+        const e = E.sideOf(es.reverse().map((intent) => ({ intent }))).remap;
+        rec.parents.push({ id: p, remap: e?.maps ?? {}, ...(e?.lineage ? { lineage: e.lineage } : {}) });
         queue.push(p);
       }
     }
     return nodes;
+  }
+  /**
+   * A sender whose cut has the id of one of ours but another history (the project's folder copied with its carton.db
+   * before either edited: the same local cut ids). Its nodes on that cut that aren't ours (past our log, or another
+   * state at the same seq) belong to the sender's own copy of the cut: they are taken as a separate cut,
+   * `<cut>.<sender hash>` (a node id can't hold `~`), whose lineage still reaches the versions we share, so a fold
+   * finds the real common ancestor (e2e-qa S3-4: they were dropped as "ours", and folding the sender's head read past
+   * our log).
+   */
+  #unclash(pkg: ShallowExport): ShallowExport {
+    const renamed = new Map<string, string>();
+    const moved = new Set<NodeId>();
+    // the sender's first version on the cut that isn't ours names its copy: the same content, the same id, across later
+    // files from that sender; never the display name, which two copies share (review SF3-2)
+    const first = new Map<string, DagNode>();
+    for (const n of pkg.nodes) {
+      const br = this.#cuts.get(n.branchId);
+      if (!br || br.rec.shallow) continue;
+      if (n.seq <= br.log.length) {
+        const ours = this.hashOf(nodeId(n.branchId, n.seq));
+        // ours, or one we can't compare (compacted before squashed versions kept their hash): taken as ours
+        if (ours === n.hash || ours === null) continue;
+      }
+      moved.add(n.id);
+      const f = first.get(n.branchId);
+      if (!f || n.seq < f.seq) first.set(n.branchId, n);
+    }
+    for (const [b, n] of first) renamed.set(b, `${b}.${n.hash.slice(0, 8)}`);
+    if (!moved.size) return pkg;
+    const map = (id: NodeId): NodeId => {
+      if (!moved.has(id)) return id;
+      const { branchId, seq } = parseNode(id);
+      return nodeId(renamed.get(branchId)!, seq);
+    };
+    const nodes = pkg.nodes.map((n) => ({ ...n, id: map(n.id), branchId: moved.has(n.id) ? renamed.get(n.branchId)! : n.branchId, parents: n.parents.map((p) => ({ ...p, id: map(p.id) })) }));
+    const branches = { ...pkg.branches };
+    for (const [ours, theirs] of renamed) branches[theirs] = { ...(pkg.branches[ours] ?? { name: "?" }), name: `${pkg.branches[ours]?.name ?? "?"} (${pkg.sender})` };
+    return { ...pkg, nodes, branches, head: map(pkg.head) };
   }
   /**
    * Lineage from elsewhere (a `.cbproj`, a shared cut's closure) as read-only tracking knowledge: a node already known
@@ -1139,6 +1328,8 @@ export class History {
       const br = this.#cuts.get(n.branchId);
       if (br && !br.rec.shallow) continue;
       const prev = this.#lineage.get(n.id);
+      // a node's identity never changes: one we hold under this id with another state is a different version (SF3-2)
+      if (prev && prev.hash !== n.hash) throw new Error(`shallow export: node ${n.id} is another version than the one held here`);
       const bn = branches[n.branchId]?.name;
       incoming.set(n.id, { ...n, ...(prev ? { parents: prev.parents } : {}), kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
     }
@@ -1198,6 +1389,7 @@ export class History {
         out.set(n.branchId, (e = { branchId: n.branchId, rec, nodes: [], states: [] }));
       }
       e.nodes.push(n);
+      // an import's state isn't carried here: a closure starts at fork points and merges, which are past it
       const d = n.kinds.some((k) => k === "fork" || k === "merge" || k === "export") ? this.stateOf(n.id) : null;
       if (d) e.states!.push({ seq: n.seq, hash: n.hash, doc: JSON.parse(E.snapshot(d, this.schema)) });
     }
@@ -1221,7 +1413,7 @@ export class History {
    * Import: lineage nodes become read-only tracking knowledge; carried states are checked against their hash. A
    * project you don't have forks a writable cut from the sender's head (§5.3).
    */
-  importShallow(pkg: ShallowExport): { status: "forked"; cut: string; head: NodeId } | { status: "imported"; head: NodeId } | { status: "other-project" } | { status: "no-shared-lineage"; newProjectId: string } {
+  importShallow(pkg: ShallowExport): ShallowImport {
     if (pkg.format !== "carton-shallow/1") throw new Error("not a shallow export");
     let fresh = false;
     if (!this.#projectId || this.#cuts.size === 0) {
@@ -1233,6 +1425,7 @@ export class History {
       if (!known) return { status: "no-shared-lineage", newProjectId: randomHex(8) };
     }
     if (!pkg.nodes.some((n) => n.id === pkg.head)) throw new Error("shallow export: its head is not one of its nodes");
+    pkg = this.#unclash(pkg);
     const headState = (pkg.states[pkg.headHash] as { doc?: Doc } | undefined)?.doc;
     this.#takeLineage(pkg.nodes, pkg.branches, Object.entries(pkg.states).map(([hash, st]) => [hash, "doc" in st ? st.doc : headState && E.apply(E.fork(headState, this.schema), st.delta, this.schema)]));
     this.#importedAuthors.set(pkg.head, pkg.lastAuthor ?? {});
@@ -1264,7 +1457,10 @@ export class History {
       const b = pending.splice(i, 1)[0]!;
       this.#cuts.delete(b.id);
       const br = this.#mustCut(this.addCut({ id: b.id, name: b.name, forkOf: b.forkOf, owner: b.owner, root: b.root, tracking: true }).id);
-      (br.log as ConfirmedChange[]).push(...b.log.map((c) => ({ ...c })));
+      for (const c of b.log) {
+        (br.log as ConfirmedChange[]).push({ ...c });
+        if (!this.#byId.has(c.id)) this.#byId.set(c.id, br.log.at(-1)!);
+      }
     }
     this.#anc.clear();
   }
@@ -1306,7 +1502,7 @@ function softAfter(schema: Schema, head: Doc, prior: Doc, ops: readonly Op[]): S
   return schema.soft!(head, touched, [prior], placed, placed);
 }
 /** A path key back to its segments (`~1` is `/`, `~0` is `~`). */
-const unkey = (k: PathKey): string[] => k.split("/").map((x) => x.replaceAll("~1", "/").replaceAll("~0", "~"));
+const unkey = (k: PathKey): string[] => k.split("/").map(E.unescapeSegment);
 
 /** Ops that put each rejected record (or field) of `post` back to its value in `pre`. */
 function inverseOps(schema: Schema, pre: Doc, post: Doc, reject: readonly (PathKey | readonly string[])[]): Op[] {

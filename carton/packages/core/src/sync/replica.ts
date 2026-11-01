@@ -16,7 +16,7 @@ import type { Schema } from "../schema.ts";
 import type { Actor, ConfirmedChange, ConflictCard, Doc } from "../types.ts";
 import { SyncClient, type SyncClientOptions, type SyncStatus, type Timers } from "./client.ts";
 import type { PresenceState } from "./messages.ts";
-import { ReplicaQueue, type CommitInput, type QueueBranch, type QueueEvent } from "./queue.ts";
+import { ReplicaQueue, type CommitInput, type QueueBranch, type QueueEvent, type RestoreInput } from "./queue.ts";
 
 export interface SyncState {
   status: SyncStatus;
@@ -31,18 +31,23 @@ export type SharedCutEvent =
   | { type: "absorbed"; id: string; cards: ConflictCard[]; withdrawn: boolean }
   | { type: "rejected"; id: string; reason: string }
   | { type: "remote"; rows: ConfirmedChange[] }
+  /** Pending changes went up (each now has the base it was sent on): a store-backed owner keeps that (REQ-7). */
+  | { type: "sent"; ids: string[] }
   | { type: "overwritten"; id: string; by: string; author: unknown }
   | { type: "presence"; branchId: string; actor: unknown; state: PresenceState | null }
   | { type: "state"; state: SyncState }
-  | { type: "error"; error: string };
+  /** Caught up after a welcome: the host accepted this replica (an earlier error is over). */
+  | { type: "online" }
+  | { type: "error"; error: string; code?: string };
 
 /** What a write learns within its wait (§6.2, L14). */
 export type WriteOutcome =
   | { status: "confirmed"; id: string; seq: number }
   | { status: "conflicts"; id: string; seq?: number; cards: ConflictCard[]; absorbed?: boolean }
   /**
-   * Spent by a withdraw (H1): it changed nothing of its own. Reported when the outcome is older than this process's
-   * record of it, so whether it left cards is no longer known (they went to the replica's cards when it happened).
+   * Spent by a withdraw (H1), or absorbed before it was sent: it changed nothing of its own. Live, it left no cards
+   * (with cards it is `conflicts`, `absorbed: true`); when the outcome is older than this process's record of it,
+   * whether it left cards is no longer known (they went to the replica's cards when it happened).
    */
   | { status: "absorbed"; id: string; seq: number }
   | { status: "rejected"; id: string; reason: string }
@@ -89,7 +94,8 @@ function outcomeLog(queue: ReplicaQueue): OutcomeLog {
         break;
       case "absorbed": {
         const cards = [...e.change.cards, ...e.cards];
-        log.record(e.branchId, e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "confirmed", id: e.change.id, seq: queue.headSeq(e.branchId) });
+        // without cards it is saved in effect, but says so: a `cb` caller reports "already in place", not a new change
+        log.record(e.branchId, e.change.id, cards.length ? { status: "conflicts", id: e.change.id, cards, absorbed: true } : { status: "absorbed", id: e.change.id, seq: queue.headSeq(e.branchId) });
         break;
       }
       case "rejected":
@@ -151,13 +157,49 @@ export class SharedCut {
   }
 
   // ---------------------------------------------------------------- writing
-  /** Queue a change on this cut. Returns at once: `pending` (or `confirmed` when the cut is still local). */
-  commit(input: CommitInput): ReturnType<ReplicaQueue["commit"]> {
+  /**
+   * Queue a change on this cut. Returns at once: `pending` (or `confirmed` when the cut is still local). `deferEmpty`:
+   * an empty change's confirmation isn't recorded here; its owner records it with `settleEmpty` once its store kept the
+   * spent id, so no wait is told before then (Carton: review R6-9).
+   */
+  commit(input: CommitInput, o: { deferEmpty?: boolean } = {}): ReturnType<ReplicaQueue["commit"]> {
     const r = this.queue.commit(this.branchId, input);
     // an empty change is confirmed at once with no event: its wait must say so too (round 2 finding 11)
-    if (r.empty) this.log.record(this.branchId, r.id, { status: "confirmed", id: r.id, seq: this.queue.headSeq(this.branchId) });
+    if (r.empty && !o.deferEmpty) this.log.record(this.branchId, r.id, { status: "confirmed", id: r.id, seq: this.queue.headSeq(this.branchId) });
     this.refreshState();
     return r;
+  }
+  /**
+   * Pending changes kept across a restart, back in the queue in order, as they were (`ReplicaQueue.restoreAll`);
+   * `stateAt`: confirmed states the queue doesn't hold. `held`: those whose base nobody can rebuild yet.
+   */
+  restoreAll(inputs: readonly RestoreInput[], stateAt?: (seq: number) => Doc | null): ReturnType<ReplicaQueue["restoreAll"]> {
+    const r = this.queue.restoreAll(this.branchId, inputs, stateAt);
+    this.refreshState();
+    return r;
+  }
+  /**
+   * Take back a change the store never kept (`ReplicaQueue.unqueue`); one that may have been sent is refused here and
+   * withdrawn (`rejectLocally`), with `reason`.
+   */
+  unqueue(id: string, reason: string): void {
+    if (!this.queue.unqueue(this.branchId, id)) this.queue.rejectLocally(this.branchId, id, reason);
+    this.refreshState();
+  }
+  /** Run the pusher now (changes queued behind one taken back waited at it). */
+  wake(): void {
+    this.client?.pump();
+  }
+  /** A change committed `held` was kept by the store: it may be sent now, and what was queued after it. */
+  kept(id: string): void {
+    if (this.queue.unhold(this.branchId, id)) this.client?.pump();
+  }
+  /**
+   * The outcome of an empty change committed with `deferEmpty`, once its owner's store kept it: its spent id, or what
+   * won that id there (another process's change). Its waits answer from then on (R6-9).
+   */
+  settleEmpty(id: string, o: WriteOutcome): void {
+    this.log.record(this.branchId, id, o);
   }
   /**
    * The outcome of change `id` within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed@seq, conflicts (late cards,
@@ -220,11 +262,17 @@ export class SharedCut {
         if (e.type === "status") this.refreshState();
         else if (e.type === "presence") this.emit({ type: "presence", branchId: this.branchId, actor: e.actor, state: e.state });
         else if (e.type === "overwritten") this.emit({ type: "overwritten", id: e.id, by: e.by, author: e.author });
-        else if (e.type === "error") this.emit({ type: "error", error: e.error });
+        else if (e.type === "error") this.emit({ type: "error", error: e.error, ...(e.code ? { code: e.code } : {}) });
+        else if (e.type === "online") this.emit({ type: "online" });
+        else if (e.type === "push") this.emit({ type: "sent", ids: e.ids });
       },
     }).start();
     this.refreshState();
     return this.client.whenCaughtUp(timeoutMs);
+  }
+  /** Send this replica's person on the live connection (`SyncClient.identify`). */
+  identify(): void {
+    this.client?.identify();
   }
   /** History this replica doesn't hold, from the server (`SyncClient.history`): fails while not connected. */
   history(after: number, upTo: number, opts: { lineage?: boolean } = {}): ReturnType<SyncClient["history"]> {

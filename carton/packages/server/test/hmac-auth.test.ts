@@ -142,3 +142,16 @@ test("tokens ride in Authorization or the WebSocket subprotocol list", async () 
   const { token } = await a.join(await a.createInvite("p", "editor"), "alice", newInstallKey());
   assert.match("carton.auth." + token, /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/);
 });
+
+test("only the MAC's canonical encoding verifies: a token differing in the last character's unused bits is refused", async () => {
+  const a = auth();
+  const { token } = await a.join(await a.createInvite("p", "viewer"), "eve", newInstallKey());
+  const mac = token.slice(token.lastIndexOf(".") + 1);
+  assert.equal(mac.length, 43, "32 bytes: the last character carries 4 bits and 2 unused ones");
+  const ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const forged = token.slice(0, -1) + ALPHABET[ALPHABET.indexOf(mac.at(-1)!) ^ 1];
+  assert.notEqual(forged, token);
+  assert.deepEqual(fromB64url(forged.slice(forged.lastIndexOf(".") + 1)), fromB64url(mac), "it decodes to the same MAC");
+  assert.equal(await a.verify(forged), null);
+  await assert.rejects(a.check(forged), /bad signature/);
+});

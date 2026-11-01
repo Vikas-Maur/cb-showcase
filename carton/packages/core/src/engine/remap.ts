@@ -3,7 +3,7 @@
 // [p, len] (later times pushed right). A time is mapped as a start edge ("s": right-continuous) or an end edge ("e":
 // left-continuous); null means the time sat inside deleted content.
 import type { Schema } from "../schema.ts";
-import type { Doc, Op, Path, Rec, RemapChain, RemapMaps, RemapOp, RemapStep, SetOp } from "../types.ts";
+import type { Doc, EditKinds, Lineage, Op, Path, Rec, RemapChain, RemapMaps, RemapOp, RemapStep, SetOp } from "../types.ts";
 import { posOf } from "./doc.ts";
 import { cmp, EMPTY } from "./json.ts";
 
@@ -141,6 +141,39 @@ export function invertChain(chain: RemapChain | null | undefined): RemapChain {
 }
 export const invertMaps = (m: RemapMaps | null | undefined): RemapMaps => Object.fromEntries(Object.entries(m ?? {}).map(([t, c]) => [t, invertChain(c)]));
 export const isEmptyMap = (m: RemapMaps | null | undefined): boolean => !m || Object.values(m).every((c) => !c?.length);
+/**
+ * Lineages of successive changes as one: a piece a later change splits again carries that split's pieces too (review
+ * SF4-5: merged key by key, the later split of `c` replaced the earlier one, and an edit of `c` missed `c-b`).
+ */
+export const composeLineage = (...ls: (Lineage | null | undefined)[]): Lineage => {
+  const out: Lineage = {};
+  for (const l of ls) {
+    if (!l) continue;
+    for (const s in out) out[s] = [...new Set(out[s]!.flatMap((p) => l[p] ?? [p]))];
+    for (const s in l) out[s] ??= l[s]!;
+  }
+  return out;
+};
+/**
+ * What changes that landed in order did, as merge3 takes one side of `remaps` and `kinds`: their recorded maps and
+ * split lineage composed, their edit kinds merged (the remap undefined when nothing is recorded: merge3 infers). One
+ * definition for a local commit's rebase, the queue's and a shared cut's stale base (review SF4-4, SF4-5).
+ */
+export const sideOf = (cs: readonly { intent?: { maps?: RemapMaps; lineage?: Lineage } | null; kinds?: EditKinds | null }[]): { remap: ReturnType<typeof intentRemap>; kinds: EditKinds } => ({
+  remap: intentRemap({ maps: composeMaps(...cs.map((c) => c.intent?.maps)), lineage: composeLineage(...cs.map((c) => c.intent?.lineage)) }),
+  kinds: Object.assign({}, ...cs.map((c) => c.kinds)),
+});
+/**
+ * A change's recorded remap as merge3 takes it (one side of `remaps`): its maps and its lineage, or undefined when it
+ * has neither. A split records lineage only (`{middle: ["middle", "middle-b"]}`): kept, so a rebase over a concurrent
+ * edit of the split clip reaches every piece (kit-docs: it was dropped whenever the maps were empty).
+ */
+export const intentRemap = (i: { maps?: RemapMaps; lineage?: Lineage } | null | undefined): { maps: RemapMaps; lineage?: Lineage } | undefined => {
+  if (!i) return undefined;
+  const lineage = i.lineage && Object.keys(i.lineage).length ? i.lineage : undefined;
+  if (isEmptyMap(i.maps) && !lineage) return undefined;
+  return { maps: i.maps ?? {}, ...(lineage ? { lineage } : {}) };
+};
 
 /**
  * A remap op as the per-item sets it stands for, against `doc`: every item on a mapped lane whose extent maps cleanly

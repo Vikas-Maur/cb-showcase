@@ -218,7 +218,7 @@ export interface Change extends Declaration {
   /** A fold-in: the node merged into this branch. */
   mergeOf?: NodeRef;
   /** A fold-in's per-parent edge maps (the transform applied to each parent's content), for remaps per lineage edge. */
-  mergeEdges?: { first: RemapMaps; second: RemapMaps };
+  mergeEdges?: { first: RemapMaps; second: RemapMaps; lineage?: [Lineage, Lineage] };
   /** The merge base node(s) used (several for a criss-cross's virtual base). */
   mergeBase?: NodeId[];
   /** revert/undo/restore: the change(s) it inverts. */
@@ -236,6 +236,14 @@ export interface Change extends Declaration {
 /** A change confirmed by its sequencer: a row of the `changes` table. */
 export interface ConfirmedChange extends Change {
   seq: number;
+  /**
+   * Compaction (§5.4): this change now holds the micro-changes from `squashedFrom` up to it, as one change; the
+   * changes it holds keep their seq and id but no ops (`squashedInto` names this one) and their versions are gone.
+   */
+  squashedFrom?: number;
+  squashedInto?: number;
+  /** A squashed change: the hash of its version's state before it was squashed (its identity in others' lineage). */
+  squashedHash?: string;
 }
 
 /** A pending change in a replica's queue: every version it had (each rebase adds one), newest last. */
@@ -342,7 +350,9 @@ export interface Version {
   /** Full state hash, when already known (the head, named versions); `hashOf(ref)` computes any other. */
   hash?: string;
   change: ChangeId | null;
+  /** Who: the generic person told by person where known (Carton.setIdentity), the actor as recorded in `authoredAs`. */
   author: Actor | null;
+  authoredAs?: Actor;
   at: number;
   name?: string;
   kind: ChangeKind | "root" | "fork";
@@ -350,7 +360,7 @@ export interface Version {
   summary?: string;
 }
 
-export type LineageKind = "head" | "root" | "fork" | "merge" | "export";
+export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";
 
 /**
  * A node of the lineage graph carried by shallow `.cbproj` exports (§13): fork, merge, export, root and head nodes.
@@ -362,7 +372,7 @@ export interface DagNode {
   seq: number;
   hash: string;
   kinds: LineageKind[];
-  parents: { id: NodeId; remap: RemapMaps }[];
+  parents: { id: NodeId; remap: RemapMaps; lineage?: Lineage }[];
   owner?: string;
   branchName?: string;
 }
@@ -510,6 +520,8 @@ export type NoticeKind = "overwritten" | "lost-to-delete" | "late-conflict" | "r
 /** A message for one actor, returned at the start of its next `cb`/MCP result (late conflicts, overwrites). */
 export interface Notice {
   to: ActorKey;
+  /** The cut the change was made on (late conflicts and rejections), so its cards are resolved there. */
+  cut?: string;
   kind: NoticeKind;
   text: string;
   path?: PathKey;
@@ -525,7 +537,32 @@ export type CartonEvent =
   | { type: "pending"; branchId: string; id: ChangeId }
   | { type: "notice"; notice: Notice }
   | { type: "sync"; status: "offline" | "syncing" | "up-to-date" | "stopped"; waiting: number }
-  /** A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1). */
+  /**
+   * A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1).
+   * Emitted once the rows that came with it are settled into History (after their `change` events), so state read in
+   * the handler (credits for a card's other side, head, log) is current (web-demo REQ-U1). A settle that couldn't store
+   * it tells it with the one that does; after a keyframe catch-up, once the skipped rows are in History (fetched, or
+   * loaded from the store another handle saved them to). If they can't be fetched (offline, a server that can't serve
+   * history), or the handle stops or closes first, it is told on what History holds: credits for those rows are then
+   * unknown. A settle's `notice` events (a late conflict's cards) come the same way (review R6-8, R6-10, R6-11).
+   */
   | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
   | { type: "presence"; branchId: string; actor: Actor; state: unknown }
-  | { type: "warning"; branchId: string; warnings: SoftWarning[] };
+  | { type: "warning"; branchId: string; warnings: SoftWarning[] }
+  /**
+   * The host refused or failed this replica's sync of a cut (a hello refused, a token the host doesn't accept, a host
+   * it can't reach, an upload over the host's limit): `error`, until a later welcome or ack clears it (`null`).
+   */
+  | { type: "sync-error"; branchId: string; error: SyncError | null }
+  /** Who is behind a replica changed (`setIdentity`, or the server's people): authors in log() and credits() may read differently. */
+  | { type: "people" };
+
+/**
+ * Why a cut's sync is failing, for a sync status line. `code`: `update-server` (the host is older than this app's
+ * document schema), `unauthorized` (its token or scope), `unreachable` (no connection), `unknown-cut`, `too-large`,
+ * or `server` (anything else the host said). `message`: the host's or connection's own words.
+ */
+export interface SyncError {
+  code: "update-server" | "unauthorized" | "unreachable" | "unknown-cut" | "too-large" | "server";
+  message: string;
+}

@@ -5,13 +5,18 @@
   "type": "module",
   "license": "UNLICENSED",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./keys": "./src/keys.ts"
   },
   "publishConfig": {
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      },
+      "./keys": {
+        "types": "./dist/keys.d.ts",
+        "default": "./dist/keys.js"
       }
     }
   },

@@ -1,0 +1,7 @@
+{
+  // `@carton/media/node`: worker-thread hashing, the fs range cache, the loopback range server, ffmpeg encoders.
+  "extends": "../../tsconfig.node.json",
+  "include": [
+    "src"
+  ]
+}
