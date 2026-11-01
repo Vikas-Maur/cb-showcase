@@ -618,6 +618,12 @@ class CartonImpl implements Carton {
   #rest: { h: History; cuts: { id: string; upTo: number }[] } | null = null;
   /** The background load of `#rest` under way, if any (a failed one is retried by the next call that waits). */
   #loading: Promise<void> | null = null;
+  /**
+   * The timer that starts the background load after open (background()). close() clears it: until it fires it holds the
+   * handle, and with it the whole history, and a loop of opens and closes whose reads all resolve at once never lets it
+   * fire (route 40).
+   */
+  #bg: ReturnType<typeof setTimeout> | undefined;
   /** The rebuild running, and one asked for meanwhile, which starts the moment it settles (#rebuild). */
   #rebuilding: Promise<void> | null = null;
   #nextRebuild: { p: Promise<void>; ok: () => void; fail: (e: unknown) => void } | null = null;
@@ -915,16 +921,22 @@ class CartonImpl implements Carton {
    * store that reads eagerly would read them before. A call that needs them before then loads them itself.
    */
   background(): void {
-    if (this.#rest) setTimeout(() => void (this.#rest && !this.#loading && !this.#closing && this.#loadRest().catch(() => {})), 0);
+    if (!this.#rest || this.#closing) return;
+    this.#bg = setTimeout(() => {
+      this.#bg = undefined;
+      if (this.#rest && !this.#loading && !this.#closing) this.#loadRest().catch(() => {});
+    }, 0);
   }
   /**
    * Read the rows `#rest` holds back into History, newest first, a page at a time with the event loop free between
-   * pages; a rebuild meanwhile makes them moot. A failure no call waits for is kept for the next one that does.
+   * pages; a rebuild meanwhile makes them moot. A failure no call waits for is kept for the next one that does. Once
+   * close() has begun, the background pages stop (a call waiting for the rows still gets them all).
    */
   #loadRest(): Promise<void> {
     const rest = this.#rest!;
     const p = (async () => {
       while (rest.cuts.length) {
+        if (this.#closing && !this.#hurry) return;
         const c = rest.cuts[0]!;
         // a page at a time in the background; all that's left at once when a call waits (#hurry)
         const all = this.#hurry;
@@ -2554,6 +2566,8 @@ class CartonImpl implements Carton {
   }
   async close() {
     this.#closing = true;
+    clearTimeout(this.#bg);
+    this.#bg = undefined;
     this.#connected = null;
     await this.#queue;
     await this.#loading?.catch(() => {});

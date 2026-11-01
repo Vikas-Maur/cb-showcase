@@ -202,8 +202,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   this handle too, as for one opened after it. Version names from the names table stay as they are (renamed since), and
   creators come out as a whole load at open gives them, with what was confirmed live meanwhile applied after, in its
   order (also through such a rebuild); a later rebuild gives them as a whole load does, as any rebuild did before.
-  `head()`, `cuts()`, `pendingCount()` and `notices()` don't wait; `close()` waits for a load under way and drops its
-  error; a connect still waiting then gives up. Shared and tracking cuts, and a cut an older fork without its own fork
+  `head()`, `cuts()`, `pendingCount()` and `notices()` don't wait. `close()` stops the background load after the page
+  under way (a call already waiting still gets every row), waits for it and drops its error, and clears the timer that
+  starts it: nothing else holds a closed handle, so its history is freed once the caller drops it, also in a loop of
+  opens and closes whose reads all resolve at once (route 40). A connect still waiting then gives up. Shared and tracking cuts, and a cut an older fork without its own fork
   state forks from, are read whole as before. Still O(changes), by design for now: that background read, and the
   in-memory log it fills (History indexes the whole log: change ids, creators, credits, undo). The full fix is a store
   index of change ids and an async History that pages old rows from the store on demand. A replica that caught up
