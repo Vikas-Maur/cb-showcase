@@ -48,7 +48,8 @@ test("desktop: importProject makes the document main@1 once; app data keys the p
   assert.equal(first.imported, true);
   assert.equal(first.location.inBundle, true);
   const log = await first.carton.log();
-  assert.deepEqual([log[0]!.ref.seq, log[0]!.kind, log[0]!.author?.id], [1, "import", "import"]);
+  // the import is recorded as the import and told as the person whose project it was (ui-words d20005a)
+  assert.deepEqual([log[0]!.ref.seq, log[0]!.kind, log[0]!.author?.id, log[0]!.authoredAs?.id], [1, "import", "person", "import"]);
   await first.carton.close();
   await first.store.close();
   const again = await open();
@@ -124,7 +125,7 @@ test("H2: history with authors, restore as a new version, undo by actor group", 
     await carton.commit({ doc: withClip((await carton.head()).doc, "intro", { textContent: "mine" }), author: me });
     await carton.commit({ doc: withClip((await carton.head()).doc, "outro", { textContent: "bob's" }), author: teammate });
     const log = await carton.log({ limit: 10 });
-    assert.deepEqual(log.slice(0, 3).map((v) => [v.ref.seq, v.author?.id]), [[3, "bob"], [2, "person"], [1, "import"]]);
+    assert.deepEqual(log.slice(0, 3).map((v) => [v.ref.seq, v.author?.id]), [[3, "bob"], [2, "person"], [1, "person"]]);
     const u = await carton.undo(me.group, { author: me });
     assert.equal(u.status, "confirmed");
     let head = (await carton.head()).doc;
@@ -257,7 +258,7 @@ test("CLI: register() adds Carton's commands to the cb program and extends histo
   const names = program.commands.map((c) => c.name());
   for (const n of ["history", "cut", "fold", "credits", "restore", "undo", "compare", "publish", "conflicts", "resolve", "branch", "merge", "log", "blame"]) assert.ok(names.includes(n), n);
   await program.commands.find((c) => c.name() === "history")!.run(["Demo"], {});
-  assert.match(printed.at(-1)!, /^VERSION\s+SAVED\s+BY\s+WHAT\nmain@1\s+just now\s+Import/);
+  assert.match(printed.at(-1)!, /^VERSION\s+SAVED\s+BY\s+WHAT\nmain@1\s+just now\s+person\s+import/);
   for (const p of opened) await p.close();
 });
 

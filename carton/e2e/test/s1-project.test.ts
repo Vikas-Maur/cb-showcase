@@ -44,7 +44,8 @@ test("S1 a real Cardboard project: GUI save, a Director turn with two parallel s
   assert.match(String((rev as any).branch8), /^[0-9a-f]{8}$/);
   assert.match(String((rev as any).nonce), /^[0-9a-z]{8}$/i);
   let h = await cbOk(m, ["history"]);
-  assert.deepEqual(h.versions.map((v: any) => [v.version, v.kind, v.by?.id ?? null]), [["main@1", "import", "import"], ["main@0", "root", null]]);
+  // the import is told as the person whose project it was (ui-words d20005a), recorded as the import
+  assert.deepEqual(h.versions.map((v: any) => [v.version, v.kind, v.by?.id ?? null]), [["main@1", "import", "person"], ["main@0", "root", null]]);
 
   // --- a person's GUI save: Cardboard writes project.json; the materializer applies it, credited to the person
   await app.ask({ cmd: "serve", req: { e2e: "gui", set: [{ name: SAMPLE.title, field: "fontSize", value: 150 }] } });

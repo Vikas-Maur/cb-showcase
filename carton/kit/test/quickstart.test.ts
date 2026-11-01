@@ -51,7 +51,7 @@ test("quickstart 1: import, agents' edits, history and credits, a cut, a fold wi
 
   const h = await cb(P, "history");
   assert.equal(h.code, 0, h.out);
-  assert.match(h.out, /^VERSION\s+SAVED\s+BY\s+WHAT\nmain@3\s+just now\s+Director › general-purpose \(turn turn1\)\s+edit\nmain@2\s+just now\s+Director \(turn turn1\)\s+edit\nmain@1\s+just now\s+Import\s+import/);
+  assert.match(h.out, /^VERSION\s+SAVED\s+BY\s+WHAT\nmain@3\s+just now\s+Director › general-purpose \(turn turn1\)\s+edit\nmain@2\s+just now\s+Director \(turn turn1\)\s+edit\nmain@1\s+just now\s+person\s+import/);
   assert.equal((await cb(P, "credits", "Outro")).out, "outro: last changed by Director › general-purpose (turn turn1) (subagent general-purpose a1b2, chat chat1)");
 
   assert.match((await cb(P, "cut", "new", "30s cut")).out, /^New cut "30s cut" \(\w{8}\)$/);
