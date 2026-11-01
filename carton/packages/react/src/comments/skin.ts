@@ -53,6 +53,7 @@ export const commentsSkin = `
   font-family:var(--cb-mono);font-size:10.5px;white-space:nowrap;cursor:pointer}
 :where(${S}) :where(.carton-comment-at:hover:not(:disabled)){background:#ffffff1a;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-comment-at:disabled),:where(${S}) :where(span.carton-comment-at){cursor:default}
+:where(${S}) :where(.carton-comment-at[data-status=general]){font-family:inherit;font-size:11px}
 :where(${S}) :where(.carton-comment-at:focus-visible){outline:none;box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
 :where(${S}) :where(.carton-comment-mine){display:flex;margin-left:auto;opacity:0;transition:opacity var(--cb-fast)}
 :where(${S}) :where(.carton-comment:hover .carton-comment-mine),:where(${S}) :where(.carton-comment-mine:focus-within){opacity:1}
