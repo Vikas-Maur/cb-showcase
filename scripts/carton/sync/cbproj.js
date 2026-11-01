@@ -38,7 +38,7 @@ import { randomBytes } from "node:crypto";
 import { extend, cardboard14, headScope } from "../carton-node.js";
 import { Carton, LOCAL_TABLES } from "@carton/core";
 import { cardboardAdapter, materializeProject } from "@carton/cardboard";
-import { readCbproj, bringInTheirChanges, importFullHistory, ZipReader, SHALLOW_ENTRY, FULL_ENTRY, EXPORT_DIR } from "@carton/cardboard/node";
+import { readCbproj, bringInTheirChanges, ZipReader, SHALLOW_ENTRY, FULL_ENTRY, EXPORT_DIR } from "@carton/cardboard/node";
 import { openLocal, identify, nodeHasher } from "@carton/local";
 import { openProjectStore, openSqliteStore } from "@carton/store-sqlite";
 
@@ -173,10 +173,10 @@ async function saved(entries) {
 
 // ---------------------------------------------------------------- Open Project, a project you don't have
 /**
- * The file's history copy (`history.db`, extracted next to the shallow export, or by importFullHistory) into `c`: the
- * sender's cuts become read-only cuts with their versions, authors and names. Optional: a copy that can't be opened or
- * that core refuses (another project's, another schema's) is logged once and the rest goes on. Opened read-only and
- * closed before its folder is removed.
+ * The file's history copy (`history.db`, extracted next to the shallow export) into `c`: the sender's cuts become
+ * read-only cuts with their versions, authors and names. Optional: a copy that can't be opened or that core refuses
+ * (another project's, another schema's) is logged once and the rest goes on. Opened read-only and closed before its
+ * folder is removed.
  */
 async function takeHistory(c, file, label) {
   let hs = null;
@@ -364,26 +364,14 @@ async function bringIn(file, store) {
     if (cut && cut.sequencer.kind !== "local" && !globalThis.__cartonSync?.holds?.(lc)) {
       throw new Error(`"${name}" is shared live, so their changes can only come in through the app with the project open. Open the file in Cardboard.`);
     }
-    // "Include history": their versions are taken here, around the shallow import, rather than by the adapter (which
-    // takes them after it). Core's importShallow takes a node past the end of a cut this copy holds in full for one of
-    // a copy of the project that went its own way, and renames it (History.#unclash), even when that cut is the
-    // sender's own, held read-only from their earlier file's history: their newer versions then sit on a renamed cut,
-    // the fold merges that, and the next file's fold finds an older base (their old values clash again). Taking the
-    // history first grows their read-only cut to the file's versions, so the shallow import finds them as known. Only
-    // when the file names a cut this copy has already: a file of the same project id with no shared lineage must still
-    // be told apart (its cuts would otherwise come in first and look shared). A refused history never stops the rest.
-    let history;
-    const historyOpts = { openStore: (p) => openSqliteStore(p, { readOnly: true }), tmpDir: tmpDirOf(bundle) };
-    const takeFileHistory = async () => (history ??= await importFullHistory({ importHistory: (from) => c.importHistory(from) }, file, historyOpts));
+    // "Include history": the adapter takes their versions first when the file extends a cut this copy holds (their
+    // read-only cut grows to the file's versions, so the shallow import finds them known instead of setting them apart
+    // on a renamed cut), after the shallow import otherwise (a file of the same project id with no shared lineage is
+    // still told apart). A refused history never stops the rest.
+    const history = contents.hasFullHistory ? { history: { file, openStore: (p) => openSqliteStore(p, { readOnly: true }), tmpDir: tmpDirOf(bundle) } } : {};
     const res = await bringInTheirChanges({
-      importShallow: async (pkg) => {
-        if (!contents.hasFullHistory) return c.importShallow(pkg);
-        const known = new Set((await c.cuts()).map((x) => x.id));
-        if (pkg.nodes.some((n) => known.has(n.branchId))) await takeFileHistory();
-        const imp = await c.importShallow(pkg);
-        if (imp.status === "imported" || imp.status === "forked") await takeFileHistory();
-        return imp;
-      },
+      importShallow: (pkg) => c.importShallow(pkg),
+      importHistory: (from) => c.importHistory(from),
       // the adapter's checks for a copy of this project that went its own way, or a file newer than a shared cut here
       cuts: () => c.cuts(),
       head: (cutId) => c.head(cutId),
@@ -396,13 +384,13 @@ async function bringIn(file, store) {
         if ((f.status === "confirmed" || f.status === "pending") && cards.size) await keepCards(lc, actor, [...cards.values()]);
         return f;
       },
-    }, contents);
+    }, contents, history);
     // the clips head uses now, for their files (adoptMedia); up to date too (round 4 #3: a file that comes again with a
     // clip's member an earlier copy lacked still brings it in)
     if (res.status === "forked" || (res.status === "folded" && ["confirmed", "pending", "up-to-date"].includes(res.fold.status))) {
       wanted = new Set((materializeProject((await c.head()).doc, await store.read(id))?.media ?? []).map((m) => m.id));
     }
-    return history ? { ...res, history } : res;
+    return res;
   });
   if (r.history?.status === "refused") warnOnce("history:" + file, `the versions in ${path.basename(file)} weren't brought in (their changes were): ${r.history.reason}`);
   switch (r.status) {

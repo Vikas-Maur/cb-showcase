@@ -84,6 +84,14 @@ test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's 
   const read = { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" }, agent_id: "a1", agent_type: "Explore" };
   assert.deepEqual(await files.hooks[0](read), {}, "never a decision");
   assert.deepEqual(asked.pop(), ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7/sub-Explore-a1", event: "pre-tool-use", input: { ...read, cwd: "/b" } }]);
+  // the worker's one decision, a refused Write of project.json, is the hook's answer (anything else is not)
+  const deny = { hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "use your view" } };
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: false, output: deny }) });
+  assert.deepEqual(await files.hooks[0]({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: "/b/project.json" } }), deny);
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: true, output: { hookSpecificOutput: { permissionDecision: "allow" } } }) });
+  assert.deepEqual(await files.hooks[0](read), {}, "never an allow");
+  asked.splice(0);
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
   // a Bash command that reads the shared file freezes it as a Read does; one that doesn't name it sends nothing
   await m.directorHook(ctx, gate({}))({ hook_event_name: "PreToolUse", tool_input: { command: "cat timeline.tsx" } });
   assert.deepEqual(asked.pop(), ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7", event: "pre-tool-use", input: { hook_event_name: "PreToolUse", tool_input: { file_path: "timeline.tsx" }, tool_name: "Read", cwd: "/b" } }]);

@@ -12,7 +12,9 @@
 //   only ones the frozen file takes in (R8-01). Cardboard's own regeneration of it (its mirror) and its watcher's apply
 //   are handed over to the Materializer (the facade's install and the watcher patch ask ownsTimeline/timelineEvent).
 // - `cb source print --view <name>` (local-cli's printView write) prints an agent's own copy in .scratch/views/, and
-//   each save of it is applied as that agent's change, with a `<name>.status` sidecar the agent reads (confirmed,
+//   each save of it (seen by polling the printed views: a watcher's handle inside the bundle would stop Cardboard
+//   moving it to the trash or renaming it on Windows) is applied as that agent's change, with a `<name>.status` sidecar
+//   the agent reads (confirmed,
 //   conflicts, rejected, with the cards and the diagnostics). A clash is a card for the agent (`cb conflicts`, the Stop
 //   hook) and for the person (onCards: the History panel's cards).
 // - project.json stays the facade's (H1, through Cardboard's own store): the Materializer runs with writeProject off,
@@ -20,20 +22,28 @@
 //   teammate's change) goes into it with the facade's materialize, so the pages adopt it.
 // - The View's holder is the project's one Carton lease holder in this worker (@carton/local's keepLease around a
 //   CartonHolderEngine with the Materializer as its printer), so cb's writes and hook events reach the Materializer.
-//   Live sync (live.js) uses this holder for a shared project instead of keeping a lease of its own.
+//   Live sync (live.js) uses this holder for a shared project instead of keeping a lease of its own; the holder
+//   connects sync only once Live runs (an unshared project has nothing to connect to).
+// - Stopgap until cardboard-adapter merges an agent's own `cb` write into the freeze view (R8-01 covers its saves of
+//   the file): during a freeze, such a write restarts the shared file from head (the Materializer's printShared), so an
+//   agent that re-reads timeline.tsx after `cb source apply` finds its edit, as with 1.4.0. The person's edits made
+//   since the freeze began show then too.
 // - Old prints: a timeline.tsx or view printed by Cardboard 1.4.0 carries a bare `stateUpdatedAt` rev. The facade
 //   maps each one it wrote to its state (`views` table `["rev", ms]`); the engine wrapper resolves them there, so such
 //   a file applies as an edit of that state instead of being refused ("state unknown: re-print").
 import fs from "node:fs";
 import path from "node:path";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
-import { Materializer, DisplacedFiles, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
-import { keepLease, holderSocketPath, CartonHolderEngine, CartonMaterializerEngine, hookDelivered, hookEventFor, parseActorId } from "@carton/local";
+import { Materializer, cartonMaterializerEngine, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
+import { keepLease, holderSocketPath, CartonHolderEngine, preToolUse, parseActorId } from "@carton/local";
 import { caughtUp } from "./live.js";
 
 const MATERIALIZE_MS = 40;
+// How often the views Carton printed are checked for a save (a stat each; nothing when there are none).
+const POLL_MS = 250;
+// A cb write that changes the timeline (the stopgap below).
+const CHANGES = new Set(["commit", "restore", "revert", "undo", "undoTurn", "fold"]);
 const errText = (e) => (e && e.message) || String(e);
 const warned = new Set();
 const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); console.warn("[carton] " + msg); } };
@@ -45,8 +55,8 @@ const views = new Map(); // key → Promise<View | null>
 const running = new Map(); // key → View, once started (the facade asks synchronously)
 
 /**
- * The engine the Materializer gets: local's CartonMaterializerEngine (cards kept for the save's author, a shared cut's
- * spacing), plus 1.4.0's numbered revs through the facade's map. A save that landed is in project.json (so in the app)
+ * The engine the Materializer gets: cardboard-adapter's cartonMaterializerEngine (cards for invalid records, a shared
+ * cut read as shared), plus 1.4.0's numbered revs through the facade's map. A save that landed is in project.json (so in the app)
  * before the Materializer answers it in the view's `.status`: an agent that reads "confirmed" finds it everywhere.
  * Anything else goes to the inner engine as it is.
  */
@@ -82,7 +92,10 @@ export class View {
     this.mz = null;
     this.lease = null;
     this.holder = null;
-    this.watcher = null;
+    this.polling = null;
+    this.stamps = new Map(); // printed view name → its file's stamp
+    this.syncArgs = null; // the holder's sync start, kept until Live runs
+    this.live = false;
     this.off = null;
     this.timer = null;
     this.stopped = false;
@@ -94,10 +107,13 @@ export class View {
     if (!codec) throw new Error("this build has no timeline.tsx printer for Carton");
     const mz = new Materializer({
       bundle: bundlePath,
-      engine: engineFor(new CartonMaterializerEngine(lc.carton), lc, () => this.materializeNow()),
+      engine: engineFor(cartonMaterializerEngine(lc.carton), lc, () => this.materializeNow()),
       host: cardboardFilesHost,
       codec,
       writeProject: false,
+      // `.carton/displaced` is the facade's (project.json's installs, its journal): the Materializer's start-up recovery
+      // would take an untagged file there as a timeline.tsx save
+      displacedDir: path.join(CARTON_DIR, "displaced-views"),
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
       onCards: (c) => {
@@ -105,36 +121,32 @@ export class View {
         try { Promise.resolve(this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, c)).catch(lost); } catch (e) { lost(e); }
       },
     });
-    // Stopgap until cardboard-adapter's `displacedDir` option: the Materializer's displaced files get a folder of their
-    // own. `.carton/displaced` is the facade's (project.json's installs and its journal), and the Materializer's
-    // recovery at start takes an untagged file there as a timeline.tsx save.
-    mz.held = new DisplacedFiles(path.join(bundlePath, CARTON_DIR, "displaced-views"), { now: () => mz.clock.now(), quietMs: mz.opts.quietMs, holdMs: mz.opts.quietMs, ...mz.busy });
     this.mz = mz;
     // Head moved in this handle: the shared file follows (unless frozen), project.json too.
     this.off = lc.carton.on((e) => this.#event(e));
     await mz.start();
-    this.#watchViews();
+    await this.#trackPrinted();
 
-    // The holder. A hooked agent's own `cb` call is that agent working: it freezes timeline.tsx until the agent's Stop
-    // (hookRead), not for a minute after it as a windowless agent's call does (onCb), which would keep the file frozen
-    // after the turn ended.
-    const scope = new AsyncLocalStorage();
-    const busy = async (author) => (author && hookDelivered(author) ? mz.hookRead(author) : mz.onCb());
+    // The holder. Its writes and its follower tell the Materializer who is working (local's tellBusy: a hooked agent's
+    // `cb` call is hookRead, frozen until its Stop; anyone else's is onCb, frozen a while).
     const printer = {
-      printView: (name, owner, o) => mz.printView(name, owner, o),
+      printView: async (name, owner, o) => {
+        const v = await mz.printView(name, owner, o);
+        this.#track(v.name);
+        return v;
+      },
       hookRead: (a) => mz.hookRead(a),
       hookWrite: (a, rel) => mz.hookWrite(a, rel),
       hookStop: (a) => mz.hookStop(a),
-      onCb: async () => {
-        const s = scope.getStore();
-        if (s) return busy(s.actor);
-        // the holder's follower: another process committed (cb in its own process, a helper); whose change it was
-        const last = await lc.carton.log({ limit: 1 }).catch(() => []);
-        return busy(last[0]?.author ?? null);
-      },
+      onCb: () => mz.onCb(),
       onHeadChange: (cause) => mz.onHeadChange(cause),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
-      onExternalHeadChange: () => mz.onExternalHeadChange(),
+      onExternalHeadChange: async () => {
+        const r = await mz.onExternalHeadChange();
+        // another process's write (cb's own commit): an agent's shows in the frozen file too (the stopgap)
+        if (r === "head" && mz.freeze.active) await this.#agentWrote((await lc.carton.log({ limit: 1 }).catch(() => []))[0]?.author);
+        return r;
+      },
       onChangeUpdate: (v, id, u) => mz.onChangeUpdate(v, id, u),
     };
     const engine = new CartonHolderEngine(lc.carton, { materializer: printer, onExternal: () => this.materializeSoon() });
@@ -142,7 +154,17 @@ export class View {
     // Before any print the holder pulls (§6.2); a write it served changes head, which project.json follows.
     engine.serve = async (req, ctx) => {
       await caughtUp(lc.carton);
-      try { return await scope.run({ actor: req?.actor ?? null }, () => serve(req, ctx)); } finally { this.materializeSoon(); }
+      try {
+        const r = await serve(req, ctx);
+        if (CHANGES.has(req?.op?.kind) && r && !r.empty && (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts")) await this.#agentWrote(req.actor);
+        return r;
+      } finally { this.materializeSoon(); }
+    };
+    // Sync connects once Live runs for the project (connectSync); the holder's later starts (a lease taken back) too.
+    const startSync = engine.startSync.bind(engine);
+    engine.startSync = async (...a) => {
+      this.syncArgs = { start: startSync, args: a };
+      if (this.live) return startSync(...a);
     };
     this.holder = engine;
     this.lease = keepLease(() => ({
@@ -153,6 +175,18 @@ export class View {
       log: () => {},
     }));
     await this.lease.start();
+  }
+
+  /** Live sync runs for the project (live.js): the holder connects (now, and whenever it takes the lease again). */
+  async connectSync() {
+    this.live = true;
+    if (this.syncArgs && !this.stopped) await this.syncArgs.start(...this.syncArgs.args);
+  }
+
+  /** The stopgap: an agent's own cb write during a freeze shows in the shared file (from head). */
+  async #agentWrote(author) {
+    if (!author || author.kind === "human" || !this.mz.freeze.active || this.stopped) return;
+    await this.mz.printShared().catch((e) => warnOnce("print:" + this.bundlePath, `timeline.tsx didn't show an agent's edit in ${path.basename(this.bundlePath)}: ${errText(e)}`));
   }
 
   /** This handle holds the lease right now (not fenced, not stopped). */
@@ -192,17 +226,39 @@ export class View {
     }, MATERIALIZE_MS);
   }
 
-  // The views folder; the bundle's own files come from Cardboard's watcher (timelineEvent), which already watches it.
-  #watchViews() {
-    const dir = path.join(this.bundlePath, ...VIEWS_DIR.split("/"));
-    try {
-      this.watcher = fs.watch(dir, { persistent: false }, (_ev, name) => {
-        if (name && !this.stopped) this.mz.onFsEvent(VIEWS_DIR + "/" + String(name).replace(/\\/g, "/"));
-      });
-      this.watcher.on("error", () => {});
-    } catch (e) {
-      warnOnce("watch:" + this.bundlePath, `agents' views in ${path.basename(this.bundlePath)} aren't watched: ${errText(e)}`);
+  // The views Carton printed, checked every POLL_MS by their files' stamps (stat only: no handle in the bundle). The
+  // bundle's own files come from Cardboard's watcher (timelineEvent), which already watches it. A file in the views
+  // folder Carton never printed is never applied (the Materializer's R5-03), so it isn't looked at.
+  async #trackPrinted() {
+    let names = [];
+    try { names = fs.readdirSync(path.join(this.bundlePath, ...VIEWS_DIR.split("/"))).filter((n) => n.toLowerCase().endsWith(".tsx")); } catch {}
+    for (const n of names) {
+      const name = n.slice(0, -4), canon = fold ? name.toLowerCase() : name;
+      if (await this.mz.engine.getMeta(["view", canon]).catch(() => null)) this.#track(canon);
     }
+  }
+  #stamp(name) {
+    try {
+      const st = fs.statSync(path.join(this.bundlePath, ...VIEWS_DIR.split("/"), name + ".tsx"), { bigint: true });
+      return `${st.ino}:${st.size}:${st.mtimeNs}`;
+    } catch {
+      return null;
+    }
+  }
+  #track(name) {
+    if (this.stopped || this.stamps.has(name)) return;
+    this.stamps.set(name, this.#stamp(name));
+    if (this.polling) return;
+    this.polling = setInterval(() => {
+      if (this.stopped) return;
+      for (const [n, was] of this.stamps) {
+        const now = this.#stamp(n);
+        if (now === was) continue;
+        this.stamps.set(n, now);
+        this.mz.onFsEvent(`${VIEWS_DIR}/${n}.tsx`);
+      }
+    }, POLL_MS);
+    this.polling.unref?.();
   }
 
   /** Cardboard's watcher saw timeline.tsx change. */
@@ -217,19 +273,20 @@ export class View {
     if (op.event === "stop") return this.mz.hookStop(actor);
   }
 
-  /** A Director turn ended: it and its subagents stop holding the freeze. */
+  /**
+   * A Director turn ended: it and its subagents stop holding the freeze and let go of their pins (the turn's own Stop
+   * does both for the whole turn, a subagent's SubagentStop only for itself).
+   */
   async endTurn(id) {
-    const ids = [...this.mz.freeze.hooked.keys()].filter((k) => k === id || k.startsWith(id + "/"));
-    for (const k of ids) await this.mz.hookStop(this.mz.freeze.hooked.get(k));
-    // a turn that never got into `hooked` (no read, no cb call) still lets go of its pins
-    if (!ids.includes(id)) { const a = parseActorId(id); if (a) await this.mz.hookStop(a); }
+    const a = parseActorId(id);
+    if (a) await this.mz.hookStop(a);
   }
 
   async stop() {
     this.stopped = true;
     clearTimeout(this.timer);
     this.off?.();
-    this.watcher?.close();
+    clearInterval(this.polling);
     await this.lease?.stop().catch(() => {});
     await this.mz?.close().catch(() => {});
   }
@@ -285,9 +342,10 @@ extend({
     api.onOpen((bundlePath, lc) => startView(api, bundlePath, lc));
     return {
       /**
-       * main (the Director's hooks): `pre-tool-use` with the tool call (a Read of timeline.tsx, a Write/Edit of it or
-       * project.json; local's hookEventFor), `stop` for a stop the late-conflict hook let through, `endTurn` when the
-       * turn ends. `actor` is the id main exports for the agent's cb calls.
+       * main (the Director's hooks): `pre-tool-use` with the tool call (a Read or Write/Edit of timeline.tsx is the
+       * Materializer's event; a Write/Edit of project.json is refused, `output` being the hook's answer; local's
+       * preToolUse), `stop` for a stop the late-conflict hook let through, `endTurn` when the turn ends. `actor` is
+       * the id main exports for the agent's cb calls.
        */
       async agentHook({ bundlePath, actor, event, input }) {
         const v = bundlePath ? await viewOf(bundlePath) : null;
@@ -295,7 +353,12 @@ extend({
         if (!v || !a) return { delivered: false };
         if (event === "endTurn") return await v.endTurn(a.id), { delivered: true };
         if (event === "stop") return await v.hook(a, { event: "stop" }), { delivered: true };
-        const h = event === "pre-tool-use" ? hookEventFor("pre-tool-use", input ?? {}, { projectDir: v.bundlePath }) : null;
+        if (event !== "pre-tool-use") return { delivered: false };
+        // @carton/local's rule for every hooked agent's file tools (as host Claude Code's cb carton-hook runs it): a
+        // Write/Edit of project.json is refused with a pointer to the agent's own view (PLAN §6.4); a Read of
+        // timeline.tsx, or a Write/Edit of it, is the Materializer's event
+        const { output, event: h } = preToolUse(input ?? {}, { projectDir: v.bundlePath, turn: a.chat && a.turn ? { chat: a.chat, turn: a.turn } : null });
+        if (output?.hookSpecificOutput?.permissionDecision === "deny") return { delivered: false, output };
         if (!h) return { delivered: false };
         await v.hook(a, h.op);
         return { delivered: true };
