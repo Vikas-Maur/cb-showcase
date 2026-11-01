@@ -153,14 +153,20 @@ export interface Overlap {
 export type ActorKind = "human" | "agent" | "subagent" | "external" | "system";
 
 /**
- * Who made a change, down to the subagent. `group` is the undo group (§8): your edits, the agent turns you started
- * from this window, and every local windowless actor (`cb` without a turn id) on the same machine and OS user.
+ * Who made a change, down to the subagent. `group` is the undo group (§8): every local actor on the same machine and OS
+ * user (your edits, the agent turns you started, a terminal's `cb`), as `cb undo` and History's Undo see it; a
+ * teammate is never in yours. The app's Ctrl+Z sees only the part of it marked `app`, made in the editor's session.
  */
 export interface Actor {
   kind: ActorKind;
   id: string;
   name?: string;
   group?: string;
+  /**
+   * Made from the app: the person at the editor, or an agent turn they started there (an agent the app started, which
+   * names it in `CARDBOARD_ACTOR`). Never a terminal's `cb`. The app's Ctrl+Z and redo see only these (UndoScope).
+   */
+  app?: boolean;
   chat?: string;
   turn?: string;
   agentId?: string;

@@ -266,18 +266,50 @@ const refOf = async (lc, rev) => {
 };
 const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 
-// Who an actor id is (CARDBOARD_ACTOR's form). The person at the app shares the machine's undo group with windowless
-// agents (§8). "cli" is the store bridge's word for a `cb` that nothing named (no CARDBOARD_ACTOR): who it is comes
-// from @carton/local's identity chain, as for Carton's own cb (Claude Code, Codex, Gemini from their environment, a
-// declared agent, else the person at this terminal), never an agent called "cli" (ui-words #4).
-const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : id === "cli" ? identify() : parseActorId(id) ?? identify({ declared: id }));
+// Who an actor id is (CARDBOARD_ACTOR's form). Every local actor is in the machine's undo group (§8: `cb undo`, History's
+// Undo). The person at the app and an agent the app started (main names it in CARDBOARD_ACTOR, which the store bridge
+// passes as the id) are the app's own (`app`): the app's Ctrl+Z sees only those, in the editor's session (laptop
+// report 90c4127, bug 3). "cli" is the store bridge's word for a `cb` that nothing named (no CARDBOARD_ACTOR): who it
+// is comes from @carton/local's identity chain, as for Carton's own cb (Claude Code, Codex, Gemini from their
+// environment, a declared agent, else the person at this terminal), never an agent called "cli" (ui-words #4), and
+// never the app's. Nor are the worker's own bookkeeping ("app") and a save Carton didn't write ("external:…").
+const appNamed = (id) => id !== "app" && !id.startsWith("external:");
+const actorOf = (id) => {
+  if (id === "person") return { id: "person", kind: "human", group: localGroup(), app: true };
+  if (id === "cli") return identify();
+  const a = parseActorId(id, appNamed(id) ? { app: true } : {});
+  return a ?? identify({ declared: id });
+};
 // "You" in the History panel (R3): in a shared project, this replica's identity (live sync sets it from the host
 // session at share and join), as core tells the person's GUI saves there; before a share, the generic person they are
 // recorded as. GUI saves stay recorded as "person" either way.
 const meOf = (lc) => {
   const who = lc.carton.identity?.();
-  return who ? { kind: "human", id: who.id, name: who.name, group: localGroup() } : actorOf("person");
+  return who ? { kind: "human", id: who.id, name: who.name, group: localGroup(), app: true } : actorOf("person");
 };
+
+// The app's Ctrl+Z and redo (H6): the person's undo group in the editor's session (`since`, the bridge's), only what was
+// made from the app (`app`). An undo whose inverse clashes with a later change of the same thing changes nothing
+// (core): its cards are kept for the person and shown in the open History panels' conflict stack, each saying why in
+// plain words (laptop report 90c4127, bug 6), so the person can keep the newer value or take theirs back.
+const STEP_REASON = {
+  undo: "Not undone: this changed after your edit. Keep yours to undo it here anyway.",
+  redo: "Not redone: this changed after your undo. Keep yours to redo it here anyway.",
+};
+const cardKey = (c) => `${c.path}|${canon(c.ours)}|${canon(c.theirs)}`;
+async function keepStepCards(lc, bundlePath, author, which, cards) {
+  const worded = cards.map((c) => ({ ...c, reason: STEP_REASON[which] }));
+  // pressed again with nothing changed: the same cards, kept once
+  const kept = new Set((await lc.carton.notices(author)).flatMap((n) => n.cards ?? []).map(cardKey));
+  const fresh = worded.filter((c) => !kept.has(cardKey(c)));
+  if (fresh.length) {
+    const to = keyOf(author), at = Date.now(), rand = () => Math.random().toString(16).slice(2, 10);
+    const n = fresh.length, text = `${which === "undo" ? "Your undo" : "Your redo"} didn't change anything: ${n === 1 ? "something it changes was" : `${n} things it changes were`} changed since. Choose in History or with cb conflicts / cb resolve.`;
+    await lc.store.write([{ table: "notices", key: [to, at, 0, rand()], value: { to, kind: "late-conflict", text, cards: fresh, at } }]);
+  }
+  for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(worded);
+  return worded;
+}
 
 // The History panels open in this process, per bundle (fromCarton handles): a person's GUI save's cards show in them at
 // once. Cards go to @carton/react as core returns them: core merges merge3(base, head, mine), so `ours` is head and
@@ -1031,6 +1063,27 @@ export const cardboard14 = {
       }
       return p;
     };
+    const scopeOf = (since) => ({ group: localGroup(), app: true, ...(typeof since === "number" ? { since } : {}) });
+    const canStep = async (lc, since) => {
+      const { group, ...scope } = scopeOf(since);
+      const [u, r] = await Promise.all([lc.carton.undoStack(group, { ...scope, limit: 1 }), lc.carton.redoStack(group, { ...scope, limit: 1 })]);
+      return { undo: u.length > 0, redo: r.length > 0 };
+    };
+    const step = async (which, projectId, since) => {
+      const lc = await lcOf(projectId);
+      if (!lc) return { status: "unavailable" };
+      const op = { kind: which, ...scopeOf(since) }, actor = actorOf("person");
+      const here = extensions.find((e) => typeof e.serveHere === "function");
+      const bundlePath = bundleOf(projectId);
+      // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
+      let r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true }));
+      // local's write path answers a clash as `conflicts` (the cards)
+      if (r?.status === "conflicts" && r.conflicts?.length && bundlePath) r = { ...r, conflicts: await keepStepCards(lc, bundlePath, actor, which, r.conflicts) };
+      // what is left to undo and redo, read while head goes into project.json
+      const [project, can] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null)]);
+      if (project) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
+      return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}) };
+    };
     return {
       ping: async () => "pong",
       head: async ({ projectId }) => library.projects.read(projectId),
@@ -1041,22 +1094,19 @@ export const cardboard14 = {
         const r = /^\d{13}$/.test(String(ref)) ? await refOf(lc, Number(ref)) : ref;
         return materializeProject(await lc.carton.checkout(r), current);
       },
-      // ⌘Z for the person's group, then head goes into project.json through the store (the pages adopt it). The page
-      // waits for it, so where this worker's View holds the project's lease its holder serves the undo here, in this
-      // process (request R4: local's write path would reach that same holder through its control socket); anywhere
-      // else (another process holds the lease, no View runs) it goes through local's write path as before.
-      undo: async ({ projectId }) => {
+      // ⌘Z and ⇧⌘Z for the person's group (H6), then head goes into project.json through the store; the answer carries
+      // that project, which the page adopts at once (the pages' change event follows as usual). The page waits for it,
+      // so where this worker's View holds the project's lease its holder serves the step here, in this process (request
+      // R4: local's write path would reach that same holder through its control socket); anywhere else (another
+      // process holds the lease, no View runs) it goes through local's write path as before. `since`: when the editor's
+      // session began (the bridge's); the answer says what is left to undo and redo (`can`).
+      undo: ({ projectId, since }) => step("undo", projectId, since),
+      redo: ({ projectId, since }) => step("redo", projectId, since),
+      // What Ctrl+Z and redo can do now, for the editor's buttons and shortcuts.
+      undoState: async ({ projectId, since }) => {
         const lc = await lcOf(projectId);
-        if (!lc) return { status: "unavailable" };
-        const op = { kind: "undo", group: localGroup() }, actor = actorOf("person");
-        const here = extensions.find((e) => typeof e.serveHere === "function");
-        const bundlePath = bundleOf(projectId);
-        // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
-        const r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true }));
-        if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-        return r;
+        return lc ? canStep(lc, since) : null;
       },
-      redo: async () => ({ status: "unavailable" }),
       // A Director turn ended: its last version on the current cut takes the turn's label, unless it has a name.
       nameTurn: async ({ projectId, chat, turn, prompt }) => {
         const lc = await lcOf(projectId), label = turnLabel(prompt);
@@ -1205,16 +1255,20 @@ export function headScope(current, next) {
 }
 
 // Head into project.json through the worker's store (the store bridge writes without committing a second change).
+// Head into project.json through Cardboard's store: the project it wrote, or null when the file already showed head.
+// The project as the store has it: `latest` hands back the store's own document when project.json is as the worker
+// last saw it (no second parse of a large project), and reads the file when anything else wrote it.
 async function materializeIn(library, projectId) {
-  const current = await library.projects.read(projectId);
-  const bundlePath = library.projects.bundlePathFor(projectId);
+  const projects = library.projects;
+  const current = typeof projects.latest === "function" ? await projects.latest(projectId) : await projects.read(projectId);
+  const bundlePath = projects.bundlePathFor(projectId);
   let next = await headProject(bundlePath, current);
-  if (!next) return false;
+  if (!next) return null;
   // R6: extensions fill in what only they know first (a teammate's new clip: where it plays from, its size, duration).
   for (const e of extensions) {
     if (typeof e.materializeDoc !== "function") continue;
     try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
   }
-  await library.projects.updateScoped(next, headScope(current, next));
-  return true;
+  await projects.updateScoped(next, headScope(current, next));
+  return next;
 }

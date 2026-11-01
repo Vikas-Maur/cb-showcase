@@ -6,13 +6,18 @@
 // - H5: a change from elsewhere is adopted without an undo entry and without dropping a pending save: the armed save
 //   goes first, with its base, then the editor takes head and its base in one store step. No change from elsewhere
 //   is ever saved again under the person's name (gate G1).
-// - H6: ⌘Z and ⇧⌘Z undo and redo the person's actor group in Carton, never another writer's change.
+// - H6: Ctrl+Z and redo act as Cardboard's own: the person's own edits and the agent turns they started in the app, in
+//   this editor session only (since the project opened here), never a terminal's cb. The worker's answer carries the
+//   project it wrote, adopted at once; the undo and redo buttons follow what Carton has left to undo and redo.
 // - H7: ripple, gap and silence deletes and ripple trims record what they moved.
 // Main says whether Carton is on (carton:call "enabled"). Until it has, and whenever it's off, every hook does what
 // Cardboard does. A method the page answers itself (the live-sync half, scripts/carton/sync) is added with
 // handle(name, fn): call(name, args) then runs fn(...args) here instead of going to main.
 module.exports = String.raw`window.__carton = (() => {
   let on = false, store = null, sent = null, intents = [], stale = false, bypass = false;
+  // H6: an undo or redo under way (its project), the change event that came meanwhile (replayed after it), the
+  // availability refresh's timer
+  let stepping = null, deferred = null, canTimer = null;
   // The editor's own last timeline save not yet answered: the document holds it, whatever the base says (ui-words #3).
   let unanswered = null;
   let settle;
@@ -41,6 +46,9 @@ module.exports = String.raw`window.__carton = (() => {
       // version before both, where it clashed with the earlier save at head (a card of the person against themself).
       const after = unanswered && unanswered.id === doc.id && (st.cartonBase == null || unanswered.rev > st.cartonBase) ? unanswered.rev : undefined;
       sent = unanswered = { id: doc.id, rev: doc.stateUpdatedAt };
+      // the person's own edit: there is something to undo now, and nothing to redo (as the editor's own stacks); the
+      // save's echo asks the worker again
+      store.raw({ cartonCanUndo: true, cartonCanRedo: false });
       const meta = { actor: "person", base: st.cartonBase ?? undefined, ...(after !== undefined ? { after } : {}), intents: intents.length ? intents : undefined };
       intents = [];
       return meta;
@@ -52,11 +60,15 @@ module.exports = String.raw`window.__carton = (() => {
       if (!store || ev.removed) return null;
       const st = store.state();
       if (st.projectId !== ev.id) return null;
+      // An undo or redo under way answers with the project it wrote: this event waits for it (replayed after it if
+      // the answer didn't hold it), rather than fetching the same project again.
+      if (stepping === ev.id) { if (!deferred || (ev.stateUpdatedAt ?? 0) >= (deferred.ev.stateUpdatedAt ?? 0)) deferred = { host, ev }; return { adopted: false, timeline: undefined }; }
       // A preview stays as it is; "Return to current" takes head.
       if (st.cartonPreview) { stale = true; return { adopted: false, timeline: undefined }; }
       // The echo of our own save: the editor already shows it, only its base moves.
       if (sent && sent.id === ev.id && sent.rev === ev.stateUpdatedAt) {
         store.raw({ cartonBase: ev.stateUpdatedAt });
+        this.refreshCan();
         return { adopted: false, timeline: undefined };
       }
       if (st.cartonBase != null && ev.stateUpdatedAt != null && ev.stateUpdatedAt <= st.cartonBase) return { adopted: false, timeline: undefined };
@@ -76,7 +88,19 @@ module.exports = String.raw`window.__carton = (() => {
       const t = timelineOf(project);
       host.editor.adopt({ ...t, duration: duration(t.timelineItems), cartonBase: project.stateUpdatedAt ?? null });
       unanswered = null; // the editor shows head now, with its base
+      this.refreshCan(); // an agent turn the person started here is theirs to undo; another writer's change isn't
       return { adopted: false, timeline: undefined };
+    },
+    // H6: what Carton has left to undo and redo, for the buttons (patch-carton: EditorRoute's selectors).
+    setCan(can) { if (store && can) store.raw({ cartonCanUndo: !!can.undo, cartonCanRedo: !!can.redo }); },
+    refreshCan() {
+      if (!on || !store) return;
+      clearTimeout(canTimer);
+      canTimer = setTimeout(() => {
+        const st = store.state();
+        if (!st.projectId) return;
+        call("undoState", { projectId: st.projectId, ...(st.cartonSince != null ? { since: st.cartonSince } : {}) }).then((c) => { if (c && store.state().projectId === st.projectId) this.setCan(c); }, () => {});
+      }, 150);
     },
     // H6: true when Carton took the undo (Cardboard's snapshot undo then doesn't run). If Carton has no history for
     // the project, Cardboard's own undo runs after all.
@@ -87,7 +111,32 @@ module.exports = String.raw`window.__carton = (() => {
       const st = store.state();
       if (!st.projectId || st.cartonPreview) return false;
       const own = () => { bypass = true; try { store.state()[which](); } finally { bypass = false; } };
-      store.flush().then(() => call(which, { projectId: st.projectId })).then((r) => { if (r?.status === "unavailable") own(); }, (e) => { console.warn("[carton] " + which + " failed:", e?.message ?? e); own(); });
+      const id = st.projectId;
+      store.flush().then(() => {
+        stepping = id;
+        const since = store.state().cartonSince;
+        return call(which, { projectId: id, ...(since != null ? { since } : {}) });
+      }).then((r) => {
+        if (r?.status === "unavailable") return own();
+        if (r?.can) this.setCan(r.can);
+        // the project the step wrote, adopted now, unless the person edited meanwhile (their save goes first: the
+        // change event's path below then reads head again)
+        const now = store.state();
+        if (r?.project && now.projectId === id && !now.cartonPreview && !store.armed() && !store.inflight?.()) {
+          const project = store.deserialize(r.project), t = timelineOf(project);
+          store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === id ? project : p)) });
+          store.adopt({ ...t, duration: duration(t.timelineItems), cartonBase: project.stateUpdatedAt ?? null });
+          unanswered = null;
+          if (deferred && (deferred.ev.stateUpdatedAt ?? 0) <= (project.stateUpdatedAt ?? 0)) deferred = null;
+        }
+        // a conflict: the cards are in the conflict stack, each saying why (the worker kept them for the person)
+        if (r?.status === "conflicts") console.info("[carton] " + which + " didn't change anything: " + (r.conflicts?.length ?? 0) + " card(s) in the conflict stack");
+      }, (e) => { console.warn("[carton] " + which + " failed:", e?.message ?? e); own(); }).finally(() => {
+        if (stepping === id) stepping = null;
+        const d = deferred;
+        deferred = null;
+        if (d) this.receive(d.host, d.ev).catch(() => {});
+      });
       return true;
     },
     // Compare and the A/B toggle: an earlier version in the editor, read-only (§9). null returns to current.

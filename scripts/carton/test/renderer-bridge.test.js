@@ -11,6 +11,7 @@ const load = ({ enabled }) => {
   const calls = [], log = [];
   let state = { projectId: "p1", cartonBase: 100, cartonPreview: null, tracks: [], timelineItems: [] };
   let armed = false;
+  const answers = {};
   const project = (rev, items) => ({ id: "p1", stateUpdatedAt: rev, tracks: [{ id: "t1" }], timelineItems: items, aspectRatio: "16:9" });
   const disk = { doc: project(200, [{ id: "a", endTime: 4 }]) };
   const store = {
@@ -19,7 +20,7 @@ const load = ({ enabled }) => {
     adopt: (p) => { log.push(["adopt", p]); state = { ...state, ...p }; },
     armed: () => armed,
     flush: async () => { log.push(["flush", armed]); armed = false; },
-    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout") return project(150, [{ id: "old", endTime: 2 }]); return { status: "confirmed" }; },
+    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout") return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
     on: () => () => {},
     deserialize: (d) => d,
     projects: { getState: () => ({ projects: [disk.doc] }), setState: (s) => log.push(["projects", s.projects.length]) },
@@ -31,7 +32,7 @@ const load = ({ enabled }) => {
     editor: { adopt: (p) => { log.push(["adopt", p]); state = { ...state, ...p }; } },
   };
   window.__carton.store(store);
-  return { c: window.__carton, calls, log, host, disk, project, store, setArmed: (a) => (armed = a), state: () => state };
+  return { c: window.__carton, calls, log, host, disk, project, store, answers, setArmed: (a) => (armed = a), state: () => state, setState: (p) => (state = { ...state, ...p }) };
 };
 
 test("off: nothing is attached and nothing is taken", async () => {
@@ -83,7 +84,8 @@ test("our own save's echo only moves the base", async () => {
   await t.c.ready;
   t.c.saveMeta({ id: "p1", stateUpdatedAt: 101 }, { ownedFields: ["tracks", "timelineItems"] });
   assert.deepEqual(await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 101, carton: true }), { adopted: false, timeline: undefined });
-  assert.deepEqual(t.log, [["raw", { cartonBase: 101 }]]);
+  // (the person's own edit enables undo and clears redo at once, as the editor's own stacks do)
+  assert.deepEqual(t.log, [["raw", { cartonCanUndo: true, cartonCanRedo: false }], ["raw", { cartonBase: 101 }]]);
 });
 
 test("a change from elsewhere: the armed save goes first, then head and its base in one adopt, no undo entry", async () => {
@@ -107,6 +109,22 @@ test("undo and redo go to Carton after the pending save", async () => {
   assert.equal(t.c.redo(), true);
   await new Promise((r) => setTimeout(r, 10));
   assert.deepEqual(t.calls.slice(1), [["carton:call", "undo", { projectId: "p1" }], ["carton:call", "redo", { projectId: "p1" }]]);
+});
+
+test("H6 (laptop bugs 3, 4): the session's start goes with each step; the project in the answer is adopted at once and the buttons follow what is left", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.setState({ cartonSince: 1234 });
+  t.answers.redo = () => ({ status: "confirmed", project: t.project(300, [{ id: "b", endTime: 6 }]), can: { undo: true, redo: false } });
+  assert.equal(t.c.redo(), true);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(t.calls.at(-1), ["carton:call", "redo", { projectId: "p1", since: 1234 }]);
+  assert.deepEqual(t.state().timelineItems, [{ id: "b", endTime: 6 }], "adopted from the answer, no fetch");
+  assert.equal(t.state().cartonBase, 300);
+  assert.deepEqual([t.state().cartonCanUndo, t.state().cartonCanRedo], [true, false], "the buttons say what is left");
+  // its change event, arriving after: already shown, only the base would move
+  assert.deepEqual(await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 300, carton: true }), { adopted: false, timeline: undefined });
+  assert.ok(!t.log.some((l) => l[0] === "replace"), "the project wasn't fetched again");
 });
 
 test("a preview is read-only: changes wait, undo doesn't take it, and Return to current takes head", async () => {

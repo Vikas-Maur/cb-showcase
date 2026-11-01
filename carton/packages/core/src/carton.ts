@@ -19,7 +19,7 @@ import type { SyncStatus } from "./sync/index.ts";
 import { ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
-import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
+import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
 import type {
@@ -311,18 +311,28 @@ export interface Carton {
   restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** Undo one change (revert by change). */
   revert(changeId: ChangeId, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
-  /** ⌘Z for an actor group (default: the handle actor's group). Remote teammates are never in it. */
   /**
+   * ⌘Z for an actor group (default: the handle actor's group). Remote teammates are never in it. The app's Ctrl+Z
+   * passes `app` and `since` (UndoScope): only what was made from the app, in the editor's session.
    * Like commit, undo (and fold, fold-some, restore, revert, fork) takes a stable `id`: a call retried with an id
    * already confirmed returns that confirmation and never makes a second change.
    */
-  undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId }): Promise<CommitResult & { entry?: UndoEntry }>;
+  undo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
+  /**
+   * Redo for an actor group: re-applies exactly what its newest undo took back, as a new change (a revert of that
+   * undo), which the next ⌘Z takes back again. Nothing once the group has made a newer edit (in `since`/`app`'s scope),
+   * as an editor's redo clears. Takes a stable `id` as undo does.
+   */
+  redo(group?: string, opts?: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope): Promise<CommitResult & { entry?: UndoEntry }>;
   /**
    * Optional compaction (§5.4): on this replica's local cuts, squash the micro-changes of every auto-version older than
    * `olderThanDays` (default 90) into the auto-version's last change. Returns how many changes were squashed.
    */
   compact(opts?: { cut?: string; olderThanDays?: number }): Promise<{ squashed: number }>;
-  undoStack(group?: string, opts?: { cut?: string }): Promise<UndoEntry[]>;
+  /** The group's undo stack, newest first, in `since`/`app`'s scope; `limit`: only the newest that many (labelled). */
+  undoStack(group?: string, opts?: { cut?: string; limit?: number } & UndoScope): Promise<UndoEntry[]>;
+  /** What redo would re-apply, newest first, in the same scope; empty once the group made a newer edit. */
+  redoStack(group?: string, opts?: { cut?: string; limit?: number } & UndoScope): Promise<UndoEntry[]>;
   /** Read-only preview of a state. */
   preview(ref: StateRef | string): Promise<Preview>;
   /** Credits: who last changed a record, down to the subagent; `detail`: also when, and in which change. */
@@ -401,6 +411,8 @@ interface PendingRow {
   /** Its base as ops from the confirmed state at `head` (review SF4-2); absent when it sits on no pending change. */
   baseDelta?: Op[];
 }
+/** The undo scope in a call's options (only the fields given, so a plain call sees the whole group). */
+const scopeOf = (o: UndoScope): UndoScope => ({ ...(o.since !== undefined ? { since: o.since } : {}), ...(o.app ? { app: true } : {}) });
 /** A rebase changed its ops: its latest version's differ from its first's, or did before it was restored. */
 const editedOf = (p: QueuedChange): boolean => {
   if (p.edited) return true;
@@ -1509,7 +1521,13 @@ class CartonImpl implements Carton {
     const rid = change.slice(0, Math.max(0, change.indexOf(".")));
     return this.#people.get(rid) ?? (this.#me && (rid === this.#rid || this.#ownRids.has(rid)) ? this.#me : undefined);
   }
-  async undoStack(group?: string, opts: { cut?: string } = {}) {
+  async undoStack(group?: string, opts: { cut?: string; limit?: number } & UndoScope = {}) {
+    return this.#stack("undo", group, opts);
+  }
+  async redoStack(group?: string, opts: { cut?: string; limit?: number } & UndoScope = {}) {
+    return this.#stack("redo", group, opts);
+  }
+  async #stack(which: "undo" | "redo", group: string | undefined, opts: { cut?: string; limit?: number } & UndoScope) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     const sc = this.#shared.get(cut);
@@ -1520,10 +1538,15 @@ class CartonImpl implements Carton {
     const tail = sc && sc.queue.headSeq(cut) === this.#h.headSeq(cut) ? this.#tail(cut, sc) : undefined;
     const n = this.#h.headSeq(cut);
     const log = tail ? [...this.#h.changes(cut), ...tail.rows] : this.#h.changes(cut);
+    const scope = scopeOf(opts), g = group ?? groupOf(this.#actor());
+    const entries = which === "undo" ? this.#h.undoStack(cut, g, tail, scope) : this.#h.redoStack(cut, g, tail, scope);
+    // labelled only as far as asked: a label describes the change against the state before it
+    const listed = opts.limit === undefined ? entries : entries.slice(0, Math.max(0, opts.limit));
+    if (which === "redo") return listed;
     // a named version's label is its name, given with the edit or after it (as a teammate who joined sees it, on the
     // row); an unnamed edit's says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
     const names = new Map(this.#h.names());
-    return this.#h.undoStack(cut, group ?? groupOf(this.#actor()), tail).map((e) => {
+    return listed.map((e) => {
       const c = log[e.seq - 1]!;
       const name = e.seq <= n ? names.get(nodeId(cut, e.seq))?.name : undefined;
       if (name) return { ...e, label: undoLabel(c, name) };
@@ -1794,13 +1817,23 @@ class CartonImpl implements Carton {
     if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planRevert(cut, changeId, { author: this.#actor(opts.author), tail }));
     return this.#mutate(opts.id ? undefined : cut, () => this.#h.revert(cut, changeId, { author: this.#actor(opts.author), ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
-  async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } = {}) {
+  async undo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
     const actor = this.#actor(opts.author);
+    const scope = scopeOf(opts);
     this.#writable(cut);
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail }));
-    return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope }));
+    return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+  }
+  async redo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
+    const cut = opts.cut ?? this.#h.current;
+    await this.#whole();
+    const actor = this.#actor(opts.author);
+    const scope = scopeOf(opts);
+    this.#writable(cut);
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope }));
+    return this.#mutate(opts.id ? undefined : cut, () => this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
   // ------------------------------------------------------------ retention (§5.4)
