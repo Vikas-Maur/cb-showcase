@@ -287,6 +287,29 @@ async function sameState(lc, header) {
   return undefined;
 }
 const SAME_STATE_SCAN = 256;
+// A rev map entry for a version that holds changes still pending in the lease holder, with no state hash to check it by:
+// core would resolve it as the confirmed state it was built on (review P1).
+const pendingRef = (ref) => !!ref && typeof ref === "object" && !!ref.pending?.length && !ref.hash;
+// Review P1: a print of a version still pending in a shared cut's lease holder (offline): this process holds only the
+// confirmed rows, so the document project.json shows (the holder's state) is pinned here as a held state on the
+// confirmed seq it was built on, with the pending changes it holds. The print carries that pin's header: the apply's
+// preview and the holder's commit both resolve exactly the printed document (core reloads pins another process writes).
+// null (1.4.0's print, which no apply takes as exact) if it can't be pinned.
+const PRINT_OWNER = "cb-print", PRINT_PIN_MS = 7 * 24 * 3600_000;
+// `project` (the document project.json shows) pinned as a held state on `ref`'s confirmed seq with its pending changes:
+// {header, doc}, or null if it can't be pinned or read back here.
+async function pinHeld(lc, ref, project) {
+  const c = lc.carton;
+  const at = await c.resolve({ branchId: ref.branchId, seq: ref.seq }).catch(() => null);
+  if (!at) return null;
+  const p = await c.pin({ owner: PRINT_OWNER, cut: ref.branchId, seq: ref.seq, causal: [...(ref.pending ?? [])], doc: fromHost(project, at.doc), ttlMs: PRINT_PIN_MS }).catch((e) => (warnOnce("pin:" + ref.branchId, "an edit still waiting to sync can't be named exactly: " + errText(e)), null));
+  const held = p?.header ? await c.resolve(p.header).catch(() => null) : null;
+  return held ? { header: p.header, doc: held.doc } : null;
+}
+async function pendingPrint(lc, ref, project) {
+  const held = await pinHeld(lc, ref, project);
+  return held ? { project: forCardboard({ ...materializeProject(held.doc, project), stateUpdatedAt: project.stateUpdatedAt }), rev: held.header } : null;
+}
 // The header a print carries for a version (core's ref token: "<cut name>@<seq>~<hash8> b:<cut8>"), which the apply
 // resolves back to exactly that version; null if its cut is unknown here.
 async function headerOf(lc, ref) {
@@ -416,6 +439,15 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     await setRev(lc, base.stateUpdatedAt, baseRef);
   }
   if (chained) baseRef = chained.base;
+  // Review P1: a cb write's base still pending in the lease holder resolves here (and in the holder, from a ref without
+  // its hash) as the confirmed state it was built on, where an edit back to that state's value reads as no change. Its
+  // document is what the store's base shows when that is its rev: pinned, the commit merges against exactly it; else
+  // refused ("print it again"). (A GUI save's base is the editor's: its path is unchanged.)
+  if (meta?.base === undefined && pendingRef(baseRef)) {
+    const held = base && base.stateUpdatedAt === rev ? await pinHeld(lc, baseRef, base) : null;
+    if (!held) throw new Error(`the version ${rev} the edit was made on is no longer available`);
+    baseRef = held.header;
+  }
   const baseDoc = chained?.doc ?? imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
   const gui = meta?.base !== undefined && !!baseRef;
   const mine = gui ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
@@ -880,14 +912,18 @@ export const cardboard14 = {
     const lc = bundlePath && project ? await open(bundlePath, { projectId: project.id }) : null;
     if (!lc) return null;
     const c = lc.carton, ref = await refOf(lc, project.stateUpdatedAt).catch(() => undefined);
-    // a confirmed version (a pending one is the holder's to rebuild), its state hash computed if the ref lacks it, and
-    // the header checked as the apply will resolve it
-    if (!ref || typeof ref !== "object" || ref.pending?.length) return null;
+    if (!ref || typeof ref !== "object") return null;
+    // a version still pending in a shared cut's lease holder (offline): what project.json shows, pinned (pendingPrint)
+    if (ref.pending?.length) return pendingPrint(lc, ref, project);
+    // a confirmed version, its state hash computed if the ref lacks it, and the header checked as the apply resolves it
     const doc = (await c.resolve({ branchId: ref.branchId, seq: ref.seq }).catch(() => null))?.doc;
     const header = doc ? await headerOf(lc, { ...ref, hash: ref.hash ?? hashDoc(doc, c.schema) }) : null;
     if (!header || !(await c.resolve(header).then(() => true, () => false))) return null;
     return { project: forCardboard({ ...materializeProject(doc, project), stateUpdatedAt: project.stateUpdatedAt }), rev: header };
   },
+  // Laptop #2 (review P1): a numeric rev naming a version still pending in the lease holder, which this process can
+  // only rebuild as its confirmed prefix: no base here (null), so the apply says "print it again" (the new print is
+  // pinned, printed). Never that prefix as the version: an edit back to the confirmed value read as no change.
   // Laptop #2: 1.4.0's revisionAtOrBefore (a numeric header's base, MCP's edit at a rev) with history: the exact
   // version the rev names (the rev map), never the first one at or before it in history order, which over several
   // writers' revs (each process's clock, not save order) can be a newer version. A rev older than every version
@@ -903,10 +939,11 @@ export const cardboard14 = {
     if (!lc) return older();
     const exact = await this.revision({ bundlePath, rev, slice, file: () => null }).catch(() => null);
     if (exact) return exact.doc;
-    // a version this process can't rebuild (pending in a shared cut's lease holder) that project.json shows: the file
-    // is that version, as printed
+    // a version this process can't rebuild (pending in the lease holder, or an outside save not recorded yet) that
+    // project.json still shows: the file is exactly what was printed (the commit pins it as its base: commit())
     const onDisk = readProject(bundlePath);
     if (onDisk && onDisk.stateUpdatedAt === rev) return slice ? slice(onDisk) : { tracks: onDisk.tracks ?? [], timelineItems: onDisk.timelineItems ?? [], aspectRatio: onDisk.aspectRatio };
+    if (pendingRef(await refOf(lc, Number(rev)).catch(() => undefined))) return null;
     for (const v of await lc.carton.log({})) {
       const r = await revOf(lc, v.ref);
       if (typeof r === "number" && r <= rev) return null;
@@ -917,7 +954,8 @@ export const cardboard14 = {
   async revision({ bundlePath, rev, ref: header, slice, file }) {
     const lc = await open(bundlePath);
     const ref = lc ? await refOf(lc, header ?? Number(rev)) : undefined;
-    if (!ref) return file();
+    // (a pending version's ref, without its state hash, would check out as its confirmed prefix: not this version)
+    if (!ref || pendingRef(ref)) return file();
     // (the mirror's revision readers hand it to Cardboard's restore and diff code: a copy, as for head)
     const p = forCardboard(materializeProject(await lc.carton.checkout(ref), readProject(bundlePath)));
     const doc = slice ? slice(p) : { tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio };

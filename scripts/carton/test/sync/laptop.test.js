@@ -196,3 +196,39 @@ test("#8 an in-app turn on the person's own Claude Code (not the Director) is a 
     assert.equal(named.by?.id ?? named.by, hookActor, JSON.stringify(named));
   } finally { await pc.stopWorker(); }
 });
+
+test("#2 (review P1) a print of an edit still waiting to sync (shared, offline) is exactly that edit's state: unchanged, check finds nothing; edited back, the edit lands", t, async () => {
+  const b = await S.build();
+  const host = await S.startHost(path.join(S.TMP, "laptop-p1-host"));
+  const pc = await S.computer("laptop-p1", b);
+  S.seed(pc, b);
+  try {
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0].id;
+    const r = await pc.call("carton.liveShare", { projectId: id, host: host.origin, adminToken: S.ADMIN, name: "Alice" });
+    assert.equal(r.status, "shared", JSON.stringify(r));
+    await S.until(async () => (await pc.call("carton.liveStatus", { projectId: id })).status === "up-to-date", 20_000, "shared");
+    await host.stop();
+    await S.until(async () => (await pc.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "offline");
+    // the app's edit, waiting to sync: 140 → 199
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: 199 } : null));
+    await S.until(() => S.textOf(S.fileOf(pc)).fontSize === 199, 10_000, "the pending edit in project.json");
+    const printed = raw(pc, b, ["source", "print", "Demo"]);
+    assert.equal(printed.code, 0, printed.out + printed.err);
+    assert.match(printed.out, /fontSize=\{199\}/);
+    const file = (name, text) => (fs.writeFileSync(path.join(pc.home, name), text), path.join(pc.home, name));
+    // unchanged: nothing to apply
+    const c = pc.cb(["source", "check", "Demo", file("p1-same.tsx", printed.out)]);
+    assert.equal(c.code, 0, c.out + c.err);
+    assert.deepEqual(c.json().ops, [], "check of the unchanged print: " + JSON.stringify(c.json().ops));
+    // edited back to 140: that is the edit, made on 199
+    const a = pc.cb(["source", "apply", "Demo", file("p1-back.tsx", printed.out.replace("fontSize={199}", "fontSize={140}"))]);
+    assert.equal(a.code, 0, a.out + a.err);
+    assert.ok(a.json().ops.length > 0, "the apply changes the size: " + a.out);
+    await S.until(async () => S.textOf(await S.projectOf(pc, id)).fontSize === 140, 20_000, "140 again");
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+    await host.stop().catch(() => {});
+  }
+});
