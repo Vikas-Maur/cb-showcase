@@ -26,7 +26,7 @@ export type Page = any;
 export type Context = any;
 
 export interface TestHost {
-  kind: "node" | "cloudflare";
+  kind: "node" | "cloudflare" | "remote";
   url: string;
   adminToken: string;
   close(): Promise<void>;
@@ -65,6 +65,16 @@ export async function buildClient(): Promise<void> {
     const p = spawn(process.execPath, [join(webDir, "build.mjs")], { stdio: ["ignore", "inherit", "inherit"] });
     p.on("exit", (code) => (code === 0 ? res() : rej(new Error(`build failed: ${code}`))));
   });
+}
+
+/**
+ * A host already running at `url` (a deployment): nothing is started or stopped, and there is no admin token (a test
+ * that needs one can't use it). Its health is checked first.
+ */
+export async function remoteHost(url: string): Promise<TestHost> {
+  const base = new URL(url).origin;
+  await waitHealthy(base, 30_000);
+  return { kind: "remote", url: base, adminToken: "", close: async () => {} };
 }
 
 /**

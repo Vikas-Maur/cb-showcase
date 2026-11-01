@@ -6,20 +6,26 @@
 //      trims it;
 //   3. Alice sees Bob's trim; her upload finishes; the landing page lists the project.
 // Alice's upload is slowed (DevTools network throttling) so the clip is still going up while Bob watches.
-// Screenshots: CARTON_E2E_SHOTS=<dir>. Host: CARTON_E2E_CREATE_HOST=cloudflare (default) | node.
+// Screenshots: CARTON_E2E_SHOTS=<dir>. Host: CARTON_E2E_CREATE_HOST=cloudflare (default) | node | <https://… URL of a
+// running host, e.g. the production Worker: nothing is started; the project made there stays>.
+// CARTON_E2E_PROJECT=<name> names the project (default "Beach day"). Timings are printed as `[timing] …` lines.
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { buildClient, joinAs, launchChromium, newPerson, scratch, startHost, type Browser, type Page, type TestHost } from "./harness.ts";
+import { buildClient, joinAs, launchChromium, newPerson, remoteHost, scratch, startHost, type Browser, type Page, type TestHost } from "./harness.ts";
 
 const shots = process.env.CARTON_E2E_SHOTS;
-const kind = (process.env.CARTON_E2E_CREATE_HOST ?? "cloudflare") as "node" | "cloudflare";
+const hostArg = process.env.CARTON_E2E_CREATE_HOST ?? "cloudflare";
+const remote = /^https?:\/\//.test(hostArg) ? hostArg : null;
+const kind = remote ? "remote" : (hostArg as "node" | "cloudflare");
+const projectName = process.env.CARTON_E2E_PROJECT ?? "Beach day";
+const timing = (what: string, ms: number) => console.log(`[timing] ${what}: ${(ms / 1000).toFixed(1)} s`);
 let browser: Browser, host: TestHost, clip: string;
 
 before(async () => {
-  await buildClient();
+  if (!remote) await buildClient();
   browser = await launchChromium();
   if (shots) mkdirSync(shots, { recursive: true });
   // a 20 s 720p H.264 clip with its index (moov) at the end, as cameras and ffmpeg write it by default: the pieces
@@ -28,7 +34,7 @@ before(async () => {
   clip = join(scratch, "beach-walk.mp4");
   if (!existsSync(clip))
     execFileSync(process.env.CARTON_FFMPEG ?? "ffmpeg", ["-loglevel", "error", "-y", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate=30", "-f", "lavfi", "-i", "sine=frequency=330", "-t", "20", "-c:v", "libx264", "-b:v", "3M", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest", clip]);
-  host = await startHost(kind, "create", kind === "cloudflare" ? { config: "wrangler.production.toml" } : { openCreate: true });
+  host = remote ? await remoteHost(remote) : await startHost(kind as "node" | "cloudflare", "create", kind === "cloudflare" ? { config: "wrangler.production.toml" } : { openCreate: true });
 });
 after(async () => {
   await browser?.close();
@@ -41,20 +47,22 @@ async function shot(page: Page, name: string): Promise<void> {
 type Job = { phase: string; done: number; total: number };
 const uploads = (page: Page): Promise<Job[]> => page.evaluate(() => (window as unknown as { __carton: { uploads: { get(): { phase: string; done: number; total: number }[] } } }).__carton.uploads.get());
 
-test(`a project made in the browser: create, upload, invite, a teammate plays it while it uploads and edits (${kind})`, { timeout: 300_000 }, async () => {
+test(`a project made in the browser: create, upload, invite, a teammate plays it while it uploads and edits (${remote ?? kind})`, { timeout: 600_000 }, async () => {
   const a = await newPerson(browser);
   const alice = await a.newPage();
   alice.on("pageerror", (e: Error) => console.error(`[alice] page error: ${e.message}`));
   await alice.goto(host.url);
   await alice.getByTestId("new-project").click();
-  await alice.getByTestId("new-title").fill("Beach day");
+  await alice.getByTestId("new-title").fill(projectName);
   await alice.getByTestId("new-person").fill("Alice");
   await alice.locator("[data-testid=create]:not([disabled])").waitFor();
   await shot(alice, "2-new-project");
+  const t0 = Date.now();
   await alice.getByTestId("create").click();
   await alice.getByTestId("timeline").waitFor({ timeout: 30_000 });
+  timing("create: Create project pressed → editor open", Date.now() - t0);
   await alice.getByTestId("empty-timeline").waitFor();
-  assert.equal(await alice.getByTestId("project-name").textContent(), "Beach day");
+  assert.equal(await alice.getByTestId("project-name").textContent(), projectName);
   const me = await alice.evaluate(() => (window as unknown as { __carton: { session: { role: string; projectId: string } } }).__carton.session);
   assert.equal(me.role, "owner");
 
@@ -69,10 +77,12 @@ test(`a project made in the browser: create, upload, invite, a teammate plays it
   const cdp = await a.newCDPSession(alice);
   await cdp.send("Network.enable");
   await cdp.send("Network.emulateNetworkConditions", { offline: false, latency: 5, downloadThroughput: -1, uploadThroughput: 1_500_000 });
+  const tUpload = Date.now();
   await alice.getByTestId("add-video-input").setInputFiles(clip);
   const clipEl = alice.locator("[data-clip-id]").first();
   await clipEl.waitFor({ timeout: 20_000 });
   const clipId = await clipEl.getAttribute("data-clip-id");
+  timing("upload: file picked → clip on Alice's timeline", Date.now() - tUpload);
   await alice.getByTestId("upload-progress").waitFor();
   // some of it is up (a piece or two), most is still to go
   await alice.waitForFunction(() => {
@@ -94,15 +104,24 @@ test(`a project made in the browser: create, upload, invite, a teammate plays it
 
   // Bob joins while the clip is still uploading, and plays it
   const b = await newPerson(browser);
+  const tJoin = Date.now();
   const bob = await joinAs(b, link, "Bob");
   await bob.locator(`[data-clip-id="${clipId}"]`).waitFor({ timeout: 20_000 });
+  timing("Bob: Join pressed → clip on his timeline", Date.now() - tJoin);
   assert.equal((await uploads(alice)).find((j) => j.phase === "uploading") !== undefined, true, "Alice's upload is still going when Bob opens the project");
+  const tPlay = Date.now();
   await bob.getByTestId("play").click();
+  await bob.waitForFunction(() => {
+    const v = document.querySelector(".cb-viewer video") as HTMLVideoElement | null;
+    return !!v && v.readyState >= 2 && v.currentTime > 0;
+  }, null, { timeout: 60_000 });
+  timing("Bob: Play pressed → first frame moving", Date.now() - tPlay);
   await bob.waitForFunction(() => {
     const v = document.querySelector(".cb-viewer video") as HTMLVideoElement | null;
     return !!v && v.readyState >= 2 && v.currentTime > 0.5;
   }, null, { timeout: 60_000 });
   const stillUploading = (await uploads(alice)).some((j) => j.phase === "uploading");
+  timing("Bob: Play pressed → 0.5 s played", Date.now() - tPlay);
   await bob.getByTestId("play").click(); // pause
   await shot(bob, "5-bob-plays-while-uploading");
   assert.ok(stillUploading, "Bob's player ran while Alice's upload was still going");
@@ -116,11 +135,14 @@ test(`a project made in the browser: create, upload, invite, a teammate plays it
   await bob.mouse.up();
   const bobEnd = Number(await bob.locator(`[data-clip-id="${clipId}"]`).getAttribute("data-end"));
   assert.ok(bobEnd < before, `Bob trimmed it (${before} → ${bobEnd})`);
+  const tTrim = Date.now();
   await alice.waitForFunction(([sel, v]: [string, string]) => document.querySelector(sel)?.getAttribute("data-end") === v, [`[data-clip-id="${clipId}"]`, bobEnd.toFixed(1)], { timeout: 20_000 });
+  timing("Bob's trim → seen on Alice's timeline", Date.now() - tTrim);
   await shot(bob, "6-bob-trimmed");
 
   // the upload finishes (pieces, then the whole file) and Alice's chip goes
-  await alice.waitForFunction(() => !document.querySelector("[data-testid=upload-progress]"), null, { timeout: 120_000 });
+  await alice.waitForFunction(() => !document.querySelector("[data-testid=upload-progress]"), null, { timeout: 300_000 });
+  timing("upload: file picked → fully up (pieces, then the whole file; throttled to 1.5 MB/s)", Date.now() - tUpload);
   assert.deepEqual((await uploads(alice)).map((j) => j.phase), ["done"]);
   // the whole file is on the host, and its pieces are gone
   const held = await alice.evaluate(async () => {
@@ -135,11 +157,11 @@ test(`a project made in the browser: create, upload, invite, a teammate plays it
   const home = await a.newPage();
   await home.goto(host.url);
   await home.getByTestId("project-list").waitFor();
-  assert.match(await home.getByTestId("project-list").textContent(), /Beach day.*Owner/);
+  assert.match(await home.getByTestId("project-list").textContent(), new RegExp(`${projectName}.*Owner`));
   await shot(home, "1-landing");
   const bobHome = await b.newPage();
   await bobHome.goto(host.url);
-  assert.match(await bobHome.getByTestId("project-list").textContent(), /Beach day.*Can edit/);
+  assert.match(await bobHome.getByTestId("project-list").textContent(), new RegExp(`${projectName}.*Can edit`));
   // and reopens it
   await home.getByTestId("project-open").first().click();
   await home.getByTestId("timeline").waitFor({ timeout: 30_000 });
