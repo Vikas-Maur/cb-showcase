@@ -1583,6 +1583,112 @@
           ]
         }
       ]
+    },
+    {
+      "id": "core-open-ab-100k",
+      "agent": "foundation-core",
+      "claim": "open from keyframes (cf02743) vs 6cd9c3e at 100,000 changes: open + head(), and open + head + log({limit:1}); core-open-ab ran out of heap (default ~2 GB) at 100k with 11 runs in both build orders, so: each build alone at the default heap (max RSS by /usr/bin/time -v in the step's stderr), then the A/B with a 5 GB heap",
+      "timeout": 35,
+      "steps": [
+        {
+          "label": "check out before = 6cd9c3e and after = cf02743 as worktrees (by full SHA)",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; for s in \"$2\" \"$3\"; do git fetch --no-tags --depth=1 origin \"$s\"; done; git worktree add --detach \"$4/a\" \"$2\"; git worktree add --detach \"$4/c\" \"$3\"; git -C \"$4/a\" log -1 --format=\"before %H %s\"; git -C \"$4/c\" log -1 --format=\"after %H %s\"",
+            "_",
+            "..",
+            "6cd9c3e55470a846fa7532a2aeff811c3d6134c0",
+            "cf027433cd1352ff326fcae5634d657791f997ef",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "npm ci in each build's carton/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; for d in \"$1/a/carton\" \"$1/c/carton\"; do (cd \"$d\" && npm ci --no-audit --no-fund); done",
+            "_",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "after (cf02743) alone, N=100000, 11 runs, default heap",
+          "env": {
+            "GFV_LOCKED": "1",
+            "LOAD_WAIT": "0",
+            "RUNS": "11",
+            "N": "100000",
+            "OUT": "{results}/after-alone.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "{tmp}/c/carton/bench/core/open-ab.ts",
+            ".",
+            "after={tmp}/c/carton"
+          ],
+          "stdoutTo": "{results}/after-alone.txt"
+        },
+        {
+          "label": "before (6cd9c3e) alone, N=100000, 11 runs, default heap",
+          "env": {
+            "GFV_LOCKED": "1",
+            "LOAD_WAIT": "0",
+            "RUNS": "11",
+            "N": "100000",
+            "OUT": "{results}/before-alone.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "{tmp}/c/carton/bench/core/open-ab.ts",
+            ".",
+            "before={tmp}/a/carton"
+          ],
+          "stdoutTo": "{results}/before-alone.txt"
+        },
+        {
+          "label": "A/B after-first, N=100000, 11 runs, --max-old-space-size=5120",
+          "env": {
+            "GFV_LOCKED": "1",
+            "LOAD_WAIT": "0",
+            "RUNS": "11",
+            "N": "100000",
+            "OUT": "{results}/ab-100k.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--max-old-space-size=5120",
+            "{tmp}/c/carton/bench/core/open-ab.ts",
+            ".",
+            "after={tmp}/c/carton",
+            "before={tmp}/a/carton"
+          ],
+          "stdoutTo": "{results}/ab-100k.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "ab-100k.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^n=100000 after",
+            "^n=100000 before"
+          ]
+        }
+      ]
     }
   ]
 }
