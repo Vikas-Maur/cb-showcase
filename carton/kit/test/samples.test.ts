@@ -15,7 +15,7 @@ import { bringInTheirChanges, excludedFromExport, exportCbproj, extractFullHisto
 import { register } from "@carton/cli-mcp";
 import { authProviderSuite } from "@carton/conformance";
 import { hookSettings, identify, nodeHasher, openLocal, readProjectId, runWrite } from "@carton/local";
-import { prefixCommand, preToolUseOutput } from "@carton/local/hooks";
+import { prefixCommand, preToolUse, preToolUseOutput } from "@carton/local/hooks";
 import { createFsBlobStore } from "@carton/blob-fs";
 import { createHmacAuth, newSecret } from "@carton/server";
 import { startNodeHost } from "@carton/server-node";
@@ -140,6 +140,48 @@ test("H2: history with authors, restore as a new version, undo by actor group", 
   }
 });
 
+test("H2: `undo --turn` undoes the rest of the turn; what someone changed again since keeps their value, as a card", async () => {
+  const bundleDir = bundle("h2-undo-card");
+  const { carton, store } = await importProject({ bundleDir, projectId: readProjectId(bundleDir), adapter: cardboardAdapter, hasher: nodeHasher, host: () => readProjectJson(bundleDir).project });
+  try {
+    const director: Actor = { ...agent("director/c/t1"), turn: "t1" };
+    const me: Actor = { kind: "human", id: "person", group: "local:me@box" };
+    await carton.commit({ doc: withClip(withClip((await carton.head()).doc, "intro", { textContent: "turn's intro" }), "outro", { textContent: "turn's outro" }), author: director });
+    await carton.commit({ doc: withClip((await carton.head()).doc, "outro", { textContent: "mine" }), author: me });
+    const r = await runWrite(carton, { id: "kit.undo-card", actor: director, op: { kind: "undoTurn", turn: "t1" } });
+    assert.equal(r.status, "conflicts", JSON.stringify(r));
+    assert.ok(r.status === "conflicts" && r.id !== undefined, "it landed: a change id");
+    const head = (await carton.head()).doc;
+    assert.deepEqual([clip(head, "intro").textContent, clip(head, "outro").textContent], ["Intro", "mine"], "the intro is undone; the outro keeps the newer edit");
+    const card = r.status === "conflicts" ? r.conflicts[0]! : null;
+    assert.deepEqual([card?.path, card?.ours, card?.theirs], ["timelineItems/outro/textContent", "mine", "Outro"], "the card offers the value from before the turn");
+  } finally {
+    await carton.close();
+    await store.close();
+  }
+});
+
+test("People: setIdentity tells the generic person as this device's person; authoredAs keeps what was recorded", async () => {
+  const bundleDir = bundle("people");
+  const { carton, store } = await importProject({ bundleDir, projectId: readProjectId(bundleDir), adapter: cardboardAdapter, hasher: nodeHasher, host: () => readProjectJson(bundleDir).project });
+  try {
+    const gui: Actor = { kind: "human", id: "person", group: "local:me@box" };
+    await carton.commit({ doc: withClip((await carton.head()).doc, "intro", { textContent: "from the GUI" }), author: gui });
+    await carton.commit({ doc: withClip((await carton.head()).doc, "outro", { textContent: "agent's" }), author: agent("director/c/t1") });
+    await carton.setIdentity({ id: "alice@example.com", name: "Alice" });
+    assert.deepEqual(carton.identity(), { id: "alice@example.com", name: "Alice" });
+    const [byAgent, byGui] = await carton.log({ limit: 2 });
+    assert.equal(byGui!.author?.name, "Alice");
+    assert.equal(byGui!.authoredAs?.id, "person");
+    assert.equal(byAgent!.author?.id, "director/c/t1", "agents are never resolved");
+    assert.equal(byAgent!.authoredAs, undefined);
+    assert.equal(await carton.pendingCount(), 0, "a local cut has nothing waiting for a server");
+  } finally {
+    await carton.close();
+    await store.close();
+  }
+});
+
 test("H2: a retried `undo --turn` gets the first answer back, though the turn changed and clashed since", async () => {
   const bundleDir = bundle("h2-retry");
   const { carton, store } = await importProject({ bundleDir, projectId: readProjectId(bundleDir), adapter: cardboardAdapter, hasher: nodeHasher, host: () => readProjectJson(bundleDir).project });
@@ -222,17 +264,35 @@ test("CLI: register() adds Carton's commands to the cb program and extends histo
 test("H9: the hooks' settings for host Claude Code, and the Director's command prefix", () => {
   const s = hookSettings({ command: "node /opt/carton/bin.js", projectDir: "/projects/My film.cardboard" }) as any;
   assert.equal(s.hooks.PreToolUse[0].matcher, "Bash");
+  assert.equal(s.hooks.PreToolUse[1].matcher, "Read|Write|Edit|MultiEdit");
+  assert.equal(s.hooks.PreToolUse[1].hooks[0].command, "node /opt/carton/bin.js hook pre-tool-use --project '/projects/My film.cardboard'");
   assert.equal(s.hooks.Stop[0].hooks[0].command, "node /opt/carton/bin.js hook stop --project '/projects/My film.cardboard'");
   const input = { hook_event_name: "PreToolUse", tool_name: "Bash", agent_id: "a-1", agent_type: "general-purpose", tool_input: { command: "cb source apply Demo" } };
   const out = preToolUseOutput(input, prefixCommand(input, { chat: "c1", turn: "t7" })) as any;
   assert.equal(out.hookSpecificOutput.updatedInput.command, "export CARDBOARD_ACTOR='director/c1/t7/sub-general-purpose-a_1'; cb source apply Demo");
 });
 
-test("H11: .carton/ and .scratch/views/ never go into a .cbproj", () => {
+test("H8/H9: an agent's write of project.json is refused; its Read and Write of timeline.tsx become hook events", () => {
+  const dir = "/projects/Demo.cardboard";
+  const tool = (tool_name: string, file: string) => ({ hook_event_name: "PreToolUse", tool_name, session_id: "s1", tool_input: { file_path: `${dir}/${file}` } });
+  const denied = preToolUse(tool("Edit", "project.json"), { projectDir: dir });
+  assert.equal((denied.output as any).hookSpecificOutput.permissionDecision, "deny");
+  assert.equal(denied.event, null);
+  assert.equal(preToolUse(tool("Read", "project.json"), { projectDir: dir }).event, null, "reading it is fine");
+  assert.deepEqual(preToolUse(tool("Read", "timeline.tsx"), { projectDir: dir }).event?.op, { kind: "hook", event: "read", file: "timeline.tsx" });
+  assert.deepEqual(preToolUse(tool("MultiEdit", "timeline.tsx"), { projectDir: dir }).event?.op, { kind: "hook", event: "write", file: "timeline.tsx" });
+  assert.equal(preToolUse(tool("Read", "notes.md"), { projectDir: dir }).event, null, "other files mean nothing");
+});
+
+test("H11: .carton/ and the view files Carton wrote never go into a .cbproj; a person's files in .scratch/views/ do", () => {
   assert.equal(excludedFromExport(".carton/carton.db"), true);
-  assert.equal(excludedFromExport(".scratch/views/director.tsx"), true);
   assert.equal(excludedFromExport("timeline.tsx"), false);
   assert.equal(excludedFromExport("media/clip.mp4"), false);
+  // in .scratch/views/, a file is told by its content: a view whose rev line is Carton's is left out
+  assert.equal(excludedFromExport(".scratch/views/director.tsx", undefined, "// cardboard:rev Main cut@3~5e1f0c2a b:5e1f0c2a by director\n"), true);
+  assert.equal(excludedFromExport(".scratch/views/director.tsx", undefined, "// cardboard:rev 12\n"), false, "1.4.0's own print travels");
+  assert.equal(excludedFromExport(".scratch/views/notes.md", undefined, "my notes"), false);
+  assert.equal(excludedFromExport(".scratch/views/director.tsx"), true, "with no content, a name Carton could have written is left out");
 });
 
 test("H11: a .cbproj with \"Include history\" is read back with importHistory: the sender's versions and authors", async () => {
@@ -241,8 +301,8 @@ test("H11: a .cbproj with \"Include history\" is read back with importHistory: t
   const out = join(scratch("h11-history"), "Demo.cbproj");
   try {
     await carton.commit({ doc: withClip((await carton.head()).doc, "intro", { textContent: "agent's" }), author: agent("director/c/t1") });
-    const head = await carton.head();
-    await exportCbproj({ bundle: bundleDir, out, shallow: await carton.exportShallow(), head: { doc: head.doc, toProject: materializeProject }, fullHistory: (to) => store.exportCopy(to, [...LOCAL_TABLES]) });
+    const shallow = await carton.exportShallow();
+    await exportCbproj({ bundle: bundleDir, out, shallow, head: { doc: await carton.checkout(shallow.head), toProject: materializeProject }, fullHistory: (to) => store.exportCopy(to, [...LOCAL_TABLES]) });
   } finally {
     await carton.close();
     await store.close();

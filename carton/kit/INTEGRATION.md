@@ -14,9 +14,10 @@ Hook numbers H1–H13 are the plan's (§16). Every Carton call on this page is r
 "[Samples that run](#samples-that-run)" are checked by `kit/test/samples.test.ts`. Snippets that call Cardboard's
 own functions use them by role (`projectStore.latest(id)`), and say so.
 
-**Contents:** [The model](#the-model-in-one-minute) · [Opening a project](#opening-a-project-cartonopen-on-each-platform)
-· [The hooks](#the-hooks) · [Swapping backends](#swapping-backends) · [Migration](#migration-of-existing-projects)
-· [Rolling out](#rolling-it-out-safely) · [Samples that run](#samples-that-run)
+**Contents:** [The model](#the-model-in-one-minute) · [Opening a
+project](#opening-a-project-cartonopen-on-each-platform) · [The hooks](#the-hooks) · [Swapping
+backends](#swapping-backends) · [Migration](#migration-of-existing-projects) · [Rolling out](#rolling-it-out-safely) ·
+[Samples that run](#samples-that-run)
 
 ## The model in one minute
 
@@ -243,10 +244,11 @@ memory).
   history unchanged.
 - `history` adds who made each version and on which cut (the `Version.author` and its cut).
 - `undo(id, rev)` becomes `carton.restore(ref)`: the old state, saved as a new version.
-- `undo --turn <turn>` reverts every change of one agent turn as one inverse change at head
-  (`write({ kind: "undoTurn", turn })`, or `cb undo --turn`). Today, if someone else changed any of the same things
-  since, it undoes **nothing** and returns those clashes as cards (they aren't stored): show them, and let the person
-  decide. Landing the parts that don't clash, as §8 describes, isn't built yet ([LIMITS.md](LIMITS.md)).
+- `undo --turn <turn>` reverts every change of one agent turn as one inverse change at head (`write({ kind: "undoTurn",
+  turn })`, or `cb undo --turn`). What someone else changed again since keeps their newer value: each such path becomes
+  a card for the actor who asked for the undo (status `conflicts`, stored like a save's cards, so `cb conflicts` lists
+  them), and the rest of the turn is undone. A card's `theirs` is the value from before the turn, so picking it finishes
+  the undo there.
 - Keep `recordRevision` writing `.revs` while you roll out, so switching Carton off loses nothing.
 - Name versions after the user's words: when a Director turn ends, `nameTurn(carton, { chat, turn }, label)`
   (`@carton/cardboard`) names its last version ("Make the intro tighter"). The label goes into the project's history
@@ -282,10 +284,10 @@ revert)**. It merges three ways with item-level conflicts, replacing whole neste
   `cb`'s printer and MCP's results don't change. `--prefer file` keeps the file's side and records a card;
   `--prefer editor` keeps head's.
 - The apply's result adds `carton: { status, ref }`: `confirmed`, `pending` or `conflicts`.
-- **Per-agent views** replace the shared file for agents: `cb source print --view` prints
-  `.scratch/views/<name>.tsx`, which only its owner edits, and Carton applies every save of it live and writes
-  `<name>.status` (`confirmed`, `pending`, `conflicts` or `error`). The base of each save is that view's last applied
-  save, so nothing is merged twice (R4-02). The materializer does all of this.
+- **Per-agent views** replace the shared file for agents: `cb source print --view` prints `.scratch/views/<name>.tsx`,
+  which only its owner edits, and Carton applies every save of it live and writes `<name>.status` (`confirmed`,
+  `pending`, `conflicts`, `rejected` or `error`). The base of each save is that view's last applied save, so nothing is
+  merged twice (R4-02). The materializer does all of this.
 - A stock `cb` that doesn't know Carton must not be left able to apply a Carton-headered file. It would parse no rev
   and two-way merge. Route `apply` through Carton in every copy of the mirror (CLI and worker), and MCP's
   `apply_timeline` too.
@@ -394,13 +396,14 @@ const silences = { kind: "remove-silences", maps: { [t]: [step(silent)] }, linea
 ```
 
 A concurrent edit is then mapped through the intent once, not guessed: an agent's trim of a later clip, made before the
-ripple, lands on the moved clip. Record lineage too. When a local cut's commit is rebased over a split (or a split over
-an edit), and when a shared cut's queued change is rebased over the host's, an edit made on the old clip also reaches
-the other pieces. It doesn't on every path yet: a fold, and a shared cut's commit made on an older version, don't use
-the other side's lineage; and edits to a clip's time fields (`startTime`, `endTime`, `trimStart`, `trimEnd`,
-`playbackSpeed`) or its track never follow it ([LIMITS.md](LIMITS.md)). Save several intents of one save as one (a later
-one composes after the earlier, `composeMaps`). A commit with an `intent` skips inference; without one, Carton infers a
-ripple only when it is unambiguous (`inferRipple`, L9).
+ripple, lands on the moved clip. Record lineage too. When a commit is rebased over a split (on a local cut, a shared
+cut's queue, or a shared cut's commit made on an older version), a split over an edit, or a cut folded into one that
+split the clip, an edit made on the old clip also reaches the other pieces, a move to another track included. A retime
+of a clip the other side split (its time fields: `startTime`, `endTime`, `trimStart`, `trimEnd`, `playbackSpeed`) is a
+conflict card instead, by design. Merges and `.cbproj` links made before this lineage was recorded carry none
+([LIMITS.md](LIMITS.md)). Save several
+intents of one save as one (a later one composes after the earlier, `composeMaps`). A commit with an `intent` skips
+inference; without one, Carton infers a ripple only when it is unambiguous (`inferRipple`, L9).
 
 **Invariant.** A ripple is applied exactly once, however often it is rebased or re-sent.
 
@@ -415,12 +418,33 @@ built from a list of namespaces.
 
 **With Carton.**
 - Start `EngineThread.start({ dbPath, factory, config })` per open project, and the materializer (`mz.start()`,
-  `mz.watch()`): it applies per-agent view saves live and writes their `.status`.
+  `mz.watch()`): it applies per-agent view saves live and writes their `.status`. Give it to the lease holder's engine
+  (`materializer`), so `cb`'s `printView` and `hook` writes reach it.
+- **Per-agent views.** `cb source print <project> --view <name>` (cli-mcp's `register` adds `--view` to Cardboard's
+  `source print`; without it, Cardboard's own command runs) prints `.scratch/views/<name>.tsx` and answers its path and
+  its `.status` file. A hooked agent's view is named after the agent, whatever name it asks for. With no materializer
+  running (the app closed) it answers "views need the app open".
+- **The freeze.** While an agent's turn runs, the shared `timeline.tsx` doesn't move under it: the agent's Read of the
+  file, or its `cb` call, starts the freeze (`mz.hookRead(actor)`), and its Stop lets go (`mz.hookStop(actor)`: a
+  subagent's Stop releases only what it pinned; the turn's Stop releases the whole turn's). Once no agent holds the
+  file, the person's and remote teammates' changes reach it; the app always shows head. Local agents' saves still go
+  into the frozen file, each merged on its own base, and so do their confirmed `cb` changes; on a shared cut, only those
+  of agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). A plain `cb source print`
+  and a cut switch reprint it from head. A save that repeats an edit the file hides, or whose check for that reads more
+  than its limit of changes or fails, restarts the freeze from that save's state; a `cb` change restarts it from that
+  change's state when merging it wouldn't add exactly its edits (it repeats, overwrites or builds on an edit the file
+  hides). Each can show newer edits before the Stop. Claude Code sends no Stop when the user interrupts a turn, so a
+  hooked agent quiet for 60 s (`freezeIdleMs`) no longer holds the file; its next hook event holds it again.
+- **Hook events reach the holder as a write:** `lc.write({ kind: "hook", event: "read" | "write" | "stop", file },
+  { actor })` (`file`: project-relative, for `write` only). The holder calls its materializer's `hookRead`,
+  `hookWrite` or `hookStop`. The answer is `confirmed`, with `hook: { event, delivered }` (`delivered: false` when no
+  materializer runs); a hook never fails the turn. A process that only sends hook events can use
+  `@carton/local/hook-send` (no engine; `carton.db` read only).
 - Add a `carton` RPC namespace (head, checkout, undo, redo, notices, the History panel's calls) that main forwards
   from a `carton:call` IPC channel.
 - A commit that merged someone else's change is announced as `changed`, so the pages adopt it (H5).
 - A `timeline.tsx` save the watcher applies is credited `external:timeline.tsx`, or to the agent that announced it
-  (`mz.hookWrite(actor, rel)` from the PreToolUse hook on Write/Edit).
+  (`mz.hookWrite(actor, rel)` from the PreToolUse hook on Write, Edit and MultiEdit).
 
 **Invariants.** A ping or a lock wait never waits on the worker's main loop (P3b). Only the lease holder pushes a shared
 cut, and a holder that was replaced stops before it pushes again (fencing).
@@ -442,7 +466,13 @@ edit `timeline.tsx` or use `cb source apply`.
 - `Stop` and `SubagentStop` hooks read that actor's notices and block once per conflict set with the conflict text,
   and never again while `stop_hook_active` is set: `new StoreNoticeBox(store).run(actorIdForHook(input, turn), b =>
   stopHook(input, b, turn))`. Cards an agent leaves unresolved go to the person.
-- Host Claude Code gets the same hooks through `--settings`: `hookSettings({ command, projectDir })` builds the JSON.
+- Host Claude Code gets the same hooks through `--settings`: `hookSettings({ command, projectDir })` builds the JSON:
+  PreToolUse on `Bash` (the prefix) and on `Read|Write|Edit|MultiEdit` (the freeze and credits of H8), Stop and
+  SubagentStop. The matcher starts the hook on every such call, any file. To start it only for the project's files, add
+  Claude Code's `if` condition to each hook, one per tool and file (`Read(**/timeline.tsx)`, `Write(**/timeline.tsx)`,
+  `Edit(**/project.json)`…), as our Windows build does ([LIMITS.md](LIMITS.md)).
+- Agents may not edit `project.json`: the PreToolUse hook (`preToolUse` from `@carton/local/hooks`) refuses a Write,
+  Edit or MultiEdit of it (`permissionDecision: "deny"`), with a reason that points to `cb source print --view`.
 - The system prompt names the per-agent view flow (`cb source print --view`) and the skill in [SKILL.md](SKILL.md).
 - When a turn ends, name its version (`nameTurn`, H2).
 
@@ -485,31 +515,44 @@ Node), `proxyEncoderSuite` (GPU encoders need an NVIDIA, Intel or AMD GPU and ar
 project ID already exists in your library", C9).
 
 **With Carton.**
-- **Export.** Add `.carton` to the top-level exclusions, and skip `.scratch/views/` with a nested-path check in the
-  walk (`excludedFromExport(path)`). These apply even with Carton off: `.carton/` holds local paths and device pins.
-  Write the shallow export as its own entry: `exportCbproj({ bundle, out, shallow: await carton.exportShallow(), head:
-  { doc, toProject: materializeProject } })`. The opt-in "Include history" adds `history.db` (`fullHistory:
-  (to) => store.exportCopy(to, [...LOCAL_TABLES])`, with `LOCAL_TABLES` from `@carton/core`).
+- **Export.** Leave out `.carton/` and the view files Carton wrote in `.scratch/views/`: a `<view>.tsx` whose `//
+  cardboard:rev` line is Carton's (`Main cut@3~5e1f0c2a b:…`; 1.4.0's is a bare number) and a `<view>.status` in the
+  materializer's format. A person's or an agent's own files there travel, as in 1.4.0. The rule is
+  `excludedFromExport(path, foldCase, content)` (`cartonViewFile`; `walkBundle` reads each candidate's head for you);
+  with no content, a name Carton could have written is left out. These apply even with Carton off: `.carton/` holds
+  local paths and device pins. Write the shallow export as its own entry, with the version it ends at as the file's
+  `project.json`: `const shallow = await carton.exportShallow()`, then `exportCbproj({ bundle, out, shallow, head: {
+  doc: await carton.checkout(shallow.head), toProject: materializeProject } })`. The opt-in "Include history" adds
+  `history.db` (`fullHistory: (to) => store.exportCopy(to, [...LOCAL_TABLES])`, with `LOCAL_TABLES` from
+  `@carton/core`).
+- **What an export holds.** Its history ends at a confirmed version: edits still waiting for a shared cut's server
+  aren't in it. `exportCbproj` writes whatever `head.doc` you give it, so give it that version
+  (`checkout(shallow.head)`), not `head()`, which includes waiting edits. `carton.pendingCount(cut)` says how many there
+  are, whichever process made them (it reads the store, so `cb`'s handle, which has no sync, sees the app's); wait for
+  0, or export the confirmed head. Before each write (an export included), a handle reads the export records other
+  processes wrote since it last looked, so the app's next `.cbproj` knows a version `cb` exported meanwhile; `head()`
+  and reads don't.
 - **Open a project you don't have:** `Carton.open({ …, init: { import: contents.shallow } })`. Their cuts arrive
   read-only, and a cut of your own starts from their head.
 - **Open a project you have:** instead of the error, offer "Bring in their changes":
   `bringInTheirChanges(carton, await readCbproj(file), { check })`. It folds their head into your cut, with cards.
   No shared lineage forks a new project id; a missing common state shows the explicit dialog (§13), never an older
   base.
-- **A file with "Include history"** (`readCbproj(file).hasFullHistory`): `extractFullHistory(file, toPath)` writes
-  its history to a file of your own. Open that with `openSqliteStore(toPath)` and call `carton.importHistory(store)`. The sender's cuts arrive as read-only cuts with their versions, authors and names.
-  History from another project is refused, and so is history made with another schema at the same schema version.
-  Or let "Bring in their changes" do it: `bringInTheirChanges(carton, contents, { history: { file, openStore } })`
-  (with `openStore: (p) => openSqliteStore(p, { readOnly: true })`) imports it, except with `check`.
+- **A file with "Include history"** (`readCbproj(file).hasFullHistory`): `extractFullHistory(file, toPath)` writes its
+  history to a file of your own. Open that with `openSqliteStore(toPath)` and call `carton.importHistory(store)`. The
+  sender's cuts arrive as read-only cuts with their versions, authors and names. History from another project is
+  refused, and so is history made with another schema at the same schema version. Or let "Bring in their changes" do it:
+  `bringInTheirChanges(carton, contents, { history: { file, openStore } })` (with `openStore: (p) => openSqliteStore(p,
+  { readOnly: true })`) imports it, except with `check`.
 - View files and Carton's database in a received file are never applied or unpacked (`readCbproj` lists them as
   `ignored`).
 
-**Invariants.** A `.cbproj` never contains `.carton/` or `.scratch/views/`. A round trip, twice, then a third fold finds
-the right common version and reverts nothing.
+**Invariants.** A `.cbproj` never contains `.carton/` or a view file Carton wrote. A round trip, twice, then a third
+fold finds the right common version and reverts nothing.
 
 **Proof.** The cardboard suite's `cbproj.ts` (Alice → Bob → Alice twice, then a third fold; ignored entries; the
-full-history entry); engine `cbproj` tests (shallow export). Your integration test: open the zip and assert there is no
-`.carton/` or `.scratch/views/` entry.
+full-history entry; a person's files in `.scratch/views/` travel, Carton's don't); engine `cbproj` tests (shallow
+export). Your integration test: open the zip and assert there is no `.carton/` entry and no view file Carton wrote.
 
 ### H12 · Web `DocumentSyncService`
 
@@ -539,6 +582,27 @@ the pending queue. When the app is closed, `cb` starts a helper that holds the s
 **Invariant.** A `cb` write is pushed exactly once, even when its helper dies mid-call (stable change ids).
 
 **Proof.** System `R4-04 helper`, `R3-03 handoff` (`r3-03-handoff.ts`), `R2-02` (statuses), `v11 reconnect`.
+
+### People and presence on shared projects
+
+**Today.** A GUI save has no author. With Carton it is the generic person, `{ kind: "human", id: "person" }`, on every
+computer, so in a shared project every teammate's GUI edits would read as "You".
+
+**With Carton.**
+- When a person shares or joins, call `carton.setIdentity({ id, name })`: `id` is their sync session's account, and
+  `name` what teammates see. It is kept in the store and sent to the host. `carton.identity()` reads it back.
+- `log()` and `credits()` then tell a change by the generic person as the person behind the device that made it, and
+  keep the actor as recorded in `authoredAs`. A teammate's devices are told by the host. Agents, subagents and named
+  humans are never resolved. Hashes and history don't change.
+- Pass the person as the History panel's `me` (`{ kind: "human", ...carton.identity(), group }`), so their own edits
+  show as "You". A `people` event says authors may read differently: read the history again.
+- Presence goes out as the resolved person. When a connection closes, the host tells the others that its people left,
+  and the client drops the presence it was showing from others.
+- A watch link (a reader scoped to a Published cut) gets no people from the host: there, every GUI edit shows as the
+  generic person ([LIMITS.md](LIMITS.md)).
+
+**Proof.** `store-memory/test/people.test.ts` (this store's person in log and credits, agents as recorded, a restart);
+`kit/test/samples.test.ts` "People"; the quickstart's `live.ts` (Bob's GUI edit, as "person", reads "Bob" at Alice's).
 
 ### UI · The History panel and conflict cards
 
@@ -602,8 +666,21 @@ its tests run every host suite inside workerd. We have not deployed it: deployin
 (`auth.verify`), check the token's project, then hand each message to `sequencer.handle(conn, msg)`, and call
 `sequencer.disconnect(conn)` on close. Run `sequencer.maintain({ keep: 10_000, segmentRows: 10_000 })` on a timer.
 Mount `handleHttp(request, deps)` from `@carton/host-http` for invites, sessions, signed media URLs and resumable
-uploads. `server-node/src/host.ts` is a complete example in about 340 lines. Then run the host suites on it
-([CONFORMANCE.md](CONFORMANCE.md)).
+uploads. `server-node/src/host.ts` is a complete example. Then run the host suites on it
+([CONFORMANCE.md](CONFORMANCE.md)). What the host API does, in short (details in `carton/docs/plugins.md`):
+- **Presence leaves.** `sequencer.disconnect(conn)` tells the cut's other subscribers that each actor the connection
+  showed has left (a client that crashes never sends its own leave). Call it for every way a socket ends, and drop
+  sockets that go silent: server-node pings after 30 s of silence and drops the socket after as long again. A client
+  whose own connection closes drops the presence it was showing from others.
+- **Signed uploads.** A signed PUT answers with the stored object's info as JSON (`key`, `size`, `etag`,
+  `contentType`, `sha256`). With `If-None-Match: *` it is create-only: 412 when the key is already there, with the
+  earlier object's info and nothing written. `X-Carton-Sha256` makes the host refuse a body that doesn't hash to it.
+- **Many heads at once.** `POST /api/projects/<id>/blobs/heads { keys }` answers `{ blobs }`, one `{ size }` or `null`
+  per key, in order: up to 1,000 keys a request (a host may answer a prefix; ask again for the rest). One invalid or
+  out-of-scope key refuses the whole batch. `hostMediaBlobs.heads(keys)` splits and retries for you.
+- **Key length.** S3 and R2 cap a key at 1,024 bytes, prefix included. A host keeps a project's media under
+  `projects/<id>/media/`, so a media key gets 1,024 bytes less that prefix, and a longer one is refused as
+  `InvalidKey`.
 
 **Your accounts.** An `AuthProvider` turns a session token into who is connecting:
 
@@ -666,7 +743,8 @@ cuts (`branches`), for remote agents.
   - G2: the 99th-percentile GUI save latency, with 4 agents running `cb source apply` at once, no worse than without
     Carton;
   - the displace/install race on the platform's file system (NTFS, APFS).
-- **Run the conformance suite in CI** on your adapter, your projection and your hosts ([CONFORMANCE.md](CONFORMANCE.md)).
+- **Run the conformance suite in CI** on your adapter, your projection and your hosts
+  ([CONFORMANCE.md](CONFORMANCE.md)).
 
 ## Samples that run
 
@@ -674,22 +752,27 @@ cuts (`branches`), for remote agents.
 functions:
 - opening with `importProject` (main@1 once, placement in app data);
 - H1: mutations committed against their base: a stale base rebased, a clash carded, a retried id deduplicated, the file
-  as a view of head, an in-place edit throwing (records are frozen) and a replaced record committed; through the `cb` write path, a save that clashes on one
-  clip lands the rest and keeps its card for its author, across a restart;
+  as a view of head, an in-place edit throwing (records are frozen) and a replaced record committed; through the `cb`
+  write path, a save that clashes on one clip lands the rest and keeps its card for its author, across a restart;
 - H4: a GUI save through a lossy projection carries only the person's edit;
-- H2: history with authors, undo by actor group, restore;
+- H2: history with authors, undo by actor group, restore; `undo --turn` landing the rest with a card for a clip changed
+  again since, and a retried one getting its first answer back;
 - H3: a print pin and an apply on its header; a header nothing can rebuild is `StateUnknown`;
 - `cb`'s commands registered on a stand-in for commander, as cli-mcp's own tests do;
-- H9: the hooks' settings and the Director's command prefix;
+- H9: the hooks' settings (the Bash and file-tool matchers) and the Director's command prefix; H8/H9: an agent's write
+  of `project.json` refused, its Read and Write of `timeline.tsx` turned into hook events;
 - H7: a ripple recorded as an intent maps a concurrent trim of a later clip once;
-- H11: what a `.cbproj` leaves out;
+- H11: what a `.cbproj` leaves out (by a view file's content), and a file with "Include history" read back, directly
+  and through "Bring in their changes";
+- people: `setIdentity` telling the generic person by name, `authoredAs`, and `pendingCount` on a local cut;
 - the Node host with blobs on disk;
 - a custom `AuthProvider` through `authProviderSuite`.
 
-`kit/test/ui.test.ts` runs the UI wiring (`serveUi` ↔ `remoteUi`). The quickstart's test (`kit/test/quickstart.test.ts`) runs `.cbproj` export, open and "Bring in their changes", and
-two live replicas through the Node host. Browser-only and Cloudflare-only samples are marked where they appear, with
-the tests that run them. The S3 sample isn't run here (it needs an S3 service); blob-s3's own tests run the blob suite
-against one.
+`kit/test/ui.test.ts` runs the UI wiring (`serveUi` ↔ `remoteUi`). The quickstart's test (`kit/test/quickstart.test.ts`)
+runs `.cbproj` export, open and "Bring in their changes", and two live replicas through the Node host (with
+`setIdentity` and `pendingCount`). Browser-only and Cloudflare-only samples are marked where they appear, with the tests
+that run them. The S3 sample isn't run here (it needs an S3 service); blob-s3's own tests run the blob suite against
+one.
 
 ```sh
 cd carton

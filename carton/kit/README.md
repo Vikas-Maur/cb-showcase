@@ -223,14 +223,16 @@ Alice shared "Main cut": Up to date
 Bob joined: Up to date
 Alice's edit: confirmed, Bob's edit: confirmed
 Alice sees Bob's outro: "Bye"; Bob sees Alice's intro: "Hello"
-Bob offline: pending (Offline: 1 edit waiting)
+Bob offline: pending (Offline: 1 edit waiting); waiting for the server: 1
 Bob back online: Up to date; Alice sees his edit
-History on Alice's side: @… Bob, @… Bob, @… Alice
+History on Alice's side: @… Bob (saved as "person"), @… Bob, @… Alice
 ```
 
 Alice shares her cut, so the host orders its changes from now on. Bob joins from nothing: an editor invite, the shared
 cut's record and its starting state from Alice, an empty history of his own, and every change from the host. They
-edit at once, each sees the other's edit, and Bob's offline edit waits and then syncs. Stop the host with Ctrl+C.
+edit at once, each sees the other's edit, and Bob's offline edit waits and then syncs. Each names the person behind
+their device (`setIdentity`), and Bob's offline edit is saved as the app's GUI saves are, by the generic person: Alice's
+history still shows it as Bob's. Stop the host with Ctrl+C.
 Sharing moved Main cut to the host, so start again from step 1 in a fresh folder to try the earlier steps once more.
 
 ### Check that it all still works
