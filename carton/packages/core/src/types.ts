@@ -167,6 +167,11 @@ export interface Actor {
   agentType?: string;
   provider?: string;
   model?: string;
+  /**
+   * Told, never recorded: the person behind the replica that made an agent's change (`log`, `credits`), so a teammate's
+   * agent can be named as theirs ("Leo's Director"). Absent when no person is known. A commit drops it.
+   */
+  owner?: { id: string; name: string };
 }
 
 /** Stable key of an actor for maps and notices: `kind/id[/agentId]`. */
@@ -497,7 +502,7 @@ export interface UndoEntry {
   changeId: ChangeId;
   seq: number;
   branchId: string;
-  /** "Undo Director: tighter intro", "Undo Claude Code (terminal): ...". */
+  /** "Undo Director: tighter intro", "Undo Claude Code: ...". */
   label: string;
   author: Actor;
   at: number;

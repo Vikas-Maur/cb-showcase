@@ -18,7 +18,9 @@ test("openLocal's init is main@1, one change in history with an author", async (
     const log = (await lc.carton.log({ limit: 10 })).filter((v) => v.kind !== "root");
     assert.equal(log.length, 1, JSON.stringify(log));
     assert.deepEqual([log[0]!.ref.seq, log[0]!.kind], [1, "import"]);
-    assert.deepEqual([log[0]!.author?.kind, log[0]!.author?.id], ["system", "import"], "credited to the import");
+    // recorded as the import; told as the person whose project it was (ui-words: History shows "You", not "Import")
+    assert.deepEqual([log[0]!.authoredAs?.kind, log[0]!.authoredAs?.id], ["system", "import"], "recorded as the import");
+    assert.equal(log[0]!.author?.kind, "human", "told as the person");
   } finally {
     await lc.close();
   }

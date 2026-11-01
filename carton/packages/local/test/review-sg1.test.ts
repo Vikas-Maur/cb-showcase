@@ -46,7 +46,7 @@ test("a new project whose import change never landed gets it on the next open wi
     assert.equal(h.ref.seq, 1, "main@1");
     assert.equal(item(h.doc, "c3").name, "c3", "the starting state is the one given");
     const [v] = (await again.carton.log({ limit: 5 })).filter((x) => x.change);
-    assert.equal(v!.author?.id, "import", "credited to the import");
+    assert.equal((v!.authoredAs ?? v!.author)?.id, "import", "recorded as the import (told as the person: ui-words)");
   } finally {
     await again.close();
   }

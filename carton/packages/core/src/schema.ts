@@ -183,8 +183,11 @@ export interface SchemaDef {
   timeline?: TimelineConfig | null;
   hard?: HardValidator | null;
   soft?: SoftValidator | null;
-  /** A human label for a record in descriptions and cards ("'Intro'"). */
-  label?: ((collection: string, record: Rec | undefined) => string) | null;
+  /**
+   * A human label for a record in descriptions and cards ("'Intro'"). `doc` is the state the record is in, when the
+   * caller has it: a record named after another (a clip after its media's file name) looks it up there.
+   */
+  label?: ((collection: string, record: Rec | undefined, doc?: Doc) => string) | null;
   /** Editors' words for root fields in descriptions (`{aspectRatio: "aspect ratio"}`). */
   labels?: Record<string, string> | null;
 }
@@ -195,7 +198,7 @@ export interface Schema {
   readonly timeline: TimelineConfig | null;
   readonly hard: HardValidator | null;
   readonly soft: SoftValidator | null;
-  readonly label: ((collection: string, record: Rec | undefined) => string) | null;
+  readonly label: ((collection: string, record: Rec | undefined, doc?: Doc) => string) | null;
   readonly labels: Readonly<Record<string, string>> | null;
 }
 
