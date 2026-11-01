@@ -65,7 +65,8 @@ same header. `engine` is a `MaterializerEngine` over Carton and carton.db (`@car
   (`lastOpenedAt`) makes no new print, so an agent's next Edit isn't refused.
 - **How old a print can be** (R7-01): each print is pinned, and superseded prints are released once they are past the
   newest 256 and older than a day (`keepPrints`); the print `timeline.tsx` shows on disk keeps its pin, whoever printed
-  it (another process, this one before a restart). A save on a released print still applies exactly when it named a
+  it (another process, this one before a restart); while the file names none (a writer still writing it), nothing is
+  released. A save on a released print still applies exactly when it named a
   confirmed version (no pin needed); one on a freeze view or on edits still pending offline is refused "state unknown:
   re-print". Never a wrong base.
 - **A host that writes for its own changes** (the app's GUI save writes project.json after its commit) tells it:

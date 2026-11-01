@@ -564,11 +564,13 @@ test("save speed review 2 #2: a pending save of the frozen file rebased before i
   await w.tick(100);
   assert.equal(find(shown(w), "a").name, "agent");
   const pending = await w.carton.pendingChanges();
+  assert.deepEqual(pending.changes.map((c) => c.rebases), [0], "as committed");
   const server = await serverOf(t, w);
   await server.commit(BOB, (its) => void (find(its, "a").name = "teammate"));
   await server.deliver();
   const after = await w.carton.pendingChanges();
   assert.deepEqual(after.changes.map((c) => c.id), pending.changes.map((c) => c.id), "the same id");
+  assert.deepEqual(after.changes.map((c) => c.rebases), [1], "rebased once");
   assert.equal(find(toHost(after.changes[0]!.after).timelineItems as Item[], "a").name, "teammate", "its rename taken away");
   w.mz.onHeadChange("remote");
   await w.tick(100);
@@ -601,20 +603,20 @@ test("save speed review 2 #2: a pending save of the frozen file confirmed as app
   await server.commit(agent.actor, (its) => void (find(its, "b").opacity = 0.5), save1.id);
   await server.deliver();
   assert.deepEqual((await w.carton.pendingChanges()).changes, [], "confirmed");
-  await agent.editUntilDone(TIMELINE_FILE, (its) => {
-    find(its, "b").opacity = 0.75;
-    find(its, "c").name = "agent c";
-  });
-  await w.mz.idle(); // the save's own regeneration (its next save's base), before any timer
-  assert.deepEqual(view(), ["agent", 0.75, "agent c"], "the first save under the next; the person's rename still hidden");
   // a save written on the print before the first save, repeating its edit: not a repeat of a hidden change
   const items = structuredClone(old.items);
   find(items, "b").opacity = 0.5;
   find(items, "b").name = "late";
   await late.write(TIMELINE_FILE, render(old, items));
+  await w.mz.idle(); // the save's own regeneration (its next save's base), before any timer
+  assert.deepEqual([...view(), find(shown(w), "b").name], ["agent", 0.5, "c", "late"], "the first save under it; the person's rename still hidden");
+  await agent.editUntilDone(TIMELINE_FILE, (its) => {
+    find(its, "b").opacity = 0.75;
+    find(its, "c").name = "agent c";
+  });
   await w.mz.idle();
   assert.deepEqual([...view(), find(shown(w), "b").name], ["agent", 0.75, "agent c", "late"], "the person's rename still hidden");
-  w.mz.onHeadChange("remote"); // the confirmation's event: the first save joins the view
+  w.mz.onHeadChange("remote"); // the confirmation's event
   await w.tick(100);
   assert.deepEqual([...view(), find(shown(w), "b").name], ["agent", 0.75, "agent c", "late"]);
 });
@@ -756,4 +758,129 @@ test("save speed review 2 #5: project.json written again with nothing the print 
   await w.tick(100);
   assert.equal(fs.readFileSync(w.abs(TIMELINE_FILE), "utf8"), read.text, "the same file");
   assert.equal(await agent.edit(TIMELINE_FILE, (its) => void (find(its, "a").name = "agent")), true);
+});
+
+// Review round 3 of this stage (GPT 6.1 Sol): a save confirmed rebased and not folded yet shows by what was confirmed;
+// a save rebased before it was recorded shows by its edits as they are; a file on disk that names no print releases
+// nothing; a host write that lands while a print is made gets that print checked.
+
+test("save speed review 3 #1: a pending save of the frozen file confirmed rebased, the next save before its fold, shows by what was confirmed [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 5), clip("b", 5, 10), clip("c", 10, 15)], offlineShared: true, materializer: { writeProject: false } });
+  const agent = w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } });
+  await agent.read();
+  await agent.editUntilDone(TIMELINE_FILE, (its) => {
+    find(its, "a").name = "agent";
+    find(its, "b").opacity = 0.5;
+  });
+  await w.tick(100);
+  const save = (await w.carton.pendingChanges()).changes[0]!;
+  const server = await serverOf(t, w);
+  await server.commit(BOB, (its) => void (find(its, "a").name = "teammate"));
+  await server.commit(agent.actor, (its) => void (find(its, "b").opacity = 0.5), save.id); // its rename lost
+  await server.deliver();
+  assert.deepEqual((await w.carton.pendingChanges()).changes, []);
+  await agent.editUntilDone(TIMELINE_FILE, (its) => void (find(its, "c").name = "next"));
+  await w.mz.idle(); // its regeneration, before the confirmation's own rewrite
+  const its = shown(w);
+  assert.deepEqual([find(its, "a").name, find(its, "b").opacity, find(its, "c").name], ["a", 0.5, "next"], "the lost rename not shown again; the teammate's hidden");
+});
+
+test("save speed review 3 #1: a save the view already holds once no longer pending (a restart at head) is let go, not looked for at every print [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 5), clip("b", 5, 10)], offlineShared: true, materializer: { writeProject: false } });
+  const agent = w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } });
+  await agent.read();
+  await agent.editUntilDone(TIMELINE_FILE, (its) => void (find(its, "a").name = "agent"));
+  await w.tick(100);
+  const save = (await w.carton.pendingChanges()).changes[0]!;
+  const server = await serverOf(t, w);
+  await server.commit(agent.actor, (its) => void (find(its, "a").name = "agent"), save.id);
+  await server.deliver();
+  await w.mz.printShared(); // `cb source print`: the freeze restarts at head, which holds the save
+  const mz = w.mz as unknown as { foldAgentChanges: () => Promise<boolean> };
+  const fold = mz.foldAgentChanges.bind(w.mz);
+  let folds = 0;
+  mz.foldAgentChanges = () => ((folds++), fold());
+  await agent.editUntilDone(TIMELINE_FILE, (its) => void (find(its, "b").name = "next"));
+  await w.mz.idle();
+  assert.deepEqual([find(shown(w), "a").name, find(shown(w), "b").name], ["agent", "next"]);
+  assert.equal(folds, 0, "no fold for a save already let go");
+});
+
+test("save speed review 3 #2: a pending save of the frozen file rebased before it was recorded shows by its edits as they are [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 5), clip("b", 5, 10)], offlineShared: true, materializer: { writeProject: false } });
+  const agent = w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } });
+  await agent.read();
+  const server = await serverOf(t, w);
+  await server.commit(BOB, (its) => void (find(its, "a").name = "teammate"));
+  const commitSave = w.engine.commit.bind(w.engine);
+  let once = false;
+  w.engine.commit = async (input) => {
+    const res = await commitSave(input);
+    if (!once) {
+      once = true;
+      await server.deliver(); // the teammate's rename arrives just after the save's commit: rebased at once
+    }
+    return res;
+  };
+  await agent.editUntilDone(TIMELINE_FILE, (its) => {
+    find(its, "a").name = "agent";
+    find(its, "b").opacity = 0.5;
+  });
+  await w.tick(100);
+  assert.deepEqual((await w.carton.pendingChanges()).changes.map((c) => c.rebases), [1]);
+  assert.deepEqual([find(shown(w), "a").name, find(shown(w), "b").opacity], ["a", 0.5], "its rename gone; the teammate's hidden");
+});
+
+test("save speed review 3 #3: a timeline.tsx on disk that names no print (cut short by a writer still writing it) releases nothing [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 5)], offlineShared: true, materializer: { writeProject: false, keepPrints: { count: 1, ms: 0 } } });
+  await w.gui((its) => void (find(its, "a").name = "shown pending"));
+  await w.tick(100);
+  const text = fs.readFileSync(w.abs(TIMELINE_FILE), "utf8");
+  const rev = findRev(text)!.rev!;
+  const engine = cartonMaterializerEngine(w.carton, { clock: () => w.clock.now() });
+  const other = new Materializer({ bundle: w.bundle, engine, host: cardboardFilesHost, codec: failingPrinter, clock: w.clock, writeProject: false, keepPrints: { count: 1, ms: 0 }, displacedDir: ".carton/other-displaced" });
+  t.after(() => other.close());
+  await assert.rejects(other.printShared(), /printer unavailable/);
+  fs.writeFileSync(w.abs(TIMELINE_FILE), "// card"); // an in-place writer, paused after truncating
+  for (let i = 0; i < 70; i++) {
+    await commit(w, HUMAN, (its) => void (find(its, "a").name = `unprinted ${i}`));
+    w.clock.t++;
+    await assert.rejects(other.printShared(), /printer unavailable/);
+  }
+  fs.writeFileSync(w.abs(TIMELINE_FILE), text); // it finishes, on the print it read
+  assert.equal(find(toHost((await engine.resolve(rev)).baseDoc).timelineItems as Item[], "a").name, "shown pending", "its pin kept");
+});
+
+test("save speed review 3 #4: in a freeze, a host write that lands while a print is made gets that print checked [real engine]", async (t) => {
+  const codec = { ...jsonTimelineCodec };
+  const w = await openWorld(t, { items: [clip("a", 0, 5, { annotations: ["old"] })], codec, materializer: { writeProject: false } });
+  await w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } }).read();
+  let land!: (x: HostWrite) => void;
+  await commit(w, HUMAN, (its) => void (find(its, "a").name = "gui"));
+  w.mz.onHeadChange("gui", { after: new Promise<HostWrite>((r) => (land = r)) });
+  const print = codec.print.bind(codec);
+  let release!: () => void;
+  let started!: () => void;
+  const entered = new Promise<void>((r) => (started = r));
+  const gate = new Promise<void>((r) => (release = r));
+  codec.print = (async (...args: Parameters<typeof print>) => {
+    const text = await print(...args);
+    started();
+    await gate;
+    return text;
+  }) as typeof codec.print;
+  const printing = w.mz.printShared(); // from project.json as it is now
+  await entered;
+  const pj = w.abs(PROJECT_FILE);
+  const env = JSON.parse(fs.readFileSync(pj, "utf8")) as { project: { timelineItems: Item[] } };
+  find(env.project.timelineItems, "a").annotations = ["new"];
+  fs.writeFileSync(`${pj}.tmp`, JSON.stringify(env));
+  fs.renameSync(`${pj}.tmp`, pj);
+  land({ project: { envelope: env, stamp: (await statStamp(pj))! } });
+  await Promise.resolve();
+  release();
+  await printing;
+  codec.print = print;
+  await w.tick(100);
+  assert.deepEqual(find(shown(w), "a").annotations, ["new"]);
 });

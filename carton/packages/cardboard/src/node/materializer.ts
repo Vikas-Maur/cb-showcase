@@ -104,9 +104,14 @@ export interface PendingChange {
   author: Actor;
   before: Doc;
   after: Doc;
+  /** How many times it was rebased (0: as committed; core's `pendingChanges`). */
+  rebases?: number;
 }
 
-/** A save applied during a freeze, its commit pending: its base and content, and its change's edits then (`editsKey`). */
+/**
+ * A save applied during a freeze, its commit pending: its base and content, and its change's edits as committed
+ * (`editsKey`; "" when it was rebased before they were read: it then shows by its edits as they are).
+ */
 interface FrozenSave {
   base: Doc;
   saved: Doc;
@@ -454,8 +459,9 @@ export class Materializer {
   // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active. `baseSeq` is
   // the confirmed seq the freeze view was derived from and `causal` the agent saves merged into it since: its pin
   // carries both, so a save from it meets every other change since, and never those saves a second time.
-  // `saves`: saves applied in this freeze whose commit is still pending on a shared cut, by change id: they show on top
-  // of the view (`withPending`) and join it once confirmed (`foldAgentChanges`), so a rebase that changes one shows
+  // `saves`: saves applied in a freeze whose commit is still pending on a shared cut, by change id: they show on top of
+  // the view (`withPending`) and join it once confirmed (`foldAgentChanges`), so a rebase that changes one shows; one
+  // no longer pending on the freeze's cut (confirmed, withdrawn, another cut's) is let go at the next print
   readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown, scanned: 0, pending: "", saves: new Map<string, FrozenSave>() };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
@@ -472,6 +478,8 @@ export class Materializer {
    * the print may be from project.json before it. The next rewrite timer checks it, frozen or not.
    */
   private printedLanding = false;
+  /** Host writes landed so far (a print made while one landed is checked: `printedLanding`). */
+  private landedWrites = 0;
   private lastRemoteRewrite = -Infinity;
   private remoteTimer: unknown = null;
   private localTimer: unknown = null;
@@ -727,13 +735,11 @@ export class Materializer {
   }
   /** The freeze view restarts from `h`; it belongs to the cut `h` was pinned on (review 11 #1). */
   private restartFreeze(h: HeldBase): void {
-    const cut = h.cut ?? this.engine.cut?.() ?? null;
-    if (cut !== this.freeze.cut) this.freeze.saves.clear(); // pending on the cut the freeze leaves
     this.freeze.view = h.baseDoc;
     this.freeze.baseSeq = h.baseSeq;
     this.freeze.scanned = h.baseSeq;
     this.freeze.causal = [...h.causal];
-    this.freeze.cut = cut;
+    this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
   }
   /**
    * Whether a save repeated an edit of a change its base doesn't hold: a confirmed change on `cut` after `seq`, outside
@@ -849,6 +855,7 @@ export class Materializer {
     const landed = (w?: HostWrite | void) => {
       if (settled) return;
       settled = true;
+      this.landedWrites++;
       if (late) this.printedLanding = true; // printed meanwhile from project.json before this write (with no watcher on it)
       else {
         this.landing.delete(id);
@@ -992,7 +999,6 @@ export class Materializer {
       const cut = this.engine.cut?.();
       const shown = this.sharedRef && this.sharedCut === cut ? await this.resolveOrNull(this.sharedRef) : null;
       this.freeze.active = true;
-      this.freeze.saves.clear(); // an earlier freeze's (they show from its prints, as head was)
       this.restartFreeze(shown ? { ...shown, ...(cut !== undefined ? { cut } : {}) } : await this.currentHead());
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
@@ -1101,8 +1107,8 @@ export class Materializer {
     const seen = await this.importUnseen(TIMELINE_FILE);
     await this.freezeOnCurrentCut();
     // the freeze view only on the cut it belongs to (if the cut moved since, head until the next check restarts it)
-    const view = this.freeze.active && this.freeze.cut === (this.engine.cut?.() ?? null) ? this.freeze.view : null;
-    const shown = view ? await this.withPending(view) : null;
+    const frozen = this.freeze.active && !!this.freeze.view && this.freeze.cut === (this.engine.cut?.() ?? null);
+    const shown = frozen ? await this.withPending() : null;
     // superseded prints are released past `keepPrints` (R7-01's bound); the pin's record goes with the next meta write
     // (the path's token before the install, or its state after it) instead of one write of its own
     // the print the file shows is never released, whatever was pinned since (a print that failed, a restart point),
@@ -1119,6 +1125,9 @@ export class Materializer {
       const cur = seen === undefined ? await this.readFile(TIMELINE_FILE) : seen;
       // unchanged: the file is Carton's print of this state, made from the same project.json (a print made from an
       // older one, while the host was still writing its save, is made again)
+      // a host write landed while this print is made (or still landing once it is installed): it may be from
+      // project.json before that write (one whose wait ended earlier is checked when it lands)
+      const landedBefore = this.landedWrites;
       const src = await this.projectSource();
       const same = !force && !!cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body;
       if (same && this.sharedEnv === src.key) return;
@@ -1141,7 +1150,7 @@ export class Materializer {
       this.sharedEnv = src.key;
       this.sharedHeader = header;
       this.shownPin = { branchId: pinned.branchId, ref: pinned.ref };
-      if (this.landing.size) this.printedLanding = true; // from project.json before the host's write, maybe
+      if (this.landing.size || this.landedWrites !== landedBefore) this.printedLanding = true;
       this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
     } finally {
       // not stored with another write (unchanged, or a failure before it): on its own, so the pin can be released early
@@ -1152,19 +1161,14 @@ export class Materializer {
   /**
    * The prints the shared file shows, which a prune must keep: the one timeline.tsx names on disk now (whoever printed
    * it: another process, this one before a restart; an agent's save there names the print it was written on) and the
-   * last one installed here. A file that can't be read fails the prune, which then releases nothing.
+   * last one installed here. A file that names none (missing mid-install, cut short by a writer still writing it, or
+   * unreadable) fails the prune, which then releases nothing: the print its writer started from is unknown.
    */
   private async shownPrints(): Promise<PinHold[]> {
-    const out: PinHold[] = this.shownPin ? [this.shownPin] : [];
-    let text: string | null = null;
-    try {
-      text = (await retryBusy(() => fs.readFileSync(this.abs(TIMELINE_FILE)), this.busy)).toString("utf8");
-    } catch (e) {
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e; // none there (mid-install): the last one installed
-    }
-    const rev = text === null ? null : findRev(text)?.rev;
-    if (rev?.kind === "carton" && rev.branch8) out.push({ branchId: rev.branch8, ref: rev.ref });
-    return out;
+    const text = (await retryBusy(() => fs.readFileSync(this.abs(TIMELINE_FILE)), this.busy)).toString("utf8");
+    const rev = findRev(text)?.rev;
+    if (rev?.kind !== "carton" || !rev.branch8) throw new Error("timeline.tsx names no print");
+    return [...(this.shownPin ? [this.shownPin] : []), { branchId: rev.branch8, ref: rev.ref }];
   }
 
   /**
@@ -1178,20 +1182,21 @@ export class Materializer {
    * pending edits stay out. `key`: the agents' changes the queue held (shown or not) and their edits, to tell when it
    * moved.
    */
-  private async withPending(view: Doc): Promise<{ doc: Doc; ids: string[]; key: string }> {
+  private async withPending(): Promise<{ doc: Doc; ids: string[]; key: string }> {
     const saves = this.freeze.saves;
-    if (!this.engine.pendingChanges || !this.engine.shared()) return { doc: view, ids: [], key: "" };
+    if (!this.engine.pendingChanges || !this.engine.shared()) return { doc: this.freeze.view!, ids: [], key: "" };
     const { changes } = await this.engine.pendingChanges(this.freeze.cut ?? undefined);
-    const mine = changes.filter((p) => isAgent(p.author) || saves.has(p.id));
-    let doc = view;
-    const ids: string[] = [];
-    // saves applied in this freeze (see `freeze.saves`): confirmed since, not folded into the view yet, as applied
-    const waiting = new Set(mine.map((p) => p.id));
-    for (const [id, s] of saves) {
-      if (waiting.has(id)) continue;
-      doc = this.host.merge3(s.base, doc, s.saved);
-      ids.push(id);
+    // a save applied in this freeze that is no longer pending joins the view by what was confirmed (`foldAgentChanges`:
+    // as applied only with the edits it was applied with) before the view is printed; one neither pending nor confirmed
+    // (withdrawn, refused) is gone
+    const waiting = new Set(changes.map((p) => p.id));
+    if ([...saves.keys()].some((id) => !waiting.has(id))) {
+      await this.foldAgentChanges();
+      for (const id of [...saves.keys()]) if (!waiting.has(id)) saves.delete(id);
     }
+    const mine = changes.filter((p) => isAgent(p.author) || saves.has(p.id));
+    let doc = this.freeze.view!;
+    const ids: string[] = [];
     for (const p of mine) {
       const s = saves.get(p.id);
       if (s && s.key === this.editsKey(p)) {
@@ -1956,7 +1961,7 @@ export class Materializer {
           // a commit still pending on a shared cut can be rebased before it is confirmed (a remote edit takes one of its
           // edits away): it shows on top of the view as it is at each print, and joins the view once confirmed
           const pending = res.id ? await this.pendingOf(res.id) : null;
-          if (pending) this.freeze.saves.set(res.id!, { base: baseDoc, saved, key: this.editsKey(pending) });
+          if (pending) this.freeze.saves.set(res.id!, { base: baseDoc, saved, key: pending.rebases ? "" : this.editsKey(pending) });
           else {
             this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
             for (const id of own) if (!this.freeze.causal.includes(id)) this.freeze.causal.push(id);
