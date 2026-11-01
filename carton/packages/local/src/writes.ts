@@ -64,8 +64,11 @@ export interface WriteRequest {
   waitMs?: number;
   /**
    * The person's own action in the app (⌘Z, a menu command; the facade sets it), not a `cb` call: nobody is about to
-   * work on the shared timeline.tsx because of it, so it doesn't freeze the file (`tellBusy`), and the file shows the
-   * write at once. `cb` never sets it. Only `true` counts.
+   * work on the shared timeline.tsx because of it, so it doesn't start or extend a freeze of the file (`tellBusy`). A
+   * freeze an agent already holds still applies (the file shows the write once it ends). `cb` never sets it. Only
+   * `true` counts. Written by the holder (or in-process); a helper that took the lease from a stalled app answers it
+   * too, but the app's follower then sees the change as another process's and freezes the file as for a `cb` call
+   * (the flag isn't stored with the change).
    */
   gui?: boolean;
 }
