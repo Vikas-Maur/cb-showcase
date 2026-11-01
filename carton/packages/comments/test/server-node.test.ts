@@ -1,8 +1,7 @@
 // Comments through a real server-node (HMAC tokens, WebSocket, node:sqlite on disk), two people and a watch link.
-// The server half is ours (`@carton/comments/server`); routing its two message kinds is hosts-plugins' change to
-// `@carton/server` (request REQ-C1 in notes/comments.md). Until that lands, the host answers "unknown message type",
-// the clients report `unsupported`, and these tests mark themselves todo.
-import test, { type TestContext } from "node:test";
+// The server half is ours (`@carton/comments/server`); `@carton/server` routes its two message kinds (REQ-C1,
+// hosts-plugins' e712920).
+import test from "node:test";
 import assert from "node:assert/strict";
 import * as path from "node:path";
 import { createHmacAuth } from "@carton/server";
@@ -13,7 +12,6 @@ import { BOB, ME, clip, openCarton, scratch, until } from "./helpers.ts";
 
 const PROJECT = "comments-e2e";
 const SECRET = "test-only-secret-test-only-secret-0123";
-const TODO = "waits on hosts-plugins routing `comments`/`comment` in @carton/server (REQ-C1, notes/comments.md)";
 
 async function host(): Promise<{ node: NodeHost; token(role: Role, account: string, branches?: string[]): Promise<string> }> {
   const auth = createHmacAuth({ secret: SECRET });
@@ -31,20 +29,18 @@ async function client(h: Awaited<ReturnType<typeof host>>, who: { id: string; na
   return { carton, comments };
 }
 
-/** True (and the test marked todo) when this host doesn't carry comments yet. */
-async function unsupported(t: TestContext, c: Comments): Promise<boolean> {
+/** The host carries comments: the stream catches up (a host from before REQ-C1 would say `unsupported`). */
+async function caughtUp(c: Comments): Promise<void> {
   await until(() => ["up-to-date", "unsupported"].includes(c.syncStatus()?.state ?? ""), 5000, "the comment stream");
-  if (c.syncStatus()?.state !== "unsupported") return false;
-  t.todo(TODO);
-  return true;
+  assert.equal(c.syncStatus()?.state, "up-to-date", "the host routes comments (REQ-C1)");
 }
 
-test("server-node: two people converge on a thread; the server keeps it on disk across a restart", async (t) => {
+test("server-node: two people converge on a thread; a third catches up from the server's storage", async () => {
   const h = await host();
   const a = await client(h, ME);
   const b = await client(h, BOB);
   try {
-    if (await unsupported(t, a.comments)) return;
+    await caughtUp(a.comments);
     const c = await a.comments.add({ body: "The logo is cut off", range: [3, 4] });
     await until(() => !!b.comments.get(c.id), 5000, "bob sees it");
     const r = await b.comments.reply(c.id, "Fixed in the next version");
@@ -61,12 +57,12 @@ test("server-node: two people converge on a thread; the server keeps it on disk 
   }
 });
 
-test("server-node: a viewer is refused; a watch link reads only its Published cut's comments", async (t) => {
+test("server-node: a viewer is refused; a watch link reads only its Published cut's comments, and no account id", async () => {
   const h = await host();
   const ed = await client(h, ME);
   const closers: (() => Promise<void>)[] = [];
   try {
-    if (await unsupported(t, ed.comments)) return;
+    await caughtUp(ed.comments);
     const pub = await ed.carton.fork("For the client");
     const forClient = await ed.comments.add({ body: "Client: check the music", range: [1, 2], cut: pub.id });
     const internal = await ed.comments.add({ body: "Internal note", range: [1, 2] });
@@ -81,6 +77,10 @@ test("server-node: a viewer is refused; a watch link reads only its Published cu
     closers.push(() => watchView.close());
     await until(() => watchView.all().some((x) => x.id === forClient.id), 5000, "the watch link's comment");
     assert.ok(!watchView.all().some((x) => x.id === internal.id));
+    // the author as a link sees it: no people-record name here, so a label; nothing of alice's account
+    assert.deepEqual(watchView.get(forClient.id)?.author, { id: "teammate:1", name: "Teammate 1" });
+    assert.ok(!JSON.stringify(watchView.all()).includes(ME.id), "no account id in what the watch link keeps");
+    assert.equal(ed.comments.get(forClient.id)?.author.id, ME.id, "the team sees the account");
     const refusals: string[] = [];
     watchView.on((e) => void (e.type === "refused" && refusals.push(e.refused)));
     await watchView.add({ body: "Can I?", range: [1, 2] });
