@@ -11,6 +11,6 @@ export { LIMITS } from "./types.ts";
 export { applyPatch, mergePatch, patchProblem, anchorProblem, validBody, validId, threadsOf, newCommentId, type Thread, type PatchResult } from "./model.ts";
 export { TimelineIndex, makeAnchor, place, type AnchorOptions, type AnchorAt, type Placement, type PlacementStatus, type PlaceTarget } from "./anchor.ts";
 export { cartonLineage, type LineageSource, type LineageCarton, type VersionAt } from "./lineage.ts";
-export { cartonCommentStore, memoryCommentStore, COMMENT_TABLES, type CommentStore, type CommentSnapshot, type CommentWrite } from "./store.ts";
+export { cartonCommentStore, memoryCommentStore, CommentStreamChanged, COMMENT_TABLES, type CommentStore, type CommentSnapshot, type CommentWrite } from "./store.ts";
 export { CommentSync, type CommentSyncOptions, type CommentSyncState, type CommentSyncStatus, type CommentSyncEngine } from "./sync.ts";
 export { Comments, CommentError, type CommentsOptions, type CommentsCarton, type CommentsEvent, type CommentTarget } from "./comments.ts";

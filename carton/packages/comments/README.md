@@ -71,8 +71,11 @@ keyframe) is placed all the same.
 - **`CommentStore`**: where comments are kept. `cartonCommentStore(carton.store)` (the default) keeps three tables in
   the project's own Store beside its history (carton.db on desktop, IndexedDB in a browser): `comments`,
   `comments_pending`, `comments_meta`. `memoryCommentStore()` for tests. Pending patches are compare-and-set rows, and
-  server rows and the read position are written against what is stored (newer by `seq` only, forward only), so the
-  app and `cb` can both write comments to one carton.db. A plug-in implements `load`, `write`, `pending` and `read`.
+  server rows and the read position are written against what is stored (newer by `seq` only, forward only, each
+  write conditioned on a revision every such write bumps), so the app and `cb` can both write comments to one
+  carton.db. A stream reset starts a new generation (`epoch`): a handle still writing the old stream's rows gets
+  `CommentStreamChanged`, reloads and asks the server again. A plug-in implements `load`, `write`, `pending` and
+  `read`.
 - **`CommentSync`**: how they are shared. Its own connection through the project's `Transport` to the project's host,
   with the project's token. Nothing in the document sync changes.
 - **Server half**: `@carton/comments/server` (`createCommentRoom({ storage })`): pure rules over the sequencer's

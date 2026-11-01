@@ -11,7 +11,7 @@ import { canonical, hashDoc, type Doc, type Lineage, type Person, type Schema, t
 import { makeAnchor, place, TimelineIndex, type AnchorOptions, type IndexChanges, type Placement } from "./anchor.ts";
 import { cartonLineage, type LineageCarton, type LineageSource } from "./lineage.ts";
 import { applyPatch, mergePatch, threadsOf, newCommentId, newOpId, patchProblem, validBody, type Thread } from "./model.ts";
-import { cartonCommentStore, type CommentStore } from "./store.ts";
+import { cartonCommentStore, CommentStreamChanged, type CommentStore, type CommentWrite } from "./store.ts";
 import { CommentSync, type CommentSyncOptions, type CommentSyncStatus } from "./sync.ts";
 import type { Comment, CommentAuthor, CommentPatch, CommentRefusal, PendingPatch } from "./types.ts";
 
@@ -102,6 +102,8 @@ export class Comments {
   readonly #pending = new Map<string, PendingPatch>();
   readonly #view = new Map<string, Comment>();
   #head = 0;
+  /** The stream generation the cached rows and head belong to (the store's, as last read or reset here). */
+  #epoch = "";
   #rev = 0;
   #all: readonly Comment[] | null = null;
   #threads: readonly Thread[] | null = null;
@@ -334,13 +336,16 @@ export class Comments {
   /** Read everything stored; on a reload, only what changed is rebuilt (the rest keep their objects). */
   async #load(): Promise<void> {
     const snap = await this.#store.load();
+    // another handle reset the stream since: an id and seq may now be another comment's, so nothing cached is kept
+    const sameStream = snap.epoch === this.#epoch;
+    this.#epoch = snap.epoch;
     const first = this.#view.size === 0 && this.#confirmed.size === 0 && this.#pending.size === 0;
     const changed = new Set<string>();
     const seen = new Set<string>();
     for (const c of snap.comments) {
       seen.add(c.id);
       const cur = this.#confirmed.get(c.id);
-      if (cur && cur.seq === c.seq && (cur.seq !== undefined || canonical(cur) === canonical(c))) continue;
+      if (sameStream && cur && cur.seq === c.seq && (cur.seq !== undefined || canonical(cur) === canonical(c))) continue;
       this.#confirmed.set(c.id, c);
       changed.add(c.id);
     }
@@ -424,6 +429,9 @@ export class Comments {
   /** Read the pending rows again, and the stored rows of `rows` (a comment another process may have sent). */
   async #reloadPending(rows: readonly string[] = []): Promise<void> {
     const ids = new Set<string>();
+    // pending first, then the rows: a comment another handle sends in between is in one or the other, never neither
+    // (its row and the pending row's removal are one write)
+    const pending = await this.#store.pending();
     if (rows.length) {
       const got = await this.#store.read(rows);
       rows.forEach((id, i) => {
@@ -435,8 +443,22 @@ export class Comments {
         }
       });
     }
-    for (const id of this.#syncPending(await this.#store.pending())) ids.add(id);
+    for (const id of this.#syncPending(pending)) ids.add(id);
     if (ids.size) this.#rebuild(ids);
+  }
+
+  /**
+   * Write rows or the head of the stream this handle reads. If another handle reset the stream since (the store's
+   * generation changed), take what the store has now and throw: the sync drops the connection and asks again from
+   * the store's position.
+   */
+  async #writeStream(w: CommentWrite): Promise<boolean> {
+    try {
+      return await this.#store.write(w.reset !== undefined ? w : { ...w, epoch: this.#epoch });
+    } catch (e) {
+      if (e instanceof CommentStreamChanged) await this.#load();
+      throw e;
+    }
   }
 
   /** Take the stored pending rows; the ids whose row changed. */
@@ -523,7 +545,9 @@ export class Comments {
     const forget = reset ? [...touched].filter((id) => !kept.has(id)) : [];
     // the store keeps the newer of what it has and these rows, and moves its head only forward (another handle on
     // the same carton.db may be ahead); a reset is written as one
-    await this.#store.write({ rows: keep, ...(reset ? { reset: true } : {}), ...(nextHead !== null ? { head: nextHead } : {}) });
+    const epoch = reset ? newCommentId() : this.#epoch;
+    await this.#writeStream({ rows: keep, ...(reset ? { reset: epoch } : {}), ...(nextHead !== null ? { head: nextHead } : {}) });
+    this.#epoch = epoch;
     for (const id of forget) this.#confirmed.delete(id);
     for (const r of keep) this.#confirmed.set(r.id, r);
     if (nextHead !== null) this.#head = nextHead;
@@ -536,8 +560,8 @@ export class Comments {
     const nextHead = head !== null && head > this.#head ? head : undefined;
     const base = { rows: newer ? [row] : [], ...(nextHead !== undefined ? { head: nextHead } : {}) };
     // the pending row goes only if nothing was added to it since it was sent; otherwise it is sent again
-    if (!(await this.#store.write({ ...base, drop: [sent] }))) {
-      await this.#store.write(base);
+    if (!(await this.#writeStream({ ...base, drop: [sent] }))) {
+      await this.#writeStream(base);
       await this.#reloadPending();
     } else if (this.#pending.get(sent.id)?.v === sent.v) this.#pending.delete(sent.id);
     if (newer) this.#confirmed.set(row.id, row);

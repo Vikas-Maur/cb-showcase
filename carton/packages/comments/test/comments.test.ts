@@ -4,6 +4,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryStore } from "@carton/store-memory";
 import { Comments, CommentError } from "../src/comments.ts";
+import { cartonCommentStore, type CommentStore } from "../src/store.ts";
 import { BOB, ME, clip, commitDoc, edit, openCarton } from "./helpers.ts";
 
 const items = () => [clip("a", 0, 10), clip("c", 10, 20), clip("d", 20, 30)];
@@ -168,4 +169,55 @@ test("a split piece moved away is followed by its lineage, not by another clip o
   const p = (await comments.placements()).get(c.id)!;
   assert.deepEqual([p.status, p.range, p.items, p.guess], ["moved", [31, 32], ["x2"], undefined]);
   await comments.close();
+});
+
+test("an edit whose compare-and-set lost to an upload in another process still goes through (never 'not found')", async () => {
+  const carton = await openCarton(items());
+  const raw = cartonCommentStore(carton.store);
+  let during: (() => Promise<void>) | null = null;
+  const once = async () => {
+    const f = during;
+    during = null;
+    if (f) await f();
+  };
+  // this handle's store: the other process's upload lands right after this handle's first read while it recovers
+  const hooked: CommentStore = {
+    ...raw,
+    async pending() {
+      const r = await raw.pending();
+      await once();
+      return r;
+    },
+    async read(ids) {
+      const r = await raw.read(ids);
+      await once();
+      return r;
+    },
+  };
+  const cb = await Comments.open({ carton, store: hooked, me: ME });
+  const other = await Comments.open({ carton, me: ME });
+  const c = await cb.add({ body: "Draft", range: [1, 2] });
+  await other.refresh();
+  await other.edit(c.id, "Draft (other process)");
+  const [pend] = await raw.pending();
+  // the worker's upload: the server's row in, the pending row out, one write
+  during = async () => void (await raw.write({ rows: [{ ...other.get(c.id)!, seq: 1 }], head: 1, drop: [pend!] }));
+  const r = await cb.edit(c.id, "Draft (cb)");
+  assert.equal(r.body, "Draft (cb)");
+  assert.equal((await raw.pending())[0]?.patch.body, "Draft (cb)", "kept as a new pending patch over the server's row");
+  await Promise.all([cb.close(), other.close()]);
+});
+
+test("refresh after another process reset the stream: a row with the same id and seq but other content is taken", async () => {
+  const carton = await openCarton(items());
+  const raw = cartonCommentStore(carton.store);
+  const h = await Comments.open({ carton, me: ME });
+  const row = (body: string) => ({ id: "c1", author: BOB, body, cut: carton.cut, at: 1, seq: 1 });
+  await raw.write({ rows: [row("Before the reset")], head: 1, epoch: "" });
+  await h.refresh();
+  assert.equal(h.get("c1")?.body, "Before the reset");
+  await raw.write({ rows: [row("After the reset")], head: 1, reset: "e2" });
+  await h.refresh();
+  assert.equal(h.get("c1")?.body, "After the reset");
+  await h.close();
 });
