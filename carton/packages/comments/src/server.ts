@@ -34,7 +34,7 @@ export interface CommentRoomOptions {
   clock?: () => number;
   /** The name the server knows for a session's person (its `people` table), preferred over the one a patch carries. */
   nameOf?: (auth: AuthContext) => string | undefined;
-  limits?: Partial<Pick<typeof LIMITS, "perProject" | "page" | "burst" | "perSec">>;
+  limits?: { perProject?: number; page?: number; burst?: number; perSec?: number };
 }
 
 export interface CommentRoom {
@@ -151,8 +151,10 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
       const p = m.patch;
       const cur = get(m.id);
       const parent = p.add?.replyTo !== undefined ? get(p.add.replyTo) : undefined;
-      const cut = cur?.cut ?? parent?.cut ?? p.add?.cut;
-      if (cut === undefined || !mayReadComments(c.auth, cut)) return refuse(c, m, "not-found", cur || parent ? "no such comment" : p.add ? "the comment this replies to isn't there" : "no such comment");
+      const cut = cur?.cut ?? parent?.cut ?? (p.add?.replyTo === undefined ? p.add?.cut : undefined);
+      // (a new thread names its own cut: refused below as forbidden, which tells the writer nothing it didn't say)
+      const own = !cur && !parent && p.add?.replyTo === undefined;
+      if (cut === undefined || (!own && !mayReadComments(c.auth, cut))) return refuse(c, m, "not-found", p.add?.replyTo !== undefined && !cur ? "the comment this replies to isn't there" : "no such comment");
       if (!mayComment(c.auth, cut)) return refuse(c, m, "forbidden", c.auth.role === "viewer" ? "viewers can read comments but not write them" : "this link can't comment on that cut");
       const wait = take(c);
       if (wait) return refuse(c, m, "rate-limited", "too many comments at once", wait);

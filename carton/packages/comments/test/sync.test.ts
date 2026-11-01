@@ -1,0 +1,128 @@
+// Two and more Comments handles sharing comments through the comment room over a Transport (the test host delivers
+// JSON copies in order, as the in-process host does): convergence, offline and never-shared comments going up, a
+// lost answer, refusals, rate limits, a watch link's scope, and a host from before comments.
+import test from "node:test";
+import assert from "node:assert/strict";
+import { Comments } from "../src/comments.ts";
+import type { CommentsEvent } from "../src/comments.ts";
+import { BOB, ME, clip, commentHost, openCarton, until } from "./helpers.ts";
+
+const items = () => [clip("a", 0, 10), clip("c", 10, 20)];
+type Host = ReturnType<typeof commentHost>;
+async function client(host: Host, who: { id: string; name: string }, role: Parameters<Host["token"]>[0] = "editor", branches?: string[]) {
+  const carton = await openCarton(items());
+  const comments = await Comments.open({ carton, me: who, sync: { transport: host.transport, url: host.url, token: host.token(role, who.id, branches) } });
+  return { carton, comments };
+}
+
+test("two people: a thread, a reply, an edit and a resolve reach the other; both end with the server's rows", async () => {
+  const host = commentHost();
+  const a = await client(host, ME);
+  const b = await client(host, BOB);
+  const c = await a.comments.add({ body: "Cut the pause here", range: [12, 13] });
+  await until(() => !!b.comments.get(c.id), 3000, "bob sees alice's comment");
+  const r = await b.comments.reply(c.id, "On it");
+  await until(() => a.comments.threads()[0]?.replies.length === 1, 3000, "alice sees the reply");
+  await a.comments.edit(c.id, "Cut the long pause here");
+  await b.comments.resolve(c.id);
+  assert.ok(await a.comments.settled());
+  assert.ok(await b.comments.settled());
+  await until(() => !!a.comments.get(c.id)?.resolved && b.comments.get(c.id)?.body === "Cut the long pause here");
+  for (const x of [a, b]) {
+    assert.equal(x.comments.isPending(c.id), false);
+    assert.equal(x.comments.isPending(r.id), false);
+    assert.ok(x.comments.get(c.id)!.seq! > 0);
+  }
+  assert.deepEqual(a.comments.get(c.id), b.comments.get(c.id));
+  assert.equal(a.comments.get(c.id)!.author.id, "alice");
+  assert.equal(b.comments.get(r.id)!.author.id, "bob");
+  await Promise.all([a.comments.close(), b.comments.close()]);
+});
+
+test("written offline, and in a project never shared: kept, then sent once connected", async () => {
+  const host = commentHost();
+  // never shared: no sync at all
+  const carton = await openCarton(items());
+  const local = await Comments.open({ carton, me: ME });
+  const early = await local.add({ body: "Before sharing", range: [1, 2] });
+  await local.edit(early.id, "Before sharing (edited)");
+  await local.close();
+  // shared now: the same store, with sync
+  const shared = await Comments.open({ carton, me: ME, sync: { transport: host.transport, url: host.url, token: host.token("editor", "alice") } });
+  const b = await client(host, BOB);
+  await until(() => b.comments.get(early.id)?.body === "Before sharing (edited)", 3000, "the never-shared comment went up");
+  assert.equal(host.room.head(), 1, "an add and an edit made before sharing went up as one patch");
+  // offline: the link drops and stays down while alice writes
+  host.drop();
+  const off = await shared.add({ body: "Written offline", range: [3, 4] });
+  assert.ok(shared.isPending(off.id));
+  await until(() => !!b.comments.get(off.id), 5000, "the offline comment went up after the reconnect");
+  assert.ok(await shared.settled());
+  assert.equal(shared.isPending(off.id), false);
+  await Promise.all([shared.close(), b.comments.close()]);
+});
+
+test("an answer lost with the link: the patch is sent again and stored once", async () => {
+  const host = commentHost();
+  const a = await client(host, ME);
+  await until(() => a.comments.syncStatus()?.state === "up-to-date");
+  const c = await a.comments.add({ body: "Once", range: [1, 2] });
+  host.drop(); // the add may or may not have reached the room; its answer is lost either way
+  await until(() => a.comments.syncStatus()?.state === "up-to-date" && !a.comments.isPending(c.id), 5000, "settled after the reconnect");
+  assert.equal(host.room.head(), 1);
+  await a.comments.close();
+});
+
+test("refused for good (a viewer writes): the pending comment goes, and the writer is told", async () => {
+  const host = commentHost();
+  const v = await client(host, { id: "vic", name: "Vic" }, "viewer");
+  const events: CommentsEvent[] = [];
+  v.comments.on((e) => events.push(e));
+  const c = await v.comments.add({ body: "Can I?", range: [1, 2] });
+  await until(() => events.some((e) => e.type === "refused"), 3000, "the refusal");
+  assert.deepEqual(events.find((e) => e.type === "refused"), { type: "refused", id: c.id, refused: "forbidden", reason: "viewers can read comments but not write them" });
+  assert.equal(v.comments.get(c.id), undefined);
+  assert.equal(v.comments.isPending(c.id), false);
+  await v.comments.close();
+});
+
+test("rate-limited: a burst of comments, a thread with its reply, all go up in time, the reply after its thread", async () => {
+  const host = commentHost({ limits: { burst: 2, perSec: 40 } });
+  const a = await client(host, ME);
+  const ids: string[] = [];
+  for (let i = 0; i < 6; i++) ids.push((await a.comments.add({ body: `note ${i}`, range: [i, i + 1] })).id);
+  const r = await a.comments.reply(ids[5]!, "and a reply");
+  assert.ok(await a.comments.settled(8000), "everything answered");
+  assert.equal(host.room.head(), 7);
+  assert.equal(a.comments.get(r.id)?.replyTo, ids[5]);
+  await a.comments.close();
+});
+
+test("a watch link sees only the Published cut's comments, live and on catch-up", async () => {
+  const host = commentHost();
+  const ed = await client(host, ME);
+  const pub = await ed.carton.fork("For the client");
+  const onPub = await ed.comments.add({ body: "Client: check the logo", range: [1, 2], cut: pub.id });
+  const internal = await ed.comments.add({ body: "Internal: re-grade later", range: [1, 2] });
+  const watch = await client(host, { id: "guest", name: "Guest" }, "viewer", [pub.id]);
+  const shown = () => watch.comments.all().map((c) => c.id);
+  await until(() => shown().includes(onPub.id), 3000, "the watch link's catch-up");
+  const later = await ed.comments.add({ body: "Client: new music", range: [5, 6], cut: pub.id });
+  await ed.comments.add({ body: "Internal: later", range: [5, 6] });
+  await until(() => shown().includes(later.id), 3000, "live fan-out");
+  assert.ok(await ed.comments.settled());
+  assert.deepEqual(shown().sort(), [onPub.id, later.id].sort());
+  assert.ok(!shown().includes(internal.id));
+  await Promise.all([ed.comments.close(), watch.comments.close()]);
+});
+
+test("a host from before comments: the comments stay here, the status says so, no retry loop", async () => {
+  const host = commentHost({ legacy: true });
+  const a = await client(host, ME);
+  await until(() => a.comments.syncStatus()?.state === "unsupported", 3000, "unsupported");
+  const c = await a.comments.add({ body: "Still mine", range: [1, 2] });
+  assert.ok(a.comments.isPending(c.id));
+  await new Promise((r) => setTimeout(r, 50));
+  assert.equal(host.connections, 0, "it closed its connection and didn't come back");
+  await a.comments.close();
+});

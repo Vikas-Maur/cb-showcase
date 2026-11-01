@@ -245,12 +245,17 @@ export class CommentSync {
   }
 
   #rateLimited(ms: number): void {
-    this.#rateUntil = Date.now() + ms;
-    if (this.#rateTimer) return;
+    this.#rateUntil = Math.max(this.#rateUntil, Date.now() + ms);
+    this.#wakeAfterLimit();
+  }
+
+  /** A pump once the rate limit has passed (one timer, at the latest limit any answer gave). */
+  #wakeAfterLimit(): void {
+    if (this.#rateTimer) clearTimeout(this.#rateTimer);
     this.#rateTimer = setTimeout(() => {
       this.#rateTimer = null;
       void this.#pump();
-    }, ms);
+    }, Math.max(1, this.#rateUntil - Date.now()));
   }
 
   async #pump(): Promise<void> {
@@ -263,7 +268,11 @@ export class CommentSync {
       do {
         this.#again = false;
         const conn = this.#conn;
-        if (!conn || this.#stopped || Date.now() < this.#rateUntil) return;
+        if (!conn || this.#stopped) return;
+        if (Date.now() < this.#rateUntil) {
+          if (!this.#rateTimer) this.#wakeAfterLimit();
+          return;
+        }
         const rows = await this.#engine.pending();
         // a reply waits for its thread's first comment to be answered: sent together, a rate-limited thread would
         // leave the reply refused as "not found" for good
