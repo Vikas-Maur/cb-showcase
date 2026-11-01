@@ -47,12 +47,16 @@ export interface CommentSyncEngine {
   head(): number;
   /** Pending rows, read fresh (another process may have added some). */
   pending(): Promise<PendingPatch[]>;
-  /** Rows from the server; `head`: the read position to keep, when it may advance; `reset`: see CommentsRowsMsg. */
-  take(rows: readonly Comment[], head: number | null, reset?: boolean): Promise<void>;
+  /**
+   * Rows from the server; `head`: the read position to keep, when it may advance; `reset`: see CommentsRowsMsg.
+   * `current()`: is the connection that brought them still this sync's? (Checked when they are about to be written:
+   * after a restart, a message that was waiting is another connection's and is dropped.)
+   */
+  take(rows: readonly Comment[], head: number | null, reset: boolean, current: () => boolean): Promise<void>;
   /** The server stored `sent` as `row`. */
-  answered(sent: PendingPatch, row: Comment, head: number | null): Promise<void>;
+  answered(sent: PendingPatch, row: Comment, head: number | null, current: () => boolean): Promise<void>;
   /** The server refused `sent` for good. */
-  refused(sent: PendingPatch, refusal: CommentRefusal, reason: string): Promise<void>;
+  refused(sent: PendingPatch, refusal: CommentRefusal, reason: string, current: () => boolean): Promise<void>;
   status(s: CommentSyncStatus): void;
 }
 
@@ -111,6 +115,23 @@ export class CommentSync {
     c?.close();
     await this.#chain.catch(() => {});
     this.#set({ state: "stopped" });
+  }
+
+  /**
+   * Drop the connection and connect again, asking from the engine's position (another process reset the stream
+   * this engine reads: what the old connection would still send belongs before it).
+   */
+  restart(why = "the comment stream was reset here"): void {
+    const c = this.#conn;
+    if (this.#stopped || this.#status.state === "unsupported") return;
+    this.#conn = null;
+    this.#inflight.clear();
+    this.#inflightIds.clear();
+    this.#caughtUp = false;
+    this.#abort?.abort();
+    c?.close();
+    this.#backoff = BACKOFF_MIN;
+    this.#retry(why);
   }
 
   /** Something was added to the pending rows: send it. */
@@ -221,6 +242,7 @@ export class CommentSync {
 
   async #onMessage(conn: TransportConnection, m: CommentServerMessage | { type: "error"; reason?: string; code?: string }): Promise<void> {
     if (!m || typeof m !== "object") return;
+    const live = () => this.#conn === conn;
     if (m.type === "comments") {
       if (m.reply) {
         if (typeof m.retryMs === "number") {
@@ -232,7 +254,7 @@ export class CommentSync {
           }, Math.min(BACKOFF_MAX, Math.max(1, m.retryMs)));
           return;
         }
-        await this.#engine.take(m.rows, m.head, m.reset === true);
+        await this.#engine.take(m.rows, m.head, m.reset === true, live);
         if (m.more) return this.#request(conn);
         this.#caughtUp = true;
         this.#backoff = BACKOFF_MIN;
@@ -241,7 +263,7 @@ export class CommentSync {
         return;
       }
       // fan-out: in the server's order, after everything it sent before; the position moves once caught up
-      await this.#engine.take(m.rows, this.#caughtUp ? m.head : null);
+      await this.#engine.take(m.rows, this.#caughtUp ? m.head : null, false, live);
       this.#wake();
       return;
     }
@@ -250,9 +272,9 @@ export class CommentSync {
       if (!sent) return;
       this.#inflight.delete(m.n);
       this.#inflightIds.delete(sent.id);
-      if (m.row) await this.#engine.answered(sent, m.row, this.#caughtUp && m.row.seq !== undefined ? m.row.seq : null);
+      if (m.row) await this.#engine.answered(sent, m.row, this.#caughtUp && m.row.seq !== undefined ? m.row.seq : null, live);
       else if (m.refused === "rate-limited") this.#rateLimited(m.retryMs ?? 1000);
-      else await this.#engine.refused(sent, m.refused ?? "bad-request", m.reason ?? "refused");
+      else await this.#engine.refused(sent, m.refused ?? "bad-request", m.reason ?? "refused", live);
       this.#wake();
       void this.#pump();
       return;

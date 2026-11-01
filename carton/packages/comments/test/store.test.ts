@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import * as path from "node:path";
 import { createMemoryStore } from "@carton/store-memory";
 import { openSqliteStore } from "@carton/store-sqlite";
-import { cartonCommentStore, memoryCommentStore, COMMENT_TABLES, type CommentStore } from "../src/store.ts";
+import type { Store } from "@carton/core";
+import { cartonCommentStore, memoryCommentStore, CommentStreamChanged, COMMENT_TABLES, type CommentStore } from "../src/store.ts";
 import type { Comment, PendingPatch } from "../src/types.ts";
 import { ME, scratch } from "./helpers.ts";
 
@@ -28,7 +29,7 @@ for (const [kind, make] of kinds) {
   test(`${kind}: rows, the read position and pending rows round-trip; pending puts and drops are compare-and-set`, async () => {
     const { store, close } = await make();
     try {
-      assert.deepEqual(await store.load(), { comments: [], pending: [], head: 0 });
+      assert.deepEqual(await store.load(), { comments: [], pending: [], head: 0, epoch: "" });
       assert.ok(await store.write({ rows: [row("a", 1), row("b", 2)], head: 2, put: [{ row: pend("c", 1), prev: null }] }));
       // a second "new" pending row for c fails: another writer has one
       assert.equal(await store.write({ rows: [row("z", 9)], put: [{ row: pend("c", 1, "other"), prev: null }] }), false);
@@ -66,11 +67,16 @@ for (const [kind, make] of kinds) {
       assert.equal(await store.write({ rows: [row("z", 9)], head: 9, put: [{ row: pend("p", 2), prev: null }] }), false);
       assert.equal((await store.load()).head, 5, "a failed batch writes nothing");
       // the server's stream was reset: its old rows go (pending ones stay), the head is taken as it is
-      assert.ok(await store.write({ rows: [row("n", 1)], head: 1, reset: true }));
+      assert.ok(await store.write({ rows: [row("n", 1)], head: 1, reset: "e2" }));
       snap = await store.load();
       assert.deepEqual(snap.comments.map((c) => c.id), ["n"]);
       assert.equal(snap.head, 1);
+      assert.equal(snap.epoch, "e2");
       assert.deepEqual(snap.pending.map((p) => p.id), ["p"]);
+      // rows of the generation before the reset are another stream's: refused, so their handle reloads
+      await assert.rejects(store.write({ rows: [row("old", 7)], head: 7, epoch: "" }), CommentStreamChanged);
+      assert.ok(await store.write({ rows: [row("m", 2)], head: 2, epoch: "e2" }));
+      assert.deepEqual((await store.load()).comments.map((c) => c.id).sort(), ["m", "n"]);
     } finally {
       await close();
     }
@@ -91,6 +97,77 @@ test("two handles on one carton.db, writing rows of one comment at once: the new
   } finally {
     await Promise.all([s1.close(), s2.close()]);
   }
+});
+
+test("a reset never keeps a row another handle wrote while it scanned; that handle's later rows are refused", async () => {
+  const raw = createMemoryStore();
+  let during: (() => Promise<void>) | null = null;
+  // the reset's handle sees the Store through this: another handle writes right after the reset's scan of the rows
+  const seen = new Proxy(raw, {
+    get(t, k) {
+      if (k === "range")
+        return async (table: string, ...rest: unknown[]) => {
+          const r = await (t.range as (...a: unknown[]) => Promise<unknown>)(table, ...rest);
+          if (table === COMMENT_TABLES.comments && during) {
+            const f = during;
+            during = null;
+            await f();
+          }
+          return r;
+        };
+      const v = Reflect.get(t, k);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as Store;
+  const a = cartonCommentStore(seen);
+  const b = cartonCommentStore(raw);
+  assert.ok(await b.write({ rows: [row("x", 5)], head: 5, epoch: "" }));
+  during = async () => void (await b.write({ rows: [row("late", 3)], epoch: "" })); // an old-stream row, no head move
+  assert.ok(await a.write({ rows: [row("n", 1)], head: 1, reset: "e2" }));
+  const snap = await a.load();
+  assert.deepEqual(snap.comments.map((c) => c.id), ["n"], "the row written during the scan went too");
+  assert.deepEqual([snap.head, snap.epoch], [1, "e2"]);
+  await assert.rejects(b.write({ rows: [row("later", 4)], epoch: "" }), CommentStreamChanged);
+});
+
+/** A Store whose `get` of one key runs `during` once, right after it read (another handle's write lands there). */
+function interleaved(raw: Store, table: string, key: string, during: () => Promise<void>): Store {
+  let armed = true;
+  return new Proxy(raw, {
+    get(t, k) {
+      if (k === "get")
+        return async (tb: string, ky: unknown[]) => {
+          const r = await t.get(tb, ky as never);
+          if (armed && tb === table && ky[0] === key) {
+            armed = false;
+            await during();
+          }
+          return r;
+        };
+      const v = Reflect.get(t, k);
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  }) as Store;
+}
+
+test("an answer's pending drop, with its row already stored, never goes through a reset that happened meanwhile", async () => {
+  const raw = createMemoryStore();
+  const other = cartonCommentStore(raw);
+  const p = pend("x", 1);
+  assert.ok(await other.write({ rows: [row("x", 5)], head: 5, put: [{ row: p, prev: null }], epoch: "" }));
+  // this handle reads the stored row; another handle resets the stream right then (its new stream has no "x" yet)
+  const a = cartonCommentStore(interleaved(raw, COMMENT_TABLES.comments, "x", async () => void (await other.write({ rows: [row("n", 1)], head: 1, reset: "e2" }))));
+  await assert.rejects(a.write({ rows: [row("x", 5)], head: 5, drop: [p], epoch: "" }), CommentStreamChanged);
+  assert.deepEqual((await other.pending()).map((q) => q.id), ["x"], "the pending patch stays, to be sent again");
+});
+
+test("load never pairs one generation's head with another's rows", async () => {
+  const raw = createMemoryStore();
+  const other = cartonCommentStore(raw);
+  assert.ok(await other.write({ rows: [row("x", 5)], head: 5, epoch: "" }));
+  const a = cartonCommentStore(interleaved(raw, COMMENT_TABLES.meta, "head", async () => void (await other.write({ rows: [row("n", 1)], head: 1, reset: "e2" }))));
+  const snap = await a.load();
+  assert.deepEqual([snap.epoch, snap.head, snap.comments.map((c) => c.id)], ["e2", 1, ["n"]]);
 });
 
 test("in carton.db the comments are tables of their own beside the history, never document changes", async () => {

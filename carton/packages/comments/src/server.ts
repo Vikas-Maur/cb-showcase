@@ -10,21 +10,28 @@
 // - only a comment's author edits or deletes it; the author is the session's account, never what a client claims;
 // - each connection has a token bucket like presence's (LIMITS.burst at once, LIMITS.perSec after), another for
 //   catch-up pages (LIMITS.readBurst, LIMITS.readPerSec), and a project at most LIMITS.perProject comments;
+// - a session scoped to some cuts (a watch link, a review link) never learns an account id (the people record's rule,
+//   `seesPeople` in the sequencer): every other author in the rows it gets, and who resolved a thread, is the
+//   people record's display name for that person, or "Teammate N" (N fixed per project at the person's first write),
+//   with the id `teammate:N`; its own comments keep its own id, so it can edit them. Everyone else gets full authors;
 // - an op (one pending version, `op`) is applied once: a retry of an op already applied (its answer was lost) is
 //   answered with the row as it is now and changes nothing, so it can't undo a change made after it.
 //
 // Storage: three tables, created on first use. `comments` holds each comment as it now is; `comment_log` orders the
 // stream: one row per comment, at the seq of its latest change (the older row is deleted), so catching up from any
 // position reads each changed comment once. `comment_ops` keeps, per comment and account, the last LIMITS.ops op ids
-// applied. A change writes 4 rows (P5-style accounting: a comment costs what a change costs, about).
+// applied. `comment_people` numbers the project's writers for links (and keeps the people record's name as of their
+// last write): one more row at a person's first write, or when that name changes. A change writes 4 rows (P5-style
+// accounting: a comment costs what a change costs, about).
 //   comments     (id TEXT PRIMARY KEY, seq INTEGER, cut TEXT, row TEXT)   WITHOUT ROWID
 //   comment_log  (seq INTEGER PRIMARY KEY, id TEXT, cut TEXT)            WITHOUT ROWID
 //   comment_ops  (id TEXT, account TEXT, ops TEXT, PRIMARY KEY (id, account)) WITHOUT ROWID   -- ops: a JSON array
+//   comment_people (account TEXT PRIMARY KEY, n INTEGER, name TEXT)    WITHOUT ROWID
 //   comment_meta (k TEXT PRIMARY KEY, v INTEGER)                         WITHOUT ROWID   -- "count"
 
 import type { AuthContext, SequencerStorage } from "@carton/core/plugins";
 import { applyPatch, patchProblem, validId } from "./model.ts";
-import { LIMITS, type Comment, type CommentAnswerMsg, type CommentPatchMsg, type CommentRefusal, type CommentsRequest, type CommentServerMessage } from "./types.ts";
+import { LIMITS, type Comment, type CommentAuthor, type CommentAnswerMsg, type CommentPatchMsg, type CommentRefusal, type CommentsRequest, type CommentServerMessage } from "./types.ts";
 
 /** A connection as the comment room sees it. */
 export interface CommentPeer {
@@ -63,6 +70,14 @@ export function mayReadComments(auth: AuthContext, cut: string): boolean {
   return WRITE_ROLES.has(auth.role) || !auth.branches || auth.branches.includes(cut);
 }
 
+/**
+ * May this session learn who wrote comments (account ids)? Everyone but a session scoped to some cuts: the same rule
+ * as the people record's (`seesPeople` in the sequencer).
+ */
+export function seesAuthors(auth: AuthContext): boolean {
+  return WRITE_ROLES.has(auth.role) || !auth.branches;
+}
+
 /** May this session comment on `cut`? */
 export function mayComment(auth: AuthContext, cut: string): boolean {
   return COMMENT_ROLES.has(auth.role) && (!auth.branches || auth.branches.includes(cut));
@@ -72,6 +87,7 @@ const DDL = [
   "CREATE TABLE IF NOT EXISTS comments (id TEXT NOT NULL PRIMARY KEY, seq INTEGER NOT NULL, cut TEXT NOT NULL, row TEXT NOT NULL) WITHOUT ROWID",
   "CREATE TABLE IF NOT EXISTS comment_log (seq INTEGER NOT NULL PRIMARY KEY, id TEXT NOT NULL, cut TEXT NOT NULL) WITHOUT ROWID",
   "CREATE TABLE IF NOT EXISTS comment_ops (id TEXT NOT NULL, account TEXT NOT NULL, ops TEXT NOT NULL, PRIMARY KEY (id, account)) WITHOUT ROWID",
+  "CREATE TABLE IF NOT EXISTS comment_people (account TEXT NOT NULL PRIMARY KEY, n INTEGER NOT NULL, name TEXT) WITHOUT ROWID",
   "CREATE TABLE IF NOT EXISTS comment_meta (k TEXT NOT NULL PRIMARY KEY, v INTEGER NOT NULL) WITHOUT ROWID",
 ];
 
@@ -128,6 +144,42 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
     db.exec("INSERT INTO comment_ops (id, account, ops) VALUES (?, ?, ?) ON CONFLICT(id, account) DO UPDATE SET ops = excluded.ops", id, account, JSON.stringify(ops));
   };
 
+  // the project's writers as links see them: a number each, and the people record's name as of their last write
+  let people: Map<string, { n: number; name: string | null }> | null = null;
+  const peopleNow = () => {
+    if (!people) {
+      init();
+      people = new Map(db.exec<{ account: string; n: number; name: string | null }>("SELECT account, n, name FROM comment_people").map((r) => [r.account, { n: num(r.n), name: r.name ?? null }]));
+    }
+    return people;
+  };
+  /** Number a writer (inside the write's transaction); the cache takes it once that commits. */
+  const notePerson = (account: string, name: string | null): (() => void) | null => {
+    const all = peopleNow();
+    const was = all.get(account);
+    if (was && was.name === name) return null;
+    const n = was?.n ?? Math.max(0, ...[...all.values()].map((p) => p.n)) + 1;
+    db.exec("INSERT INTO comment_people (account, n, name) VALUES (?, ?, ?) ON CONFLICT(account) DO UPDATE SET name = excluded.name", account, n, name);
+    return () => void all.set(account, { n, name });
+  };
+  const asLinkSees = (a: CommentAuthor, viewer: AuthContext): CommentAuthor => {
+    if (a.id === viewer.account) return a;
+    let p = peopleNow().get(a.id);
+    if (!p) {
+      // a row from before people were numbered: number its writer now
+      db.transaction(() => notePerson(a.id, null))?.();
+      p = peopleNow().get(a.id) ?? { n: 0, name: null };
+    }
+    return { id: `teammate:${p.n}`, name: p.name ?? `Teammate ${p.n}`, ...(a.agent ? { agent: a.agent } : {}) };
+  };
+  /** A row as `viewer` may see it: full for the team, without account ids for a link. */
+  const shown = (row: Comment, viewer: AuthContext): Comment => {
+    if (seesAuthors(viewer)) return row;
+    const out: Comment = { ...row, author: asLinkSees(row.author, viewer) };
+    if (row.resolved) out.resolved = { ...row.resolved, by: asLinkSees(row.resolved.by, viewer) };
+    return out;
+  };
+
   const answer = (c: CommentPeer, m: CommentPatchMsg, a: Partial<CommentAnswerMsg>) =>
     c.send({ type: "commentAnswer", branchId: m.branchId, n: m.n, id: typeof m.id === "string" ? m.id.slice(0, LIMITS.id) : "", ...a });
   const refuse = (c: CommentPeer, m: CommentPatchMsg, refused: CommentRefusal, reason: string, retryMs?: number) => answer(c, m, { refused, reason, ...(retryMs ? { retryMs } : {}) });
@@ -162,7 +214,7 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
         if (rows.length && bytes + r.row.length > lim.pageBytes) break;
         last = num(r.seq);
         if (!mayReadComments(c.auth, r.cut)) continue;
-        rows.push(JSON.parse(r.row) as Comment);
+        rows.push(shown(JSON.parse(r.row) as Comment, c.auth));
         bytes += r.row.length;
       }
       const more = last < top && (scanned.length === lim.page || last < num(scanned[scanned.length - 1]?.seq ?? last));
@@ -196,18 +248,20 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
       if (wait) return refuse(c, m, "rate-limited", "too many comments at once", wait);
       // an op applied before (its answer was lost): the row as it is now, nothing changed
       const had = cur && m.op !== undefined ? opsOf(m.id, c.auth.account) : [];
-      if (cur && m.op !== undefined && had.includes(m.op)) return answer(c, m, { row: cur });
+      if (cur && m.op !== undefined && had.includes(m.op)) return answer(c, m, { row: shown(cur, c.auth) });
       if (!cur && p.add && count() >= lim.perProject) return refuse(c, m, "too-many", `a project has at most ${lim.perProject} comments`);
-      const name = (opts.nameOf?.(c.auth) ?? p.author.name).slice(0, LIMITS.name);
+      const known = opts.nameOf?.(c.auth)?.slice(0, LIMITS.name);
+      const name = known ?? p.author.name.slice(0, LIMITS.name);
       const who = { id: c.auth.account, name, ...(p.author.agent ? { agent: p.author.agent } : {}) };
       const res = applyPatch(cur, m.id, p, who, (id) => (id === p.add?.replyTo ? parent : get(id)), clock());
       if (!res.ok) return refuse(c, m, res.refused, res.reason);
       if (!res.changed) {
         // kept even so: retried after a later change, it must still change nothing
         keepOp(m.id, c.auth.account, had, m.op);
-        return answer(c, m, { row: cur });
+        return answer(c, m, { row: shown(cur!, c.auth) });
       }
       let row!: Comment;
+      let numbered: (() => void) | null = null;
       db.transaction(() => {
         const seq = head() + 1;
         row = { ...res.row, seq };
@@ -216,9 +270,11 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
         db.exec("INSERT INTO comments (id, seq, cut, row) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, cut = excluded.cut, row = excluded.row", m.id, seq, row.cut, JSON.stringify(row));
         if (!cur) db.exec("INSERT INTO comment_meta (k, v) VALUES ('count', 1) ON CONFLICT(k) DO UPDATE SET v = v + 1");
         keepOp(m.id, c.auth.account, had, m.op);
+        numbered = notePerson(who.id, known ?? null);
       });
-      answer(c, m, { row });
-      for (const o of peers) if (o !== c && mayReadComments(o.auth, row.cut)) o.send({ type: "comments", branchId: row.cut, rows: [row], head: row.seq! });
+      (numbered as (() => void) | null)?.();
+      answer(c, m, { row: shown(row, c.auth) });
+      for (const o of peers) if (o !== c && mayReadComments(o.auth, row.cut)) o.send({ type: "comments", branchId: row.cut, rows: [shown(row, o.auth)], head: row.seq! });
     },
   };
 }
