@@ -438,11 +438,14 @@ async function headProject(bundlePath, current, given) {
 // running then doesn't count. A save whose write never comes (the store's write failed before the install) is let go
 // after LANDING_MS with nothing, which the Materializer takes as "read the file" (it waits 5 s at most itself).
 const LANDING_MS = 6000;
-const landings = new Map(); // bundle (resolved) → [{queued, settle}] in save order
+const landings = new Map(); // landingKey(bundle) → [{queued, settle}] in save order
+// the bundle as the file system names it: case-insensitively on Windows and macOS (the save's bundle path and the
+// write's folder come from different calls of Cardboard's store)
+const landingKey = (dir) => { const r = path.resolve(dir); return process.platform === "win32" || process.platform === "darwin" ? r.toLowerCase() : r; };
 function hostWrite(bundlePath) {
   const ext = extensions.filter((e) => typeof e.hostWrite === "function");
   if (!bundlePath || !ext.length) return null;
-  const key = path.resolve(bundlePath);
+  const key = landingKey(bundlePath);
   let resolve;
   const after = new Promise((r) => (resolve = r));
   const l = { queued: false };
@@ -542,7 +545,7 @@ const revIn = (file, bytes) => {
 // `envelope`: the object writeNow stringified into it, for the GUI saves this write lands (hostWrite, above): with the
 // file's stamp once the install put those bytes there (`own`, checked under the install lock), else nothing.
 async function install(tmp, file, seenStamp, rev, envelope) {
-  const due = path.basename(file) === "project.json" ? (landings.get(path.resolve(path.dirname(file))) ?? []).filter((l) => l.queued) : [];
+  const due = path.basename(file) === "project.json" ? (landings.get(landingKey(path.dirname(file))) ?? []).filter((l) => l.queued) : [];
   let out = false;
   try { return (out = await installFile(tmp, file, seenStamp, rev)); } finally {
     if (due.length) {
