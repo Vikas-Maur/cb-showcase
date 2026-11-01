@@ -44,6 +44,8 @@ const STORE = {
       ["let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);", "let[m]=await this.__cartonListRevisions(r),p=m===void 0?null:await this.__cartonReadRevision(r,m);"],
       ["let d=await this.listRevisions(r);for(let m of d.slice(20))", "let d=await this.__cartonListRevisions(r);for(let m of d.slice(20))"],
     ],
+    // the mirror's print (cb source print, MCP's print_timeline, timeline.tsx): Carton's exact header with Carton on
+    print: ["async print(t,r=[]){return this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Cr(__p.project),__p.rev,r):this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(o,c.doc,c.added),a.rev}", "return await this.writeTimeline(o,c.doc,c.added,{source:\"undo\",rev:a.rev}),a.rev}"],
     headerRev: ["g=Nh(r)?rt(r):r", "g=Nh(r)?(__carton.on?__carton.headerRev(rt(r),r):rt(r)):r"],
     base: ["B=await this.revisionAtOrBefore(o,g.rev)??j,", "B=(__carton.on&&typeof g.rev==\"string\"?await __carton.cartonBase(g.rev,o):await this.revisionAtOrBefore(o,g.rev))??(__carton.on?await __carton.missingRev(g.rev,j,o):j),"],
@@ -93,6 +95,7 @@ const STORE = {
       ["let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);", "let[u]=await this.__cartonListRevisions(r),p=u===void 0?null:await this.__cartonReadRevision(r,u);"],
       ["let l=await this.listRevisions(r);for(let u of l.slice(20))", "let l=await this.__cartonListRevisions(r);for(let u of l.slice(20))"],
     ],
+    print: ["async print(t,r=[]){return this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Zs(__p.project),__p.rev,r):this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(i,s.doc,s.added),o.rev}", "return await this.writeTimeline(i,s.doc,s.added,{source:\"undo\",rev:o.rev}),o.rev}"],
     headerRev: ["h=OC(r)?li(r):r", "h=OC(r)?(__carton.on?__carton.headerRev(li(r),r):li(r)):r"],
     base: ["be=await this.revisionAtOrBefore(i,h.rev)??de,", "be=(__carton.on&&typeof h.rev==\"string\"?await __carton.cartonBase(h.rev,i):await this.revisionAtOrBefore(i,h.rev))??(__carton.on?await __carton.missingRev(h.rev,de,i):de),"],
@@ -171,6 +174,13 @@ const patchStore = (replace, k) => {
   for (const [from, to] of s.revFiles) replace(from, to);
   around(replace, "listRevisions", "t", () => "__carton.listRevisions(this,t)");
   around(replace, "readRevision", "t,r", () => "__carton.readRevision(this,t,r)");
+  // Laptop #2 (agents' cb edits overwrote each other): a numeric rev's base is the exact version the rev names, not the
+  // first at or before it in history order (several writers' revs aren't in save order: a newer version was taken, and
+  // the print's older values read as the agent's edits); .revs only for a rev older than Carton's history. And a print
+  // carries Carton's exact header, its records that version's as Carton has them, so the apply merges against exactly
+  // what was printed and `cb source check` of an unchanged print finds nothing.
+  around(replace, "revisionAtOrBefore", "t,r", () => "__carton.revisionAtOrBefore(this,t,r)");
+  replace(...s.print);
   replace("async history(t){", "history(t){return __carton.on?this.__cartonHistory(t).then(r=>__carton.history(this,t,r)):this.__cartonHistory(t)}async __cartonHistory(t){");
   // undo <rev> restores through writeTimeline, whose scope says so.
   replace(...s.undoWrite);

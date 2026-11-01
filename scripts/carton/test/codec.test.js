@@ -105,7 +105,8 @@ const checkCodec = (r, rev) => {
   assert.equal(mine.length, own.length);
   assert.deepEqual(mine.map((l, i) => (l === own[i] ? null : i)).filter((i) => i !== null), [3], "only the rev line differs");
   assert.equal(mine[3], "// cardboard:rev " + rev, "the rev verbatim on Cardboard's rev line");
-  assert.match(own[3], /^\/\/ cardboard:rev \d+$/);
+  // cb's own print: 1.4.0's numeric rev, or with history Carton's exact header for the version printed (laptop #2)
+  assert.match(own[3], /^\/\/ cardboard:rev (\d+|.+@\d+~[0-9a-f]{8} b:[0-9a-f]{8})$/);
   assert.ok(!r.roundTrip.error, r.roundTrip.error);
   assert.deepEqual(r.roundTrip.project, r.project, "parse(print(p), p) is p");
   assert.equal(r.half.name, "SyntaxError", "a half-written file is refused");
@@ -165,9 +166,11 @@ test("cb source apply of a file under a Carton header merges against that exact 
   const extra = await real(), root = path.join(TMP, "lib-real"), b = setup(carton.cli, root, extra);
   // Version A: EDIT1. Its print, and Carton's header for it.
   const old = timeline(b), A = cartonHeader(carton.cli, root, extra);
+  // A's print as 1.4.0 wrote it (with Carton on, prints carry Carton's header: laptop #2), its rev the project's
+  const oldNumeric = withRev(old, String(project(b).stateUpdatedAt));
   // Since A, on the current timeline: the clip runs to 2.5 s (version B).
   ok(cb(carton.cli, root, ["source", "apply", "Demo", write("real-b.tsx", clipTo25(timeline(b)))], extra), "apply B");
-  const revB = Number(/^\/\/ cardboard:rev (\d+)$/m.exec(timeline(b))[1]);
+  const revB = project(b).stateUpdatedAt;
   const apply = (name, text) => cb(carton.cli, root, ["source", "apply", "Demo", write(name, text)], extra);
   // 1. A's print under A's Carton header (and a later numeric rev line, which doesn't count: only the first one does),
   //    with the title's size changed: merged against A, so B's clip stays.
@@ -177,7 +180,7 @@ test("cb source apply of a file under a Carton header merges against that exact 
   let p = project(b);
   assert.deepEqual([item(p, "video").endTime, item(p, "text").fontSize], [2.5, 140]);
   // 2. 1.4.0's numeric header of A, as before Carton's form: through the rev map, against A.
-  const r2 = json(ok(apply("real-2.tsx", old.replace(">Hi</div>", ">Hey</div>")), "apply 2"));
+  const r2 = json(ok(apply("real-2.tsx", oldNumeric.replace(">Hi</div>", ">Hey</div>")), "apply 2"));
   assert.equal(r2.carton.status, "confirmed");
   p = project(b);
   assert.deepEqual([item(p, "video").endTime, item(p, "text").fontSize], [2.5, 140]);
