@@ -27,7 +27,8 @@ test("real Carton: history, credits down to the subagent, compare, activity", as
     assert.equal(h.code, 0, h.err);
     const v = h.json().versions;
     assert.deepEqual(v.map((x: any) => x.version), ["main@3", "main@2", "main@1", "main@0"], "the starting state is main@1, the import");
-    assert.equal(v[2].by.id, "import");
+    // the import is told as the person whose project it was (ui-words), recorded as the import
+    assert.deepEqual([v[2].kind, v[2].by.kind, v[2].by.id], ["import", "human", "person"]);
     assert.equal(v[0].by.agentType, "editor");
     assert.deepEqual([v[0].tracks, v[0].items, v[0].duration], [2, 5, 30]);
     assert.match((await cb(local, ["credits", "c2"])).out, /^c2: last changed by Director › editor \(turn t1\) \(subagent editor a1, chat c1\)$/);
@@ -35,7 +36,7 @@ test("real Carton: history, credits down to the subagent, compare, activity", as
     const cmp = await cb(local, ["compare", "main@0", "--json"]);
     assert.ok(cmp.json().changes.length >= 2, cmp.out);
     const act = await cb(local, ["activity", "--json"]);
-    assert.deepEqual(act.json().activity.map((g: any) => [g.by.id, g.changes]), [["director/c1/t1/sub-editor-a1", 1], ["director/c1/t1", 1], ["import", 1]]);
+    assert.deepEqual(act.json().activity.map((g: any) => [g.by.id, g.changes]), [["director/c1/t1/sub-editor-a1", 1], ["director/c1/t1", 1], ["person", 1]]);
   } finally {
     await local.close();
   }
