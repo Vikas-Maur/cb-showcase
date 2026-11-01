@@ -64,18 +64,34 @@ test("another process's pin and release are seen at the next call, which reads t
   for (const x of [a, b]) await x.close();
 });
 
-test("a pin another process wrote after this handle read the pins: this handle's pin write fails on the token, reads them again, and both pins stay", async () => {
+test("a pin another process writes after this handle read the pins and before its own pin write lands: that write fails on the token, the retry reads them again, and both pins stay", async () => {
   const data = createMemoryData();
-  const ka = counted(createMemoryStore({ shared: data }));
+  const inner = createMemoryStore({ shared: data });
+  let interleave: (() => Promise<unknown>) | null = null,
+    pinWrites = 0;
+  // A's store: the moment A's pin write is about to land (A has refreshed and planned it), B pins first
+  const store: Store = { ...inner, info: inner.info, get: inner.get, range: inner.range, close: inner.close, write: async (w, c) => {
+    if (w.some((x) => x.table === "pins")) {
+      pinWrites++;
+      const f = interleave;
+      interleave = null;
+      if (f) await f();
+    }
+    return inner.write(w, c);
+  } };
+  const ka = counted(store);
   const a = await Carton.open({ adapter, store: ka.store, init: { doc: doc0() }, actor: alice });
   const b = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: bob });
   const d = (await a.head()).doc;
-  const pb = await b.pin({ owner: "view-b", doc: edit(d, "a", "B's draft") });
+  let pb: { header: string } | undefined;
+  interleave = async () => (pb = await b.pin({ owner: "view-b", doc: edit(d, "a", "B's draft") }));
   ka.n.pins = 0;
   const pa = await a.pin({ owner: "turn-a", doc: edit(d, "b", "A's draft") });
+  assert.ok(pb, "B pinned while A's pin write was about to land");
+  assert.equal(pinWrites, 2, "A's first pin write failed on the token; the retry landed");
   assert.ok(ka.n.pins >= 1, "A read the pins again");
-  assert.equal((await createMemoryStore({ shared: data }).range("pins")).length, 2, "both pin rows are stored");
-  assert.equal(item(await a.checkout(pb.header), "a")!.name, "B's draft", "A holds B's pin");
+  assert.equal((await inner.range("pins")).length, 2, "both pin rows are stored");
+  assert.equal(item(await a.checkout(pb!.header), "a")!.name, "B's draft", "A holds B's pin");
   assert.equal(item(await b.checkout(pa.header), "b")!.name, "A's draft", "B holds A's pin");
   for (const x of [a, b]) await x.close();
 });

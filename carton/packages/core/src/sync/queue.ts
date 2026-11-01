@@ -82,6 +82,11 @@ export interface QueuedChange {
   rejecting?: string;
   /** The connection that refused its withdraw (its token or branch): not withdrawn again on it. */
   withdrawRefused?: number;
+  /**
+   * Not to be sent yet, nor anything after it: the store write that keeps it is under way and may fail (a commit with
+   * conditions, review R6-2). Cleared by `unhold` once it landed; taken back by `unqueue` if it failed.
+   */
+  held?: true;
   meta: Record<string, unknown>;
   history?: HistoryFields;
 }
@@ -120,6 +125,8 @@ export interface CommitInput {
   inferIntent?: boolean;
   /** Fold-in, undo and naming fields the change records (kept through rebases, sent with the push). */
   history?: HistoryFields;
+  /** Hold it back from the pusher until `unhold` (its store write may yet fail: `QueuedChange.held`). */
+  held?: boolean;
 }
 
 /** A pending change as a store kept it across a restart (`ReplicaQueue.restore`). */
@@ -359,6 +366,7 @@ export class ReplicaQueue {
       withdrawSent: null,
       meta: ch.meta ?? {},
       ...(ch.history ? { history: pickHistory(ch.history) } : {}),
+      ...(ch.held ? { held: true as const } : {}),
     };
     queue.push(p);
     this.invalidate(b);
@@ -700,6 +708,12 @@ export class ReplicaQueue {
    * the process that holds the lease can still apply it), and the changes after it are rebased without it. false, and
    * nothing done, if a copy of it may have been sent: then it is withdrawn instead (rejectLocally).
    */
+  unhold(b: string, id: string): boolean {
+    const p = this.queues.get(b)!.find((x) => x.id === id);
+    if (!p?.held) return false;
+    delete p.held;
+    return true;
+  }
   unqueue(b: string, id: string): boolean {
     const queue = this.queues.get(b)!;
     const p = queue.find((x) => x.id === id);

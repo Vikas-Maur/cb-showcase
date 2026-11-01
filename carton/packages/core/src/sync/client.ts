@@ -689,6 +689,7 @@ export class SyncClient {
   private pushPending(b: string): void {
     const head = this.queue.headSeq(b);
     for (const p of [...this.queue.pending(b)]) {
+      if (p.held) break; // its store write is under way: nothing from it on goes out yet (R6-2)
       if (!this.queue.isEmpty(p)) continue;
       if (!p.sentBases.length) {
         this.queue.absorbLocally(b, p); // never sent: no copy can exist anywhere
@@ -714,6 +715,7 @@ export class SyncClient {
     const sizes: number[] = [];
     let tooLarge: string | null = null;
     for (const p of pend) {
+      if (p.held) break;
       if (this.queue.isEmpty(p) || this.inFlight(p)) continue;
       const v = last(p.versions);
       let ch: Change = {
