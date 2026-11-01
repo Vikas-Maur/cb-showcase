@@ -70,6 +70,8 @@ export interface CommentTarget {
 }
 
 const INDEXES = 3;
+/** The generic person (core's PERSON): what wrote comments before the project had an identity. */
+const PERSON = "person";
 /** A thread with no anchor: on the whole project, the same object every time (views keep their identity). */
 const GENERAL: Placement = Object.freeze({ status: "general", range: null, items: Object.freeze([]) as unknown as string[] });
 
@@ -440,8 +442,15 @@ export class Comments {
     this.#sync = new CommentSync(opts, {
       cut: () => self.#opts.cut?.() ?? self.#carton.cut,
       head: () => self.#head,
-      // read fresh: `cb` (another process on the same carton.db) may have written comments meanwhile
-      pending: () => self.#run(async () => (await self.#reloadPending(), [...self.#pending.values()])),
+      // read fresh: `cb` (another process on the same carton.db) may have written comments meanwhile. Only this
+      // person's patches go up (or the generic person's, written before an identity was set): a full-history .cbproj
+      // copies the pending table, and the server would file someone else's unsent comment under this session.
+      pending: () =>
+        self.#run(async () => {
+          await self.#reloadPending();
+          const me = self.me().id;
+          return [...self.#pending.values()].filter((p) => p.patch.author.id === me || p.patch.author.id === PERSON);
+        }),
       take: (rows, head, reset) => self.#run(() => self.#take(rows, head, reset === true)),
       answered: (sent, row, head) => self.#run(() => self.#answered(sent, row, head)),
       refused: (sent, refused, reason) => self.#run(() => self.#refused(sent, refused, reason)),

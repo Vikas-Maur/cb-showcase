@@ -126,3 +126,19 @@ test("a host from before comments: the comments stay here, the status says so, n
   assert.equal(host.connections, 0, "it closed its connection and didn't come back");
   await a.comments.close();
 });
+
+test("someone else's unsent comment (a full-history .cbproj copies the pending table) is never sent as this person's", async () => {
+  const host = commentHost();
+  const carton = await openCarton(items());
+  // Bob wrote a comment on his machine and sent the project with its history before it went up
+  const bob = await Comments.open({ carton, me: BOB });
+  const theirs = await bob.add({ body: "Bob's note", range: [1, 2] });
+  await bob.close();
+  // Alice opens that carton.db and shares
+  const alice = await Comments.open({ carton, me: ME, sync: { transport: host.transport, url: host.url, token: host.token("editor", "alice") } });
+  const mine = await alice.add({ body: "Alice's note", range: [3, 4] });
+  await until(() => !alice.isPending(mine.id), 3000, "alice's own comment went up");
+  assert.equal(host.room.head(), 1, "only alice's");
+  assert.ok(alice.isPending(theirs.id), "bob's stays here, waiting for bob");
+  await alice.close();
+});
