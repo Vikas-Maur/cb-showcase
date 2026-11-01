@@ -4,7 +4,9 @@
 //      is retried, never left pending in a handle that holder doesn't read;
 //   #2 an agent's card belongs to the cut its save landed on: History shows it only there, a pick commits there;
 //   #4 identical cards from two agents show once, and a pick closes the card for both agents;
-//   a View released while it is still starting doesn't take the lease or timeline.tsx afterwards.
+//   a View released while it is still starting doesn't take the lease or timeline.tsx afterwards;
+//   the freeze holds when another connection's write makes the holder look at head after the agent saved its view (CI
+//   Windows: the app's printShared stopgap showed the person's edit then), and an agent's own cb commit shows in it.
 // On real core, cardboard-adapter's Materializer and engine, @carton/local's lease and holder, and an in-process host,
 // bundled with esbuild (no Cardboard bundles needed).
 //   node --test --test-concurrency=1 scripts/carton/test/sync/views-guards.test.js
@@ -182,7 +184,7 @@ test("the freeze holds when the holder hears of another connection's write after
   const v = new A.View({ api, bundlePath: bundle, lc });
   try {
     await v.start();
-    const actor = { kind: "agent", id: "director/chat/turn", chat: "chat", turn: "turn" };
+    const actor = { kind: "agent", id: "director/chat/turn", chat: "chat", turn: "turn", provider: "claude-code" }; // a Director turn: hooked (local's hookDelivered)
     const shared = () => fs.readFileSync(path.join(bundle, "timeline.tsx"), "utf8");
     // the turn starts: its first read freezes timeline.tsx; it prints its own view
     await v.hook(actor, { event: "read" });
@@ -201,6 +203,12 @@ test("the freeze holds when the holder hears of another connection's write after
     await v.holder.materializer.onExternalHeadChange();
     await v.mz.idle();
     assert.ok(!shared().includes("PERSON-WHILE-FROZEN"), "the person's edit stays out of timeline.tsx until the turn stops");
+    // the agent's own cb commit (served by this holder) shows in the frozen file at once, as with 1.4.0; the person's
+    // edit still doesn't
+    const out = await v.holder.serve({ id: "aaabbbcc.1", actor, op: { kind: "commit", ops: [{ op: "set", path: ["timelineItems", title, "fontSize"], value: 111 }] } });
+    assert.equal(out.status, "confirmed", JSON.stringify(out));
+    await until(() => shared().includes('"fontSize": 111'), 20_000, "the agent's cb edit in the frozen timeline.tsx");
+    assert.ok(!shared().includes("PERSON-WHILE-FROZEN"), "the agent's cb edit shows without the person's");
     await v.hook(actor, { event: "stop" });
     await until(() => shared().includes("PERSON-WHILE-FROZEN"), 20_000, "the person's edit after the Stop");
   } finally {

@@ -394,8 +394,11 @@ onto the packages' APIs, so a package API change touches only the facade.
     hooks) and host Claude Code's (`cb carton-hook`, spawned with the hook's JSON on stdin): a Read of `timeline.tsx`
     freezes it, a Write/Edit of `project.json` is refused with a pointer to `cb source print --view`, the Stop lets go.
     Views are polled (a stat every 250 ms, only the views Carton printed): no watch handle inside the bundle, which on
-    Windows can block Cardboard's rename or trash of it. Stopgap until cardboard-adapter merges an agent's own `cb`
-    commit into the frozen file: such a commit during a freeze reprints the shared file from head (`printShared`).
+    Windows can block Cardboard's rename or trash of it. An agent's own `cb` commit during a freeze shows in the frozen
+    file at once (the Materializer's `foldAgentChanges`, cardboard-adapter `151a38e`); the person's and remote changes
+    stay out until the freeze ends. (The app's earlier stopgap reprinted the shared file from head when the newest
+    change was an agent's, which on Windows CI showed the person's edit during a turn: an in-process view save was the
+    newest change when another connection's write made the holder look. Guarded by `views-guards.test.js`.)
 - **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
   save projection, cut out at build time) and `carton-ui.js`.
 - **Wired, tested on stand-ins only:** the editor's pages (H4–H7, the History tab, the Share panel) and main (H9: the

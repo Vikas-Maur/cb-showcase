@@ -24,10 +24,9 @@
 //   CartonHolderEngine with the Materializer as its printer), so cb's writes and hook events reach the Materializer.
 //   Live sync (live.js) uses this holder for a shared project instead of keeping a lease of its own; the holder
 //   connects sync only once Live runs (an unshared project has nothing to connect to).
-// - Stopgap until cardboard-adapter merges an agent's own `cb` write into the freeze view (R8-01 covers its saves of
-//   the file): during a freeze, such a write restarts the shared file from head (the Materializer's printShared), so an
-//   agent that re-reads timeline.tsx after `cb source apply` finds its edit, as with 1.4.0. The person's edits made
-//   since the freeze began show then too.
+// - An agent's own `cb` write during a freeze shows in the frozen timeline.tsx at once, as with 1.4.0 (the Materializer's
+//   foldAgentChanges, whatever told it of head: this holder's write, local's follower, a confirmation); the person's
+//   and remote changes stay out until the freeze ends.
 // - Old prints: a timeline.tsx or view printed by Cardboard 1.4.0 carries a bare `stateUpdatedAt` rev. The facade
 //   maps each one it wrote to its state (`views` table `["rev", ms]`); the engine wrapper resolves them there, so such
 //   a file applies as an edit of that state instead of being refused ("state unknown: re-print").
@@ -44,8 +43,6 @@ const MATERIALIZE_MS = 40;
 const POLL_MS = 250;
 // How long a view save on a shared cut waits for this worker to hold the lease again (#mayCommit).
 const LEASE_WAIT_MS = 5000;
-// A cb write that changes the timeline (the stopgap below).
-const CHANGES = new Set(["commit", "restore", "revert", "undo", "undoTurn", "fold"]);
 const errText = (e) => (e && e.message) || String(e);
 const warned = new Set();
 const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); console.warn("[carton] " + msg); } };
@@ -154,12 +151,7 @@ export class View {
       onCb: () => mz.onCb(),
       onHeadChange: (cause) => mz.onHeadChange(cause),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
-      onExternalHeadChange: async () => {
-        const r = await mz.onExternalHeadChange();
-        // another process's write (cb's own commit): an agent's shows in the frozen file too (the stopgap)
-        if (r === "head" && mz.freeze.active) await this.#agentWrote((await lc.carton.log({ limit: 1 }).catch(() => []))[0]?.author);
-        return r;
-      },
+      onExternalHeadChange: () => mz.onExternalHeadChange(),
       onChangeUpdate: (v, id, u) => mz.onChangeUpdate(v, id, u),
     };
     const engine = new CartonHolderEngine(lc.carton, { materializer: printer, onExternal: () => this.materializeSoon() });
@@ -168,9 +160,7 @@ export class View {
     engine.serve = async (req, ctx) => {
       await caughtUp(lc.carton);
       try {
-        const r = await serve(req, ctx);
-        if (CHANGES.has(req?.op?.kind) && r && !r.empty && (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts")) await this.#agentWrote(req.actor);
-        return r;
+        return await serve(req, ctx);
       } finally { this.materializeSoon(); }
     };
     // Sync connects once Live runs for the project (connectSync); the holder's later starts (a lease taken back) too.
@@ -194,12 +184,6 @@ export class View {
   async connectSync() {
     this.live = true;
     if (this.syncArgs && !this.stopped) await this.syncArgs.start(...this.syncArgs.args);
-  }
-
-  /** The stopgap: an agent's own cb write during a freeze shows in the shared file (from head). */
-  async #agentWrote(author) {
-    if (!author || author.kind === "human" || !this.mz.freeze.active || this.stopped) return;
-    await this.mz.printShared().catch((e) => warnOnce("print:" + this.bundlePath, `timeline.tsx didn't show an agent's edit in ${path.basename(this.bundlePath)}: ${errText(e)}`));
   }
 
   /**
