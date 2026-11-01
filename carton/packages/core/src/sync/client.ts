@@ -18,7 +18,7 @@
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
-import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, PresenceState, ServerMessage } from "./messages.ts";
+import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, Person, PersonRids, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
 import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, jsonBytesBound, oversized, seal, unseal } from "./envelope.ts";
@@ -90,6 +90,10 @@ export interface SyncClientOptions {
    * rejected locally ("too large"); pushes over it together go in several messages.
    */
   maxMessageBytes?: number;
+  /** The person at this replica, sent in every hello and by `identify()` (windows-sync R3). */
+  identity?: () => Person | null;
+  /** People the server sent (its welcome's list, and each change to it), before the rows they come with. */
+  onPeople?: (people: PersonRids[]) => void;
 }
 
 /** The most presence updates a client sends a second (§12: 10–20 Hz while dragging). */
@@ -120,6 +124,12 @@ function mergeLineage(have: ClosureEntry[], page: readonly ClosureEntry[]): Clos
   return out;
 }
 
+/** One key per actor in presence (`kind:id`; anything else by its JSON). */
+const presenceKey = (a: unknown): string => {
+  const x = a as { kind?: unknown; id?: unknown } | null;
+  return x && typeof x === "object" && typeof x.id === "string" ? `${String(x.kind)}:${x.id}` : JSON.stringify(a);
+};
+
 export class SyncClient {
   readonly queue: ReplicaQueue;
   readonly branchId: string;
@@ -136,11 +146,17 @@ export class SyncClient {
   stopped = false;
   stopReason: string | null = null;
   caughtUp = false;
+  /** This connection's server keeps people (its welcome had `people`): `identity` may be sent alone. */
+  private peopleKept = false;
   private quiesced = false;
   private retry: unknown = null;
   private presenceAt = -Infinity;
   private presenceNext: { actor: Change["author"]; state: PresenceState | null } | null = null;
   private presenceTimer: unknown = null;
+  /** The latest presence asked for, sent or not: shown again after a reconnect (review SF4-8). */
+  private presenceLast: { actor: Change["author"]; state: PresenceState | null } | null = null;
+  /** Peers this connection shows (their last presence not a leave), by actor: told gone when it closes. */
+  private shown = new Map<string, unknown>();
   private waiters: ((ok: boolean) => void)[] = [];
   private statusListeners: ((s: SyncStatus) => void)[] = [];
   private _status: SyncStatus = "offline";
@@ -209,11 +225,16 @@ export class SyncClient {
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
     if (this.presenceTimer !== null) this.timers.clearTimeout(this.presenceTimer);
     this.presenceTimer = null;
+    // a coalesced update still waiting goes out before the close: it is often the leave (`null`) a closing editor
+    // sends right after its last move, and peers have no other way to learn the person left (the relay keeps none)
+    const p = this.presenceNext;
     this.presenceNext = null;
+    if (p && this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
     const c = this.conn;
     this.conn = null;
     c?.close();
     this.failRequests(why);
+    this.dropShown();
     this.setStatus("stopped");
     this.emit({ type: "stopped", why });
     for (const w of this.waiters.splice(0)) w(false);
@@ -275,6 +296,7 @@ export class SyncClient {
         this.caughtUp = false;
         this.confirmedSoFar = [];
         this.noKeyframe = false;
+        this.peopleKept = false;
         this.stats.reconnects++;
         const id = this.connId;
         const conn = c;
@@ -306,6 +328,7 @@ export class SyncClient {
     if (id !== this.connId || !this.conn) return;
     this.conn = null;
     this.failRequests(why);
+    this.dropShown();
     this.caughtUp = false;
     this.setStatus("offline");
     this.emit({ type: "offline", why });
@@ -328,6 +351,15 @@ export class SyncClient {
       this.requests.set(m.req, { m, rows: [], resolve, reject });
       this.send(m);
     });
+  }
+  /**
+   * The connection is gone: every peer it showed is told gone, as a leave (`state: null`). A host that restarts, or a
+   * room evicted on a deploy, keeps no one to send leaves for; a peer still there shows again with its next update.
+   */
+  private dropShown(): void {
+    const gone = [...this.shown.values()];
+    this.shown.clear();
+    for (const actor of gone) this.emit({ type: "presence", branchId: this.branchId, actor, state: null });
   }
   /** Drop connection `id` (a lost message: the server couldn't read an envelope, or we couldn't): reconnect, catch up. */
   private drop(id: number, why: string): void {
@@ -368,7 +400,14 @@ export class SyncClient {
     if (this.noKeyframe) m.noKeyframe = true;
     if (after !== undefined) m.claimsAfter = after;
     if (this.o.blobs) m.envelopes = true;
+    const who = this.o.identity?.();
+    if (who) m.identity = who;
     return m;
+  }
+  /** Send this replica's person now, on a connection whose server keeps people (one that never would says so in error). */
+  identify(): void {
+    const who = this.o.identity?.();
+    if (who && this.peopleKept && this.conn?.open) this.send({ type: "identity", branchId: this.branchId, identity: who });
   }
   private adoptKey(): string | null {
     const s = this.queue.branch(this.branchId).sequencer;
@@ -416,9 +455,17 @@ export class SyncClient {
       case "adopted":
         if (this.queue.branch(b).sequencer.kind !== "handingOff") return;
         return this.becomeServer(m.since);
+      case "people":
+        if (m.branchId === b) this.o.onPeople?.(m.people);
+        return;
       case "hello":
       case "changes":
         if (m.type === "hello" && m.maxMessageBytes && this.o.blobs) this.serverLimit = m.maxMessageBytes;
+        // the people first, so the rows they name are told by person from the start
+        if (m.type === "hello" && m.people && m.branchId === b) {
+          this.peopleKept = true;
+          this.o.onPeople?.(m.people);
+        }
         this.fenced(() => {
           if (m.branchId !== b) return;
           if (m.type === "hello" && m.uncheckedFrom !== undefined) {
@@ -460,6 +507,10 @@ export class SyncClient {
             this.setStatus(this.queue.pending(b).length ? "syncing" : "up-to-date");
             for (const w of this.waiters.splice(0)) w(true);
             this.emit({ type: "online" });
+            // shown again on a new connection: peers got a leave for the old one, and an update the disconnect caught
+            // waiting is the latest (review SF4-8); a leave isn't repeated
+            const p = this.presenceLast;
+            if (p?.state) this.sendPresence(p.actor, p.state);
           }
           this.pump();
         });
@@ -556,8 +607,12 @@ export class SyncClient {
       }
       case "overwritten":
         return this.emit({ type: "overwritten", id: m.id, by: m.by, author: m.author });
-      case "presence":
+      case "presence": {
+        const k = presenceKey(m.actor);
+        if (m.state === null) this.shown.delete(k);
+        else this.shown.set(k, m.actor);
         return this.emit({ type: "presence", branchId: m.branchId, actor: m.actor, state: m.state });
+      }
       case "unknownBranch":
         return this.emit({ type: "error", error: "unknown branch" });
       case "adoptError":
@@ -595,6 +650,7 @@ export class SyncClient {
    * (The server also drops anything over a per-connection cap.)
    */
   sendPresence(actor: Change["author"], state: PresenceState | null): void {
+    this.presenceLast = { actor, state };
     if (!this.conn?.open) return;
     const now = (this.o.clock ?? Date.now)();
     const wait = this.presenceAt + 1000 / PRESENCE_PER_SEC - now;

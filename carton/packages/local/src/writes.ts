@@ -14,7 +14,9 @@
 import { merge3 } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
+import { statusPath } from "@carton/cardboard/node";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
+import type { HookOp } from "./hooks.ts";
 
 /** The JSON a write carries over the control socket. Docs and ops are plain JSON. */
 export type WriteOp =
@@ -36,8 +38,18 @@ export type WriteOp =
   | { kind: "switch"; cut: string }
   | { kind: "name"; ref: string; name: string }
   | { kind: "pin"; owner: string; cut?: string; ttlMs?: number }
-  /** `cb source print --view [name]`: the materializer prints a per-agent view (§6.4); needs a holder that runs one. */
+  /**
+   * `cb source print --view <name>`: the materializer prints a per-agent view (§6.4); needs a holder that runs one. A
+   * hooked agent's view is named after it whatever it asks; others get the name asked, else `agent-<4 chars>`.
+   */
   | { kind: "printView"; name?: string }
+  /**
+   * An agent's Claude Code hook event (hooks.ts `HookOp`: read, write, stop) for the holder's materializer: the
+   * freeze of the shared file, credits for a hooked agent's save, the turn's pins (§6.4, H8). Never starts a helper,
+   * never counts as a `cb` call, never delivers notices (no agent reads a hook's answer); applied once per request id
+   * by the same materializer. With no materializer to tell: `hook: {event, delivered: false}`.
+   */
+  | HookOp
   /** Share a cut (§5.3): the holder hands it from the local sequencer to the server (local → handing off → server). */
   | { kind: "share"; cut?: string }
   /** `cb resolve` closed a card: drop it from the actor's late-conflict notices. */
@@ -52,10 +64,16 @@ export interface WriteRequest {
   waitMs?: number;
 }
 
+/**
+ * WriteOp `head`'s answer: the holder's head of the cut written to (core's `head(cut)`: the records are History's own,
+ * frozen and shared, never copied per answer; only the collection arrays are new).
+ */
+export type WriteHead = { ref: StateRef; doc: unknown };
 export type CbResult =
-  | { status: "confirmed"; id?: ChangeId; seq: number; ref: string | null; notices: Notice[]; empty?: boolean; [k: string]: unknown }
-  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; [k: string]: unknown }
-  | { status: "conflicts"; id?: ChangeId; conflicts: ConflictCard[]; ref: string | null; notices: Notice[]; [k: string]: unknown }
+  /** `head` (confirmed, pending, conflicts): when the write asked for it (WriteOp `head`). */
+  | { status: "confirmed"; id?: ChangeId; seq: number; ref: string | null; notices: Notice[]; empty?: boolean; head?: WriteHead; [k: string]: unknown }
+  | { status: "pending"; id: ChangeId; ref: string | null; notices: Notice[]; online: boolean; head?: WriteHead; [k: string]: unknown }
+  | { status: "conflicts"; id?: ChangeId; conflicts: ConflictCard[]; ref: string | null; notices: Notice[]; head?: WriteHead; [k: string]: unknown }
   | { status: "rejected"; id?: ChangeId; reason: string; notices: Notice[]; [k: string]: unknown }
   | { status: "error"; error: string; notices: Notice[]; [k: string]: unknown };
 
@@ -68,7 +86,7 @@ export const WAIT_MS = 5000;
  * receiving a write is simply asked again. (`submit`'s `idempotent: false` path stays for any future write without an
  * id; none uses it now.)
  */
-export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share"]);
+export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
 
 /**
  * Run an idempotent write again when Carton lost its append race too many times in a row (many writers on one
@@ -242,13 +260,22 @@ const receiptKey = (requestId: ChangeId) => ["@request", requestId];
 /**
  * `shared`: written with a shared cut's pending row; it holds the cards, and core says whether the change landed.
  * `cut`: the cut the request went to, so a retry's WriteOp `head` is of that cut even after a switch (older receipts
- * have none: the op's cut, else the current one).
+ * have none: the op's cut, else the current one). runWrite fixes it once per request and commits there.
  */
 interface Receipt { seq: number; change: ChangeId | null; cards: ConflictCard[]; at: number; shared?: boolean; cut?: string }
 
 /** What a write needs from the materializer, when the holder runs one (`@carton/cardboard/node`'s `Materializer`). */
 export interface ViewPrinter {
-  printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string }>;
+  /** `status`: the view's status file (project-relative); default `.scratch/views/<name>.status` (cardboard's). */
+  printView(name: string, owner: Actor, opts?: { hooked?: boolean }): Promise<{ name: string; path: string; ref: string; status?: string }>;
+  /**
+   * Hook events (WriteOp `hook`): a hooked agent read the shared file, is about to write `rel`, ended its turn. A
+   * hooked agent's own `cb` call is `hookRead` too (`tellBusy`).
+   */
+  hookRead?(actor: Actor): Promise<void>;
+  hookWrite?(actor: Actor, rel: string): Promise<void>;
+  hookStop?(actor: Actor): Promise<void>;
+  /** A `cb` call by someone whose stop nobody reports (`tellBusy`): the shared file stays frozen a while after it. */
   onCb?(): Promise<void>;
   onHeadChange?(cause: "local" | "gui" | "remote"): void;
   /**
@@ -257,8 +284,90 @@ export interface ViewPrinter {
    * follows; a frozen timeline.tsx doesn't).
    */
   onCutSwitch?(cut: string): void | Promise<void>;
+  /**
+   * carton.db may have moved under the holder (another process wrote it, B11): the materializer reads head and brings
+   * the files up to it, or does nothing when it already shows that head (cardboard-adapter `e352fea`). The holder's
+   * follower calls it on every write another connection made; without it, `onHeadChange("local")` for another
+   * process's change on the current cut.
+   */
+  onExternalHeadChange?(): Promise<unknown>;
   /** A view's change settled after its save returned (a shared cut): its `.status` sidecar says so (R5-04). */
   onChangeUpdate?(view: string, changeId: string, s: { status: "confirmed" | "conflicts" | "rejected"; seq?: number; conflicts?: ConflictCard[]; reason?: string }): Promise<void>;
+}
+
+/**
+ * `cb` calls by `authors` reached the holder (its own runWrite, or another process's changes its follower found): tell
+ * the materializer an agent is working (§6.4 freeze triggers). A hooked agent (its hook events reach the holder, its
+ * Stop too) is `hookRead`: the shared timeline.tsx stays frozen until its Stop, which ends the freeze at once. Anyone
+ * else (a windowless agent, the person's own `cb`, a change with no author) is `onCb`: nothing reports their stop, so
+ * the file stays frozen for a while after the call. A materializer without hookRead/hookStop gets `onCb` for all.
+ * Without this, a hooked agent's `cb` call kept timeline.tsx frozen a minute after its turn ended (windows-sync H8).
+ */
+export async function tellBusy(mz: ViewPrinter | null | undefined, authors: readonly (Actor | null | undefined)[]): Promise<void> {
+  if (!mz) return;
+  const hooks = !!(mz.hookRead && mz.hookStop);
+  let windowless = authors.length === 0;
+  const told = new Set<string>();
+  for (const a of authors) {
+    if (!(a && hooks && hookDelivered(a))) windowless = true;
+    else if (!told.has(a.id)) {
+      told.add(a.id);
+      await mz.hookRead!(a);
+    }
+  }
+  if (windowless) await mz.onCb?.();
+}
+
+const HOOK_EVENTS: ReadonlySet<string> = new Set(["read", "write", "stop"]);
+/** Hook requests a materializer was told, by request id: the call, and when it settled. */
+interface Told { call: Promise<void>; settled?: number }
+const hooksTold = new WeakMap<ViewPrinter, Map<ChangeId, Told>>();
+/** A settled request is remembered this long (a retry comes within seconds), and at most this many. */
+const HOOKS_KEEP_MS = 10 * 60_000;
+const HOOKS_KEPT = 10_000;
+/** Forget settled requests past HOOKS_KEEP_MS, then the oldest settled past HOOKS_KEPT; a call in flight never. */
+function forgetTold(told: Map<ChangeId, Told>, now: number): void {
+  for (const [id, t] of told) if (t.settled !== undefined && now - t.settled >= HOOKS_KEEP_MS) told.delete(id);
+  for (const [id, t] of told) {
+    if (told.size <= HOOKS_KEPT) break;
+    if (t.settled !== undefined) told.delete(id);
+  }
+}
+
+/**
+ * WriteOp `hook`: tell the materializer, once per request id. A retry of a request it was told (an answer lost on the
+ * socket) waits for that call instead of making it again: `hookWrite` queues one credit per call, so a second would
+ * credit the agent with someone else's next save. A call that failed isn't made again either: it may have taken
+ * effect before it failed (cardboard's hookWrite queues the credit, then updates the freeze), so its retry gets its
+ * failure (review H8 #3). A call in flight is never forgotten (#4). A new holder has a new materializer that was never
+ * told: the retry tells it.
+ */
+async function hookEvent(op: HookOp, actor: Actor, id: ChangeId, mz: ViewPrinter | null, notices: Notice[]): Promise<CbResult> {
+  if (!HOOK_EVENTS.has(op.event)) return { status: "error", error: `unknown hook event ${JSON.stringify(op.event)}`, notices };
+  const file = op.event === "write" ? hookFile(op.file) : null;
+  if (op.event === "write" && !file) return { status: "error", error: `a write hook event names a file inside the project, not ${JSON.stringify(op.file ?? null)}`, notices };
+  const call = !mz ? null : op.event === "read" ? mz.hookRead && (() => mz.hookRead!(actor)) : op.event === "write" ? mz.hookWrite && (() => mz.hookWrite!(actor, file!)) : mz.hookStop && (() => mz.hookStop!(actor));
+  if (!mz || !call) return { status: "confirmed", seq: 0, ref: null, notices, hook: { event: op.event, delivered: false } };
+  let told = hooksTold.get(mz);
+  if (!told) hooksTold.set(mz, (told = new Map()));
+  let t = told.get(id);
+  const again = !!t;
+  if (!t) {
+    if (told.size >= 256) forgetTold(told, Date.now());
+    const entry: Told = (t = { call: Promise.resolve().then(call) }); // a materializer that throws at once is a failed call too
+    const settle = () => { entry.settled = Date.now(); };
+    entry.call.then(settle, settle);
+    told.set(id, entry);
+  }
+  await t.call;
+  return { status: "confirmed", seq: 0, ref: null, notices, hook: { event: op.event, delivered: true, ...(again ? { again: true } : {}) } };
+}
+/** A hook's file: project-relative with `/`, no `..`, not absolute; null when it isn't one. */
+function hookFile(f: unknown): string | null {
+  if (typeof f !== "string" || !f) return null;
+  const rel = f.replace(/\\/g, "/").replace(/^(\.\/)+/, "");
+  if (!rel || rel.startsWith("/") || /^[A-Za-z]:/.test(rel) || rel.split("/").some((s) => s === ".." || s === "")) return null;
+  return rel;
 }
 
 /** Run one write on a Carton handle and answer with the cb result contract. */
@@ -276,14 +385,17 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   // listen before writing: on a shared cut the ack can arrive before commit() returns
   const outcomes = watchOutcomes(carton);
   try {
-    // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes for a while (§6.4 freeze triggers)
-    await opts.materializer?.onCb?.();
+    // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes: a hooked agent's until its Stop, anyone
+    // else's for a while (§6.4 freeze triggers; tellBusy); a hook event isn't one (a Stop would freeze the file again
+    // just as the turn ends)
+    if (op.kind !== "hook") await tellBusy(opts.materializer, [author]);
     let result = await run();
     // WriteOp `head`: the holder's head of the cut the write went to, never of whichever cut is current now
     if ("head" in op && op.head && (result.status === "confirmed" || result.status === "pending" || result.status === "conflicts")) {
       result = { ...result, head: await carton.head(into ?? destCut(op)) } as CbResult;
     }
-    notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
+    // a hook's answer goes to the hook process, never to the agent: its notices stay for its next `cb` call
+    if (op.kind !== "hook") notices.push(...(await deliverNotices(carton, req.actor, { request: req.id, answered })));
     return result;
   } finally {
     outcomes.close();
@@ -303,15 +415,20 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // caller is the view file (two terminal agents on one machine look alike; their views don't, §6.4)
       const owner: Actor = isFallbackActor(author) ? { kind: "external", id: `external:.scratch/views/${name}.tsx`, name: `${author.name ?? "Terminal"} (view ${name})`, group: author.group } : author;
       const v = await opts.materializer.printView(name, owner, { hooked: hookDelivered(author) });
-      return { status: "confirmed", seq: 0, ref: v.ref, notices, view: v };
+      return { status: "confirmed", seq: 0, ref: v.ref, notices, view: { ...v, status: v.status ?? statusPath(v.name) } };
     }
+    case "hook": return hookEvent(op, author, req.id, opts.materializer ?? null, notices);
     case "commit": {
       // A save whose merge raises cards: the rest lands, and each card keeps head's value until someone picks (nothing
       // is lost). Core's own rebase loop decides every card "ours" (keeping its intents, inferred remaps and policy as
       // it would for any rebase) and reports the cards it decided; they are written as a notice for `cb conflicts` /
       // `cb resolve` in the same atomic batch as the append, so no crash or concurrent writer can separate them.
-      // The base is fixed once per request (default: head now): a retry after core lost its append race must merge
-      // from the same base, never re-apply the proposal on a newer head.
+      // The cut and base are fixed once per request (default: the current cut, its head now): a retry after core lost
+      // its append race must merge from the same base, never re-apply the proposal on a newer head. The cut is read
+      // once and given to core: a switch served while this write waits moves nothing, so the cut core commits on is
+      // the one its base, its shared check and its receipt name (review H8 #1: one read here and core's own later one
+      // could differ, even for a save whose every edit was carded, which has no change to name its cut).
+      if (op.cut === undefined) op.cut = carton.cut;
       if (op.base === undefined) op.base = (await carton.head(op.cut)).ref;
       const store = storeOf(carton);
       const receipt = store ? await store.get<Receipt>("notices", receiptKey(req.id)) : undefined;
@@ -324,7 +441,7 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       }
       // on a shared cut core deduplicates a retried id itself (pending, confirmed, or recorded as a no-op) and says
       // where it is now; the receipt, written with its pending row, keeps the cards it answered with
-      const cutId = op.cut ?? carton.cut;
+      const cutId = op.cut;
       const sharedCut = (await carton.cuts()).find((c) => c.id === cutId)?.sequencer.kind !== "local";
       r = await carton.commit({
         id: req.id, author, cut: op.cut, base: op.base, doc: op.doc as any, ops: op.ops as any, intent: op.intent as any, kinds: op.kinds as any, policy: op.policy, name: op.name,
@@ -349,6 +466,11 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     case "fold": {
       // --keep mine|theirs decides every card one way; without it a fold with cards saves nothing and lists them
       const choices = op.keep ? () => (op.keep === "mine" ? "ours" : "theirs") as "ours" | "theirs" : undefined;
+      // what "the rest" would be for this request is decided (and recorded) before the fold: core records a fold that
+      // finds nothing new as a no-op under the request's id, so a decision made after it could be interrupted, and a
+      // retry would then pick a partial fold made after the request was answered
+      const restAsked = !op.check && !op.reject?.length;
+      const rest = restAsked ? await restOf(carton, req.id, op.from, op.into) : null;
       r = op.reject?.length
         ? await carton.foldSome(op.from, { into: op.into, author, reject: op.reject, check: op.check, missingBase: op.missingBase, choices, id: req.id })
         : await carton.fold(op.from, { into: op.into, author, check: op.check, missingBase: op.missingBase, choices, id: req.id });
@@ -356,8 +478,8 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       // (§5.3 R2-14: accepting the rest reverts that partial fold's inverse change), under the request's id (B4).
       // A retry finds the first try's answer recorded as a no-op (confirmed, empty) and carries on from there
       const nothingNew = r?.status === "up-to-date" || (r?.status === "confirmed" && r.empty);
-      if (nothingNew && !op.check && !op.reject?.length) {
-        const inverse = await restOf(carton, req.id, op.from, op.into);
+      if (nothingNew && restAsked) {
+        const inverse = rest;
         if (inverse) {
           // its own id (the fold above recorded the request's id as a no-op); a retry gets this revert's answer again
           r = await carton.revert(inverse, { author, cut: op.into, id: `${req.id}.rest` });
@@ -449,29 +571,64 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
   const store = storeOf(carton);
   // a retry: answer as the first time (an undo, or nothing to undo), before looking at what the turn holds now, on the
   // cut that answer is on (the current cut may have changed since the first try), with the cards it raised
-  const answeredOn = await answeredBefore(carton, id);
-  if (answeredOn) {
-    const h = answeredOn === (cut ?? carton.cut) ? head : await carton.head(answeredOn);
+  const replay = async (on: string) => {
+    const h = on === (cut ?? carton.cut) ? head : await carton.head(on);
     const cards = (store ? await store.get<ConflictCard[]>("notices", undoCardsKey(id)) : undefined) ?? [];
-    return { r: await carton.commit({ id, doc: h.doc, base: h.ref, author, cut: answeredOn }), cards };
-  }
+    return { r: await carton.commit({ id, doc: h.doc, base: h.ref, author, cut: on }), cards };
+  };
+  const answeredOn = await answeredBefore(carton, id);
+  if (answeredOn) return replay(answeredOn);
   const versions = await carton.log({ cut, limit: 5000 });
   const undone = new Set<string>();
   for (const v of versions) if (v.kind === "undo" && v.change) for (const x of (await revertsOf(carton, v.change))) undone.add(x);
   const mine = versions.filter((v) => v.author?.turn === turn && v.change && v.kind !== "undo" && !undone.has(v.change));
   // nothing (left) to undo: head itself, under the request's id. A retry of an undo that landed gets its answer back;
   // a first one changes nothing and is recorded as a no-op, so its retry never undoes work that reached the turn since
-  if (!mine.length) return { r: await carton.commit({ id, doc: head.doc, base: head.ref, author, cut }), cards: [] };
+  if (!mine.length) {
+    // a copy of this request that finished meanwhile is why nothing is left: its answer, with its cards
+    const on = await answeredBefore(carton, id);
+    if (on) return replay(on);
+    return { r: await carton.commit({ id, doc: head.doc, base: head.ref, author, cut }), cards: [] };
+  }
   let doc: Doc = head.doc;
-  const cards: ConflictCard[] = [];
+  // one card per path: the turn changed a field several times, and a later edit changed it again. Newest first, so the
+  // first card's base is the turn's last value and ours is head's; each older change's card only moves theirs back to
+  // the value before it, so picking the undo restores the value from before the turn, not one of the turn's own
+  const byPath = new Map<string, ConflictCard>();
   for (const v of mine) {
     const [before, after] = await Promise.all([carton.checkout({ branchId: v.ref.branchId, seq: v.ref.seq - 1 }), carton.checkout(v.ref)]);
     // base: the turn's change; ours: head (a clash keeps head's newer value); theirs: before the change
     const m = merge3(after, doc, before, carton.schema, { infer: false });
     doc = m.doc;
-    cards.push(...m.conflicts);
+    for (const c of m.conflicts) {
+      const prev = byPath.get(c.path);
+      if (!prev) { byPath.set(c.path, c); continue; }
+      const { hunks: _h, ops: _o, ...kept } = prev; // a text card's hunks described the newer pair only
+      byPath.set(c.path, { ...kept, theirs: c.theirs });
+    }
   }
-  if (cards.length && store) await store.write([cardsRow(author, id, id, cards), { table: "notices", key: undoCardsKey(id), value: cards }]);
+  const cards = [...byPath.values()];
+  if (store) {
+    // the cards go in only while this request has no answer yet: a copy of it that finished meanwhile (and whose cards
+    // its author may have resolved since) is answered as it was, its cards never written again. A first try that
+    // stopped before committing left cards for an undo that never landed: these replace them
+    const target = cut ?? carton.cut;
+    const shared = (await carton.cuts()).find((c) => c.id === target)?.sequencer.kind !== "local";
+    const unanswered = [
+      { table: "ids", key: [id], expect: "absent" as const },
+      { table: "meta", key: ["noop", id], expect: "absent" as const },
+      ...(shared ? [{ table: "pending", key: [target, id], expect: "absent" as const }] : []),
+    ];
+    const earlier = await store.get<ConflictCard[]>("notices", undoCardsKey(id));
+    if (cards.length || earlier?.length) {
+      const row = cards.length ? cardsRow(author, id, id, cards) : { table: "notices", key: cardsKey(author, id), value: undefined };
+      if (!(await store.write([row, { table: "notices", key: undoCardsKey(id), value: cards }], unanswered))) {
+        const on = await answeredBefore(carton, id);
+        if (on) return replay(on);
+        throw new Error("undo --turn: the store changed under this write; try again");
+      }
+    }
+  }
   return { r: await carton.commit({ id, doc, base: head.ref, author, cut, name: `Undo turn ${turn}`, undoOf: mine.map((v) => v.change!) }), cards };
 }
 /** The cards an `undo --turn` request raised (local `notices` table, no actor reads it): its retry answers with them. */
@@ -518,9 +675,9 @@ async function keptOut(carton: Carton, from: string, into?: string): Promise<Cha
 }
 
 /**
- * What a fold request folds in as "the rest": decided once per request and recorded before acting (local `notices`
- * table, `["@fold-rest", id]`, which no actor reads), so a retry, or a second copy of the request, replays that
- * decision: the same inverse, or nothing, never a partial fold made after the request was answered.
+ * What a fold request folds in as "the rest": decided once per request and recorded before the fold itself runs
+ * (local `notices` table, `["@fold-rest", id]`, which no actor reads), so a retry, or a second copy of the request,
+ * replays that decision: the same inverse, or nothing, never a partial fold made after the request was first made.
  */
 async function restOf(carton: Carton, requestId: ChangeId, from: string, into?: string): Promise<ChangeId | null> {
   const store = storeOf(carton);
@@ -530,6 +687,9 @@ async function restOf(carton: Carton, requestId: ChangeId, from: string, into?: 
   if (done || !store) return done ?? (await keptOut(carton, from, into));
   const prior = await store.get<Decision>("notices", key);
   if (prior) return prior.inverse;
+  // core already holds an answer for this request but no decision was recorded with it (a request from before
+  // decisions were recorded first): nothing more, never a partial fold made since
+  if (await answeredBefore(carton, requestId)) return null;
   const inverse = await keptOut(carton, from, into);
   if (await store.write([{ table: "notices", key, value: { inverse } satisfies Decision }], [{ table: "notices", key, expect: "absent" }])) return inverse;
   return (await store.get<Decision>("notices", key))?.inverse ?? null; // another copy decided first

@@ -81,3 +81,85 @@ test("a 60 Hz drag sends at most PRESENCE_PER_SEC presence messages a second, an
   client.stop();
   vt.advance(1000); // no timer left behind after stop
 });
+
+test("presence after a quiet spell goes out at once; a leave right after a move still goes out when the client stops (owner check)", async () => {
+  const vt = virtualTime();
+  const q = new ReplicaQueue(schema);
+  q.addBranch({ id: "b", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
+  const conn = new Conn();
+  const client = new SyncClient({ queue: q, branchId: "b", schemaVersion: 1, connect: async () => conn, timers: vt.timers, clock: vt.clock, defer: (fn) => queueMicrotask(fn) }).start();
+  await new Promise((r) => setTimeout(r, 0));
+  conn.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  const me = { kind: "human" as const, id: "me" };
+  const presence = () => conn.sent.filter((m) => m.type === "presence") as Extract<ClientMessage, { type: "presence" }>[];
+  vt.advance(5000);
+  client.sendPresence(me, { at: 1 });
+  assert.deepEqual(presence().map((m) => m.state?.at), [1], "the first update after a quiet spell isn't delayed");
+  vt.advance(1000);
+  client.sendPresence(me, { at: 2 });
+  vt.advance(20);
+  client.sendPresence(me, null); // the editor closes: its leave, inside the 100 ms interval
+  assert.deepEqual(presence().map((m) => m.state?.at ?? null), [1, 2], "the leave is coalesced, waiting");
+  client.stop();
+  assert.deepEqual(presence().map((m) => m.state?.at ?? null), [1, 2, null], "the leave went out before the close");
+  vt.advance(1000);
+  assert.equal(presence().length, 3, "nothing after stop");
+});
+
+// hosts-plugins' request: a host that restarts, or a room evicted outright on a deploy, drops every socket and keeps no
+// one to send leaves for, so peers shown before would stay as ghosts. The client tells them gone when its own
+// connection closes (and when it stops); a peer still there shows again with its next update after the reconnect.
+test("when its connection closes, the client tells every peer it showed gone; after the reconnect a peer's next update shows it again", async () => {
+  const vt = virtualTime();
+  const q = new ReplicaQueue(schema);
+  q.addBranch({ id: "b", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
+  class Dropping extends Conn {
+    private closed: ((why: string) => void)[] = [];
+    override onClose(l?: (why: string) => void) {
+      if (l) this.closed.push(l);
+    }
+    lose(why: string) {
+      this.open = false;
+      for (const l of this.closed) l(why);
+    }
+  }
+  const conns: Dropping[] = [];
+  const events: { actor: unknown; state: unknown }[] = [];
+  const client = new SyncClient({
+    queue: q,
+    branchId: "b",
+    schemaVersion: 1,
+    connect: async () => (conns.push(new Dropping()), conns.at(-1)!),
+    timers: vt.timers,
+    clock: vt.clock,
+    defer: (fn) => queueMicrotask(fn),
+    onEvent: (e) => void (e.type === "presence" && events.push({ actor: e.actor, state: e.state })),
+  }).start();
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  await tick();
+  conns[0]!.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  const ann = { kind: "human" as const, id: "ann" },
+    bob = { kind: "human" as const, id: "bob" },
+    cat = { kind: "agent" as const, id: "cat" };
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 1 } });
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: bob, state: { at: 2 } });
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: cat, state: { at: 3 } });
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: bob, state: null }); // bob left: nothing to clear for him
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 4 } }); // ann moved: still one entry
+  events.length = 0;
+  conns[0]!.lose("host restarted");
+  assert.deepEqual(events, [{ actor: ann, state: null }, { actor: cat, state: null }], "each peer shown is told gone once");
+  // reconnect: nothing is told again until a peer's next update
+  vt.advance(1000);
+  await tick();
+  assert.equal(conns.length, 2, "reconnected");
+  conns[1]!.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  assert.equal(events.length, 2);
+  conns[1]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 5 } });
+  assert.deepEqual(events.at(-1), { actor: ann, state: { at: 5 } });
+  // stopping tells them gone too (this replica no longer sees anyone)
+  client.stop();
+  assert.deepEqual(events.slice(3), [{ actor: ann, state: null }]);
+  conns[1]!.lose("late close");
+  assert.equal(events.length, 4, "nothing after stop");
+});

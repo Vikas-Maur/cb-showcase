@@ -23,6 +23,8 @@ port.on("message", async (m: { id: number; method: string; params: any }) => {
     let result: unknown = null;
     if (m.method === "ready") { const h = await ready; result = { nonce: h.nonce }; }
     else if (m.method === "serve") { const h = lease.current ?? (await ready); result = await made.engine.serve(m.params, { holder: h }); }
+    // the app's main thread knows carton.db moved (its own writer, a test): look now, answered once looked (B11)
+    else if (m.method === "nudge") await made.engine.nudge?.();
     else if (m.method === "stop") { await lease.stop(); await made.close?.(); await made.store.close(); }
     else throw Object.assign(new Error(`unknown method ${m.method}`), { code: -32601 });
     port.postMessage({ id: m.id, result });
