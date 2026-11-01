@@ -133,6 +133,24 @@ test("pages: a long stream comes in pages with the position to ask from; filtere
   assert.equal(since, 8);
 });
 
+test("pages stop at their byte budget, always holding one row", () => {
+  const w = world({ pageBytes: 1500 });
+  const ed = w.join("editor", "ed");
+  for (let i = 1; i <= 5; i++) w.send(ed, `c${i}`, patch("x".repeat(1000)));
+  const r = peer("viewer", "v");
+  const pages: number[] = [];
+  let since = 0;
+  for (let guard = 0; guard < 10; guard++) {
+    w.room.onComments(r, { type: "comments", branchId: "main", since });
+    const m = r.last() as CommentsRowsMsg;
+    pages.push(m.rows.length);
+    since = m.head;
+    if (!m.more) break;
+  }
+  assert.deepEqual(pages, [1, 1, 1, 1, 1]);
+  assert.equal(since, 5);
+});
+
 test("a position past the stream's end (the server's storage was reset) is answered from the start, marked reset", () => {
   const w = world();
   const ed = w.join("editor", "ed");

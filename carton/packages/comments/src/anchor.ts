@@ -24,26 +24,45 @@ export interface AnchorOptions {
   media?: string;
 }
 
-/** One item of a timeline as an anchor sees it. */
+/** One item of a timeline as an anchor sees it. Immutable, and the same object in every version that shares the record. */
 interface Layer {
-  id: string;
-  it: Rec;
-  s: number;
-  e: number;
-  rank: number;
-  speed: number;
-  src: number;
-  visible: boolean;
-  attr: string;
+  readonly id: string;
+  readonly it: Rec;
+  readonly s: number;
+  readonly e: number;
+  readonly rank: number;
+  readonly speed: number;
+  readonly src: number;
+  readonly visible: boolean;
+  readonly media: string | undefined;
+  /** The lane record and its place it was made with (a lane hidden, muted or reordered makes new layers). */
+  readonly lane: Rec | undefined;
+  readonly order: number;
 }
 
-const ATTR = new WeakMap<Rec, { key: string; str: string }>();
+/**
+ * Layers by record object, per schema and media field: History hands out the same record object for every version that
+ * didn't change it, so the next version's index reuses all but the changed records' layers, and "what changed"
+ * between two versions' indexes is an identity check per item (`changedSince`).
+ */
+const LAYERS = new WeakMap<Schema, Map<string, WeakMap<Rec, Layer>>>();
+/** An item's attributes as content (16 hex), by record object, per ignore set. */
+const ATTR = new WeakMap<Rec, { key: string; hash: string }>();
 const WIN = new WeakMap<Rec, ShotWindow[]>();
 
+/** What changed between two versions' indexes: items added, removed or changed, where they were and are, their media. */
+export interface IndexChanges {
+  ids: Set<string>;
+  spans: [number, number][];
+  media: Set<string>;
+  /** More than half the items changed: compare everything again. */
+  most: boolean;
+}
+
 /**
- * One version's timeline, indexed for anchors: items by id, visible items by start with each block's latest end (so
- * "what is under [s, e]" skips blocks that end before s). Built once per version; cheap on the next version because an
- * item's attribute string is cached on its record object, and History shares unchanged records between versions.
+ * One version's timeline, indexed for anchors: items by id and by media, visible items by start with each block's latest
+ * end (so "what is under [s, e]" skips blocks that end before s). Built once per version, and cheap on the next one:
+ * unchanged records keep their layers, and nothing reads a record's content until a signature needs it.
  */
 export class TimelineIndex {
   readonly byId = new Map<string, Layer>();
@@ -51,6 +70,8 @@ export class TimelineIndex {
   readonly #sorted: Layer[] = [];
   readonly #blockEnd: number[] = [];
   readonly #schema: Schema;
+  readonly #ignore: Set<string>;
+  readonly #ignoreKey: string;
   /** The output's end (the latest item end), seconds. */
   readonly duration: number;
   static readonly BLOCK = 32;
@@ -59,50 +80,55 @@ export class TimelineIndex {
     this.#schema = schema;
     const tl = schema.timeline;
     let dur = 0;
+    this.#ignore = new Set();
+    this.#ignoreKey = "";
     if (tl) {
       const sh = tl.shots ?? {};
       const key = schema.collections[tl.collection]?.key ?? "id";
       const laneKey = schema.collections[tl.lanes]?.key ?? "id";
-      // lanes as the shot diff sees them: in sequence order, each with its place as `order` (core's shots())
-      const lanes = new Map<unknown, Rec>();
-      const laneList = [...((doc[tl.lanes] as Rec[] | undefined) ?? [])].sort(byPos(laneKey));
-      laneList.forEach((l, i) => lanes.set(l[laneKey], { ...l, order: i }));
       // Placement fields and the item's own id never count as content: a moved or split clip shows the same picture.
-      const ignore = new Set([...(sh.ignore ?? []), ...(sh.edgeFields ?? []), key, tl.start, tl.end, tl.source, tl.sourceEnd, tl.speed, tl.lane]);
-      const ignoreKey = [...ignore].sort().join(",");
+      this.#ignore = new Set([...(sh.ignore ?? []), ...(sh.edgeFields ?? []), key, tl.start, tl.end, tl.source, tl.sourceEnd, tl.speed, tl.lane]);
+      this.#ignoreKey = [...this.#ignore].sort().join(",");
+      // lanes as the shot diff sees them: in sequence order, each with its place as `order` (core's shots())
+      const lanes = new Map<unknown, { rec: Rec; view: Rec; order: number }>();
+      const laneList = [...((doc[tl.lanes] as Rec[] | undefined) ?? [])].sort(byPos(laneKey));
+      laneList.forEach((l, i) => lanes.set(l[laneKey], { rec: l, view: { ...l, order: i }, order: i }));
+      let bySchema = LAYERS.get(schema);
+      if (!bySchema) LAYERS.set(schema, (bySchema = new Map()));
+      const mediaField = opts.media ?? "";
+      let cache = bySchema.get(mediaField);
+      if (!cache) bySchema.set(mediaField, (cache = new WeakMap()));
       for (const it of (doc[tl.collection] as Rec[] | undefined) ?? []) {
-        const s = it[tl.start] as number,
-          e = it[tl.end] as number;
-        if (typeof s !== "number" || typeof e !== "number" || !(e - s > EPS)) continue;
         const lane = lanes.get(it[tl.lane]);
-        let a = ATTR.get(it);
-        if (!a || a.key !== ignoreKey) {
-          let str = "";
-          for (const k of Object.keys(it).sort()) if (!ignore.has(k) && it[k] !== undefined) str += JSON.stringify(k) + ":" + canonical(it[k]) + ",";
-          ATTR.set(it, (a = { key: ignoreKey, str }));
+        let l = cache.get(it);
+        if (!l || l.lane !== lane?.rec || l.order !== (lane?.order ?? -1)) {
+          const s = it[tl.start] as number,
+            e = it[tl.end] as number;
+          if (typeof s !== "number" || typeof e !== "number" || !(e - s > EPS)) continue;
+          const m = opts.media ? it[opts.media] : undefined;
+          l = {
+            id: String(it[key]),
+            it,
+            s,
+            e,
+            rank: sh.rank ? sh.rank(it, lane?.view) : 0,
+            speed: typeof it[tl.speed] === "number" && (it[tl.speed] as number) > 0 ? (it[tl.speed] as number) : 1,
+            src: typeof it[tl.source] === "number" ? (it[tl.source] as number) : 0,
+            visible: sh.visible ? sh.visible(it, lane?.view) : true,
+            media: typeof m === "string" ? m : undefined,
+            lane: lane?.rec,
+            order: lane?.order ?? -1,
+          };
+          cache.set(it, l);
         }
-        const l: Layer = {
-          id: String(it[key]),
-          it,
-          s,
-          e,
-          rank: sh.rank ? sh.rank(it, lane) : 0,
-          speed: typeof it[tl.speed] === "number" && (it[tl.speed] as number) > 0 ? (it[tl.speed] as number) : 1,
-          src: typeof it[tl.source] === "number" ? (it[tl.source] as number) : 0,
-          visible: sh.visible ? sh.visible(it, lane) : true,
-          attr: a.str,
-        };
         this.byId.set(l.id, l);
-        if (opts.media) {
-          const m = it[opts.media];
-          if (typeof m === "string") {
-            const list = this.byMedia.get(m);
-            if (list) list.push(l);
-            else this.byMedia.set(m, [l]);
-          }
+        if (l.media !== undefined) {
+          const list = this.byMedia.get(l.media);
+          if (list) list.push(l);
+          else this.byMedia.set(l.media, [l]);
         }
         if (l.visible) this.#sorted.push(l);
-        if (e > dur) dur = e;
+        if (l.e > dur) dur = l.e;
       }
     }
     this.duration = dur;
@@ -136,6 +162,36 @@ export class TimelineIndex {
     return out;
   }
 
+  /** What changed from `prev` to this version (an identity check per item: unchanged records share their layers). */
+  changedSince(prev: TimelineIndex): IndexChanges {
+    const out: IndexChanges = { ids: new Set(), spans: [], media: new Set(), most: false };
+    const note = (l: Layer) => {
+      out.ids.add(l.id);
+      out.spans.push([l.s, l.e]);
+      if (l.media !== undefined) out.media.add(l.media);
+    };
+    for (const [id, l] of this.byId) {
+      const p = prev.byId.get(id);
+      if (p === l) continue;
+      note(l);
+      if (p) note(p);
+    }
+    for (const [id, p] of prev.byId) if (!this.byId.has(id)) note(p);
+    out.most = out.ids.size * 2 > Math.max(this.byId.size, prev.byId.size);
+    return out;
+  }
+
+  /** An item's attributes as content, hashed (16 hex), cached on its record. */
+  #attr(l: Layer): string {
+    let a = ATTR.get(l.it);
+    if (!a || a.key !== this.#ignoreKey) {
+      let str = "";
+      for (const k of Object.keys(l.it).sort()) if (!this.#ignore.has(k) && l.it[k] !== undefined) str += JSON.stringify(k) + ":" + canonical(l.it[k]) + ",";
+      ATTR.set(l.it, (a = { key: this.#ignoreKey, hash: sha256Hex(str).slice(0, 16) }));
+    }
+    return a.hash;
+  }
+
   /** Edge windows of an item (fades, transitions) in item-local time, cached per record. */
   windows(l: Layer): ShotWindow[] {
     const f = this.#schema.timeline?.shots?.windows;
@@ -147,12 +203,12 @@ export class TimelineIndex {
 
   /**
    * The shot signature of `[s, e]`: what the range looks and sounds like, not where it sits (16 hex). Pieces of a split
-   * clip that continue each other read as one layer, as in the shot diff.
+   * clip that continue each other read as one layer, as in the shot diff. `layers`: `under(s, e)` when already known.
    */
-  sig(s: number, e: number): string {
-    const layers = this.under(s, e).sort((x, y) => x.rank - y.rank || (x.attr < y.attr ? -1 : x.attr > y.attr ? 1 : 0) || x.s - y.s);
+  sig(s: number, e: number, layers: Layer[] = this.under(s, e)): string {
+    const sorted = layers.map((l) => ({ l, attr: this.#attr(l) })).sort((x, y) => x.l.rank - y.l.rank || (x.attr < y.attr ? -1 : x.attr > y.attr ? 1 : 0) || x.l.s - y.l.s);
     const parts: { attr: string; rank: number; speed: number; src: number; lo: number; hi: number; win: string }[] = [];
-    for (const l of layers) {
+    for (const { l, attr } of sorted) {
       const lo = Math.max(s, l.s),
         hi = e > s ? Math.min(e, l.e) : s;
       const src = l.src + (lo - l.s) * l.speed;
@@ -162,11 +218,11 @@ export class TimelineIndex {
       for (const w of this.windows(l)) if (b > a ? w.a < b - EPS && w.b > a + EPS : w.a <= a + EPS && w.b > a + EPS) win += `w${w.sig ?? ""}:${q(w.a - a)}:${q(w.b - a)};`;
       const prev = parts[parts.length - 1];
       // a split's next piece: same layer content, the time and the source both continue
-      if (prev && !win && !prev.win && prev.rank === l.rank && prev.attr === l.attr && prev.speed === l.speed && Math.abs(prev.hi - lo) < 1e-4 && Math.abs(prev.src + (prev.hi - prev.lo) * prev.speed - src) < 1e-4) {
+      if (prev && !win && !prev.win && prev.rank === l.rank && prev.attr === attr && prev.speed === l.speed && Math.abs(prev.hi - lo) < 1e-4 && Math.abs(prev.src + (prev.hi - prev.lo) * prev.speed - src) < 1e-4) {
         prev.hi = hi;
         continue;
       }
-      parts.push({ attr: l.attr, rank: l.rank, speed: l.speed, src, lo, hi, win });
+      parts.push({ attr, rank: l.rank, speed: l.speed, src, lo, hi, win });
     }
     let str = `${q(e - s)}#`;
     for (const p of parts) str += `${p.rank}|${p.attr}|${q(p.speed)}|${q(p.src)}|${q(p.lo - s)}|${q(p.hi - s)}|${p.win}\n`;
@@ -209,8 +265,7 @@ export function makeAnchor(doc: Doc, schema: Schema, at: AnchorAt, range?: reado
     const p = Math.max(s, l.s);
     const item: AnchorItem = { id: l.id, at: l.src + (p - l.s) * l.speed };
     if (p > s) item.dt = p - s;
-    const m = opts.media ? l.it[opts.media] : undefined;
-    if (typeof m === "string" && m.length <= LIMITS.name) item.media = m;
+    if (l.media !== undefined && l.media.length <= LIMITS.name) item.media = l.media;
     items.push(item);
   }
   if (items.length) anchor.items = items;
@@ -284,16 +339,17 @@ export function place(anchor: Anchor, target: PlaceTarget, lineage?: Lineage | n
   const items = [...new Set(followed)];
   if (start === null) {
     if (trimmed !== null) {
-      const at = Math.max(0, trimmed);
-      return { status: "outdated", range: [at, at + len], items, why: "trimmed" };
+      const at = Math.max(0, Math.round(trimmed * 1e6) / 1e6);
+      return { status: "outdated", range: [at, Math.round((at + len) * 1e6) / 1e6], items, why: "trimmed" };
     }
     if (anchor.items?.length) return { status: "removed", range: [s, e], items: [] };
     start = s; // an empty spot: it stays where it was
   }
-  start = Math.max(0, start);
-  const range: [number, number] = [start, start + len];
+  // the same place within 0.1 ms is the same place (float error from following a clip): keep the anchored times
+  start = Math.abs(start - s) < 1e-4 ? s : Math.max(0, Math.round(start * 1e6) / 1e6);
+  const range: [number, number] = start === s ? [s, e] : [start, Math.round((start + len) * 1e6) / 1e6];
   const now = ix.under(range[0], range[1]);
-  const on = now.sort((x, y) => y.rank - x.rank || x.s - y.s).map((l) => l.id);
-  if (anchor.sig !== undefined && ix.sig(range[0], range[1]) === anchor.sig) return { status: Math.abs(start - s) < 1e-4 ? "exact" : "moved", range, items: on };
+  const on = [...now].sort((x, y) => y.rank - x.rank || x.s - y.s).map((l) => l.id);
+  if (anchor.sig !== undefined && ix.sig(range[0], range[1], now) === anchor.sig) return { status: start === s ? "exact" : "moved", range, items: on };
   return { status: "outdated", range, items: on, why: "changed" };
 }

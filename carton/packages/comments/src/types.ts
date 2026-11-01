@@ -159,8 +159,9 @@ export const LIMITS = {
   messageBytes: 64 * 1024,
   /** Comments per project, so a free host's storage is bounded (§17, L6). */
   perProject: 100_000,
-  /** Rows per page of `comments`. */
+  /** Rows per page of `comments`, and its size (JSON characters; at least one row). */
   page: 500,
+  pageBytes: 512 * 1024,
   /** Per connection: patches at once, then per second (like presence's bucket, slower: people type comments). */
   burst: 10,
   perSec: 2,

@@ -34,7 +34,7 @@ export interface CommentRoomOptions {
   clock?: () => number;
   /** The name the server knows for a session's person (its `people` table), preferred over the one a patch carries. */
   nameOf?: (auth: AuthContext) => string | undefined;
-  limits?: { perProject?: number; page?: number; burst?: number; perSec?: number };
+  limits?: { perProject?: number; page?: number; pageBytes?: number; burst?: number; perSec?: number };
 }
 
 export interface CommentRoom {
@@ -129,9 +129,19 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
         lim.page,
       );
       const rows: Comment[] = [];
-      for (const r of scanned) if (mayReadComments(c.auth, r.cut)) rows.push(JSON.parse(r.row) as Comment);
-      const more = scanned.length === lim.page && num(scanned[scanned.length - 1]!.seq) < top;
-      c.send({ type: "comments", branchId: m.branchId, rows, head: more ? num(scanned[scanned.length - 1]!.seq) : top, reply: true, ...(more ? { more: true } : {}), ...(reset ? { reset: true } : {}) });
+      // a page stops at its byte budget (at least one row), so it never needs an envelope: 500 rows of 10,000-character
+      // bodies would be 5 MB
+      let bytes = 0,
+        last = from;
+      for (const r of scanned) {
+        if (rows.length && bytes + r.row.length > lim.pageBytes) break;
+        last = num(r.seq);
+        if (!mayReadComments(c.auth, r.cut)) continue;
+        rows.push(JSON.parse(r.row) as Comment);
+        bytes += r.row.length;
+      }
+      const more = last < top && (scanned.length === lim.page || last < num(scanned[scanned.length - 1]?.seq ?? last));
+      c.send({ type: "comments", branchId: m.branchId, rows, head: more ? last : top, reply: true, ...(more ? { more: true } : {}), ...(reset ? { reset: true } : {}) });
     },
     onComment(c, m, peers) {
       init();

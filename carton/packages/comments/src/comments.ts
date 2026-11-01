@@ -8,7 +8,7 @@
 // written offline, or before the project was ever shared, go up when it connects.
 
 import { canonical, hashDoc, type Doc, type Lineage, type Person, type Schema, type StateRef } from "@carton/core";
-import { makeAnchor, place, TimelineIndex, type AnchorOptions, type Placement } from "./anchor.ts";
+import { makeAnchor, place, TimelineIndex, type AnchorOptions, type IndexChanges, type Placement } from "./anchor.ts";
 import { cartonLineage, type LineageCarton, type LineageSource } from "./lineage.ts";
 import { applyPatch, mergePatch, threadsOf, newCommentId, validBody, type Thread } from "./model.ts";
 import { cartonCommentStore, type CommentStore } from "./store.ts";
@@ -35,6 +35,11 @@ export interface CommentsOptions {
   me?: CommentAuthor | (() => CommentAuthor);
   /** Host details for anchors (Cardboard: `{ media: "mediaItemId" }`). */
   anchor?: AnchorOptions;
+  /**
+   * The cut this session names to the host (default: the Carton's current cut). A watch-link or review-link session
+   * names its Published cut: the host lets a scoped session name only its cuts.
+   */
+  cut?: () => string;
   /** Split lineage between versions (default: from the Carton). */
   lineage?: LineageSource;
   clock?: () => number;
@@ -65,6 +70,17 @@ export interface CommentTarget {
 }
 
 const INDEXES = 3;
+
+/** Could the changes between two versions move a thread placed on the first? */
+function affected(memo: { p: Placement; deps: Set<string> }, a: { items?: { media?: string }[]; range?: [number, number] }, ch: IndexChanges): boolean {
+  for (const id of ch.ids) if (memo.deps.has(id)) return true;
+  for (const i of a.items ?? []) if (i.media !== undefined && ch.media.has(i.media)) return true;
+  for (const r of [memo.p.range, a.range]) {
+    if (!r) continue;
+    for (const [s, e] of ch.spans) if (s <= r[1] + 1e-4 && e >= r[0] - 1e-4) return true;
+  }
+  return false;
+}
 const yieldNow = () => new Promise<void>((r) => setTimeout(r, 0));
 
 export class Comments {
@@ -85,7 +101,10 @@ export class Comments {
   /** Store writes and server answers, one at a time (they read-modify-write the maps). */
   #serial: Promise<unknown> = Promise.resolve();
   readonly #indexes = new Map<string, TimelineIndex>();
-  readonly #placed = new Map<string, { anchor: object; hash: string; p: Placement }>();
+  /** Each thread's last placement: on which version, and the items it depends on there. */
+  readonly #placed = new Map<string, { anchor: object; hash: string; p: Placement; deps: Set<string> }>();
+  /** The version placed on last, so the next one compares only what changed (`TimelineIndex.changedSince`). */
+  #last: { hash: string; index: TimelineIndex } | null = null;
   #closed = false;
 
   private constructor(opts: CommentsOptions) {
@@ -197,9 +216,17 @@ export class Comments {
     return this.placeOn(await this.#current(opts.cut), opts);
   }
 
-  /** Where every thread sits on `target` (a version the caller already has: the head it shows, a preview). */
+  /**
+   * Where every thread sits on `target` (a version the caller already has: the head it shows, a preview). Against the
+   * version placed on last, only threads that a changed item could move are placed again: a changed item they follow
+   * or sit on, a change overlapping where they sit, or a clip of their media.
+   */
   async placeOn(target: CommentTarget, opts: { budgetMs?: number } = {}): Promise<ReadonlyMap<string, Placement>> {
     const index = this.#index(target.hash, target.doc);
+    const last = this.#last;
+    const changes = last && last.hash !== target.hash ? index.changedSince(last.index) : null;
+    const incremental = !!changes && !changes.most && changes.spans.length <= 512;
+    this.#last = { hash: target.hash, index };
     const out = new Map<string, Placement>();
     const lineages = new Map<string, Promise<Lineage | null>>();
     const budget = opts.budgetMs;
@@ -212,11 +239,15 @@ export class Comments {
         continue;
       }
       const memo = this.#placed.get(id);
-      if (memo && memo.anchor === a && memo.hash === target.hash) {
-        out.set(id, memo.p);
-        continue;
+      if (memo && memo.anchor === a) {
+        if (memo.hash === target.hash || (incremental && memo.hash === last!.hash && !affected(memo, a, changes!))) {
+          memo.hash = target.hash;
+          out.set(id, memo.p);
+          continue;
+        }
       }
       let p = place(a, { index, hash: target.hash });
+      const deps = new Set<string>(a.items?.map((i) => i.id));
       // only a thread that didn't land exactly needs the lineage between its version and the target (a split whose
       // second piece got a new id); most never do, so most never read a change row
       if (p.status !== "exact" && p.status !== "moved" && p.status !== "general" && a.items?.length) {
@@ -224,9 +255,13 @@ export class Comments {
         let lp = lineages.get(key);
         if (!lp) lineages.set(key, (lp = this.#lineage.lineage({ cut: a.cut, seq: a.seq }, { cut: target.cut, seq: target.seq }).catch(() => null)));
         const lineage = await lp;
-        if (lineage && Object.keys(lineage).length) p = place(a, { index, hash: target.hash }, lineage);
+        if (lineage && Object.keys(lineage).length) {
+          p = place(a, { index, hash: target.hash }, lineage);
+          for (const i of a.items) for (const x of lineage[i.id] ?? []) deps.add(x);
+        }
       }
-      this.#placed.set(id, { anchor: a, hash: target.hash, p });
+      for (const x of p.items) deps.add(x);
+      this.#placed.set(id, { anchor: a, hash: target.hash, p, deps });
       out.set(id, p);
       if (budget !== undefined && performance.now() - t0 > budget) {
         await yieldNow();
@@ -395,7 +430,7 @@ export class Comments {
   #startSync(opts: CommentSyncOptions): void {
     const self = this;
     this.#sync = new CommentSync(opts, {
-      cut: () => self.#carton.cut,
+      cut: () => self.#opts.cut?.() ?? self.#carton.cut,
       head: () => self.#head,
       // read fresh: `cb` (another process on the same carton.db) may have written comments meanwhile
       pending: () => self.#run(async () => (await self.#reloadPending(), [...self.#pending.values()])),
