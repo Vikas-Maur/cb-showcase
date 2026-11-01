@@ -107,7 +107,8 @@ export function declaredIdentity(declared?: string | null): IdentitySource {
       const m = DECLARED.exec(raw);
       if (!m || m[1] === "director") return null; // a Director id only ever comes from the hook
       const label = PROVIDER_NAMES[m[1]] ?? m[1];
-      return { kind: "agent", id: raw, name: `${label}${m[2] ? ` (${m[2]})` : ""} (terminal)`, provider: m[1], group: localGroup() };
+      // named by its product, as people know it ("Codex"); the name it gave itself stays in the id (ui-words)
+      return { kind: "agent", id: raw, name: label, provider: m[1], group: localGroup() };
     },
   };
 }
@@ -118,7 +119,9 @@ export const environmentIdentity: IdentitySource = {
   current(env = process.env) {
     const host = safePart(hostname());
     const provider = env.CLAUDECODE === "1" ? "claude-code" : env.GEMINI_CLI === "1" ? "gemini" : Object.keys(env).some((k) => k.startsWith("CODEX_")) ? "codex" : env.CURSOR_TRACE_ID ? "cursor" : null;
-    if (provider) return { kind: "agent", id: `${provider}@${host}`, name: `${PROVIDER_NAMES[provider]} (terminal)`, provider, group: localGroup() };
+    if (provider) return { kind: "agent", id: `${provider}@${host}`, name: PROVIDER_NAMES[provider]!, provider, group: localGroup() };
+    // the person at this machine, typing `cb`: History tells it as "You" (a teammate's, as that teammate); never shown
+    // by this name
     return { kind: "external", id: `terminal:${localGroup().slice("local:".length)}`, name: "Terminal", group: localGroup() };
   },
 };

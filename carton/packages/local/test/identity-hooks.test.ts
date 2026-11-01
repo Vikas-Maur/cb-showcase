@@ -27,10 +27,14 @@ test("Claude Code hook input: subagent ids from agent_id/agent_type; hyphenated 
 
 test("self-declared (L1) for Codex and Gemini; never a director id; environment fallback", () => {
   const c = identify({ env: {}, declared: "codex/fix-captions" });
-  assert.deepEqual([c.kind, c.id, c.provider, c.name], ["agent", "codex/fix-captions", "codex", "Codex (fix-captions) (terminal)"]);
+  // ui-words: named by its product, no "(terminal)"; the name it gave itself stays in the id
+  assert.deepEqual([c.kind, c.id, c.provider, c.name], ["agent", "codex/fix-captions", "codex", "Codex"]);
   assert.equal(identify({ env: { CARTON_AGENT: "gemini" } }).provider, "gemini");
   assert.notEqual(identify({ env: {}, declared: "director/c/t" }).id, "director/c/t", "only the hook may claim a Director turn");
   assert.equal(identify({ env: { CLAUDECODE: "1" } }).provider, "claude-code");
+  // ui-words: "Claude Code", never "Claude Code (terminal)" (History, undo labels)
+  assert.equal(identify({ env: { CLAUDECODE: "1" } }).name, "Claude Code");
+  assert.equal(identify({ env: { CODEX_HOME: "/x" } }).name, "Codex");
   assert.equal(identify({ env: { GEMINI_CLI: "1" } }).provider, "gemini");
   assert.equal(identify({ env: { CODEX_SANDBOX: "seatbelt" } }).provider, "codex");
   const t = identify({ env: {} });
