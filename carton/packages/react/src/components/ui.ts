@@ -74,11 +74,12 @@ export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?
   const glyph =
     actor.kind === "human"
       ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.name)))
-      : actor.kind === "subagent"
+      : actor.kind === "subagent" && !named
         ? h("span", { className: "carton-avatar-initials" }, initials(actor.subagentType ?? actor.name).slice(0, 1))
         : h(Icon, { name: "sparkle", size: Math.round(size * 0.62) });
+  // Beside a name, a subagent is its agent ("Director"): the agent's look too.
   return named
-    ? h("span", { className: "carton-avatar", "data-kind": actor.kind, style, "aria-hidden": true }, glyph)
+    ? h("span", { className: "carton-avatar", "data-kind": actor.kind === "subagent" ? "agent" : actor.kind, style, "aria-hidden": true }, glyph)
     : h("span", { className: "carton-avatar", "data-kind": actor.kind, style, role: "img", "aria-label": label, "data-carton-tip": label }, glyph);
 }
 

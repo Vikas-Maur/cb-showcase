@@ -32,7 +32,8 @@ function SideView({ side, which, showing, order }: { side: ConflictSide; which: 
       { className: "carton-conflict-who" },
       h(Avatar, { actor: side.author, size: 16, named: true }),
       order ? h("span", { className: "carton-actor-name", "data-kind": side.author.kind }, order.label) : h(ActorName, { actor: side.author }),
-      side.at != null ? h("time", { dateTime: new Date(side.at).toISOString() }, when(side.at, now, locale, words.justNow)) : null,
+      // an ordered side's name carries its clock time ("Your earlier edit (10:04)"): no second, relative one
+      side.at != null && !order ? h("time", { dateTime: new Date(side.at).toISOString() }, when(side.at, now, locale, words.justNow)) : null,
       side.where ? h("span", { className: "carton-conflict-where" }, side.where) : null,
       showing ? h("span", { className: "carton-badge", "data-tone": "muted" }, words.showingNow) : null,
     ),
