@@ -495,6 +495,11 @@ const MUTATE_BACKSTOP_MS = 60_000;
 const KF_BYTES = 1 << 20;
 const PROJECT = ["project"] as const;
 const CURRENT = ["current"] as const;
+/**
+ * A token written with every pin row write, in the same batch (windows-sync R1): a refresh reads it, one key, and reads
+ * the pins table again only when it changed, rather than on every call (the table gains a row per print of a shared file).
+ */
+const PINS_GEN = ["pinsGen"] as const;
 const NODE_RE = /^[^~\s]+@\d+$/;
 const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.collections).map((k) => [k, []]));
 interface ProjectMeta {
@@ -591,6 +596,8 @@ class CartonImpl implements Carton {
   #confirmed: { cut: string; change: ConfirmedChange }[] = [];
   #noops: { id: ChangeId; cut: string; seq: number }[] = [];
   #pinSnap = new Map<string, PinRow>();
+  /** The pins token (PINS_GEN) the pin snapshot was read with, or written with by this handle's own last pin write. */
+  #pinsGen: string | undefined = undefined;
   #ridSaved = false;
   /** People by replica id, as the server said (meta ["person", rid]); this replica's own person (meta ["identity"]). */
   #people = new Map<string, Person>();
@@ -891,7 +898,7 @@ class CartonImpl implements Carton {
     const kfState = new Map<string, { periodic: number; bytes: number }>();
     for (const c of cuts) await add(c);
     for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) h.nameVersion(nodeId(e.key[0] as string, e.key[1] as number), e.value.name, e.value.by);
-    const pinSnap = await this.#loadPins(h);
+    const pins = await this.#loadPins(h);
     for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
     const current = await s.get<string>(T.meta, CURRENT);
     if (current && byId.has(current)) h.current = current;
@@ -908,7 +915,8 @@ class CartonImpl implements Carton {
     if (this.#h && h.cut(this.#h.current)) h.current = this.#h.current;
     this.#h = h;
     this.#exportsSeen = exportsSeen;
-    this.#pinSnap = pinSnap;
+    this.#pinSnap = pins.snap;
+    this.#pinsGen = pins.gen;
     this.#joining = joining;
     people();
     if (late) h.relive(late);
@@ -980,15 +988,17 @@ class CartonImpl implements Carton {
     }
   }
   // Pins as the store holds them (other processes pin too), and a snapshot to condition our pin writes on.
-  async #loadPins(h: History): Promise<Map<string, PinRow>> {
+  // The token first: a pin written between the two reads leaves it older than the rows, and the next refresh reads again.
+  async #loadPins(h: History): Promise<{ snap: Map<string, PinRow>; gen: string | undefined }> {
+    const gen = await this.store.get<string>(T.meta, PINS_GEN);
     const rows = await this.store.range<PinRow>(T.pins);
     h.setPins(rows.map((e) => e.value));
-    return new Map(rows.map((e) => [e.key.join("|"), e.value]));
+    return { snap: new Map(rows.map((e) => [e.key.join("|"), e.value])), gen };
   }
   // Re-read the tail of a cut (another process may have appended), any new cuts, and the pins.
   // `exports` (before every write): also the exports other processes made since (#newExports); head() and reads skip
   // that read, as nothing they return depends on it.
-  async #refresh(cut?: string, exports = false): Promise<void> {
+  async #refresh(cut?: string, exports = false, pins = false): Promise<void> {
     const s = this.store;
     for (const e of await s.range<CutRecord>(T.cuts)) {
       const known = this.#h.cut(e.key[0] as string);
@@ -1009,7 +1019,8 @@ class CartonImpl implements Carton {
     }
     // another process's rows: its replica id and what it learnt of people may be new too
     if (loaded) await this.#loadPeople();
-    this.#pinSnap = await this.#loadPins(this.#h);
+    // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
+    if (pins || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) ({ snap: this.#pinSnap, gen: this.#pinsGen } = await this.#loadPins(this.#h));
     if (exports) await this.#newExports();
   }
   /**
@@ -1034,13 +1045,27 @@ class CartonImpl implements Carton {
     const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
     return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids));
   }
-  /** A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite. */
-  #pinWrite(ref: StateRef): { write: StoreWrite; cond: StoreCondition } {
+  /**
+   * A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite, with a
+   * new pins token conditioned on the one this handle holds: a pin another process wrote since fails the write, the
+   * retry reads the pins again, and no pin is ever missed by a handle that skips the read. `done`, once it landed: this
+   * handle's snapshot and token are the store's.
+   */
+  #pinWrite(ref: StateRef): { writes: StoreWrite[]; conds: StoreCondition[]; done: () => void } {
     const key = [ref.branchId, ref.seq, ref.hash8 ?? ref.hash?.slice(0, 8) ?? ""];
-    const was = this.#pinSnap.get(key.join("|"));
+    const k = key.join("|"),
+      was = this.#pinSnap.get(k),
+      value = this.#h.pinRow(key[0] as string, key[1] as number, key[2] as string);
+    const gen = randomHex(8),
+      prev = this.#pinsGen;
     return {
-      write: { table: T.pins, key, value: this.#h.pinRow(key[0] as string, key[1] as number, key[2] as string) },
-      cond: { table: T.pins, key, expect: was === undefined ? "absent" : { equals: was } },
+      writes: [{ table: T.pins, key, value }, { table: T.meta, key: [...PINS_GEN], value: gen }],
+      conds: [{ table: T.pins, key, expect: was === undefined ? "absent" : { equals: was } }, { table: T.meta, key: [...PINS_GEN], expect: prev === undefined ? "absent" : { equals: prev } }],
+      done: () => {
+        if (value === undefined) this.#pinSnap.delete(k);
+        else this.#pinSnap.set(k, value);
+        this.#pinsGen = gen;
+      },
     };
   }
   #knowledgeWrites(h: History, prior?: ReturnType<History["knowledge"]>): StoreWrite[] {
@@ -1122,7 +1147,7 @@ class CartonImpl implements Carton {
     if (n) this.#h.noteNoop(id, n[0], n[1]);
   }
   /** Run a History mutation under the handle's queue, persist what it confirmed, and retry after losing a race. */
-  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId } = {}): Promise<R> {
+  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[]; done?: () => void }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId; pins?: boolean } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
       await this.#whole();
@@ -1134,14 +1159,15 @@ class CartonImpl implements Carton {
       let turn: { owner: string; until: number } | null = null;
       try {
         for (let lost = 0; ; ) {
-          await this.#refresh(cut, true);
+          await this.#refresh(cut, true, opts.pins);
           await this.#noopOf(opts.id);
           this.#confirmed.length = 0;
           this.#noops.length = 0;
-          let ok: boolean, r: R;
+          let ok: boolean, r: R, done: (() => void) | undefined;
           try {
             r = fn();
             const x = opts.extra?.() ?? {};
+            done = x.done;
             ok = await this.#flush([...(x.writes ?? []), ...(turn ? [{ table: T.lease, key: TURN, value: undefined }] : [])], [...(opts.conditions ?? []), ...(x.conds ?? []), { table: T.lease, key: TURN, expect: turn ? { equals: turn } : "absent" }]);
           } catch (e) {
             // the model may hold changes the store never got (a write that threw): drop them before anything else runs
@@ -1152,6 +1178,7 @@ class CartonImpl implements Carton {
           }
           if (ok) {
             turn = null; // given back with the append
+            done?.();
             return r;
           }
           // another process appended first, someone holds the turn, or a caller's condition (a lease fence) failed:
@@ -1500,10 +1527,7 @@ class CartonImpl implements Carton {
           : [];
       ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(pending.length ? { pending } : {}), ...(opts.doc ? { doc: opts.doc } : {}), ...(opts.seq !== undefined ? { seq: opts.seq } : {}) });
     }, {
-      extra: () => {
-        const pw = this.#pinWrite(ref);
-        return { writes: [pw.write], conds: [pw.cond] };
-      },
+      extra: () => this.#pinWrite(ref),
       idempotent: true,
     });
     return { ref, header: this.#h.refString(cut, ref.seq, ref.hash!, { printNonce: randomHex(4), ...(opts.by ? { by: opts.by } : {}) }) };
@@ -1511,10 +1535,7 @@ class CartonImpl implements Carton {
   async release(ref: StateRef, owner: string): Promise<void> {
     await this.#whole();
     await this.#mutate(undefined, () => this.#h.release(ref, owner), {
-      extra: () => {
-        const pw = this.#pinWrite(ref);
-        return { writes: [pw.write], conds: [pw.cond] };
-      },
+      extra: () => this.#pinWrite(ref),
       idempotent: true,
     });
   }
@@ -1706,7 +1727,7 @@ class CartonImpl implements Carton {
           squashed += this.#compactCut(rec.id, cutoff, plan);
         }
       },
-      { extra: () => ({ writes: plan }), idempotent: true },
+      { extra: () => ({ writes: plan }), idempotent: true, pins: true },
     );
     if (squashed) {
       // rows were rewritten, not appended: History is rebuilt from the store, behind every other write

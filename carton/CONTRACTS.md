@@ -178,6 +178,13 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   its fence as `sync.connect({ nonce, fence, conditions })`: once replaced, it records nothing more and stops.
   `carton.pendingCount(cut?)` counts the edits waiting for a shared cut's server from the store, so any process on
   the project (one without sync too, like `cb` deciding whether a Save As may carry history) sees the holder's.
+- **Pins across processes (windows-sync R1):** every pin row write carries a new token, `meta ["pinsGen"]`, in the same
+  batch and conditioned on the token the writer holds, so a pin another process wrote since fails the write and the
+  retry reads the pins again. The calls that refresh (`head()`, reads, every write) read that one key, and the whole
+  pins table only when it moved: their cost no longer grows with the pins (a GUI save prints the shared file and pins
+  it). A handle's own pin write leaves its snapshot and token current. A compaction reads the pins table always, as it
+  keeps every pinned version. A core from before the token writes pin rows alone: a handle of this core sees such a pin
+  at its next open or rebuild, or after another process's pin moves the token, and its compaction keeps it.
 - **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
   whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
   pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.
