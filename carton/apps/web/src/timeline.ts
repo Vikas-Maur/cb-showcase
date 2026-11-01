@@ -3,7 +3,7 @@
 // presence ghost (§5.1, §12: drags are live as ghosts, committed on release, L2). Clips are memoized by record:
 // the engine keeps unchanged records as the same objects, so a remote edit redraws only the clips it touched.
 
-import { createElement as h, memo, useLayoutEffect, useRef, useState } from "react";
+import { createElement as h, memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Doc, HeldBase, Op, Rec } from "@carton/core";
 import { GhostLayer } from "@carton/react";
 import { ITEMS, TRACKS, type SampleMedia } from "./demo-doc.ts";
@@ -47,6 +47,8 @@ export interface TimelineProps {
   onBlocked: () => void;
   /** An object URL for a T1 image key, once loaded (the parent re-renders when one arrives). */
   image: (key: string) => string | undefined;
+  /** Drawn over the ruler (comment markers), given seconds-to-pixels and what changes it. */
+  rulerOverlay?: (timeToX: (t: number) => number, layoutKey: unknown) => ReactNode;
 }
 
 export function Timeline(p: TimelineProps) {
@@ -140,6 +142,8 @@ export function Timeline(p: TimelineProps) {
     p.onSeek(Math.max(0, (clientX - el.getBoundingClientRect().left + el.scrollLeft) / pps));
   };
 
+  // one function per scale, so the markers lay out again only when it changes
+  const timeToX = useMemo(() => (t: number) => t * pps, [pps]);
   const ticks: number[] = [];
   const step = pps < 40 ? 2 : 1;
   for (let s = 0; s <= length; s += step) ticks.push(s);
@@ -155,6 +159,7 @@ export function Timeline(p: TimelineProps) {
         "div",
         { className: "cb-tl-ticks", onPointerDown: (e: PointerEvent) => seekAt(e.clientX), "data-testid": "ruler" },
         ticks.map((s) => h("span", { key: s, className: "cb-tl-tick", style: { left: s * pps } }, s % (step * 2) === 0 ? `${s}s` : "")),
+        p.rulerOverlay?.(timeToX, pps),
       ),
     ),
     h(
@@ -189,7 +194,7 @@ export function Timeline(p: TimelineProps) {
             onCancel,
           });
         }),
-        h(GhostLayer, { timeToX: (t: number) => t * pps, trackBand: (id: string) => bands.get(id) ?? null, layoutKey: pps, className: "cb-tl-ghosts" }),
+        h(GhostLayer, { timeToX, trackBand: (id: string) => bands.get(id) ?? null, layoutKey: pps, className: "cb-tl-ghosts" }),
         h("div", { className: "cb-tl-playhead", style: { transform: `translateX(${p.time * pps}px)`, height: top } }),
       ),
     ),

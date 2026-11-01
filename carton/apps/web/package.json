@@ -17,6 +17,7 @@
     "@carton/blob-memory": "0.1.0",
     "@carton/blob-fs": "0.1.0",
     "@carton/cardboard": "0.1.0",
+    "@carton/comments": "0.1.0",
     "@carton/core": "0.1.0",
     "@carton/host-http": "0.1.0",
     "@carton/media": "0.1.0",
