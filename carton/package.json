@@ -22,6 +22,7 @@
     "packages/local",
     "packages/cli-mcp",
     "packages/react",
+    "packages/comments",
     "packages/conformance",
     "e2e",
     "apps/web"
