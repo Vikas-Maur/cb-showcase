@@ -152,6 +152,7 @@ export class BlobVault {
           const id = q.get("id") ?? "", n = Number(q.get("n"));
           checkPartNumber(n);
           const data = new Uint8Array(await req.arrayBuffer());
+          if (q.has("len") && Number(q.get("len")) !== data.byteLength) return fail("InvalidPart", `part ${n}: ${data.byteLength} bytes arrived, ${q.get("len")} declared`);
           const etag = this.#state.storage.transactionSync(() => {
             if (!this.#upload(id, key)) return null;
             this.#sql.exec("DELETE FROM part_chunks WHERE id = ? AND n = ?", id, n);
@@ -247,8 +248,10 @@ export class DoBlobStore implements BlobStore {
   async #call(method: string, path: string, params: Record<string, string | number | undefined>, body?: RequestInit["body"]): Promise<Response> {
     const u = new URL(`https://vault${path}`);
     for (const [k, v] of Object.entries(params)) if (v !== undefined) u.searchParams.set(k, String(v));
-    const init: RequestInit = { method };
+    const init: RequestInit & { duplex?: "half" } = { method };
     if (body !== undefined) init.body = body;
+    // a streamed body (a part passed straight through) must say so outside workerd (Node's fetch)
+    if (body instanceof ReadableStream) init.duplex = "half";
     return this.#ns.get(this.#ns.idFromName(this.#name)).fetch(u.toString(), init);
   }
 
@@ -354,6 +357,11 @@ export class DoBlobStore implements BlobStore {
       async uploadPart(partNumber, data) {
         checkPartNumber(partNumber);
         return s.#json(await s.#call("PUT", "/mp/part", { k: key, id: uploadId, n: partNumber }, data as Uint8Array<ArrayBuffer>));
+      },
+      // the part's bytes go to the vault as they arrive: the Worker in front never reads them (its CPU and memory)
+      async uploadPartStream(partNumber, body, size) {
+        checkPartNumber(partNumber);
+        return s.#json(await s.#call("PUT", "/mp/part", { k: key, id: uploadId, n: partNumber, len: size }, body as ReadableStream<Uint8Array>));
       },
       async listParts() {
         return s.#json(await s.#call("GET", "/mp/parts", { k: key, id: uploadId }));
