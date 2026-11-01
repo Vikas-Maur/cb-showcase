@@ -109,11 +109,15 @@ client says `unsupported` and keeps its comments.
 - a session scoped to some cuts (a Published cut's **watch link**) reads only comments on those cuts, and with a
   commenting role (a review link) comments only there; it learns nothing of other cuts' comments;
 - only a comment's **author** edits or deletes it; the author is the session's account, never what a client claims;
+- a scoped session (a watch link, a review link) **never learns an account id**, as with the people record: every
+  other author, and who resolved a thread, comes as `{ id: "teammate:N", name }`, the name being the people record's
+  display name or "Teammate N" (N fixed per project at the person's first write); its own comments keep its own id;
 - per connection a token bucket like presence's (10 at once, 2 per second), and one for catch-up pages (20 at once, 5
   per second); at most 100,000 comments per project; a comment at most 64 KB; pages at most 500 rows and 512 KB;
 - an op is applied once (the last 64 op ids per comment and account are kept);
 - storage: `comments`, `comment_log` (one row per comment, at the seq of its latest change), `comment_ops`,
-  `comment_meta`. A change writes 4 rows.
+  `comment_people`, `comment_meta`. A change writes 4 rows (one more at a person's first write in the project, or
+  when their people-record name changed).
 
 ## Performance
 

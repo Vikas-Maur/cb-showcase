@@ -143,6 +143,60 @@ test("catch-up pages are limited per connection: past the read bucket, no rows a
   assert.equal(ask().rows.length, 1);
 });
 
+test("a watch link never receives an account id: authors are display names or a label stable within the project", () => {
+  const storage = nodeSqliteStorage(":memory:");
+  // the people record knows alice's name; bob has none (his patches claim one, which a watch link never sees)
+  const people: Record<string, string> = { "acct-alice-7f3": "Alice Chen" };
+  const room = createCommentRoom({ storage, nameOf: (a) => people[a.account] });
+  const peers: ReturnType<typeof peer>[] = [];
+  const join = (role: Role, account: string, branches?: string[], cut = "pub") => {
+    const p = peer(role, account, branches);
+    room.onComments(p, { type: "comments", branchId: cut, since: 0 });
+    peers.push(p);
+    return p;
+  };
+  const send = (p: ReturnType<typeof peer>, id: string, pt: CommentPatch) => {
+    room.onComment(p, { type: "comment", branchId: "pub", n: ++n, id, patch: pt, op: `o${n}` }, peers);
+    return p.answers().at(-1)!;
+  };
+  const alice = join("editor", "acct-alice-7f3");
+  const bob = join("editor", "acct-bob-91c");
+  const claim = (name: string) => ({ id: "x", name });
+  send(alice, "c1", { add: { body: "Music in too early", cut: "pub", at: 1 }, at: 1, author: claim("A") });
+  send(bob, "r1", { add: { replyTo: "c1", body: "Moved it", cut: "pub", at: 2 }, at: 2, author: claim("Bob from Accounts") });
+  send(bob, "c1", { resolved: true, at: 3, author: claim("Bob from Accounts") });
+  // a watch link: catch-up, then live rows; a review link (a scoped commenter) writes and gets its answers
+  const watch = join("viewer", "acct-watch-001", ["pub"]);
+  const review = join("commenter", "acct-rev-55", ["pub"]);
+  send(alice, "c2", { add: { body: "And here", cut: "pub", at: 4 }, at: 4, author: claim("A") });
+  const mine = send(review, "c3", { add: { body: "From the review link", cut: "pub", at: 5 }, at: 5, author: claim("R") });
+  const reopened = send(review, "c1", { resolved: false, at: 6, author: claim("R") });
+  const leaked = (p: ReturnType<typeof peer>, accounts: string[]) => accounts.filter((a) => JSON.stringify(p.got).includes(a));
+  assert.deepEqual(leaked(watch, ["acct-alice-7f3", "acct-bob-91c", "acct-rev-55", "Bob from Accounts"]), [], "nothing of anyone's account reaches the watch link");
+  assert.deepEqual(leaked(review, ["acct-alice-7f3", "acct-bob-91c"]), [], "nor the review link (it is scoped too)");
+  const seen = (p: ReturnType<typeof peer>) => new Map(p.rows().map((r) => [r.id, r]));
+  const w = seen(watch);
+  assert.deepEqual(w.get("c1")?.author, { id: "teammate:1", name: "Alice Chen" }, "the people record's name");
+  assert.deepEqual(w.get("r1")?.author, { id: "teammate:2", name: "Teammate 2" }, "no name there: a label");
+  assert.deepEqual(w.get("c2")?.author, w.get("c1")?.author, "the same label for the same person");
+  assert.deepEqual(w.get("c3")?.author, { id: "teammate:3", name: "Teammate 3" }, "a claimed name is never shown to a link");
+  assert.equal(mine.row?.author.id, "acct-rev-55", "a session's own comments keep its own id (it edits them)");
+  assert.equal(reopened.row?.resolved, undefined, "a link reopens a thread");
+  // a second watch link, later: the same labels
+  const watch2 = join("viewer", "acct-watch-002", ["pub"]);
+  assert.deepEqual(seen(watch2).get("r1")?.author, { id: "teammate:2", name: "Teammate 2" });
+  // the team sees full authors
+  const team = seen(alice);
+  assert.deepEqual(team.get("c3")?.author.id, "acct-rev-55");
+  assert.deepEqual(seen(join("editor", "acct-carol-3", undefined, "main")).get("r1")?.author, { id: "acct-bob-91c", name: "Bob from Accounts" });
+  // and after a wake (a new room over the same storage) the labels are the same
+  const again = createCommentRoom({ storage, nameOf: (a) => people[a.account] });
+  const w3 = peer("viewer", "acct-watch-003", ["pub"]);
+  again.onComments(w3, { type: "comments", branchId: "pub", since: 0 });
+  assert.deepEqual(seen(w3).get("r1")?.author, { id: "teammate:2", name: "Teammate 2" });
+  assert.equal(seen(w3).get("c1")?.resolved, undefined);
+});
+
 test("the stream: a changed comment moves to the end; catching up from any place reads each changed comment once", () => {
   const w = world();
   const a = w.join("editor", "alice");
