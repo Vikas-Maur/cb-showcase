@@ -69,17 +69,18 @@ anything.
 - **`cb` on a shared cut waits up to 5 s (L14)** for the server, then answers `pending`; offline it answers `pending`
   at once, and conflicts come later as notices.
 - **While an agent turn is running, the shared `timeline.tsx` is frozen (L16).** From the agent's first Read of it
-  until its turn's Stop, Carton doesn't rewrite it with the person's or teammates' changes; the app always shows head.
-  The freeze holds back automatic rewrites only: a plain `cb source print`, a cut switch, or an agent change that
-  can't merge cleanly into the frozen file shows newer state before the Stop. An agent's own
-  `cb` changes do show in it (cardboard-adapter's head; not yet in the snapshot the kit runs on). Claude Code sends no
+  until its turn's Stop, Carton doesn't rewrite it with the person's or remote teammates' changes; the app always shows
+  head. Local agents' saves still go into it, and so do their `cb` changes (cardboard-adapter's head; not yet in the
+  snapshot the kit runs on). It can show newer state before the Stop: a plain `cb source print` and a cut switch reprint
+  it from head, and a save or `cb` change that repeats an edit the file hides restarts it from that change's state (as
+  does a save whose check for that reads more than its limit of changes, or fails). Claude Code sends no
   Stop when the user interrupts a turn, so a hooked agent's hold also ends 60 s after its last hook event, and its next
   event holds the file again. An agent that isn't hooked holds it for 60 s after each save or `cb` call.
-- **`cb` talks to the app over a local socket, one JSON line per message.** A `cb` save carries the whole project,
-  and an answer can carry the head. The reader drops the connection when the part of a message it is still waiting
-  for passes 64 Mi UTF-16 code units (counted after UTF-8 decoding, not in bytes), and `cb` fails after its retries.
-  A message within that cap always passes this check; a larger one may pass or fail, depending on how it arrives in
-  pieces.
+- **`cb` talks to the app over a local socket, one JSON line per message.** A `cb` save carries the whole project, and
+  an answer can carry the head. The reader drops the connection when the part of a message it is still waiting for
+  passes 64 Mi UTF-16 code units (counted after UTF-8 decoding, not in bytes), and `cb` can fail at once or after
+  retries. A message within that cap always passes this check; a larger one may pass or fail, depending on how it
+  arrives in pieces.
 - **The file-tool hook runs on every matching tool call.** `hookSettings` gives host Claude Code a PreToolUse matcher
   `Read|Write|Edit|MultiEdit`, so a hook process starts for every Read or edit of any file; it acts only on the
   project's `timeline.tsx` and `project.json`. Claude Code's `if` conditions on each hook (`Read(**/timeline.tsx)`,

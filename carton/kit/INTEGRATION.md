@@ -425,10 +425,11 @@ built from a list of namespaces.
 - **The freeze.** While an agent's turn runs, the shared `timeline.tsx` doesn't move under it: the agent's Read of the
   file, or its `cb` call, starts the freeze (`mz.hookRead(actor)`), and its Stop lets go (`mz.hookStop(actor)`: a
   subagent's Stop releases only what it pinned; the turn's Stop releases the whole turn's). Once no agent holds the
-  file, the person's and teammates' changes reach it; the app always shows head. The freeze holds back automatic
-  rewrites only: a plain `cb source print` reprints the file from head, and so does a cut switch. An agent's own `cb`
-  changes show in the frozen file (cardboard-adapter's head; not yet in the snapshot the kit runs on); one that doesn't
-  merge cleanly into it restarts the freeze from that change's own state, which can show newer edits. Claude Code sends
+  file, the person's and remote teammates' changes reach it; the app always shows head. Local agents' saves still go
+  into the frozen file, each merged on its own base, and so do their `cb` changes (cardboard-adapter's head; not yet in
+  the snapshot the kit runs on). A plain `cb source print` and a cut switch reprint it from head; a save or `cb` change
+  that repeats an edit the file hides restarts the freeze from that change's state (so does a save whose check for that
+  reads more than its limit of changes, or fails). Either can show newer edits before the Stop. Claude Code sends
   no Stop when the user interrupts a turn, so a hooked agent quiet for 60 s (`freezeIdleMs`) no longer holds the file;
   its next hook event holds it again.
 - **Hook events reach the holder as a write:** `lc.write({ kind: "hook", event: "read" | "write" | "stop", file },
