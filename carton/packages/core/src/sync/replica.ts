@@ -175,6 +175,14 @@ export class SharedCut {
     return r;
   }
   /**
+   * Take back a change the store never kept (`ReplicaQueue.unqueue`); one that may have been sent is refused here and
+   * withdrawn (`rejectLocally`), with `reason`.
+   */
+  unqueue(id: string, reason: string): void {
+    if (!this.queue.unqueue(this.branchId, id)) this.queue.rejectLocally(this.branchId, id, reason);
+    this.refreshState();
+  }
+  /**
    * The outcome of change `id` within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed@seq, conflicts (late cards,
    * or absorbed with cards), rejected (validation), or still pending.
    */

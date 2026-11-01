@@ -694,6 +694,22 @@ export class ReplicaQueue {
     const cards = p.versions.slice(1).flatMap((v) => v.cards);
     this.emit({ type: "absorbed", branchId: b, change: p, cards, withdrawn });
   }
+  /**
+   * Take back a change whose store write never kept it (the write that queued it failed a condition: a lease fence that
+   * moved): never sent, it leaves the queue as if it had never been made, with no outcome (no notice, its id unspent, so
+   * the process that holds the lease can still apply it), and the changes after it are rebased without it. false, and
+   * nothing done, if a copy of it may have been sent: then it is withdrawn instead (rejectLocally).
+   */
+  unqueue(b: string, id: string): boolean {
+    const queue = this.queues.get(b)!;
+    const p = queue.find((x) => x.id === id);
+    if (!p) return true;
+    if (p.sentBases.length || p.sends) return false;
+    this.queues.set(b, queue.filter((x) => x !== p));
+    this.invalidate(b);
+    this.rebaseAll(b);
+    return true;
+  }
   /** The sequencer's validation refused the change: it is dropped, never retried, and the queue is rebased without it. */
   rejectPending(b: string, id: string, reason: string): QueuedChange | null {
     const queue = this.queues.get(b)!;
