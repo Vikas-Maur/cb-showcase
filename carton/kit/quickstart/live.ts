@@ -2,7 +2,7 @@
 //   node kit/quickstart/live.ts <bundle> <host data dir> [http://127.0.0.1:8787]
 // Alice owns <bundle> (made by import.ts). She shares its current cut and invites Bob as an editor. Bob joins from
 // nothing: an empty history of his own, the invite's cut record and root state, and every row from the host. Both edit
-// at once, each sees the other's edit, then Bob goes offline, edits, and comes back. Bob's history goes in a new
+// at once, each sees the other's edit, then Bob goes offline, edits as the app's GUI does, and comes back. Bob's history goes in a new
 // folder next to the bundle, `Bob-XXXXXX/`.
 import { mkdtempSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -61,6 +61,9 @@ const bobStore = await openSqliteStore(join(bobDir, "carton.db"));
 const b = await open(bobStore, bob, await session("bob", "editor"), invite);
 await until("Bob to connect", async () => b.sync!.status === "up-to-date");
 console.log(`Bob joined: ${b.sync!.state().label}`);
+// Each names the person behind their device: the session's account, and the name teammates see
+await a.setIdentity({ id: "alice", name: "Alice" });
+await b.setIdentity({ id: "bob", name: "Bob" });
 
 // both edit at once: Alice the intro, Bob the outro; `wait` waits up to 5 s for the host's answer, as `cb` does
 const [ra, rb] = await Promise.all([
@@ -71,14 +74,18 @@ console.log(`Alice's edit: ${ra.status}, Bob's edit: ${rb.status}`);
 await until("each to see the other's edit", async () => clip((await a.head()).doc, "Outro").textContent === "Bye" && clip((await b.head()).doc, "Intro").textContent === "Hello");
 console.log(`Alice sees Bob's outro: "${clip((await a.head()).doc, "Outro").textContent}"; Bob sees Alice's intro: "${clip((await b.head()).doc, "Intro").textContent}"`);
 
-// Bob goes offline and keeps editing; his edit waits, then syncs when he is back
+// Bob goes offline and keeps editing; his edit waits, then syncs when he is back. It is saved as Cardboard's GUI
+// saves are, by the generic person ("person" on every computer); history tells it as the person behind Bob's device
 await b.sync!.disconnect();
-const offline = await b.commit({ doc: edit((await b.head()).doc, "Middle", { color: "#ff0000" }) });
-console.log(`Bob offline: ${offline.status} (${b.sync!.state().label})`);
+const gui: Actor = { kind: "human", id: "person", group: "bob@desk" };
+const offline = await b.commit({ doc: edit((await b.head()).doc, "Middle", { color: "#ff0000" }), author: gui });
+console.log(`Bob offline: ${offline.status} (${b.sync!.state().label}); waiting for the server: ${await b.pendingCount()}`);
 await b.sync!.connect();
 await until("Bob's edit to reach Alice", async () => clip((await a.head()).doc, "Middle").color === "#ff0000");
 console.log(`Bob back online: ${b.sync!.state().label}; Alice sees his edit`);
-console.log(`History on Alice's side: ${(await a.log({ limit: 3 })).map((v) => `@${v.ref.seq} ${v.author?.name ?? v.author?.id ?? "?"}`).join(", ")}`);
+const told = (v: { author?: Actor | null; authoredAs?: Actor }) => `${v.author?.name ?? v.author?.id ?? "?"}${v.authoredAs ? ` (saved as "${v.authoredAs.id}")` : ""}`;
+await until("Alice to know who is behind Bob's device", async () => (await a.log({ limit: 1 }))[0]!.author?.name === "Bob");
+console.log(`History on Alice's side: ${(await a.log({ limit: 3 })).map((v) => `@${v.ref.seq} ${told(v)}`).join(", ")}`);
 
 await a.close();
 await b.close();

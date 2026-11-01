@@ -19,10 +19,10 @@ holds; they don't say how fast the built code is.
   cut is still read into memory on each open, and every `cb` call opens the project. Compaction is optional.
 - **Fonts aren't synced (L4), and no validator warns about them yet.** The Cardboard schema's soft checks cover overlaps
   only.
-- **A split's lineage is used on some paths only** (new). When a local cut's commit is rebased over a split, and when a
-  shared cut's queued change is rebased over the host's, an edit made on the old clip also reaches the other pieces. A
-  fold, and a shared cut's commit made on an older version, don't use the other side's lineage: there the edit lands
-  only on the piece that kept the clip's id. Edits to a clip's time fields or its track never follow lineage.
+- **A split's lineage isn't used by a fold** (new). When a commit is rebased over a split (on a local cut, a shared
+  cut's queue, or a shared cut's commit made on an older version), an edit made on the old clip also reaches the other
+  pieces. A fold doesn't use it: there the edit lands only on the piece that kept the clip's id. Edits to a clip's time
+  fields or its track never follow lineage.
 - **Ripple inference is a heuristic (L9).** Carton infers a ripple from an agent's file edit only when it is
   unambiguous. Recorded intents (H7) are the reliable path.
 - **FAT and exFAT have no hard links (L13).** There, a save from another program that lands in a very short window can
@@ -46,6 +46,14 @@ holds; they don't say how fast the built code is.
   agent turn" for the sender's agents needs the opt-in full-history export. `Carton.importHistory(store)` reads that
   export back (the sender's cuts arrive read-only, with their versions). `readCbproj` only says whether a file has
   it; `bringInTheirChanges` imports it when given its `history` option (not with `check`).
+- **A later shallow `.cbproj` from the same sender doesn't extend a cut held read-only from an earlier file's
+  history.** Its newer versions come in as a separate cut `<cut>.<hash8>` linked to the versions both hold, so a fold
+  still finds the right base. PLAN §13 asks for lineage that finds the base, not one cut per sender. Workaround: bring
+  the later file in with its history (`importHistory` grows the tracking cut).
+- **No export of a state that includes waiting offline edits.** Every export is a confirmed version with its state
+  hash; a state with pending edits has none yet, and confirms later under another seq and hash, so a copy built on it
+  couldn't find its base. §13's "Offline edits (date)" variant, whose head could be exported, isn't built. Meanwhile:
+  `carton.pendingCount(cut)` to wait, or export the confirmed head.
 - **The first version.** `importProject` makes the current document `main@1`, as §16 says. `openLocal({ init })`
   instead records it as the root state at seq 0. Use `importProject` for migration.
 
@@ -60,16 +68,24 @@ anything.
   Windows, so it should work there, but that hasn't been run. An agent whose shell is cmd or PowerShell doesn't get it.
 - **`cb` on a shared cut waits up to 5 s (L14)** for the server, then answers `pending`; offline it answers `pending`
   at once, and conflicts come later as notices.
-- **`cb undo --turn` is all or nothing** (new). If anyone changed any of the same things after the turn, it undoes
-  nothing ("Not undone") and lists those cards, which aren't stored for later. §8 asks for the rest to land with cards
-  for the clashing parts. (On a shared cut, a clash the server finds after the undo was sent leaves the rest undone,
-  with late cards, as for any change.)
-- **While an agent turn is running, the shared `timeline.tsx` (L16)** doesn't show others' changes until the agent
-  prints again. The app always shows head.
+- **While an agent turn is running, the shared `timeline.tsx` is frozen (L16).** From the agent's first Read of it
+  until its turn's Stop, it doesn't show the person's or teammates' changes; the app always shows head. An agent's own
+  `cb` changes do show in it (cardboard-adapter's head; not yet in the snapshot the kit runs on). Claude Code sends no
+  Stop when the user interrupts a turn, so a hooked agent's hold also ends 60 s after its last hook event, and its next
+  event holds the file again. An agent that isn't hooked holds it for 60 s after each save or `cb` call.
+- **`cb` talks to the app over a local socket, one JSON line per message, at most 64 MiB.** A `cb` save carries the
+  whole project, and an answer can carry the head. A project whose JSON is larger can't be saved through `cb` while the
+  app holds it: the app drops the connection, and `cb` fails after its retries.
+- **The file-tool hook runs on every matching tool call.** `hookSettings` gives host Claude Code a PreToolUse matcher
+  `Read|Write|Edit|MultiEdit`, so a hook process starts for every Read or edit of any file; it acts only on the
+  project's `timeline.tsx` and `project.json`. Claude Code's `if` conditions on each hook (`Read(**/timeline.tsx)`,
+  `Edit(**/project.json)`…, one per tool and file) start no process for other files; our Windows build uses them
+  (checked against Claude Code 2.1.309 and 2.1.316 on Linux). `hookSettings` doesn't add them yet. The cost per call
+  hasn't been measured.
 - **The shared `timeline.tsx` (L18):** two outside writers replacing each other's file within the watcher's latency can
   lose the first save, as in 1.4.0. Per-agent views (`.scratch/views/<name>.tsx`, one writer each) avoid it, but they
   print only through a process that runs the materializer: the app's library worker once H8 is wired. The default
-  headless helper doesn't run one.
+  headless helper doesn't run one, so with the app closed `cb source print --view` answers "views need the app open".
 - **The standalone `carton` command can't reach a server.** It has no option for the host's URL or token, so its writes
   to a shared cut fail. Inside Cardboard, `cb` goes through the app's engine. There is no `cb share` command yet (sharing
   is `carton.share()`).
@@ -84,6 +100,10 @@ anything.
   message limit (32 MiB) is refused as too large. `openLocal({ sync })` passes the `sync` you give it (blobs
   included) to the process's own handle. The headless helper passes the host's blob client
   (`@carton/host-http/client`) when it can load it, unless its sync settings say `blobs: false`.
+- **A watch link's viewers see the generic person.** In a shared project, editors see each GUI edit under the name of
+  the person behind the device (`setIdentity`). A reader scoped to a Published cut (a watch link) gets no people from
+  the host, so it never learns the team's accounts and names, and every GUI edit there shows as the generic person.
+  (`carton/docs/plugins.md`, "People".)
 - **Version ids are provisional until confirmed (L5).** A share started offline stays "Syncing" until the device
   reaches the server; cancelling a share is a server-side operation only.
 - **A process that doesn't hold the sync lease** keeps its own commits on a shared cut queued until it connects. `cb`
@@ -120,14 +140,24 @@ Not run yet:
 | `@carton/local`, `cli-mcp` | Claude Code's hooks on Windows |
 | `@carton/media` | GPU encoders; the range cache under Windows antivirus |
 | Hosts | No deploy |
-| The kit's own tests | `kit/test/*` run on Linux only (they are outside the workspace's test run) |
+| The kit's own tests | `kit/test/*` run on CI's Linux, Windows and macOS machines; nothing on a user's own machine |
 | Gates (§16) | G1 (3 remote writers at 1/s for 10 minutes), G2 (GUI save latency with 4 agents), on real machines |
 
 ## Our Windows build (for reference)
 
-Our build of Cardboard 1.4.0 for Windows patches H1–H9 and adds the History panel: history, cuts, fold, credits and
-`undo --turn` work through `cb` against Cardboard's real bundles (tested on Linux). The editor's pages (H4–H7 and the
-panel) run only on Windows, so they have been tested against stand-ins. It is off by default (`CARDBOARD_CARTON=1`)
-until G1 and G2 pass. Not wired there yet: the materializer (per-agent views, the freeze), H1b, H10, H11's shallow
-export entry and "Bring in their changes" (so a `.cbproj` it writes carries no Carton data), H12, H13, the engine
-thread, and any live sync. `carton/docs/INTEGRATION-1.4.0.md` §6 has the details.
+With Carton off (the default), every Carton hook there runs Cardboard's own code, except three changes that apply
+either way: the staging folder's removal after Open Project retries on Windows; Open Project of a `.cbproj` that holds
+Carton's data removes, from the staged copy only, the `.carton\` folder and the view files Carton wrote in
+`.scratch\views\` (a person's or an agent's own files there stay; a stock `.cbproj` opens as before); and Save As of a
+`.cbproj` leaves the same files out. The repository's README, "Saves on Windows", has the details.
+
+
+Our build of Cardboard 1.4.0 for Windows wires Carton into Cardboard's real bundles. Tested on Linux with the real
+library worker and `cb`: history, cuts, fold, credits and `undo --turn`; the per-agent views and the `timeline.tsx`
+freeze (H8), with the Director's and host Claude Code's hooks; and, between two libraries through a host on
+127.0.0.1, sharing, live edits, presence, offline and back, shared media (H10), `.cbproj` with history and "Bring in
+their changes" (H11), and `cb`'s cloud mode (H13). The editor's pages (H4–H7, the History tab, the Share panel) and
+main's hooks run only on Windows, so they have been tested against stand-ins. It is off by default
+(`CARDBOARD_CARTON=1`) until G1 and G2 pass. Not wired there yet: Carton's merge in the apply's preview (H3), the
+engine thread, a hook of its own for H1b, and H12 (dormant on desktop). This is windows-sync's branch, ahead of the
+snapshot the kit runs on; `carton/docs/INTEGRATION-1.4.0.md` §6 has the details.

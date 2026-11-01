@@ -140,10 +140,10 @@ test("quickstart 3: a Node host on localhost, two people live on one shared cut,
       "Bob joined: Up to date",
       "Alice's edit: confirmed, Bob's edit: confirmed",
       `Alice sees Bob's outro: "Bye"; Bob sees Alice's intro: "Hello"`,
-      "Bob offline: pending (Offline: 1 edit waiting)",
+      "Bob offline: pending (Offline: 1 edit waiting); waiting for the server: 1",
       "Bob back online: Up to date; Alice sees his edit",
     ].join("\n") + "\n" + r.out.split("\n").at(-1));
-    assert.match(r.out.split("\n").at(-1)!, /^History on Alice's side: @4 Bob, @3 (Alice|Bob), @2 (Alice|Bob)$/);
+    assert.match(r.out.split("\n").at(-1)!, /^History on Alice's side: @4 Bob \(saved as "person"\), @3 (Alice|Bob), @2 (Alice|Bob)$/);
   } finally {
     host.kill("SIGTERM");
   }

@@ -25,7 +25,7 @@ Every `cb` write (`source apply`, `fold`, `restore`, `undo`, `resolve`…) answe
 |---|---|---|
 | `confirmed` | Saved, in order, for everyone | Go on |
 | `pending` | Saved on this machine, but the server hasn't answered yet (or you are offline). It syncs by itself | Go on. If it later clashes, you hear about it on your next `cb` call |
-| `conflicts` | On a save: the rest of your edit landed, and each card kept the other side's value. When `undo --turn` says "Not undone", or a fold says "Not folded in": nothing was saved (see those sections). When a fold says "Folded in, but … came back", or `undo --turn` says "Undid turn …: conflicts": it landed except those cards, which are yours to resolve like a save's | Read the cards (below). Never write your edit again to get around one |
+| `conflicts` | On a save, and on `undo --turn` ("Undid turn …: conflicts"): the rest landed, and each card kept the other side's value. When a fold says "Not folded in": nothing was saved (see that section). When a fold says "Folded in, but … came back": it landed except those cards. Either way the cards are yours to resolve like a save's | Read the cards (below). Never write your edit again to get around one |
 | `rejected` | Nothing was saved: the edit broke a rule (a clip ending before it starts, a missing track) | Fix the edit and save again |
 
 The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the result is
@@ -42,8 +42,13 @@ The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the
    the exact version your edit is made on.
 2. **Know whose clip it is.** `cb credits <project> <clip>` says who last changed a clip, down to the subagent. If a
    person changed it recently, say so before you change it again.
-3. **Edit as usual** (`timeline.tsx`, `cb source apply`, or MCP `apply_timeline`). Small edits, one idea per save.
-   Save from the version you printed: never paste an old file over a newer one.
+3. **Edit your own view** when the app is open: `cb source print <project> --view <name>` prints the timeline to a
+   file only you edit, and says where it is and where its `.status` file is. Edit it and save it; each save is applied,
+   and the `.status` file says how it went (`confirmed`, `pending`, `conflicts`, `rejected` or `error`). If the answer
+   is "views need the app open", edit as usual (`timeline.tsx`, `cb source apply`, or MCP `apply_timeline`). Small
+   edits, one idea per save. Save from the version you printed: never paste an old file over a newer one.
+   While your turn runs, `timeline.tsx` holds still for you: it doesn't show the person's or teammates' changes until
+   your turn ends, so print again before you rely on what others did.
 4. **Read the result** of every save (table above).
 5. **After your turn, check your cards.** `cb conflicts <project>` lists the open cards of your edits, numbered:
 
@@ -101,11 +106,11 @@ like a save's (step 5 of the loop).
 ## Undo, restore, compare
 
 - **Undo your own turn:** `cb undo <project> --turn <turn>` takes back every change of that turn, yours and your
-  subagents', as one new version. Changes others made since stay. If someone changed any of the same things after
-  you, it undoes **nothing**: the answer starts "Not undone" and lists those cards (they aren't kept for later). Tell
-  the user which clips were changed since, and undo the rest by hand only if they ask. On a shared cut the server can
-  find such a clash after the undo was sent: then the answer is "Undid turn …: conflicts", the rest was undone, and
-  the cards are in `cb conflicts`. `cb history` shows `(turn <turn>)` next to each
+  subagents', as one new version. Changes others made since stay. If someone changed one of the same things after
+  you, their newer value stays and you get a card for it: the answer is "Undid turn …: conflicts", the rest is undone,
+  and the cards are in `cb conflicts`. On such a card **yours** is the value from before your turn: `cb resolve
+  <project> <n> --keep mine` finishes the undo there, `--keep theirs` keeps their edit. Tell the user which clips were
+  changed since. `cb history` shows `(turn <turn>)` next to each
   version. Plain `cb undo <project>` undoes the newest change of your undo group (the person's edits and the turns they
   started).
 - **Restore** brings back an old version as a new version: `cb restore <project> main@12`. It also takes back everyone
@@ -124,7 +129,8 @@ with the cards it would raise), `timeline_cuts` (`action: list | new | switch`),
 ## Habits
 
 - Never overwrite someone else's edit to make your save go through. A card is the answer, not an obstacle.
-- Never edit `project.json` or anything in `.carton/`. Edit the timeline.
+- Never edit `project.json` or anything in `.carton/`. Edit the timeline. (When Carton's hooks are on, a Write or Edit
+  of `project.json` is refused, with a pointer to your view.)
 - Print again before editing after a long pause: others may have changed the project. An error that the version your
   file was printed from is no longer available (Carton's own words end in `re-print`) means exactly that: print, then
   redo the edit. It never guesses a base.
