@@ -237,6 +237,12 @@ export interface Carton {
    * the store, so a handle without sync (`cb`) sees the app's waiting edits too. 0 for a cut no server sequences.
    */
   pendingCount(cut?: string): Promise<number>;
+  /**
+   * This replica's pending changes on a shared cut (default: current), in queue order: each one's author and the
+   * optimistic states just before and after it (the confirmed state at `seq` the queue is on, then each change's latest
+   * version applied in turn, as `head` builds its state). None on a cut this replica sequences itself.
+   */
+  pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc }[] }>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
   checkout(ref: StateRef | string): Promise<Doc>;
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
@@ -1273,6 +1279,24 @@ class CartonImpl implements Carton {
       return { ref: this.#sharedRef(cut), doc: owned(sc.queue.optimistic(cut).doc, this.schema) };
     }
     return { ref: this.#h.ref(cut), doc: owned(this.#h.viewOf(this.#h.head(cut))!, this.schema) };
+  }
+  async pendingChanges(cut = this.#h.current) {
+    await this.#queue;
+    await this.#refresh(cut);
+    const sc = this.#isShared(cut) && this.#opts.sync ? await this.#ensureShared(cut) : undefined;
+    if (!sc) return { seq: this.#h.headSeq(cut), changes: [] };
+    this.#feedQueue(cut);
+    // as the optimistic head is built: the confirmed state the queue is on, then each change's latest version in turn
+    const seq = sc.queue.headSeq(cut);
+    let doc = sc.queue.confirmedState(cut, seq);
+    const changes: { id: ChangeId; author: Actor; before: Doc; after: Doc }[] = [];
+    for (const p of sc.queue.pending(cut)) {
+      const v = p.versions[p.versions.length - 1]!;
+      const after = v.ops.length ? E.apply(E.fork(doc, this.schema), v.ops, this.schema) : doc;
+      changes.push({ id: p.id, author: p.author, before: owned(doc, this.schema), after: owned(after, this.schema) });
+      doc = after;
+    }
+    return { seq, changes };
   }
   async checkout(ref: StateRef | string) {
     await this.#whole();
