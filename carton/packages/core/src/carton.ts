@@ -2095,11 +2095,17 @@ class CartonImpl implements Carton {
       case "presence":
         this.#emit({ type: "presence", branchId: e.branchId, actor: e.actor as Actor, state: e.state });
         return;
-      case "absorbed":
+      case "absorbed": {
         // an absorption the server acknowledged (a withdraw) clears it too; one decided here proves nothing (SF3-8)
         if (e.withdrawn) this.#clearSyncError(cut);
-        this.#emit({ type: "absorbed", branchId: cut, id: e.id, cards: e.cards });
-        break;
+        // told once the settle it comes with has run: the confirmed rows (the teammate's change behind a card among
+        // them) are in History, so a handler reading state at the event (credits, log, head) finds them (web-demo
+        // REQ-U1: the card named "Someone"). After a settle that couldn't store, it is told all the same
+        const ev: CartonEvent = { type: "absorbed", branchId: cut, id: e.id, cards: e.cards };
+        void this.#settle(cut, e).then(() => this.#emit(ev));
+        this.#fetchHistory(cut);
+        return;
+      }
     }
     void this.#settle(cut, e);
     this.#fetchHistory(cut);
