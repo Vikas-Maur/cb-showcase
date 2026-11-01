@@ -60,6 +60,8 @@ export type WriteOutcome =
 interface OutcomeLog {
   get(b: string, id: string): WriteOutcome | undefined;
   record(b: string, id: string, o: WriteOutcome): void;
+  /** Forget an outcome recorded too early (an empty write whose store write then failed: review R6-3). */
+  drop(b: string, id: string): void;
   on(l: (b: string, id: string, o: WriteOutcome) => void): () => void;
 }
 const LOGS = new WeakMap<ReplicaQueue, OutcomeLog>();
@@ -77,6 +79,7 @@ function outcomeLog(queue: ReplicaQueue): OutcomeLog {
       if (map.size > 4096) map.delete(map.keys().next().value!);
       for (const l of listeners) l(b, id, o);
     },
+    drop: (b, id) => void map.delete(`${b}\u0000${id}`),
     on(l) {
       listeners.add(l);
       return () => listeners.delete(l);
@@ -181,6 +184,18 @@ export class SharedCut {
   unqueue(id: string, reason: string): void {
     if (!this.queue.unqueue(this.branchId, id)) this.queue.rejectLocally(this.branchId, id, reason);
     this.refreshState();
+  }
+  /** Run the pusher now (changes queued behind one taken back waited at it). */
+  wake(): void {
+    this.client?.pump();
+  }
+  /** A change committed `held` was kept by the store: it may be sent now, and what was queued after it. */
+  kept(id: string): void {
+    if (this.queue.unhold(this.branchId, id)) this.client?.pump();
+  }
+  /** An empty write's immediate confirmation, taken back: its store write failed, so its id is unspent (R6-3). */
+  forgetOutcome(id: string): void {
+    this.log.drop(this.branchId, id);
   }
   /**
    * The outcome of change `id` within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed@seq, conflicts (late cards,

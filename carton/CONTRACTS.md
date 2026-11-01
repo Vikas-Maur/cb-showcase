@@ -105,9 +105,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   already holds by the rows that extend it. The importer's own cuts are never touched. Returns `{ cuts }` taken.
 - **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
   (a lease fence); a lost cross-process append race rebuilds from the store and retries. The conditions go with the
-  write that keeps the edit: the append on a local cut, the pending row on a shared one. On a shared cut, a condition
-  that breaks before that write (a lease taken over meanwhile) rejects the commit: nothing is stored or queued, no
-  notice is filed, and the id stays unspent for the process that holds the lease (windows-sync review round 3 #1).
+  write that keeps the edit: the append on a local cut, the pending row on a shared one. On a shared cut, a commit with
+  conditions isn't sent to the server until that write lands (nor what is queued after it), and a condition that
+  breaks before then (a lease taken over meanwhile) rejects the commit: nothing is stored, sent or queued, no notice is
+  filed, and the id stays unspent for the process that holds the lease (windows-sync review round 3 #1; review R6-2,
+  R6-3).
 - **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
   sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
   cut's ancestry closure (`history` request) and loads it as read-only lineage. The client asks for it in pages
@@ -116,7 +118,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 - **Shared cuts** (`sequencer.kind !== "local"`) go through `SharedCut` (sync-sequencer's queue and client): `commit`,
   `fold`, `foldSome`, `undo`, `revert` and `restore` all queue an ordinary change with its intent, kind and `reverts`
   under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the
-  author. Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
+  author. The `absorbed` event comes once the rows that came with it are in History (after their `change` events): a
+  handler that reads credits, head or log at it sees the teammate's change behind a card (web-demo REQ-U1).
+  Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
   shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
   the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
   client's message limit is refused before it is sent (`rejected` / "too large", its author told; the edits after it
@@ -186,8 +190,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   retry reads the pins again. The calls that refresh (`head()`, reads, every write) read that one key, and the whole
   pins table only when it moved: their cost no longer grows with the pins (a GUI save prints the shared file and pins
   it). A handle's own pin write leaves its snapshot and token current. A compaction reads the pins table always, as it
-  keeps every pinned version. A core from before the token writes pin rows alone: a handle of this core sees such a pin
-  at its next open or rebuild, or after another process's pin moves the token, and its compaction keeps it.
+  keeps every pinned version, and its write is conditioned on the token it read: a pin another process writes while it
+  plans fails that write, and the retry keeps the new pin too. A core from before the token writes pin rows alone: a
+  handle of this core sees such a pin at its next open or rebuild, or after another process's pin moves the token; its
+  compaction keeps one written before it read the pins, not one landing in between.
 - **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
   whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
   pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.

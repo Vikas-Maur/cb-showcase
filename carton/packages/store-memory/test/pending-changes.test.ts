@@ -62,3 +62,26 @@ test("pendingChanges: this handle's queue in order with authors; states chain fr
   for (const x of [cb, a]) await x.close();
   host.close();
 });
+
+test("pendingChanges' rebases (cardboard-adapter b2c8656): 0 as committed, 1 once a confirmed change another process stored is rebased under it", async () => {
+  const tokens = new Map<string, AuthContext>();
+  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
+  for (const n of ["alice", "bob"]) tokens.set(`tok-${n}`, { account: n, credential: `${n}/install`, role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
+  const data = createMemoryData();
+  // the holder (connected), and another process on the same carton.db that never connects (its edits stay pending)
+  const a = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), init: { doc: doc0() }, actor: alice, sync: { transport: host.transport, url: host.url, token: "tok-alice", autoConnect: true } });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const b = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: agent, sync: { transport: host.transport, url: host.url, token: "tok-bob", autoConnect: false } });
+  const mine = await b.commit({ ops: [set("c", "name", "the agent's")] });
+  assert.equal(mine.status, "pending");
+  assert.deepEqual((await b.pendingChanges()).changes.map((c) => [c.id, c.rebases]), [[mine.status === "pending" ? mine.id : "", 0]], "as committed");
+  assert.equal((await a.commit({ ops: [set("a", "name", "the holder's")], wait: 5000 })).status, "confirmed");
+  const pc = await b.pendingChanges(); // reads the holder's row, which the queue takes in under the pending edit
+  assert.deepEqual(pc.changes.map((c) => c.rebases), [1], "rebased once");
+  assert.equal(item(pc.changes[0]!.before, "a")!.name, "the holder's", "on the confirmed change");
+  assert.equal(item(pc.changes[0]!.after, "c")!.name, "the agent's");
+  for (const x of [b, a]) await x.close();
+  host.close();
+});
