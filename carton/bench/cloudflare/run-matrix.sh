@@ -10,5 +10,5 @@ while read -r line; do
   [ -z "$line" ] || [ "${line:0:1}" = "#" ] && continue
   for _ in $(seq 90); do i=$(idle); [ "$i" -ge "$IDLE_MIN" ] && break; sleep 8; done
   echo "=== $(date -u +%T) idle ${i}% load $(cut -d' ' -f1 /proc/loadavg): $line"
-  node sync.ts $line 2>&1 | grep -v "^\[.*\]     at" | tail -3
+  node "${SCRIPT:-sync.ts}" $line 2>&1 | grep -v "^\[.*\]     at" | tail -6
 done < "$1"

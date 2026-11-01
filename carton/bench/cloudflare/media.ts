@@ -33,6 +33,8 @@ const { values: a } = parseArgs({
     seed: { type: "string", default: "" },
     keep: { type: "boolean", default: false },
     tag: { type: "string", default: "" },
+    // the namespaces it uses: uploader cfl<base>, teammate cfl<base+1>
+    "ns-base": { type: "string", default: "40" },
   },
 });
 const host = a.host as HostName;
@@ -55,9 +57,10 @@ const est = host === "r2"
   : { doStoredBytes: 2 * size + 2 * MiB, doRowsWritten: mib * 4 + parts * 4 + 100, doRowsRead: mib * 8 + 1000, workersReq: parts * 3 + Math.ceil(downBytes / (4 * MiB)) + 60, doReq: parts * 6 + Math.ceil(downBytes / (4 * MiB)) * 2 + 60 };
 const g = await guard({ test: runId, ...est, uploadBytes: size * (a.resume ? 1.2 : 1) + 2 * MiB });
 
-netns("up", "2");
-netns("profile", "0", a.profile!);
-netns("profile", "1", a["teammate-profile"] || a.profile!);
+const UP = Number(a["ns-base"]), MATE = UP + 1;
+netns("up", String(MATE + 1));
+netns("profile", String(UP), a.profile!);
+netns("profile", String(MATE), a["teammate-profile"] || a.profile!);
 const ownerToken = await tokenFor(projectId, "uploader");
 const mateToken = await tokenFor(projectId, "teammate");
 const stateDir = mkdtempSync(join(tmpdir(), "cflab-upload-"));
@@ -67,7 +70,7 @@ const events: any[] = [];
 /** Runs media-client.ts in namespace `ns`; resolves with its lines. `watch` may kill it. */
 function client(ns: number, cfg: Record<string, unknown>, watch?: (l: any, kill: () => void) => void): Promise<any[]> {
   return new Promise((ok) => {
-    const p = spawn("bash", [join(HERE, "netns.sh"), "exec", String(ns), process.execPath, join(HERE, "media-client.ts"), JSON.stringify({ host, projectId, ...cfg })], { stdio: ["ignore", "pipe", "pipe"] });
+    const p = spawn("bash", [join(HERE, "netns.sh"), "exec", String(ns === 0 ? UP : MATE), process.execPath, join(HERE, "media-client.ts"), JSON.stringify({ host, projectId, ...cfg })], { stdio: ["ignore", "pipe", "pipe"] });
     const lines: any[] = [];
     createInterface({ input: p.stdout! }).on("line", (s) => {
       let l: any;
@@ -103,8 +106,8 @@ let first = await client(0, upCfg, (l, kill) => {
   if (a.resume === "kill" && killedAt === null) (killedAt = l.done), kill();
   if (a.resume === "hole" && holeAt === null) {
     holeAt = l.done;
-    netns("hole", "0", "on");
-    setTimeout(() => netns("hole", "0", "off"), Number(a["hole-sec"]) * 1000);
+    netns("hole", String(UP), "on");
+    setTimeout(() => netns("hole", String(UP), "off"), Number(a["hole-sec"]) * 1000);
   }
 });
 const sessions = [first];
@@ -155,7 +158,7 @@ if (a.dedup && done) {
 
 // downloads on a (slower) profile
 if (downBytes && done) {
-  netns("profile", "1", a["down-profile"] || a.profile!);
+  netns("profile", String(MATE), a["down-profile"] || a.profile!);
   const d = await client(1, { op: "download", token: mateToken, key: `m/${done.hash}`, bytes: Math.min(downBytes, size), chunk: 4 * MiB });
   const r = last(d, "downloaded");
   result.download = { profile: a["down-profile"] || a.profile, bytes: r?.bytes, ms: r?.ms, firstMs: r?.firstMs, mbps: r ? (r.bytes * 8) / 1e6 / (r.ms / 1000) : null, failed: last(d, "failed") ?? null };
