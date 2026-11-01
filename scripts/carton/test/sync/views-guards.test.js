@@ -158,7 +158,8 @@ test("#1 a view save on a shared cut waits for the lease: never left pending whi
     other = null;
     await until(() => v.holds(), 20_000, "the View holds the lease again");
     await until(async () => (await c.head()).doc.timelineItems.find((i) => i.id === title).fontSize === 123, 60_000, "the agent's save applied");
-    assert.deepEqual(await pendingByAgent().then((x) => x.filter((r) => !r.value.confirmed)), [], "and confirmed, not left pending");
+    // head shows a pending edit at once; the server's confirmation follows (CI Windows: checked before it came)
+    await until(async () => (await pendingByAgent()).every((r) => r.value.confirmed), 20_000, "the agent's save confirmed, not left pending");
   } finally {
     await other?.retire("test cleanup").catch(() => {});
     await engine2?.close?.().catch(() => {});

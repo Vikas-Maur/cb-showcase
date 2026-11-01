@@ -641,7 +641,9 @@ with Carton off none of it runs at all.
   them on a read-only cut. History never includes your local data (pins, notices, sync settings). Saved while edits to
   a shared project are still waiting to sync (offline; Carton counts them for whichever process saves, the app or
   `cb`), the file has no Carton history at all, only what you see (as in 1.4.0), and the log says so. Save again once
-  synced.
+  synced. An agent's or a teammate's edit arriving during a Save As can't break it: the files Carton rewrites
+  (`timeline.tsx`, `project.json`, the views) go into the file as they were when the save began. (Cardboard's zip
+  writer reads a file only when its turn comes; a file rewritten before then stopped the library worker.)
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
