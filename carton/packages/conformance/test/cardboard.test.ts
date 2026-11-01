@@ -32,6 +32,7 @@ import "../src/cardboard/system/review20.ts";
 import "../src/cardboard/system/review21.ts";
 import "../src/cardboard/system/invalid-records.ts";
 import "../src/cardboard/system/app-options.ts";
+import "../src/cardboard/system/freeze-cb.ts";
 import "../src/cardboard/system/hosts-schema.ts";
 import "../src/cardboard/cli-codec.test.ts";
 

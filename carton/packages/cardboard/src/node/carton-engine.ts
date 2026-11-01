@@ -259,7 +259,7 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
           const after = below?.seq === v.ref.seq ? below.doc : await carton.checkout({ branchId: c, seq: v.ref.seq });
           const before = await carton.checkout({ branchId: c, seq: v.ref.seq - 1 });
           below = { seq: v.ref.seq - 1, doc: before };
-          yield { id: v.change, seq: v.ref.seq, before, after };
+          yield { id: v.change, seq: v.ref.seq, before, after, author: v.author };
         }
         if (page.length < PAGE) return;
         page = await carton.log({ cut: c, limit: PAGE, before: page[page.length - 1]!.ref.seq });

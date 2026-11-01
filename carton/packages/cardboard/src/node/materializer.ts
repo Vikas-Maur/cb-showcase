@@ -96,9 +96,10 @@ export interface MaterializerEngine {
   /**
    * The confirmed changes on `cut` (default: the current one) after `seq` and before `until`, outside `skip`, newest
    * first, read as they are asked for (a caller can stop early), each with the states just before and after it: whether
-   * a save repeated an edit of a change it never saw (rounds 13-15).
+   * a save repeated an edit of a change it never saw (rounds 13-15); and who made it, when known (an agent's `cb` change
+   * joins a frozen shared file's view).
    */
-  changesSince?(seq: number, o?: { cut?: string; until?: number; skip?: ReadonlySet<string> }): AsyncIterable<{ id: string; seq: number; before: Doc; after: Doc }>;
+  changesSince?(seq: number, o?: { cut?: string; until?: number; skip?: ReadonlySet<string> }): AsyncIterable<{ id: string; seq: number; before: Doc; after: Doc; author?: Actor | null }>;
   /** A fresh change id, recorded before committing so a retry commits with the same id (dedup by id). */
   newChangeId?(): string;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
@@ -371,7 +372,7 @@ export class Materializer {
   // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active. `baseSeq` is
   // the confirmed seq the freeze view was derived from and `causal` the agent saves merged into it since: its pin
   // carries both, so a save from it meets every other change since, and never those saves a second time.
-  readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown };
+  readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown, scanned: 0 };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
   /** The cut `sharedRef` was pinned on. */
@@ -631,6 +632,7 @@ export class Materializer {
   private restartFreeze(h: HeldBase): void {
     this.freeze.view = h.baseDoc;
     this.freeze.baseSeq = h.baseSeq;
+    this.freeze.scanned = h.baseSeq;
     this.freeze.causal = [...h.causal];
     this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
   }
@@ -690,14 +692,15 @@ export class Materializer {
   }
 
   /**
-   * Head moved. `local` and `gui`: rewrite promptly (coalesced). `remote`: at most every 30 s while shared. Nothing for
-   * non-agent changes while a freeze is active. project.json follows head promptly either way.
+   * Head moved. `local` and `gui`: rewrite promptly (coalesced). `remote`: at most every 30 s while shared. While a
+   * freeze is active, only local agents' changes reach the shared file, promptly, whatever told of them (a `cb` commit
+   * here or in another local process, or on a shared cut its confirmation): `foldAgentChanges`; nothing for non-agent
+   * changes. project.json follows head promptly either way.
    */
   onHeadChange(cause: "local" | "gui" | "remote"): void {
     if (this.closed) return;
     this.scheduleProjectWrite(cause);
-    if (this.freeze.active) return;
-    if (cause === "remote" && this.engine.shared()) {
+    if (cause === "remote" && this.engine.shared() && !this.freeze.active) {
       if (this.remoteTimer) return;
       const at = Math.max(this.clock.now(), this.lastRemoteRewrite + this.opts.remoteRewriteMs);
       this.remoteTimer = this.clock.setTimeout(() => {
@@ -713,8 +716,54 @@ export class Materializer {
       this.localTimer = null;
       this.fire(() => this.orRetry("shared", async () => {
         if (!this.freeze.active) await this.writeSharedNow(cause);
+        else if (await this.foldAgentChanges()) await this.writeSharedNow("cb");
       }));
     }, this.opts.localRewriteMs);
+  }
+
+  /**
+   * During a freeze, local agents' own `cb` changes join the freeze view as their file saves do (R8-01, windows-sync
+   * H8): an agent reads its own `cb` edit in the frozen timeline.tsx at once, as in 1.4.0, while the person's and remote
+   * changes stay out until the freeze ends. Each confirmed change on the freeze's cut not read yet (a change pending on
+   * a shared cut joins once confirmed), made by an agent or a
+   * subagent, is merged into the view with the state just before it as its base, oldest first. On a shared cut only an
+   * actor hooked here counts (an agent of a remote teammate is a remote change; a windowless local agent's change there
+   * waits for the freeze to end). The view then holds exactly that change (its id joins the view's causal past) only
+   * if the merge gained exactly its edits; a change that overwrote or built on a change still hidden (the person's edit
+   * of the same clip) doesn't merge so: the freeze restarts at that change's own state, which shows what was confirmed
+   * up to it, as for a save (rounds 13-15). Returns whether the view changed.
+   */
+  private async foldAgentChanges(): Promise<boolean> {
+    if (!this.freeze.view || !this.engine.changesSince) return false;
+    const cut = this.freeze.cut ?? undefined;
+    const found: { id: string; seq: number; before: Doc; after: Doc; author?: Actor | null }[] = [];
+    let top = this.freeze.scanned;
+    for await (const c of this.engine.changesSince(this.freeze.scanned, { ...(cut !== undefined ? { cut } : {}), skip: new Set(this.freeze.causal) })) {
+      top = Math.max(top, c.seq);
+      if (this.localAgent(c.author)) found.push(c);
+    }
+    let changed = false;
+    for (const c of found.reverse()) {
+      const view = this.freeze.view!;
+      const merged = this.host.merge3(c.before, view, c.after);
+      if (this.host.changes && sameEdits(this.host.changes(view, merged), this.host.changes(c.before, c.after))) {
+        this.freeze.view = merged;
+        this.freeze.causal.push(c.id);
+      } else {
+        const p = await this.engine.pin({ owner: "shared-view", ttlMs: 7 * DAY, seq: c.seq, ...(cut !== undefined ? { cut } : {}) });
+        this.restartFreeze({ baseDoc: p.doc, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) });
+      }
+      changed = true;
+    }
+    this.freeze.scanned = Math.max(this.freeze.scanned, top);
+    return changed;
+  }
+  /** Whether a change by `a` is a local agent's (see `foldAgentChanges`). */
+  private localAgent(a: Actor | null | undefined): boolean {
+    if (!a || (a.kind !== "agent" && a.kind !== "subagent")) return false;
+    if (!this.engine.shared()) return true; // a cut only this replica writes: every agent on it is local
+    const h = this.freeze.hooked.get(a.id);
+    return !!h && (h.group ?? null) === (a.group ?? null);
   }
 
   /** Runs a rewrite; if it fails, it is tried again (`retryWrite`) and the failure still reaches the caller's log. */
@@ -1711,6 +1760,9 @@ const isSubagent = (a: Actor): boolean => a.kind === "subagent" || !!a.agentId;
 const turnOf = (a: Actor): string => a.turn ?? (isSubagent(a) && a.id.includes("/") ? a.id.slice(0, a.id.lastIndexOf("/")) : a.id);
 /** Meta row: the pin owners a turn's subagents printed with, released when the turn itself stops. */
 const turnPinsKey = (turn: string): string[] => ["turn-pins", turn];
+
+/** Whether two lists of edits (`MaterializerHost.changes`) are the same edits. */
+const sameEdits = (a: string[], b: string[]): boolean => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 
 /** `.scratch/views/<name>.tsx` -> name. */
 export function viewName(rel: string): string | null {
