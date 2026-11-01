@@ -238,3 +238,55 @@ test("8. Credits name the Director turn and the person", t, async () => {
   assert.ok(h.some((r) => r.author?.key?.includes(TURN) && r.name === LABEL), "History has the turn's named version: " + JSON.stringify(h.map((r) => [r.author?.key, r.name])));
   assert.ok(h.some((r) => r.author?.kind === "human"), "and the person's: " + JSON.stringify(h.map((r) => r.author?.key)));
 });
+
+// windows-sync (H8, local-cli's hook path): the agents' file tools reach the worker's Materializer. On Windows the same
+// path runs over the control socket's named pipe, with case-insensitive paths and history in app data: the laptop run.
+const tsxNow = () => fs.readFileSync(tsxFile, "utf8");
+/** The person edits the title's text in the GUI; timeline.tsx is read every 50 ms for 1.5 s after. */
+async function guiEditWhileFrozen(words) {
+  const before = tsxNow();
+  await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, textContent: words } : null));
+  const reads = [];
+  for (let i = 0; i < 30; i++) { reads.push(tsxNow()); await S.sleep(50); }
+  assert.equal((await text()).textContent, words, "the person's edit is head");
+  assert.equal(reads.filter((x) => x.includes(words)).length, 0, `the person's edit reached timeline.tsx (of ${reads.length} reads)`);
+  assert.ok(reads.every((x) => x === before), "timeline.tsx unchanged");
+}
+const atHead = (words, what) => S.until(() => tsxNow().includes(`textContent="${words}"`), 20_000, what);
+
+test("9. The Director's file tools (the app's own hooks): a Read of timeline.tsx freezes it for the turn, a Write of project.json is refused, and the turn's end lets go", t, async () => {
+  need(m && ctx, "2 (the Director's context)");
+  await atHead(GUI.text, "timeline.tsx at head before the turn");
+  const chat2 = { chatId: CHAT, turn: { id: "turnT2", state: "running", text: "Make it pop." } };
+  m.turnStarted(chat2, id, ctx.project.bundlePath, chat2.turn, "director");
+  m.directorEnv({ ...pc.env }, ctx, () => (chat2.turn.state === "running" ? "turnT2" : null));
+  const [files] = m.fileHooks(ctx);
+  assert.equal(files.matcher, "Read|Write|Edit|MultiEdit");
+  assert.deepEqual(await files.hooks[0]({ hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: tsxFile } }), {}, "a Read goes on");
+  await guiEditWhileFrozen("GUI two");
+  const denied = await files.hooks[0]({ hook_event_name: "PreToolUse", tool_name: "Write", tool_input: { file_path: path.join(ctx.project.bundlePath, "project.json"), content: "{}" } });
+  assert.equal(denied.hookSpecificOutput?.permissionDecision, "deny", "a Write of project.json is refused: " + JSON.stringify(denied));
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /cb source print --view/);
+  assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", stop_hook_active: false }), {}, "nothing to hand back: the turn stops");
+  m.turnEnded(chat2);
+  chat2.turn.state = "done";
+  await atHead("GUI two", "timeline.tsx back to head once the turn stopped");
+});
+
+test("10. Host Claude Code's hooks through cb carton-hook (as --settings runs them): a Read freezes timeline.tsx, a Write of project.json is refused, the Stop lets go", t, async () => {
+  need(id && bin, "1");
+  const hook = (event, input) => {
+    const x = spawnSync(process.execPath, [path.join(b.cli, "cardboard.mjs"), "--root", pc.root, "carton-hook", event], { input: JSON.stringify(input), cwd: path.join(pc.root, "Demo.cardboard"), env: { ...pc.env, CARDBOARD_ACTOR: "claude/chatH" }, encoding: "utf8", timeout: 60_000 });
+    assert.equal(x.status, 0, `cb carton-hook ${event}: ${x.stdout}${x.stderr}`);
+    return JSON.parse(x.stdout.replace(/^\[carton\][^\n]*\n/gm, "") || "{}");
+  };
+  const session = { session_id: "hostsession1", cwd: path.join(pc.root, "Demo.cardboard") };
+  await atHead("GUI two", "timeline.tsx at head before the host agent's turn");
+  assert.deepEqual(hook("pre-tool-use", { ...session, hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: tsxFile } }), {}, "a Read goes on");
+  await guiEditWhileFrozen("GUI three");
+  const denied = hook("pre-tool-use", { ...session, hook_event_name: "PreToolUse", tool_name: "Edit", tool_input: { file_path: "project.json", old_string: "a", new_string: "b" } });
+  assert.equal(denied.hookSpecificOutput?.permissionDecision, "deny", "an Edit of project.json is refused: " + JSON.stringify(denied));
+  assert.match(denied.hookSpecificOutput.permissionDecisionReason, /cb source print --view/);
+  assert.deepEqual(hook("stop", { ...session, hook_event_name: "Stop", stop_hook_active: false }), {}, "nothing to hand back: the agent stops");
+  await atHead("GUI three", "timeline.tsx back to head once the host agent stopped");
+});

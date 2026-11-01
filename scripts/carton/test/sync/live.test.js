@@ -14,6 +14,12 @@ const S = require("./support.js");
 
 const t = { skip: S.noBuild };
 let b, host, alice, bob, id, link;
+// An agent's own copy of the timeline at head (cb source print --view: the lease holder prints it).
+const printView = (pc, name) => {
+  const r = pc.cb(["source", "print", "Demo", "--view", name], { CARDBOARD_ACTOR: "codex/" + name });
+  assert.equal(r.code, 0, "print --view: " + r.out + r.err);
+  return fs.readFileSync(path.join(pc.root, "Demo.cardboard", ".scratch", "views", name + ".tsx"), "utf8");
+};
 
 test.before(async () => {
   if (S.noBuild) return;
@@ -238,10 +244,11 @@ test("offline and rejoin: Bob edits while the host is down; his edit waits, then
 });
 
 test("cb on the shared project with the app open: the agent's edit goes through the worker's lease and reaches Bob", t, async () => {
-  // The agent edits the printed timeline as it is now (timeline.tsx follows project.json a moment later).
-  const tsx = path.join(alice.root, "Demo.cardboard", "timeline.tsx");
-  await S.until(() => /fontSize=\{90\}/.test(fs.readFileSync(tsx, "utf8")), 10_000, "alice's timeline.tsx at head");
-  const printed = fs.readFileSync(tsx, "utf8");
+  // The agent prints the timeline as it is now, in its own view (H8: the shared timeline.tsx stays frozen a minute
+  // after a cb call, such as the media add above, so an agent working beside others prints its own).
+  await S.until(async () => S.textOf(await S.projectOf(alice, id)).fontSize === 90, 10_000, "bob's 90 at alice");
+  const printed = printView(alice, "c9");
+  assert.match(printed, /fontSize=\{90\}/, "the view is at head");
   // Then Bob changes the title's text, and it reaches Alice: the agent's print is now one version behind.
   await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Bob was here" } : null));
   await S.until(async () => S.textOf(await S.projectOf(alice, id)).textContent === "Bob was here", 20_000, "bob's text at alice");
@@ -262,9 +269,8 @@ test("cb on the shared project with the app open: the agent's edit goes through 
 });
 
 test("offline, cb with the app open from a print one version behind: Alice's file keeps Bob's change and the agent's", t, async () => {
-  const tsx = path.join(alice.root, "Demo.cardboard", "timeline.tsx");
-  await S.until(() => /fontSize=\{77\}/.test(fs.readFileSync(tsx, "utf8")), 10_000, "alice's timeline.tsx at head");
-  const printed = fs.readFileSync(tsx, "utf8");
+  const printed = printView(alice, "c11");
+  assert.match(printed, /fontSize=\{77\}/, "the view is at head");
   await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Bob again" } : null));
   await S.until(async () => S.textOf(await S.projectOf(alice, id)).textContent === "Bob again", 20_000, "bob's text at alice");
   const port = host.port;
@@ -365,8 +371,9 @@ test("a host older than the app: Bob's panel says the host needs an update, inst
   assert.equal(st.problem.code, "update-server", JSON.stringify(st));
   assert.match(st.problem.words, /needs an update/);
   assert.match(st.problem.detail ?? "", /update the server/, "the host's own message, shown under the words");
-  const ev = bob.events().filter((e) => e.change?.topic === "live" && e.change.id === id).map((e) => e.change.live.problem).reverse()[0];
-  assert.equal(ev?.code, "update-server", "the Share panel was told too");
+  // (the harness's worker passes events on every 10 ms, answers at once: the event can come a moment after the answer)
+  const lastProblem = () => bob.events().filter((e) => e.change?.topic === "live" && e.change.id === id).map((e) => e.change.live.problem).reverse()[0];
+  await S.until(() => lastProblem()?.code === "update-server", 5_000, "the Share panel told too");
   // A host that takes the app's schema again: the problem goes.
   await host.stop();
   host = await S.startHost(path.join(S.TMP, "host"), port);

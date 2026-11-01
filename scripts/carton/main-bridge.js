@@ -127,13 +127,15 @@ module.exports = String.raw`var __cartonMain = (() => {
         q("confirmed") + ", " + q("conflicts") + " (someone else changed the same thing: what is there was kept, and the cards say what) or " + q("rejected") + " (with why). " +
         q("timeline.tsx") + " keeps showing the state your turn started from until your turn ends. " + q("cb conflicts " + id) + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person."];
     },
-    // H8: the Director's file tools, beside its Bash hook: a Read of timeline.tsx, a Write/Edit of it or of project.json
-    // (the worker maps them as host Claude Code's hooks are mapped, @carton/local's hookEventFor). Never a decision.
+    // H8: the Director's file tools, beside its Bash hook: a Read or Write/Edit of timeline.tsx reaches the worker's
+    // Materializer, and a Write/Edit of project.json is refused with a pointer to the agent's own view (PLAN §6.4). The
+    // worker decides as host Claude Code's hooks decide (@carton/local's preToolUse); its only decision is that deny.
     fileHooks(ctx) {
       if (!on) return [];
       return [{ matcher: "Read|Write|Edit|MultiEdit", hooks: [async (input) => {
-        if (input?.hook_event_name === "PreToolUse") await agentHook(ctx, directorActor(ctx, input), "pre-tool-use", { ...input, cwd: input.cwd ?? ctx.project?.bundlePath });
-        return {};
+        if (input?.hook_event_name !== "PreToolUse") return {};
+        const r = await agentHook(ctx, directorActor(ctx, input), "pre-tool-use", { ...input, cwd: input.cwd ?? ctx.project?.bundlePath });
+        return r?.output?.hookSpecificOutput?.permissionDecision === "deny" ? r.output : {};
       }] }];
     },
     hostSettings() {
