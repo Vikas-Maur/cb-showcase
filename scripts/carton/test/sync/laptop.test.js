@@ -4,7 +4,8 @@
 //      exact version it names, and `cb source check` of an unchanged print finds nothing, with the revs of several
 //      writers out of save order (the facade's half, a writer's document past others, is facade.test.js's);
 //   #5 a .cbproj exported with Carton opens in another Carton-on library that hasn't the project;
-//   #9 cb's first call after `project create` says nothing about history being off.
+//   #9 cb's first call after `project create` says nothing about history being off; a file's cut, read-only here,
+//      isn't shown under the name of this copy's own.
 //   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> node --test --test-concurrency=1 scripts/carton/test/sync/laptop.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -13,7 +14,7 @@ const S = require("./support.js");
 
 const t = { skip: S.skip, timeout: 300_000 };
 const TITLES = 'export default (\n  <timeline aspect="16:9">\n    <track name="Agents">\n      <text name="W1" start={0} end={1} fontSize={100} textContent="W1" />\n      <text name="W2" start={1} end={2} fontSize={100} textContent="W2" />\n    </track>\n  </timeline>\n);\n';
-const CARTON_HEADER = /^\/\/ cardboard:rev (.+@\d+~[0-9a-f]{8} b:[0-9a-f]{8})\s*$/m;
+const CARTON_HEADER = /^\/\/ cardboard:rev (.+@\d+~[0-9a-f]{8} b:[0-9a-f]{8})(?: p:\S+)?(?: by .*)?$/m;
 const sizeOf = (text, name) => Number(new RegExp(`<text[^>]*name="${name}"[^>]*fontSize=\\{(\\d+)\\}`).exec(text)?.[1]);
 const setSize = (text, name, n) => text.replace(new RegExp(`(<text[^>]*name="${name}"[^>]*fontSize=\\{)\\d+(\\})`), `$1${n}$2`);
 
@@ -73,4 +74,77 @@ test("#2 a print carries Carton's exact header; its base, and an old numeric pri
   const now = raw(pc, b, ["source", "print", "Demo"]).out;
   assert.deepEqual([sizeOf(now, "W1"), sizeOf(now, "W2")], [150, 170], "W1 stays the other writer's, W2 is the edit");
   assert.match(now, CARTON_HEADER);
+});
+
+/**
+ * Open Project in cb's copy (the CLI chunk's library, as `cb project open <file.cbproj>` calls it; `project open`
+ * itself refuses --root, cbproj.test.js). `Za` is the chunk's library opener in Cardboard 1.4.0.
+ */
+function cliOpen(b, pc, file) {
+  const chunk = require("url").pathToFileURL(path.join(b.cli, "chunks", "chunk-LL26E55H.mjs")).href;
+  const code = `const m = await import(${JSON.stringify(chunk)});
+const lib = await m.Za({ root: ${JSON.stringify(pc.root)} });
+try { const p = await lib.projects.openArchive(${JSON.stringify(file)}); console.log(JSON.stringify({ ok: true, id: p?.id })); }
+catch (e) { console.log(JSON.stringify({ ok: false, error: String(e?.message ?? e) })); }`;
+  const r = spawnSync(process.execPath, ["--input-type=module", "-e", code], { env: pc.env, encoding: "utf8", timeout: 120_000 });
+  const line = (r.stdout ?? "").split("\n").reverse().find((l) => l.startsWith('{"ok"'));
+  assert.ok(line, "no answer from the CLI's library:\n" + r.stdout + r.stderr);
+  return JSON.parse(line);
+}
+
+test("#5 a .cbproj saved with Carton (its timeline.tsx under Carton's header) opens in another Carton-on library that hasn't the project: cb's copy and the app", t, async () => {
+  const b = await S.build();
+  const alice = await S.computer("laptop-5-alice", b), bob = await S.computer("laptop-5-bob", b), carol = await S.computer("laptop-5-carol", b);
+  const must = (x, what) => assert.equal(x.code, 0, what + ": " + x.out + x.err);
+  must(alice.cb(["project", "create", "Demo"]), "create");
+  fs.writeFileSync(path.join(alice.home, "titles.tsx"), TITLES);
+  must(alice.cb(["source", "apply", "Demo", path.join(alice.home, "titles.tsx")]), "apply");
+  const bundle = alice.cb(["project", "list"]).json().find((p) => p.name === "Demo").bundlePath;
+  const id = JSON.parse(fs.readFileSync(path.join(bundle, "project.json"), "utf8")).project.id;
+  const file = path.join(alice.home, "demo.cbproj");
+  // the app's Save As, with the worker's Materializer printing timeline.tsx (Carton's header), and no history in it
+  try {
+    await alice.startWorker();
+    await alice.call("projects.list");
+    await S.until(() => CARTON_HEADER.test(fs.readFileSync(path.join(bundle, "timeline.tsx"), "utf8")), 20_000, "Carton's print of timeline.tsx");
+    await alice.call("projects.saveArchive", id, file);
+  } finally { await alice.stopWorker(); }
+  const z = S.zipOf(file);
+  assert.match(z.read("timeline.tsx").toString("utf8"), CARTON_HEADER, "the file's timeline.tsx names Alice's version as Carton does");
+  // cb's copy (cb project open)
+  const opened = cliOpen(b, bob, file);
+  assert.deepEqual(opened, { ok: true, id }, "Bob's cb opens it");
+  const at = (pc) => raw(pc, b, ["source", "print", "Demo"]).out;
+  assert.deepEqual([sizeOf(at(bob), "W1"), sizeOf(at(bob), "W2")], [100, 100]);
+  assert.ok(fs.existsSync(path.join(bob.root, "Demo.cardboard", ".carton", "carton.db")), "with history of its own");
+  // #9: Alice's cut, read-only here, doesn't show under the name of Bob's own
+  const cuts = bob.cb(["cut", "list", "Demo"]).json().cuts.map((c) => [c.name, !!c.tracking]).sort((x, y) => x[0].localeCompare(y[0]));
+  assert.deepEqual(cuts, [["Main cut", false], ["Main cut (their copy)", true]], JSON.stringify(cuts));
+  // the app (a double-click hands the file to the library worker's Open Project)
+  try {
+    await carol.startWorker();
+    const p = await carol.call("projects.openArchive", file);
+    assert.equal(p?.id, id, "Carol's app opens it");
+  } finally { await carol.stopWorker(); }
+  assert.deepEqual([sizeOf(at(carol), "W1"), sizeOf(at(carol), "W2")], [100, 100]);
+});
+
+test("#9 cb's `project create` says nothing about history being off: the project's history starts with it", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("laptop-9", b);
+  const made = pc.cb(["project", "create", "Demo"]);
+  assert.equal(made.code, 0, made.out + made.err);
+  assert.doesNotMatch(made.err, /history is off/, "no warning on create: " + made.err);
+  const bundle = pc.cb(["project", "list"]).json().find((p) => p.name === "Demo").bundlePath;
+  assert.ok(fs.existsSync(path.join(bundle, ".carton", "carton.db")), "history began with the project");
+  const h = pc.cb(["history", "Demo"]);
+  assert.equal(h.code, 0, h.out + h.err);
+  assert.doesNotMatch(h.err, /history is off/, h.err);
+  const n0 = h.json().versions.length;
+  assert.ok(n0 >= 1, "the new project is in its history: " + h.out);
+  fs.writeFileSync(path.join(pc.home, "titles.tsx"), TITLES);
+  const a = pc.cb(["source", "apply", "Demo", path.join(pc.home, "titles.tsx")]);
+  assert.equal(a.code, 0, a.out + a.err);
+  assert.doesNotMatch(a.err, /history is off/, a.err);
+  assert.equal(pc.cb(["history", "Demo"]).json().versions.length, n0 + 1, "the apply is the next version");
 });

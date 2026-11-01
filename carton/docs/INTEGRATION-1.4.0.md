@@ -353,6 +353,13 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   - shared lineage offers "Bring in their changes": a DAG merge into the current cut, with cards;
   - no shared lineage forks a new id;
   - a missing common state gives the explicit dialog (§13), never an older base.
+- **A project this library hasn't.** Its history starts from the file's shallow export, on a cut of its own forked
+  from the sender's head. The staged `timeline.tsx` names the sender's version on their cut (Carton's header), which
+  this library holds only as a read-only shallow cut. The facade resolves such a header (its cut not one of this
+  library's) to the version of the current cut with that state, as core checks it by its hash: the fork's start. So
+  Cardboard's prepare applies it as unchanged; before, it was "no longer available" and the Open Project failed
+  (laptop #5, `cb project open` and a double-click alike). Their read-only cuts that would share a name with one of
+  this copy's show as "<name> (their copy)", after an Open Project and after a bring-in.
 
 ## 5. The bridge contract
 

@@ -260,10 +260,32 @@ const refOf = async (lc, rev) => {
   if (typeof rev === "number") return lc.store.get(REVS, ["rev", rev]);
   const ref = typeof rev === "string" ? rev.trim() : "";
   if (!ref) return undefined;
-  try { await lc.carton.resolve(ref); } catch (e) { if (e?.code === "STATE_UNKNOWN") return undefined; throw e; }
+  try { await lc.carton.resolve(ref); } catch (e) { if (e?.code === "STATE_UNKNOWN") return sameState(lc, ref); throw e; }
   return ref;
 };
 const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
+// Laptop #5: a header that names another library's cut (a .cbproj's timeline.tsx, printed where it was saved: here
+// only a shallow cut of theirs, never rebuilt) names a state by its hash. The version of this project's current cut
+// with that state (an Open Project's history starts from the sender's head: the same state, on a cut of its own) is
+// exactly what was printed; its header here, else undefined. Only for a cut that isn't this library's own: on one of
+// ours an unknown version stays unknown ("print it again").
+const HEADER = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:\S+)?(?: by .*)?$/;
+async function sameState(lc, header) {
+  const m = HEADER.exec(header);
+  if (!m) return undefined;
+  const cuts = await lc.carton.cuts();
+  if (cuts.some((c) => !c.shallow && branchToken(c.id) === m[4])) return undefined;
+  const cut = cuts.find((c) => c.id === lc.carton.cut);
+  if (!cut) return undefined;
+  // core says whether a version has that state: a header with its seq and the printed hash resolves only then (the
+  // newest first; a file from another library is opened, or brought in, near where its history began here)
+  for (const v of (await lc.carton.log({ limit: SAME_STATE_SCAN })).map((x) => x.ref.seq).concat(0)) {
+    const here = `${cut.name}@${v}~${m[3]} b:${branchToken(cut.id)}`;
+    if (await lc.carton.resolve(here).then(() => true, () => false)) return here;
+  }
+  return undefined;
+}
+const SAME_STATE_SCAN = 256;
 // The header a print carries for a version (core's ref token: "<cut name>@<seq>~<hash8> b:<cut8>"), which the apply
 // resolves back to exactly that version; null if its cut is unknown here.
 async function headerOf(lc, ref) {
@@ -616,17 +638,21 @@ const revIn = (file, bytes) => {
 async function install(tmp, file, seenStamp, rev, envelope) {
   const due = path.basename(file) === "project.json" ? (landings.get(landingKey(path.dirname(file))) ?? []).filter((l) => l.queued) : [];
   let out = false;
-  try { return (out = await installFile(tmp, file, seenStamp, rev)); } finally {
+  try { return (out = await installFile(tmp, file, seenStamp, rev, envelope)); } finally {
     if (due.length) {
       const stamp = out === true && envelope ? installs.get(file)?.own?.stamp : null;
       for (const l of due) l.settle(stamp ? { project: { envelope, stamp } } : undefined);
     }
   }
 }
-async function installFile(tmp, file, seenStamp, rev) {
+async function installFile(tmp, file, seenStamp, rev, envelope) {
   const bundle = path.dirname(file);
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
-  const lc = await open(bundle);
+  // (A new project's first write: project.json isn't there yet, so its id and first state come from what the store is
+  // writing, and history starts with it. Laptop #9: opened without them, cb's `project create` said history was off
+  // because "project.json has none", though the next call started it.)
+  const first = path.basename(file) === "project.json" && envelope?.project?.id ? { projectId: envelope.project.id, doc: envelope.project } : {};
+  const lc = await open(bundle, first);
   if (!lc) return fs.promises.rename(tmp, file);
   // H8: Cardboard's print of timeline.tsx isn't installed where the worker's Materializer writes it.
   if (path.basename(file) === "timeline.tsx" && (timelineOwned(bundle) || (await workerWritesTimeline(lc)))) return fs.rmSync(tmp, { force: true }), true;

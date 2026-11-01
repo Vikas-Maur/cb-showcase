@@ -658,8 +658,9 @@ with Carton off none of it runs at all.
 - **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their versions
   in instead of 1.4.0's "This project ID already exists". Where you both changed the same thing, theirs goes in and
   yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History panel).
-  Clips they added come with their files. Opening one of a project you don't have starts its history from theirs;
-  whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
+  Clips they added come with their files. Opening one of a project you don't have starts its history from theirs
+  (its `timeline.tsx`, printed under their version, opens as that version: the same state starts your history); their
+  cuts show as read-only, and as "<name> (their copy)" where one would share a name with yours; whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
   move or remove an open file). A `.carton\` folder or Carton's view files inside a `.cbproj` are never kept: Open
   Project removes them, even with Carton off, and keeps anything else in `.scratch\views\` (see "Saves on Windows",
   With Carton off). **Include history**:
