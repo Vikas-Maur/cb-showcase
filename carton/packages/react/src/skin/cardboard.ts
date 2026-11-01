@@ -276,37 +276,18 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-stack-aside li:hover){background:#ffffff08}
 :where(${S}) :where(.carton-stack-aside-title){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--cb-fg-1)}
 /* ---------------------------------------------------------------- Carton's layer over Cardboard's stage (the preview's
-   column): History and Share at its top-right, their panel on its right side, the card stack in its bottom-right
-   corner. The layer passes clicks through; only its own controls take them. */
+   column): the preview banner at its top, the card stack in its bottom-right corner. The layer passes clicks through;
+   only its own controls take them. The History/Share sidebar beside the chat uses Cardboard's own classes. */
 :where(.carton-stage${S}){position:absolute;inset:0;z-index:30;pointer-events:none;background:none}
-:where(.carton-stage${S}) > *{pointer-events:auto}
-:where(${S}) :where(.carton-stage-tools){position:absolute;top:12px;right:12px;display:flex;gap:6px}
-:where(${S}) :where(.carton-stage-btn){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border:1px solid #ffffff14;border-radius:8px;
-  background:#1b1b1be6;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--cb-fg-1);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;
-  box-shadow:var(--cb-shadow-near);transition:background var(--cb-fast) var(--cb-ease),border-color var(--cb-fast) var(--cb-ease)}
-:where(${S}) :where(.carton-stage-btn:hover){background:#262626f2;border-color:#ffffff24}
-:where(${S}) :where(.carton-stage-btn:focus-visible, .carton-side-tab:focus-visible){outline:2px solid var(--cb-ring);outline-offset:1px}
-:where(${S}) :where(.carton-stage-btn .carton-icon){color:var(--cb-fg-2)}
-:where(.carton-stage${S}) > :where(.carton-stage-banner){position:absolute;top:12px;left:12px;right:220px;display:flex;justify-content:center;pointer-events:none}
-:where(.carton-stage${S}[data-panel]) > :where(.carton-stage-banner){right:352px}
+:where(.carton-stage${S}) > :where(.carton-stage-banner){position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:center;pointer-events:none}
 :where(${S}) :where(.carton-stage-banner > *){pointer-events:auto;box-shadow:var(--cb-shadow)}
-:where(.carton-stage${S}) > :where(.carton-stage-stack){position:absolute;right:12px;bottom:12px;max-height:calc(100% - 60px);display:flex;flex-direction:column;justify-content:flex-end;pointer-events:none}
-:where(.carton-stage${S}[data-panel]) > :where(.carton-stage-stack){right:352px}
+:where(.carton-stage${S}) > :where(.carton-stage-stack){position:absolute;left:12px;right:12px;bottom:12px;max-height:calc(100% - 60px);display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;pointer-events:none}
 :where(${S}) :where(.carton-stage-stack > *){pointer-events:auto}
-:where(${S}) :where(.carton-side){position:absolute;top:0;right:0;bottom:0;width:340px;display:flex;flex-direction:column;background:var(--cb-panel);
-  border-left:1px solid #ffffff0f;box-shadow:-16px 0 40px -20px #000000cc;outline:none;animation:carton-side-in var(--cb-base) var(--cb-decel)}
-@keyframes carton-side-in{from{transform:translateX(12px);opacity:0}to{transform:none;opacity:1}}
-:where(${S}) :where(.carton-side-head){display:flex;align-items:center;gap:8px;flex:none;height:48px;padding:0 8px 0 10px;border-bottom:1px solid #ffffff0f}
-:where(${S}) :where(.carton-side-tabs){display:flex;gap:2px;margin-right:auto;padding:2px;border-radius:8px;background:#ffffff08}
-:where(${S}) :where(.carton-side-tab){display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;
-  color:var(--cb-fg-3);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;transition:color var(--cb-fast) var(--cb-ease)}
-:where(${S}) :where(.carton-side-tab:hover){color:var(--cb-fg-1)}
-:where(${S}) :where(.carton-side-tab[aria-selected=true]){background:var(--cb-raised);color:var(--cb-fg-1);box-shadow:0 0 0 1px #ffffff0d}
-:where(${S}) :where(.carton-side-body){flex:1;min-height:0;display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto}
-:where(${S}) :where(.carton-side .carton-panel-title){display:none}
-:where(${S}) :where(.carton-side .carton-panel-head){padding-top:10px}
-:where(${S}) :where(.carton-side-watch){display:flex;flex-direction:column;gap:10px;padding:8px 12px 12px}
-:where(${S}) :where(.carton-side-watch > .carton-btn){align-self:flex-start}
+:where(.carton-sidebar${S}){font-size:inherit}
+:where(${S}) :where(.carton-sidebar .carton-panel-title){display:none}
+:where(${S}) :where(.carton-sidebar .carton-panel-head){padding-top:6px}
+:where(${S}) :where(.carton-sidebar-watch){display:flex;flex-direction:column;gap:10px;padding:8px 12px 12px}
+:where(${S}) :where(.carton-sidebar-watch > .carton-btn){align-self:flex-start}
 :where(${S}) :where(.carton-conflicts-count){font-size:12px;font-weight:500;color:var(--cb-warn)}
 :where(${S}) :where(.carton-compare-sides){display:grid;grid-template-columns:1fr 1fr;gap:6px}
 :where(${S}) :where(.carton-compare-side){padding:10px;border-radius:8px;background:var(--cb-sunken)}
@@ -437,8 +418,8 @@ export const cardboardSkin = `
 @media (prefers-reduced-motion: reduce){
   :where(${S}) *, :where(${S}) *::before, :where(${S}) *::after{animation:none!important;transition:none!important}
 }
-/* the side panel is narrow: Compare's two sides one above the other (after the Compare rules above, so it wins) */
-:where(${S}) :where(.carton-side .carton-compare-sides){grid-template-columns:1fr}
+/* the sidebar is narrow: Compare's two sides one above the other (after the Compare rules above, so it wins) */
+:where(${S}) :where(.carton-sidebar .carton-compare-sides){grid-template-columns:1fr}
 `;
 
 /** Add a stylesheet once per document (by id). Returns the <style> element. */

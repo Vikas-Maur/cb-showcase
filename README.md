@@ -448,10 +448,11 @@ What changes with it on:
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
-- **History and Share** buttons at the top-right of the editor's preview. Each opens its panel on the preview's right
-  side (Esc or × closes it); the timeline, Ctrl+Z and the agent's chat stay as they are. History: versions, compare
-  with current and "Watch the changes", restore, cuts, fold in. Opening an old version shows it read-only until
-  "Return to current".
+- **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
+  panel beside the agent's chat, in the chat's look (drag its edge to resize); the same icon closes it, and the icon
+  of the open panel shows as pressed. The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
+  History: versions, compare with current and "Watch the changes", restore, cuts, fold in. Opening an old version
+  shows it read-only until "Return to current".
 - **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
   your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
   once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
@@ -617,7 +618,7 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the "Share" button at the top-right of the editor's preview): enter the host and the invite you were given (the host's owner gets
+- **Share** (the "Share" icon in the title bar): enter the host and the invite you were given (the host's owner gets
   one with its admin token). The project goes up with its whole history and authors. Its clips go up too: each clip's
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
@@ -668,7 +669,7 @@ with Carton off none of it runs at all.
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
-`scripts\carton\sync\patches\*.js`: presence in the editor (`ui.js`; Share opens from the preview's top-right), `cardboard-media://` for clips
+`scripts\carton\sync\patches\*.js`: presence in the editor (`ui.js`; Share opens from the title bar), `cardboard-media://` for clips
 that live on the host (`media.js`), the agent's media tools (`tools.js`), `cb`'s cloud mode (`cloud.js`) and `.cbproj`
 (`cbproj.js`). Sessions and tokens are in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
 

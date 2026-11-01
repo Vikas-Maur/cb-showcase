@@ -124,6 +124,12 @@ module.exports = String.raw`window.__carton = (() => {
       handlers.set(name, fn);
     },
     onEvent: (f) => store.on("carton:event", f),
+    // The title bar's History and Share icons (the tab strip, another page): main routes them to this page as
+    // carton:command, and the page says which panel is open, which main hands to the strip for the icons' pressed look.
+    onCommand: (f) => store.on("carton:command", f),
+    reportPanel(panel) {
+      if (on && store) Promise.resolve(store.invoke("carton:panel", { panel: panel ?? null })).catch(() => {});
+    },
   };
 })();
 `;
