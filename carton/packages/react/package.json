@@ -44,6 +44,7 @@
     "react": ">=18"
   },
   "devDependencies": {
+    "@carton/comments": "0.1.0",
     "@carton/store-memory": "0.1.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.3.0",
