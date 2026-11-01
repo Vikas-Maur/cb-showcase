@@ -4,6 +4,8 @@
 // tells the materializer itself, and dropped the look's notice: nothing ever told the listeners the handle was on the new
 // cut (a ViewPrinter without `onExternalHeadChange` kept showing main; `onExternal` heard nothing). Now the follower
 // knows which cut it (or a served switch) last announced, and every look tells a cut never announced.
+// Since foundation `90077ed` core no longer moves the handle when it rebuilds (it keeps the handle's own cut): another
+// process's switch reaches the app only through the follower's adoption, a cut at a time, each told once.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -38,7 +40,7 @@ async function world(name: string) {
   return { c, s, other, alt, engine, name: name_, shown, external, makeB, close };
 }
 
-test("SG5-1: a cut another process made and switched to while the follower adopted the previous one is told, once", async () => {
+test("SG5-1: a cut another process made and switched to while the follower adopted the previous one: each told, once, in order", async () => {
   const w = await world("sg5-adopt");
   const adopt = w.c.switchTo.bind(w.c);
   let inject = true;
@@ -51,21 +53,23 @@ test("SG5-1: a cut another process made and switched to while the follower adopt
     await w.engine.nudge();
     assert.equal(w.name(w.c.cut), "B");
     assert.equal(w.name((await w.s.get<string>("meta", ["current"]))!), "B");
-    assert.deepEqual(w.shown, ["B"], "the printer was told of B, once");
-    assert.deepEqual(w.external, ["cut:B"]);
+    // the adoption of Alt lands on Alt (core keeps the handle's cut through the rebuild B caused), and is told; the next
+    // look adopts B
+    assert.deepEqual(w.shown, ["Alt", "B"], "the printer was told of each cut the app was on, once");
+    assert.deepEqual(w.external, ["cut:Alt", "cut:B"]);
   } finally {
     await w.close();
   }
 });
 
-test("SG5-1: a cut the handle was moved to by a call of the app's own (core reloading) is told at the next look", async () => {
+test("SG5-1: a cut another process switched to while the app's own call rebuilt the handle is adopted and told at the next look", async () => {
   const w = await world("sg5-refresh");
   try {
     await w.engine.nudge();
     await w.makeB();
-    // the app lists its cuts (a `cb cut list` it serves): core reloads, and the handle is on B
+    // the app lists its cuts (a `cb cut list` it serves): core reloads, and keeps the handle on main (`90077ed`)
     await w.c.cuts();
-    assert.equal(w.name(w.c.cut), "B");
+    assert.equal(w.name(w.c.cut), "Main");
     await w.engine.nudge();
     await w.engine.nudge();
     assert.deepEqual(w.shown, ["B"], "a cut switch, not just a head move");

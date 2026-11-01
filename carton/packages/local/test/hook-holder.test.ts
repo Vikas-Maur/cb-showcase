@@ -141,6 +141,30 @@ test("a hooked agent's cb call with no Stop (a turn the user interrupted): the f
   assert.ok(Date.now() - t0 >= idle, `not before the quiet time: ${Date.now() - t0} ms`);
 });
 
+test("the app's ⌘Z (`gui`) doesn't freeze timeline.tsx: the file shows the undo and the person's next edit at once; a cb undo does freeze it", { timeout: 60_000 }, async (t) => {
+  const { dir, other, person } = await world(t, "gui-undo");
+  // the person in the app: the facade's ⌘Z is `lc.write({kind: "undo"}, {actor: person, gui: true})`, served by the
+  // holder over its socket (here from this process's handle, as the facade's goes to the View's holder)
+  const me = { kind: "human" as const, id: "person", name: "me", group: "gui-undo@test" };
+  const edit = async (id: string, v: string) => {
+    assert.equal((await other.write({ kind: "commit", ops: [set(id, "name", v)] }, { actor: me, gui: true })).status, "confirmed");
+    await until(() => named(shared(dir), id) === v, 5_000, `the edit of ${id} in timeline.tsx`, () => shared(dir));
+  };
+  await edit("c1", "the person's edit");
+  const undo = await other.write({ kind: "undo", group: me.group }, { actor: me, gui: true });
+  assert.equal(undo.status, "confirmed", JSON.stringify(undo));
+  await until(() => named(shared(dir), "c1") === "c1", 5_000, "the undo in timeline.tsx", () => shared(dir));
+  await person("c3", "person 2");
+  await until(() => named(shared(dir), "c3") === "person 2", 5_000, "the person's next edit in timeline.tsx (not frozen)", () => shared(dir));
+
+  // control: the same undo as a `cb` call (no `gui`) freezes the file: the undo and the next edit stay out of it
+  await edit("c2", "again");
+  assert.equal((await other.write({ kind: "undo", group: me.group }, { actor: me })).status, "confirmed");
+  await person("c4", "person 3");
+  await sleep(500);
+  assert.deepEqual([named(shared(dir), "c2"), named(shared(dir), "c4")], ["again", "c4"], "a cb call freezes the shared file");
+});
+
 test("a hooked agent's change another process committed (the follower) freezes timeline.tsx until its Stop, too", { timeout: 60_000 }, async (t) => {
   const { dir, other, answers, hook, person } = await world(t, "hook-cb-follow");
   // committed outside the holder (a cb in its own process, or a helper that had the lease): the app's follower finds it

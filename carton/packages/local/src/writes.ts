@@ -62,6 +62,15 @@ export interface WriteRequest {
   op: WriteOp;
   /** How long to wait for the server's answer on a shared cut (default 5000). */
   waitMs?: number;
+  /**
+   * The person's own action in the app (⌘Z, a menu command; the facade sets it), not a `cb` call: nobody is about to
+   * work on the shared timeline.tsx because of it, so it doesn't start or extend a freeze of the file (`tellBusy`). A
+   * freeze an agent already holds still applies (the file shows the write once it ends). `cb` never sets it. Only
+   * `true` counts. Written by the holder (or in-process); a helper that took the lease from a stalled app answers it
+   * too, but the app's follower then sees the change as another process's and freezes the file as for a `cb` call
+   * (the flag isn't stored with the change).
+   */
+  gui?: boolean;
 }
 
 /**
@@ -387,8 +396,8 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
   try {
     // a `cb` call keeps the shared timeline.tsx frozen against non-agent changes: a hooked agent's until its Stop, anyone
     // else's for a while (§6.4 freeze triggers; tellBusy); a hook event isn't one (a Stop would freeze the file again
-    // just as the turn ends)
-    if (op.kind !== "hook") await tellBusy(opts.materializer, [author]);
+    // just as the turn ends), nor is the person's own action in the app (`gui`: an undo would hide itself for a minute)
+    if (op.kind !== "hook" && req.gui !== true) await tellBusy(opts.materializer, [author]);
     let result = await run();
     // WriteOp `head`: the holder's head of the cut the write went to, never of whichever cut is current now
     if ("head" in op && op.head && (result.status === "confirmed" || result.status === "pending" || result.status === "conflicts")) {
