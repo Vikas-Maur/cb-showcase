@@ -219,19 +219,19 @@ test("the freeze holds when the holder hears of another connection's write after
 });
 
 test("a View released while it is still starting doesn't take the lease or timeline.tsx afterwards", opt, async () => {
-  // views.js as the worker runs it, with stand-ins for the packages: a Materializer whose start waits until told (`\r?`: a Windows checkout has CRLF lines)
+  // views.js as the worker runs it (each name it imports is a parameter below: a new import needs one), with stand-ins for the packages: a Materializer whose start waits until told (`\r?`: a Windows checkout has CRLF lines)
   const src = fs.readFileSync(path.join(ROOT, "scripts", "carton", "sync", "views.js"), "utf8").replace(/^import .*;\r?\n/gm, "").replaceAll("export class ", "class ").replaceAll("export function ", "function ");
   let ext, open, go, leaseStarted = false, leaseStopped = false;
   const starting = new Promise((r) => (go = r));
   class Materializer { constructor() { this.freeze = {}; } async start() { await starting; } async close() {} }
   class CartonHolderEngine { async serve() {} async startSync() {} }
   const keepLease = () => ({ start: async () => { leaseStarted = true; }, stop: async () => { leaseStopped = true; } });
-  const load = new Function("fs", "path", "extend", "cardboardFilesHost", "Materializer", "CARTON_DIR", "VIEWS_DIR", "TIMELINE_FILE", "keepLease", "holderSocketPath", "CartonHolderEngine", "cartonMaterializerEngine", "preToolUse", "parseActorId", "caughtUp", src + ";return { viewOf };");
+  const load = new Function("fs", "path", "AsyncLocalStorage", "extend", "cardboardFilesHost", "Materializer", "CARTON_DIR", "VIEWS_DIR", "TIMELINE_FILE", "keepLease", "holderSocketPath", "CartonHolderEngine", "cartonMaterializerEngine", "preToolUse", "parseActorId", "caughtUp", src + ";return { viewOf };");
   const saved = globalThis.__cartonTimelineCodec;
   globalThis.__cartonTimelineCodec = {};
   try {
     const bundle = path.join(DIR, "closing.cardboard");
-    const mod = load(fs, path, (e) => (ext = e), {}, Materializer, ".carton", ".scratch/views", "timeline.tsx", keepLease, () => path.join(DIR, "stub.sock"), CartonHolderEngine, () => ({}), () => ({}), () => null, async () => {});
+    const mod = load(fs, path, require("node:async_hooks").AsyncLocalStorage, (e) => (ext = e), {}, Materializer, ".carton", ".scratch/views", "timeline.tsx", keepLease, () => path.join(DIR, "stub.sock"), CartonHolderEngine, () => ({}), () => ({}), () => null, async () => {});
     const api = { bundleOf: () => bundle, onOpen: (f) => (open = f) };
     ext.worker(api);
     const opening = open(bundle, { carton: { projectId: "p", cut: "main", on: () => () => {} }, store: {}, dbPath: path.join(bundle, ".carton", "carton.db") });
