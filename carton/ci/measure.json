@@ -1689,6 +1689,249 @@
           ]
         }
       ]
+    },
+    {
+      "id": "core-open-mem",
+      "agent": "foundation-core",
+      "claim": "route 40 fixed (24083fc: close() clears the background-load timer, background pages stop once close begins): a closed handle keeps nothing; heap after close + GC per open/close cycle of a 100k project, open + head() and the whole-history load, default heap, against 6cd9c3e, with cf02743 as the control that leaked; then F4's A/B on 24083fc at every size with the default heap",
+      "timeout": 45,
+      "steps": [
+        {
+          "label": "check out before = 6cd9c3e, bug = cf02743 (route 40 control) and after = 24083fc as worktrees (by full SHA)",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; for s in \"$2\" \"$3\" \"$4\"; do git fetch --no-tags --depth=1 origin \"$s\"; done; git worktree add --detach \"$5/a\" \"$2\"; git worktree add --detach \"$5/b\" \"$3\"; git worktree add --detach \"$5/c\" \"$4\"; for d in a b c; do git -C \"$5/$d\" log -1 --format=\"$d %H %s\"; done",
+            "_",
+            "..",
+            "6cd9c3e55470a846fa7532a2aeff811c3d6134c0",
+            "cf027433cd1352ff326fcae5634d657791f997ef",
+            "24083fc88763b0ca437b710fa1b3e74d7a0efd89",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "npm ci in each build's carton/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; for d in a b c; do (cd \"$1/$d/carton\" && npm ci --no-audit --no-fund); done",
+            "_",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "the 100k project, built through after's Carton into one store-sqlite file (open-ab.ts's generator and edits)",
+          "env": {
+            "N": "100000"
+          },
+          "run": [
+            "{node}",
+            "ci/open-mem.mjs",
+            "make",
+            ".",
+            "{tmp}/c/carton",
+            "{tmp}/p100k.db"
+          ]
+        },
+        {
+          "label": "after alone, whole: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "whole",
+            "OUT": "{results}/mem-after-whole.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "after={tmp}/c/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem-after-whole.txt"
+        },
+        {
+          "label": "before alone, whole: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "whole",
+            "OUT": "{results}/mem-before-whole.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "before={tmp}/a/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem-before-whole.txt"
+        },
+        {
+          "label": "bug alone, whole: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "whole",
+            "OUT": "{results}/mem-bug-whole.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "bug={tmp}/b/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem-bug-whole.txt"
+        },
+        {
+          "label": "after alone, head: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "head",
+            "OUT": "{results}/mem-after-head.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "after={tmp}/c/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem-after-head.txt"
+        },
+        {
+          "label": "before alone, head: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "head",
+            "OUT": "{results}/mem-before-head.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "before={tmp}/a/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem-before-head.txt"
+        },
+        {
+          "label": "bug alone, head: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "head",
+            "OUT": "{results}/mem-bug-head.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "bug={tmp}/b/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem-bug-head.txt"
+        },
+        {
+          "label": "open-ab.ts A/B, after (24083fc) vs before (6cd9c3e), 1k/10k/30k/100k, 11 runs, default heap",
+          "env": {
+            "GFV_LOCKED": "1",
+            "LOAD_WAIT": "0",
+            "RUNS": "11",
+            "OUT": "{results}/open-ab-24083fc.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "{tmp}/c/carton/bench/core/open-ab.ts",
+            ".",
+            "after={tmp}/c/carton",
+            "before={tmp}/a/carton"
+          ],
+          "stdoutTo": "{results}/open-ab-24083fc.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "mem-after-whole.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^after whole N=100000"
+          ]
+        },
+        {
+          "file": "mem-before-whole.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^before whole N=100000"
+          ]
+        },
+        {
+          "file": "mem-after-head.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^after head N=100000"
+          ]
+        },
+        {
+          "file": "mem-before-head.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^before head N=100000"
+          ]
+        },
+        {
+          "file": "open-ab-24083fc.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^n=100000 after",
+            "^n=100000 before"
+          ]
+        }
+      ]
     }
   ]
 }
