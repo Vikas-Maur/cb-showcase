@@ -401,6 +401,16 @@ onto the packages' APIs, so a package API change touches only the facade.
     stay out until the freeze ends. (The app's earlier stopgap reprinted the shared file from head when the newest
     change was an agent's, which on Windows CI showed the person's edit during a turn: an in-process view save was the
     newest change when another connection's write made the holder look. Guarded by `views-guards.test.js`.)
+    A view save on a shared cut is committed with the View's lease as a store condition (`fence(nonce)` in core's
+    `CommitInput.conditions`, through the engine's handle): a lease taken by another process after the save's check
+    makes core refuse it whole, and the save waits for the lease, so it is never left pending in a handle the new holder
+    doesn't read. Each save's cut is kept in a local `views` row until its cards are reported (the Materializer
+    resumes a stored result after a restart without a commit, and a conflicts-only save has no change to look up).
+    A worker lease alone doesn't make `cb` leave `timeline.tsx` to the worker: the View records its lease's nonce
+    (`views` `["timelineOwner"]`) and `cb`'s mirror and install compare it with the lease row (Live's holder without a
+    View holds a worker lease and prints nothing). History shows a kept GUI conflict on the cut core's notice names,
+    reported when the panel is on that cut (at its start and after the panel switches cut); a pick on one cut leaves an
+    agent's identical card on another cut open.
 - **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
   save projection, cut out at build time) and `carton-ui.js`.
 - **Wired, tested on stand-ins only:** the editor's pages (H4–H7, the History tab, the Share panel) and main (H9: the

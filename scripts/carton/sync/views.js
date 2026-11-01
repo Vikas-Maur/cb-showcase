@@ -33,17 +33,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { extend } from "../carton-node.js";
+import { extend, TIMELINE_OWNER } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
 import { Materializer, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
-import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId } from "@carton/local";
+import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId, fence } from "@carton/local";
 import { caughtUp } from "./live.js";
+import { cutOfChange } from "./view-cards.js";
 
 const MATERIALIZE_MS = 40;
 // How often the views Carton printed are checked for a save (a stat each; nothing when there are none).
 const POLL_MS = 250;
 // How long a view save on a shared cut waits for this worker to hold the lease again (#mayCommit).
 const LEASE_WAIT_MS = 5000;
+// `views` rows [SAVE_CUT, request id] → {cut, at}: the cut a view save was committed on, until its cards are reported.
+const SAVE_CUT = "saveCut";
+const SAVE_CUT_KEEP_MS = 7 * 24 * 3600_000;
 const errText = (e) => (e && e.message) || String(e);
 const warned = new Set();
 const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); console.warn("[carton] " + msg); } };
@@ -68,7 +72,7 @@ const fromApp = (a) => a?.id === "person" && a?.kind === "human";
  * before the Materializer answers it in the view's `.status`: an agent that reads "confirmed" finds it everywhere.
  * Anything else goes to the inner engine as it is.
  */
-function engineFor(inner, lc, landed, mayCommit, cutOf) {
+function engineFor(inner, lc, landed, mayCommit, cutOf, failed) {
   const old = async (rev) => {
     const ref = await lc.store.get("views", ["rev", Number(rev)]);
     if (!ref) return null;
@@ -81,14 +85,48 @@ function engineFor(inner, lc, landed, mayCommit, cutOf) {
       if (k === "commit") {
         return async (input) => {
           await mayCommit(input.meta?.file);
-          // the cut it lands on (the engine commits on the current one), for its cards (onCards): a card belongs there
+          // the cut it lands on (the engine commits on the current one), for its cards (onCards): a card belongs there.
+          // Also stored: a save the Materializer resumes after a restart reports its cards without a commit here
+          // (review H8 r2 #2), and one with conflicts only made no change to look the cut up by.
+          const cut = lc.carton.cut;
           if (input.id) {
-            cutOf.set(input.id, lc.carton.cut);
+            cutOf.set(input.id, cut);
             if (cutOf.size > 64) cutOf.delete(cutOf.keys().next().value);
+            await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: { cut, at: Date.now() } }]).catch(() => {});
           }
-          const r = await t.commit(input.base?.kind === "legacy" ? { ...input, base: (await old(input.base.rev)) ?? input.base } : input);
+          let r;
+          try {
+            r = await t.commit(input.base?.kind === "legacy" ? { ...input, base: (await old(input.base.rev)) ?? input.base } : input);
+          } catch (e) {
+            failed(input.meta?.file);
+            throw e;
+          }
+          if (input.id && !r?.cards?.length) await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: undefined }]).catch(() => {});
           if (r?.status && r.status !== "rejected") await landed();
           return r;
+        };
+      }
+      const v = t[k];
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+}
+
+/**
+ * lc.carton as the Materializer's engine sees it: on a shared cut a commit carries the View's lease as a Store condition
+ * (`fence(nonce)`, core's CommitInput.conditions), so core writes it only while this View still holds the lease. #mayCommit
+ * checks before the save; another process can take the lease between that check and the write, and the save would then be
+ * queued pending in a handle the new holder never reads (review H8 r2 #1). Now core refuses it whole, and the save waits
+ * for the lease as #mayCommit's do. `nonceFor(cut)`: the nonce for a shared cut, null for a local one (any handle commits
+ * there); it throws when the View doesn't hold the lease.
+ */
+function fencedCarton(carton, nonceFor) {
+  return new Proxy(carton, {
+    get(t, k) {
+      if (k === "commit") {
+        return async (input) => {
+          const n = await nonceFor(input?.cut ?? t.cut);
+          return t.commit(n ? { ...input, conditions: [...(input?.conditions ?? []), fence(n)] } : input);
         };
       }
       const v = t[k];
@@ -123,7 +161,9 @@ export class View {
     const cutOf = new Map(); // a view save's request id → the cut it was committed on
     const mz = new Materializer({
       bundle: bundlePath,
-      engine: engineFor(cartonMaterializerEngine(lc.carton), lc, () => this.materializeNow(), (file) => this.#mayCommit(file), cutOf),
+      engine: engineFor(cartonMaterializerEngine(fencedCarton(lc.carton, (cut) => this.#nonceFor(cut))), lc, () => this.materializeNow(), (file) => this.#mayCommit(file), cutOf, (file) => {
+        if (file && !this.holds()) this.waiting.add(file);
+      }),
       host: cardboardFilesHost,
       codec,
       writeProject: false,
@@ -132,14 +172,24 @@ export class View {
       displacedDir: path.join(CARTON_DIR, "displaced-views"),
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
+      // The cut: the one recorded at the commit, or (a save the Materializer resumes after a restart, its result
+      // already stored: no commit here, review H8 r2 #2) the cut its change is on.
       onCards: (c) => {
-        const cut = cutOf.get(c.request) ?? lc.carton.cut;
+        const known = cutOf.get(c.request);
         cutOf.delete(c.request);
         const lost = (e) => warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e));
-        try { Promise.resolve(this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, { ...c, cut })).catch(lost); } catch (e) { lost(e); }
+        (async () => {
+          const stored = c.request ? (await lc.store.get("views", [SAVE_CUT, c.request]).catch(() => null))?.cut : null;
+          const cut = known ?? c.cut ?? stored ?? (await cutOfChange(lc.store, c.change)) ?? lc.carton.cut;
+          await this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, { ...c, cut });
+          if (c.request) await lc.store.write([{ table: "views", key: [SAVE_CUT, c.request], value: undefined }]).catch(() => {});
+        })().catch(lost);
       },
     });
     this.mz = mz;
+    // a save's cut kept past a week was never reported (its process stopped before it knew whether it had cards)
+    for (const r of await lc.store.range("views", { prefix: [SAVE_CUT] }).catch(() => []))
+      if (!(Date.now() - (r.value?.at ?? 0) < SAVE_CUT_KEEP_MS)) await lc.store.write([{ table: "views", key: r.key, value: undefined }]).catch(() => {});
     // Head moved in this handle: the shared file follows (unless frozen), project.json too.
     this.off = lc.carton.on((e) => this.#event(e));
     await mz.start();
@@ -183,7 +233,12 @@ export class View {
       engine,
       kind: "worker",
       socketPath: holderSocketPath(path.dirname(lc.dbPath), "worker"),
-      log: () => {},
+      // Each lease this View's holder takes is recorded as the one that prints timeline.tsx: a worker lease alone
+      // doesn't say so (Live's holder without a View holds one too, review H8 r2 #6); cb and the facade's install
+      // compare the lease's nonce with this row before leaving the file to the worker.
+      log: (e) => {
+        if (e?.type === "lease" && e.nonce && !this.stopped) lc.store.write([{ table: "views", key: TIMELINE_OWNER, value: { nonce: e.nonce, pid: process.pid, at: Date.now() } }]).catch((err) => warnOnce("owner:" + this.bundlePath, "couldn't record this worker as timeline.tsx's printer: " + errText(err)));
+      },
     }));
     await this.lease.start();
   }
@@ -211,6 +266,14 @@ export class View {
       }
       await new Promise((r) => setTimeout(r, 50));
     }
+  }
+
+  /** The lease nonce a commit on `cut` is fenced on: null on a local cut; throws while another process holds the lease. */
+  async #nonceFor(cut) {
+    const c = (await this.lc.carton.cuts()).find((x) => x.id === cut);
+    if (!c || c.sequencer?.kind === "local") return null;
+    if (!this.holds()) throw new Error("another process holds this shared project's sync just now; the save is applied once the app has it back");
+    return this.lease.current.nonce;
   }
 
   /** This handle holds the lease right now (not fenced, not stopped). */

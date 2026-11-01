@@ -46,6 +46,11 @@ test.before(async () => {
         'export { cartonMaterializerEngine } from "@carton/cardboard/node";',
         'export { createInProcessHost } from "@carton/server";',
         'export { sqliteStorage } from "../../carton/packages/conformance/src/system/sqlite.ts";',
+        'export { cardboard14 } from "./carton-node.js";',
+        'export { Live } from "./sync/live.js";',
+        'import "./sync/cbproj.js";',
+        'export { openSqliteStore } from "@carton/store-sqlite";',
+        'export { cutOfChange } from "./sync/view-cards.js";',
       ].join("\n"),
       resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js",
     },
@@ -226,12 +231,12 @@ test("a View released while it is still starting doesn't take the lease or timel
   class Materializer { constructor() { this.freeze = {}; } async start() { await starting; } async close() {} }
   class CartonHolderEngine { async serve() {} async startSync() {} }
   const keepLease = () => ({ start: async () => { leaseStarted = true; }, stop: async () => { leaseStopped = true; } });
-  const load = new Function("fs", "path", "AsyncLocalStorage", "extend", "cardboardFilesHost", "Materializer", "CARTON_DIR", "VIEWS_DIR", "TIMELINE_FILE", "keepLease", "holderSocketPath", "CartonHolderEngine", "cartonMaterializerEngine", "preToolUse", "parseActorId", "caughtUp", src + ";return { viewOf };");
+  const load = new Function("fs", "path", "AsyncLocalStorage", "extend", "TIMELINE_OWNER", "cardboardFilesHost", "Materializer", "CARTON_DIR", "VIEWS_DIR", "TIMELINE_FILE", "keepLease", "holderSocketPath", "CartonHolderEngine", "cartonMaterializerEngine", "preToolUse", "parseActorId", "fence", "caughtUp", "cutOfChange", src + ";return { viewOf };");
   const saved = globalThis.__cartonTimelineCodec;
   globalThis.__cartonTimelineCodec = {};
   try {
     const bundle = path.join(DIR, "closing.cardboard");
-    const mod = load(fs, path, require("node:async_hooks").AsyncLocalStorage, (e) => (ext = e), {}, Materializer, ".carton", ".scratch/views", "timeline.tsx", keepLease, () => path.join(DIR, "stub.sock"), CartonHolderEngine, () => ({}), () => ({}), () => null, async () => {});
+    const mod = load(fs, path, require("node:async_hooks").AsyncLocalStorage, (e) => (ext = e), ["timelineOwner"], {}, Materializer, ".carton", ".scratch/views", "timeline.tsx", keepLease, () => path.join(DIR, "stub.sock"), CartonHolderEngine, () => ({}), () => ({}), () => null, () => ({}), async () => {}, async () => null);
     const api = { bundleOf: () => bundle, onOpen: (f) => (open = f) };
     ext.worker(api);
     const opening = open(bundle, { carton: { projectId: "p", cut: "main", on: () => () => {} }, store: {}, dbPath: path.join(bundle, ".carton", "carton.db") });
@@ -244,5 +249,212 @@ test("a View released while it is still starting doesn't take the lease or timel
     assert.equal(await mod.viewOf(bundle), null);
   } finally {
     globalThis.__cartonTimelineCodec = saved;
+  }
+});
+
+// ---------------------------------------------------------------- review H8 round 2
+const freshBundle = (name) => {
+  const bundle = path.join(DIR, name);
+  fs.rmSync(bundle, { recursive: true, force: true });
+  fs.mkdirSync(bundle, { recursive: true });
+  const env = envelope();
+  fs.writeFileSync(path.join(bundle, "project.json"), JSON.stringify(env));
+  return { bundle, env, project: env.project, title: env.project.timelineItems.find((i) => i.type === "text").id };
+};
+const testHost = (project) => A.createInProcessHost({ storage: A.sqliteStorage(), auth: { kind: "test", verify: async () => ({ account: "alice", credential: "alice/install", role: "editor", projectId: project.id, expires: Date.now() + 3600_000 }) }, timeline: A.cardboardAdapter.schema.timeline, groupOf: (c, f) => A.cardboardAdapter.schema.collections[c]?.groupOf.get(f)?.name });
+const DIRECTOR = { kind: "agent", id: "director/chat/turn", chat: "chat", turn: "turn", provider: "claude-code" };
+
+test("r2 #1 a view save whose lease is taken between the check and the write is refused whole, then applied once the app has the lease back", opt, async () => {
+  const { bundle, project, title } = freshBundle("lease-race.cardboard");
+  const store = A.createMemoryStore(), host = testHost(project);
+  const sync = { transport: host.transport, url: host.url, token: "test-token", autoConnect: false };
+  const c = await A.Carton.open({ adapter: A.cardboardAdapter, store, projectId: project.id, init: { doc: A.fromHost(project, null) }, sync, actor: PERSON });
+  const lc = { carton: c, store, lease: new A.Lease(store), dbPath: path.join(bundle, ".carton", "carton.db") };
+  globalThis.__cartonTimelineCodec = A.jsonTimelineCodec;
+  const v = new A.View({ bundlePath: bundle, lc, api: { bundleOf: () => bundle, materialize: async () => {} } });
+  const commit = c.commit.bind(c);
+  let c2, other, engine2, resume, entered = false;
+  try {
+    await v.start();
+    await c.share();
+    await v.connectSync();
+    await until(() => c.sync.state().status === "up-to-date", 20_000, "shared");
+    const print = await v.mz.printView("agent", DIRECTOR, { hooked: true }), file = path.join(bundle, print.path);
+    // the agent's save passes #mayCommit, then waits just before core writes it
+    c.commit = async (input) => { if (input.author?.id === DIRECTOR.id && !entered) { entered = true; await new Promise((r) => (resume = r)); } return commit(input); };
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/"fontSize": \d+/, '"fontSize": 123'));
+    assert.ok(v.holds());
+    v.mz.onFsEvent(print.path);
+    await until(() => entered, 20_000, "the save past its lease check");
+    // another process takes the lease meanwhile
+    c2 = await A.Carton.open({ adapter: A.cardboardAdapter, store, actor: PERSON, sync });
+    engine2 = new A.CartonHolderEngine(c2);
+    other = new A.Holder({ lease: lc.lease, engine: engine2, kind: "worker", socketPath: A.holderSocketPath(DIR, "race-other") });
+    assert.ok(await other.start());
+    assert.ok(!v.holds());
+    resume();
+    await v.mz.idle();
+    const byAgent = async () => (await store.range("pending", { prefix: [c.cut] })).filter((r) => r.value.author?.id === DIRECTOR.id);
+    assert.deepEqual(await byAgent(), [], "nothing queued in the handle that lost the lease");
+    assert.equal((await c2.commit({ ops: [{ op: "set", path: ["timelineItems", title, "textContent"], value: "REPLACEMENT" }], wait: 5000 })).status, "confirmed");
+    // the other process lets go: the save is applied, and confirmed
+    await other.retire("test: handed back");
+    other = null;
+    await until(() => v.holds(), 20_000, "the View holds the lease again");
+    await until(async () => (await c.head()).doc.timelineItems.find((i) => i.id === title).fontSize === 123, 60_000, "the agent's save applied");
+    await until(async () => (await byAgent()).every((r) => r.value.confirmed), 20_000, "and confirmed");
+  } finally {
+    resume?.();
+    c.commit = commit;
+    await other?.retire("test cleanup").catch(() => {});
+    await engine2?.close?.().catch(() => {});
+    await c2?.close().catch(() => {});
+    await v.stop();
+    await c.close();
+    host.close();
+  }
+});
+
+test("r2 #2 a view save's cards resumed after a restart on another cut keep the cut the save landed on", opt, async () => {
+  const { bundle, project, title } = freshBundle("resume.cardboard");
+  const store = A.createMemoryStore();
+  const c = await A.Carton.open({ adapter: A.cardboardAdapter, store, projectId: project.id, init: { doc: A.fromHost(project, null) }, actor: PERSON });
+  const lc = { carton: c, store, lease: new A.Lease(store), dbPath: path.join(bundle, ".carton", "carton.db") }, cards = [];
+  const api = { bundleOf: () => bundle, materialize: async () => {}, agentCards: async (_b, x) => void cards.push(x) };
+  globalThis.__cartonTimelineCodec = A.jsonTimelineCodec;
+  let v = new A.View({ bundlePath: bundle, lc, api });
+  const write = store.write.bind(store);
+  let failedOnce = false;
+  try {
+    await v.start();
+    const cutA = c.cut, p = await v.mz.printView("agent", DIRECTOR, { hooked: true });
+    await c.commit({ ops: [{ op: "set", path: ["timelineItems", title, "fontSize"], value: 150 }] });
+    const file = path.join(bundle, p.path);
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/"fontSize": \d+/, '"fontSize": 170'));
+    // the process stops right after the save's result is stored (before its cards go anywhere)
+    store.write = async (batch, ...rest) => {
+      const out = await write(batch, ...rest);
+      if (!failedOnce && batch.some((w) => w.table === "views" && w.key[0] === "attempt" && w.value?.result)) { failedOnce = true; throw new Error("test: the process stopped here"); }
+      return out;
+    };
+    v.mz.onFsEvent(p.path);
+    await until(() => failedOnce, 20_000, "the stop");
+    await v.mz.idle();
+    assert.equal(cards.length, 0);
+    await v.stop();
+    store.write = write;
+    // it starts again on another cut, and the Materializer resumes the stored result
+    const b = await c.fork("B");
+    await c.switchTo(b.id);
+    v = new A.View({ bundlePath: bundle, lc, api });
+    await v.start();
+    v.mz.onFsEvent(p.path);
+    const got = await until(() => cards[0], 20_000, "the resumed cards");
+    assert.equal(got.cut, cutA, "the card belongs to cut A, where the save landed");
+  } finally {
+    store.write = write;
+    await v.stop();
+    await c.close();
+  }
+});
+
+test("r2 #4 a pick on one cut leaves the same agent's identical card on another cut open, on both sides", opt, async () => {
+  const project = envelope().project, title = project.timelineItems.find((i) => i.type === "text").id;
+  const store = A.createMemoryStore();
+  const c = await A.Carton.open({ adapter: A.cardboardAdapter, store, projectId: project.id, init: { doc: A.fromHost(project, null) }, actor: PERSON });
+  try {
+    const agent = { kind: "agent", id: "director/c/t" }, key = keyOf(agent), lc = { carton: c, store };
+    const card = { kind: "field", path: `timelineItems/${title}/fontSize`, base: 96, ours: 150, theirs: 170 };
+    const views = A.viewCards({ actorOf: (id) => ({ kind: "agent", id }), keyOf, me: PERSON });
+    const cutA = c.cut;
+    const changes = {};
+    for (const [cut, value] of [[cutA, 111], [null, 222]]) {
+      if (!cut) { const b = await c.fork("B"); await c.switchTo(b.id); }
+      await c.commit({ ops: [{ op: "set", path: ["timelineItems", title, "name"], value: "v" + value }], author: agent });
+      const r = { id: (await c.log({ limit: 1 }))[0].change };
+      changes[c.cut] = r.id;
+      // the engine's notice for the agent (keyed by its change), and the person's copy
+      await store.write([{ table: "notices", key: [key, value, 0, r.id], value: { to: key, kind: "late-conflict", change: r.id, cards: [card], at: value } }]);
+      await views.keep(lc, { actor: agent, cards: [card], cut: c.cut, batch: r.id, change: r.id, at: value });
+    }
+    const cutB = c.cut;
+    assert.equal(await A.cutOfChange(store, changes[cutA]), cutA, "a change's cut, from core's ids");
+    await views.close(lc, card, key, cutA);
+    const agentRows = (await store.range("notices", { prefix: [key] })).filter((r) => r.value.cards?.length);
+    assert.deepEqual(agentRows.map((r) => r.value.change), [changes[cutB]], "the agent's card on B stays open");
+    assert.equal((await views.shown(lc)).length, 1, "and the person's on B shows");
+  } finally {
+    await c.close();
+  }
+});
+
+test("r2 #3 a kept GUI conflict shows in History on its own cut only, and Keep yours commits there", opt, async () => {
+  const project = envelope().project, title = project.timelineItems.find((i) => i.type === "text").id;
+  const store = A.createMemoryStore();
+  const c = await A.Carton.open({ adapter: A.cardboardAdapter, store, projectId: project.id, init: { doc: A.fromHost(project, null) }, actor: PERSON });
+  const servers = new Map(), messages = [], lc = { carton: c, store };
+  try {
+    const cutA = c.cut;
+    await c.commit({ ops: [{ op: "set", path: ["timelineItems", title, "fontSize"], value: 150 }] });
+    const b = await c.fork("B");
+    await c.switchTo(b.id);
+    await c.commit({ ops: [{ op: "set", path: ["timelineItems", title, "fontSize"], value: 222 }] });
+    // a late conflict of a GUI save on A, kept for the person (core says its cut)
+    const card = { kind: "field", path: `timelineItems/${title}/fontSize`, base: 96, ours: 150, theirs: 170 };
+    await store.write([{ table: "notices", key: ["human/person", 1, 0, "late"], value: { to: "human/person", cut: cutA, kind: "late-conflict", text: "a GUI save met a teammate's", cards: [card], at: 1 } }]);
+    const library = { projects: { read: async () => null, bundlePathFor: () => null } };
+    const services = A.cardboard14.workerServices({ library, emit: (m) => messages.push(m.message), bundleOf: () => path.join(DIR, "panel.cardboard"), lcOf: async () => lc, servers });
+    await services.ui({ projectId: project.id, client: "late", message: { t: "hello" } });
+    const init = await until(() => messages.find((m) => m.t === "init"), 20_000, "the panel");
+    const sizeCards = (list) => (list ?? []).filter((x) => x.path?.endsWith("/fontSize"));
+    assert.deepEqual(sizeCards(init.topics.conflicts), [], "on B, A's card doesn't show");
+    let n = 0;
+    const call = async (method, ...args) => {
+      const id = ++n;
+      await services.ui({ projectId: project.id, client: "late", message: { t: "call", id, method, args } });
+      const ret = await until(() => messages.find((m) => m.t === "ret" && m.id === id), 20_000, method);
+      assert.ok(ret.ok, method + ": " + ret.error);
+      return ret.value;
+    };
+    await call("switchCut", cutA);
+    const shown = await until(() => { const t = messages.filter((m) => m.t === "topic" && m.topic === "conflicts").pop(); return sizeCards(t?.value)[0]; }, 20_000, "A's card on A");
+    await call("resolve", shown.id, "mine");
+    assert.equal((await c.head(cutA)).doc.timelineItems.find((x) => x.id === title).fontSize, 170, "Keep yours: on A");
+    assert.equal((await c.head(b.id)).doc.timelineItems.find((x) => x.id === title).fontSize, 222, "B untouched");
+  } finally {
+    for (const s of servers.values()) s.close();
+    await c.close();
+  }
+});
+
+test("r2 #6 cb leaves timeline.tsx to the worker only when the worker's lease is a View's (not Live's holder without one)", opt, async () => {
+  const { bundle, project } = freshBundle("mirror.cardboard");
+  const db = path.join(bundle, ".carton", "carton.db");
+  fs.mkdirSync(path.dirname(db), { recursive: true });
+  const store = await A.openSqliteStore(db), host = testHost(project);
+  const sync = { transport: host.transport, url: host.url, token: "test-token", autoConnect: false };
+  const c = await A.Carton.open({ adapter: A.cardboardAdapter, store, projectId: project.id, init: { doc: A.fromHost(project, null) }, actor: PERSON, sync });
+  const lc = { carton: c, store, lease: new A.Lease(store), dbPath: db };
+  globalThis.__cartonTimelineCodec = A.jsonTimelineCodec;
+  let live, v;
+  try {
+    await c.share();
+    // Live's own holder (the View didn't start): it holds a worker lease and prints nothing
+    live = new A.Live({ api: { materialize: async () => {}, emit: () => {} }, bundlePath: bundle, projectId: project.id, lc });
+    await live.start();
+    assert.ok(live.holds());
+    assert.equal(await A.cardboard14.mirrorOwned(bundle), false, "cb prints timeline.tsx itself");
+    await live.stop();
+    // a View's holder: the worker prints it
+    v = new A.View({ bundlePath: bundle, lc, api: { bundleOf: () => bundle, materialize: async () => {} } });
+    await v.start();
+    await until(() => v.holds(), 20_000, "the View's lease");
+    await until(async () => (await A.cardboard14.mirrorOwned(bundle)) === true, 20_000, "cb leaves it to the worker's View");
+  } finally {
+    await A.cardboard14.release(bundle).catch(() => {});
+    await live?.stop().catch(() => {});
+    await v?.stop();
+    await c.close();
+    host.close();
   }
 });

@@ -60,6 +60,20 @@ const handed = (v) => !!(v.handedAt || v.handedToHuman);
  * The person's side of agents' cards. `actorOf(id)` and `keyOf(actor)` as the facade has them (`keyOf`: core's notice
  * key, `kind/id[/agentId]`); `me`: the person.
  */
+/**
+ * The cut a change is on, by its id: confirmed (core's `ids` table: `[cut, seq]`) or still waiting to sync (`pending`,
+ * keyed by its cut). null when the store has neither (a save that didn't land).
+ */
+export async function cutOfChange(store, id) {
+  if (!id) return null;
+  try {
+    const at = await store.get("ids", [id]);
+    if (Array.isArray(at) && typeof at[0] === "string") return at[0];
+    for (const r of await store.range("pending")) if (r.value?.id === id) return String(r.key[0]);
+  } catch {}
+  return null;
+}
+
 export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
   // The cards still open on an agent's side: its notice rows (the engine's B5 row, cb's), resolved ones already gone.
   const openFor = async (store, key) => (await store.range(TABLE, { prefix: [key] })).flatMap((r) => r.value?.cards ?? []);
@@ -113,9 +127,20 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
     };
     const people = (await rows(lc.store)).filter((r) => onCut(r.value) && has(r.value));
     const agents = new Set([agentKey, ...people.map((r) => r.value.agentKey ?? keyOf(agentOf(r.value)))]);
+    // An agent's notice holds the card for the save it came from (keyed by its change): one known to be on another cut
+    // stays open there (review H8 r2 #4: the same agent's identical card on another cut). A notice behind one of these
+    // person rows is on this cut; any other by its change's cut; one whose cut can't be told closes, as before.
+    const behind = new Set(people.flatMap((r) => [r.value.change, r.value.batch, r.value.request].filter(Boolean)));
+    const onThisCut = async (v) => {
+      if (!cut) return true;
+      if (v.cut) return v.cut === cut;
+      if (!v.change || behind.has(v.change)) return true;
+      const at = await cutOfChange(lc.store, v.change);
+      return at === null || at === cut;
+    };
     for (const r of people) await casUpdate(lc.store, TABLE, r.key, drop, r.value);
     for (const key of agents)
-      for (const r of await lc.store.range(TABLE, { prefix: [key] })) if (has(r.value)) await casUpdate(lc.store, TABLE, r.key, drop, r.value);
+      for (const r of await lc.store.range(TABLE, { prefix: [key] })) if (has(r.value) && (await onThisCut(r.value))) await casUpdate(lc.store, TABLE, r.key, drop, r.value);
   }
 
   // Each panel's own resolve (fromCarton's, before the facade wraps it): it can drop a card without committing.

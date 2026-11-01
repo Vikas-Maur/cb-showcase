@@ -187,9 +187,18 @@ function timelineEvent(bundlePath) {
     try { e.timelineEvent(bundlePath); } catch (err) { warnOnce("tevent:" + (e.name ?? "?"), "an extension's timelineEvent failed: " + errText(err)); }
   }
 }
+// The `views` row (local table) naming the lease whose holder prints timeline.tsx: the worker's View writes it each time
+// its holder takes the lease (sync/views.js).
+export const TIMELINE_OWNER = ["timelineOwner"];
+// Whether the worker prints this bundle's timeline.tsx: it holds the lease now, and that lease is a View's (a worker
+// lease alone isn't: Live's holder without a View holds one and prints nothing, review H8 r2 #6).
 async function workerWritesTimeline(lc) {
   if (inWorker) return false;
-  try { const row = await lc.lease.read(); return row?.kind === "worker" && row.expires > Date.now(); } catch { return false; }
+  try {
+    const row = await lc.lease.read();
+    if (row?.kind !== "worker" || !(row.expires > Date.now()) || !row.nonce) return false;
+    return (await lc.store.get("views", TIMELINE_OWNER))?.nonce === row.nonce;
+  } catch { return false; }
 }
 // Whether Cardboard's mirror leaves timeline.tsx to Carton after a save (the store bridge's mirrorOwned): the same test
 // install() makes before it drops Cardboard's print of the file, made before the print, so the print isn't made at all.
@@ -761,13 +770,20 @@ export const cardboard14 = {
       const bundlePath = bundleOf(projectId);
       if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
       panels.get(bundlePath).add(handle);
-      // Cards kept from earlier GUI saves are shown too, until resolved.
+      // Cards kept from earlier GUI saves are shown too, until resolved: each on the cut its change was made on (core's
+      // notice says which). fromCarton files a reported card under the cut it is on, so a notice is reported only while
+      // the panel is on its cut: at the start, and again after the panel switches cut (review H8 r2 #3: one from cut A
+      // showed on B, and "Keep yours" committed it there). A notice from before core said its cut counts as this one's.
       const person = keyOf(actorOf("person"));
       const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
-      handle.reportConflicts((await kept()).flatMap((x) => x.value.cards));
-      // And agents' view-save cards still open, shown the person's way round (before the methods are wrapped).
-      views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []);
-      for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
+      const keptHere = async () => (await kept()).filter((x) => !x.value.cut || x.value.cut === lc.carton.cut);
+      // And agents' view-save cards still open on this cut, shown the person's way round (views.shown).
+      const reportHere = async () => {
+        handle.reportConflicts((await keptHere()).flatMap((x) => x.value.cards));
+        for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
+      };
+      views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []); // (before the methods are wrapped)
+      await reportHere();
       // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
       for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
         const f = ui[m];
@@ -776,11 +792,14 @@ export const cardboard14 = {
           const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
           // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
           const agents = views.isAgent(card);
+          const cutBefore = lc.carton.cut;
           const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
+          // on another cut now (switchCut, newCut…): that cut's kept cards (fromCarton drops repeats)
+          if (lc.carton.cut !== cutBefore) await reportHere().catch((err) => warnOnce("panel:" + bundlePath, "kept conflict cards didn't show after a cut switch: " + errText(err)));
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
           // resolved them first, they are already gone.
-          if (card && !agents) for (const x of await kept()) {
+          if (card && !agents) for (const x of await keptHere()) {
             const cards = x.value.cards.filter((c) => !sameCard(c, card));
             if (cards.length < x.value.cards.length) await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
           }
