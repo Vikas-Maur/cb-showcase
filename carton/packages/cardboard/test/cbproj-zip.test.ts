@@ -17,7 +17,9 @@ import {
   MANIFEST,
   SHALLOW_ENTRY,
   VIEWS_DIR,
+  cartonViewFile,
   excludedFromExport,
+  viewFileCandidate,
   walkBundle,
 } from "../src/node/cbproj/walk.ts";
 
@@ -544,9 +546,8 @@ const EXCLUDED = [
   `${CARTON_DIR}/displaced/x`,
   SHALLOW_ENTRY,
   FULL_ENTRY,
-  `${VIEWS_DIR}/a.tsx`,
+  `${VIEWS_DIR}/a.tsx`, // Carton's view and its sidecar (CONTENT)
   `${VIEWS_DIR}/a.status`,
-  `${VIEWS_DIR}/deep/b.tsx`,
   ".x.tmp",
   ".project.json.3f2a.tmp",
   ".tmpdir.tmp/inside.txt",
@@ -554,6 +555,10 @@ const EXCLUDED = [
 ];
 const INCLUDED = [
   ".scratch/notes.md",
+  `${VIEWS_DIR}/notes.md`, // a person's or an agent's own files next to Carton's views travel (the app's rule too)
+  `${VIEWS_DIR}/plan.tsx`, // no Carton header: 1.4.0's own print, or an agent's file
+  `${VIEWS_DIR}/b.status`, // not the materializer's fields
+  `${VIEWS_DIR}/deep/b.tsx`, // a subfolder: never Carton's, whatever it holds (CONTENT)
   ".scratch/views-old/a.tsx", // a sibling whose name starts like the excluded folder's
   ".scratch/viewsa",
   "media/a.mp4",
@@ -569,18 +574,30 @@ const INCLUDED = [
   "agent/chats/1.jsonl",
 ];
 
+const CARTON_HEADER = "// cardboard:rev main@3~deadbeef b:0a1b2c3d p:0f1e2d3c by Carton\nexport default null;\n";
+const CARTON_STATUS = JSON.stringify({ status: "confirmed", ref: "main@3~deadbeef b:0a1b2c3d", seq: 3, conflicts: [], diagnostics: [], change: "c-1", at: 1 });
+const CONTENT: Record<string, string> = {
+  [`${VIEWS_DIR}/a.tsx`]: CARTON_HEADER,
+  [`${VIEWS_DIR}/a.status`]: CARTON_STATUS,
+  [`${VIEWS_DIR}/plan.tsx`]: "// cardboard:rev 1700000000000\nexport default null;\n",
+  [`${VIEWS_DIR}/b.status`]: JSON.stringify({ status: "confirmed", note: "mine" }),
+  [`${VIEWS_DIR}/deep/b.tsx`]: CARTON_HEADER,
+  [".SCRATCH/Views/v.tsx"]: CARTON_HEADER,
+};
+const contentOf = (rel: string, i: number): string => CONTENT[rel] ?? "x".repeat(i + 1);
+
 async function makeBundle(files: string[]): Promise<string> {
   const dir = scratch("Walk.cardboard");
   for (const [i, rel] of files.entries()) {
     const abs = path.join(dir, ...rel.split("/"));
     await fsp.mkdir(path.dirname(abs), { recursive: true });
-    await fsp.writeFile(abs, "x".repeat(i + 1));
+    await fsp.writeFile(abs, contentOf(rel, i));
   }
   await fsp.mkdir(path.join(dir, "empty-folder"), { recursive: true });
   return dir;
 }
 
-test("walkBundle keeps what Cardboard's walk keeps, less Carton's folders", async () => {
+test("walkBundle keeps what Cardboard's walk keeps, less Carton's folders and the view files Carton wrote", async () => {
   const all = [...EXCLUDED, ...INCLUDED];
   const dir = await makeBundle(all);
   // Symlinks are skipped as Cardboard's walk skips them (Windows may not allow creating them: then untested here).
@@ -601,16 +618,48 @@ test("walkBundle keeps what Cardboard's walk keeps, less Carton's folders", asyn
   );
   for (const f of walked) {
     const i = all.indexOf(f.archivePath);
-    assert.equal(f.size, i + 1, f.archivePath);
+    assert.equal(f.size, Buffer.byteLength(contentOf(f.archivePath, i)), f.archivePath);
     assert.equal(f.sourcePath, path.join(dir, ...f.archivePath.split("/")));
   }
   if (symlinks) assert.ok(!walked.some((f) => f.archivePath.startsWith("link")));
 
-  // The predicate alone agrees with the walk on every file.
+  // The predicate, given a view file's content, agrees with the walk on every file; by path alone, a name that could
+  // be Carton's view file is left out
   const kept = new Set(walked.map((f) => f.archivePath));
-  for (const rel of all) assert.equal(excludedFromExport(rel), !kept.has(rel), rel);
+  for (const [i, rel] of all.entries()) assert.equal(excludedFromExport(rel, undefined, viewFileCandidate(rel) ? contentOf(rel, i) : undefined), !kept.has(rel), rel);
+  assert.deepEqual(all.filter((rel) => viewFileCandidate(rel)).sort(), [`${VIEWS_DIR}/a.status`, `${VIEWS_DIR}/a.tsx`, `${VIEWS_DIR}/b.status`, `${VIEWS_DIR}/plan.tsx`]);
+  for (const rel of all.filter((r) => viewFileCandidate(r))) assert.equal(excludedFromExport(rel), true, `${rel} by path alone`);
+  assert.equal(excludedFromExport(VIEWS_DIR), false, "the folder itself is walked");
   // An export's own entries are never carried over from a received copy.
   assert.ok(excludedFromExport(SHALLOW_ENTRY) && excludedFromExport(FULL_ENTRY) && excludedFromExport(EXPORT_DIR));
+});
+
+test("cartonViewFile: Carton's view (its header) and status sidecar (exactly its fields), as the app's rule tells them", () => {
+  const status = { status: "conflicts", ref: "main@3~deadbeef b:0a1b2c3d", seq: 3, conflicts: [{ path: "x" }], diagnostics: ["error: c3"], change: "c-3", at: 2 };
+  const yes: Array<[string, string]> = [
+    ["a.tsx", CARTON_HEADER],
+    ["A-b_c.1.TSX", "// cardboard:rev 30s Instagram cut@4~0badf00d b:0a1b2c3d\n"], // a cut name with spaces
+    ["a.tsx", "/** a comment first */\n  //  cardboard:rev main@3~deadbeef b:0a1b2c3d  \r\nx"],
+    ["a.status", JSON.stringify(status)],
+    ["a.status", JSON.stringify({ ...status, status: "error", error: "state unknown: re-print", ref: null, seq: null, change: null })],
+  ];
+  const no: Array<[string, string | null]> = [
+    ["a.tsx", "// cardboard:rev 1700000000000\n"], // 1.4.0's own print
+    ["a.tsx", "// cardboard:rev main@3~deadbeef\n"], // no b: token: not as core prints it
+    ["a.tsx", "export default null;\n"],
+    ["a.tsx", `${"x".repeat(64 * 1024)}\n// cardboard:rev main@3~deadbeef b:0a1b2c3d\n`], // past the head
+    ["a.tsx", null], // can't be read
+    ["a b.tsx", CARTON_HEADER], // not a view name
+    ["a.md", CARTON_HEADER],
+    ["a.status", JSON.stringify({ ...status, note: "mine" })], // a field the materializer never writes
+    ["a.status", JSON.stringify({ ...status, at: "2" })],
+    ["a.status", JSON.stringify({ ...status, status: "done" })],
+    ["a.status", JSON.stringify([status])],
+    ["a.status", "{"],
+  ];
+  for (const [name, content] of yes) assert.equal(cartonViewFile(name, content), true, `${name}: ${content.slice(0, 60)}`);
+  for (const [name, content] of no) assert.equal(cartonViewFile(name, content), false, `${name}: ${content?.slice(0, 60)}`);
+  assert.equal(cartonViewFile("a.tsx", Buffer.from(CARTON_HEADER)), true, "bytes as well as text");
 });
 
 test("Carton's names fold case where the file system does; Cardboard's never do", async () => {
@@ -618,7 +667,8 @@ test("Carton's names fold case where the file system does; Cardboard's never do"
     [".Carton/carton.db", true],
     [".CARTON-EXPORT/shallow.json", true],
     [".Scratch/VIEWS/a.tsx", true],
-    [".scratch/Views", true],
+    [".scratch/Views/A.STATUS", true],
+    [".scratch/Views", false], // the folder is walked: only Carton's files in it are left out
     [".scratch/viewsX/a", false],
     ["Cache/x", false],
     ["PROJECT.JSON", false],
@@ -634,13 +684,13 @@ test("Carton's names fold case where the file system does; Cardboard's never do"
   const probe = scratch("case-probe");
   await fsp.writeFile(probe, "");
   if (fs.existsSync(path.join(path.dirname(probe), path.basename(probe).toUpperCase()))) return;
-  const dir = await makeBundle([".Carton/x", ".SCRATCH/Views/v.tsx", ".scratch/notes.md", "Cache/x", "cache/y"]);
+  const dir = await makeBundle([".Carton/x", ".SCRATCH/Views/v.tsx", ".SCRATCH/Views/mine.md", ".scratch/notes.md", "Cache/x", "cache/y"]);
   assert.deepEqual(
     (await walkBundle(dir, true)).map((f) => f.archivePath),
-    [".scratch/notes.md", "Cache/x"],
+    [".SCRATCH/Views/mine.md", ".scratch/notes.md", "Cache/x"],
   );
   assert.deepEqual(
     (await walkBundle(dir, false)).map((f) => f.archivePath),
-    [".Carton/x", ".SCRATCH/Views/v.tsx", ".scratch/notes.md", "Cache/x"],
+    [".Carton/x", ".SCRATCH/Views/mine.md", ".SCRATCH/Views/v.tsx", ".scratch/notes.md", "Cache/x"],
   );
 });

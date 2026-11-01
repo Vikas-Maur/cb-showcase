@@ -6,7 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, type ViewRow } from "../src/node/materializer.ts";
+import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOwner, type ViewRow } from "../src/node/materializer.ts";
 import { jsonTimelineCodec } from "../src/codec.ts";
 import { findRev } from "../src/header.ts";
 import { FakeClock, FakeEngine, plainHost } from "./helpers/fake-engine.ts";
@@ -276,6 +276,90 @@ test("R8-01 freeze view: during a hooked turn non-agent changes stay out of the 
   assert.equal(s.find(after, "clip9").name, "remote edit", "after the freeze the file is head");
   const h = await s.head();
   assert.equal(h.filter((i) => i.textContent === "Title by B").length, 1, "no duplicate in head");
+});
+
+/** Pin owners the fake engine still holds for hooked turns. */
+const turnPins = (s: { engine: FakeEngine }): string[] => [...new Set([...s.engine.pins.values()].flatMap((p) => [...p.owners]))].filter((o) => o.startsWith("turn:")).sort();
+
+test("local-cli H8: a Director subagent's Stop releases only its own pins; the Director keeps its view and the freeze; the turn's own Stop releases everything, a subagent's whose Stop was lost too", async (t) => {
+  const s = await setup(t, [clip("X", 0, 10)]);
+  const director = { kind: "agent" as const, id: "director/c/t4", turn: "t4" };
+  const sub = { kind: "subagent" as const, id: "director/c/t4/sub-explore-ab12", turn: "t4", agentType: "explore", agentId: "ab12" };
+  const lost = { kind: "subagent" as const, id: "director/c/t4/sub-explore-cd34", turn: "t4", agentType: "explore", agentId: "cd34" };
+  await s.mz.hookRead(director);
+  await s.mz.printView("d", director, { hooked: true });
+  for (const a of [sub, lost]) {
+    await s.mz.hookRead(a);
+    await s.mz.printView(a.agentId, a, { hooked: true });
+  }
+  await s.mz.hookStop(sub);
+  assert.deepEqual(turnPins(s), [turnOwner(director), turnOwner(lost)].sort(), "only the subagent's own pin went");
+  assert.equal(s.mz.freeze.active, true, "the shared file stays frozen for the Director");
+  await s.mz.hookStop(director); // the subagent `lost` never sent its SubagentStop
+  await s.tick(100);
+  assert.deepEqual(turnPins(s), [], "the turn's own Stop releases every pin the turn took");
+  assert.equal(s.mz.freeze.active, false, "and the freeze ends: no actor of the turn is left hooked");
+  assert.equal(await s.engine.getMeta(["turn-pins", "t4"]), undefined, "the turn's list of subagent pins goes with it");
+});
+
+test("local-cli H8: a terminal session's subagent (no turn id) pins on its own, and the session's Stop releases it", async (t) => {
+  const s = await setup(t, [clip("X", 0, 10)]);
+  const session = { kind: "agent" as const, id: "claude-code/ab12cd34" };
+  const sub = { kind: "subagent" as const, id: "claude-code/ab12cd34/sub-explore-ef56", agentType: "explore", agentId: "ef56" };
+  await s.mz.printView("session", session, { hooked: true });
+  await s.mz.printView("sub", sub, { hooked: true });
+  assert.equal(turnPins(s).length, 2, "two owners");
+  await s.mz.hookStop(session);
+  assert.deepEqual(turnPins(s), []);
+});
+
+test("local-cli e0bb577: a hooked agent whose Stop never comes (an interrupted turn) holds the freeze only until it has been quiet for 60 s; each of its events resets that; a Stop still ends it at once", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5), clip("b", 5, 10)]);
+  const agent = { kind: "agent" as const, id: "director/c/t7", turn: "t7" };
+  const hidden = () => s.find(s.read().items, "b").name === "b";
+  await s.mz.hookRead(agent);
+  s.engine.external((d) => ((d.timelineItems as Item[])[1]!.name = "remote edit"));
+  s.mz.onHeadChange("remote");
+  const steps: [string, () => Promise<unknown>][] = [
+    ["a write of the shared file", () => s.mz.hookWrite(agent, TIMELINE_FILE)],
+    ["a write of a file it doesn't watch", () => s.mz.hookWrite(agent, "notes/todo.md")],
+    ["a write of a view", () => s.mz.hookWrite(agent, viewPath("v7"))],
+    ["a view print", () => s.mz.printView("v7", agent, { hooked: true })],
+  ];
+  for (const [what, step] of steps) {
+    await s.tick(40_000);
+    assert.ok(s.mz.freeze.active && hidden(), `frozen 40 s after its last event (before ${what})`);
+    await step();
+  }
+  await s.tick(40_000);
+  assert.ok(s.mz.freeze.active && hidden(), "still frozen 40 s after the print, 200 s after the read");
+  await s.tick(21_000); // its Stop never came: 61 s of quiet
+  assert.equal(s.mz.freeze.active, false, "the freeze ends after the idle cap");
+  assert.equal(s.find(s.read().items, "b").name, "remote edit", "and the file catches up");
+  assert.deepEqual([...s.mz.freeze.hooked.keys(), ...s.mz.freeze.heard.keys()], [], "it holds nothing any more");
+  // its next event holds the freeze again; its Stop ends it at once
+  await s.mz.hookRead(agent);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "later"));
+  s.mz.onHeadChange("remote");
+  await s.tick(1000);
+  assert.ok(s.mz.freeze.active && s.find(s.read().items, "a").name === "a", "held again");
+  await s.mz.hookStop(agent);
+  await s.tick(100);
+  assert.equal(s.mz.freeze.active, false);
+  assert.equal(s.find(s.read().items, "a").name, "later", "caught up at its Stop");
+});
+
+test("local-cli H8: hookWrite of a file the materializer doesn't watch is ignored (nothing would ever clear its entry)", async (t) => {
+  const s = await setup(t, [clip("X", 0, 10)]);
+  const agent = { kind: "agent" as const, id: "director/c/t5", turn: "t5" };
+  const announced = (s.mz as unknown as { announced: Map<string, unknown[]> }).announced;
+  for (const rel of ["notes/todo.md", ".scratch/views/deep/x.tsx", ".scratch/views/x.status"]) await s.mz.hookWrite(agent, rel);
+  assert.deepEqual([...announced.keys()], []);
+  await s.mz.hookWrite(agent, viewPath("v"));
+  await s.mz.printView("v", agent, { hooked: true });
+  assert.equal(s.mz.freeze.active, false, "an agent that hasn't read or written the shared file doesn't freeze it");
+  await s.mz.hookWrite(agent, TIMELINE_FILE);
+  assert.deepEqual([...announced.keys()].sort(), [TIMELINE_FILE, viewPath("v")].sort(), "watched files are still announced");
 });
 
 test("R5-05: while shared, remote changes rewrite the shared file at most every 30 s; local changes stay prompt", async (t) => {

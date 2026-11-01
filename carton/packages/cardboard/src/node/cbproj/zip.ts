@@ -618,6 +618,20 @@ export class ZipReader {
   }
 
   /**
+   * A member's bytes by its entry, whatever its name: to tell what it is (a member 1.4.0's importer extracts under a
+   * name this reader won't extract, `.scratch\views\x.tsx`), never to extract it. Stored and unencrypted only, as
+   * every read here; CRC-checked.
+   */
+  async readMember(entry: ZipEntry, maxBytes = Infinity): Promise<Buffer> {
+    if (entry.method !== STORED) throw new Error(`Project file has a compressed member: ${entry.name}`);
+    if (entry.flags & FLAG_ENCRYPTED) throw new Error(`Project file has an encrypted member: ${entry.name}`);
+    if (entry.size > maxBytes) throw new Error(`Project file has an oversized ${entry.name}`);
+    const data = await readExact(this.fh, entry.size, await this.dataStart(entry));
+    if (zlib.crc32(data) !== entry.crc32) throw damaged(`CRC-32 mismatch in ${entry.name}`);
+    return data;
+  }
+
+  /**
    * Streams a member to `destPath` (replacing it), through `<destPath>.part` so the file appears only whole and
    * CRC-checked.
    */
