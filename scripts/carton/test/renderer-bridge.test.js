@@ -168,3 +168,17 @@ test("a save whose write is under way counts as unsaved: head is adopted only af
   assert.equal(reads, 2);
   assert.deepEqual(t.log.map((l) => l[0]), ["flush", "replace", "adopt"]);
 });
+
+test("See it, Show on timeline: the clip is selected and the playhead goes to its start; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const did = [];
+  t.store.raw({ timelineItems: [{ id: "clip-a", startTime: 4.5, endTime: 8 }], selectTimelineItem: (id) => did.push(["select", id]), setPlaybackPosition: (s) => did.push(["seek", s]) });
+  assert.equal(t.c.projectId, "p1");
+  assert.equal(t.c.reveal("clip-a"), true);
+  assert.deepEqual(did, [["select", "clip-a"], ["seek", 4.5]]);
+  assert.equal(t.c.reveal("gone"), false, "a clip this version doesn't have");
+  const off = load({ enabled: false });
+  await off.c.ready;
+  assert.equal(off.c.reveal("clip-a"), false);
+});

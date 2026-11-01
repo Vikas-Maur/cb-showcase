@@ -298,11 +298,11 @@ if (mode === "--cli") {
   patch(indexFile, (replace) => {
     replace("sV=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;", "sV=async(e,t)=>{if(t.carton&&window.__carton?.on){const __r=await window.__carton.receive(e,t);if(__r)return __r}const{id:a,timeline:n,artefacts:s}=t;");
   });
-  // The History panel: a rail tab in the editor (EditorRoute-*.js), loaded from carton-ui.js when first shown.
+  // Carton's layer over the editor's stage (EditorRoute-*.js): History and Share at its top-right, their panel on its
+  // right side, the conflict cards' floating stack (editor-panel.js, scripts/carton/ui.js). With Carton off the stage
+  // is Cardboard's own div, as it is.
   patch(editorFile, (replace, prepend) => {
-    replace('{id:"effects",icon:gw,label:"Effects",event:"filters_panel_opened"}]],U_=V_.map(', '{id:"effects",icon:gw,label:"Effects",event:"filters_panel_opened"}],...window.__carton?.on?[[{id:"carton",icon:__cbCartonIcon,label:"History",event:"carton_panel_opened"}]]:[]],U_=V_.map(');
-    replace('uf=["media","layouts","music","captions","voiceover","text","transitions","effects"].filter(', 'uf=["media","layouts","music","captions","voiceover","text","transitions","effects",...window.__carton?.on?["carton"]:[]].filter(');
-    replace('case"effects":return c.jsx(tP,{});default:return null}', 'case"effects":return c.jsx(tP,{});case"carton":return c.jsx(__cbCartonPanel,{projectId:t});default:return null}');
+    replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,');
     prepend(require("./carton/editor-panel"));
   });
 } else {

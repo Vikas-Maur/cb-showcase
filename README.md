@@ -448,9 +448,15 @@ What changes with it on:
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
-- **History tab** in the editor's left rail: versions, compare, restore, cuts, fold in. Opening an old version shows
-  it read-only until "Return to current". Conflict cards wait there: your own edits that clashed, and an agent's view
-  edit that clashed with yours (see "An agent's edit and yours at once" below). On an agent's card your value is the
+- **History and Share** buttons at the top-right of the editor's preview. Each opens its panel on the preview's right
+  side (Esc or × closes it); the timeline, Ctrl+Z and the agent's chat stay as they are. History: versions, compare
+  with current and "Watch the changes", restore, cuts, fold in. Opening an old version shows it read-only until
+  "Return to current".
+- **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
+  your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
+  once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
+  it. **See it:** "Preview" shows the timeline with that side kept, read-only, with the clip in view; "Show on
+  timeline" selects the clip and moves the playhead to it. On an agent's card your value is the
   one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back). A card says what each
   side did, in the editor's words ("Moved 1.5 s → 3.0 s", "Opacity 50%", "Removed"), with the clip named by its file;
   two edits of your own read "Your earlier edit" and "Your later edit", with "Keep earlier" and "Keep later".
@@ -611,7 +617,7 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the editor's left rail, "Share"): enter the host and the invite you were given (the host's owner gets
+- **Share** (the "Share" button at the top-right of the editor's preview): enter the host and the invite you were given (the host's owner gets
   one with its admin token). The project goes up with its whole history and authors. Its clips go up too: each clip's
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
@@ -662,7 +668,7 @@ with Carton off none of it runs at all.
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
-`scripts\carton\sync\patches\*.js`: the Share tab and presence in the editor (`ui.js`), `cardboard-media://` for clips
+`scripts\carton\sync\patches\*.js`: presence in the editor (`ui.js`; Share opens from the preview's top-right), `cardboard-media://` for clips
 that live on the host (`media.js`), the agent's media tools (`tools.js`), `cb`'s cloud mode (`cloud.js`) and `.cbproj`
 (`cbproj.js`). Sessions and tokens are in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
 
@@ -689,7 +695,7 @@ set CARDBOARD_PRISTINE=C:\cb-pristine
 node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js
 ```
 
-Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview
+Still to check on the Windows laptop: the Share panel in the real editor, a teammate's clip playing in the preview
 (Electron's protocol handler and the media element), NVENC/QSV/AMF proxies, the helper under named pipes, and renames
 under Defender.
 
