@@ -167,7 +167,8 @@ export const words = {
   noChanges: "No changes to watch. The two versions look the same.",
 
   // Read-only preview (§9, R2-16)
-  previewing: (label: string) => `Previewing ${label}`,
+  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
+  previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
   readOnly: "Read-only",
   returnToCurrent: "Return to current to edit",
   previewBlocked: "This is a preview, so edits don't apply here.",
