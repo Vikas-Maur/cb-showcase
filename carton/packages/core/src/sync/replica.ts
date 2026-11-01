@@ -185,6 +185,10 @@ export class SharedCut {
     if (!this.queue.unqueue(this.branchId, id)) this.queue.rejectLocally(this.branchId, id, reason);
     this.refreshState();
   }
+  /** Run the pusher now (changes queued behind one taken back waited at it). */
+  wake(): void {
+    this.client?.pump();
+  }
   /** A change committed `held` was kept by the store: it may be sent now, and what was queued after it. */
   kept(id: string): void {
     if (this.queue.unhold(this.branchId, id)) this.client?.pump();

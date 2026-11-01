@@ -1034,8 +1034,12 @@ class CartonImpl implements Carton {
     if (loaded) await this.#loadPeople();
     // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
     if (pins || this.#pinsStale || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) {
-      ({ snap: this.#pinSnap, gen: this.#pinsGen } = await this.#loadPins(this.#h));
-      this.#pinsStale = false;
+      const h = this.#h,
+        loaded = await this.#loadPins(h);
+      // a rebuild replaced History during the read: these pins went into the old one, so the new one isn't certified by
+      // them; the next call reads again (R6-6)
+      if (this.#h !== h) this.#pinsStale = true;
+      else ({ snap: this.#pinSnap, gen: this.#pinsGen } = loaded), (this.#pinsStale = false);
     }
     if (exports) await this.#newExports();
   }
@@ -2434,62 +2438,73 @@ class CartonImpl implements Carton {
    */
   async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = [], conditions: readonly StoreCondition[] = []): Promise<CommitResult> {
     if (r.status === "confirmed") {
-      // a no-op only if nobody answered this id meanwhile (a holder that replaced this one: the lease conditions), so a
-      // retry answers empty and never applies the edit later over someone else's; otherwise the store's answer is it
-      const ok = await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }, ...extra], [
-        { table: T.meta, key: ["noop", id], expect: "absent" },
-        { table: T.ids, key: [id], expect: "absent" },
-        { table: T.pending, key: [cut, id], expect: "absent" },
-        ...this.#settleConds,
-        ...conditions,
-      ]);
-      if (!ok) {
+      // the queue confirmed the empty write at once (its outcome log says so): that answer stays only if this write
+      // lands, or if the id was confirmed after all; otherwise a retry of the id would get it (R6-3, R6-4)
+      let keep = false;
+      try {
+        // a no-op only if nobody answered this id meanwhile (a holder that replaced this one: the lease conditions), so a
+        // retry answers empty and never applies the edit later over someone else's; otherwise the store's answer is it
+        const ok = await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }, ...extra], [
+          { table: T.meta, key: ["noop", id], expect: "absent" },
+          { table: T.ids, key: [id], expect: "absent" },
+          { table: T.pending, key: [cut, id], expect: "absent" },
+          ...this.#settleConds,
+          ...conditions,
+        ]);
+        if (ok) {
+          keep = true;
+          this.#h.noteNoop(id, cut, r.seq);
+          // the answer its retry gets too (the same version)
+          return this.#h.confirmedById(id)!;
+        }
         await this.#refresh();
         await this.#noopOf(id);
         const won = this.#h.confirmedById(id);
-        if (won) return won;
+        if (won) return (keep = true), won;
         if (await this.store.get(T.pending, [cut, id])) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
-        // the queue confirmed the empty write at once: that answer goes, or a retry of the id would get it (R6-3)
-        sc.forgetOutcome(id);
-        this.#queuedIn(cut).delete(id);
         if (conditions.length && !(await this.store.write([], conditions))) throw new Error("Carton: the store changed under this write (a condition failed)");
         throw new Error("Carton: the store changed under this write (the sync lease moved to another holder)");
+      } finally {
+        if (!keep) {
+          sc.forgetOutcome(id);
+          this.#queuedIn(cut).delete(id);
+        }
       }
-      this.#h.noteNoop(id, cut, r.seq);
-      // the answer its retry gets too (the same version)
-      return this.#h.confirmedById(id)!;
     }
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
-    const writes: StoreWrite[] = [];
-    const rows: PendingRow[] = [];
-    sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && rows.push(pendingRow(p, order, sc.queue)));
-    for (const v of rows) writes.push({ table: T.pending, key: [cut, v.id], value: v });
-    // made on the queue's state: if that is past the store's rows, it is saved with them (SF1-4); nothing is removed
-    // here (a settle does that)
-    writes.push(...this.#gapWrites(cut, sc.queue, this.#h.headSeq(cut), rows.map((v) => v.head ?? 0), false).writes);
-    // started before anything can settle it: a settle waits for #inflight
-    if (writes.length || extra.length || conditions.length) {
-      const w = this.store.write([...writes, ...extra], [...conditions]);
-      const ids = [id, ...also];
-      for (const x of ids) this.#inflight.set(x, w);
-      let ok: boolean;
-      try {
-        ok = await w;
-      } catch (e) {
-        // a conditioned change is held from the pusher until this write lands: one that threw was never made either
-        if (conditions.length) this.#takeBack(sc, cut, ids);
-        throw e;
-      } finally {
-        for (const x of ids) if (this.#inflight.get(x) === w) this.#inflight.delete(x);
+    const ids = [id, ...also];
+    let ok = true;
+    try {
+      const writes: StoreWrite[] = [];
+      const rows: PendingRow[] = [];
+      sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && rows.push(pendingRow(p, order, sc.queue)));
+      for (const v of rows) writes.push({ table: T.pending, key: [cut, v.id], value: v });
+      // made on the queue's state: if that is past the store's rows, it is saved with them (SF1-4); nothing is removed
+      // here (a settle does that)
+      writes.push(...this.#gapWrites(cut, sc.queue, this.#h.headSeq(cut), rows.map((v) => v.head ?? 0), false).writes);
+      // started before anything can settle it: a settle waits for #inflight
+      if (writes.length || extra.length || conditions.length) {
+        const w = this.store.write([...writes, ...extra], [...conditions]);
+        for (const x of ids) this.#inflight.set(x, w);
+        try {
+          ok = await w;
+        } finally {
+          for (const x of ids) if (this.#inflight.get(x) === w) this.#inflight.delete(x);
+        }
       }
-      if (!ok) {
-        // a condition broke between #prepShared's check and this write: nothing was stored, so the edit was never made
-        // (held, it was never sent)
-        this.#takeBack(sc, cut, ids);
-        throw new Error("Carton: the store changed under this write (a condition failed)");
-      }
-      if (conditions.length) for (const x of ids) sc.kept(x);
+    } catch (e) {
+      // a conditioned change is held from the pusher until this write lands: one that threw (here or in the Store, at
+      // once or later) was never made either (R6-5)
+      if (conditions.length) this.#takeBack(sc, cut, ids);
+      throw e;
     }
+    if (!ok) {
+      // a condition broke between #prepShared's check and this write: nothing was stored, so the edit was never made
+      // (held, it was never sent)
+      this.#takeBack(sc, cut, ids);
+      throw new Error("Carton: the store changed under this write (a condition failed)");
+    }
+    if (conditions.length) for (const x of ids) sc.kept(x);
     if (!wait) return r;
     const o = await sc.waitFor(id, wait);
     // a confirmation is answered once History holds the row (the result carries the change)
@@ -2505,6 +2520,8 @@ class CartonImpl implements Carton {
       this.#queuedIn(cut).delete(x);
       sc.unqueue(x, "the store changed under this write (a condition failed)");
     }
+    // what was queued behind them (already kept) waited at the held one: the pusher goes on from here (R6-7)
+    sc.wake();
   }
   async #commitShared(cut: string, input: CommitInput, author: Actor, id: ChangeId): Promise<CommitResult> {
     const { sc, done } = await this.#prepShared(cut, id, input.conditions ?? []);
@@ -2534,8 +2551,9 @@ class CartonImpl implements Carton {
     }
     // `undoOf` (cb undo --turn through a save): the change records what it undoes, as on a local cut
     // with conditions, the queued change isn't sent until the write that keeps it lands (it may fail them: R6-2)
-    const r = this.#enqueue(sc, cut, id, author, ops, input, input.undoOf?.length ? { kind: "undo", reverts: [...input.undoOf], ...(input.name ? { name: input.name } : {}) } : undefined, !!input.conditions?.length);
+    // the card rows are made first: a cardsWrite that throws leaves nothing queued (R6-5)
     const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
+    const r = this.#enqueue(sc, cut, id, author, ops, input, input.undoOf?.length ? { kind: "undo", reverts: [...input.undoOf], ...(input.name ? { name: input.name } : {}) } : undefined, !!input.conditions?.length);
     const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites, input.conditions ?? []);
     return resolved.length && (out.status === "pending" || out.status === "confirmed") ? { ...out, resolved } : out;
   }
