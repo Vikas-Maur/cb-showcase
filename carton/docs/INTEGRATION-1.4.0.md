@@ -288,6 +288,10 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 **Undo (H6).**
 - `undo()` and `redo()` first send the pending save, then ask the worker for the inverse of the person's actor group's
   latest change at head. The result comes back through H5.
+- The worker serves the undo through its View's holder in its own process (`serveHere`, the holder's `engine.serve`:
+  local's runWrite, with the Materializer told and the person's notices delivered) whenever that View holds the
+  project's lease; before, local's write path reached the same holder through its control socket. Elsewhere (another
+  process holds the lease, no View runs) it still goes through local's write path. `save-cost.test.js` counts it.
 - With Carton off, or without history for the project, Cardboard's snapshot undo runs.
 
 **Remaps (H7).**

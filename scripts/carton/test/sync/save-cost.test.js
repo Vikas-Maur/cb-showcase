@@ -97,3 +97,40 @@ test("the person's ⌘Z shows in timeline.tsx at once, and so do the edits after
     S.killHelpers();
   }
 });
+
+// ⌘Z with Carton on is a call the page waits for. Where the worker's View holds the project's lease, its holder serves
+// the undo in this process (request R4); before, @carton/local's write path handed it to that same holder through its
+// control socket, a round trip from the worker to itself. Counted as socket writes in the worker (count-calls.cjs),
+// against a call that writes nothing to Carton.
+test("the person's ⌘Z is served in the worker's own process, not through local's control socket to itself", t, async (tc) => {
+  const b = await S.build();
+  const pc = await S.computer("undo-here", b);
+  const must = (x, what) => assert.equal(x.code, 0, what + ": " + x.out + x.err);
+  must(pc.cb(["project", "create", "Demo"]), "create");
+  must(pc.cb(["media", "add", "Demo", b.clip]), "media add");
+  const file = path.join(pc.home, "t.tsx");
+  fs.writeFileSync(file, timeline(1));
+  must(pc.cb(["source", "apply", "Demo", file]), "apply");
+  try {
+    await pc.startWorker({ NODE_OPTIONS: [process.env.NODE_OPTIONS, "--require", path.join(__dirname, "count-calls.cjs")].filter(Boolean).join(" ") });
+    const id = (await pc.call("projects.list"))[0].id;
+    for (const size of [111, 122, 133, 144]) {
+      await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: size } : null));
+      await S.sleep(400);
+    }
+    for (let k = 0; k < 3; k++) {
+      await pc.call("test.counters");
+      await pc.call("projects.list");
+      const base = (await pc.call("test.counters")).socket;
+      const r = await pc.call("carton.undo", { projectId: id });
+      assert.equal(r.status, "confirmed", JSON.stringify(r));
+      const c = await pc.call("test.counters");
+      tc.diagnostic(`undo ${k}: ${c.socket} socket writes (a call that writes nothing: ${base})`);
+      assert.ok(c.socket <= base + 2, `undo ${k} wrote ${c.socket} times to sockets, a call that writes nothing ${base}: the undo went through the control socket`);
+    }
+    assert.equal((await S.projectOf(pc, id)).timelineItems.find((i) => i.type === "text").fontSize, 111, "three undos: back to the first save");
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});

@@ -36,7 +36,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
 import { Materializer, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
-import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId, fence } from "@carton/local";
+import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId, fence, nextChangeId } from "@carton/local";
 import { caughtUp } from "./live.js";
 import { cutOfChange } from "./view-cards.js";
 
@@ -374,6 +374,18 @@ export class View {
   }
 
   /**
+   * A write the app makes for the person (⌘Z), served by this View's holder in this process as its control socket would
+   * serve it: the same engine.serve (local's runWrite on this handle, with the Materializer told, the person's notices
+   * delivered, a retry on a lost append race, and the person's write freezing nothing), without the round trip through
+   * the socket to this same process (request R4). Only while this View holds the lease; otherwise null, and the caller
+   * goes through @carton/local's write path, which finds whoever holds it.
+   */
+  async serveHere(op, actor) {
+    if (this.stopped || !this.holds()) return null;
+    return this.holder.serve({ id: nextChangeId(), actor, op });
+  }
+
+  /**
    * A Director turn ended: it and its subagents stop holding the freeze and let go of their pins (the turn's own Stop
    * does both for the whole turn, a subagent's SubagentStop only for itself).
    */
@@ -428,6 +440,8 @@ extend({
   // The facade: timeline.tsx is the Materializer's here (its install and Cardboard's watcher hand over).
   ownsTimeline: (bundlePath) => running.has(keyOf(bundlePath)),
   timelineEvent: (bundlePath) => running.get(keyOf(bundlePath))?.timelineEvent(),
+  // The facade's ⌘Z: served by the View's holder here when it holds the lease (null: the caller writes through local)
+  serveHere: (bundlePath, op, actor) => running.get(keyOf(bundlePath))?.serveHere(op, actor) ?? null,
   async release(dir, inside) {
     const stops = [];
     // A View still starting goes too (review H8 r1): left out, its start would finish after the release, take the

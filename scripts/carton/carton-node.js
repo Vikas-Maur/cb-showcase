@@ -857,11 +857,17 @@ export const cardboard14 = {
         const r = /^\d{13}$/.test(String(ref)) ? await refOf(lc, Number(ref)) : ref;
         return materializeProject(await lc.carton.checkout(r), current);
       },
-      // ⌘Z for the person's group, then head goes into project.json through the store (the pages adopt it).
+      // ⌘Z for the person's group, then head goes into project.json through the store (the pages adopt it). The page
+      // waits for it, so where this worker's View holds the project's lease its holder serves the undo here, in this
+      // process (request R4: local's write path would reach that same holder through its control socket); anywhere
+      // else (another process holds the lease, no View runs) it goes through local's write path as before.
       undo: async ({ projectId }) => {
         const lc = await lcOf(projectId);
         if (!lc) return { status: "unavailable" };
-        const r = await lc.write({ kind: "undo", group: localGroup() }, { actor: actorOf("person") });
+        const op = { kind: "undo", group: localGroup() }, actor = actorOf("person");
+        const here = extensions.find((e) => typeof e.serveHere === "function");
+        const bundlePath = bundleOf(projectId);
+        const r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor }));
         if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
         return r;
       },

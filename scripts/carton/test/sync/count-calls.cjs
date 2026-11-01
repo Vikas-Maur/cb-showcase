@@ -5,10 +5,12 @@
 //             NTFS (and often the virus scanner), so their number is what a save costs there
 //   mirror    Cardboard's own print of timeline.tsx written to its temp file (the store bridge's writeFile)
 //   project   calls of the editor's GUI save projection P (fmsv.cjs): how many items a save projects
+//   socket    writes on a net socket (local's control socket, a Unix socket or a named pipe): a write the app hands to
+//             a lease holder over it, and the holder's answer
 const fs = require("fs");
 const Module = require("module");
 let counts, inside = false;
-const reset = () => (counts = { fs: 0, byCall: {}, mirror: 0, project: 0 });
+const reset = () => (counts = { fs: 0, byCall: {}, mirror: 0, project: 0, socket: 0 });
 reset();
 const MIRROR_TMP = /[\\/]\.timeline\.tsx\.[0-9a-f-]+\.tmp$/;
 const count = (name, file) => {
@@ -42,4 +44,7 @@ Module._load = function (request, ...rest) {
   }
   return m;
 };
+const net = require("net");
+const write = net.Socket.prototype.write;
+net.Socket.prototype.write = function (...a) { counts.socket++; return write.apply(this, a); };
 globalThis.__cartonTestCounters = () => { const c = counts; reset(); return c; };

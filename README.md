@@ -527,7 +527,9 @@ run below.
    project or moving it to the trash. Where the materializer writes `timeline.tsx`, Cardboard's own regeneration of it
    after each save is skipped (it printed the whole timeline, wrote it to a temp file and deleted it unread, on every
    save). Your Ctrl+Z shows in `timeline.tsx` at once, as your edits do: it is yours, not an agent's, so it doesn't
-   freeze the file (it used to, for a minute, hiding the undo and your next edits from any agent that read it).
+   freeze the file (it used to, for a minute, hiding the undo and your next edits from any agent that read it). The
+   worker undoes it in its own process when it holds the project's sync lease, without a round trip through its own
+   control socket.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
 thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
