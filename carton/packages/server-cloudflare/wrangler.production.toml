@@ -27,10 +27,11 @@ class_name = "BlobVault"
 tag = "v1"
 new_sqlite_classes = ["ProjectRoom", "BlobVault"]
 
-# Media, keyframes and archived change segments. Remove this block to run on the DO-blob fallback.
-[[r2_buckets]]
-binding = "BLOBS"
-bucket_name = "carton"
+# No R2 for now (the user's choice): media, keyframes and archived change segments go to the BLOB_VAULT Durable Object
+# fallback (L11), which passes the same blob-store suites. To move to R2 later, create the bucket and add:
+#   [[r2_buckets]]
+#   binding = "BLOBS"
+#   bucket_name = "carton"
 
 [vars]
 # the newest document schemaVersion clients may send in hello. Unset, it is the Cardboard adapter's
