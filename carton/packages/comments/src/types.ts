@@ -89,6 +89,12 @@ export interface PendingPatch {
   patch: CommentPatch;
   /** Goes up on every local edit of this row: the server's answer clears it only if nothing was added since it was sent. */
   v: number;
+  /**
+   * This version's op id (new with every `v`): the server applies an op once and answers a retry of it with the row as
+   * it is, so a version sent again after its answer was lost never undoes a later change (rows from before op ids
+   * have none, and are applied as before).
+   */
+  op?: string;
 }
 
 /** Why a patch was refused. `rate-limited` is retried later; the others are final. */
@@ -112,6 +118,8 @@ export interface CommentPatchMsg {
   n: number;
   id: string;
   patch: CommentPatch;
+  /** The pending version's op id (`PendingPatch.op`): a retry of an op already applied changes nothing. */
+  op?: string;
 }
 export type CommentClientMessage = CommentsRequest | CommentPatchMsg;
 
@@ -132,6 +140,8 @@ export interface CommentsRowsMsg {
    * rows kept here (pending ones stay, and are sent again) and take these, which start from 0.
    */
   reset?: true;
+  /** A `comments` request over the read limit: no rows; ask again (from the same position) after this many ms. */
+  retryMs?: number;
 }
 /** The answer to a `comment`: its row as stored (`row`), or why not. */
 export interface CommentAnswerMsg {
@@ -165,6 +175,11 @@ export const LIMITS = {
   /** Per connection: patches at once, then per second (like presence's bucket, slower: people type comments). */
   burst: 10,
   perSec: 2,
+  /** Per connection: `comments` requests (pages) at once, then per second (a 100,000-comment catch-up is ~200 pages). */
+  readBurst: 20,
+  readPerSec: 5,
+  /** Op ids the server remembers per comment and account (a retry older than that many later ops is applied again). */
+  ops: 64,
   /** Timeline times, seconds. */
   maxTime: 1e7,
 } as const;

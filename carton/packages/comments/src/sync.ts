@@ -7,8 +7,10 @@
 //   the row as stored, or why not. One patch per comment is in flight at a time; a comment edited while its patch was
 //   on its way is sent again after the answer;
 // - others' patches arrive as `comments` rows (fan-out), in the server's order.
-// The read position advances only past rows this connection has certainly seen: page by page while catching up, then
-// with each fan-out and answer (the server sends them in its order). Reconnects back off from 0.5 s to 30 s.
+// The read position advances only past rows this connection has certainly seen and stored: page by page while catching
+// up, then with each fan-out and answer (the server sends them in its order). A message that can't be stored ends the
+// connection, and the next one asks again from the last position stored, so a failed write never leaves a gap.
+// Reconnects back off from 0.5 s to 30 s.
 
 import type { Transport, TransportConnection } from "@carton/core/plugins";
 import type { sync } from "@carton/core";
@@ -69,6 +71,7 @@ export class CommentSync {
   #timer: ReturnType<typeof setTimeout> | null = null;
   #rateTimer: ReturnType<typeof setTimeout> | null = null;
   #rateUntil = 0;
+  #readTimer: ReturnType<typeof setTimeout> | null = null;
   /** n -> the row as sent. */
   readonly #inflight = new Map<number, PendingPatch>();
   readonly #inflightIds = new Set<string>();
@@ -100,7 +103,8 @@ export class CommentSync {
     this.#stopped = true;
     if (this.#timer) clearTimeout(this.#timer);
     if (this.#rateTimer) clearTimeout(this.#rateTimer);
-    this.#timer = this.#rateTimer = null;
+    if (this.#readTimer) clearTimeout(this.#readTimer);
+    this.#timer = this.#rateTimer = this.#readTimer = null;
     this.#abort?.abort();
     const c = this.#conn;
     this.#conn = null;
@@ -162,7 +166,15 @@ export class CommentSync {
     this.#inflightIds.clear();
     conn.onMessage((m) => {
       if (this.#conn !== conn) return;
-      this.#chain = this.#chain.then(() => this.#onMessage(conn, m as unknown as CommentServerMessage | { type: "error"; reason?: string; code?: string })).catch(() => {});
+      this.#chain = this.#chain.then(async () => {
+        // a message queued behind one that failed belongs to a connection already given up
+        if (this.#conn !== conn) return;
+        try {
+          await this.#onMessage(conn, m as unknown as CommentServerMessage | { type: "error"; reason?: string; code?: string });
+        } catch (e) {
+          this.#fail(conn, `couldn't keep comments here: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      });
     });
     conn.onClose((why) => {
       if (this.#conn !== conn) return;
@@ -175,6 +187,17 @@ export class CommentSync {
     this.#set({ state: "catching-up" });
     this.#request(conn);
     void this.#pump();
+  }
+
+  /** This connection's rows can't be kept (a store write failed): drop it; the next asks from the last stored position. */
+  #fail(conn: TransportConnection, error: string): void {
+    if (this.#conn !== conn) return;
+    this.#conn = null;
+    this.#inflight.clear();
+    this.#inflightIds.clear();
+    this.#caughtUp = false;
+    conn.close();
+    if (!this.#stopped) this.#retry(error);
   }
 
   #retry(error: string): void {
@@ -200,6 +223,15 @@ export class CommentSync {
     if (!m || typeof m !== "object") return;
     if (m.type === "comments") {
       if (m.reply) {
+        if (typeof m.retryMs === "number") {
+          // over the host's read limit: the same page, later
+          if (this.#readTimer) clearTimeout(this.#readTimer);
+          this.#readTimer = setTimeout(() => {
+            this.#readTimer = null;
+            if (this.#conn === conn && !this.#stopped) this.#request(conn);
+          }, Math.min(BACKOFF_MAX, Math.max(1, m.retryMs)));
+          return;
+        }
         await this.#engine.take(m.rows, m.head, m.reset === true);
         if (m.more) return this.#request(conn);
         this.#caughtUp = true;
@@ -285,9 +317,14 @@ export class CommentSync {
           const n = ++this.#n;
           this.#inflight.set(n, row);
           this.#inflightIds.add(row.id);
-          this.#send(conn, { type: "comment", branchId: this.#engine.cut(), n, id: row.id, patch: row.patch });
+          this.#send(conn, { type: "comment", branchId: this.#engine.cut(), n, id: row.id, patch: row.patch, ...(row.op ? { op: row.op } : {}) });
         }
       } while (this.#again);
+    } catch (e) {
+      // the pending rows couldn't be read: try again in a while (nothing is lost, they stay stored)
+      this.#set({ ...this.#status, error: `couldn't read pending comments: ${e instanceof Error ? e.message : String(e)}` });
+      this.#rateUntil = Math.max(this.#rateUntil, Date.now() + 1000);
+      this.#wakeAfterLimit();
     } finally {
       this.#pumping = false;
     }

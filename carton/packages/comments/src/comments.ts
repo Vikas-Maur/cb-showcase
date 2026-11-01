@@ -10,7 +10,7 @@
 import { canonical, hashDoc, type Doc, type Lineage, type Person, type Schema, type StateRef } from "@carton/core";
 import { makeAnchor, place, TimelineIndex, type AnchorOptions, type IndexChanges, type Placement } from "./anchor.ts";
 import { cartonLineage, type LineageCarton, type LineageSource } from "./lineage.ts";
-import { applyPatch, mergePatch, threadsOf, newCommentId, validBody, type Thread } from "./model.ts";
+import { applyPatch, mergePatch, threadsOf, newCommentId, newOpId, patchProblem, validBody, type Thread } from "./model.ts";
 import { cartonCommentStore, type CommentStore } from "./store.ts";
 import { CommentSync, type CommentSyncOptions, type CommentSyncStatus } from "./sync.ts";
 import type { Comment, CommentAuthor, CommentPatch, CommentRefusal, PendingPatch } from "./types.ts";
@@ -76,7 +76,7 @@ const PERSON = "person";
 const GENERAL: Placement = Object.freeze({ status: "general", range: null, items: Object.freeze([]) as unknown as string[] });
 
 function samePlacement(x: Placement, y: Placement): boolean {
-  return x.status === y.status && x.why === y.why && x.range?.[0] === y.range?.[0] && x.range?.[1] === y.range?.[1] && x.items.length === y.items.length && x.items.every((v, i) => v === y.items[i]);
+  return x.status === y.status && x.why === y.why && x.guess === y.guess && x.range?.[0] === y.range?.[0] && x.range?.[1] === y.range?.[1] && x.items.length === y.items.length && x.items.every((v, i) => v === y.items[i]);
 }
 
 /** Could the changes between two versions move a thread placed on the first? */
@@ -256,9 +256,10 @@ export class Comments {
       }
       let p = place(a, { index, hash: target.hash });
       const deps = new Set<string>(a.items?.map((i) => i.id));
-      // only a thread that didn't land exactly needs the lineage between its version and the target (a split whose
-      // second piece got a new id); most never do, so most never read a change row
-      if (p.status !== "exact" && p.status !== "moved" && p.status !== "general" && a.items?.length) {
+      // only a thread that didn't land on its clips needs the lineage between its version and the target (a split
+      // whose second piece got a new id): one that didn't land, or one placed by its media alone (another clip of the
+      // same media may sit nearer than the piece lineage names); most never do, so most never read a change row
+      if (((p.status !== "exact" && p.status !== "moved" && p.status !== "general") || p.guess) && a.items?.length) {
         const key = `${a.cut}@${a.seq}`;
         let lp = lineages.get(key);
         if (!lp) lineages.set(key, (lp = this.#lineage.lineage({ cut: a.cut, seq: a.seq }, { cut: target.cut, seq: target.seq }).catch(() => null)));
@@ -283,9 +284,13 @@ export class Comments {
 
   // ------------------------------------------------------------ lifecycle
 
-  /** Read the store again (another process, such as `cb`, may have written comments to carton.db). */
-  refresh(): Promise<void> {
-    return this.#run(() => this.#load());
+  /**
+   * Read the store again (another process, such as `cb`, may have written comments to carton.db), and send what it
+   * left pending. Comments that didn't change keep their objects.
+   */
+  async refresh(): Promise<void> {
+    await this.#run(() => this.#load());
+    this.#sync?.kick();
   }
 
   /** Resolves once every pending patch is answered and the stream is caught up (false after `timeoutMs`). */
@@ -326,14 +331,28 @@ export class Comments {
     return r;
   }
 
+  /** Read everything stored; on a reload, only what changed is rebuilt (the rest keep their objects). */
   async #load(): Promise<void> {
     const snap = await this.#store.load();
-    this.#confirmed.clear();
-    this.#pending.clear();
-    for (const c of snap.comments) this.#confirmed.set(c.id, c);
-    for (const p of snap.pending) this.#pending.set(p.id, p);
+    const first = this.#view.size === 0 && this.#confirmed.size === 0 && this.#pending.size === 0;
+    const changed = new Set<string>();
+    const seen = new Set<string>();
+    for (const c of snap.comments) {
+      seen.add(c.id);
+      const cur = this.#confirmed.get(c.id);
+      if (cur && cur.seq === c.seq && (cur.seq !== undefined || canonical(cur) === canonical(c))) continue;
+      this.#confirmed.set(c.id, c);
+      changed.add(c.id);
+    }
+    for (const id of [...this.#confirmed.keys()])
+      if (!seen.has(id)) {
+        this.#confirmed.delete(id);
+        changed.add(id);
+      }
+    for (const id of this.#syncPending(snap.pending)) changed.add(id);
     this.#head = snap.head;
-    this.#rebuild();
+    if (first) this.#rebuild();
+    else if (changed.size) this.#rebuild(changed);
   }
 
   /** The view of one comment: the confirmed row with its pending patch applied (if it applies). */
@@ -356,7 +375,8 @@ export class Comments {
         if (v) this.#view.set(id, v);
       }
     } else
-      for (const id of ids) {
+      // threads first, so a reply sees its thread as rebuilt
+      for (const id of [...ids].sort((a, b) => Number(this.#isReply(a)) - Number(this.#isReply(b)))) {
         const v = this.#viewOf(id);
         if (v) this.#view.set(id, v);
         else this.#view.delete(id);
@@ -374,43 +394,68 @@ export class Comments {
       const me = this.me();
       const author: CommentAuthor = agent ? { ...me, agent } : me;
       const full: CommentPatch = { ...change, at: this.#clock(), author };
+      // the shape the server checks, before anything is stored: a patch it would refuse never waits here
+      const bad = patchProblem(full);
+      if (bad) throw new CommentError("bad-request", bad);
       for (let attempt = 0; attempt < 8; attempt++) {
         // the same rules as the server, on what people see now
         const check = applyPatch(this.#view.get(id), id, full, author, (x) => this.#view.get(x), this.#clock());
         if (!check.ok) throw new CommentError(check.refused, check.reason);
         if (!check.changed) return check.row;
         const prev = this.#pending.get(id) ?? null;
-        const row: PendingPatch = { id, patch: prev ? mergePatch(prev.patch, full) : full, v: (prev?.v ?? 0) + 1 };
+        // each version gets its own op id: the server applies an op once, so a version retried after its answer was
+        // lost never undoes what came after it
+        const row: PendingPatch = { id, patch: prev ? mergePatch(prev.patch, full) : full, v: (prev?.v ?? 0) + 1, op: newOpId() };
         if (await this.#store.write({ put: [{ row, prev }] })) {
           this.#pending.set(id, row);
           this.#rebuild([id]);
           this.#sync?.kick();
           return this.#view.get(id) ?? check.row;
         }
-        // another process changed this comment's pending row: take what the store has and try again
-        await this.#reloadPending();
+        // another process changed this comment's pending row (or sent it, and the server's row is stored now): take
+        // what the store has of it and try again
+        const parent = change.add?.replyTo;
+        await this.#reloadPending(parent !== undefined ? [id, parent] : [id]);
       }
       throw new Error("comments: couldn't save (the comment kept changing in another process)");
     });
   }
 
-  async #reloadPending(): Promise<void> {
-    const rows = await this.#store.pending();
+  /** Read the pending rows again, and the stored rows of `rows` (a comment another process may have sent). */
+  async #reloadPending(rows: readonly string[] = []): Promise<void> {
     const ids = new Set<string>();
+    if (rows.length) {
+      const got = await this.#store.read(rows);
+      rows.forEach((id, i) => {
+        const r = got[i];
+        const cur = this.#confirmed.get(id);
+        if (r && (!cur || (cur.seq ?? -1) < (r.seq ?? -1))) {
+          this.#confirmed.set(id, r);
+          ids.add(id);
+        }
+      });
+    }
+    for (const id of this.#syncPending(await this.#store.pending())) ids.add(id);
+    if (ids.size) this.#rebuild(ids);
+  }
+
+  /** Take the stored pending rows; the ids whose row changed. */
+  #syncPending(rows: readonly PendingPatch[]): string[] {
+    const ids: string[] = [];
     const seen = new Set<string>();
     for (const r of rows) {
       seen.add(r.id);
       const cur = this.#pending.get(r.id);
-      if (cur && cur.v === r.v && canonical(cur.patch) === canonical(r.patch)) continue;
+      if (cur && cur.v === r.v && cur.op === r.op && canonical(cur.patch) === canonical(r.patch)) continue;
       this.#pending.set(r.id, r);
-      ids.add(r.id);
+      ids.push(r.id);
     }
     for (const id of [...this.#pending.keys()])
       if (!seen.has(id)) {
         this.#pending.delete(id);
-        ids.add(id);
+        ids.push(id);
       }
-    if (ids.size) this.#rebuild(ids);
+    return ids;
   }
 
   async #current(cut?: string): Promise<CommentTarget> {
@@ -476,7 +521,9 @@ export class Comments {
     if (!keep.length && nextHead === null && !reset) return;
     const kept = new Set(keep.map((k) => k.id));
     const forget = reset ? [...touched].filter((id) => !kept.has(id)) : [];
-    await this.#store.write({ rows: keep, ...(forget.length ? { forget } : {}), ...(nextHead !== null ? { head: nextHead } : {}) });
+    // the store keeps the newer of what it has and these rows, and moves its head only forward (another handle on
+    // the same carton.db may be ahead); a reset is written as one
+    await this.#store.write({ rows: keep, ...(reset ? { reset: true } : {}), ...(nextHead !== null ? { head: nextHead } : {}) });
     for (const id of forget) this.#confirmed.delete(id);
     for (const r of keep) this.#confirmed.set(r.id, r);
     if (nextHead !== null) this.#head = nextHead;

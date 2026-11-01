@@ -8,15 +8,18 @@
 // - a session scoped to some cuts (a Published cut's watch link) reads only comments on those cuts, and, with a
 //   commenting role, comments only there; an unscoped session reads every comment;
 // - only a comment's author edits or deletes it; the author is the session's account, never what a client claims;
-// - each connection has a token bucket like presence's (LIMITS.burst at once, LIMITS.perSec after), and a project at
-//   most LIMITS.perProject comments.
+// - each connection has a token bucket like presence's (LIMITS.burst at once, LIMITS.perSec after), another for
+//   catch-up pages (LIMITS.readBurst, LIMITS.readPerSec), and a project at most LIMITS.perProject comments;
+// - an op (one pending version, `op`) is applied once: a retry of an op already applied (its answer was lost) is
+//   answered with the row as it is now and changes nothing, so it can't undo a change made after it.
 //
 // Storage: three tables, created on first use. `comments` holds each comment as it now is; `comment_log` orders the
 // stream: one row per comment, at the seq of its latest change (the older row is deleted), so catching up from any
-// position reads each changed comment once. A change writes 3 rows (P5-style accounting: a comment costs what a
-// change costs, about).
+// position reads each changed comment once. `comment_ops` keeps, per comment and account, the last LIMITS.ops op ids
+// applied. A change writes 4 rows (P5-style accounting: a comment costs what a change costs, about).
 //   comments     (id TEXT PRIMARY KEY, seq INTEGER, cut TEXT, row TEXT)   WITHOUT ROWID
 //   comment_log  (seq INTEGER PRIMARY KEY, id TEXT, cut TEXT)            WITHOUT ROWID
+//   comment_ops  (id TEXT, account TEXT, ops TEXT, PRIMARY KEY (id, account)) WITHOUT ROWID   -- ops: a JSON array
 //   comment_meta (k TEXT PRIMARY KEY, v INTEGER)                         WITHOUT ROWID   -- "count"
 
 import type { AuthContext, SequencerStorage } from "@carton/core/plugins";
@@ -34,7 +37,7 @@ export interface CommentRoomOptions {
   clock?: () => number;
   /** The name the server knows for a session's person (its `people` table), preferred over the one a patch carries. */
   nameOf?: (auth: AuthContext) => string | undefined;
-  limits?: { perProject?: number; page?: number; pageBytes?: number; burst?: number; perSec?: number };
+  limits?: { perProject?: number; page?: number; pageBytes?: number; burst?: number; perSec?: number; readBurst?: number; readPerSec?: number; ops?: number };
 }
 
 export interface CommentRoom {
@@ -45,7 +48,7 @@ export interface CommentRoom {
   onComments(c: CommentPeer, m: CommentsRequest): void;
   /** A `comment`: check it, store it, answer `c`, and send the row to every peer in `peers` that may read it. */
   onComment(c: CommentPeer, m: CommentPatchMsg, peers: Iterable<CommentPeer>): void;
-  /** A connection closed: forget its rate bucket. */
+  /** A connection closed: forget its rate buckets. */
   forget(c: CommentPeer): void;
   /** The stream's newest seq. */
   head(): number;
@@ -68,6 +71,7 @@ export function mayComment(auth: AuthContext, cut: string): boolean {
 const DDL = [
   "CREATE TABLE IF NOT EXISTS comments (id TEXT NOT NULL PRIMARY KEY, seq INTEGER NOT NULL, cut TEXT NOT NULL, row TEXT NOT NULL) WITHOUT ROWID",
   "CREATE TABLE IF NOT EXISTS comment_log (seq INTEGER NOT NULL PRIMARY KEY, id TEXT NOT NULL, cut TEXT NOT NULL) WITHOUT ROWID",
+  "CREATE TABLE IF NOT EXISTS comment_ops (id TEXT NOT NULL, account TEXT NOT NULL, ops TEXT NOT NULL, PRIMARY KEY (id, account)) WITHOUT ROWID",
   "CREATE TABLE IF NOT EXISTS comment_meta (k TEXT NOT NULL PRIMARY KEY, v INTEGER NOT NULL) WITHOUT ROWID",
 ];
 
@@ -92,19 +96,36 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
   };
   const count = (): number => num(db.exec<{ v: number }>("SELECT v FROM comment_meta WHERE k = 'count'")[0]?.v ?? 0);
 
-  // per connection: LIMITS.burst patches at once, refilled at LIMITS.perSec (presence's bucket, slower)
-  const buckets = new WeakMap<CommentPeer, { tokens: number; at: number }>();
-  const take = (c: CommentPeer): number => {
+  // per connection: LIMITS.burst patches at once, refilled at LIMITS.perSec (presence's bucket, slower), and
+  // LIMITS.readBurst catch-up pages, refilled at LIMITS.readPerSec. In memory, like presence's: a Durable Object
+  // hibernates only after ~10 s without a message, longer than either bucket takes to refill.
+  type Bucket = { tokens: number; at: number };
+  const bucket = (map: WeakMap<CommentPeer, Bucket>, burst: number, perSec: number) => (c: CommentPeer): number => {
     const now = clock();
-    const b = buckets.get(c) ?? { tokens: lim.burst, at: now };
-    b.tokens = Math.min(lim.burst, b.tokens + ((now - b.at) / 1000) * lim.perSec);
+    const b = map.get(c) ?? { tokens: burst, at: now };
+    b.tokens = Math.min(burst, b.tokens + (Math.max(0, now - b.at) / 1000) * perSec);
     b.at = now;
-    buckets.set(c, b);
+    map.set(c, b);
     if (b.tokens >= 1) {
       b.tokens -= 1;
       return 0;
     }
-    return Math.max(1, Math.ceil(((1 - b.tokens) / lim.perSec) * 1000));
+    return Math.max(1, Math.ceil(((1 - b.tokens) / perSec) * 1000));
+  };
+  const writes = new WeakMap<CommentPeer, Bucket>();
+  const reads = new WeakMap<CommentPeer, Bucket>();
+  const take = bucket(writes, lim.burst, lim.perSec);
+  const takeRead = bucket(reads, lim.readBurst, lim.readPerSec);
+
+  // the op ids an account applied to a comment, newest last
+  const opsOf = (id: string, account: string): string[] => {
+    const r = db.exec<{ ops: string }>("SELECT ops FROM comment_ops WHERE id = ? AND account = ?", id, account)[0];
+    return r ? (JSON.parse(r.ops) as string[]) : [];
+  };
+  const keepOp = (id: string, account: string, had: string[], op: string | undefined) => {
+    if (op === undefined) return;
+    const ops = [...had, op].slice(-lim.ops);
+    db.exec("INSERT INTO comment_ops (id, account, ops) VALUES (?, ?, ?) ON CONFLICT(id, account) DO UPDATE SET ops = excluded.ops", id, account, JSON.stringify(ops));
   };
 
   const answer = (c: CommentPeer, m: CommentPatchMsg, a: Partial<CommentAnswerMsg>) =>
@@ -114,11 +135,15 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
   return {
     head,
     forget(c) {
-      buckets.delete(c);
+      writes.delete(c);
+      reads.delete(c);
     },
     onComments(c, m) {
       init();
       const since = typeof m.since === "number" && Number.isInteger(m.since) && m.since >= 0 ? m.since : 0;
+      // a page costs a query and up to pageBytes on the wire: past the read bucket, the same page later
+      const wait = takeRead(c);
+      if (wait) return c.send({ type: "comments", branchId: m.branchId, rows: [], head: since, reply: true, more: true, retryMs: wait });
       const top = head();
       // a position past the stream's end: this server's rows were reset (or the client's are another server's)
       const reset = since > top;
@@ -154,6 +179,7 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
         return refuse(c, m, "bad-request", "patch isn't JSON");
       }
       if (bytes > LIMITS.messageBytes) return refuse(c, m, "bad-request", "a comment is at most 64 KB");
+      if (m.op !== undefined && !validId(m.op)) return refuse(c, m, "bad-request", "an op id is up to 100 of [A-Za-z0-9._:~-]");
       const why = patchProblem(m.patch);
       if (why) return refuse(c, m, "bad-request", why);
       // the thread's cut decides who may see and write it; a cut this session can't read gets the answer an absent
@@ -168,12 +194,19 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
       if (!mayComment(c.auth, cut)) return refuse(c, m, "forbidden", c.auth.role === "viewer" ? "viewers can read comments but not write them" : "this link can't comment on that cut");
       const wait = take(c);
       if (wait) return refuse(c, m, "rate-limited", "too many comments at once", wait);
+      // an op applied before (its answer was lost): the row as it is now, nothing changed
+      const had = cur && m.op !== undefined ? opsOf(m.id, c.auth.account) : [];
+      if (cur && m.op !== undefined && had.includes(m.op)) return answer(c, m, { row: cur });
       if (!cur && p.add && count() >= lim.perProject) return refuse(c, m, "too-many", `a project has at most ${lim.perProject} comments`);
       const name = (opts.nameOf?.(c.auth) ?? p.author.name).slice(0, LIMITS.name);
       const who = { id: c.auth.account, name, ...(p.author.agent ? { agent: p.author.agent } : {}) };
       const res = applyPatch(cur, m.id, p, who, (id) => (id === p.add?.replyTo ? parent : get(id)), clock());
       if (!res.ok) return refuse(c, m, res.refused, res.reason);
-      if (!res.changed) return answer(c, m, { row: cur });
+      if (!res.changed) {
+        // kept even so: retried after a later change, it must still change nothing
+        keepOp(m.id, c.auth.account, had, m.op);
+        return answer(c, m, { row: cur });
+      }
       let row!: Comment;
       db.transaction(() => {
         const seq = head() + 1;
@@ -182,6 +215,7 @@ export function createCommentRoom(opts: CommentRoomOptions): CommentRoom {
         db.exec("INSERT INTO comment_log (seq, id, cut) VALUES (?, ?, ?)", seq, m.id, row.cut);
         db.exec("INSERT INTO comments (id, seq, cut, row) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET seq = excluded.seq, cut = excluded.cut, row = excluded.row", m.id, seq, row.cut, JSON.stringify(row));
         if (!cur) db.exec("INSERT INTO comment_meta (k, v) VALUES ('count', 1) ON CONFLICT(k) DO UPDATE SET v = v + 1");
+        keepOp(m.id, c.auth.account, had, m.op);
       });
       answer(c, m, { row });
       for (const o of peers) if (o !== c && mayReadComments(o.auth, row.cut)) o.send({ type: "comments", branchId: row.cut, rows: [row], head: row.seq! });

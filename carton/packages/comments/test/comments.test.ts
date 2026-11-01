@@ -136,3 +136,36 @@ test("a comment on an older version, placed on the head", async () => {
   assert.deepEqual([p.get(c.id)?.status, p.get(c.id)?.range], ["moved", [10, 11]]);
   await comments.close();
 });
+
+test("edits, replies and authors are checked before they are kept: nothing the server would refuse waits here", async () => {
+  const carton = await openCarton(items());
+  const comments = await Comments.open({ carton, me: ME });
+  const c = await comments.add({ body: "Fine", range: [1, 2] });
+  await assert.rejects(comments.edit(c.id, "   "), (e: unknown) => e instanceof CommentError && e.refused === "bad-request");
+  await assert.rejects(comments.reply(c.id, ""), (e: unknown) => e instanceof CommentError && e.refused === "bad-request");
+  await assert.rejects(comments.reply(c.id, "x".repeat(10_001)), (e: unknown) => e instanceof CommentError && e.refused === "bad-request");
+  const long = await Comments.open({ carton, me: { id: "alice", name: "A".repeat(300) } });
+  await assert.rejects(long.add({ body: "Hi", range: [1, 2] }), (e: unknown) => e instanceof CommentError && e.refused === "bad-request");
+  assert.equal(comments.get(c.id)?.body, "Fine");
+  assert.deepEqual(comments.all().map((x) => x.id), [c.id], "no reply kept");
+  await Promise.all([comments.close(), long.close()]);
+});
+
+test("a split piece moved away is followed by its lineage, not by another clip of its media nearer the old place", async () => {
+  const carton = await openCarton([clip("x", 0, 10)]);
+  const comments = await Comments.open({ carton, me: ME, anchor: { media: "mediaItemId" } });
+  const c = await comments.add({ body: "This frame", range: [6, 7] });
+  // split x at 5: its second half (x2, a new id) moves to 30; another clip of the same media lands at 12, nearer
+  await commitDoc(
+    carton,
+    (d) =>
+      edit(d, { x: { endTime: 5, trimEnd: 5 } }, [
+        { ...clip("x2", 30, 35), mediaItemId: "m-x", trimStart: 5, trimEnd: 10 },
+        { ...clip("y", 12, 22), mediaItemId: "m-x" },
+      ]),
+    { kind: "split", lineage: { x: ["x", "x2"] } },
+  );
+  const p = (await comments.placements()).get(c.id)!;
+  assert.deepEqual([p.status, p.range, p.items, p.guess], ["moved", [31, 32], ["x2"], undefined]);
+  await comments.close();
+});

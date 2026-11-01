@@ -299,6 +299,8 @@ export interface Placement {
   items: string[];
   /** For `outdated`: what changed. */
   why?: "changed" | "trimmed";
+  /** Found by its media alone (no id or lineage led there): another clip of the same media, nearest the old place. */
+  guess?: true;
 }
 
 /** A target version for `place`: its document's index, and its state hash (equal to the anchor's: exact at once). */
@@ -320,6 +322,7 @@ export function place(anchor: Anchor, target: PlaceTarget, lineage?: Lineage | n
   const ix = target.index;
   let start: number | null = null;
   let trimmed: number | null = null;
+  let guess = false;
   const followed: string[] = [];
   for (const ai of anchor.items ?? []) {
     const ids = lineage?.[ai.id] ?? [ai.id];
@@ -340,7 +343,10 @@ export function place(anchor: Anchor, target: PlaceTarget, lineage?: Lineage | n
         const t = ix.timeOf(l, ai.at);
         if (t !== null && (best === null || Math.abs(t - (ai.dt ?? 0) - s) < Math.abs(best - s))) best = t - (ai.dt ?? 0);
       }
-      if (best !== null) start = best;
+      if (best !== null) {
+        start = best;
+        guess = true;
+      }
     }
     if (start !== null) break;
   }
@@ -358,6 +364,7 @@ export function place(anchor: Anchor, target: PlaceTarget, lineage?: Lineage | n
   const range: [number, number] = start === s ? [s, e] : [start, Math.round((start + len) * 1e6) / 1e6];
   const now = ix.under(range[0], range[1]);
   const on = [...now].sort((x, y) => y.rank - x.rank || x.s - y.s).map((l) => l.id);
-  if (anchor.sig !== undefined && ix.sig(range[0], range[1], now) === anchor.sig) return { status: start === s ? "exact" : "moved", range, items: on };
-  return { status: "outdated", range, items: on, why: "changed" };
+  const g = guess ? ({ guess: true } as const) : {};
+  if (anchor.sig !== undefined && ix.sig(range[0], range[1], now) === anchor.sig) return { status: start === s ? "exact" : "moved", range, items: on, ...g };
+  return { status: "outdated", range, items: on, why: "changed", ...g };
 }

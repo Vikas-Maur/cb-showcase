@@ -94,7 +94,9 @@ const SKEW_MS = 5 * 60_000;
  * - anyone who may comment adds comments and replies (the caller checks the role and the cut scope);
  * - only a comment's author changes its body or deletes it;
  * - anyone who may comment resolves or reopens a thread (its first comment);
- * - a retried add by its author is not an error: what it carries is applied as an edit (exactly once in effect);
+ * - an add whose comment exists already, by its author, is not an error: what it carries is applied as an edit (a
+ *   version merged after the first was sent: the add went up, its answer was lost, the text was edited since; a
+ *   retry of the very same version is caught before, by its op id, and changes nothing);
  * - a patch that changes nothing changes nothing (`changed: false`), so a retry is never stored twice.
  * `parent` looks up a thread's first comment for a reply. `now` caps writers' times at the receiver's clock plus skew.
  */
@@ -186,11 +188,20 @@ export function threadsOf(comments: Iterable<Comment>): Thread[] {
   return out.sort((a, b) => byTime(a.root, b.root));
 }
 
-/** A fresh comment id: 16 random hex characters after a `c` (ids are made by the writer, so a retry keeps its id). */
-export function newCommentId(): string {
+function randomId(prefix: string): string {
   const b = new Uint8Array(8);
   crypto.getRandomValues(b);
-  let s = "c";
+  let s = prefix;
   for (const x of b) s += x.toString(16).padStart(2, "0");
   return s;
+}
+
+/** A fresh comment id: 16 random hex characters after a `c` (ids are made by the writer, so a retry keeps its id). */
+export function newCommentId(): string {
+  return randomId("c");
+}
+
+/** A fresh op id (one per pending version): 16 random hex characters after an `o`. */
+export function newOpId(): string {
+  return randomId("o");
 }

@@ -32,8 +32,8 @@ function world(opts: Parameters<typeof createCommentRoom>[0]["limits"] = {}, clo
     peers.push(p);
     return p;
   };
-  const send = (p: ReturnType<typeof peer>, id: string, pt: CommentPatch) => {
-    room.onComment(p, { type: "comment", branchId: "main", n: ++n, id, patch: pt }, peers);
+  const send = (p: ReturnType<typeof peer>, id: string, pt: CommentPatch, op?: string) => {
+    room.onComment(p, { type: "comment", branchId: "main", n: ++n, id, patch: pt, ...(op ? { op } : {}) }, peers);
     return p.answers().at(-1)!;
   };
   return { storage, room, join, send, peers };
@@ -99,6 +99,48 @@ test("a retried patch is stored once: the same answer, no new row in the stream"
   const resolved = w.send(a, "c1", { resolved: true, at: 2, author: { id: "alice", name: "A" } });
   const resolvedAgain = w.send(a, "c1", { resolved: true, at: 3, author: { id: "alice", name: "A" } });
   assert.equal(resolvedAgain.row?.seq, resolved.row?.seq);
+});
+
+test("an op is applied once: retried after its answer was lost and a later change, it undoes nothing", () => {
+  const w = world();
+  const laptop = w.join("editor", "alice");
+  const phone = w.join("editor", "alice");
+  const bob = w.join("editor", "bob");
+  const me = { id: "alice", name: "A" };
+  // the add goes in; its answer is lost; the phone edits the comment
+  const first = w.send(laptop, "c1", patch("Hello"), "o-add");
+  w.send(phone, "c1", { body: "Hello (edited on the phone)", at: 5, author: me }, "o-edit");
+  const retry = w.send(laptop, "c1", patch("Hello"), "o-add");
+  assert.equal(retry.row?.body, "Hello (edited on the phone)", "the retry answers the row as it is now");
+  assert.equal(w.room.head(), first.row!.seq! + 1, "and writes nothing");
+  // a resolve goes in, bob reopens, the resolve is retried: still open
+  w.send(laptop, "c1", { resolved: true, at: 6, author: me }, "o-res");
+  w.send(bob, "c1", { resolved: false, at: 7, author: { id: "bob", name: "B" } }, "o-bob");
+  assert.equal(w.send(laptop, "c1", { resolved: true, at: 6, author: me }, "o-res").row?.resolved, undefined);
+  // an op that changed nothing is remembered too: retried after a change, it still changes nothing
+  w.send(laptop, "c1", { resolved: false, at: 8, author: me }, "o-noop");
+  w.send(bob, "c1", { resolved: true, at: 9, author: { id: "bob", name: "B" } }, "o-bob2");
+  assert.ok(w.send(laptop, "c1", { resolved: false, at: 8, author: me }, "o-noop").row?.resolved, "still resolved");
+  // ops are per account: bob's op ids don't hide alice's
+  assert.equal(w.send(laptop, "c1", { body: "Hi", at: 10, author: me }, "o-bob").row?.body, "Hi");
+  // a bad op id is refused
+  assert.equal(w.send(laptop, "c1", { body: "x", at: 11, author: me }, "bad op").refused, "bad-request");
+});
+
+test("catch-up pages are limited per connection: past the read bucket, no rows and when to ask again", () => {
+  let now = 0;
+  const w = world({ readBurst: 2, readPerSec: 4 }, () => now);
+  const ed = w.join("editor", "ed"); // one page taken
+  w.send(ed, "c1", patch("x"));
+  const ask = () => {
+    w.room.onComments(ed, { type: "comments", branchId: "main", since: 0 });
+    return ed.got.at(-1) as CommentsRowsMsg;
+  };
+  assert.equal(ask().rows.length, 1);
+  const limited = ask();
+  assert.deepEqual([limited.rows.length, limited.head, limited.more, limited.retryMs], [0, 0, true, 250]);
+  now += 250;
+  assert.equal(ask().rows.length, 1);
 });
 
 test("the stream: a changed comment moves to the end; catching up from any place reads each changed comment once", () => {
@@ -193,11 +235,11 @@ test("malformed messages are refused, never stored", () => {
   assert.equal(w.room.head(), 0);
 });
 
-test("a change costs 3 rows written (the comment, its place in the stream, the old place removed)", () => {
+test("a change costs 4 rows written (the comment, its place in the stream, the old place removed, its op)", () => {
   const w = world();
   const ed = w.join("editor", "ed");
-  w.send(ed, "c1", patch("x"));
+  w.send(ed, "c1", patch("x"), "o1");
   const before = w.storage.stats().rowsWritten;
-  w.send(ed, "c1", { body: "y", at: 2, author: { id: "ed", name: "E" } });
-  assert.equal(w.storage.stats().rowsWritten - before, 3);
+  w.send(ed, "c1", { body: "y", at: 2, author: { id: "ed", name: "E" } }, "o2");
+  assert.equal(w.storage.stats().rowsWritten - before, 4);
 });

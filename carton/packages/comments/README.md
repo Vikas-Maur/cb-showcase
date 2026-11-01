@@ -70,8 +70,9 @@ keyframe) is placed all the same.
 
 - **`CommentStore`**: where comments are kept. `cartonCommentStore(carton.store)` (the default) keeps three tables in
   the project's own Store beside its history (carton.db on desktop, IndexedDB in a browser): `comments`,
-  `comments_pending`, `comments_meta`. `memoryCommentStore()` for tests. Pending patches are compare-and-set rows, so
-  the app and `cb` can both write comments to one carton.db.
+  `comments_pending`, `comments_meta`. `memoryCommentStore()` for tests. Pending patches are compare-and-set rows, and
+  server rows and the read position are written against what is stored (newer by `seq` only, forward only), so the
+  app and `cb` can both write comments to one carton.db. A plug-in implements `load`, `write`, `pending` and `read`.
 - **`CommentSync`**: how they are shared. Its own connection through the project's `Transport` to the project's host,
   with the project's token. Nothing in the document sync changes.
 - **Server half**: `@carton/comments/server` (`createCommentRoom({ storage })`): pure rules over the sequencer's
@@ -84,14 +85,18 @@ keyframe) is placed all the same.
 | Message | Direction | What |
 |---|---|---|
 | `comments {branchId, since}` | client → host | subscribe to the project's comment stream, and read the rows after `since` |
-| `comments {rows, head, more?, reply?, reset?}` | host → client | a page of rows (`more` until caught up), or others' changes as they happen |
-| `comment {branchId, n, id, patch}` | client → host | one comment's pending patch: `{add?, body?, resolved?, deleted?, at, author}` |
+| `comments {rows, head, more?, reply?, reset?, retryMs?}` | host → client | a page of rows (`more` until caught up), or others' changes as they happen; `retryMs`: over the read limit, ask again then |
+| `comment {branchId, n, id, patch, op?}` | client → host | one comment's pending patch: `{add?, body?, resolved?, deleted?, at, author}`; `op`: this version's op id |
 | `commentAnswer {n, id, row?, refused?, reason?, retryMs?}` | host → client | the row as stored, or why not |
 
 A comment's edits made before the server answered merge into one patch, so a project that was never shared sends one
-patch per comment when it is. A retried patch is stored once. The read position advances only past rows the client
-has certainly seen. A host from before comments answers "unknown message type": the client says `unsupported` and
-keeps its comments.
+patch per comment when it is. Each pending version has an op id, and the host applies an op once: a version retried
+after its answer was lost gets the row as it is now, so it never undoes a later edit or reopen. The read position
+advances only past rows the client has certainly seen and stored; a row it can't store ends the connection, and the
+next one asks again from the last stored position. Several handles may share one carton.db (the app's worker and `cb`):
+the store keeps the newer row by `seq` and moves the position only forward, whatever each handle had cached, and
+`refresh()` sends what another process left pending. A host from before comments answers "unknown message type": the
+client says `unsupported` and keeps its comments.
 
 ## Server rules (PLAN §14)
 
@@ -99,10 +104,11 @@ keeps its comments.
 - a session scoped to some cuts (a Published cut's **watch link**) reads only comments on those cuts, and with a
   commenting role (a review link) comments only there; it learns nothing of other cuts' comments;
 - only a comment's **author** edits or deletes it; the author is the session's account, never what a client claims;
-- per connection a token bucket like presence's (10 at once, 2 per second); at most 100,000 comments per project; a
-  comment at most 64 KB; pages at most 500 rows and 512 KB;
-- storage: `comments`, `comment_log` (one row per comment, at the seq of its latest change), `comment_meta`. A change
-  writes 3 rows.
+- per connection a token bucket like presence's (10 at once, 2 per second), and one for catch-up pages (20 at once, 5
+  per second); at most 100,000 comments per project; a comment at most 64 KB; pages at most 500 rows and 512 KB;
+- an op is applied once (the last 64 op ids per comment and account are kept);
+- storage: `comments`, `comment_log` (one row per comment, at the seq of its latest change), `comment_ops`,
+  `comment_meta`. A change writes 4 rows.
 
 ## Performance
 

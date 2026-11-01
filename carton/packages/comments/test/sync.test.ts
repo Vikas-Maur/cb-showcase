@@ -4,6 +4,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { Comments } from "../src/comments.ts";
+import { cartonCommentStore, type CommentStore } from "../src/store.ts";
 import type { CommentsEvent } from "../src/comments.ts";
 import { BOB, ME, clip, commentHost, openCarton, until } from "./helpers.ts";
 
@@ -141,4 +142,60 @@ test("someone else's unsent comment (a full-history .cbproj copies the pending t
   assert.equal(host.room.head(), 1, "only alice's");
   assert.ok(alice.isPending(theirs.id), "bob's stays here, waiting for bob");
   await alice.close();
+});
+
+test("a fan-out row that can't be stored ends the connection; the next one catches up from the last stored position", async () => {
+  const host = commentHost();
+  const carton = await openCarton(items());
+  const base = cartonCommentStore(carton.store);
+  let fail = 0;
+  const store: CommentStore = {
+    ...base,
+    async write(w) {
+      if (fail > 0 && w.rows?.length && !w.put && !w.drop) {
+        fail--;
+        throw new Error("disk full");
+      }
+      return base.write(w);
+    },
+  };
+  const a = await Comments.open({ carton, store, me: ME, sync: { transport: host.transport, url: host.url, token: host.token("editor", "alice") } });
+  const b = await client(host, BOB);
+  await until(() => a.syncStatus()?.state === "up-to-date", 3000, "alice caught up");
+  fail = 1;
+  const c1 = await b.comments.add({ body: "First", range: [1, 2] });
+  const c2 = await b.comments.add({ body: "Second", range: [3, 4] });
+  await until(() => !!a.get(c1.id) && !!a.get(c2.id), 5000, "alice has both, the one that failed too");
+  await a.close();
+  const again = await Comments.open({ carton, me: ME });
+  assert.ok(again.get(c1.id) && again.get(c2.id), "both stored");
+  await Promise.all([again.close(), b.comments.close()]);
+});
+
+test("a cb process's comment (no sync) goes up on the worker's refresh; cb can still edit it after the worker sent it", async () => {
+  const host = commentHost();
+  const carton = await openCarton(items());
+  const worker = await Comments.open({ carton, me: ME, sync: { transport: host.transport, url: host.url, token: host.token("editor", "alice") } });
+  const cb = await Comments.open({ carton, me: ME });
+  const b = await client(host, BOB);
+  await until(() => worker.syncStatus()?.state === "up-to-date", 3000, "the worker caught up");
+  const c = await cb.add({ body: "From the CLI", range: [1, 2] });
+  await worker.refresh();
+  await until(() => !!b.comments.get(c.id), 3000, "the refresh sent cb's comment");
+  await until(() => !worker.isPending(c.id), 3000, "answered");
+  // cb still holds its own pending view; the worker's upload dropped the pending row and stored the server's row
+  await cb.edit(c.id, "From the CLI (edited)");
+  await worker.refresh();
+  await until(() => b.comments.get(c.id)?.body === "From the CLI (edited)", 3000, "the edit went up too");
+  await Promise.all([worker.close(), cb.close(), b.comments.close()]);
+});
+
+test("a catch-up over the host's read limit waits and asks again, and gets everything", async () => {
+  const host = commentHost({ limits: { page: 1, readBurst: 1, readPerSec: 40 } });
+  const b = await client(host, BOB);
+  for (let i = 0; i < 4; i++) await b.comments.add({ body: `note ${i}`, range: [i, i + 1] });
+  assert.ok(await b.comments.settled());
+  const a = await client(host, ME);
+  await until(() => a.comments.all().length === 4 && a.comments.syncStatus()?.state === "up-to-date", 5000, "alice caught up in limited pages");
+  await Promise.all([a.comments.close(), b.comments.close()]);
 });
