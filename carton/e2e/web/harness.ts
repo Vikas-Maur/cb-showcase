@@ -94,8 +94,7 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
     },
   );
   // a run that ends without close() (a crash, Ctrl-C) still takes the tree down
-  const onExit = () => killTreeNow(proc);
-  process.once("exit", onExit);
+  const unhook = onEnd(() => killTreeNow(proc));
   let log = "";
   proc.stdout!.on("data", (b: Buffer) => (log += b.toString()));
   proc.stderr!.on("data", (b: Buffer) => (log += b.toString()));
@@ -104,7 +103,7 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
     await waitHealthy(url, 120_000, proc);
   } catch (e) {
     await killTree(proc, 0);
-    process.off("exit", onExit);
+    unhook();
     throw new Error(`${(e as Error).message}\n${log.slice(-3000)}`);
   }
   return {
@@ -115,7 +114,7 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
       // the host's own log, for a failed run (CARTON_E2E_HOSTLOG=<file>)
       if (process.env.CARTON_E2E_HOSTLOG) (await import("node:fs")).writeFileSync(process.env.CARTON_E2E_HOSTLOG, log);
       await killTree(proc, 500);
-      process.off("exit", onExit);
+      unhook();
     },
   };
 }
@@ -131,6 +130,32 @@ function wranglerEntry(): string {
   const rel = typeof bin === "string" ? bin : bin?.wrangler;
   if (!rel) throw new Error(`${pkg} names no wrangler bin`);
   return join(dirname(pkg), rel);
+}
+
+/**
+ * Run `f` when this process ends without closing the host: a normal exit, or Ctrl-C / a kill (SIGINT, SIGTERM, and
+ * SIGHUP off Windows), which end Node without its `exit` event. After `f`, the signal is raised again so the process
+ * ends as it would have. Returns the unhook.
+ */
+function onEnd(f: () => void): () => void {
+  let done = false;
+  const once = () => {
+    if (!done) (done = true), f();
+  };
+  const signals: NodeJS.Signals[] = process.platform === "win32" ? ["SIGINT", "SIGTERM"] : ["SIGINT", "SIGTERM", "SIGHUP"];
+  const onSignal = (sig: NodeJS.Signals) => {
+    once();
+    unhook();
+    // the default action, unless someone else handles it
+    if (process.listenerCount(sig) === 0) process.kill(process.pid, sig);
+  };
+  const unhook = () => {
+    process.off("exit", once);
+    for (const s of signals) process.off(s, onSignal);
+  };
+  process.once("exit", once);
+  for (const s of signals) process.on(s, onSignal);
+  return unhook;
 }
 
 const gone = (p: ChildProcess) => p.exitCode !== null || p.signalCode !== null || p.pid === undefined;

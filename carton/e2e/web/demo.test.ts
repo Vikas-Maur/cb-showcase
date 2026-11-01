@@ -9,6 +9,9 @@
 //   6. Real offline (the browser's network off): Bob's edit waits, then lands when the network is back.
 //   7. Watch the changes: Alice compares the first version with now and plays the changes.
 //   8. Alice publishes; a viewer opens the watch page (the published version), and is told when newer edits exist.
+// A third test per host: comments (REQ-C3). Alice comments at a moment on a clip; Bob sees the marker and the thread
+// live and replies; a viewer reads them and has no box to write in; Alice moves the clip and the comment follows it;
+// Alice comments on the Published cut, and its watch link shows that comment only, with no account id anywhere.
 // A second test per host: Fold in, including partial ("fold in some of it") and "Fold in the rest" later, from a cut
 // on Alice's machine into the shared Main cut.
 // Hosts: CARTON_E2E_HOST=node (default) | cloudflare (`wrangler dev`, local) | both.
@@ -81,6 +84,22 @@ async function editCaption(page: Page, id: string, text: string): Promise<void> 
   const input = page.getByTestId("caption-text");
   await input.fill(text);
   await input.press("Enter");
+}
+/** Post a comment from the side panel's Comments tab, pinned where the playhead (or selected clip) is. */
+async function comment(page: Page, text: string): Promise<void> {
+  await page.getByTestId("side-comments").click();
+  const box = page.locator(".carton-comments-compose textarea");
+  await box.click();
+  await box.fill(text);
+  await page.locator(".carton-comments-compose").getByRole("button", { name: "Comment" }).click();
+  await page.locator(".carton-comment-body", { hasText: text }).waitFor({ timeout: 10_000 });
+}
+/** Seconds to pixels on a page's timeline, from a clip's box (the ruler and the lanes share the origin). */
+async function scale(page: Page, id: string): Promise<{ x0: number; pps: number }> {
+  const box = await clipEl(page, id).boundingBox();
+  const { start, end } = await clipTimes(page, id);
+  const pps = box.width / (end - start);
+  return { x0: box.x - start * pps, pps };
 }
 async function syncWords(page: Page): Promise<string> {
   return (await page.locator(".carton-sync").textContent()) ?? "";
@@ -305,6 +324,122 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       throw e;
     } finally {
       await bot?.stop();
+      for (const c of contexts) await c.close().catch(() => {});
+      await host.close();
+    }
+  });
+}
+
+for (const kind of hosts as ("node" | "cloudflare")[]) {
+  test(`Comments: live with replies, viewers read only, a moved clip takes its comment, a watch link sees its cut's on ${kind === "node" ? "server-node" : "server-cloudflare (wrangler dev)"}`, { timeout: 180_000 }, async () => {
+    const host: TestHost = await startHost(kind, "comments");
+    const contexts: { close(): Promise<void> }[] = [];
+    const pages: [string, Page][] = [];
+    try {
+      const seed: SeedResult = await seedDemo({ baseUrl: host.url, adminToken: host.adminToken, media: fakeMedia ? { given: fakeMedia } : { generate: { clipsDir: join(process.env.HOME ?? ".", "gfv-scratch", "carton", "web-demo", "clips") } } });
+      const aliceCtx = await newPerson(browser), bobCtx = await newPerson(browser), viewerCtx = await newPerson(browser), watchCtx = await newPerson(browser);
+      contexts.push(aliceCtx, bobCtx, viewerCtx, watchCtx);
+      const alice = await joinAs(aliceCtx, seed.alice, "Alice");
+      const bob = await joinAs(bobCtx, seed.bob, "Bob");
+      pages.push(["alice", alice], ["bob", bob]);
+      for (const p of [alice, bob]) await p.locator(".carton-sync", { hasText: "Up to date" }).waitFor({ timeout: 15_000 });
+      const accounts: string[] = [];
+      for (const p of [alice, bob]) accounts.push(await p.evaluate(() => (window as unknown as { __carton: { session: { account: string } } }).__carton.session.account));
+
+      // Alice puts the playhead a quarter second into clip-2 (no caption over it there), selects the clip, comments
+      const { x0, pps } = await scale(alice, "clip-2");
+      const c2 = await clipTimes(alice, "clip-2");
+      const at = c2.start + 0.25;
+      const ruler = await alice.getByTestId("ruler").boundingBox();
+      await alice.mouse.click(x0 + at * pps, ruler.y + ruler.height / 2);
+      await clipEl(alice, "clip-2").click();
+      await comment(alice, "Music comes in too early");
+      const marker = (p: Page) => p.locator(".carton-comment-marker").first();
+      await marker(alice).waitFor({ timeout: 5000 });
+      const mx = async (p: Page) => {
+        const b = await marker(p).boundingBox();
+        return b.x + b.width / 2;
+      };
+      assert.ok(Math.abs((await mx(alice)) - (x0 + at * pps)) <= 3, "the marker sits where the playhead was");
+
+      // Bob sees the marker live, opens the thread and replies; Alice sees the reply
+      await marker(bob).waitFor({ timeout: 10_000 });
+      await bob.getByTestId("side-comments").click();
+      const thread = (p: Page) => p.locator(".carton-thread", { hasText: "Music comes in too early" });
+      await thread(bob).waitFor({ timeout: 10_000 });
+      assert.match((await thread(bob).locator(".carton-comment-name").first().textContent()) ?? "", /Alice/);
+      await thread(bob).getByRole("button", { name: "Reply" }).click();
+      const reply = thread(bob).locator("textarea");
+      await reply.fill("Agreed, I'll look");
+      await thread(bob).getByRole("button", { name: "Reply" }).last().click();
+      await alice.locator(".carton-comment-body", { hasText: "Agreed, I'll look" }).waitFor({ timeout: 10_000 });
+      await shot(bob, `${kind}-c1-reply-bob`);
+
+      // a draft survives switching to History and back (review R4-2)
+      await alice.getByTestId("side-comments").click();
+      await alice.locator(".carton-comments-compose textarea").fill("half a thought");
+      await alice.getByTestId("side-history").click();
+      await alice.getByTestId("side-comments").click();
+      assert.equal(await alice.locator(".carton-comments-compose textarea").inputValue(), "half a thought");
+      await alice.locator(".carton-comments-compose textarea").fill("");
+
+      // a viewer reads the thread and has no box to write in
+      const viewer = await joinAs(viewerCtx, seed.viewer, "Vic");
+      pages.push(["viewer", viewer]);
+      await viewer.getByTestId("side-comments").click();
+      await thread(viewer).waitFor({ timeout: 10_000 });
+      await viewer.locator(".carton-comments-readonly").waitFor();
+      assert.equal(await viewer.locator(".carton-comments-compose").count(), 0, "no comment box for a viewer");
+      assert.equal(await thread(viewer).getByRole("button", { name: "Reply" }).count(), 0, "no reply for a viewer");
+      await shot(viewer, `${kind}-c2-viewer`);
+
+      // Alice moves clip-2 past the end, where nothing else shows: the comment follows it, "moved", for both
+      const end = Math.max(...(await Promise.all(["clip-1", "clip-2", "clip-3", "clip-4"].map(async (id) => (await clipTimes(alice, id)).end))));
+      await drag(alice, "clip-2", "body", (end + 0.5 - c2.start) * pps);
+      const moved = await clipTimes(alice, "clip-2");
+      assert.ok(moved.start >= end, `clip-2 now starts at ${moved.start}, past ${end}`);
+      for (const p of [alice, bob]) {
+        await p.locator('.carton-thread[data-status="moved"]', { hasText: "Music comes in too early" }).waitFor({ timeout: 10_000 });
+        await waitClip(p, "clip-2", "data-start", moved.start);
+      }
+      const after = await scale(alice, "clip-2");
+      await alice.waitForFunction(([want]: [number]) => {
+        const b = document.querySelector(".carton-comment-marker")?.getBoundingClientRect();
+        return !!b && Math.abs(b.x + b.width / 2 - want) <= 3;
+      }, [after.x0 + (moved.start + 0.25) * after.pps], { timeout: 10_000 });
+      await shot(alice, `${kind}-c3-moved-alice`);
+
+      // publish, comment on the Published cut; its watch link shows that comment only
+      await alice.getByTestId("publish").click();
+      await alice.locator(".carton-published").waitFor({ timeout: 10_000 });
+      const url: string = await alice.waitForFunction(() => [...(window as unknown as { __carton: { links: Map<string, string> } }).__carton.links.values()][0], null, { timeout: 10_000 }).then((h: { jsonValue(): Promise<string> }) => h.jsonValue());
+      // The editor's Cuts menu doesn't open a Published cut (it is read only; Cardboard's way to comment on one would be a
+      // review link), so Alice's comment on it goes through her page's Comments handle, at the moved clip's moment
+      await alice.evaluate(async ([text, t]: [string, number]) => {
+        type W = { __carton: { carton: { cuts(): Promise<{ id: string; kind: string }[]> }; comments: { add(i: object): Promise<unknown>; settled(ms: number): Promise<boolean> } } };
+        const c = (window as unknown as W).__carton;
+        const pub = (await c.carton.cuts()).find((x) => x.kind === "published")!;
+        await c.comments.add({ body: text, range: [t, t], cut: pub.id });
+        if (!(await c.comments.settled(10_000))) throw new Error("the comment didn't reach the host");
+      }, ["Lovely ending", moved.start + 0.25]);
+      const watch = await watchCtx.newPage();
+      pages.push(["watch", watch]);
+      const frames: string[] = [];
+      watch.on("websocket", (ws: { on(e: string, f: (x: { payload: string | Buffer }) => void): void }) => ws.on("framereceived", (f) => frames.push(String(f.payload))));
+      await watch.goto(url);
+      await watch.locator(".carton-comment-body", { hasText: "Lovely ending" }).waitFor({ timeout: 15_000 });
+      await pause(1000); // anything else would have come by now
+      const bodies = await watch.locator(".carton-comment-body").allTextContents();
+      assert.deepEqual(bodies, ["Lovely ending"], "the Published cut's comment only");
+      for (const name of await watch.locator(".carton-comment-name").allTextContents()) assert.ok(name === "Alice" || /^Teammate \d+$/.test(name), name);
+      assert.equal(await watch.locator(".carton-comments-compose").count(), 0, "a watch link can't comment");
+      const seen = frames.join("\n") + (await watch.evaluate(() => document.body.innerText + JSON.stringify((window as unknown as { __watchComments: { all(): unknown } }).__watchComments.all())));
+      for (const acct of accounts) assert.ok(!seen.includes(acct), `no account id (${acct}) reaches the watch link`);
+      await shot(watch, `${kind}-c4-watch-comments`);
+    } catch (e) {
+      if (shots) for (const [who, page] of pages) await page.screenshot({ path: join(shots, `${kind}-comments-FAILED-${who}.png`) }).catch(() => {});
+      throw e;
+    } finally {
       for (const c of contexts) await c.close().catch(() => {});
       await host.close();
     }

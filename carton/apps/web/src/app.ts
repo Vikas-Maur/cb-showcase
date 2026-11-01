@@ -10,6 +10,8 @@ import type { Actor, Carton, Doc, HeldBase, Op, Rec, SyncError } from "@carton/c
 import {
   ConflictList,
   CreditsPopover,
+  CommentMarkers,
+  CommentsPanel,
   CutsMenu,
   Dialog,
   FoldInDialog,
@@ -26,6 +28,7 @@ import {
   usePreview,
   useSyncStatus,
   type CartonUiHandle,
+  type CommentsUiHandle,
   type Cut,
   type Side,
 } from "@carton/react";
@@ -42,6 +45,8 @@ import { Btn } from "./ui.ts";
 export interface AppProps {
   carton: Carton;
   ui: CartonUiHandle;
+  /** Timecoded comments on this project (the panel beside History, the markers over the ruler). */
+  comments: CommentsUiHandle;
   live: LiveDoc;
   session: Session;
   me: Actor;
@@ -89,6 +94,24 @@ export function App(p: AppProps) {
   const [watch, setWatch] = useState<{ a: string; b: string } | null>(null);
   const [fold, setFold] = useState<{ from: Cut; into: Cut } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [side, setSide] = useState<"history" | "comments">("history");
+  const [thread, setThread] = useState<string | null>(null);
+  // where a new comment goes: the playhead; on a selected clip the playhead isn't on, the whole clip
+  const timeRef = useRef(time);
+  timeRef.current = time;
+  const docRef = useRef<Doc>(head);
+  docRef.current = previewDoc ?? head;
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
+  const commentAt = useCallback((): number | readonly [number, number] => {
+    const t = timeRef.current;
+    const c = selectedRef.current ? clipOf(docRef.current, selectedRef.current) : undefined;
+    if (!c) return t;
+    const s = c.startTime as number, e = c.endTime as number;
+    return t >= s && t <= e ? t : [s, e];
+  }, []);
+  const seekTo = useCallback((t: number) => (setPlaying(false), setTime(t)), []);
+  const selectThread = useCallback((id: string | null) => (setThread(id), id && setSide("comments")), []);
 
   const onEdit = useCallback(
     async (ops: Op[], base?: HeldBase) => {
@@ -140,18 +163,31 @@ export function App(p: AppProps) {
         "aside",
         { className: "cb-side" },
         h(Conflicts),
-        h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) }),
+        h(SideTabs, { side, setSide, comments: p.comments }),
+        // both stay mounted: switching tabs keeps a comment or reply being written, and History's scroll
+        h("div", { className: "cb-side-pane", hidden: side !== "history" }, h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) })),
+        h("div", { className: "cb-side-pane", hidden: side !== "comments", "data-testid": "comments-pane" }, h(CommentsPanel, { className: "cb-comments", comments: p.comments, at: commentAt, onSeek: seekTo, selected: thread, onSelect: setThread })),
       ),
     ),
     h(
       "div",
       { className: "cb-bottom" },
-      h(Timeline, { doc, media: p.media, time, onSeek: (t: number) => (setPlaying(false), setTime(t)), selected, onSelect: setSelected, onEdit, base: () => p.live.base(), presence: p.presence, readOnly, onBlocked, image: (k: string) => p.images.get(k) }),
+      h(Timeline, { doc, media: p.media, time, onSeek: (t: number) => (setPlaying(false), setTime(t)), selected, onSelect: setSelected, onEdit, base: () => p.live.base(), presence: p.presence, readOnly, onBlocked, image: (k: string) => p.images.get(k),
+        rulerOverlay: (timeToX: (t: number) => number, layoutKey: unknown) => h(CommentMarkers, { comments: p.comments, timeToX, layoutKey, selected: thread, onSelect: selectThread, className: "cb-tl-comments" }),
+      }),
     ),
     watch ? h(WatchDialog, { ...watch, carton: p.carton, media: p.media, images: p.images, onClose: () => setWatch(null) }) : null,
     fold ? h(FoldInDialog, { fromCutId: fold.from.id, intoCutId: fold.into.id, onClose: () => setFold(null) }) : null,
     error ? h(Toast, { text: error, onClose: () => setError(null) }) : null,
   );
+}
+
+/** History and Comments share the side panel, as in Cardboard's right panel. */
+function SideTabs({ side, setSide, comments }: { side: "history" | "comments"; setSide: (s: "history" | "comments") => void; comments: CommentsUiHandle }) {
+  const open = useSyncExternalStore(comments.subscribe, () => comments.threads().filter((t) => !t.resolved).length);
+  const tab = (id: "history" | "comments", label: string) =>
+    h("button", { type: "button", role: "tab", className: "cb-side-tab", "aria-selected": side === id, "data-testid": `side-${id}`, onClick: () => setSide(id) }, label);
+  return h("div", { role: "tablist", className: "cb-side-tabs" }, tab("history", "History"), tab("comments", open ? `Comments (${open})` : "Comments"));
 }
 
 function TopBar(p: AppProps & { onFoldIn: (from: Cut, into: Cut) => void }) {

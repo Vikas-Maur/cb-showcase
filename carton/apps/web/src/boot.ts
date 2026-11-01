@@ -3,11 +3,13 @@
 
 import { createElement as h } from "react";
 import type { Root } from "react-dom/client";
-import type { Actor, Carton, CutRecord, Doc, SyncError } from "@carton/core";
+import { parseNode, type Actor, type Carton, type CutRecord, type Doc, type SyncError } from "@carton/core";
 import { fromCarton, CartonProvider } from "@carton/react";
 import { openIdbStore } from "@carton/store-idb";
 import { webSocketTransport } from "@carton/server-node/transport";
 import { App } from "./app.ts";
+import { gatedTransport, openEditorComments, type ShownVersion } from "./comments.ts";
+import { injectCommentsSkin } from "@carton/react";
 import { describeCardWith } from "./cards.ts";
 import { parseDescriptor, watchHash } from "./descriptor.ts";
 import { ensureWatchFile } from "./watch-file.ts";
@@ -40,7 +42,13 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const cached = keys.get(`carton.descriptor.${session.projectId}`);
   const known = cached ? parseDescriptor(cached) : await readDescriptor(session);
   if (!cached) keys.set(`carton.descriptor.${session.projectId}`, JSON.stringify(known));
-  const { carton, descriptor } = await openProject({ session, me, store, transport: webSocketTransport(), autoConnect: false, descriptor: known });
+  // one transport for the document sync and the comments; "Go offline" closes the comments' connection too
+  let offline = false;
+  const gate = gatedTransport(webSocketTransport(), () => !offline);
+  const { carton, descriptor } = await openProject({ session, me, store, transport: gate.transport, autoConnect: false, descriptor: known });
+  // who is behind this replica, by account and name: the host names comment authors (and History's people) from it
+  const who = carton.identity();
+  if (who?.id !== session.account || who.name !== name) await carton.setIdentity({ id: session.account, name });
   const waiting = cell(false);
   // why the current cut's sync is failing (a host refusing this client, H-SV): shown in place of the sync words
   const syncProblem = cell<SyncError | null>(carton.sync?.error() ?? null);
@@ -49,6 +57,26 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   });
   const lock = await holdPushLock(`${session.projectId}:${session.account}`, carton, waiting.set, () => location.reload());
   const live = await LiveDoc.open(carton);
+  // Timecoded comments on the same transport, URL and token (REQ-C3). Only the tab holding the push lock shares them,
+  // as with edits; viewers read. Placed again when the head on screen moves (LiveDoc), not on every presence event.
+  // A History preview is on screen instead of the head: comments are placed on it and new ones pinned to it. A preview
+  // whose version can't be named ({cut, seq}) takes no new comment (it would land on the head's content).
+  injectCommentsSkin(document);
+  const previewDoc = cell<Doc | null>(null);
+  let shown: ShownVersion | null = null;
+  let unnamed = false;
+  const { comments, ui: commentsView } = await openEditorComments({
+    carton,
+    sync: lock.holding() ? { transport: gate.transport, url: session.wsUrl, token: () => session.token() } : null,
+    versions: {
+      on: (l) => {
+        const offs = [live.subscribe(l), previewDoc.subscribe(l)];
+        return () => offs.forEach((off) => off());
+      },
+    },
+    shown: () => shown,
+    canComment: () => session.role !== "viewer" && !waiting.get() && !unnamed,
+  });
   const presence = new PresenceSender((s) => carton.sync?.presence(s));
   const images = new ImageCache((key) => readBlob(session, key));
   const media = startMedia({ baseUrl, projectId: session.projectId, token: () => session.token() });
@@ -57,7 +85,6 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const mediaReady = cell(false);
   media.ready.then(() => mediaReady.set(true), () => {});
   session.onToken(() => media.refreshToken());
-  const previewDoc = cell<Doc | null>(null);
 
   // Publishing gives a watch link: the Published cut is handed to the host as its own shared cut, and a viewer
   // invite (owners only) lets anyone with the link watch it (§0.1 "Published cut: what the share link shows").
@@ -107,18 +134,31 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
     },
     shareUrl: (cut) => links.get(cut.id),
     describeCard: describeCardWith(() => live.doc),
-    onPreview: (pv) => previewDoc.set(pv ? (pv.doc as Doc) : null),
+    onPreview: (pv) => {
+      let at: { branchId: string; seq: number } | null = null;
+      try {
+        at = pv ? parseNode(pv.ref) : null;
+      } catch {
+        at = null;
+      }
+      shown = pv && at && Number.isInteger(at.seq) ? { cut: at.branchId, seq: at.seq, doc: pv.doc as Doc } : null;
+      unnamed = !!pv && !shown;
+      previewDoc.set(pv ? (pv.doc as Doc) : null);
+    },
   });
   ui.subscribe("cuts", () => live.invalidate());
 
-  let offline = false;
   // only the tab holding the push lock ever connects (§6.2); the others stay read-only until it closes
   const setOffline = async (off: boolean) => {
     offline = off;
     if (off) {
       presence.stop();
+      gate.drop();
       await carton.sync!.disconnect();
-    } else if (lock.holding()) await carton.sync!.connect().catch(() => false);
+    } else if (lock.holding()) {
+      await carton.sync!.connect().catch(() => false);
+      void comments.refresh(); // sends what waited; the comment sync reconnects on its own backoff
+    }
   };
   // real offline: the browser says the network went away; back online reconnects (unless the person chose offline)
   addEventListener("offline", () => void carton.sync!.disconnect());
@@ -140,14 +180,14 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   });
 
   // test and demo hooks (the e2e reads state through these; nothing secret: the page already holds it)
-  Object.assign(window, { __carton: { carton, ui, live, presence, me, session: { projectId: session.projectId, account: session.account, role: session.role }, links } });
+  Object.assign(window, { __carton: { carton, ui, live, presence, me, session: { projectId: session.projectId, account: session.account, role: session.role }, links, comments } });
 
   await ui.ready;
   root.render(
     h(
       CartonProvider,
       { ui },
-      h(App, { carton, ui, live, session, me, name, media: descriptor.media, presence, images, mediaUrl: media.url, mediaReady, syncProblem, previewDoc, waiting, setOffline, isOffline: () => offline }),
+      h(App, { carton, ui, live, session, me, name, comments: commentsView, media: descriptor.media, presence, images, mediaUrl: media.url, mediaReady, syncProblem, previewDoc, waiting, setOffline, isOffline: () => offline }),
     ),
   );
   presence.active("Joined");

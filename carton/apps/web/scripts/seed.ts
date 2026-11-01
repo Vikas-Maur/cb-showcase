@@ -23,6 +23,8 @@ export interface SeedResult {
   alice: string;
   /** An editor's invite link (Bob, and the Director bot). */
   bob: string;
+  /** A viewer's invite link: reads the project, writes nothing (comments neither). */
+  viewer: string;
   descriptor: ProjectDescriptor;
 }
 
@@ -77,7 +79,7 @@ export async function seedDemo(o: { baseUrl: string; adminToken: string; project
   await putBlob(session, DESCRIPTOR_KEY, new TextEncoder().encode(JSON.stringify(descriptor)), "application/json");
   await carton.close();
   const link = (invite: string) => `${o.baseUrl}/${joinHash(projectId, invite)}`;
-  return { projectId, alice: link(await session.invite("owner")), bob: link(await session.invite("editor")), descriptor };
+  return { projectId, alice: link(await session.invite("owner")), bob: link(await session.invite("editor")), viewer: link(await session.invite("viewer")), descriptor };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
