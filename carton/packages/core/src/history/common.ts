@@ -39,7 +39,7 @@ export const STORE_TABLES = {
   /** `[path]` -> absolute media paths (local; never exported). */
   pathMap: "pathMap",
 } as const;
-export const LOCAL_TABLES: ReadonlySet<string> = new Set(["pending", "pins", "notices", "views", "ephemeral", "lease", "pathMap"]);
+export const LOCAL_TABLES: ReadonlySet<string> = new Set(["pending", "pins", "notices", "views", "ephemeral", "lease", "pathMap", "comments_pending", "comments_meta"]);
 
 /** "state unknown: re-print": a ref that can't be reconstructed exactly (§4.4). Never a guess. */
 export class StateUnknown extends Error {

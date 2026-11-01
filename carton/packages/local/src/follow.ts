@@ -66,9 +66,8 @@ export interface Follower {
   /**
    * The handle was switched in this process and its listeners know (CartonHolderEngine calls it for a switch it served
    * and printed). Whoever switches a followed handle in-process says so here: a cut never announced is told at the
-   * next look as a cut switch, however the handle got there (a switch made here that nobody announced, one whose
-   * printing failed, or core moving the handle while it reloads), so a missing call costs a repeated notice, never a
-   * lost one.
+   * next look as a cut switch, however the handle got there (a switch made here that nobody announced, or one whose
+   * printing failed), so a missing call costs a repeated notice, never a lost one.
    */
   served(cut: string): void;
   /** Stop: nothing is switched or told after this; resolves once a look in progress has finished. */
@@ -98,9 +97,9 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
   /**
    * The cut the listeners were last told the handle is on: by this follower (a cut notice that went through) or by the
    * holder (`served`). The handle can be on another one with nothing found in the store to say so: a switch served
-   * here whose printing failed, or core moving the handle while it reloads (another process made a cut and switched to
-   * it: any call that refreshes, this follower's own scan too, rebuilds the handle on the stored current cut). Every
-   * look ends by telling such a cut.
+   * here whose printing failed, or one made in this process that nobody announced. Every look ends by telling such a
+   * cut. (Core no longer moves the handle to the stored current cut when it rebuilds, foundation `90077ed`: another
+   * process's switch reaches this handle only through `adoptCut`.)
    */
   let announced = carton.cut;
   /**
