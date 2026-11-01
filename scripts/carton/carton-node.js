@@ -1079,13 +1079,21 @@ export const cardboard14 = {
         return r;
       },
       redo: async () => ({ status: "unavailable" }),
-      // A Director turn ended: its last version on the current cut takes the turn's label, unless it has a name.
-      nameTurn: async ({ projectId, chat, turn, prompt }) => {
+      // An in-app agent's turn ended: its last version on the current cut takes the turn's label, unless it has a name.
+      // The Director's versions name their turn; another provider's (laptop #8: the person's own Claude Code, Codex)
+      // are told by who made them (`actors`, a subagent's as its agent's) and when (from `since`, the turn's start).
+      nameTurn: async ({ projectId, chat, turn, prompt, actors, since }) => {
         const lc = await lcOf(projectId), label = turnLabel(prompt);
         if (!lc || !label) return { status: "unavailable" };
         const want = { turn: safePart(String(turn)), chat: chat ? safePart(String(chat)) : null };
+        const by = Array.isArray(actors) ? new Set(actors.map(String)) : null;
+        const ours = (v) => {
+          if (!by) return v.author?.turn === want.turn && (!want.chat || v.author?.chat === want.chat);
+          const who = String((v.authoredAs ?? v.author)?.id ?? "").replace(/\/sub-[^/]*$/, "");
+          return by.has(who) && typeof v.at === "number" && v.at >= (Number(since) || 0);
+        };
         for (const v of await lc.carton.log({ limit: 200 })) {
-          if (v.author?.turn !== want.turn || (want.chat && v.author?.chat !== want.chat)) continue;
+          if (!ours(v)) continue;
           if (!v.name) {
             await lc.carton.name(v.ref, label);
             // Core tells no one of a name: the History panels open on this project show it through their own

@@ -440,8 +440,9 @@ What changes with it on:
   back builds on that save, and a save that landed past an agent's change on another clip brings that change into the
   editor (it used to stay out of the editor, and your next save undid it).
 - **History** keeps every version, not the last 20, with who made it, down to the Director's turn and subagent.
-  `cb history` shows who made each version, and each Director turn is named from your prompt ("Make the intro
-  tighter"). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
+  `cb history` shows who made each version, and each turn of an agent in the app (the Director, your own Claude Code,
+  Codex, the others) is named from your prompt ("Make the intro tighter"); its hold on `timeline.tsx` ends with the
+  turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
   agent turn.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit.
@@ -592,10 +593,13 @@ The build's last step checks that `carton-node.cjs` loads in Cardboard's own Nod
 1. **No regression, Carton off.** Start `out\Cardboard-win\Cardboard.exe --remote-debugging-port=9334` without
    `CARDBOARD_CARTON` and run `scripts\test-shortcuts.js` (both forms, see "Testing the keyboard"). Expect 25 and 9
    passes, as before Carton. Repeat with `CARDBOARD_CARTON=1`: the same.
-2. **The lost update (B1), Carton off then on.** With the app closed:
-   `node scripts/carton/writers.js setup "%CB%" %CARDBOARD_HOME% bench-media\<a clip>.mp4`, then
-   `node scripts/carton/writers.js run "%CB%" %CARDBOARD_HOME% --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
-   this Node; `cb` through `Cardboard.exe` works too.) Off, some writers can lose their last edit. On, none may, once
+2. **The lost update (B1), Carton off then on.** A signed-in app keeps its projects in its account's library,
+   `%CARDBOARD_HOME%\accounts\<64 hex>` (made at the first sign-in), not in `%CARDBOARD_HOME%` itself, so the writers
+   use that folder, or the app never shows their project: sign in once, then
+   `for /d %A in ("%CARDBOARD_HOME%\accounts\*") do set LIB=%A` (`%%A` in a .cmd file). With the app closed:
+   `node scripts/carton/writers.js setup "%CB%" "%LIB%" bench-media\<a clip>.mp4`, then
+   `node scripts/carton/writers.js run "%CB%" "%LIB%" --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
+   this Node; `cb` through `Cardboard.exe` works too. Steps 3 and 4 use the same `%LIB%`.) Off, some writers can lose their last edit. On, none may, once
    history is in.
 3. **Gate G2: GUI saves under 4 agents** (§6.2). Start the app with `CARDBOARD_CARTON_TIMING=%TEMP%\g2-off.jsonl`, open
    "Carton gates", start the 4 writers (`run … --seconds 300`), and edit for 3 minutes in the editor: move, trim,

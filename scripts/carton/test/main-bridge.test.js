@@ -166,7 +166,7 @@ test("G2's timing log records each save's round trip, on and off", async () => {
   assert.equal(load({ CARDBOARD_CARTON: "1" }).time(p), p);
 });
 
-test("a Director turn's end asks the worker to name its last version; the prompt is never logged", async () => {
+test("an in-app turn's end asks the worker to name its last version (the Director's, and laptop #8 any other provider's by its actors since the turn began); the prompt is never logged", async () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const asked = [], logged = [];
   m.library({ call: async (method, arg) => (asked.push([method, arg]), { status: "named" }) });
@@ -176,13 +176,22 @@ test("a Director turn's end asks the worker to name its last version; the prompt
     const chat = { chatId: "c1", turn: { state: "running" } };
     m.turnStarted(chat, "p1", "/b", { id: "t9", text: "Make the intro tighter, then add a title." }, "director");
     m.turnEnded(chat, "result");
-    const host = { chatId: "c2", turn: { state: "running" } };
+    const host = { chatId: "c2", sessionIds: { claude: "abcd1234-5678" }, turn: { state: "running" } };
     m.turnStarted(host, "p1", "/b", { id: "t1", text: "secret words" }, "claude");
     m.turnEnded(host, "result");
     await new Promise((r) => setImmediate(r));
   } finally { Object.assign(console, original); }
   // (H8: first the turn lets go of the shared timeline.tsx; the prompt goes only to nameTurn)
-  assert.deepEqual(asked, [["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t9", event: "endTurn", input: undefined }], ["carton.nameTurn", { projectId: "p1", chat: "c1", turn: "t9", prompt: "Make the intro tighter, then add a title." }]]);
+  const since = asked.find(([method, a]) => method === "carton.nameTurn" && a.chat === "c2")?.[1].since;
+  assert.ok(typeof since === "number" && since <= Date.now());
+  assert.deepEqual(asked, [
+    ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t9", event: "endTurn", input: undefined }],
+    ["carton.nameTurn", { projectId: "p1", chat: "c1", turn: "t9", prompt: "Make the intro tighter, then add a title." }],
+    // host Claude Code: its cb calls' actor (agentEnv) and its hooks' (claude-code/<session>)
+    ["carton.agentHook", { bundlePath: "/b", actor: "claude/c2", event: "endTurn", input: undefined }],
+    ["carton.agentHook", { bundlePath: "/b", actor: "claude-code/abcd1234", event: "endTurn", input: undefined }],
+    ["carton.nameTurn", { projectId: "p1", chat: "c2", turn: "t1", prompt: "secret words", actors: ["claude/c2", "claude-code/abcd1234"], since }],
+  ]);
   assert.ok(!logged.some((l) => /intro|secret/.test(l)), logged.join("\n"));
   // Off: nothing is remembered or asked.
   const off = load({});

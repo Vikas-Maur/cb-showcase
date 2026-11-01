@@ -148,3 +148,51 @@ test("#9 cb's `project create` says nothing about history being off: the project
   assert.doesNotMatch(a.err, /history is off/, a.err);
   assert.equal(pc.cb(["history", "Demo"]).json().versions.length, n0 + 1, "the apply is the next version");
 });
+
+test("#8 an in-app turn on the person's own Claude Code (not the Director) is a turn too: the freeze ends with it and its last version takes the prompt's name", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("laptop-8", b);
+  const must = (x, what) => assert.equal(x.code, 0, what + ": " + x.out + x.err);
+  must(pc.cb(["project", "create", "Demo"]), "create");
+  fs.writeFileSync(path.join(pc.home, "titles.tsx"), TITLES);
+  must(pc.cb(["source", "apply", "Demo", path.join(pc.home, "titles.tsx")]), "apply");
+  const bundle = pc.cb(["project", "list"]).json().find((p) => p.name === "Demo").bundlePath;
+  const id = JSON.parse(fs.readFileSync(path.join(bundle, "project.json"), "utf8")).project.id;
+  const tsxFile = path.join(bundle, "timeline.tsx"), tsx = () => fs.readFileSync(tsxFile, "utf8");
+  // main's bridge, with the worker as its library (as dist/main.js holds them)
+  const saved = { ...process.env };
+  Object.assign(process.env, { CARDBOARD_CARTON: "1", CARDBOARD_CARTON_TIMING: "" });
+  let m;
+  try { m = new Function("require", require("../../main-bridge.js") + "return __cartonMain;")(require); } finally { process.env = saved; }
+  const session = "abcd1234-5678-4000-8000-000000000001", hookActor = "claude-code/abcd1234";
+  const env = m.agentEnv({}, "claude", "c2");
+  try {
+    await pc.startWorker();
+    m.library({ call: (method, arg) => pc.call(method, arg) });
+    await pc.call("projects.list");
+    // the project open in the app: a GUI save opens its Carton, and the worker's Materializer prints timeline.tsx
+    await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, textContent: "W2 title" } : null));
+    await S.until(() => / p:\S+ by carton$/m.test(tsx()) && tsx().includes('textContent="W2 title"'), 20_000, "the Materializer's timeline.tsx");
+    const chat = { chatId: "c2", sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "Make the first title bigger. Then stop." } };
+    m.turnStarted(chat, id, bundle, chat.turn, "claude");
+    // host Claude Code reads timeline.tsx: its hook (cb carton-hook, through --settings) tells the worker's holder
+    const read = spawnSync(process.execPath, [path.join(b.cli, "cardboard.mjs"), "carton-hook", "pre-tool-use", "--project", bundle], { env: { ...pc.env, ...env }, input: JSON.stringify({ hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: tsxFile }, cwd: bundle }), encoding: "utf8", timeout: 60_000 });
+    must({ code: read.status, out: read.stdout, err: read.stderr }, "the hook");
+    // the person's GUI edit stays out of the frozen file; the agent's own cb edit (as its Bash hook names it) shows
+    await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, fontSize: 180 } : null));
+    const printed = raw(pc, b, ["source", "print", "Demo"]).out;
+    fs.writeFileSync(path.join(pc.home, "w1.tsx"), setSize(printed, "W1", 160));
+    const r = spawnSync(process.execPath, [path.join(b.cli, "cardboard.mjs"), "--root", pc.root, "source", "apply", "Demo", path.join(pc.home, "w1.tsx")], { env: { ...pc.env, CARDBOARD_ACTOR: hookActor }, encoding: "utf8", timeout: 120_000 });
+    must({ code: r.status, out: r.stdout, err: r.stderr }, "the agent's apply");
+    await S.until(() => sizeOf(tsx(), "W1") === 160, 20_000, "the agent's own edit in the frozen file");
+    await S.sleep(1500);
+    assert.equal(sizeOf(tsx(), "W2"), 100, "the person's edit stays out while the turn runs");
+    // the turn ends (Cardboard's closeTurn): the freeze lets go at once, and the agent's version is named
+    const ended = Date.now();
+    m.turnEnded(chat, "result");
+    await S.until(() => sizeOf(tsx(), "W2") === 180, 10_000, "timeline.tsx back to head after the turn");
+    assert.ok(Date.now() - ended < 10_000);
+    const named = await S.until(() => pc.cb(["history", "Demo", "--limit", "20"]).json().versions.find((v) => v.name === "Make the first title bigger"), 20_000, "the turn's version named");
+    assert.equal(named.by?.id ?? named.by, hookActor, JSON.stringify(named));
+  } finally { await pc.stopWorker(); }
+});
