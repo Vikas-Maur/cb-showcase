@@ -89,7 +89,11 @@ export interface QueuedChange {
   held?: true;
   meta: Record<string, unknown>;
   history?: HistoryFields;
-  /** Restored after a rebase that changed its ops (its versions before the restored one are gone: `RestoreInput.edited`). */
+  /**
+   * Restored from a stored row (its versions before the restored one are gone): the digest of the ops it was committed
+   * with (`RestoreInput.committed`), or, from a row stored before the digest, that a rebase had changed them (`edited`).
+   */
+  committed?: string;
   edited?: boolean;
 }
 
@@ -142,7 +146,12 @@ export interface RestoreInput extends CommitInput {
   sentBases: readonly number[];
   /** Refused here after a copy was sent: it waits for its withdraw, then is reported rejected with this. */
   rejecting?: string;
-  /** A rebase changed its ops from those it was committed with (its stored ops are its latest version's). */
+  /**
+   * The digest of the ops it was committed with (`hashOps(ops, null)`; its stored ops are its latest version's): `edited`
+   * compares with it, so a later rebase that brings the ops back reads unedited (review R6-14).
+   */
+  committed?: string;
+  /** From a row stored before `committed`: a rebase had changed its ops (it stays edited). Ignored with `committed`. */
   edited?: boolean;
   /** The confirmed seq its ops were made on; default: the queue's head. */
   head?: number;
@@ -486,7 +495,7 @@ export class ReplicaQueue {
         meta: ch.meta ?? {},
         ...(ch.history ? { history: pickHistory(ch.history) } : {}),
         ...(ch.rejecting !== undefined ? { rejecting: ch.rejecting } : {}),
-        ...(ch.edited ? { edited: true } : {}),
+        ...(ch.committed !== undefined ? { committed: ch.committed } : ch.edited ? { edited: true } : {}),
       };
       queue.push(p);
       this.invalidate(b);

@@ -16,7 +16,7 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncode
 import type { FieldSpec, Schema } from "./schema.ts";
 import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
+import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
@@ -393,7 +393,15 @@ interface PendingRow {
   /** Its latest version's rebase count. */
   k?: number;
   supersedes?: string[];
-  /** A rebase changed its ops (`pendingChanges`' `edited`), kept with `k`: once restored, its earlier versions are gone. */
+  /**
+   * The digest of the ops it was committed with (`hashOps(ops, null)`), kept with `k`: once restored, its earlier versions
+   * are gone, and `pendingChanges`' `edited` compares its latest ops with this (review R6-14).
+   */
+  committed?: string;
+  /**
+   * A rebase changed its ops, as of this write (kept for a reader from before `committed`). A row with no `committed`
+   * (stored before it): true stays edited, its committed ops unknown; absent, its stored ops are the committed ones.
+   */
   edited?: boolean;
   /** The cards its rebases raised, by rebase count: what it reports when it settles. */
   cards?: { k: number; cards: ConflictCard[] }[];
@@ -413,10 +421,23 @@ interface PendingRow {
 }
 /** The undo scope in a call's options (only the fields given, so a plain call sees the whole group). */
 const scopeOf = (o: UndoScope): UndoScope => ({ ...(o.since !== undefined ? { since: o.since } : {}), ...(o.app ? { app: true } : {}) });
-/** A rebase changed its ops: its latest version's differ from its first's, or did before it was restored. */
+/** The digest of a version's ops alone (`hashOps(ops, null)`), once per version. */
+const opsDigest = (v: QueueVersion): string => {
+  let d = OPS_DIGEST.get(v);
+  if (d === undefined) OPS_DIGEST.set(v, (d = hashOps(v.ops, null)));
+  return d;
+};
+const OPS_DIGEST = new WeakMap<QueueVersion, string>();
+/** The digest of the ops it was committed with; undefined when unknown (restored from a row from before it that said edited). */
+const committedOf = (p: QueuedChange): string | undefined => p.committed ?? (p.edited ? undefined : opsDigest(p.versions[0]!));
+/**
+ * A rebase changed its ops: its latest version's differ from those it was committed with. Restored from a row: from the
+ * digest it kept (review R6-14); a row from before the digest that said so stays edited.
+ */
 const editedOf = (p: QueuedChange): boolean => {
-  if (p.edited) return true;
   const v = p.versions[p.versions.length - 1]!, first = p.versions[0]!;
+  if (p.committed !== undefined) return opsDigest(v) !== p.committed;
+  if (p.edited) return true;
   // the hash covers the intent too: a remap re-expressed over the same ops edits nothing (review R6-12). Its ops are
   // compared only when the hashes differ, once per latest version
   if (v.hash === first.hash) return false;
@@ -427,6 +448,7 @@ const editedOf = (p: QueuedChange): boolean => {
 const OPS_CHANGED = new WeakMap<QueueVersion, boolean>();
 const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
+  const committed = v.k ? committedOf(p) : undefined;
   const delta = q.baseDelta(p.branchId, v);
   const cards = p.versions.filter((x) => x.cards.length).map((x) => ({ k: x.k, cards: x.cards }));
   return {
@@ -442,7 +464,7 @@ const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow
     kinds: v.kinds,
     policy: v.policy,
     ...(p.history ? { history: p.history } : {}),
-    ...(v.k ? { k: v.k, supersedes: v.supersedes, edited: editedOf(p) } : {}),
+    ...(v.k ? { k: v.k, supersedes: v.supersedes, ...(committed !== undefined ? { committed } : {}), edited: editedOf(p) } : {}),
     ...(cards.length ? { cards } : {}),
     ...(p.sentBases.length ? { sentBases: [...p.sentBases] } : {}),
     ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -461,7 +483,7 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.history ? { history: p.history } : {}),
   k: p.k ?? 0,
   supersedes: p.supersedes ?? [],
-  ...(p.edited ? { edited: true } : {}),
+  ...(p.committed !== undefined ? { committed: p.committed } : p.edited ? { edited: true } : {}),
   cards: p.cards ?? [],
   sentBases: p.sentBases ?? [],
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
