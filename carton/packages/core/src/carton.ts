@@ -687,6 +687,10 @@ class CartonImpl implements Carton {
   #joined = false;
   /** The last write of people the server sent: a reload waits for it, so it never reads the store from before it. */
   #peopleSaved: Promise<unknown> = Promise.resolve();
+  /** People reads one at a time (#readPeople): the chain, how many began, and the newest whose snapshot is set. */
+  #peopleReads: Promise<unknown> = Promise.resolve();
+  #peopleRead = 0;
+  #peopleSet = 0;
   #closed = false;
   /** close() has begun: nothing starts a load or a connection any more. */
   #closing = false;
@@ -1133,15 +1137,30 @@ class CartonImpl implements Carton {
   async #loadPeople(): Promise<void> {
     (await this.#readPeople())();
   }
-  /** People, this replica's identity and this store's replica ids as stored; the function sets them on the handle. */
-  async #readPeople(): Promise<() => void> {
-    const s = this.store;
-    await this.#peopleSaved;
-    const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
-    const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
-    const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
-    const joined = (await s.get<boolean>(T.meta, ["joined"])) === true;
-    return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids), (this.#joined = joined));
+  /**
+   * People, this replica's identity and this store's replica ids as stored; the function sets them on the handle. The
+   * reads run one at a time, numbered in order, and a snapshot is set only if none read after it was set first: an older
+   * read finishing late (a refresh's retry, a rebuild that sets everything at its end) never takes back what a newer one
+   * set, which no later refresh would read again if it loads no row (review of fix/core-deferred, finding 2).
+   */
+  #readPeople(): Promise<() => void> {
+    const read = async () => {
+      const s = this.store;
+      await this.#peopleSaved;
+      const n = ++this.#peopleRead;
+      const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
+      const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
+      const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
+      const joined = (await s.get<boolean>(T.meta, ["joined"])) === true;
+      return () => {
+        if (n <= this.#peopleSet) return;
+        this.#peopleSet = n;
+        (this.#people = people), (this.#me = me), (this.#ownRids = rids), (this.#joined = joined);
+      };
+    };
+    const p = this.#peopleReads.then(read, read);
+    this.#peopleReads = p.catch(() => {});
+    return p;
   }
   /**
    * A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite, with a
