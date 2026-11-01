@@ -2423,12 +2423,15 @@ class CartonImpl implements Carton {
   }
   /**
    * #tell on the serialized chain, after any settle under way has told its `change` events (so a batch's notice or
-   * absorption never comes before them): for every cut, or `cut`, with `all`.
+   * absorption never comes before them): for every cut, or `cut`, with `all`. An `all` drain (a fetch that failed) is
+   * queued even with nothing waiting yet: a settle under way may still be storing a batch whose events wait for that
+   * fetch, and they go into #due only once it is stored (R6-13). A fetch of the cut started since (the next sync
+   * event's retry) holds them again, as any fetch under way does.
    */
   #drain(cut?: string, all = false): void {
-    if (!this.#due.size) return;
+    if (!all && !this.#due.size) return;
     const run = () => {
-      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all);
+      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all && !this.#fetching.has(c));
     };
     // a listener that throws doesn't break the chain
     this.#queue = this.#queue.then(run, run).catch(() => {});
