@@ -132,7 +132,10 @@ export interface CommitInput {
   id?: ChangeId;
   /** A shared cut: wait up to this many ms for the sequencer's answer (`cb` waits 5 s); default: return pending. */
   wait?: number;
-  /** Extra Store conditions for the append (a lease holder's `fence(nonce)`). */
+  /**
+   * Extra Store conditions (a lease holder's `fence(nonce)`), carried by the write that keeps the edit: the append, or a
+   * shared cut's pending row.
+   */
   conditions?: StoreCondition[];
   /**
    * Record the change as an undo of these changes (`kind: "undo"`, `reverts`), so the actor group's undo stack treats
@@ -237,6 +240,13 @@ export interface Carton {
    * the store, so a handle without sync (`cb`) sees the app's waiting edits too. 0 for a cut no server sequences.
    */
   pendingCount(cut?: string): Promise<number>;
+  /**
+   * This replica's pending changes on a shared cut (default: current), in queue order: each one's author and the
+   * optimistic states just before and after it (the confirmed state at `seq` the queue is on, then each change's latest
+   * version applied in turn, as `head` builds its state), and how many times it was rebased (0: as committed). None on
+   * a cut this replica sequences itself.
+   */
+  pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number }[] }>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
   checkout(ref: StateRef | string): Promise<Doc>;
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
@@ -495,6 +505,11 @@ const MUTATE_BACKSTOP_MS = 60_000;
 const KF_BYTES = 1 << 20;
 const PROJECT = ["project"] as const;
 const CURRENT = ["current"] as const;
+/**
+ * A token written with every pin row write, in the same batch (windows-sync R1): a refresh reads it, one key, and reads
+ * the pins table again only when it changed, rather than on every call (the table gains a row per print of a shared file).
+ */
+const PINS_GEN = ["pinsGen"] as const;
 const NODE_RE = /^[^~\s]+@\d+$/;
 const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.collections).map((k) => [k, []]));
 interface ProjectMeta {
@@ -591,6 +606,10 @@ class CartonImpl implements Carton {
   #confirmed: { cut: string; change: ConfirmedChange }[] = [];
   #noops: { id: ChangeId; cut: string; seq: number }[] = [];
   #pinSnap = new Map<string, PinRow>();
+  /** The pins token (PINS_GEN) the pin snapshot was read with, or written with by this handle's own last pin write. */
+  #pinsGen: string | undefined = undefined;
+  /** The pins must be read again whatever the token says: a pin write landed after a rebuild replaced its History. */
+  #pinsStale = false;
   #ridSaved = false;
   /** People by replica id, as the server said (meta ["person", rid]); this replica's own person (meta ["identity"]). */
   #people = new Map<string, Person>();
@@ -618,6 +637,12 @@ class CartonImpl implements Carton {
   #rest: { h: History; cuts: { id: string; upTo: number }[] } | null = null;
   /** The background load of `#rest` under way, if any (a failed one is retried by the next call that waits). */
   #loading: Promise<void> | null = null;
+  /**
+   * The timer that starts the background load after open (background()). close() clears it: until it fires it holds the
+   * handle, and with it the whole history, and a loop of opens and closes whose reads all resolve at once never lets it
+   * fire (route 40).
+   */
+  #bg: ReturnType<typeof setTimeout> | undefined;
   /** The rebuild running, and one asked for meanwhile, which starts the moment it settles (#rebuild). */
   #rebuilding: Promise<void> | null = null;
   #nextRebuild: { p: Promise<void>; ok: () => void; fail: (e: unknown) => void } | null = null;
@@ -885,7 +910,7 @@ class CartonImpl implements Carton {
     const kfState = new Map<string, { periodic: number; bytes: number }>();
     for (const c of cuts) await add(c);
     for (const e of await s.range<{ name: string; at: number; by?: Actor }>(T.names)) h.nameVersion(nodeId(e.key[0] as string, e.key[1] as number), e.value.name, e.value.by);
-    const pinSnap = await this.#loadPins(h);
+    const pins = await this.#loadPins(h);
     for (const e of await s.range<[string, number]>(T.meta, { prefix: ["noop"] })) h.noteNoop(e.key[1] as string, e.value[0], e.value[1]);
     const current = await s.get<string>(T.meta, CURRENT);
     if (current && byId.has(current)) h.current = current;
@@ -902,7 +927,8 @@ class CartonImpl implements Carton {
     if (this.#h && h.cut(this.#h.current)) h.current = this.#h.current;
     this.#h = h;
     this.#exportsSeen = exportsSeen;
-    this.#pinSnap = pinSnap;
+    this.#pinSnap = pins.snap;
+    this.#pinsGen = pins.gen;
     this.#joining = joining;
     people();
     if (late) h.relive(late);
@@ -915,16 +941,22 @@ class CartonImpl implements Carton {
    * store that reads eagerly would read them before. A call that needs them before then loads them itself.
    */
   background(): void {
-    if (this.#rest) setTimeout(() => void (this.#rest && !this.#loading && !this.#closing && this.#loadRest().catch(() => {})), 0);
+    if (!this.#rest || this.#closing) return;
+    this.#bg = setTimeout(() => {
+      this.#bg = undefined;
+      if (this.#rest && !this.#loading && !this.#closing) this.#loadRest().catch(() => {});
+    }, 0);
   }
   /**
    * Read the rows `#rest` holds back into History, newest first, a page at a time with the event loop free between
-   * pages; a rebuild meanwhile makes them moot. A failure no call waits for is kept for the next one that does.
+   * pages; a rebuild meanwhile makes them moot. A failure no call waits for is kept for the next one that does. Once
+   * close() has begun, the background pages stop (a call waiting for the rows still gets them all).
    */
   #loadRest(): Promise<void> {
     const rest = this.#rest!;
     const p = (async () => {
       while (rest.cuts.length) {
+        if (this.#closing && !this.#hurry) return;
         const c = rest.cuts[0]!;
         // a page at a time in the background; all that's left at once when a call waits (#hurry)
         const all = this.#hurry;
@@ -968,15 +1000,17 @@ class CartonImpl implements Carton {
     }
   }
   // Pins as the store holds them (other processes pin too), and a snapshot to condition our pin writes on.
-  async #loadPins(h: History): Promise<Map<string, PinRow>> {
+  // The token first: a pin written between the two reads leaves it older than the rows, and the next refresh reads again.
+  async #loadPins(h: History): Promise<{ snap: Map<string, PinRow>; gen: string | undefined }> {
+    const gen = await this.store.get<string>(T.meta, PINS_GEN);
     const rows = await this.store.range<PinRow>(T.pins);
     h.setPins(rows.map((e) => e.value));
-    return new Map(rows.map((e) => [e.key.join("|"), e.value]));
+    return { snap: new Map(rows.map((e) => [e.key.join("|"), e.value])), gen };
   }
   // Re-read the tail of a cut (another process may have appended), any new cuts, and the pins.
   // `exports` (before every write): also the exports other processes made since (#newExports); head() and reads skip
   // that read, as nothing they return depends on it.
-  async #refresh(cut?: string, exports = false): Promise<void> {
+  async #refresh(cut?: string, exports = false, pins = false): Promise<void> {
     const s = this.store;
     for (const e of await s.range<CutRecord>(T.cuts)) {
       const known = this.#h.cut(e.key[0] as string);
@@ -997,7 +1031,15 @@ class CartonImpl implements Carton {
     }
     // another process's rows: its replica id and what it learnt of people may be new too
     if (loaded) await this.#loadPeople();
-    this.#pinSnap = await this.#loadPins(this.#h);
+    // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
+    if (pins || this.#pinsStale || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) {
+      const h = this.#h,
+        loaded = await this.#loadPins(h);
+      // a rebuild replaced History during the read: these pins went into the old one, so the new one isn't certified by
+      // them; the next call reads again (R6-6)
+      if (this.#h !== h) this.#pinsStale = true;
+      else ({ snap: this.#pinSnap, gen: this.#pinsGen } = loaded), (this.#pinsStale = false);
+    }
     if (exports) await this.#newExports();
   }
   /**
@@ -1022,13 +1064,34 @@ class CartonImpl implements Carton {
     const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
     return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids));
   }
-  /** A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite. */
-  #pinWrite(ref: StateRef): { write: StoreWrite; cond: StoreCondition } {
+  /**
+   * A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite, with a
+   * new pins token conditioned on the one this handle holds: a pin another process wrote since fails the write, the
+   * retry reads the pins again, and no pin is ever missed by a handle that skips the read. `done`, once it landed: this
+   * handle's snapshot and token are the store's.
+   */
+  /** The pins token is still the one this handle holds (read with its pins, or written by its own last pin write). */
+  #pinsGenCond(): StoreCondition {
+    return { table: T.meta, key: [...PINS_GEN], expect: this.#pinsGen === undefined ? "absent" : { equals: this.#pinsGen } };
+  }
+  #pinWrite(ref: StateRef): { writes: StoreWrite[]; conds: StoreCondition[]; done: () => void } {
     const key = [ref.branchId, ref.seq, ref.hash8 ?? ref.hash?.slice(0, 8) ?? ""];
-    const was = this.#pinSnap.get(key.join("|"));
+    const k = key.join("|"),
+      was = this.#pinSnap.get(k),
+      value = this.#h.pinRow(key[0] as string, key[1] as number, key[2] as string);
+    const gen = randomHex(8),
+      h = this.#h;
     return {
-      write: { table: T.pins, key, value: this.#h.pinRow(key[0] as string, key[1] as number, key[2] as string) },
-      cond: { table: T.pins, key, expect: was === undefined ? "absent" : { equals: was } },
+      writes: [{ table: T.pins, key, value }, { table: T.meta, key: [...PINS_GEN], value: gen }],
+      conds: [{ table: T.pins, key, expect: was === undefined ? "absent" : { equals: was } }, this.#pinsGenCond()],
+      done: () => {
+        // a rebuild replaced History while the write was under way: it may not hold this pin, so the pins are read again
+        // at the next call rather than certified by this write (review R6-1)
+        if (this.#h !== h) return void (this.#pinsStale = true);
+        if (value === undefined) this.#pinSnap.delete(k);
+        else this.#pinSnap.set(k, value);
+        this.#pinsGen = gen;
+      },
     };
   }
   #knowledgeWrites(h: History, prior?: ReturnType<History["knowledge"]>): StoreWrite[] {
@@ -1110,7 +1173,7 @@ class CartonImpl implements Carton {
     if (n) this.#h.noteNoop(id, n[0], n[1]);
   }
   /** Run a History mutation under the handle's queue, persist what it confirmed, and retry after losing a race. */
-  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId } = {}): Promise<R> {
+  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[]; done?: () => void }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId; pins?: boolean } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
       await this.#whole();
@@ -1122,14 +1185,15 @@ class CartonImpl implements Carton {
       let turn: { owner: string; until: number } | null = null;
       try {
         for (let lost = 0; ; ) {
-          await this.#refresh(cut, true);
+          await this.#refresh(cut, true, opts.pins);
           await this.#noopOf(opts.id);
           this.#confirmed.length = 0;
           this.#noops.length = 0;
-          let ok: boolean, r: R;
+          let ok: boolean, r: R, done: (() => void) | undefined;
           try {
             r = fn();
             const x = opts.extra?.() ?? {};
+            done = x.done;
             ok = await this.#flush([...(x.writes ?? []), ...(turn ? [{ table: T.lease, key: TURN, value: undefined }] : [])], [...(opts.conditions ?? []), ...(x.conds ?? []), { table: T.lease, key: TURN, expect: turn ? { equals: turn } : "absent" }]);
           } catch (e) {
             // the model may hold changes the store never got (a write that threw): drop them before anything else runs
@@ -1140,6 +1204,7 @@ class CartonImpl implements Carton {
           }
           if (ok) {
             turn = null; // given back with the append
+            done?.();
             return r;
           }
           // another process appended first, someone holds the turn, or a caller's condition (a lease fence) failed:
@@ -1234,6 +1299,26 @@ class CartonImpl implements Carton {
       return { ref: this.#sharedRef(cut), doc: owned(sc.queue.optimistic(cut).doc, this.schema) };
     }
     return { ref: this.#h.ref(cut), doc: owned(this.#h.viewOf(this.#h.head(cut))!, this.schema) };
+  }
+  // Only this handle's queue: none on a handle without sync (`cb`), nor for an edit held until its base can be rebuilt,
+  // while `pendingCount` counts every process's stored rows. Read-only; O(changes × records): two owned states per change.
+  async pendingChanges(cut = this.#h.current) {
+    await this.#queue;
+    await this.#refresh(cut);
+    const sc = this.#isShared(cut) && this.#opts.sync ? await this.#ensureShared(cut) : undefined;
+    if (!sc) return { seq: this.#h.headSeq(cut), changes: [] };
+    this.#feedQueue(cut);
+    // as the optimistic head is built: the confirmed state the queue is on, then each change's latest version in turn
+    const seq = sc.queue.headSeq(cut);
+    let doc = sc.queue.confirmedState(cut, seq);
+    const changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number }[] = [];
+    for (const p of sc.queue.pending(cut)) {
+      const v = p.versions[p.versions.length - 1]!;
+      const after = v.ops.length ? E.apply(E.fork(doc, this.schema), v.ops, this.schema) : doc;
+      changes.push({ id: p.id, author: p.author, before: owned(doc, this.schema), after: owned(after, this.schema), rebases: v.k });
+      doc = after;
+    }
+    return { seq, changes };
   }
   async checkout(ref: StateRef | string) {
     await this.#whole();
@@ -1488,10 +1573,7 @@ class CartonImpl implements Carton {
           : [];
       ref = this.#h.pin({ cutId: cut, owner: opts.owner, expires: opts.ttlMs === undefined ? Infinity : now + opts.ttlMs, ...(pending.length ? { pending } : {}), ...(opts.doc ? { doc: opts.doc } : {}), ...(opts.seq !== undefined ? { seq: opts.seq } : {}) });
     }, {
-      extra: () => {
-        const pw = this.#pinWrite(ref);
-        return { writes: [pw.write], conds: [pw.cond] };
-      },
+      extra: () => this.#pinWrite(ref),
       idempotent: true,
     });
     return { ref, header: this.#h.refString(cut, ref.seq, ref.hash!, { printNonce: randomHex(4), ...(opts.by ? { by: opts.by } : {}) }) };
@@ -1499,10 +1581,7 @@ class CartonImpl implements Carton {
   async release(ref: StateRef, owner: string): Promise<void> {
     await this.#whole();
     await this.#mutate(undefined, () => this.#h.release(ref, owner), {
-      extra: () => {
-        const pw = this.#pinWrite(ref);
-        return { writes: [pw.write], conds: [pw.cond] };
-      },
+      extra: () => this.#pinWrite(ref),
       idempotent: true,
     });
   }
@@ -1694,7 +1773,10 @@ class CartonImpl implements Carton {
           squashed += this.#compactCut(rec.id, cutoff, plan);
         }
       },
-      { extra: () => ({ writes: plan }), idempotent: true },
+      // the pins as read for this plan: a pin another process writes before the plan lands moves the token, the write
+      // fails, and the retry reads the pins again (no pinned version is squashed). A pin row written without the token (a
+      // core from before it) is read here too, but a compaction can't see one that lands after that read
+      { extra: () => ({ writes: plan, conds: [this.#pinsGenCond()] }), idempotent: true, pins: true },
     );
     if (squashed) {
       // rows were rewritten, not appended: History is rebuilt from the store, behind every other write
@@ -2015,11 +2097,17 @@ class CartonImpl implements Carton {
       case "presence":
         this.#emit({ type: "presence", branchId: e.branchId, actor: e.actor as Actor, state: e.state });
         return;
-      case "absorbed":
+      case "absorbed": {
         // an absorption the server acknowledged (a withdraw) clears it too; one decided here proves nothing (SF3-8)
         if (e.withdrawn) this.#clearSyncError(cut);
-        this.#emit({ type: "absorbed", branchId: cut, id: e.id, cards: e.cards });
-        break;
+        // told once the settle it comes with has run: the confirmed rows (the teammate's change behind a card among
+        // them) are in History, so a handler reading state at the event (credits, log, head) finds them (web-demo
+        // REQ-U1: the card named "Someone"). After a settle that couldn't store, it is told all the same
+        const ev: CartonEvent = { type: "absorbed", branchId: cut, id: e.id, cards: e.cards };
+        void this.#settle(cut, e).then(() => this.#emit(ev));
+        this.#fetchHistory(cut);
+        return;
+      }
     }
     void this.#settle(cut, e);
     this.#fetchHistory(cut);
@@ -2336,12 +2424,12 @@ class CartonImpl implements Carton {
     return { sc, done: null };
   }
   /** Queue a change synchronously (nothing may run between computing `ops` on the optimistic state and this). */
-  #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name">, history?: HistoryFields): CommitResult {
+  #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name">, history?: HistoryFields, held = false): CommitResult {
     const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
     const at = this.#opts.clock?.() ?? Date.now();
     this.#authors.set(id, author);
     this.#queuedIn(cut).add(id);
-    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}) });
+    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}), ...(held ? { held: true } : {}) });
     if (r.status === "confirmed") {
       // nothing to record: the id is spent anyway (`#persistEnqueued` records it), named at the version History holds
       this.#authors.delete(id);
@@ -2350,48 +2438,80 @@ class CartonImpl implements Carton {
     }
     return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
   }
-  /** Keep what `#enqueue` did: the pending row (in queue order), or the spent id of an empty write. */
-  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = []): Promise<CommitResult> {
+  /**
+   * Keep what `#enqueue` did: the pending row (in queue order), or the spent id of an empty write. `conditions` (the
+   * caller's: a lease fence) go with that same write, so a lease that moves after #prepShared checked them still
+   * refuses the edit: nothing is stored, and the queue takes it back (windows-sync review round 3 #1).
+   */
+  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = [], conditions: readonly StoreCondition[] = []): Promise<CommitResult> {
     if (r.status === "confirmed") {
-      // a no-op only if nobody answered this id meanwhile (a holder that replaced this one: the lease conditions), so a
-      // retry answers empty and never applies the edit later over someone else's; otherwise the store's answer is it
-      const ok = await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }, ...extra], [
-        { table: T.meta, key: ["noop", id], expect: "absent" },
-        { table: T.ids, key: [id], expect: "absent" },
-        { table: T.pending, key: [cut, id], expect: "absent" },
-        ...this.#settleConds,
-      ]);
-      if (!ok) {
+      // the queue confirmed the empty write at once (its outcome log says so): that answer stays only if this write
+      // lands, or if the id was confirmed after all; otherwise a retry of the id would get it (R6-3, R6-4)
+      let keep = false;
+      try {
+        // a no-op only if nobody answered this id meanwhile (a holder that replaced this one: the lease conditions), so a
+        // retry answers empty and never applies the edit later over someone else's; otherwise the store's answer is it
+        const ok = await this.store.write([{ table: T.meta, key: ["noop", id], value: [cut, r.seq] }, ...extra], [
+          { table: T.meta, key: ["noop", id], expect: "absent" },
+          { table: T.ids, key: [id], expect: "absent" },
+          { table: T.pending, key: [cut, id], expect: "absent" },
+          ...this.#settleConds,
+          ...conditions,
+        ]);
+        if (ok) {
+          keep = true;
+          this.#h.noteNoop(id, cut, r.seq);
+          // the answer its retry gets too (the same version)
+          return this.#h.confirmedById(id)!;
+        }
         await this.#refresh();
         await this.#noopOf(id);
         const won = this.#h.confirmedById(id);
-        if (won) return won;
+        if (won) return (keep = true), won;
         if (await this.store.get(T.pending, [cut, id])) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
+        if (conditions.length && !(await this.store.write([], conditions))) throw new Error("Carton: the store changed under this write (a condition failed)");
         throw new Error("Carton: the store changed under this write (the sync lease moved to another holder)");
+      } finally {
+        if (!keep) {
+          sc.forgetOutcome(id);
+          this.#queuedIn(cut).delete(id);
+        }
       }
-      this.#h.noteNoop(id, cut, r.seq);
-      // the answer its retry gets too (the same version)
-      return this.#h.confirmedById(id)!;
     }
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
-    const writes: StoreWrite[] = [];
-    const rows: PendingRow[] = [];
-    sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && rows.push(pendingRow(p, order, sc.queue)));
-    for (const v of rows) writes.push({ table: T.pending, key: [cut, v.id], value: v });
-    // made on the queue's state: if that is past the store's rows, it is saved with them (SF1-4); nothing is removed
-    // here (a settle does that)
-    writes.push(...this.#gapWrites(cut, sc.queue, this.#h.headSeq(cut), rows.map((v) => v.head ?? 0), false).writes);
-    // started before anything can settle it: a settle waits for #inflight
-    if (writes.length || extra.length) {
-      const w = this.store.write([...writes, ...extra]);
-      const ids = [id, ...also];
-      for (const x of ids) this.#inflight.set(x, w);
-      try {
-        await w;
-      } finally {
-        for (const x of ids) if (this.#inflight.get(x) === w) this.#inflight.delete(x);
+    const ids = [id, ...also];
+    let ok = true;
+    try {
+      const writes: StoreWrite[] = [];
+      const rows: PendingRow[] = [];
+      sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && rows.push(pendingRow(p, order, sc.queue)));
+      for (const v of rows) writes.push({ table: T.pending, key: [cut, v.id], value: v });
+      // made on the queue's state: if that is past the store's rows, it is saved with them (SF1-4); nothing is removed
+      // here (a settle does that)
+      writes.push(...this.#gapWrites(cut, sc.queue, this.#h.headSeq(cut), rows.map((v) => v.head ?? 0), false).writes);
+      // started before anything can settle it: a settle waits for #inflight
+      if (writes.length || extra.length || conditions.length) {
+        const w = this.store.write([...writes, ...extra], [...conditions]);
+        for (const x of ids) this.#inflight.set(x, w);
+        try {
+          ok = await w;
+        } finally {
+          for (const x of ids) if (this.#inflight.get(x) === w) this.#inflight.delete(x);
+        }
       }
+    } catch (e) {
+      // a conditioned change is held from the pusher until this write lands: one that threw (here or in the Store, at
+      // once or later) was never made either (R6-5)
+      if (conditions.length) this.#takeBack(sc, cut, ids);
+      throw e;
     }
+    if (!ok) {
+      // a condition broke between #prepShared's check and this write: nothing was stored, so the edit was never made
+      // (held, it was never sent)
+      this.#takeBack(sc, cut, ids);
+      throw new Error("Carton: the store changed under this write (a condition failed)");
+    }
+    if (conditions.length) for (const x of ids) sc.kept(x);
     if (!wait) return r;
     const o = await sc.waitFor(id, wait);
     // a confirmation is answered once History holds the row (the result carries the change)
@@ -2399,6 +2519,16 @@ class CartonImpl implements Carton {
     // couldn't be stored yet is still pending to the caller (SF1-6)
     if (o.status !== "pending" && !(await this.#settle(cut, { type: "remote", rows: [] }))) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
     return this.#outcome(cut, o);
+  }
+  /** Changes whose store write failed taken back out of the queue: as if never made (no outcome, ids unspent). */
+  #takeBack(sc: SharedCut, cut: string, ids: readonly ChangeId[]): void {
+    for (const x of ids) {
+      this.#authors.delete(x);
+      this.#queuedIn(cut).delete(x);
+      sc.unqueue(x, "the store changed under this write (a condition failed)");
+    }
+    // what was queued behind them (already kept) waited at the held one: the pusher goes on from here (R6-7)
+    sc.wake();
   }
   async #commitShared(cut: string, input: CommitInput, author: Actor, id: ChangeId): Promise<CommitResult> {
     const { sc, done } = await this.#prepShared(cut, id, input.conditions ?? []);
@@ -2427,9 +2557,11 @@ class CartonImpl implements Carton {
       }
     }
     // `undoOf` (cb undo --turn through a save): the change records what it undoes, as on a local cut
-    const r = this.#enqueue(sc, cut, id, author, ops, input, input.undoOf?.length ? { kind: "undo", reverts: [...input.undoOf], ...(input.name ? { name: input.name } : {}) } : undefined);
+    // with conditions, the queued change isn't sent until the write that keeps it lands (it may fail them: R6-2)
+    // the card rows are made first: a cardsWrite that throws leaves nothing queued (R6-5)
     const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
-    const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites);
+    const r = this.#enqueue(sc, cut, id, author, ops, input, input.undoOf?.length ? { kind: "undo", reverts: [...input.undoOf], ...(input.name ? { name: input.name } : {}) } : undefined, !!input.conditions?.length);
+    const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites, input.conditions ?? []);
     return resolved.length && (out.status === "pending" || out.status === "confirmed") ? { ...out, resolved } : out;
   }
   /**
@@ -2554,6 +2686,8 @@ class CartonImpl implements Carton {
   }
   async close() {
     this.#closing = true;
+    clearTimeout(this.#bg);
+    this.#bg = undefined;
     this.#connected = null;
     await this.#queue;
     await this.#loading?.catch(() => {});
