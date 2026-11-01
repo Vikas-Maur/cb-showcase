@@ -403,14 +403,17 @@ onto the packages' APIs, so a package API change touches only the facade.
     newest change when another connection's write made the holder look. Guarded by `views-guards.test.js`.)
     A view save on a shared cut is committed with the View's lease as a store condition (`fence(nonce)` in core's
     `CommitInput.conditions`, through the engine's handle): a lease taken by another process after the save's check
-    makes core refuse it whole, and the save waits for the lease, so it is never left pending in a handle the new holder
-    doesn't read. Each save's cut is kept in a local `views` row until its cards are reported (the Materializer
-    resumes a stored result after a restart without a commit, and a conflicts-only save has no change to look up).
-    A worker lease alone doesn't make `cb` leave `timeline.tsx` to the worker: the View records its lease's nonce
-    (`views` `["timelineOwner"]`) and `cb`'s mirror and install compare it with the lease row (Live's holder without a
-    View holds a worker lease and prints nothing). History shows a kept GUI conflict on the cut core's notice names,
-    reported when the panel is on that cut (at its start and after the panel switches cut); a pick on one cut leaves an
-    agent's identical card on another cut open.
+    makes core refuse it whole, and the save waits for the lease. (Core checks the conditions before a shared cut's
+    enqueue but doesn't carry them into the pending row's write, so a takeover in that last moment can still leave the
+    save pending in this handle: a request to foundation-core.) Each save's cut is kept in a local `views` row from its
+    first attempt until its cards are reported: a save the Materializer resumes after a restart reports them without a
+    commit here, a retry is answered with the first attempt's result, and a conflicts-only save has no change to look
+    up (core's spent id, `meta` `["noop", id]`, names its cut too). A worker lease leaves `timeline.tsx` to the worker
+    unless Live's own holder (no View) recorded that its lease prints nothing (`views` `["leasePrints"]`): a record
+    that is late or failed can then only keep the file from updating in that degraded state, never let `cb` print over a
+    View's freeze. History shows a kept GUI conflict on the cut core's notice names: each panel reports it when the cut
+    it shows changes (its cuts topic, whichever panel or process switched), after a `refresh()` so fromCarton files it
+    under that cut. A pick on one cut leaves an agent's identical card on another cut open.
 - **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
   save projection, cut out at build time) and `carton-ui.js`.
 - **Wired, tested on stand-ins only:** the editor's pages (H4–H7, the History tab, the Share panel) and main (H9: the

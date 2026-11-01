@@ -61,14 +61,15 @@ const handed = (v) => !!(v.handedAt || v.handedToHuman);
  * key, `kind/id[/agentId]`); `me`: the person.
  */
 /**
- * The cut a change is on, by its id: confirmed (core's `ids` table: `[cut, seq]`) or still waiting to sync (`pending`,
- * keyed by its cut). null when the store has neither (a save that didn't land).
+ * The cut a change is on, by its id: confirmed (core's `ids` table: `[cut, seq]`), an id spent without a change (a
+ * save whose every edit was carded: `meta` `["noop", id]` → `[cut, seq]`), or still waiting to sync (`pending`, keyed
+ * by its cut). null when the store has none of them (a save that didn't land).
  */
 export async function cutOfChange(store, id) {
   if (!id) return null;
   try {
-    const at = await store.get("ids", [id]);
-    if (Array.isArray(at) && typeof at[0] === "string") return at[0];
+    for (const at of [await store.get("ids", [id]), await store.get("meta", ["noop", id])])
+      if (Array.isArray(at) && typeof at[0] === "string") return at[0];
     for (const r of await store.range("pending")) if (r.value?.id === id) return String(r.key[0]);
   } catch {}
   return null;
@@ -125,16 +126,19 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       const cards = cur.cards.filter((c) => !sameCard(c, card));
       return cards.length ? { ...cur, cards } : undefined;
     };
-    const people = (await rows(lc.store)).filter((r) => onCut(r.value) && has(r.value));
+    const all = (await rows(lc.store)).filter((r) => has(r.value));
+    const people = all.filter((r) => onCut(r.value));
     const agents = new Set([agentKey, ...people.map((r) => r.value.agentKey ?? keyOf(agentOf(r.value)))]);
     // An agent's notice holds the card for the save it came from (keyed by its change): one known to be on another cut
     // stays open there (review H8 r2 #4: the same agent's identical card on another cut). A notice behind one of these
     // person rows is on this cut; any other by its change's cut; one whose cut can't be told closes, as before.
-    const behind = new Set(people.flatMap((r) => [r.value.change, r.value.batch, r.value.request].filter(Boolean)));
+    const saves = (list) => new Set(list.flatMap((r) => [r.value.change, r.value.batch, r.value.request].filter(Boolean)));
+    const behind = saves(people), elsewhere = saves(all.filter((r) => cut && r.value.cut && r.value.cut !== cut));
     const onThisCut = async (v) => {
       if (!cut) return true;
       if (v.cut) return v.cut === cut;
       if (!v.change || behind.has(v.change)) return true;
+      if (elsewhere.has(v.change)) return false; // behind the person's copy on another cut (review H8 r3 #4)
       const at = await cutOfChange(lc.store, v.change);
       return at === null || at === cut;
     };

@@ -33,7 +33,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { extend, TIMELINE_OWNER } from "../carton-node.js";
+import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
 import { Materializer, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
 import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId, fence } from "@carton/local";
@@ -88,11 +88,16 @@ function engineFor(inner, lc, landed, mayCommit, cutOf, failed) {
           // the cut it lands on (the engine commits on the current one), for its cards (onCards): a card belongs there.
           // Also stored: a save the Materializer resumes after a restart reports its cards without a commit here
           // (review H8 r2 #2), and one with conflicts only made no change to look the cut up by.
-          const cut = lc.carton.cut;
+          // A retry of a save already committed (its process stopped before the Materializer stored the result, and it
+          // starts again, maybe on another cut) keeps its first attempt's cut: core answers the retry by its id with the
+          // first attempt's result (review H8 r3 #2).
+          let cut = lc.carton.cut;
           if (input.id) {
+            const prior = (await lc.store.get("views", [SAVE_CUT, input.id]).catch(() => null))?.cut;
+            if (prior) cut = prior;
+            else await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: { cut, at: Date.now() } }]).catch(() => {});
             cutOf.set(input.id, cut);
             if (cutOf.size > 64) cutOf.delete(cutOf.keys().next().value);
-            await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: { cut, at: Date.now() } }]).catch(() => {});
           }
           let r;
           try {
@@ -102,6 +107,11 @@ function engineFor(inner, lc, landed, mayCommit, cutOf, failed) {
             throw e;
           }
           if (input.id && !r?.cards?.length) await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: undefined }]).catch(() => {});
+          // the engine names the cut core's answer is on (a retry answered by id: the first attempt's)
+          else if (input.id && r?.cut && r.cut !== cut) {
+            cutOf.set(input.id, r.cut);
+            await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: { cut: r.cut, at: Date.now() } }]).catch(() => {});
+          }
           if (r?.status && r.status !== "rejected") await landed();
           return r;
         };
@@ -188,8 +198,10 @@ export class View {
     });
     this.mz = mz;
     // a save's cut kept past a week was never reported (its process stopped before it knew whether it had cards)
-    for (const r of await lc.store.range("views", { prefix: [SAVE_CUT] }).catch(() => []))
-      if (!(Date.now() - (r.value?.at ?? 0) < SAVE_CUT_KEEP_MS)) await lc.store.write([{ table: "views", key: r.key, value: undefined }]).catch(() => {});
+    try {
+      for (const r of await lc.store.range("views", { prefix: [SAVE_CUT] }))
+        if (!(Date.now() - (r.value?.at ?? 0) < SAVE_CUT_KEEP_MS)) await lc.store.write([{ table: "views", key: r.key, value: undefined }]);
+    } catch (e) { warnOnce("savecut:" + bundlePath, "old view-save records weren't cleared: " + errText(e)); }
     // Head moved in this handle: the shared file follows (unless frozen), project.json too.
     this.off = lc.carton.on((e) => this.#event(e));
     await mz.start();
@@ -233,12 +245,7 @@ export class View {
       engine,
       kind: "worker",
       socketPath: holderSocketPath(path.dirname(lc.dbPath), "worker"),
-      // Each lease this View's holder takes is recorded as the one that prints timeline.tsx: a worker lease alone
-      // doesn't say so (Live's holder without a View holds one too, review H8 r2 #6); cb and the facade's install
-      // compare the lease's nonce with this row before leaving the file to the worker.
-      log: (e) => {
-        if (e?.type === "lease" && e.nonce && !this.stopped) lc.store.write([{ table: "views", key: TIMELINE_OWNER, value: { nonce: e.nonce, pid: process.pid, at: Date.now() } }]).catch((err) => warnOnce("owner:" + this.bundlePath, "couldn't record this worker as timeline.tsx's printer: " + errText(err)));
-      },
+      log: () => {},
     }));
     await this.lease.start();
   }

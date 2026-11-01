@@ -187,17 +187,20 @@ function timelineEvent(bundlePath) {
     try { e.timelineEvent(bundlePath); } catch (err) { warnOnce("tevent:" + (e.name ?? "?"), "an extension's timelineEvent failed: " + errText(err)); }
   }
 }
-// The `views` row (local table) naming the lease whose holder prints timeline.tsx: the worker's View writes it each time
-// its holder takes the lease (sync/views.js).
-export const TIMELINE_OWNER = ["timelineOwner"];
-// Whether the worker prints this bundle's timeline.tsx: it holds the lease now, and that lease is a View's (a worker
-// lease alone isn't: Live's holder without a View holds one and prints nothing, review H8 r2 #6).
+// The `views` row (local table) naming a worker lease whose holder prints no timeline.tsx: Live's own holder, where the
+// View didn't start (sync/live.js writes it each time that holder takes the lease).
+export const LEASE_PRINTS = ["leasePrints"];
+// Whether the worker prints this bundle's timeline.tsx: it holds the lease now, and that lease isn't one Live's own
+// holder recorded as printing nothing (review H8 r2 #6). Told the other way round on purpose (r3 #3): a record that
+// is late or failed leaves the file to the worker, as before r2, so cb never writes over a frozen timeline.tsx; only
+// a View-less worker, already a degraded state, can then go without the file's update.
 async function workerWritesTimeline(lc) {
   if (inWorker) return false;
   try {
     const row = await lc.lease.read();
-    if (row?.kind !== "worker" || !(row.expires > Date.now()) || !row.nonce) return false;
-    return (await lc.store.get("views", TIMELINE_OWNER))?.nonce === row.nonce;
+    if (row?.kind !== "worker" || !(row.expires > Date.now())) return false;
+    const r = await lc.store.get("views", LEASE_PRINTS);
+    return !(r && r.prints === false && r.nonce === row.nonce);
   } catch { return false; }
 }
 // Whether Cardboard's mirror leaves timeline.tsx to Carton after a save (the store bridge's mirrorOwned): the same test
@@ -777,13 +780,24 @@ export const cardboard14 = {
       const person = keyOf(actorOf("person"));
       const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
       const keptHere = async () => (await kept()).filter((x) => !x.value.cut || x.value.cut === lc.carton.cut);
-      // And agents' view-save cards still open on this cut, shown the person's way round (views.shown).
+      // And agents' view-save cards still open on this cut, shown the person's way round (views.shown). fromCarton files
+      // a reported card under its own current cut, which follows the handle's only at its refresh (review H8 r3 #5: after
+      // another panel's switch its cuts topic already showed the new cut while a report still went under the old one):
+      // so it refreshes first, and nothing is reported if the handle's cut moved meanwhile (that switch reports again).
       const reportHere = async () => {
-        handle.reportConflicts((await keptHere()).flatMap((x) => x.value.cards));
-        for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
+        const cut = lc.carton.cut;
+        await handle.refresh?.();
+        const keptNow = (await keptHere()).flatMap((x) => x.value.cards), agentsNow = await views.shown(lc);
+        if (lc.carton.cut !== cut) return;
+        handle.reportConflicts(keptNow);
+        for (const x of agentsNow) handle.reportConflicts(x.cards, x.by);
       };
       views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []); // (before the methods are wrapped)
       await reportHere();
+      // The cut this panel shows changes (its own switch, another panel's on the same handle, cb's): that cut's kept
+      // cards then (review H8 r3 #5: compared with the panel's own cut, from its cuts topic, not the shared handle's).
+      let shownCut = lc.carton.cut;
+      const cutShown = (m) => (m?.t === "topic" && m.topic === "cuts" ? m.value : m?.t === "init" ? m.topics?.cuts : null)?.find?.((x) => x.current)?.id ?? null;
       // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
       for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
         const f = ui[m];
@@ -792,10 +806,7 @@ export const cardboard14 = {
           const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
           // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
           const agents = views.isAgent(card);
-          const cutBefore = lc.carton.cut;
           const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
-          // on another cut now (switchCut, newCut…): that cut's kept cards (fromCarton drops repeats)
-          if (lc.carton.cut !== cutBefore) await reportHere().catch((err) => warnOnce("panel:" + bundlePath, "kept conflict cards didn't show after a cut switch: " + errText(err)));
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
           // resolved them first, they are already gone.
@@ -824,7 +835,15 @@ export const cardboard14 = {
         s.close();
         handle.dispose?.();
       };
-      const s = serveUi(ui, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
+      const s = serveUi(ui, (m) => {
+        emit({ kind: "carton", id: projectId, client, message: m });
+        const now = cutShown(m);
+        if (now && now !== shownCut) {
+          shownCut = now;
+          // fromCarton drops repeats; its cut follows the handle's, which keptHere and views.shown read
+          reportHere().catch((err) => warnOnce("panel:" + bundlePath, "kept conflict cards didn't show after a cut switch: " + errText(err)));
+        }
+      });
       servers.set(client, s);
       return s;
     };
