@@ -1,0 +1,51 @@
+# Carton on Cloudflare: the PRODUCTION Worker, deployed by Cloudflare's GitHub integration (Workers Builds) from the
+# `deploy/carton` branch with `npm run deploy:cloudflare` (root directory `carton`). That script builds the web client
+# into ./dist/site first, so the page and the API always ship together. Local development stays on wrangler.toml.
+# Secrets are set in the dashboard (Worker → Settings → Variables and Secrets), never here: AUTH_SECRET (required; signs
+# invites and sessions) and ADMIN_TOKEN (lets the owner make the first invite).
+# The name must match the Worker's name in the Cloudflare dashboard.
+name = "carton"
+main = "src/worker.ts"
+compatibility_date = "2026-10-23"
+
+# The static web client. The Worker answers /api/* and /blob/* first; everything else is a file from here.
+[assets]
+directory = "./dist/site"
+binding = "ASSETS"
+run_worker_first = ["/api/*", "/blob/*"]
+
+[[durable_objects.bindings]]
+name = "PROJECT_ROOM"
+class_name = "ProjectRoom"
+
+# The DO-blob fallback (L11). Used only when BLOBS (R2) is not bound.
+[[durable_objects.bindings]]
+name = "BLOB_VAULT"
+class_name = "BlobVault"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProjectRoom", "BlobVault"]
+
+# Media, keyframes and archived change segments. Remove this block to run on the DO-blob fallback.
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "carton"
+
+[vars]
+# the newest document schemaVersion clients may send in hello. Unset, it is the Cardboard adapter's
+# CARDBOARD_SCHEMA_VERSION this Worker is built with; set it only to pin a deployment (H-SV: a pinned "1" refused
+# every client once the adapter moved to 2).
+# SCHEMA_VERSION = "2"
+# how often the alarm runs the sequencer's maintenance (archiving old rows per §18, sweeping envelope blobs);
+# ARCHIVE_KEEP / ARCHIVE_SEGMENT override the sequencer's §18 defaults (10,000 / 10,000)
+ARCHIVE_EVERY_MS = "3600000"
+# a socket that shows presence and is silent (no message, no keepalive ping) this long is closed, so its teammates stop
+# showing its cursor; "0" = never
+PRESENCE_TIMEOUT_MS = "120000"
+# media dedup within a team (§11, R2 only): a JSON object from project id to team id; unlisted projects keep their own
+# media scope
+# TEAMS = '{"film-a":"studio","film-b":"studio"}'
+# the most keys one POST /blobs/heads checks (default 200, at most 1000): each is one to four R2 calls, and a Worker
+# request's subrequests are limited per plan; the client asks again for the rest
+# BLOB_HEADS_PER_REQUEST = "200"
