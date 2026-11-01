@@ -76,8 +76,11 @@ export interface LocalCarton {
   readonly projectDir: string;
   readonly lease: Lease;
   readonly actor: Actor;
-  /** Hand a write to the lease holder (or commit it here for a local-only cut). The cb result contract. */
-  write(op: WriteOp, opts?: { actor?: Actor; waitMs?: number; id?: string }): Promise<CbResult>;
+  /**
+   * Hand a write to the lease holder (or commit it here for a local-only cut). The cb result contract. `gui`: the
+   * person's own action in the app (⌘Z), not a `cb` call: it doesn't freeze the shared timeline.tsx (WriteRequest).
+   */
+  write(op: WriteOp, opts?: { actor?: Actor; waitMs?: number; id?: string; gui?: boolean }): Promise<CbResult>;
   close(): Promise<void>;
 }
 
@@ -139,7 +142,7 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
     lease,
     actor,
     async write(op, o = {}) {
-      const req: WriteRequest = { id: o.id ?? nextChangeId(), actor: o.actor ?? actor, op, waitMs: o.waitMs ?? WAIT_MS };
+      const req: WriteRequest = { id: o.id ?? nextChangeId(), actor: o.actor ?? actor, op, waitMs: o.waitMs ?? WAIT_MS, ...(o.gui === true ? { gui: true } : {}) };
       // a caller with no factory of its own starts what the app recorded (its materializer, its sync server: B3, B7);
       // its own helperConfig (`carton --server`) goes over the recipe's config
       const recipe = opts.helperFactory ? null : await readHelperRecipe(store).catch(() => null);
