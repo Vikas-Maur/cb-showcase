@@ -646,6 +646,12 @@ class CartonImpl implements Carton {
   #pinsGen: string | undefined = undefined;
   /** The pins must be read again whatever the token says: a pin write landed after a rebuild replaced its History. */
   #pinsStale = false;
+  /**
+   * Refreshes that loaded other processes' rows into History (a count), and how many of them the people read since
+   * covers: while they differ, those rows' people are still to read and their events to tell (R6-15).
+   */
+  #rowsLoaded = 0;
+  #rowsPeople = 0;
   #ridSaved = false;
   /** People by replica id, as the server said (meta ["person", rid]); this replica's own person (meta ["identity"]). */
   #people = new Map<string, Person>();
@@ -1065,17 +1071,22 @@ class CartonImpl implements Carton {
       if (E.canonical(known) !== E.canonical(e.value)) this.#h.updateCut(e.value.id, { name: e.value.name, kind: e.value.kind, sequencer: e.value.sequencer, ...(e.value.protected !== undefined ? { protected: e.value.protected } : {}), ...(e.value.source ? { source: e.value.source } : {}) });
     }
     const cuts = cut ? [cut] : this.#h.cuts().filter((c) => !c.shallow).map((c) => c.id);
-    let loaded = false;
     for (const id of cuts) {
       const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [id], gt: [id, this.#h.headSeq(id)] })).map((e) => e.value);
       // a compaction by another process squashed rows this handle holds into a new one: what it holds is from before,
       // the new row's ops from after; read it all again
       if (rows.some((r) => r.squashedFrom! <= this.#h.headSeq(id))) return this.#rebuild();
-      if (rows.length) (loaded = true), this.#h.load(id, rows);
+      if (rows.length) this.#rowsLoaded++, this.#h.load(id, rows);
     }
     // another process's rows: its replica id and what it learnt of people may be new too; and events waiting for them
-    // (rows another handle fetched: R6-10)
-    if (loaded) await this.#loadPeople(), this.#drain();
+    // (rows another handle fetched: R6-10). Kept until done: rows loaded by a refresh whose next read failed (a later
+    // cut's rows, or people) are in History already, so the next refresh loads none and does this for them (R6-15)
+    if (this.#rowsPeople !== this.#rowsLoaded) {
+      const n = this.#rowsLoaded;
+      await this.#loadPeople();
+      this.#rowsPeople = Math.max(this.#rowsPeople, n);
+      this.#drain();
+    }
     // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
     if (pins || this.#pinsStale || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) {
       const h = this.#h,

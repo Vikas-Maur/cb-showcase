@@ -123,7 +123,7 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   settle's `notice` events (a late conflict's cards). After a settle that couldn't store, they come with the one that
   does; after a keyframe catch-up, once the skipped rows are in History (fetched, or loaded from the store). If they
   can't be fetched (offline, a server that can't serve history), or the handle stops or closes first, they come on what
-  History holds, and credits for those rows are unknown (review R6-8, R6-10, R6-11, R6-13).
+  History holds, and credits for those rows are unknown (review R6-8, R6-10, R6-11, R6-13, R6-15).
   Undo, revert and the undo stack see this replica's pending edits as the newest changes. Change ids on a
   shared cut must be `<rid>.<n>` (`carton.newChangeId()`): the server binds the rid to the device. `share()` uploads
   the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
