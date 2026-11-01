@@ -534,11 +534,15 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
   const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
   await setRev(lc, out.stateUpdatedAt, head.ref);
-  // The person's document isn't head: held, so the editor's next save made before this one's answer builds on it.
-  // Only on a cut this handle commits to itself (the change is known); a shared cut's next save uses its base.
-  if (gui && typeof doc.stateUpdatedAt === "number" && r.change?.id && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind === "local") {
+  // The person's document isn't head: held, so the editor's next save made before this one's answer builds on it. Its
+  // change: a local cut's (`change`), or a shared cut's queued edit (`id`, pending or confirmed: the lease holder's
+  // answer, this worker's or another process's). Before, a shared cut's was never held, and a quick second save after a
+  // merged one went back to its base and clashed with the first at head ("You vs You"; ui-words follow-up). A base this
+  // handle can't read (a shared cut's edit still pending in another process's holder) holds nothing: as before.
+  const own = r.change?.id ?? (typeof r.id === "string" ? r.id : null);
+  if (gui && typeof doc.stateUpdatedAt === "number" && own) {
     const on = baseRef && typeof baseRef === "object" && "baseDoc" in baseRef ? { seq: baseRef.baseSeq, causal: baseRef.causal ?? [] } : await lc.carton.resolve(baseRef).catch(() => null);
-    if (on) holdSave(bundlePath, doc.stateUpdatedAt, { baseDoc: mine, baseSeq: on.seq, causal: [...on.causal, r.change.id] });
+    if (on) holdSave(bundlePath, doc.stateUpdatedAt, { baseDoc: mine, baseSeq: on.seq, causal: [...on.causal, own] });
   }
   return { ...r, doc: out, merged: true };
 }

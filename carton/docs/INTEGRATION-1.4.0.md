@@ -269,8 +269,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 - A save sent before the previous one's echo holds that save too, while `cartonBase` still names the version before
   both. It also carries `after`: the previous save's `rev` (ui-words #3). The worker makes it on that save's state: the
   version it was recorded as when it landed as sent, or, when it was merged with another change, the person's
-  document held in memory as core's `HeldBase` (that save in its causal past). Unknown there (a shared cut, a
-  restart), the save is made on `base` as before. Without `after`, the second save clashed with the first at head: a
+  document held in memory as core's `HeldBase` (that save in its causal past), on a local cut or a shared one (its
+  queued edit's id; a non-holder hands the `HeldBase` to the lease holder with the commit). Unknown there (a restart, or
+  a shared cut's base this handle can't read), the save is made on `base` as before. Without `after`, the second save clashed with the first at head: a
   conflict card of the person against themself.
 - A GUI save is written under its own `rev` (so its echo only moves the base) only when head is the person's document.
   Core confirms a save without a rebase when the changes since its base touched other records; the worker counts

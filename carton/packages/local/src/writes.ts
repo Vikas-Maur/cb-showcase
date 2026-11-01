@@ -12,7 +12,7 @@
 // whose answer was lost with its holder gets them again; the outcome a write is still waiting for is that write's to
 // report, never another call's.
 import { merge3 } from "@carton/core";
-import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
+import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, HeldBase, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { statusPath } from "@carton/cardboard/node";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
@@ -28,7 +28,7 @@ export type WriteOp =
    * its own handle has the confirmed rows only. A confirmed answer needs it too: a write that changed nothing confirms
    * at once while the holder's own edits still wait for the server.
    */
-  | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
+  | { kind: "commit"; cut?: string; base?: string | StateRef | HeldBase; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
   | { kind: "restore"; ref: string; cut?: string; head?: boolean }
   | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
