@@ -16,7 +16,7 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncode
 import type { FieldSpec, Schema } from "./schema.ts";
 import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { ReplicaQueue, type HistoryFields, type QueuedChange, type RestoreInput } from "./sync/queue.ts";
+import { ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
@@ -243,10 +243,11 @@ export interface Carton {
   /**
    * This replica's pending changes on a shared cut (default: current), in queue order: each one's author and the
    * optimistic states just before and after it (the confirmed state at `seq` the queue is on, then each change's latest
-   * version applied in turn, as `head` builds its state), and how many times it was rebased (0: as committed). None on
-   * a cut this replica sequences itself.
+   * version applied in turn, as `head` builds its state), how many times it was rebased (0: as committed), and whether
+   * a rebase changed its edits (`edited`: its ops differ from those it was committed with, also across a restart or a
+   * reload of the queue). None on a cut this replica sequences itself.
    */
-  pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number }[] }>;
+  pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number; edited: boolean }[] }>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
   checkout(ref: StateRef | string): Promise<Doc>;
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
@@ -379,6 +380,8 @@ interface PendingRow {
   /** Its latest version's rebase count. */
   k?: number;
   supersedes?: string[];
+  /** A rebase changed its ops (`pendingChanges`' `edited`), kept with `k`: once restored, its earlier versions are gone. */
+  edited?: boolean;
   /** The cards its rebases raised, by rebase count: what it reports when it settles. */
   cards?: { k: number; cards: ConflictCard[] }[];
   /** The bases it was pushed on (hello claims them; an emptied one is withdrawn). */
@@ -395,6 +398,18 @@ interface PendingRow {
   /** Its base as ops from the confirmed state at `head` (review SF4-2); absent when it sits on no pending change. */
   baseDelta?: Op[];
 }
+/** A rebase changed its ops: its latest version's differ from its first's, or did before it was restored. */
+const editedOf = (p: QueuedChange): boolean => {
+  if (p.edited) return true;
+  const v = p.versions[p.versions.length - 1]!, first = p.versions[0]!;
+  // the hash covers the intent too: a remap re-expressed over the same ops edits nothing (review R6-12). Its ops are
+  // compared only when the hashes differ, once per latest version
+  if (v.hash === first.hash) return false;
+  let e = OPS_CHANGED.get(v);
+  if (e === undefined) OPS_CHANGED.set(v, (e = E.canonical(v.ops) !== E.canonical(first.ops)));
+  return e;
+};
+const OPS_CHANGED = new WeakMap<QueueVersion, boolean>();
 const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
   const delta = q.baseDelta(p.branchId, v);
@@ -412,7 +427,7 @@ const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow
     kinds: v.kinds,
     policy: v.policy,
     ...(p.history ? { history: p.history } : {}),
-    ...(v.k ? { k: v.k, supersedes: v.supersedes } : {}),
+    ...(v.k ? { k: v.k, supersedes: v.supersedes, edited: editedOf(p) } : {}),
     ...(cards.length ? { cards } : {}),
     ...(p.sentBases.length ? { sentBases: [...p.sentBases] } : {}),
     ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -431,6 +446,7 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.history ? { history: p.history } : {}),
   k: p.k ?? 0,
   supersedes: p.supersedes ?? [],
+  ...(p.edited ? { edited: true } : {}),
   cards: p.cards ?? [],
   sentBases: p.sentBases ?? [],
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -588,6 +604,11 @@ class CartonImpl implements Carton {
    * next settle of the cut, and a wait answers `pending` until one stores them (review SF1-6).
    */
   #unsettled = new Map<string, SharedCutEvent[]>();
+  /**
+   * Per cut, the `absorbed` and notice events of stored batches, each told once History holds every confirmed row the
+   * queue had at its batch (`at`): after a keyframe catch-up, once the skipped rows are fetched (review R6-8).
+   */
+  #due = new Map<string, { at: number; ev: CartonEvent }[]>();
   /** Per cut, why its sync is failing, until a welcome or an ack (`sync.error`, `sync-error` events). */
   #syncErrors = new Map<string, SyncError>();
   /** Per cut, the catch-up states saved (`[QUEUE_HEAD, cut, seq]`, by seq; the store key, for an older one-key row). */
@@ -935,6 +956,7 @@ class CartonImpl implements Carton {
     this.#rest = rest.length ? { h, cuts: rest } : null;
     this.#loadErr = null;
     h.loaded();
+    this.#drain();
   }
   /**
    * (Carton.open, last) Start loading the rows opening held back, once open has returned and the caller has its head: a
@@ -1029,8 +1051,9 @@ class CartonImpl implements Carton {
       if (rows.some((r) => r.squashedFrom! <= this.#h.headSeq(id))) return this.#rebuild();
       if (rows.length) (loaded = true), this.#h.load(id, rows);
     }
-    // another process's rows: its replica id and what it learnt of people may be new too
-    if (loaded) await this.#loadPeople();
+    // another process's rows: its replica id and what it learnt of people may be new too; and events waiting for them
+    // (rows another handle fetched: R6-10)
+    if (loaded) await this.#loadPeople(), this.#drain();
     // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
     if (pins || this.#pinsStale || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) {
       const h = this.#h,
@@ -1311,11 +1334,11 @@ class CartonImpl implements Carton {
     // as the optimistic head is built: the confirmed state the queue is on, then each change's latest version in turn
     const seq = sc.queue.headSeq(cut);
     let doc = sc.queue.confirmedState(cut, seq);
-    const changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number }[] = [];
+    const changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number; edited: boolean }[] = [];
     for (const p of sc.queue.pending(cut)) {
       const v = p.versions[p.versions.length - 1]!;
       const after = v.ops.length ? E.apply(E.fork(doc, this.schema), v.ops, this.schema) : doc;
-      changes.push({ id: p.id, author: p.author, before: owned(doc, this.schema), after: owned(after, this.schema), rebases: v.k });
+      changes.push({ id: p.id, author: p.author, before: owned(doc, this.schema), after: owned(after, this.schema), rebases: v.k, edited: editedOf(p) });
       doc = after;
     }
     return { seq, changes };
@@ -2097,17 +2120,11 @@ class CartonImpl implements Carton {
       case "presence":
         this.#emit({ type: "presence", branchId: e.branchId, actor: e.actor as Actor, state: e.state });
         return;
-      case "absorbed": {
+      // told by the settle that stores it, once History holds the confirmed rows behind it (#tell)
+      case "absorbed":
         // an absorption the server acknowledged (a withdraw) clears it too; one decided here proves nothing (SF3-8)
         if (e.withdrawn) this.#clearSyncError(cut);
-        // told once the settle it comes with has run: the confirmed rows (the teammate's change behind a card among
-        // them) are in History, so a handler reading state at the event (credits, log, head) finds them (web-demo
-        // REQ-U1: the card named "Someone"). After a settle that couldn't store, it is told all the same
-        const ev: CartonEvent = { type: "absorbed", branchId: cut, id: e.id, cards: e.cards };
-        void this.#settle(cut, e).then(() => this.#emit(ev));
-        this.#fetchHistory(cut);
-        return;
-      }
+        break;
     }
     void this.#settle(cut, e);
     this.#fetchHistory(cut);
@@ -2197,6 +2214,7 @@ class CartonImpl implements Carton {
     if (outcomes.length) this.#unsettled.set(cut, outcomes);
     // rows the server confirmed (ours and others'), up to the first stretch known only through a keyframe
     const rows = q.rows(cut);
+    const at = rows.length;
     const fresh: ConfirmedChange[] = [];
     const filled = this.#filled.get(cut);
     for (let i = this.#h.headSeq(cut); i < rows.length; i++) {
@@ -2262,8 +2280,8 @@ class CartonImpl implements Carton {
       // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
       if (o.type === "rejected") notices.push({ to: actorKey(authorOf(o.id)), cut, kind: "rejected", text: `Your change ${o.id} wasn't saved: ${o.reason === "too large" ? "it is larger than the server accepts; the edits after it still went through" : o.reason}`, change: o.id });
     }
-    const at = this.#opts.clock?.() ?? Date.now();
-    notices.forEach((n, i) => writes.push({ table: T.notices, key: [n.to, at, i, randomHex(4)], value: { ...n, at } }));
+    const now = this.#opts.clock?.() ?? Date.now();
+    notices.forEach((n, i) => writes.push({ table: T.notices, key: [n.to, now, i, randomHex(4)], value: { ...n, at: now } }));
     // the hand-off finished (handingOff → server{since}): the cut's record says so from now on
     const qs = q.branch(cut).sequencer;
     const rec = this.#h.cut(cut)!;
@@ -2279,6 +2297,10 @@ class CartonImpl implements Carton {
       this.#fenced = true;
       this.#connected = null;
       await this.#rebuild();
+      // events of batches it did store, still waiting for skipped rows no fetch brings now: told on what it holds
+      const due = [...this.#due.values()].flat();
+      this.#due.clear();
+      for (const d of due) this.#emit(d.ev);
       for (const s of this.#shared.values()) {
         await s.disconnect();
         s.close();
@@ -2295,6 +2317,12 @@ class CartonImpl implements Carton {
     }
     // the outcomes are stored: never retried again, whatever follows (review SF2-6)
     this.#unsettled.delete(cut);
+    // and told once, after this batch's `change` events, when History holds the rows the queue had (a card's other
+    // side among them: a handler reading credits, log or head at the event finds it; web-demo REQ-U1, R6-8)
+    const due = this.#due.get(cut) ?? [];
+    for (const n of notices) due.push({ at, ev: { type: "notice", notice: n } });
+    for (const o of outcomes) if (o.type === "absorbed") due.push({ at, ev: { type: "absorbed", branchId: cut, id: o.id, cards: o.cards } });
+    if (due.length) this.#due.set(cut, due);
     for (const o of outcomes) this.#authors.delete(o.id);
     this.#gapSaved.set(cut, gap.saved);
     for (const o of spent) this.#h.noteNoop(o.id, cut, spentAt);
@@ -2316,7 +2344,30 @@ class CartonImpl implements Carton {
     if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs });
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
-    for (const n of notices) this.#emit({ type: "notice", notice: n });
+    this.#tell(cut);
+  }
+  /** The due events of the cut (#due) whose rows History holds now, in order; `all`: every one, on what it holds. */
+  #tell(cut: string, all = false): void {
+    const due = this.#due.get(cut);
+    if (!due) return;
+    const head = this.#h.headSeq(cut);
+    let n = 0;
+    while (n < due.length && (all || due[n]!.at <= head)) n++;
+    const ready = due.splice(0, n);
+    if (!due.length) this.#due.delete(cut);
+    for (const d of ready) this.#emit(d.ev);
+  }
+  /**
+   * #tell on the serialized chain, after any settle under way has told its `change` events (so a batch's notice or
+   * absorption never comes before them): for every cut, or `cut`, with `all`.
+   */
+  #drain(cut?: string, all = false): void {
+    if (!this.#due.size) return;
+    const run = () => {
+      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all);
+    };
+    // a listener that throws doesn't break the chain
+    this.#queue = this.#queue.then(run, run).catch(() => {});
   }
   /**
    * History a connection makes available (Stage F): a joined cut's lineage (F2) and the rows a keyframe catch-up
@@ -2329,7 +2380,9 @@ class CartonImpl implements Carton {
         if (this.#joining.has(cut)) await this.#joinLineage(cut);
         if (this.#gap(cut)) await this.#backfill(cut);
       } catch {
-        // not connected, or the server couldn't answer: the next event tries again
+        // not connected, or the server couldn't answer: the next event tries again. Events waiting for the skipped rows
+        // are told now, on what History holds, rather than held for a fetch that may not come (R6-11)
+        this.#drain(cut, true);
       } finally {
         this.#fetching.delete(cut);
       }
@@ -2429,7 +2482,7 @@ class CartonImpl implements Carton {
     const at = this.#opts.clock?.() ?? Date.now();
     this.#authors.set(id, author);
     this.#queuedIn(cut).add(id);
-    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}), ...(held ? { held: true } : {}) });
+    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}), ...(held ? { held: true } : {}) }, { deferEmpty: true });
     if (r.status === "confirmed") {
       // nothing to record: the id is spent anyway (`#persistEnqueued` records it), named at the version History holds
       this.#authors.delete(id);
@@ -2445,8 +2498,8 @@ class CartonImpl implements Carton {
    */
   async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = [], conditions: readonly StoreCondition[] = []): Promise<CommitResult> {
     if (r.status === "confirmed") {
-      // the queue confirmed the empty write at once (its outcome log says so): that answer stays only if this write
-      // lands, or if the id was confirmed after all; otherwise a retry of the id would get it (R6-3, R6-4)
+      // the queue took the empty write at once, but its waits are told only what the store keeps (R6-9): the spent id
+      // once this write lands, or what won the id; nothing if it fails, so a retry of the id is still free (R6-3, R6-4)
       let keep = false;
       try {
         // a no-op only if nobody answered this id meanwhile (a holder that replaced this one: the lease conditions), so a
@@ -2462,20 +2515,24 @@ class CartonImpl implements Carton {
           keep = true;
           this.#h.noteNoop(id, cut, r.seq);
           // the answer its retry gets too (the same version)
-          return this.#h.confirmedById(id)!;
+          const done = this.#h.confirmedById(id)!;
+          sc.settleEmpty(id, { status: "confirmed", id, seq: done.seq });
+          return done;
         }
         await this.#refresh();
         await this.#noopOf(id);
         const won = this.#h.confirmedById(id);
-        if (won) return (keep = true), won;
+        if (won) {
+          // another process's change (or no-op) under this id: its outcome, the version this commit returns
+          keep = true;
+          sc.settleEmpty(id, { status: "confirmed", id, seq: won.seq });
+          return won;
+        }
         if (await this.store.get(T.pending, [cut, id])) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
         if (conditions.length && !(await this.store.write([], conditions))) throw new Error("Carton: the store changed under this write (a condition failed)");
         throw new Error("Carton: the store changed under this write (the sync lease moved to another holder)");
       } finally {
-        if (!keep) {
-          sc.forgetOutcome(id);
-          this.#queuedIn(cut).delete(id);
-        }
+        if (!keep) this.#queuedIn(cut).delete(id);
       }
     }
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
@@ -2641,6 +2698,8 @@ class CartonImpl implements Carton {
     };
     const res = this.#enqueue(sc, into, id, author, ops, {}, history);
     if (!some) return this.#persistEnqueued(sc, into, id, res);
+    // an empty fold under its partial revert: no write spends its id here, so its waits are told at once, as before
+    if (res.status === "confirmed") sc.settleEmpty(id, { status: "confirmed", id, seq: res.seq });
     const inv = this.#enqueue(sc, into, inverse!, author, some.ops, {}, { kind: "partial-revert", rejected: some.reject, reverts: id });
     return this.#persistEnqueued(sc, into, inverse!, inv, undefined, [id]);
   }
@@ -2694,7 +2753,11 @@ class CartonImpl implements Carton {
     for (const sc of this.#shared.values()) sc.close();
     this.#shared.clear();
     this.#closed = true;
+    // events still waiting for rows (their fetch under way) are told before the listeners go, on what History holds:
+    // their outcomes are stored, and nothing would tell them later (R6-11)
+    for (const c of [...this.#due.keys()]) this.#tell(c, true);
     this.#listeners.clear();
+    this.#due.clear();
   }
 }
 

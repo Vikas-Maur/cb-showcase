@@ -112,6 +112,18 @@ test("B10: a GUI save through the lossy projection touches only the clip the hum
   assert.deepEqual(adapter.project!(p), p, "P is idempotent");
 });
 
+test("save speed #4: a GUI save's items equal to P(base) keep their base record as is, not compared again; a changed item is compared and keeps what didn't change", () => {
+  const b = doc([clip("x", 0, 5, { opacity: 1 }), clip("y", 5, 10, { opacity: 1 })]);
+  // a base record the full compare would not keep (a local-only field fromHost strips): only the skip keeps it
+  const base = { ...b, timelineItems: (b.timelineItems as Rec[]).map((r) => (r.id === "x" ? { ...r, annotations: ["kept"] } : r)) };
+  const save = { ...toHost(base), timelineItems: toHost(base).timelineItems!.map((i) => standInProjection(i.id === "y" ? { ...i, opacity: 0.5 } : i)) };
+  const out = projectGuiSave(base, save, standInProjection);
+  const by = (d: typeof out, id: string) => (d.timelineItems as Rec[]).find((r) => r.id === id)!;
+  assert.equal(by(out, "x"), by(base, "x"), "the unchanged item is its base record");
+  assert.equal(by(out, "y").opacity, 0.5);
+  assert.deepEqual(diff(base, out, S).map((o) => String(o.path[1])), ["y"]);
+});
+
 test("materializeProject writes the versioned slice back over the file's project and keeps every unversioned field", () => {
   const current = {
     id: "p1",

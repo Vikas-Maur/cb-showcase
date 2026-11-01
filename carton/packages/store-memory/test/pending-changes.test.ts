@@ -3,7 +3,7 @@
 // pendingCount, which counts every process's stored rows.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Carton, hashDoc, type Actor, type Store } from "@carton/core";
+import { Carton, hashDoc, remapSpan, rippleDelete, type Actor, type Rec, type Store } from "@carton/core";
 import type { AuthContext, AuthProvider, StoreWrite } from "@carton/core/plugins";
 import { createInProcessHost } from "@carton/server";
 import { sqliteStorage } from "../../conformance/src/system/sqlite.ts";
@@ -83,5 +83,83 @@ test("pendingChanges' rebases (cardboard-adapter b2c8656): 0 as committed, 1 onc
   assert.equal(item(pc.changes[0]!.before, "a")!.name, "the holder's", "on the confirmed change");
   assert.equal(item(pc.changes[0]!.after, "c")!.name, "the agent's");
   for (const x of [b, a]) await x.close();
+  host.close();
+});
+
+test("pendingChanges' edited (cardboard-adapter 1ea09bc): false after a rebase that leaves the edit's ops as they were, true after one that changes them", async () => {
+  const tokens = new Map<string, AuthContext>();
+  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
+  tokens.set("tok-alice", { account: "alice", credential: "alice/install", role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
+  tokens.set("tok-bob", { account: "bob", credential: "bob/install", role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
+  const data = createMemoryData();
+  const a = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), init: { doc: doc0() }, actor: alice, sync: { transport: host.transport, url: host.url, token: "tok-alice", autoConnect: true } });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const b = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: agent, sync: { transport: host.transport, url: host.url, token: "tok-bob", autoConnect: false } });
+  // the agent moves clip f a second later (absolute times), pending
+  const moved = await b.commit({ ops: [set("f", "startTime", 26), set("f", "endTime", 31)] });
+  assert.equal(moved.status, "pending");
+  const entry = async () => (await b.pendingChanges()).changes[0]!;
+  assert.deepEqual([(await entry()).rebases, (await entry()).edited], [0, false], "as committed");
+  // a rename elsewhere: rebased, its ops as they were
+  assert.equal((await a.commit({ ops: [set("a", "name", "renamed")], wait: 5000 })).status, "confirmed");
+  assert.deepEqual([(await entry()).rebases, (await entry()).edited], [1, false], "rebased over an edit elsewhere");
+  // a ripple delete before it: rebased, its times remapped
+  const maps = { t1: rippleDelete(5, 5) };
+  const ops = [{ op: "remove" as const, path: ["items", "b"] }];
+  for (const it of (await a.head()).doc.items as Rec[]) {
+    if (it.id === "b") continue;
+    const m = remapSpan(maps.t1, it.startTime as number, it.endTime as number);
+    if (m && m[0] !== it.startTime) ops.push(set(it.id as string, "startTime", m[0]) as never, set(it.id as string, "endTime", m[1]) as never);
+  }
+  assert.equal((await a.commit({ ops, intent: { kind: "ripple-delete", maps }, wait: 5000 })).status, "confirmed");
+  const e = await entry();
+  assert.equal(e.rebases, 2);
+  assert.equal(e.edited, true, "a rebase changed its ops");
+  assert.notEqual(item(e.after, "f")!.startTime, 26, "the move follows the ripple");
+  for (const x of [b, a]) await x.close();
+  host.close();
+});
+
+test("pendingChanges' edited survives a reload of the queue (cardboard-adapter 893976c): a change a rebase edited, restored from its stored row, still says so", async () => {
+  const tokens = new Map<string, AuthContext>();
+  const auth: AuthProvider = { kind: "table", async verify(t) { return tokens.get(t) ?? null; } };
+  const host = createInProcessHost({ storage: sqliteStorage(), auth, timeline: schema.timeline!, groupOf: (c, f) => schema.collections[c]?.groupOf.get(f)?.name });
+  tokens.set("tok-alice", { account: "alice", credential: "alice/install", role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
+  tokens.set("tok-bob", { account: "bob", credential: "bob/install", role: "editor", projectId: "p", expires: Date.now() + 3600_000 });
+  const data = createMemoryData();
+  const a = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), init: { doc: doc0() }, actor: alice, sync: { transport: host.transport, url: host.url, token: "tok-alice", autoConnect: true } });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const agentSync = { transport: host.transport, url: host.url, token: "tok-bob", autoConnect: false };
+  const b = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: agent, sync: agentSync });
+  const moved = await b.commit({ ops: [set("f", "startTime", 26), set("f", "endTime", 31)] });
+  assert.equal(moved.status, "pending");
+  const id = moved.status === "pending" ? moved.id : "";
+  // a ripple delete before it, confirmed: the agent's pending move is rebased, its times remapped
+  const maps = { t1: rippleDelete(5, 5) };
+  const ops = [{ op: "remove" as const, path: ["items", "b"] }];
+  for (const it of (await a.head()).doc.items as Rec[]) {
+    if (it.id === "b") continue;
+    const m = remapSpan(maps.t1, it.startTime as number, it.endTime as number);
+    if (m && m[0] !== it.startTime) ops.push(set(it.id as string, "startTime", m[0]) as never, set(it.id as string, "endTime", m[1]) as never);
+  }
+  assert.equal((await a.commit({ ops, intent: { kind: "ripple-delete", maps }, wait: 5000 })).status, "confirmed");
+  const before = (await b.pendingChanges()).changes[0]!;
+  assert.deepEqual([before.id, before.rebases, before.edited], [id, 1, true], "rebased, its ops changed");
+  const startTime = item(before.after, "f")!.startTime;
+  assert.notEqual(startTime, 26);
+  // the stored row is the rebased version (its remapped ops): what a reload rebuilds the queue from
+  const raw = createMemoryStore({ shared: data });
+  await until(async () => (await raw.get<{ k?: number }>("pending", [b.cut, id]))?.k === 1, 5000, "the rebased row stored");
+  await b.close();
+  // the queue loaded again from the store (a restart): its versions before the stored one are gone
+  const b2 = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: agent, sync: agentSync });
+  const after = (await b2.pendingChanges()).changes[0]!;
+  assert.deepEqual([after.id, after.rebases], [id, 1], "the same change, restored as stored");
+  assert.equal(item(after.after, "f")!.startTime, startTime, "its remapped move");
+  assert.equal(after.edited, true, "still edited: the rebase that changed its ops came before the reload");
+  for (const x of [b2, a]) await x.close();
   host.close();
 });
