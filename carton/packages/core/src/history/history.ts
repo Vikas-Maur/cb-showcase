@@ -21,6 +21,7 @@ import type {
   Doc,
   FullExport,
   Intent,
+  Lineage as Splits,
   LineageKind,
   MergeResult,
   NodeId,
@@ -46,6 +47,8 @@ import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type Hi
 
 // ------------------------------------------------------------------ ids and keys
 
+/** A DAG edge as a fold reads it: the remaps recorded along it, and the splits (old id -> pieces) made along it. */
+type Edge = { maps?: RemapMaps; lineage?: Splits };
 /** `n` random bytes as hex (crypto.getRandomValues: Node, browsers, Workers). */
 export function randomHex(n: number): string {
   const b = new Uint8Array(n);
@@ -735,32 +738,39 @@ export class History {
   }
   /** Recorded remaps along one DAG path from ancestor `from` to `to` (first parent preferred), composed. */
   pathRemap(from: NodeId, to: NodeId, { prefer = "first" }: { prefer?: "first" | "second" } = {}): RemapMaps {
+    return E.composeMaps(...this.#path(from, to, prefer).map((e) => e.maps));
+  }
+  /** The recorded edges (maps, split lineage) along one DAG path from ancestor `from` to `to`, in order. */
+  #path(from: NodeId, to: NodeId, prefer: "first" | "second"): Edge[] {
     from = this.canon(from);
-    const steps: RemapMaps[] = [];
+    const steps: Edge[] = [];
     let cur = this.canon(to);
     while (cur !== from) {
       const ps = this.parents(cur);
       const order = prefer === "second" && ps.length > 1 ? [ps[1]!, ps[0]!] : ps;
       const p = order.find((q) => q === from || this.isAncestor(from, q));
       if (p === undefined) throw new Error(`no path ${from} -> ${to}`);
-      steps.push(this.edgeMap(p, cur));
+      steps.push(this.#edge(p, cur));
       cur = p;
     }
-    return E.composeMaps(...steps.reverse());
+    return steps.reverse();
   }
-  /** Edge maps: a change's intent maps; a fold's per-parent edge maps; an imported lineage edge's map. */
-  edgeMap(parent: NodeId, child: NodeId): RemapMaps {
+  /** An edge: a change's intent; a fold's per-parent maps and lineage; an imported lineage edge's. */
+  #edge(parent: NodeId, child: NodeId): Edge {
     const ln = this.#lineage.get(child);
-    if (ln) return ln.parents.find((p) => this.canon(p.id) === parent)?.remap ?? {};
+    if (ln) {
+      const p = ln.parents.find((p) => this.canon(p.id) === parent);
+      return { maps: p?.remap, lineage: p?.lineage };
+    }
     const c = this.changeAt(child);
-    if (!c) return {};
-    if (c.mergeOf) return this.canon(refNode(c.mergeOf)) === parent && this.canon(nodeId(c.branchId, c.seq - 1)) !== parent ? c.mergeEdges?.second ?? {} : c.mergeEdges?.first ?? {};
-    return c.intent?.maps ?? {};
+    if (!c?.mergeOf) return c?.intent ?? {};
+    const second = this.canon(refNode(c.mergeOf)) === parent && this.canon(nodeId(c.branchId, c.seq - 1)) !== parent;
+    return { maps: c.mergeEdges?.[second ? "second" : "first"], lineage: c.mergeEdges?.lineage?.[+second] };
   }
 
   // ------------------------------------------------------------ fold in, partial accept, revert, restore
   /** "Fold into …": a DAG merge of node `from` into cut `into`. */
-  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult; doc?: Doc } {
+  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult; doc?: Doc; edges?: ConfirmedChange["mergeEdges"] } {
     const { author = { kind: "human", id: this.name } as Actor, choices, prefer = "ours", missingBase = "dialog", remapPath = "first" } = opts;
     const done = opts.check ? null : this.#done(opts.id);
     if (done) return done;
@@ -793,27 +803,32 @@ export class History {
       return r;
     }
     const baseNode = base.node ?? base.nodes![0]!;
-    const Mo = this.pathRemap(baseNode, x, { prefer: remapPath }),
-      Mt = this.pathRemap(baseNode, y, { prefer: remapPath });
+    // each side's recorded maps and split lineage since the base, so an edit of a clip the other side split reaches
+    // every piece (kit-docs: a fold used the maps only)
+    const side = (to: NodeId) => E.sideOf(this.#path(baseNode, to, remapPath).map((intent) => ({ intent }))).remap,
+      Ro = side(x),
+      Rt = side(y);
     const ours = this.stateOf(x)!,
       theirs = this.stateOf(y);
     if (!theirs) return { status: "missing-base", dialog: { text: "The version to fold in isn't held here.", options: ["ask", "all-cards"], lca: y } };
     const m = E.merge3(base.doc!, ours, theirs, this.schema, {
       prefer,
-      remaps: { ours: isEmptyMap(Mo) ? undefined : { maps: Mo }, theirs: isEmptyMap(Mt) ? undefined : { maps: Mt } },
+      remaps: { ours: Ro, theirs: Rt },
     });
     const unseen = opts.unchosen === "prefer" ? [] : unseenCards(m.conflicts, choices);
     if (m.conflicts.length && (!choices || unseen.length))
       return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(into, this.headSeq(into)), merge: m, base, ...(choices ? { unseen: unseen.map((c) => c.path) } : {}), retry: (ch: Choices) => this.fold(into, from, { ...opts, choices: ch }) };
     const doc = m.conflicts.length ? E.resolve(m, choices!) : m.doc;
-    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m, base, doc };
+    // the fold's edges: each parent's maps, and the split lineage of the side it brings in (theirs onto ours, first)
+    const edges = { first: m.edges.ours, second: m.edges.theirs, ...(Ro?.lineage || Rt?.lineage ? { lineage: [Rt?.lineage ?? {}, Ro?.lineage ?? {}] as [Splits, Splits] } : {}) };
+    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m, base, doc, edges };
     const r = this.commit(into, {
       doc,
       author,
       allowEmpty: true,
       kind: "merge",
       ...(opts.id ? { id: opts.id } : {}),
-      extra: { mergeOf: parseNode(y), mergeEdges: { first: m.edges.ours, second: m.edges.theirs }, mergeBase: base.node ? [base.node] : base.nodes! },
+      extra: { mergeOf: parseNode(y), mergeEdges: edges, mergeBase: base.node ? [base.node] : base.nodes! },
     });
     this.#anc.clear();
     if (r.status === "confirmed" && r.change) this.#mergeAuthors(r.change, y);
@@ -1164,14 +1179,15 @@ export class History {
       const rec: DagNode = { id, branchId: b, seq: s, hash: this.hashOf(id)!, kinds: kindsOf(id), parents: [], ...(owner ? { owner } : {}) };
       nodes.set(id, rec);
       for (const p0 of this.parents(id)) {
-        const maps = [this.edgeMap(p0, id)];
+        const es = [this.#edge(p0, id)];
         let p = p0;
         while (!isStop(p)) {
           const pp = this.parents(p)[0]!;
-          maps.push(this.edgeMap(pp, p));
+          es.push(this.#edge(pp, p));
           p = pp;
         }
-        rec.parents.push({ id: p, remap: E.composeMaps(...maps.reverse()) });
+        const e = E.sideOf(es.reverse().map((intent) => ({ intent }))).remap;
+        rec.parents.push({ id: p, remap: e?.maps ?? {}, ...(e?.lineage ? { lineage: e.lineage } : {}) });
         queue.push(p);
       }
     }

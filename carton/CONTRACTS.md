@@ -74,7 +74,13 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   History's arrays is frozen once, and a change freezes only what it writes.
 - **A split** records its lineage in the intent (`{ kind: "split", lineage: { c: ["c", "c-b"] } }`): a concurrent
   edit to the split clip meets the split (the source record is part of its declaration) and reaches every piece,
-  whichever lands first, on local and shared cuts.
+  whichever lands first: a rebase, a shared cut's commit made on an older version, a fold (each side's maps and
+  lineage composed along its path; a fold records the lineage it brings in on its edges, `mergeEdges.lineage`, and a
+  `.cbproj` lineage edge carries it as `parents[].lineage`), on local and shared cuts. Field edits and a track change
+  follow the lineage; a real retime of the split clip (a move or trim, not a ripple's shift) is a card (`items/<id>/#time`,
+  PLAN §7: "raise a card rather than guess"). A ripple on one side moves both pieces. Folds through merges or `.cbproj`
+  edges made before this (no `mergeEdges.lineage`, no `parents[].lineage`) don't know the split: an edit there reaches
+  the clip's first piece only.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
   (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the
@@ -233,6 +239,8 @@ are stubbed). At `46f4b34` (UNVERIFIED, bytes; deterministic, not load-dependent
 
 The rest, about 20.7 KB (the bundle less these rows; gzip savings don't add exactly), is cuts, commit and rebase,
 fold and the merge DAG, states, and the merge engine (merge3, remaps, diff, apply, hashing).
+PLAN §7's split lineage, added after the table (a fold composes each side's splits and records them on its edges and on
+`.cbproj` lineage edges; a track change reaches every piece; a retime of a split clip is a card): +136, 30,099.
 
 **Why 32 KB (orchestrator, 2026-11-01).** The 30 KB budget was set at `c1d5488` (the bundle then 28,571). By `46f4b34`
 it was 29,963: the shared-cut stages F1–F4 (+820), the review rounds and the e2e-qa, kit-docs, local-cli and

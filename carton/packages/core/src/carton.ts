@@ -2274,7 +2274,7 @@ class CartonImpl implements Carton {
       return out as FoldResult;
     }
     const r = some ? some.dry : this.#h.fold(into, y, { ...opts, check: true, author });
-    const { merge, base, doc, retry: _r, ...out } = r;
+    const { merge, base, doc, edges, retry: _r, ...out } = r;
     if (r.status !== "confirmed" || !doc) return out as FoldResult;
     const ours = this.#h.stateOf(this.#h.head(into))!;
     const ops = E.diff(ours, doc, this.schema);
@@ -2284,7 +2284,7 @@ class CartonImpl implements Carton {
     const history: HistoryFields = {
       kind: "merge",
       mergeOf: parseNode(this.#h.canon(y)),
-      mergeEdges: merge ? { first: merge.edges.ours, second: merge.edges.theirs } : { first: {}, second: {} },
+      mergeEdges: edges ?? { first: {}, second: {} },
       mergeBase: base?.node ? [base.node] : base?.nodes ?? [],
       lastAuthors: this.#h.authorsFrom(ops, y, author),
     };

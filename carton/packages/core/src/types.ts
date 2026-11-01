@@ -218,7 +218,7 @@ export interface Change extends Declaration {
   /** A fold-in: the node merged into this branch. */
   mergeOf?: NodeRef;
   /** A fold-in's per-parent edge maps (the transform applied to each parent's content), for remaps per lineage edge. */
-  mergeEdges?: { first: RemapMaps; second: RemapMaps };
+  mergeEdges?: { first: RemapMaps; second: RemapMaps; lineage?: [Lineage, Lineage] };
   /** The merge base node(s) used (several for a criss-cross's virtual base). */
   mergeBase?: NodeId[];
   /** revert/undo/restore: the change(s) it inverts. */
@@ -372,7 +372,7 @@ export interface DagNode {
   seq: number;
   hash: string;
   kinds: LineageKind[];
-  parents: { id: NodeId; remap: RemapMaps }[];
+  parents: { id: NodeId; remap: RemapMaps; lineage?: Lineage }[];
   owner?: string;
   branchName?: string;
 }
