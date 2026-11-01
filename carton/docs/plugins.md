@@ -275,7 +275,9 @@ every host runs the same function. The host:
    and gets ECONNRESET; and it must close in stages (RFC 9112 §9.6), never at once: closing a socket with unread bytes
    resets the connection, and on Windows the reset loses the 413 before the client reads it. server-node answers
    `connection: close`, half-closes after the answer, then reads and drops the rest (never kept) until the client
-   closes its side, 16 MiB have come or 5 s have passed.
+   closes its side, 16 MiB have come or 5 s have passed. The body's reader must stop without destroying the request
+   (cancelling `Readable.toWeb(req)` does): node's parser stops reading the socket for a destroyed request, so a
+   chunked body's rest sits unread and the close ends in a reset.
 
    **Many heads at once (REQ-11).** Media parts live in one flat namespace (`m/<hash>`), so checking that a long
    stream's parts are all there took one HEAD each, about 2,000 requests for a 2,000-part stream.
