@@ -160,7 +160,8 @@ describe("Cardboard 1.4.0 reads our .cbproj and we read its own", { skip }, () =
   });
 
   it("(b) Cardboard imports our .cbproj, zip64 or not, and the project opens with the same timeline", async () => {
-    // Carton's files in the bundle: none of them may travel, except what the export writes as its own entry.
+    // Carton's files in the bundle: none of them may travel, except what the export writes as its own entry. A person's
+    // or an agent's own files in .scratch/views/ do, as in 1.4.0 (only the view files Carton wrote are left out).
     const add = async (rel: string, data: string): Promise<void> => {
       const abs = path.join(bundle, ...rel.split("/"));
       await fsp.mkdir(path.dirname(abs), { recursive: true });
@@ -169,13 +170,16 @@ describe("Cardboard 1.4.0 reads our .cbproj and we read its own", { skip }, () =
     await add(".carton/carton.db", "not really sqlite");
     await add(".carton/displaced/1", "{}");
     await add(".carton-export/shallow.json", '{"stale":true}'); // as a received copy's import leaves it
-    await add(".scratch/views/director.tsx", "export default null;");
+    await add(".scratch/views/director.tsx", "// cardboard:rev main@3~deadbeef b:0a1b2c3d p:0f1e2d3c\nexport default null;");
+    await add(".scratch/views/director.status", JSON.stringify({ status: "confirmed", ref: "main@3~deadbeef b:0a1b2c3d", seq: 3, conflicts: [], diagnostics: [], change: "c-1", at: 1 }));
     await add(".scratch/notes – ü.md", "keep me");
+    await add(".scratch/views/plan – ü.md", "a person's plan, next to the views");
+    await add(".scratch/views/draft.tsx", "export default function Draft() { return null; }");
 
     const walked = await walkBundle(bundle);
     const names = walked.map((f) => f.archivePath);
-    assert.ok(names.includes(".scratch/notes – ü.md"));
-    assert.ok(!names.some((n) => n.startsWith(".carton") || n.startsWith(".scratch/views")));
+    for (const n of [".scratch/notes – ü.md", ".scratch/views/plan – ü.md", ".scratch/views/draft.tsx"]) assert.ok(names.includes(n), n);
+    assert.ok(!names.some((n) => n.startsWith(".carton") || n.startsWith(".scratch/views/director.")));
 
     const reader = await ZipReader.open(theirs);
     const manifest = await reader.readEntry(MANIFEST, MANIFEST_MAX_BYTES);
@@ -202,9 +206,11 @@ describe("Cardboard 1.4.0 reads our .cbproj and we read its own", { skip }, () =
 
       const at = (rel: string): string => path.join(project.bundlePath, ...rel.split("/"));
       assert.equal(await fsp.readFile(at(".scratch/notes – ü.md"), "utf8"), "keep me");
+      assert.equal(await fsp.readFile(at(".scratch/views/plan – ü.md"), "utf8"), "a person's plan, next to the views");
+      assert.equal(await fsp.readFile(at(".scratch/views/draft.tsx"), "utf8"), "export default function Draft() { return null; }");
       assert.equal(await fsp.readFile(at(SHALLOW_ENTRY), "utf8"), shallow); // Cardboard extracts every member
       assert.equal(fs.existsSync(at(".carton")), false);
-      assert.equal(fs.existsSync(at(".scratch/views")), false);
+      assert.deepEqual(fs.readdirSync(at(".scratch/views")).sort(), ["draft.tsx", "plan – ü.md"], "Carton's view and sidecar never came");
     }
   });
 
