@@ -3,6 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMemoryBlobStore } from "@carton/blob-memory";
+import { putCreated } from "@carton/blob-memory/rules";
 import { mediaHash, manifestKey, mediaKey, webCryptoHasher, LEAF_SIZE } from "@carton/media";
 import { projectMediaStore, isTeamMediaStore, mediaLockScope } from "../src/team.ts";
 
@@ -151,4 +152,15 @@ test("the media lock's scope is the physical path: two adapters over one bucket 
   assert.notEqual(scope("a"), scope("b"), "two projects apart: two locks");
   assert.equal(scope("a", "t1"), scope("b", "t1"), "one team: one lock");
   assert.notEqual(scope("a", "t1"), scope("a", "t2"));
+});
+
+// Round 3: a create-only signed PUT answers 412 by the store's own outcome (PUT_CREATED); the team copy must keep it.
+test("a create-only put says whether it created the object, through the team copy and a project's own keys", async () => {
+  const { a, b, bytes, m, key, mf } = await setup();
+  assert.equal(putCreated(await a.put(mf, m.bytes, { ifAbsent: true })), true);
+  assert.equal(putCreated(await a.put(key, bytes, { ifAbsent: true })), true);
+  assert.equal(putCreated(await b.put(mf, m.bytes, { ifAbsent: true })), false, "the team holds a sound copy");
+  assert.equal(putCreated(await b.put(key, bytes, { ifAbsent: true })), false);
+  assert.equal(putCreated(await a.put("px/p", new Uint8Array([1]), { ifAbsent: true })), true);
+  assert.equal(putCreated(await a.put("px/p", new Uint8Array([2]), { ifAbsent: true })), false);
 });

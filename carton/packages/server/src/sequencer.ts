@@ -51,6 +51,25 @@ export interface ConnectionState {
   deadEpoch: number;
   /** The client reads envelopes (its hello said so): messages over 1 MiB go to it as blob references. */
   envelopes?: boolean;
+  /**
+   * Who this connection shows on each branch's other screens: actors whose latest presence there wasn't `null`. When
+   * it disconnects (closed, crashed, timed out), each is sent to the branch's others with `state: null`, since a client
+   * that crashed or lost its network never sends its own. Kept here so a host that keeps this state across
+   * hibernation (the Durable Object's socket attachment) keeps these too; so it stays small: at most
+   * PRESENCE_SHOWN_MAX actors, of ids no longer than PRESENCE_ID_MAX (an actor beyond either is relayed, not kept).
+   */
+  shown?: ShownPresence[];
+  /**
+   * The connection's identity changes left (`tokens`, IDENTITY_BURST at most, one back every IDENTITY_EVERY_MS) as of
+   * `at`. Kept here, not beside the connection, so a socket restored after hibernation has no fresh burst.
+   */
+  identity?: { tokens: number; at: number };
+}
+
+/** An actor a connection shows on a branch: only what names it (`actorKey`: kind, id, agentId). */
+export interface ShownPresence {
+  branchId: string;
+  actor: { kind: sync.PresenceFanoutMsg["actor"]["kind"]; id: string; agentId?: string };
 }
 
 /** A host's connection. `state`, when present, is where the sequencer keeps this connection's protocol state. */
@@ -233,13 +252,23 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   const conns = new Map<string, HostConnection>();
   const stateOf = (c: HostConnection): ConnectionState => (c.state ??= { subs: [], deadEpoch: -1 });
   const attach = (c: SequencerConnection) => {
+    // a connection that replaces another under its id (a host restoring a socket): the old one's sends, presence cap
+    // and waiting presence go with it, never to the replacement
+    const was = conns.get(c.id);
+    if (was && was !== c) retire(was);
     conns.set(c.id, c as HostConnection);
     stateOf(c as HostConnection);
   };
+  /** What the sequencer holds for a connection besides its state, keyed by the connection itself (never its id). */
+  function retire(c: HostConnection): void {
+    outboxes.delete(c);
+    presenceBuckets.delete(c);
+    clearTrailing(c);
+  }
 
   // ---------------------------------------------------------------- sending: in order, oversized ones as envelopes
   const envelopeBytes = opts.envelopeBytes ?? sync.ENVELOPE_BYTES;
-  const outboxes = new Map<string, sync.Outbox<ServerMessage>>();
+  const outboxes = new Map<HostConnection, sync.Outbox<ServerMessage>>();
   /** The envelope for `msg` when it is over the threshold (its upload started); null: it goes inline. */
   function sealed(msg: ServerMessage): Promise<sync.EnvelopeMsg> | null {
     if (!opts.blobs || !MAYBE_BIG.has(msg.type)) return null;
@@ -249,10 +278,16 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const now = clock();
     return sync.seal(big, opts.blobs, (sha) => sync.serverEnvelopeKey(sha, now));
   }
-  /** Send on `c` after what was sent before; `env`: the envelope already made for this message (a fan-out's). */
+  const attached = (c: HostConnection) => conns.get(c.id) === c;
+  /**
+   * Send on `c` after what was sent before; `env`: the envelope already made for this message (a fan-out's). Only to
+   * an attached connection: one gone or replaced (a message of its still queued, an envelope still uploading) gets
+   * nothing more, and no outbox is made for it again.
+   */
   function send(c: HostConnection, msg: ServerMessage, env?: Promise<sync.EnvelopeMsg> | null): void {
-    let out = outboxes.get(c.id);
-    if (!out) outboxes.set(c.id, (out = new sync.Outbox((m) => c.send(m))));
+    if (!attached(c)) return;
+    let out = outboxes.get(c);
+    if (!out) outboxes.set(c, (out = new sync.Outbox((m) => void (attached(c) && c.send(m)))));
     const e = stateOf(c).envelopes ? (env === undefined ? sealed(msg) : env) : null;
     out.push(msg, e ?? undefined);
   }
@@ -498,8 +533,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   type ClosureKeyframe = { branch: string; seq: number; hash: string; where: { blob: string } | { inline: string } };
   function writeBranch(rec: CutRecord, init: BranchInit, rows: readonly Row[], adoptKey: string | null, kf: { blob: string } | { inline: string } | null, rids?: string, closureKfs: readonly ClosureKeyframe[] = []): void {
     const root = init.rootSeq ?? 0;
+    const handed: string[] = []; // the uploaded rows' rids this hand-off bound to the uploader
     try {
       tables.transaction(() => {
+        handed.length = 0;
         tables.insertBranch({ id: rec.id, rec, forkOf: init.forkOf ?? null, root, since: root + rows.length, adoptKey, ...(init.closure?.length ? { closure: init.closure.map((t) => t.branchId) } : {}) });
         if (kf) tables.putKeyframe(rec.id, root, init.stateHash ?? "", kf);
         const doc = init.doc0 as Record<string, unknown> | null;
@@ -511,7 +548,10 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
           const clean = rowFrom(row, rec.id, row.seq);
           const stored = { paths: rules.storedPaths(clean), structural: rules.isStructural(clean.ops, clean.intent, timeline) };
           tables.append(rec.id, clean, stored, recordWritesOf(clean.ops), { inline: Tables.body(clean) });
-          if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) tables.bindRid(ridOf(row.id), rids);
+          if (rids !== undefined && controls.bindRid !== false && typeof row.id === "string" && tables.ridOwner(ridOf(row.id)) === undefined) {
+            tables.bindRid(ridOf(row.id), rids);
+            handed.push(ridOf(row.id));
+          }
         }
         for (const t of init.closure ?? []) {
           const had = tables.branch(t.branchId);
@@ -530,6 +570,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       tables.forget(rec.id);
       throw e;
     }
+    // committed: the uploader's earlier edits are told by person (a rolled-back hand-off told nothing)
+    if (rids !== undefined) announce(rids, handed);
   }
 
   /**
@@ -575,9 +617,63 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const bound = tables.ridOwner(rid);
     if (bound === undefined) {
       tables.bindRid(rid, who);
+      announce(who, [rid]); // before the row it binds fans out
       return true;
     }
     return bound === who;
+  }
+
+  // ---------------------------------------------------------------- people (windows-sync R3)
+  // A device credential's person: who a generic "person" author is, resolved by the change's rid (bound to the
+  // credential, §6.3). Kept beside the rows, never in them. A replica sets only its own credential's entry, under its
+  // session's account; the name is its own choice. A reader scoped to some cuts (a Published cut's watch link) learns
+  // none of it: its welcome says `people: []` and no `people` message reaches it, so a link never tells a stranger
+  // the team's accounts and names.
+  const seesPeople = (c: HostConnection) => WRITE_ROLES.has(c.auth.role) || !c.auth.branches;
+  /** A change to the people, to every connection of the project that may see them, once per cut it follows (the sync
+   * client is per cut); a connection still paging its welcome gets the whole list on its last page. */
+  function toPeople(people: sync.PersonRids[]): void {
+    // a hello's claim binds up to 4096 rids: over the threshold, each cut's message goes as one envelope, for everyone
+    const sent = new Map<string, { msg: ServerMessage; env?: Promise<sync.EnvelopeMsg> | null }>();
+    for (const c of conns.values()) {
+      if (!seesPeople(c)) continue;
+      for (const b of stateOf(c).subs) {
+        let m = sent.get(b);
+        if (!m) sent.set(b, (m = { msg: { type: "people", branchId: b, people } }));
+        if (stateOf(c).envelopes && m.env === undefined) m.env = sealed(m.msg);
+        send(c, m.msg, m.env ?? null);
+      }
+    }
+  }
+  /** rids newly bound to `credential`, told when it has a person. */
+  function announce(credential: string, rids: string[]): void {
+    if (!rids.length) return;
+    const p = tables.person(credential);
+    if (p) toPeople([{ ...p, rids }]);
+  }
+  function identityAllowed(c: HostConnection): boolean {
+    const now = clock(),
+      st = stateOf(c),
+      was = st.identity;
+    const tokens = was ? Math.min(IDENTITY_BURST, was.tokens + Math.max(0, now - was.at) / IDENTITY_EVERY_MS) : IDENTITY_BURST;
+    if (tokens < 1) return false;
+    // a new object: a host comparing the state before and after a message sees the change (the attachment)
+    st.identity = { tokens: tokens - 1, at: now };
+    return true;
+  }
+  /** `hello.identity` or an `identity` message: refused with an error (the connection stays), or recorded and told. */
+  function identify(c: HostConnection, who: unknown): void {
+    const p = (who && typeof who === "object" ? who : {}) as { id?: unknown; name?: unknown };
+    if (p.id !== c.auth.account) return send(c, { type: "error", code: "forbidden", reason: `identity: ${JSON.stringify(typeof p.id === "string" ? p.id.slice(0, 100) : p.id ?? null)} isn't this session's account` });
+    const name = typeof p.name === "string" ? p.name.trim() : "";
+    const chars = [...name].length;
+    if (chars < 1 || chars > PERSON_NAME_MAX || CONTROL_CHARS.test(name)) return send(c, { type: "error", code: "bad-request", reason: `identity: the name must be 1-${PERSON_NAME_MAX} characters, none of them control characters` });
+    const cred = credentialOf(c);
+    const was = tables.person(cred);
+    if (was?.id === p.id && was.name === name) return;
+    if (!identityAllowed(c)) return send(c, { type: "error", code: "bad-request", reason: "identity: changed too often; try again in a minute" });
+    tables.setPerson(cred, p.id, name);
+    toPeople([{ id: p.id, name, rids: tables.ridsOfPerson(cred) }]); // the sender's copy confirms it
   }
 
   /** May this connection write to `branchId` (role and the token's cut scope, §14)? Checked by every mutation. */
@@ -616,16 +712,22 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
     if (controls.helloRidClaim !== false && controls.bindRid !== false && WRITE_ROLES.has(c.auth.role)) {
       const who = credentialOf(c);
+      const fresh: string[] = [];
       for (const rid of (m.rids ?? []).slice(0, 4096)) {
         if (typeof rid !== "string") continue;
         const bound = tables.ridOwner(rid);
-        if (bound === undefined) tables.bindRid(rid, who);
-        else if (bound !== who) {
+        if (bound === undefined) {
+          tables.bindRid(rid, who);
+          fresh.push(rid);
+        } else if (bound !== who) {
           stats.ridClaimConflicts++;
           emit({ type: "ridClaimConflict", rid });
         }
       }
+      announce(who, fresh);
     }
+    // the sender's person before its welcome is built, so the welcome holds it (an old client sends none)
+    if (m.identity !== undefined) identify(c, m.identity);
     const head = tables.head(m.branchId);
     const claimsAfter = Number.isInteger(m.claimsAfter) ? (m.claimsAfter as number) : -1;
     const { list: confirmed, uncheckedFrom, checkedThrough } = confirmedOf(m.branchId, m.pending, { after: claimsAfter, budget: catchupBytes });
@@ -653,11 +755,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       } else if (from < b.root) return send(c, { type: "error", reason: `no state at or after ${b.root} for ${m.branchId}` });
     }
     budget -= sync.jsonBytesBound(confirmed, Infinity); // the confirmed-id list is part of the page too
+    // every page that subscribes or may (rows, a keyframe) holds the people, [] too: it says this server keeps them
+    budget -= sync.jsonBytesBound(seesPeople(c) ? tables.people() : [], Infinity);
     // by rows and by bytes: the client asks again while `more`. With a keyframe the page may hold no row (the keyframe
     // is its progress); without one it holds at least one (a big single row then goes as an envelope).
     const rows = await readRows(m.branchId, from, catchup, budget, !keyframe);
     const last = rows.length ? rows[rows.length - 1]!.seq : from;
-    const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed };
+    // taken after the rows' read, so no change to them can fall between this list and the subscription below
+    const msg: sync.WelcomeMsg = { type: "hello", branchId: m.branchId, head, rows, confirmed, people: seesPeople(c) ? tables.people() : [] };
     if (keyframe) msg.keyframe = keyframe;
     // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
     const src = publishedSource(b.rec);
@@ -937,13 +1042,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   // Per connection, a token bucket: PRESENCE_BURST updates at once, refilled at PRESENCE_PER_SEC. Clients send at most
   // 10 a second (the sync client coalesces); anything over the cap is dropped, so a misbehaving client can't make the
   // relay, and on a Durable Object the fan-out work, grow with its sending rate.
-  const presenceBuckets = new Map<string, { tokens: number; at: number }>();
+  const presenceBuckets = new Map<HostConnection, { tokens: number; at: number }>();
   function presenceAllowed(c: HostConnection): boolean {
     const now = clock();
-    const b = presenceBuckets.get(c.id) ?? { tokens: PRESENCE_BURST, at: now };
+    const b = presenceBuckets.get(c) ?? { tokens: PRESENCE_BURST, at: now };
     b.tokens = Math.min(PRESENCE_BURST, b.tokens + ((now - b.at) / 1000) * PRESENCE_PER_SEC);
     b.at = now;
-    presenceBuckets.set(c.id, b);
+    presenceBuckets.set(c, b);
     if (b.tokens < 1) return false;
     b.tokens -= 1;
     return true;
@@ -952,41 +1057,64 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   // The latest presence a connection had dropped by its cap, per branch, relayed when its bucket refills: a burst
   // (updates that queued behind an envelope upload, say) may lose its middle, never its end, so a drag's last position
   // or its `state: null` always reaches each branch's others. The rate itself stays per connection.
-  const presenceTrailing = new Map<string, Map<string, { msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>>();
-  function clearTrailing(id: string, branchId?: string): void {
-    const byBranch = presenceTrailing.get(id);
+  const presenceTrailing = new Map<HostConnection, Map<string, { msg: sync.PresenceFanoutMsg; timer: ReturnType<typeof setTimeout> }>>();
+  function clearTrailing(c: HostConnection, branchId?: string): void {
+    const byBranch = presenceTrailing.get(c);
     if (!byBranch) return;
     for (const [b, t] of byBranch) {
       if (branchId !== undefined && b !== branchId) continue;
       clearTimeout(t.timer);
       byBranch.delete(b);
     }
-    if (byBranch.size === 0) presenceTrailing.delete(id);
+    if (byBranch.size === 0) presenceTrailing.delete(c);
+  }
+
+  // Who a connection shows (ConnectionState.shown), noted as each presence is accepted, so a leave is owed for every
+  // actor whose last word wasn't `null`, whether or not the rate cap has relayed that word yet.
+  const sameActor = (a: ShownPresence["actor"], b: sync.PresenceFanoutMsg["actor"]) => a.kind === b.kind && a.id === b.id && a.agentId === (b.agentId ?? undefined);
+  function noteShown(c: HostConnection, branchId: string, actor: sync.PresenceFanoutMsg["actor"], showing: boolean): void {
+    const st = stateOf(c);
+    const i = st.shown?.findIndex((s) => s.branchId === branchId && sameActor(s.actor, actor)) ?? -1;
+    if (!showing) {
+      if (i < 0) return;
+      st.shown!.splice(i, 1);
+      if (st.shown!.length === 0) delete st.shown;
+      return;
+    }
+    if (i >= 0 || (st.shown?.length ?? 0) >= PRESENCE_SHOWN_MAX) return;
+    const { kind, id, agentId } = actor;
+    if (typeof kind !== "string" || typeof id !== "string" || id.length > PRESENCE_ID_MAX || branchId.length > PRESENCE_ID_MAX) return;
+    if (agentId !== undefined && (typeof agentId !== "string" || agentId.length > PRESENCE_ID_MAX)) return;
+    (st.shown ??= []).push({ branchId, actor: { kind, id, ...(agentId !== undefined ? { agentId } : {}) } });
   }
 
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
-    if (!stateOf(c).subs.includes(m.branchId)) return;
+    // a connection gone while its presence waited in the queue (behind another client's envelope read, say) said
+    // its last: relayed now, nothing would ever take it back
+    // (or replaced: a socket that reconnected under the same id is another connection, with its own state)
+    if (conns.get(c.id) !== c || !stateOf(c).subs.includes(m.branchId)) return;
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
+    noteShown(c, m.branchId, actor, msg.state !== null);
     if (!presenceAllowed(c)) {
       stats.presenceDropped++;
-      const byBranch = presenceTrailing.get(c.id) ?? new Map();
-      presenceTrailing.set(c.id, byBranch);
+      const byBranch = presenceTrailing.get(c) ?? new Map();
+      presenceTrailing.set(c, byBranch);
       const waiting = byBranch.get(m.branchId);
       if (waiting) {
         waiting.msg = msg;
         return;
       }
-      const b = presenceBuckets.get(c.id)!;
+      const b = presenceBuckets.get(c)!;
       const ms = Math.max(1, Math.ceil(((1 - b.tokens) / PRESENCE_PER_SEC) * 1000));
       const branchId = m.branchId;
       const entry = {
         msg,
         timer: setTimeout(function relay() {
-          if (!conns.has(c.id) || !stateOf(c).subs.includes(branchId)) return clearTrailing(c.id, branchId);
+          if (conns.get(c.id) !== c || !stateOf(c).subs.includes(branchId)) return clearTrailing(c, branchId);
           // one token per relay, as any update; a connection with several branches waiting takes its turns
           if (!presenceAllowed(c)) {
             entry.timer = setTimeout(relay, Math.max(1, Math.ceil(1000 / PRESENCE_PER_SEC)));
@@ -994,7 +1122,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
             return;
           }
           byBranch.delete(branchId);
-          if (byBranch.size === 0) presenceTrailing.delete(c.id);
+          if (byBranch.size === 0) presenceTrailing.delete(c);
           fanout(branchId, entry.msg, c.id);
         }, ms),
       };
@@ -1002,7 +1130,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       byBranch.set(branchId, entry);
       return;
     }
-    clearTrailing(c.id, m.branchId); // this newer state supersedes the one waiting on its branch
+    clearTrailing(c, m.branchId); // this newer state supersedes the one waiting on its branch
     fanout(m.branchId, msg, c.id);
   }
 
@@ -1038,6 +1166,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         return onFork(c, msg);
       case "keyframe":
         return onKeyframe(c, msg);
+      case "identity":
+        return identify(c, msg.identity);
       case "presence":
         return onPresence(c, msg);
       case "history":
@@ -1071,10 +1201,26 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     },
     attach,
     disconnect(conn) {
-      conns.delete(conn.id);
-      outboxes.delete(conn.id);
-      presenceBuckets.delete(conn.id);
-      clearTrailing(conn.id);
+      const c = conn as HostConnection;
+      // once per connection; one already replaced under its id leaves its replacement be (another connection, which
+      // shows the same person), and was retired when the replacement came
+      if (conns.get(c.id) !== c) return retire(c);
+      conns.delete(c.id);
+      outboxes.delete(c);
+      presenceBuckets.delete(c);
+      // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
+      // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
+      // Not while another connection shows the same actor there: the same person reconnected (the old socket timed out
+      // after the new one began) or has a second tab, and the leave would wipe the cursor it still shows.
+      const shownElsewhere = (branchId: string, actor: ShownPresence["actor"] | sync.PresenceFanoutMsg["actor"]) => {
+        for (const o of conns.values()) if (stateOf(o).shown?.some((s) => s.branchId === branchId && sameActor(s.actor, actor as sync.PresenceFanoutMsg["actor"]))) return true;
+        return false;
+      };
+      for (const [, t] of presenceTrailing.get(c) ?? []) if (t.msg.state === null && !shownElsewhere(t.msg.branchId, t.msg.actor)) fanout(t.msg.branchId, t.msg, conn.id);
+      clearTrailing(c);
+      const st = stateOf(conn);
+      for (const s of st.shown ?? []) if (!shownElsewhere(s.branchId, s.actor)) fanout(s.branchId, { type: "presence", branchId: s.branchId, actor: s.actor, state: null }, conn.id);
+      delete st.shown;
     },
     cancelShare(branchId) {
       tables.dropBranch(branchId);
@@ -1142,7 +1288,7 @@ const MAINTAIN_EVERY_MS = 60 * 60 * 1000;
 /** A state digest (`hashDoc`: SHA-256, hex). */
 const SHA256 = /^[0-9a-f]{64}$/;
 /** Server messages that can be over the envelope threshold; the rest (acks, statuses, errors…) are never sized. */
-const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject", "history"]);
+const MAYBE_BIG: ReadonlySet<string> = new Set(["hello", "changes", "reject", "history", "people"]);
 
 /** History fields a change may carry into its row (fold-ins, undo, partial accept, names): stored in the body. */
 const HISTORY_FIELDS = ["kind", "supersedes", "mergeOf", "mergeEdges", "mergeBase", "reverts", "rejected", "lastAuthors", "name", "structural"] as const;
@@ -1222,9 +1368,19 @@ function utf8Over(text: string, limit: number): boolean {
 function declarationTooLarge(ch: Change): boolean {
   return (ch.paths?.length ?? 0) + (ch.reads?.length ?? 0) > 200_000 || (ch.spans?.length ?? 0) > 50_000 || (ch.trackOrder?.length ?? 0) > 10_000 || (ch.base?.pending?.length ?? 0) > 10_000;
 }
+/** At most this many actors per connection are kept for the leave on disconnect (ConnectionState.shown). */
+const PRESENCE_SHOWN_MAX = 4;
+/** Longest actor id, agent id or branch id kept for it (an attachment of a Durable Object's socket stays small). */
+const PRESENCE_ID_MAX = 200;
 /** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
 const PRESENCE_BURST = 20;
 const PRESENCE_PER_SEC = 20;
+/** A person's name (windows-sync R3): 1–200 characters after trimming, no control characters. */
+const PERSON_NAME_MAX = 200;
+const CONTROL_CHARS = /[\u0000-\u001f\u007f-\u009f]/;
+/** Changes to a person per connection: a burst of 5, then one every 12 s; each one is a row and a fan-out to everyone. */
+const IDENTITY_BURST = 5;
+const IDENTITY_EVERY_MS = 12_000;
 /** §18: changes older than the newest 10,000 move to R2, one segment per 10,000. */
 const ARCHIVE_KEEP = 10_000;
 const ARCHIVE_SEGMENT = 10_000;

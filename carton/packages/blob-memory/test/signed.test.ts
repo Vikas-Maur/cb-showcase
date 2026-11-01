@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { blobStoreSuite } from "@carton/conformance";
 import { MemoryBlobStore } from "../src/index.ts";
-import { createBlobUrlSigner, serveSignedBlob, parseRange } from "../src/signed.ts";
+import { createBlobUrlSigner, serveSignedBlob, parseRange, SHA256_HEADER } from "../src/signed.ts";
 
 // A memory store that signs URLs, answered in-process by serveSignedBlob: the suite's signed-URL test runs on it.
 let clock = Date.now();
@@ -14,7 +14,7 @@ class SigningMemoryStore extends MemoryBlobStore {
 }
 const store = new SigningMemoryStore();
 const local = (async (input: string | URL | Request, init?: RequestInit) => serveSignedBlob(new Request(input, init), store, signer)) as typeof fetch;
-blobStoreSuite("memory with signed URLs", async () => store, { fetch: local });
+blobStoreSuite("memory with signed URLs", async () => store, { fetch: local, reportsCreated: true });
 
 test("a signed URL is bound to its method, key and expiry", async () => {
   await store.put("clip.mp4", new Uint8Array([1, 2, 3]));
@@ -71,14 +71,65 @@ test("list pages in code-point order across the BMP / astral boundary (U+E000 so
   assert.deepEqual(second.blobs.map((b) => b.key), ["u/\u{10000}"]);
 });
 
-test("a signed PUT with If-None-Match: * creates only: an existing object keeps its bytes (the store's ifAbsent)", async () => {
-  await store.put("once.bin", new Uint8Array([1, 1]));
+test("a signed PUT with If-None-Match: * creates only: 412 when the key is there, and every answer carries the stored info", async () => {
+  await store.put("once.bin", new Uint8Array([1, 1]), { contentType: "a/first" });
   const put = await signer.sign("PUT", "once.bin", 60);
-  assert.equal((await local(put, { method: "PUT", body: new Uint8Array([2, 2, 2]), headers: { "if-none-match": "*" } })).status, 200);
+  const refused = await local(put, { method: "PUT", body: new Uint8Array([2, 2, 2]), headers: { "if-none-match": "*", "content-type": "a/second" } });
+  assert.equal(refused.status, 412);
+  const first = (await refused.json()) as { key: string; size: number; etag?: string; contentType?: string };
+  assert.deepEqual([first.key, first.size, first.contentType], ["once.bin", 2, "a/first"], "the earlier object's info");
+  assert.equal(refused.headers.get("etag"), first.etag ?? null);
   assert.deepEqual(await store.get("once.bin"), new Uint8Array([1, 1]));
   const fresh = await signer.sign("PUT", "fresh.bin", 60);
-  assert.equal((await local(fresh, { method: "PUT", body: new Uint8Array([3]), headers: { "if-none-match": "*" } })).status, 200);
+  const made = await local(fresh, { method: "PUT", body: new Uint8Array([3]), headers: { "if-none-match": "*", "content-type": "a/third" } });
+  assert.equal(made.status, 200);
+  assert.deepEqual(await made.json(), await store.head("fresh.bin"), "the new object's info, as head reports it");
   assert.deepEqual(await store.get("fresh.bin"), new Uint8Array([3]));
   assert.equal((await local(put, { method: "PUT", body: new Uint8Array([4]) })).status, 200, "without the header a PUT replaces");
   assert.deepEqual(await store.get("once.bin"), new Uint8Array([4]));
+});
+
+// Round 3: the 412 was inferred from the kept object's size, digest and type, so a racing writer of other bytes of
+// the same size (or a multipart complete, with no digest) went unseen and both PUTs got 200.
+test("a create-only signed PUT that loses a race to bytes of the same size answers 412: the store says it created nothing", async () => {
+  const url = await signer.sign("PUT", "same-size.bin", 60);
+  const racing = {
+    kind: store.kind,
+    put: store.put.bind(store),
+    head: async () => {
+      await store.put("same-size.bin", new Uint8Array([7, 7, 7])); // theirs: 3 bytes, no digest
+      return null;
+    },
+  } as unknown as typeof store;
+  const r = await serveSignedBlob(new Request(url, { method: "PUT", body: new Uint8Array([1, 2, 3]), headers: { "if-none-match": "*" } }), racing, signer);
+  assert.equal(r.status, 412);
+  assert.deepEqual(await store.get("same-size.bin"), new Uint8Array([7, 7, 7]));
+});
+
+test("a store that doesn't say whether it created: 200 only when the client's digest proves the stored bytes are its own", async () => {
+  // the store's own outcome stripped, as a store from elsewhere might return it
+  const plain = { kind: store.kind, head: store.head.bind(store), put: async (...a: Parameters<typeof store.put>) => ({ ...(await store.put(...a)) }) } as unknown as typeof store;
+  const put = async (key: string, body: Uint8Array, digest?: string) =>
+    (await serveSignedBlob(new Request(await signer.sign("PUT", key, 60), { method: "PUT", body, headers: { "if-none-match": "*", ...(digest ? { [SHA256_HEADER]: digest } : {}) } }), plain, signer)).status;
+  const bytes = new Uint8Array([4, 5, 6]);
+  const sha = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex");
+  assert.equal(await put("proven.bin", bytes, sha), 200, "created, and the stored digest is the client's");
+  assert.equal(await put("unproven.bin", bytes), 412, "created, but nothing proves it: the answer still carries the info");
+  assert.deepEqual(await store.get("unproven.bin"), bytes);
+});
+
+test("a create-only signed PUT that loses a race to a writer the host doesn't serialize with answers 412 with that writer's info", async () => {
+  const url = await signer.sign("PUT", "raced.bin", 60);
+  // the other writer gets in between this host's head and its put
+  const racing = {
+    kind: store.kind,
+    put: store.put.bind(store),
+    head: async () => {
+      await store.put("raced.bin", new Uint8Array([9, 9, 9, 9]), { contentType: "a/theirs" });
+      return null;
+    },
+  } as unknown as typeof store;
+  const r = await serveSignedBlob(new Request(url, { method: "PUT", body: new Uint8Array([5]), headers: { "if-none-match": "*" } }), racing, signer);
+  assert.equal(r.status, 412);
+  assert.deepEqual([((await r.json()) as { size: number }).size, await store.get("raced.bin")], [4, new Uint8Array([9, 9, 9, 9])]);
 });

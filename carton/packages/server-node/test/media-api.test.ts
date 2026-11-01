@@ -209,7 +209,7 @@ test("§11 repair and a replacement racing it: the replacement waits for the che
   assert.deepEqual(await media.get(key, { offset: LEAF_SIZE, length: 4 }), bytes.subarray(LEAF_SIZE, LEAF_SIZE + 4), "the good replacement stands");
 });
 
-test("put with ifAbsent is one create-only PUT: an existing object stays, and its info comes back", async () => {
+test("put with ifAbsent is one create-only PUT and no read-back: an existing object stays (412), and its info comes back", async () => {
   const { h, token, media } = await host();
   const first = fill(300, 1);
   await media.put("m/once", first);
@@ -221,10 +221,49 @@ test("put with ifAbsent is one create-only PUT: an existing object stays, and it
   }) as typeof fetch;
   const client = hostMediaBlobs({ origin: h.httpUrl, projectId: "p", token, fetch: counted });
   const info = await client.put("m/once", fill(10, 2), { ifAbsent: true });
-  assert.deepEqual(calls, ["POST sign", "PUT blob", "GET head"], "no head before the PUT: the PUT itself is create-only");
-  assert.equal(info.size, 300, "the stored object's info, not the refused bytes'");
+  assert.deepEqual(calls, ["POST sign", "PUT blob"], "no head before the PUT (it is create-only), none after (its 412 says what is stored)");
+  assert.deepEqual(info, await media.head("m/once"), "the stored object's info, not the refused bytes'");
   assert.deepEqual(await media.get("m/once", { offset: 0, length: 4 }), first.subarray(0, 4));
-  assert.equal((await client.put("m/new", fill(7, 3), { ifAbsent: true })).size, 7);
+  calls.length = 0;
+  const made = await client.put("m/new", fill(7, 3), { ifAbsent: true, contentType: "image/png" });
+  assert.deepEqual(calls, ["POST sign", "PUT blob"]);
+  assert.deepEqual(made, await media.head("m/new"));
+});
+
+// A host from before the PUT answered with the stored info sends 200 and an etag whatever happened: put reads back.
+test("put with ifAbsent to a host that sends no stored info reads back what is stored", async () => {
+  const { h, token, media } = await host();
+  await media.put("m/old", fill(300, 1));
+  const calls: string[] = [];
+  const older = (async (u: string | URL | Request, i?: RequestInit) => {
+    const path = new URL(u instanceof Request ? u.url : String(u)).pathname;
+    calls.push(`${i?.method ?? "GET"} ${path.endsWith("/blobs/sign") ? "sign" : path.endsWith("/blobs/head") ? "head" : "blob"}`);
+    const r = await fetch(u, i);
+    if (i?.method !== "PUT") return r;
+    await r.body?.cancel();
+    const etag = r.headers.get("etag");
+    return new Response(null, { status: r.status === 412 ? 200 : r.status, headers: etag ? { etag } : {} });
+  }) as typeof fetch;
+  const client = hostMediaBlobs({ origin: h.httpUrl, projectId: "p", token, fetch: older });
+  assert.equal((await client.put("m/old", fill(10, 2), { ifAbsent: true })).size, 300);
+  assert.deepEqual(calls, ["POST sign", "PUT blob", "GET head"]);
+});
+
+// web-demo's report: a signed PUT kept only the content type, so the client's sha256 never reached the store.
+test("put with sha256 carries it through the signed PUT: the host refuses bytes that don't match, and head reports it", async () => {
+  const { h, token, media } = await host();
+  const bytes = fill(5000, 4);
+  const sha256 = Buffer.from(await crypto.subtle.digest("SHA-256", bytes)).toString("hex");
+  assert.equal((await media.put("px/poster", bytes, { contentType: "image/jpeg", sha256 })).sha256, sha256);
+  assert.equal((await media.head("px/poster"))?.sha256, sha256, "the store kept the digest");
+  const wrong = sha256.replace(/^./, (c) => (c === "0" ? "1" : "0"));
+  await assert.rejects(media.put("px/other", bytes, { sha256: wrong }), /400/);
+  assert.equal(await media.head("px/other"), null, "nothing was written");
+  // a raw signed PUT: the header must be a digest at all
+  const { url } = (await (await fetch(`${h.httpUrl}/api/projects/p/blobs/sign`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify({ key: "px/raw", method: "PUT" }) })).json()) as { url: string };
+  assert.equal((await fetch(url, { method: "PUT", body: bytes, headers: { "x-carton-sha256": "not-hex" } })).status, 400);
+  assert.equal((await fetch(url, { method: "PUT", body: bytes, headers: { "x-carton-sha256": sha256.toUpperCase() } })).status, 200, "hex in either case");
+  assert.equal((await media.head("px/raw"))?.sha256, sha256);
 });
 
 // Round 4 finding 2: the media lock is per physical scope. A host whose store pauses the repair's delete of `prefix`.

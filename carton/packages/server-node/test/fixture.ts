@@ -36,6 +36,8 @@ export async function nodeFixture(extra: Partial<NodeHostOptions> = {}): Promise
     transport: webSocketTransport({ keepaliveMs: 0 }),
     auth,
     ...issuer(auth),
+    // a silent socket is pinged after idleTimeoutMs and dropped after as long again
+    ...(extra.idleTimeoutMs ? { presenceTimeoutMs: 2 * extra.idleTimeoutMs } : {}),
     node: () => node,
     async restart() {
       await node.close();

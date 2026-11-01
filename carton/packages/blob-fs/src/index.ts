@@ -16,7 +16,7 @@ import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import { join, dirname, sep } from "node:path";
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkRange, checkPartNumber, checkCompleteParts, randomId, BlobError } from "@carton/blob-memory/rules";
+import { checkKey, checkRange, checkPartNumber, checkCompleteParts, randomId, BlobError, markCreated } from "@carton/blob-memory/rules";
 import { keyToSegments, decodeSegment, encodeSegment, OBJECT_SUFFIX, HASHED_DIR } from "./keys.ts";
 
 export { BadKeyError } from "./keys.ts";
@@ -183,7 +183,7 @@ export class FsBlobStore implements BlobStore {
     await this.#ready;
     if (opts.ifAbsent) {
       const existing = await this.head(key);
-      if (existing) return existing;
+      if (existing) return markCreated(existing, false);
     }
     await this.#mkdirp(dirname(file));
     const { tmp, fp } = await this.#writeTmp(async (fh) => {
@@ -195,7 +195,7 @@ export class FsBlobStore implements BlobStore {
     if (opts.ifAbsent) {
       if (!(await this.#linkIfAbsent(tmp, file))) {
         await unlink(tmp).catch(() => {});
-        return (await this.head(key))!;
+        return markCreated((await this.head(key))!, false);
       }
       if (meta) await this.#writeMeta(file, meta);
     } else {
@@ -209,7 +209,7 @@ export class FsBlobStore implements BlobStore {
     const info: BlobInfo = { key, size: data.byteLength, etag: `"${fp}"` };
     if (opts.contentType) info.contentType = opts.contentType;
     if (opts.sha256) info.sha256 = opts.sha256;
-    return info;
+    return opts.ifAbsent ? markCreated(info, true) : info;
   }
 
   // Atomic create-if-absent: a hard link fails with EEXIST if the key exists. FAT and exFAT have no hard links

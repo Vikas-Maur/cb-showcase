@@ -98,6 +98,91 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       assert.equal(opened, false, "a bad token opened a socket");
     });
 
+    // web-demo's REQ-10: a create-only PUT costs no read-back. S3 and R2 answer 412 when the key is there.
+    test("a signed PUT with If-None-Match: * answers 412 when the key is there, and both answers carry the stored info", async () => {
+      const p = project();
+      const o = await owner(p);
+      const url = async (key: string) => ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method: "PUT", expiresIn: 60 } })).json()) as { url: string }).url;
+      const head = async (key: string) => (await (await call(`/api/projects/${p}/blobs/head?key=${encodeURIComponent(key)}`, { token: o.token })).json()) as Record<string, unknown>;
+      const first = enc.encode("the first writer's bytes");
+      const made = await fetch(await url("media/once"), { method: "PUT", body: first, headers: { "if-none-match": "*", "content-type": "image/png" } });
+      assert.equal(made.status, 200);
+      const info = (await made.json()) as Record<string, unknown>;
+      assert.equal(info.size, first.byteLength);
+      assert.equal(info.contentType, "image/png");
+      assert.equal(made.headers.get("etag"), (info.etag as string | undefined) ?? null);
+      const stored = await head("media/once");
+      for (const k of ["size", "etag", "contentType"] as const) assert.equal(info[k], stored[k], k);
+      const again = await fetch(await url("media/once"), { method: "PUT", body: enc.encode("another"), headers: { "if-none-match": "*", "content-type": "text/plain" } });
+      assert.equal(again.status, 412);
+      const kept = (await again.json()) as Record<string, unknown>;
+      for (const k of ["size", "etag", "contentType"] as const) assert.equal(kept[k], stored[k], `the first object's ${k}`);
+      const get = ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key: "media/once", method: "GET", expiresIn: 60 } })).json()) as { url: string }).url;
+      assert.deepEqual(new Uint8Array(await (await fetch(get)).arrayBuffer()), first, "the first writer's bytes stay");
+    });
+
+    // Round 3: two create-only PUTs racing on a key the host doesn't lock both got 200 when their bodies had one size.
+    test("create-only signed PUTs racing on one key: exactly one 200, and the stored bytes are its body", async () => {
+      const p = project();
+      const o = await owner(p);
+      const sign = async (key: string, method: string) => ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method, expiresIn: 60 } })).json()) as { url: string }).url;
+      for (let i = 0; i < 6; i++) {
+        const key = `media/race-${i}`;
+        const bodies = [enc.encode(`first-${i}`), enc.encode(`other-${i}`)]; // the same size
+        const [u1, u2] = [await sign(key, "PUT"), await sign(key, "PUT")];
+        const rs = await Promise.all([fetch(u1, { method: "PUT", body: bodies[0], headers: { "if-none-match": "*" } }), fetch(u2, { method: "PUT", body: bodies[1], headers: { "if-none-match": "*" } })]);
+        for (const r of rs) await r.body?.cancel();
+        const statuses = rs.map((r) => r.status);
+        assert.deepEqual([...statuses].sort(), [200, 412], `${key}: ${statuses}`);
+        const stored = new Uint8Array(await (await fetch(await sign(key, "GET"))).arrayBuffer());
+        assert.deepEqual(stored, bodies[statuses.indexOf(200)], `${key}: the 200's bytes are what is stored`);
+      }
+    });
+
+    // REQ-11: media's reuse check of a long stream heads every part. One request answers up to 1,000 keys, for a prefix
+    // of them when the host's budget is smaller (the client asks again for the rest).
+    test("POST /blobs/heads: HEAD's answer for each key, in order, by HEAD's rules; at most 1,000 keys and 1 MiB", async () => {
+      const p = project();
+      const o = await owner(p);
+      const hexOf = (i: number) => i.toString(16).padStart(64, "0");
+      const a = `m/${hexOf(0xa)}`, b = `m/${hexOf(0xb)}`;
+      for (const [key, body] of [[a, "abc"], [b, "hello"]] as const) {
+        const url = ((await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: o.token, json: { key, method: "PUT", expiresIn: 60 } })).json()) as { url: string }).url;
+        assert.ok((await fetch(url, { method: "PUT", body: enc.encode(body) })).ok);
+      }
+      const heads = (keys: unknown, token = o.token) => call(`/api/projects/${p}/blobs/heads`, { method: "POST", token, json: { keys } });
+      const all = async (keys: string[], token = o.token) => {
+        const out: unknown[] = [];
+        while (out.length < keys.length) {
+          const r = await heads(keys.slice(out.length, out.length + 1000), token);
+          assert.equal(r.status, 200);
+          const { blobs } = (await r.json()) as { blobs: unknown[] };
+          assert.ok(blobs.length >= 1 && blobs.length <= Math.min(1000, keys.length - out.length), `${blobs.length} answers`);
+          out.push(...blobs);
+        }
+        return out;
+      };
+      const keys = Array.from({ length: 1300 }, (_, i) => (i % 5 === 0 ? a : i % 5 === 1 ? b : `m/${hexOf(i)}`));
+      assert.deepEqual(await all(keys), keys.map((k) => (k === a ? { size: 3 } : k === b ? { size: 5 } : null)));
+      assert.deepEqual(await (await heads([])).json(), { blobs: [] });
+      // caps, and keys a store refuses: the whole request is refused
+      assert.equal((await heads(Array(1001).fill(a))).status, 400);
+      for (const bad of [a, [a, 7], [a, "m/../x"]]) assert.equal((await heads(bad)).status, 400, JSON.stringify(bad));
+      assert.equal((await call(`/api/projects/${p}/blobs/heads`, { method: "POST", token: o.token, json: { keys: [a], pad: "x".repeat(1024 * 1024) } })).status, 413);
+      // 1,000 long keys fit (a project's scope leaves about 1,000 bytes a key; short segments, for POSIX-backed stores)
+      const long = Array.from({ length: 1000 }, (_, i) => `m/${String(i).padStart(4, "0")}/${`${"x".repeat(99)}/`.repeat(9)}end`);
+      assert.equal((await heads(long)).status, 200, "1,000 keys of 910 bytes fit");
+      // HEAD's scope: a viewer heads anything; a watch link, media named by content only
+      const viewer = await joinAs(p, o.token, "viewer");
+      assert.deepEqual(await all([a, b], viewer), [{ size: 3 }, { size: 5 }]);
+      const inv = (await (await call(`/api/projects/${p}/invites`, { method: "POST", token: o.token, json: { role: "viewer", branches: ["pub-1"] } })).json()) as { invite: string };
+      const watcher = ((await (await call(`/api/projects/${p}/join`, { method: "POST", json: { invite: inv.invite, account: "watcher", installKey: installKey() } })).json()) as { token: string }).token;
+      assert.deepEqual(await all([a, b], watcher), [{ size: 3 }, { size: 5 }]);
+      assert.equal((await heads([a, "project.json"], watcher)).status, 403);
+      assert.equal((await heads([a])).status, 200);
+      assert.equal((await call(`/api/projects/${p}/blobs/heads`, { method: "POST", json: { keys: [a] } })).status, 401, "a session is needed");
+    });
+
     test("signed media URLs: PUT, then GET with ranges, bound to their key; viewers can't sign a PUT", async () => {
       const p = project();
       const o = await owner(p);

@@ -12,7 +12,7 @@
 //   ListParts, so a client that works here works on R2 too (AWS alone would accept unequal parts).
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError, type BlobErrorCode } from "@carton/blob-memory/rules";
+import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError, markCreated, type BlobErrorCode } from "@carton/blob-memory/rules";
 import { S3Client, S3Error, type FetchLike } from "./s3-client.ts";
 
 export { S3Client, S3Error, normalizeEtag, type S3ClientOptions, type FetchLike } from "./s3-client.ts";
@@ -78,12 +78,12 @@ export class S3BlobStore implements BlobStore {
       const info: BlobInfo = { key, size: data.byteLength, etag: r.etag };
       if (opts.contentType) info.contentType = opts.contentType;
       if (opts.sha256) info.sha256 = opts.sha256;
-      return info;
+      return opts.ifAbsent ? markCreated(info, true) : info;
     } catch (e) {
       // the key exists: a conditional write leaves it alone
       if (opts.ifAbsent && e instanceof S3Error && (e.status === 412 || e.code === "PreconditionFailed")) {
         const existing = await this.head(key);
-        if (existing) return existing;
+        if (existing) return markCreated(existing, false);
       }
       throw e;
     }

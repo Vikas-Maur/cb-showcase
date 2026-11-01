@@ -97,6 +97,8 @@ export interface DurableObjectState {
   acceptWebSocket(ws: CfWebSocket, tags?: string[]): void;
   getWebSockets(tag?: string): CfWebSocket[];
   setWebSocketAutoResponse(pair?: unknown): void;
+  /** When the runtime last answered this socket's auto-response request (its `ping`), or null. */
+  getWebSocketAutoResponseTimestamp?(ws: CfWebSocket): Date | null;
   blockConcurrencyWhile<T>(fn: () => Promise<T>): Promise<T>;
 }
 
