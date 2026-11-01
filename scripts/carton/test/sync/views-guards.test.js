@@ -168,8 +168,8 @@ test("#1 a view save on a shared cut waits for the lease: never left pending whi
 });
 
 test("a View released while it is still starting doesn't take the lease or timeline.tsx afterwards", opt, async () => {
-  // views.js as the worker runs it, with stand-ins for the packages: a Materializer whose start waits until told
-  const src = fs.readFileSync(path.join(ROOT, "scripts", "carton", "sync", "views.js"), "utf8").replace(/^import .*;\n/gm, "").replaceAll("export class ", "class ").replaceAll("export function ", "function ");
+  // views.js as the worker runs it, with stand-ins for the packages: a Materializer whose start waits until told (`\r?`: a Windows checkout has CRLF lines)
+  const src = fs.readFileSync(path.join(ROOT, "scripts", "carton", "sync", "views.js"), "utf8").replace(/^import .*;\r?\n/gm, "").replaceAll("export class ", "class ").replaceAll("export function ", "function ");
   let ext, open, go, leaseStarted = false, leaseStopped = false;
   const starting = new Promise((r) => (go = r));
   class Materializer { constructor() { this.freeze = {}; } async start() { await starting; } async close() {} }
