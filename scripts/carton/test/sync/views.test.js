@@ -124,3 +124,29 @@ test("the end-to-end tests' Carton view files read as Carton's", { skip }, async
     assert.equal(c.cartonView(path.join(p.views, n)), false, n);
   }
 });
+
+// The app's rule is a copy (the store bridge runs in Cardboard's own bundles, with Carton off too, where Carton's code
+// isn't loaded): it must tell every file as cardboard-adapter's cartonViewFile does, which its .cbproj export and
+// reader use.
+test("the store bridge's rule is cardboard-adapter's cartonViewFile, file for file", { skip }, async () => {
+  const { cartonViewFile } = await import(path.join(CARDBOARD, "src", "node", "cbproj", "walk.ts"));
+  const p = await printed();
+  const view = fs.readFileSync(p.view, "utf8"), status = JSON.parse(fs.readFileSync(p.status, "utf8"));
+  const files = {
+    ...S.cartonViewFiles("agent-x"), ...S.ownViewFiles(),
+    "crlf.tsx": view.replace(/\n/g, "\r\n"),
+    "Upper.TSX": view,
+    "late.tsx": "// x\n".repeat(20_000) + view, // the rev line past the first 64 KiB
+    "space name.tsx": view,
+    "extra.status": JSON.stringify({ ...status, mine: true }),
+    "error.status": JSON.stringify({ ...status, status: "error", error: "x" }),
+    "nostatus.status": JSON.stringify({ ...status, status: "done" }),
+    "array.status": "[]",
+    "empty.tsx": "",
+  };
+  for (const [n, d] of Object.entries(files)) fs.writeFileSync(path.join(p.views, n), d);
+  for (const n of [...Object.keys(files), path.basename(p.view), path.basename(p.status)]) {
+    const want = cartonViewFile(n, fs.readFileSync(path.join(p.views, n)));
+    for (const on of [false, true]) assert.equal(bridge(on).cartonView(path.join(p.views, n)), want, `${n} (Carton ${on ? "on" : "off"})`);
+  }
+});

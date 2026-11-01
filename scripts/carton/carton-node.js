@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi } from "@carton/react";
 import { viewCards, canon, sameCard } from "./sync/view-cards.js";
@@ -675,11 +675,13 @@ export const cardboard14 = {
   // H8: host Claude Code's hooks also tell the project's lease holder (the worker's Materializer) what the agent does:
   // a Read of timeline.tsx freezes it, a Write/Edit of it or project.json is credited to the agent, and a stop the
   // late-conflict hook lets through lets go (@carton/local's runHook and sendHookEvent: carton.db read-only for the
-  // lease row, then the holder's socket; never a helper). carton.db is where the facade's handles open it.
+  // lease row, then the holder's socket; never a helper). runHook also refuses an agent's Write/Edit of project.json
+  // (PLAN §6.4). The Stop hook's notices come from the carton.db that exists (in the bundle or app data, where the
+  // facade's handles open it), never one made or moved for a hook.
   async hook({ event, input, env, bundlePath }) {
     return runHook(event === "subagent-stop" ? "stop" : event, input, {
       env,
-      openStore: async () => (bundlePath ? (await open(bundlePath))?.store ?? null : null),
+      openStore: async () => (bundlePath ? openExistingProjectStore({ projectDir: bundlePath }) : null),
       projectDir: bundlePath ?? null,
       ...(bundlePath ? { send: (e) => sendHookEvent({ projectDir: bundlePath, ...e }) } : {}),
     });

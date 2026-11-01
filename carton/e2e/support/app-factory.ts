@@ -15,7 +15,7 @@ import type { Actor, HostAdapter } from "@carton/core";
 import { openSqliteStore } from "@carton/store-sqlite";
 import { cardboardAdapter, cardboardFilesHost, jsonTimelineCodec, type TimelineCodec } from "@carton/cardboard";
 import { Materializer, readProjectForImport } from "@carton/cardboard/node";
-import { CartonHolderEngine, CartonMaterializerEngine, nodeHasher, localGroup } from "@carton/local";
+import { CartonHolderEngine, cartonMaterializerEngine, nodeHasher, localGroup } from "@carton/local";
 import type { HelperFactoryOptions, HolderEngine } from "@carton/local";
 import { webSocketTransport } from "@carton/server-node";
 
@@ -50,7 +50,7 @@ export async function createHolderEngine({ dbPath, config }: HelperFactoryOption
   });
   const mz = new Materializer({
     bundle: projectDir,
-    engine: new CartonMaterializerEngine(carton),
+    engine: cartonMaterializerEngine(carton),
     host: cardboardFilesHost,
     codec: await codecFor(config.codec),
     ...(config.remoteRewriteMs !== undefined ? { remoteRewriteMs: Number(config.remoteRewriteMs) } : {}),

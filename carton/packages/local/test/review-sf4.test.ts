@@ -12,12 +12,11 @@ import type { AuthContext, AuthProvider, Store } from "@carton/core/plugins";
 import { createMemoryStore } from "@carton/store-memory";
 import { createInProcessHost } from "@carton/server";
 import { jsonTimelineCodec } from "@carton/cardboard";
-import { Materializer, viewPath, statusPath } from "@carton/cardboard/node";
+import { cartonMaterializerEngine, Materializer, viewPath, statusPath } from "@carton/cardboard/node";
 import { findRev } from "../../cardboard/src/header.ts";
 import { sqliteStorage } from "../../conformance/src/system/sqlite.ts";
 import { runWrite, actorKey } from "../src/writes.ts";
 import { CartonHolderEngine } from "../src/open.ts";
-import { CartonMaterializerEngine } from "../src/materializer-engine.ts";
 import { adapter, doc0, schema } from "./support/real.ts";
 import { scratch } from "./support/scratch.ts";
 
@@ -168,7 +167,7 @@ test("a card-only file save retried keeps its author's cards once", async () => 
   const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor });
   const dir = mkdtempSync(join(scratch(), "sf4-cards-"));
   writeFileSync(join(dir, "project.json"), JSON.stringify({ project: doc0() }));
-  const engine = new CartonMaterializerEngine(c);
+  const engine = cartonMaterializerEngine(c);
   const host = { fromProject: (p: any) => ({ name: p.name, tracks: p.tracks, timelineItems: p.timelineItems }), toProject: (d: any, cur: any) => ({ ...cur, name: d.name, tracks: d.tracks, timelineItems: d.timelineItems }), merge3: (_b: any, _o: any, t: any) => t, diagnose: () => [] };
   const mz = new Materializer({ bundle: dir, engine, host, codec: jsonTimelineCodec, writeProject: false });
   try {
@@ -209,12 +208,16 @@ test("a real view save whose answer comes before its save returns: the sidecar e
   const c = await sharedHandle(w, store);
   const dir = mkdtempSync(join(scratch(), "sf4-early-"));
   writeFileSync(join(dir, "project.json"), JSON.stringify({ project: doc0() }));
-  const engine = new CartonMaterializerEngine(c);
+  const engine = cartonMaterializerEngine(c);
   const host = { fromProject: (p: any) => ({ name: p.name, tracks: p.tracks, timelineItems: p.timelineItems }), toProject: (d: any, cur: any) => ({ ...cur, name: d.name, tracks: d.tracks, timelineItems: d.timelineItems }), merge3: (_b: any, _o: any, t: any) => t, diagnose: () => [] };
   const mz = new Materializer({ bundle: dir, engine, host, codec: jsonTimelineCodec, writeProject: false });
   const holder = new CartonHolderEngine(c, { materializer: mz });
   try {
     await mz.start();
+    // the holder's engine reads the cut as shared at head(), with no option (R5-05's spacing; the wrapper's job before
+    // b4c9b5f). Not before a head() read: a writeProject:false materializer's start reads none (flagged to cardboard-adapter)
+    await engine.head();
+    assert.equal(engine.shared(), true, "the holder's engine reads the cut as shared, with no option");
     await mz.printView("v", actor);
     // the server answers while the save is still being processed (before the view records it as its last change)
     const commit = engine.commit.bind(engine);

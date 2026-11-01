@@ -469,10 +469,9 @@ The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases
 
 **Where it's still incomplete (2026-10-31).** History, cuts, fold, credits and `undo --turn` work in `cb` on real
 Carton. Live sync and sharing, media for shared projects, `cb`'s cloud mode and `.cbproj` with "Bring in their
-changes" work in the app's real library worker. All of it is tested on Linux with Cardboard's own bundles. Not wired
-yet:
-- per-agent view files and their `.status`, the shared `timeline.tsx` freeze during an agent's turn, and the agent
-  prompt that describes them;
+changes" work in the app's real library worker, and so do per-agent views, the `timeline.tsx` freeze during an
+agent's turn and the agent prompt that describes them (a Director turn end to end: `director-turn.test.js`). All of it
+is tested on Linux with Cardboard's own bundles. Not wired yet:
 - Carton's merge in an apply's preview (the preview is Cardboard's own; the commit that follows merges with Carton);
 - the engine thread (the worker commits on its own thread).
 
@@ -491,11 +490,15 @@ run below.
    there, so it took Carton's header for none and merged against the current timeline, reverting newer edits.)
 3. A `.cbproj` never carries `.carton\` or Carton's view files in `.scratch\views\` (on or off: the database holds
    local paths); anything else in `.scratch\views\` goes in.
-4. `cb`: the commands, WHO in `cb history`, `undo --turn`, the MCP tools, and a `cb carton-hook` command host Claude
-   Code runs for its hooks.
+4. `cb`: the commands, WHO in `cb history`, `undo --turn`, the MCP tools, `cb source print --view <name>` (an agent's
+   own view, below), and a `cb carton-hook` command host Claude Code runs for its hooks (which also tell the app what
+   the agent reads and writes, below).
 5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent; `Stop` and
-   `SubagentStop` hand a late conflict back to the agent once; the GUI save's base reaches the worker; `carton:call`
-   for the pages.
+   `SubagentStop` hand a late conflict back to the agent once (then the cards it left are the person's); the
+   Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below); the GUI save's base
+   reaches the worker; `carton:call` for the pages. With Carton on, every agent's instructions (its system prompt and
+   the `AGENTS.md` Cardboard writes into each bundle) describe the per-agent view; with Carton off they are
+   Cardboard's, word for word.
 6. The editor: the save names the version it was made on; a change from elsewhere is adopted without an undo step
    (a pending save goes first); Ctrl+Z goes to Carton; ripple and split deletes record what they moved; the History tab.
 7. Cardboard's own `timeline.tsx` printer and parser, in both copies, for Carton's prints of the timeline (per-agent
@@ -504,6 +507,21 @@ run below.
    importing anything. What only the apply can do (a path to a new clip, a LUT file outside `luts\`, a color match) is
    refused there, as is a half-written file. Each of Cardboard's functions it calls is checked at build time where
    Cardboard's own apply calls it.
+8. Agents and the person editing at once (H8): the library worker runs Carton's materializer for each project it
+   opens. It writes `timeline.tsx` from Carton's history (with that printer, under Carton's header) in place of
+   Cardboard's own regeneration, and Cardboard's watcher hands it what others save there. While an agent works,
+   `timeline.tsx` stays as it was when the agent started: a Director turn from its first `cb` call or read of the file
+   until its turn ends; an agent without hooks until a minute after its last `cb` call. The person's edits go on in
+   the editor and `project.json` meanwhile. An agent can also print its own copy, `cb source print <project> --view
+   <name>` (`.scratch\views\<name>.tsx`): each save of it is applied as that agent's change, and
+   `.scratch\views\<name>.status` says how it landed. A clash keeps what is there and is a card on both sides: the
+   agent's (`cb conflicts`, the Stop hook) and the person's (History). That worker is also the project's one lease
+   holder, so `cb`'s writes and hook events reach it. A `timeline.tsx` printed by Cardboard 1.4.0 (a numbered header)
+   still applies as an edit of the version it shows. An agent's own `cb` edit shows in `timeline.tsx` at once, freeze
+   or not (the person's edits made meanwhile come with it). An agent that writes or edits `project.json` directly is
+   refused and pointed to its own view. The views are checked for saves by reading their size and time a few times a
+   second, not by a file watcher: on Windows an open watch inside the bundle could stop Cardboard renaming the
+   project or moving it to the trash.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
 thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton

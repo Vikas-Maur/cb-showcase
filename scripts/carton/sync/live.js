@@ -26,7 +26,7 @@ const ON_CHANGE_MS = 2000;
 export class Live {
   constructor({ api, bundlePath, projectId, lc, log, onChange, view }) {
     this.onChange = onChange ?? null;
-    this.view = view ?? null; // the project's View (views.js): its holder, and project.json follows there
+    this.owner = view ?? null; // the project's View (views.js): its holder, and project.json follows there
     this.changeTimer = null;
     this.api = api;
     this.bundlePath = bundlePath;
@@ -46,7 +46,10 @@ export class Live {
     const { lc } = this;
     // Events first, so nothing the first connection brings is missed.
     this.off = lc.carton.on((e) => this.#event(e));
-    if (this.view) {
+    if (this.owner) {
+      // the View's holder connects now (an unshared project's never does)
+      await this.owner.connectSync();
+      this.#materializeSoon();
       this.#publish();
       return;
     }
@@ -122,7 +125,7 @@ export class Live {
   }
 
   #materializeSoon() {
-    if (this.view) return this.view.materializeSoon();
+    if (this.owner) return this.owner.materializeSoon();
     if (this.timer || this.stopped) return;
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -132,7 +135,7 @@ export class Live {
 
   /** This handle is the lease holder right now (not fenced, not stopped): its own writes are the pusher's. */
   holds() {
-    if (this.view) return !this.stopped && this.view.holds();
+    if (this.owner) return !this.stopped && this.owner.holds();
     const h = this.lease?.current;
     return !this.stopped && !!h && !h.stopped && !!h.nonce;
   }

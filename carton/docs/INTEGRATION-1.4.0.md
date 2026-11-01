@@ -125,8 +125,8 @@ behind the hook, not counting the packages.
 | H5 | **Adopt.** On `project:changed`, the renderer re-reads the project, replaces its record, and (`eV`) calls `cancelPendingSave()`, `pushHistory("Timeline updated from disk")` and `adopt(timeline)`, a raw store merge. A clock gate drops an event older than the local record's `stateUpdatedAt`, which **silently ignores a CLI write whenever the user edited after it but before the event arrived**. The next GUI save then overwrites it. Toast: "Some of your edits were replaced" | I: the per-event handler. Main: the change broadcast (2) | With Carton, main marks the event `carton`. If a save is armed it goes first, with its base: the worker rebases the person's edits on head (head wins a clash, the edit becomes a card). The editor then adopts head **once**, with `cartonBase` in the same raw store step. No `pushHistory`, no `cancelPendingSave`. That is what keeps a change from elsewhere from being saved again under the person's name (G1). The clock-gate race goes away | ~60 |
 | H6 | **Undo.** `pushTimelineHistory(label)` pushes a whole-timeline snapshot (50 kept, `Qx`). `undo`/`redo` swap snapshots and restore code-graphic sources. Ctrl+Z, the toolbar and Edit > Undo all end at the store's `undo`/`redo` | S: `undo`, `redo` (2) | ⌘Z undoes **your actor group** as an inverse change at head: your edits, agent turns you started, and windowless local `cb` agents (§8). It arrives back through H5 with no undo entry. The pending save goes first. If Carton has no history for the project, Cardboard's snapshot undo runs. The snapshot push stays, because caption editing detects a push by `historyPast` identity | ~30 |
 | H7 | **Ripple, split, remove silences, ripple trim.** Store actions wrap pure ops (`rippleDeleteGap`, `rippleDeleteAllGaps`, `removeSilencesFromClips`, `splitTimelineItem`) between the history push and the state write. The editor's ripple trim shifts later clips by `plan.rippleDelta` | S: four actions (4); E's ripple trim later | Each records its intent: a remap `{tracks, at, delta}` (piecewise for all gaps), or lineage for a split or a silence cut (new ids). The next save carries it, so a concurrent edit is remapped as an intent, not inferred (§6.1) | ~30 |
-| H8 | **Bundle watcher and worker RPC.** The worker `fs.watch`es the library folder and each bundle (non-recursive, 150 ms debounce). A `project.json` it didn't write is re-read and announced as `changed`. A `timeline.tsx` it didn't write goes through `mirror.apply` and is announced as `timeline-applied` or `timeline-rejected`. The worker's RPC table is built from the namespaces `projects, media, cache, …` | Worker: the RPC namespace list, the worker's start, the watcher's apply (3) | Adds a `carton` RPC namespace (head, checkout, undo, redo, notices, the History panel's `ui`) that main's `carton:call` forwards to. A `timeline.tsx` the watcher applies is `external:timeline.tsx`. A commit that merged someone else's change is announced as `changed`, so the pages adopt it. Next: the engine thread, the per-agent view watcher and `<view>.status` (`@carton/local`, the adapter's Materializer) | ~40 |
-| H9 | **Agents and the control socket.** Host agents are spawned per chat, with `cwd` = the bundle and the environment `o.environment`. Host Claude Code runs as `claude -p … --permission-mode bypassPermissions --append-system-prompt <prompt>`. The Director runs in-process with its own `env`, and has a `PreToolUse` Bash hook: the credit gate, which may rewrite the command. The prompt says to edit `timeline.tsx` or use `cb source apply`. The control socket (`cardboard.sock`, JSON-RPC) has a zod schema table and a handler table. It reads and drives the app, but has no edit method. Worker change events reach the tabs through `onChange` | Main: spawn env, Director env, the Director's hooks (2), the host Claude Code args, `carton:call` (6) | Every agent process gets `CARDBOARD_ACTOR`: `director/<chat>`, `claude/<chat>`, `codex/<chat>`, and so on. The Director's hook adds the turn. Inside a subagent it adds `/sub-<agent_type>-<agent_id>`, since Claude Code puts both in the hook input. It composes with the credit gate's rewrite. `Stop` and `SubagentStop` hooks block once per conflict set, with the conflict text (§6.2). Host Claude Code gets the same hooks through `--settings`. A `carton:call` IPC channel forwards to the worker, and `{kind:"carton"}` events go to the tabs as `carton:event`. `cb` finds Carton's lease holder through `carton.db`'s lease row, so the control socket needs no Carton method. Next: the prompt names the per-agent view flow | ~60 |
+| H8 | **Bundle watcher and worker RPC.** The worker `fs.watch`es the library folder and each bundle (non-recursive, 150 ms debounce). A `project.json` it didn't write is re-read and announced as `changed`. A `timeline.tsx` it didn't write goes through `mirror.apply` and is announced as `timeline-applied` or `timeline-rejected`. The worker's RPC table is built from the namespaces `projects, media, cache, …` | Worker: the RPC namespace list, the worker's start, the watcher's apply (3) | Adds a `carton` RPC namespace (head, checkout, undo, redo, notices, the History panel's `ui`) that main's `carton:call` forwards to. A `timeline.tsx` the watcher applies is `external:timeline.tsx`. A commit that merged someone else's change is announced as `changed`, so the pages adopt it. Per-agent views and the shared file's freeze (`sync/views.js`): the adapter's Materializer for each project the worker opens from its library, the project's one lease holder, a watcher on `.scratch/views`; the watcher's apply of `timeline.tsx` hands the change to the Materializer there, and the facade drops Cardboard's own print of it. Next: the engine thread | ~40 |
+| H9 | **Agents and the control socket.** Host agents are spawned per chat, with `cwd` = the bundle and the environment `o.environment`. Host Claude Code runs as `claude -p … --permission-mode bypassPermissions --append-system-prompt <prompt>`. The Director runs in-process with its own `env`, and has a `PreToolUse` Bash hook: the credit gate, which may rewrite the command. The prompt says to edit `timeline.tsx` or use `cb source apply`. The control socket (`cardboard.sock`, JSON-RPC) has a zod schema table and a handler table. It reads and drives the app, but has no edit method. Worker change events reach the tabs through `onChange` | Main: spawn env, Director env, the Director's hooks (2), the host Claude Code args, `carton:call` (6) | Every agent process gets `CARDBOARD_ACTOR`: `director/<chat>`, `claude/<chat>`, `codex/<chat>`, and so on. The Director's hook adds the turn. Inside a subagent it adds `/sub-<agent_type>-<agent_id>`, since Claude Code puts both in the hook input. It composes with the credit gate's rewrite. `Stop` and `SubagentStop` hooks block once per conflict set, with the conflict text (§6.2). Host Claude Code gets the same hooks through `--settings`. A `carton:call` IPC channel forwards to the worker, and `{kind:"carton"}` events go to the tabs as `carton:event`. `cb` finds Carton's lease holder through `carton.db`'s lease row, so the control socket needs no Carton method. H8: the Director's Read/Write/Edit hooks, an allowed stop and its turn's end reach the worker's Materializer (`carton.agentHook`); its Stop runs @carton/local's late-conflict hook in the worker (`carton.stopHook`); host Claude Code's `--settings` adds a `Read\|Write\|Edit\|MultiEdit` matcher, and `cb carton-hook` sends those events to the lease holder. Every agent's appended prompt (`ju`) and `AGENTS.md` describe the per-agent view, Carton on only | ~60 |
 | H10 | **Media.** Ingest copies or references a file and gives it a random id (`Rt` in the CLI, `Ua` in the worker). Main serves `cardboard-media://` with range support (`oGt`) | CLI, Worker: ingest. Main: the media protocol (3) | Lazy SHA-256 manifests (1 MiB leaves) for shared projects, the range cache, and the loopback range server (phase 4, `@carton/media`). Nothing changes for solo local projects | ~60 |
 | H11 | **`.cbproj`.** Save As writes a stored zip of the bundle minus the top-level names in a set (`cache`, `converted`, `proxies`, `.revs`). The walk compares only top-level names. Open Project refuses a project id already in the library ("This project ID already exists in your library", C9) | CLI and Worker: the set, the walk, the id check (6) | `.carton` joins the top-level exclusions. Carton's own view files in `.scratch/views/` (a print under Carton's rev line, its `.status` sidecar) are skipped by a nested check in the walk (R6-02); anything else there goes in. Both apply on or off, and Open Project removes the same from a staged bundle. The shallow export (or the opt-in `VACUUM INTO` copy) is written as its own entry. For a known project id with shared lineage, "Bring in their changes" (a DAG merge with cards) replaces the error. Imported view files are never applied | ~40 |
 | H12 | **Web `DocumentSyncService`** (dormant on desktop). An IndexedDB outbox commits whole documents: `POST /api/sync/document {projectUid, mutationId, expectedVersion, document}`. On conflict it preserves a local copy named "… (recovered conflict)" and takes the server's (B9) | S: commit, POST, recover, stage. `DocumentSyncStartup`: the copy's name (5) | Kit only: push changes with a base instead of whole documents, and rebase instead of preserving a copy | ~100 |
@@ -378,17 +378,30 @@ onto the packages' APIs, so a package API change touches only the facade.
     uploads, tools over the loopback range server); H11 `.cbproj` Save As and Open with history, "Bring in their
     changes", Carton's files never carried or kept; H13 `cb`'s cloud mode through a headless helper; the facade's
     save merges.
+  - H8's per-agent views and the shared `timeline.tsx` freeze (`scripts/carton/sync/views.js`), on one library with
+    its real worker, real `cb` and main's bridge as `dist/main.js` runs it (`sync/director-turn.test.js`, e2e-qa's
+    acceptance test): a Director turn prints its view (`cb source print --view`, through the worker's lease holder);
+    the person edits in the GUI; the agent saves its view and reads `.status` (`conflicts`, with the card); all
+    through the turn `timeline.tsx` never shows the person's edit (sampled every 50 ms); the Stop hook blocks once
+    with the card, the next stop lets the turn end and `timeline.tsx` comes back to head with both edits; the card is
+    in the agent's `cb conflicts` and in the History panel; credits and the turn's named version. The worker runs
+    cardboard-adapter's Materializer for every project it opens from its library (writeProject off: `project.json`
+    stays the facade's), with Cardboard's printer as codec; the facade drops Cardboard's own print of
+    `timeline.tsx` there (in `cb`: when the worker holds the project's lease) and the worker's watcher hands the file's
+    changes to the Materializer. One lease holder per project (the View's; Live sync uses it). The prompt's view flow:
+    `AGENTS.md` (Cardboard's text plus a section, Carton on only) and every agent's appended system prompt.
+    Steps 9 and 10 take the same turn through the hooks themselves: the Director's file tools (main's in-process
+    hooks) and host Claude Code's (`cb carton-hook`, spawned with the hook's JSON on stdin): a Read of `timeline.tsx`
+    freezes it, a Write/Edit of `project.json` is refused with a pointer to `cb source print --view`, the Stop lets go.
+    Views are polled (a stat every 250 ms, only the views Carton printed): no watch handle inside the bundle, which on
+    Windows can block Cardboard's rename or trash of it. Stopgap until cardboard-adapter merges an agent's own `cb`
+    commit into the frozen file: such a commit during a freeze reprints the shared file from head (`printShared`).
 - **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
   save projection, cut out at build time) and `carton-ui.js`.
 - **Wired, tested on stand-ins only:** the editor's pages (H4–H7, the History tab, the Share panel) and main (H9: the
   actor environment, the Director's hooks, Stop and SubagentStop, host Claude Code's `--settings`, `carton:call`).
   They need the Windows run.
 - **Not wired yet:**
-  - H8's per-agent views (`.scratch/views/<name>.tsx` and `<name>.status`) and the shared `timeline.tsx` freeze
-    during an agent's turn. The app doesn't use the adapter's Materializer: the worker still regenerates
-    `timeline.tsx` as 1.4.0 does, through displace-then-install, and holds the sync lease (so `cb`'s writes go
-    through it) only for shared projects.
-  - H9's next step: the prompt's per-agent view flow.
   - H3: Carton's merge3 in the apply's preview. `rn` still makes the preview; the commit that follows merges with
     Carton.
   - The engine thread: `engine-thread-main.js` is built but not used; the worker commits on its own thread.
@@ -406,7 +419,7 @@ Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and a
 patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
 file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
 
-### A.1 The anchors patch-carton.js replaces (99)
+### A.1 The anchors patch-carton.js replaces (107)
 
 Each copy's first ten are the timeline codec's proofs, replaced by themselves: each shows a name the codec calls
 where Cardboard's own apply, `writeTimeline` or store calls it (§4.2).
@@ -426,8 +439,6 @@ ok  Worker 1 @1263890   27B  "async applyMutation(t,r,n){"
 ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
 ok  Worker 1 @1266073   38B  "l=await G1(c),await(0,Bt.rename)(c,s)}"
 ok  Worker 1 @1255225   71B  "try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),\"utf8\")}catch{return null}"
-ok  Worker 1 @1468657   62B  "k=await(0,_d.readFile)((0,Vn.join)(g,Mt),\"utf8\")}catch{k=null}"
-ok  Worker 1 @1477718   90B  "let $=await(0,Ar.readFile)(m.mirrorPath(N),\"utf8\");return m.apply(y,$,{..._,writeBack:!0})"
 ok  Worker 1 @1262348   59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
 ok  Worker 1 @1471612   38B  "n.onWritten((y,x)=>m.afterWrite(y,x));"
 ok  Worker 1 @1424720   82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
@@ -444,9 +455,14 @@ ok  Worker 1 @1421883   38B  "writeTimeline(t,r,n){let i={...Ay(t,r)"
 ok  Worker 1 @1422021   68B  "return this.options.bundles.updateScoped(vI(i),{ownedFields:[...My],"
 ok  Worker 1 @1423605   52B  "await(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\"))}"
 ok  Worker 1 @1267459   37B  "if(o&&(rH.has(a.name)||a.name===Mt)||"
+ok  Worker 1 @1414024   58B  "OC=e=>typeof e==\"string\",$C=\"# This is a Cardboard project"
+ok  Worker 1 @1416104   15B  "\",HQ=async e=>{"
 ok  Worker 1 @1481784  112B  "var IA=[\"projects\",\"media\",\"cache\",\"transcripts\",\"voiceovers\",\"mattes\",\"inspect\",\"timeline\",\"luts\",\"downloads\"];"
 ok  Worker 1 @1482325   24B  "kte=e=>{let t=\"\",r=()=>{"
+ok  Worker 1 @1469002   52B  "c=async g=>{let T=t.idForBundlePath(g);if(!T)return;"
 ok  Worker 1 @1469154   41B  "await t.read(T);let I=await r.apply(T,k);"
+ok  Worker 1 @1468657   62B  "k=await(0,_d.readFile)((0,Vn.join)(g,Mt),\"utf8\")}catch{k=null}"
+ok  Worker 1 @1477718   90B  "let $=await(0,Ar.readFile)(m.mirrorPath(N),\"utf8\");return m.apply(y,$,{..._,writeBack:!0})"
 ok  Main   1 @76        22B  "var cxe=Object.create;"
 ok  Main   1 @2875234   56B  "_e.handle(\"project:patch\",async({document:t,scope:r})=>{"
 ok  Main   1 @2875450   36B  "St.call(\"projects.updateScoped\",t,r)"
@@ -456,7 +472,10 @@ ok  Main   1 @2767297   58B  "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath
 ok  Main   1 @2725359   15B  "env:CVt(e,t,c),"
 ok  Main   1 @2587228   45B  "PreToolUse:[{matcher:\"Bash\",hooks:[async v=>{"
 ok  Main   1 @2588123   52B  "permissionDecisionReason:k.reason}}}],timeout:Tzt}]}"
+ok  Main   1 @2766497   44B  "n.turn={state:\"running\",id:s.id,text:s.text}"
+ok  Main   1 @2771821   41B  "closeTurn(t,r){t.turn.state===\"running\"&&"
 ok  Main   1 @2645491   31B  "\"--append-system-prompt\",ju(e),"
+ok  Main   1 @2642960   38B  "Never write `project.json` directly.\","
 ok  S      1 @1556833  115B  "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});"
 ok  S      1 @1128812   75B  "updateScoped:(t,e)=>Zp(t.id,cK(e),On(\"project:patch\",{document:t,scope:e}))"
 ok  S      1 @1525370   52B  "_m({projectId:n,projectName:r,activeLeftTab:\"media\","
@@ -505,6 +524,8 @@ ok  CLI    1 @303124    38B  "writeTimeline(t,r,n){let o={...Aa(t,r)"
 ok  CLI    1 @303262    68B  "return this.options.bundles.updateScoped(Lm(o),{ownedFields:[..._a],"
 ok  CLI    1 @304809    39B  "await Uh(this.mirrorPath(t),r,\"utf8\"))}"
 ok  CLI    1 @162151    37B  "if(a&&(nS.has(i.name)||i.name===re)||"
+ok  CLI    1 @295432    58B  "Nh=e=>typeof e==\"string\",jh=\"# This is a Cardboard project"
+ok  CLI    1 @297512    30B  "\",n2=async e=>{let t=await On("
 ok  cb     1 @84        50B  "const require = __createRequire(import.meta.url);\n"
 ok  cb     1 @752048    14B  "var FN=ak(Ie);"
 ok  cb     1 @740630    87B  ".action(async(a,s)=>{let o=await H(r()),i=await I(o,a),c=await o.timeline.undo(i.id,s);"

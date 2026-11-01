@@ -19,7 +19,7 @@ import { assertInScratch, dataDirFor } from "./env.ts";
 import { Carton, type HostAdapter } from "@carton/core";
 import { cardboardAdapter, cardboardFilesHost, jsonTimelineCodec } from "@carton/cardboard";
 import { importFullHistory, Materializer, readCbproj, ZipReader, safeEntryPath } from "@carton/cardboard/node";
-import { CartonMaterializerEngine, nodeHasher } from "@carton/local";
+import { cartonMaterializerEngine, nodeHasher } from "@carton/local";
 import { locateCartonDb, openSqliteStore } from "@carton/store-sqlite";
 
 const [file, bundle] = process.argv.slice(2) as [string, string];
@@ -46,7 +46,7 @@ assertInScratch(dbPath, "carton.db");
 if (!inBundle) throw new Error("s3-open: the scratch library should keep carton.db in the bundle");
 const store = await openSqliteStore(dbPath);
 const carton = await Carton.open({ adapter: cardboardAdapter as HostAdapter, store, hasher: nodeHasher, actor: { kind: "system", id: "engine", name: "Engine" }, init: { import: c.shallow } });
-const mz = new Materializer({ bundle: staging, engine: new CartonMaterializerEngine(carton), host: cardboardFilesHost, codec: jsonTimelineCodec });
+const mz = new Materializer({ bundle: staging, engine: cartonMaterializerEngine(carton), host: cardboardFilesHost, codec: jsonTimelineCodec });
 await mz.adoptCurrentFiles();
 await mz.close();
 // the sender's history, when the file carries it (S3-2): `.carton-export/history.db` opened read-only by store-sqlite
