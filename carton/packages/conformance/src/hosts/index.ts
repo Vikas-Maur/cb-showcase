@@ -6,7 +6,7 @@
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { AuthProvider, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
+import type { AuthProvider, BlobStore, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
 
 export interface HostFixture {
   host: SequencerHost;
@@ -14,6 +14,12 @@ export interface HostFixture {
   auth: AuthProvider;
   /** A token for a fresh device credential with the given role. */
   token(role?: "owner" | "editor" | "viewer"): Promise<string>;
+  /** Within this, a connection that goes silent (no close, no keepalive, no pong) is dropped and its presence leaves
+   * its peers. The suite's silent-client test runs only when it is set; a host's default is minutes. */
+  presenceTimeoutMs?: number;
+  /** Drop the host's memory but keep its connections, as a Durable Object's hibernation does: what the host needs
+   * after it (who a connection shows, for its leaves) must come back from what it kept with each socket. */
+  hibernate?(): Promise<void>;
   /** Restart the host on the same storage (hibernation / process restart). */
   restart?(): Promise<void>;
   close(): Promise<void>;
@@ -21,6 +27,11 @@ export interface HostFixture {
   tokenFor?(o: { credential: string; account?: string; role?: Role; projectId?: string }): Promise<string>;
   /** Rows the host's storage has read and written so far (P5 cost accounting), when it can tell. */
   rows?(): Promise<{ rowsRead: number; rowsWritten: number }>;
+  /** The BlobStore a client of this host passes as `blobs`, so messages over 1 MiB travel as envelopes. */
+  clientBlobs?(token: string): BlobStore;
+  /** The size of the big change the live suite sends as an envelope (default 33 MiB, over every WebSocket cap; a host
+   * with a smaller message cap, such as a Durable Object's, says what it carries). */
+  bigMessageBytes?: number;
 }
 
 // ------------------------------------------------------------------ AuthProvider
@@ -138,4 +149,6 @@ export function sequencerStorageSuite(name: string, make: () => Promise<Sequence
 
 export { sequencerHostSuite, transportSuite, HOST_SUITE_DOC } from "./host-suite.ts";
 export { httpApiSuite, type HttpFixture } from "./http-suite.ts";
+export { helloAtSchema } from "./schema.ts";
+export { rawWebSocket, type RawConnection } from "./raw-ws.ts";
 export { liveSyncSuite } from "./live-suite.ts";

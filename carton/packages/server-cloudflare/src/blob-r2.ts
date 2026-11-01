@@ -22,7 +22,7 @@
 // the error is the same as on every other store.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError } from "@carton/blob-memory/rules";
+import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError, markCreated } from "@carton/blob-memory/rules";
 import type { BlobUrlSigner } from "@carton/blob-memory/signed";
 import type { R2Bucket, R2Object } from "./cf.ts";
 
@@ -77,10 +77,10 @@ export class R2BlobStore implements BlobStore {
       // R2's conditional put: refused (null) when any version exists
       ...(opts.ifAbsent ? { onlyIf: { etagDoesNotMatch: "*" } } : {}),
     });
-    if (o) return infoOf(o);
+    if (o) return opts.ifAbsent ? markCreated(infoOf(o), true) : infoOf(o);
     const existing = await this.#b.head(key);
     if (!existing) throw new BlobError("PreconditionFailed", `conditional put of ${key} refused, but the key is absent`);
-    return infoOf(existing);
+    return markCreated(infoOf(existing), false);
   }
 
   async #read(key: string, range?: ByteRange) {

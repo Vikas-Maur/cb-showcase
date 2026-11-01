@@ -146,6 +146,7 @@ test("SF2-4: importHistory keeps the fork state a fork stored (all that is left 
   now = 100 * 864e5;
   for (let i = 0; i < 2; i++) await a.commit({ ops: [set("f", "name", String(i))] });
   const stale = await Carton.open({ adapter, store: sa, keyframeEvery: 2 });
+  await stale.log(); // it holds the older versions (opened from a keyframe, it reads them after open)
   await a.compact();
   const f = await stale.fork("kept", { from: `${a.cut}@1` });
   const b = await Carton.open({ adapter, store: createMemoryStore(), init: { import: await a.exportShallow() } });

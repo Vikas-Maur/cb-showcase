@@ -2,6 +2,8 @@
 // reference; blob-fs, blob-s3 and blob-r2 import these checks so a bad key, range or part list fails identically on
 // every backend, before any I/O.
 
+import type { BlobInfo } from "@carton/core/plugins";
+
 export type BlobErrorCode =
   | "InvalidKey"
   | "InvalidRange"
@@ -39,6 +41,15 @@ export function checkKey(key: string): void {
     throw new BlobError("InvalidKey", `blob key longer than ${MAX_KEY_BYTES} bytes`);
 }
 
+/**
+ * A store that says, without a call, whether it would refuse a key: a scoped store's prefix leaves less room than
+ * `checkKey`'s 1,024 bytes. Not part of BlobStore; host-http checks a batch's keys with it before any call.
+ */
+export interface ChecksKeys {
+  checkKey(key: string): void;
+}
+export const checksKeys = (s: object): s is ChecksKeys => typeof (s as Partial<ChecksKeys>).checkKey === "function";
+
 export function checkRange(range: { offset: number; length?: number }): void {
   if (!Number.isSafeInteger(range.offset) || range.offset < 0) throw new BlobError("InvalidRange", `bad range offset ${range.offset}`);
   if (range.length !== undefined && (!Number.isSafeInteger(range.length) || range.length < 0))
@@ -75,6 +86,26 @@ export function checkCompleteParts(
       throw new BlobError("UnequalParts", `part ${n} is ${s.size} bytes; parts before the last must all be ${size}, and the last no larger`);
   }
   return sorted;
+}
+
+// Whether a `put` with `ifAbsent` created its object: true when this put wrote it, false when the key was there and
+// the store kept what it held. Not part of BlobInfo: a symbol-keyed, non-enumerable property, so JSON never carries it
+// and comparisons ignore it; a wrapper that copies the info carries it on (`withCreated`). A create-only signed PUT
+// answers 412 by it (serveSignedBlob). Every store in this repository sets it; without it a host can prove a create
+// only by the client's digest.
+export const PUT_CREATED: unique symbol = Symbol.for("carton.blob.putCreated");
+export function markCreated<T extends BlobInfo>(info: T, created: boolean): T {
+  Object.defineProperty(info, PUT_CREATED, { value: created, enumerable: false, configurable: true });
+  return info;
+}
+export function putCreated(info: BlobInfo): boolean | undefined {
+  const v = (info as unknown as Record<symbol, unknown>)[PUT_CREATED];
+  return typeof v === "boolean" ? v : undefined;
+}
+/** `to`, carrying `from`'s PUT_CREATED (for a wrapper that copies a put's info). */
+export function withCreated<T extends BlobInfo>(to: T, from: BlobInfo): T {
+  const c = putCreated(from);
+  return c === undefined ? to : markCreated(to, c);
 }
 
 export function randomId(): string {

@@ -10,7 +10,7 @@ import { nodeSqliteStorage } from "./storage.ts";
 
 export { startNodeHost, type NodeHost, type NodeHostOptions } from "./host.ts";
 export { nodeSqliteStorage, type NodeSqliteStorage, type NodeSqliteOptions } from "./storage.ts";
-export { webSocketTransport, type WebSocketTransportOptions } from "./transport.ts";
+export { webSocketTransport, transportError, type WebSocketTransportOptions, type TransportError, type TransportErrorCode } from "./transport.ts";
 export { acceptWebSocket, rejectUpgrade, ServerWebSocket, WsError, type WsOptions } from "./ws.ts";
 
 /** A host and a matching Transport in one process, with no sockets (tests, local single-machine sharing). The

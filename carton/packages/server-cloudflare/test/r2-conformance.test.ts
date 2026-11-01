@@ -14,13 +14,14 @@ const proxy = await getPlatformProxy<{ BLOBS: R2Bucket }>({ configPath: join(imp
 
 after(() => proxy.dispose());
 
-blobStoreSuite("r2 (local workerd)", async () => r2BlobStore(proxy.env.BLOBS), { minPartSize: R2_MIN_PART_SIZE });
+blobStoreSuite("r2 (local workerd)", async () => r2BlobStore(proxy.env.BLOBS), { minPartSize: R2_MIN_PART_SIZE, reportsCreated: true });
 
 // Signed URLs: the store signs, `serveSignedBlob` answers (the Worker's /blob route), here called in-process.
 const signer = createBlobUrlSigner({ secret: "test-secret-test-secret-test-secret!", baseUrl: "https://carton.test/blob" });
 const signedStore = r2BlobStore(proxy.env.BLOBS, { signer });
 blobStoreSuite("r2 with signed URLs", async () => signedStore, {
   minPartSize: R2_MIN_PART_SIZE,
+  reportsCreated: true,
   fetch: (async (input: string | URL | Request, init?: RequestInit) => serveSignedBlob(new Request(input, init), signedStore, signer)) as typeof fetch,
   expiryWaitMs: 2100,
 });

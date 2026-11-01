@@ -109,3 +109,21 @@ test("presence over 64 KiB is dropped, not relayed (a client can't make the 10â€
   assert.deepEqual(b.inbox.map((m) => m.type), ["presence"]);
   assert.equal(seq.stats.envelopesOut, 0, "presence is never sized for an envelope");
 });
+
+test("envelope (server): an oversized history reply goes as an envelope to a client that reads them (Stage F round 5)", async () => {
+  const blobs = memoryBlobs();
+  const { seq } = await world(d0, { blobs, envelopeBytes: 4 * KB });
+  const a = fakeConn("alice/1");
+  await seq.handle(a, hello(true));
+  const ch = change(a, [rename("c0", "Ã©".repeat(5 * KB))]);
+  const big = sync.oversized({ type: "push", branchId: BRANCH, epoch: 1, changes: [ch] }, 4 * KB)!;
+  await seq.handle(a, await sync.seal(big, blobs, (sha) => sync.clientEnvelopeKey(sha, Date.now())));
+  assert.equal(a.last("ack")?.id, ch.id);
+  a.inbox.length = 0;
+  await seq.handle(a, { type: "history", branchId: BRANCH, req: 7, after: 0, upTo: 1 });
+  assert.deepEqual(a.inbox.map((m) => m.type), ["blob"], "the reply, over the threshold, inline");
+  const reply = (await sync.unseal((a.inbox[0] as sync.EnvelopeMsg).ref, blobs, { from: "server", maxBytes: 1 << 20 })) as sync.HistoryReplyMsg;
+  assert.equal(reply.type, "history");
+  assert.equal(reply.req, 7);
+  assert.equal(reply.rows[0]!.id, ch.id);
+});
