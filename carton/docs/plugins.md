@@ -270,9 +270,12 @@ every host runs the same function. The host:
    its sync client's `blobs`, and `hostMediaBlobs({ origin, projectId, token })` as `@carton/media`'s store: signed
    ranged reads and PUTs, resumable multipart through the session's routes, `reportDamaged(key, leaf)`, and
    `heads(keys)`.
-   `handleHttp` stops reading a body at its budget and answers 413 with the rest of the body unread: a host on
-   `node:http` must then close the connection (server-node answers `connection: close`), or a client that keeps it
-   in its pool sends its next request on it and gets ECONNRESET.
+   `handleHttp` stops reading a body at its budget and answers 413 with the rest of the body unread. A host on
+   `node:http` must then close the connection, or a client that keeps it in its pool sends its next request on it
+   and gets ECONNRESET; and it must close in stages (RFC 9112 §9.6), never at once: closing a socket with unread bytes
+   resets the connection, and on Windows the reset loses the 413 before the client reads it. server-node answers
+   `connection: close`, half-closes after the answer, then reads and drops the rest (never kept) until the client
+   closes its side, 16 MiB have come or 5 s have passed.
 
    **Many heads at once (REQ-11).** Media parts live in one flat namespace (`m/<hash>`), so checking that a long
    stream's parts are all there took one HEAD each, about 2,000 requests for a 2,000-part stream.
