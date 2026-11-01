@@ -109,3 +109,27 @@ test("shared cut: a clip added under an agent's edit (merged), then moved before
   assert.deepEqual(now.timelineItems.filter((i) => i.id === "shared-added-then-moved").map((i) => [i.startTime, i.endTime]), [[3.5, 4.5]]);
   assert.equal(S.textOf(now).fontSize, 155, "the agent's edit is kept");
 });
+
+// Review of this fix (GPT 6.1 Sol, finding 1), on the reviewer's repro: the first save, a ripple (every clip shifted)
+// merged over an agent's edit, is confirmed before the second save arrives. Its change is in the held base, so the
+// second save's merge must not compose that ripple again: the clip moved once more would land 5 s too late, with no card.
+test("shared cut: a merged ripple confirmed before the next quick save isn't applied to it again", t, async () => {
+  const initial = await S.projectOf(pc, id);
+  const video = S.videoOf(initial);
+  // a second clip on the video's track, so the shift of every clip reads as a ripple
+  await pc.call("projects.updateScoped", { ...initial, stateUpdatedAt: (clock = Math.max(clock + 1, Date.now())), timelineItems: [...initial.timelineItems, { ...video, id: "another-video", startTime: 3, endTime: 5 }] }, { ...SCOPE, carton: { base: initial.stateUpdatedAt, actor: "person" } });
+  await settled((d) => d.timelineItems.some((i) => i.id === "another-video"), "the second clip in project.json");
+  const before = (await cardsForPerson()).length;
+  const doc = await S.projectOf(pc, id);
+  const editor = await editorOn(doc);
+  agentFontSize(144, "turnS3");
+  const once = await save(editor, items(doc, (it) => ({ ...it, startTime: it.startTime + 5, endTime: it.endTime + 5 })));
+  await S.until(async () => (await pc.call("carton.liveStatus", { projectId: id })).pending === 0, 20_000, "the ripple confirmed");
+  const v = S.videoOf(once);
+  await save(editor, items(once, (it) => (it.id === v.id ? { ...it, startTime: it.startTime + 1, endTime: it.endTime + 1 } : null)));
+  // settled on either outcome, so a wrong one is reported as the head it made
+  const now = await settled((d) => [v.startTime + 1, v.startTime + 6].includes(S.videoOf(d).startTime), "the second save in project.json");
+  assert.deepEqual((await cardsForPerson()).slice(before), [], "no card between the person's own saves");
+  assert.equal(S.textOf(now).fontSize, 144, "the agent's edit is kept");
+  assert.equal(S.videoOf(now).startTime, v.startTime + 1, "the ripple is applied once: it is in the held base");
+});

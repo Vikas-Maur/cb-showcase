@@ -2731,7 +2731,11 @@ class CartonImpl implements Carton {
   #sinceBase(sc: SharedCut, cut: string, at: { seq: number; causal: readonly ChangeId[]; cutId: string }): { remap?: ReturnType<typeof E.intentRemap>; kinds: EditKinds } {
     const rows = sc.queue.rows(cut).slice(at.seq);
     if (at.cutId !== cut || rows.some((r) => r.placeholder)) return { kinds: {} };
-    return E.sideOf([...rows, ...sc.queue.pending(cut).filter((p) => !at.causal.includes(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
+    // the base's causal changes are in it, pending or confirmed since (a held GUI save's own change, confirmed before the
+    // next save: its ripple was composed again, moving a clip twice; as History's local commit, `causal` is never the
+    // other side's)
+    const causal = new Set(at.causal);
+    return E.sideOf([...rows.filter((r) => !causal.has((r as ConfirmedChange).id)), ...sc.queue.pending(cut).filter((p) => !causal.has(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };
