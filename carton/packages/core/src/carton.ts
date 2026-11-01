@@ -132,7 +132,10 @@ export interface CommitInput {
   id?: ChangeId;
   /** A shared cut: wait up to this many ms for the sequencer's answer (`cb` waits 5 s); default: return pending. */
   wait?: number;
-  /** Extra Store conditions for the append (a lease holder's `fence(nonce)`). */
+  /**
+   * Extra Store conditions (a lease holder's `fence(nonce)`), carried by the write that keeps the edit: the append, or a
+   * shared cut's pending row.
+   */
   conditions?: StoreCondition[];
   /**
    * Record the change as an undo of these changes (`kind: "undo"`, `reverts`), so the actor group's undo stack treats
@@ -240,7 +243,9 @@ export interface Carton {
   /**
    * This replica's pending changes on a shared cut (default: current), in queue order: each one's author and the
    * optimistic states just before and after it (the confirmed state at `seq` the queue is on, then each change's latest
-   * version applied in turn, as `head` builds its state). None on a cut this replica sequences itself.
+   * version applied in turn, as `head` builds its state). None on a cut this replica sequences itself. Only this handle's
+   * queue: none on a handle without sync (`cb`), nor for an edit held until its base can be rebuilt, while
+   * `pendingCount` counts every process's stored rows. Read-only; O(changes × records): two owned states per change.
    */
   pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc }[] }>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
@@ -2407,8 +2412,12 @@ class CartonImpl implements Carton {
     }
     return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
   }
-  /** Keep what `#enqueue` did: the pending row (in queue order), or the spent id of an empty write. */
-  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = []): Promise<CommitResult> {
+  /**
+   * Keep what `#enqueue` did: the pending row (in queue order), or the spent id of an empty write. `conditions` (the
+   * caller's: a lease fence) go with that same write, so a lease that moves after #prepShared checked them still
+   * refuses the edit: nothing is stored, and the queue takes it back (windows-sync review round 3 #1).
+   */
+  async #persistEnqueued(sc: SharedCut, cut: string, id: ChangeId, r: CommitResult, wait?: number, also: readonly ChangeId[] = [], extra: StoreWrite[] = [], conditions: readonly StoreCondition[] = []): Promise<CommitResult> {
     if (r.status === "confirmed") {
       // a no-op only if nobody answered this id meanwhile (a holder that replaced this one: the lease conditions), so a
       // retry answers empty and never applies the edit later over someone else's; otherwise the store's answer is it
@@ -2417,6 +2426,7 @@ class CartonImpl implements Carton {
         { table: T.ids, key: [id], expect: "absent" },
         { table: T.pending, key: [cut, id], expect: "absent" },
         ...this.#settleConds,
+        ...conditions,
       ]);
       if (!ok) {
         await this.#refresh();
@@ -2424,6 +2434,7 @@ class CartonImpl implements Carton {
         const won = this.#h.confirmedById(id);
         if (won) return won;
         if (await this.store.get(T.pending, [cut, id])) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
+        if (conditions.length && !(await this.store.write([], conditions))) throw new Error("Carton: the store changed under this write (a condition failed)");
         throw new Error("Carton: the store changed under this write (the sync lease moved to another holder)");
       }
       this.#h.noteNoop(id, cut, r.seq);
@@ -2439,14 +2450,24 @@ class CartonImpl implements Carton {
     // here (a settle does that)
     writes.push(...this.#gapWrites(cut, sc.queue, this.#h.headSeq(cut), rows.map((v) => v.head ?? 0), false).writes);
     // started before anything can settle it: a settle waits for #inflight
-    if (writes.length || extra.length) {
-      const w = this.store.write([...writes, ...extra]);
+    if (writes.length || extra.length || conditions.length) {
+      const w = this.store.write([...writes, ...extra], [...conditions]);
       const ids = [id, ...also];
       for (const x of ids) this.#inflight.set(x, w);
+      let ok: boolean;
       try {
-        await w;
+        ok = await w;
       } finally {
         for (const x of ids) if (this.#inflight.get(x) === w) this.#inflight.delete(x);
+      }
+      if (!ok) {
+        // a condition broke between #prepShared's check and this write: nothing was stored, so the edit was never made
+        for (const x of ids) {
+          this.#authors.delete(x);
+          this.#queuedIn(cut).delete(x);
+          sc.unqueue(x, "the store changed under this write (a condition failed)");
+        }
+        throw new Error("Carton: the store changed under this write (a condition failed)");
       }
     }
     if (!wait) return r;
@@ -2486,7 +2507,7 @@ class CartonImpl implements Carton {
     // `undoOf` (cb undo --turn through a save): the change records what it undoes, as on a local cut
     const r = this.#enqueue(sc, cut, id, author, ops, input, input.undoOf?.length ? { kind: "undo", reverts: [...input.undoOf], ...(input.name ? { name: input.name } : {}) } : undefined);
     const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
-    const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites);
+    const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites, input.conditions ?? []);
     return resolved.length && (out.status === "pending" || out.status === "confirmed") ? { ...out, resolved } : out;
   }
   /**

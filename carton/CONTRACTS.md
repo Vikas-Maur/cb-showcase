@@ -104,7 +104,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
   already holds by the rows that extend it. The importer's own cuts are never touched. Returns `{ cuts }` taken.
 - **Commits** are idempotent by `id`, accept a held base (`{baseDoc, baseSeq, causal}`) and extra Store `conditions`
-  (a lease fence); a lost cross-process append race rebuilds from the store and retries.
+  (a lease fence); a lost cross-process append race rebuilds from the store and retries. The conditions go with the
+  write that keeps the edit: the append on a local cut, the pending row on a shared one. On a shared cut, a condition
+  that breaks before that write (a lease taken over meanwhile) rejects the commit: nothing is stored or queued, no
+  notice is filed, and the id stays unspent for the process that holds the lease (windows-sync review round 3 #1).
 - **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
   sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
   cut's ancestry closure (`history` request) and loads it as read-only lineage. The client asks for it in pages
