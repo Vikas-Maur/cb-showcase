@@ -33,6 +33,7 @@
 //   a file applies as an edit of that state instead of being refused ("state unknown: re-print").
 import fs from "node:fs";
 import path from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
 import { Materializer, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
@@ -53,6 +54,13 @@ const keyOf = (p) => { const r = path.resolve(p); return fold ? r.toLowerCase() 
 
 const views = new Map(); // key → Promise<View | null>
 const running = new Map(); // key → View, once started (the facade asks synchronously)
+// Who the write a holder is serving is from (engine.serve, below). The person's own writes from the app (⌘Z: the facade's
+// undo goes through @carton/local's write path, so through this holder) reach the Materializer as a `cb` call
+// (local's tellBusy: onCb), which froze the shared timeline.tsx for a minute as if a windowless agent were working: the
+// file kept showing the state before the undo, and the person's next edits, to any agent that read it meanwhile. The
+// person in the app is no agent (their GUI saves never freeze it, §6.4), so their writes don't either.
+const serving = new AsyncLocalStorage();
+const fromApp = (a) => a?.id === "person" && a?.kind === "human";
 
 /**
  * The engine the Materializer gets: cardboard-adapter's cartonMaterializerEngine (cards for invalid records, a shared
@@ -138,7 +146,7 @@ export class View {
       hookRead: (a) => mz.hookRead(a),
       hookWrite: (a, rel) => mz.hookWrite(a, rel),
       hookStop: (a) => mz.hookStop(a),
-      onCb: () => mz.onCb(),
+      onCb: () => (fromApp(serving.getStore()) ? undefined : mz.onCb()),
       onHeadChange: (cause) => mz.onHeadChange(cause),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
       onExternalHeadChange: async () => {
@@ -152,14 +160,14 @@ export class View {
     const engine = new CartonHolderEngine(lc.carton, { materializer: printer, onExternal: () => this.materializeSoon() });
     const serve = engine.serve.bind(engine);
     // Before any print the holder pulls (§6.2); a write it served changes head, which project.json follows.
-    engine.serve = async (req, ctx) => {
+    engine.serve = (req, ctx) => serving.run(req?.actor ?? null, async () => {
       await caughtUp(lc.carton);
       try {
         const r = await serve(req, ctx);
         if (CHANGES.has(req?.op?.kind) && r && !r.empty && (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts")) await this.#agentWrote(req.actor);
         return r;
       } finally { this.materializeSoon(); }
-    };
+    });
     // Sync connects once Live runs for the project (connectSync); the holder's later starts (a lease taken back) too.
     const startSync = engine.startSync.bind(engine);
     engine.startSync = async (...a) => {
