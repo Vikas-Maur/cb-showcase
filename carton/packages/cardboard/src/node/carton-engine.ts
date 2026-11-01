@@ -123,8 +123,8 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
 
   /**
    * Drops this owner's records whose pin has expired (core has released those pins itself). With `keep`, the owner's
-   * other pins past it are released too: all but the newest `keep.count` and those pinned in the last `keep.ms` (a pin's
-   * time is its expiry less `ttlMs`: an owner pins with one time to live). Runs before a pin of the owner (never after
+   * other pins past it are released too: all but the newest `keep.count`, those pinned in the last `keep.ms` (a pin's
+   * time is its expiry less `ttlMs`: an owner pins with one time to live) and those it holds. Runs before a pin of the owner (never after
    * it: a record for the state being pinned again could otherwise release it).
    */
   const prune = async (owner: string, ttlMs: number, keep?: PinKeep): Promise<void> => {
@@ -133,7 +133,8 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     const old = rows.filter((r) => r.value.expires <= t);
     const live = rows.filter((r) => r.value.expires > t);
     const at = (r: PinRecord) => r.expires - ttlMs;
-    const past = keep ? live.sort((a, b) => at(b.value) - at(a.value)).slice(keep.count).filter((r) => t - at(r.value) >= keep.ms) : [];
+    const held = new Set((keep?.hold ?? []).map((h) => `${h.branchId}|${STATE_TOKEN.exec(h.ref)?.[2] ?? ""}|${STATE_TOKEN.exec(h.ref)?.[3] ?? ""}`));
+    const past = keep ? live.sort((a, b) => at(b.value) - at(a.value)).slice(keep.count).filter((r) => t - at(r.value) >= keep.ms && !held.has(pinKey(r.value.ref))) : [];
     for (const r of past) await carton.release(r.value.ref, owner);
     const gone = [...old, ...past];
     if (gone.length) await store.write(gone.map((r) => ({ table: VIEWS, key: r.key, value: undefined })));

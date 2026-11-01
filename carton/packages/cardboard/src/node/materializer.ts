@@ -81,10 +81,14 @@ export interface MetaRow {
   value: unknown;
 }
 
-/** Which of an owner's pins outlive later ones: the newest `count`, and every pin younger than `ms`. */
+/**
+ * Which of an owner's pins outlive later ones: the newest `count`, every pin younger than `ms`, and the pins in `hold`
+ * (a state pinned, as `Pinned` gives it: the print a file shows now).
+ */
 export interface PinKeep {
   count: number;
   ms: number;
+  hold?: readonly { branchId: string; ref: string }[];
 }
 
 /** A pending change of this replica's on a shared cut, with the optimistic states just before and after it. */
@@ -441,6 +445,10 @@ export class Materializer {
   private sharedRef: string | null = null;
   /** The cut `sharedRef` was pinned on. */
   private sharedCut: string | undefined = undefined;
+  /** The project.json the shared file was printed from (`projectSource`'s key). */
+  private sharedEnv: string | null = null;
+  /** The pin of the print the shared file shows (held through the prune). */
+  private shownPin: { branchId: string; ref: string } | null = null;
   private lastRemoteRewrite = -Infinity;
   private remoteTimer: unknown = null;
   private localTimer: unknown = null;
@@ -938,7 +946,8 @@ export class Materializer {
     } else if (!f && this.freeze.active) {
       this.freeze.active = false;
       this.freeze.view = null;
-      await this.writeSharedNow("freeze-end");
+      // a host write still landing: its own call rewrites the file once it has (from head now)
+      if (!this.landing.size) await this.writeSharedNow("freeze-end");
     }
     if (this.freeze.timer) this.clock.clearTimeout(this.freeze.timer);
     this.freeze.timer = null;
@@ -1045,21 +1054,28 @@ export class Materializer {
     const shown = view ? await this.withPending(view) : null;
     // superseded prints are released past `keepPrints` (R7-01's bound); the pin's record goes with the next meta write
     // (the path's token before the install, or its state after it) instead of one write of its own
+    // the print the file shows is never released, whatever was pinned since (a print that failed, a restart point)
+    const keep: PinKeep = { ...this.keepPrints, hold: this.shownPin ? [this.shownPin] : [] };
     const pinned = shown
-      ? await this.engine.pin({ owner: "shared-view", doc: shown.doc, seq: this.freeze.baseSeq, causal: [...this.freeze.causal, ...shown.ids], ttlMs: 7 * DAY, keep: this.keepPrints, deferRecord: true })
-      : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY, keep: this.keepPrints, deferRecord: true });
+      ? await this.engine.pin({ owner: "shared-view", doc: shown.doc, seq: this.freeze.baseSeq, causal: [...this.freeze.causal, ...shown.ids], ttlMs: 7 * DAY, keep, deferRecord: true })
+      : await this.engine.pin({ owner: "shared-file", ttlMs: 7 * DAY, keep, deferRecord: true });
     const carry = { rows: pinned.record ? [pinned.record] : [] };
     try {
       if (shown) this.freeze.pending = shown.key;
       if (cause === "remote") this.lastRemoteRewrite = this.clock.now();
       const body = refBodyOf(pinned);
       const cur = seen === undefined ? await this.readFile(TIMELINE_FILE) : seen;
-      if (!force && cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body) return; // unchanged
+      // unchanged: the file is Carton's print of this state, made from the same project.json (a print made from an
+      // older one, while the host was still writing its save, is made again)
+      const src = await this.projectSource();
+      if (!force && cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body && this.sharedEnv === src.key) return;
       const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
-      const text = await this.codec.print(this.host.toProject(pinned.doc, await this.currentProject()), header.slice(REV_PREFIX.length));
+      const text = await this.codec.print(this.host.toProject(pinned.doc, (src.env?.project as Project | undefined) ?? null), header.slice(REV_PREFIX.length));
       await this.install(TIMELINE_FILE, text, undefined, carry);
       this.sharedRef = body; // only once installed: a failed rewrite must not read as done
       this.sharedCut = pinned.cut;
+      this.sharedEnv = src.key;
+      this.shownPin = { branchId: pinned.branchId, ref: pinned.ref };
       this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
     } finally {
       // not stored with another write (unchanged, or a failure before it): on its own, so the pin can be released early
@@ -1075,7 +1091,8 @@ export class Materializer {
    * through `foldAgentChanges`). Only a change the merge takes exactly (its edits, no more, no fewer) shows: one that
    * overwrote or built on an edit the freeze hides never shows in part, but whole once confirmed, when the freeze
    * restarts at its state (one the view holds already, a save of the shared file, gains nothing and is passed over). The person's
-   * pending edits stay out. `key`: the agents' changes the queue held (shown or not), to tell when it moved.
+   * pending edits stay out. `key`: the agents' changes the queue held (shown or not) and their edits, to tell when it
+   * moved.
    */
   private async withPending(view: Doc): Promise<{ doc: Doc; ids: string[]; key: string }> {
     if (!this.engine.pendingChanges || !this.engine.shared()) return { doc: view, ids: [], key: "" };
@@ -1089,13 +1106,17 @@ export class Materializer {
       doc = merged;
       ids.push(p.id);
     }
-    return { doc, ids, key: mine.map((p) => p.id).join(" ") };
+    return { doc, ids, key: this.pendingKey(mine) };
+  }
+  /** The agents' pending changes as printed: each one's id and edits (a rebase keeps the id and changes the edits). */
+  private pendingKey(changes: readonly PendingChange[]): string {
+    return changes.map((p) => `${p.id}:${sha((this.host.changes?.(p.before, p.after) ?? []).sort().join("\n"))}`).join(" ");
   }
   /** Whether this replica's pending agent changes moved since the frozen file was printed (see `withPending`). */
   private async pendingMoved(): Promise<boolean> {
     if (!this.engine.pendingChanges || !this.engine.shared() || !this.freeze.view) return false;
     const { changes } = await this.engine.pendingChanges(this.freeze.cut ?? undefined);
-    return changes.filter((p) => isAgent(p.author)).map((p) => p.id).join(" ") !== this.freeze.pending;
+    return this.pendingKey(changes.filter((p) => isAgent(p.author))) !== this.freeze.pending;
   }
 
   /** The project.json envelope of the file on disk (null if absent or unreadable). */
@@ -1133,17 +1154,20 @@ export class Materializer {
    * source while Carton hasn't consumed it yet, and whenever the file on disk is a foreign one older than it (a late
    * save that must not bring back older fields); otherwise the file on disk is.
    */
-  private async projectSource(): Promise<{ env: Record<string, unknown> | null; overlay: Overlay | null }> {
+  private async projectSource(): Promise<{ env: Record<string, unknown> | null; overlay: Overlay | null; key: string }> {
     const overlay = (await this.engine.getMeta<Overlay>(["file", PROJECT_FILE, "overlay"])) ?? null;
     const f = await this.envelopeFile();
     const fileEnv = f?.env ?? null;
-    if (!overlay) return { env: fileEnv, overlay: null };
+    // `key`: which envelope it is (the file's by its stamp, or an overlay by its id)
+    const file = { env: fileEnv, overlay, key: `file:${f?.stamp ?? ""}` };
+    const over = { env: overlay?.envelope ?? null, overlay, key: `overlay:${overlay?.id ?? ""}` };
+    if (!overlay) return file;
     const consumed = await this.engine.getMeta<string>(["file", PROJECT_FILE, "consumed"]);
-    if (consumed !== overlay.id) return { env: overlay.envelope, overlay };
+    if (consumed !== overlay.id) return over;
     const ps = await this.pathState(PROJECT_FILE);
     const own = !!f && ps.written.some((w) => w.hash === f.hash && w.stamp === f.stamp);
-    if (f && !own && BigInt(f.stamp.split(":")[2] ?? "0") < BigInt(overlay.mtimeNs ?? "0")) return { env: overlay.envelope, overlay };
-    return { env: fileEnv ?? overlay.envelope, overlay };
+    if (f && !own && BigInt(f.stamp.split(":")[2] ?? "0") < BigInt(overlay.mtimeNs ?? "0")) return over;
+    return fileEnv ? file : over;
   }
 
   private async writeProjectNow(cause: string): Promise<void> {
