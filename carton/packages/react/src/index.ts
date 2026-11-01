@@ -49,3 +49,5 @@ export { WatchTheChanges, stripLayout, xAt, type WatchTheChangesProps, type Box 
 export { ChangesPlayer, type PlayerState, type Side, type Clock } from "./player.ts";
 export { fromCarton, toUiActor, cardOps, splitPathKey, defaultDescribeCard, type FromCartonOptions, type CartonUiHandle } from "./from-carton.ts";
 export { serveUi, remoteUi, type ServerMessage, type ClientMessage } from "./remote.ts";
+// Comments (PLAN §9 anchors, C6): the panel, timeline markers and their view model. New files owned by `comments`.
+export * from "./comments/index.ts";
