@@ -167,7 +167,7 @@ test("verify-ci #10: a change over the client's message limit is refused as too 
   const next = await a.commit({ ops: [set("d", "name", "small")], wait: 5000 });
   assert.equal(next.status, "confirmed", "the edit after it is not held back");
   assert.equal(item((await a.head()).doc, "c")!.name, "c", "the refused edit is not in the head");
-  assert.equal((await a.notices(agent)).filter((n) => n.kind === "rejected").length, 1, "its author is told once");
+  assert.deepEqual((await a.notices(agent)).filter((n) => n.kind === "rejected").map((n) => n.cut), [a.cut], "its author is told once, with the cut (ui 37efc2a)");
   assert.equal((await mem.range("pending")).length, 0, "nothing left pending");
   assert.ok(!(await a.log()).some((v) => v.author?.id === agent.id), "never confirmed");
   await a.close();

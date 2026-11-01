@@ -21,6 +21,7 @@ import type {
   Doc,
   FullExport,
   Intent,
+  Lineage as Splits,
   LineageKind,
   MergeResult,
   NodeId,
@@ -46,6 +47,8 @@ import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type Hi
 
 // ------------------------------------------------------------------ ids and keys
 
+/** A DAG edge as a fold reads it: the remaps recorded along it, and the splits (old id -> pieces) made along it. */
+type Edge = { maps?: RemapMaps; lineage?: Splits };
 /** `n` random bytes as hex (crypto.getRandomValues: Node, browsers, Workers). */
 export function randomHex(n: number): string {
   const b = new Uint8Array(n);
@@ -125,6 +128,10 @@ export class History {
   readonly #pins = new Map<string, Pin>(); // `${cut}|${seq}|${hash8}`
   readonly #views = new Map<string, View>();
   readonly #creators = new Map<PathKey, string>(); // sequence element path -> author key (M4 nesting)
+  // change id -> its row, the first cut that holds it (a write retried with its id is found without a scan of every log)
+  readonly #byId = new Map<ChangeId, ConfirmedChange>();
+  readonly #holes = new Set<string>(); // cuts loadFrom left rows out of, until fill brings them
+  #late: [PathKey, string][] | null = null; // creators set live while #holes (loaded() .. the last fill)
   readonly #names = new Map<NodeId, { name: string; at: number; by?: Actor }>();
   readonly #local = { pathMap: {} as Record<string, string>, notices: [] as Notice[], ephemeral: {} as Record<string, unknown>, lease: null as unknown };
   readonly #anc = new Map<NodeId, Map<string, number>>();
@@ -286,7 +293,8 @@ export class History {
       return ln ? this.#states.get(ln.hash) ?? null : null;
     }
     if (s > br.log.length || s < 0) return null;
-    if (s > 0 && br.log[s - 1]!.squashedInto) return null; // compacted away (§5.4)
+    const row = br.log[s - 1];
+    if (s > 0 && (!row || row.squashedInto)) return null; // compacted away (§5.4), or not loaded yet (loadFrom)
     if (br.sq && s === br.log.length) return live ? br.sq.head : E.fork(br.sq.head, this.schema); // stateOf never hands out the live head
     let k = s;
     while (!br.kf.has(k)) k--;
@@ -318,8 +326,7 @@ export class History {
   }
   /** Where a change id was confirmed, on any cut this replica holds. */
   findChange(id: ChangeId): ConfirmedChange | null {
-    for (const c of this.#cuts.values()) for (let i = c.log.length - 1; i >= 0; i--) if (c.log[i]!.id === id) return c.log[i]!;
-    return null;
+    return this.#byId.get(id) ?? null;
   }
   #mustCut(cutId: string): Cut {
     const c = this.#cuts.get(cutId);
@@ -345,16 +352,82 @@ export class History {
     for (const r of fresh) this.#confirmed(c, r, false);
   }
 
+  /**
+   * Open from a keyframe (§5.4, F1): a local cut's rows from the keyframe's own row on, the rows before it held back
+   * for `fill`. Its head and seq are whole at once; an older version is readable only after `fill`.
+   */
+  loadFrom(cutId: string, rows: readonly ConfirmedChange[], kf: readonly [number, Doc]): void {
+    const c = this.#mustCut(cutId);
+    c.sq!.skipTo(kf[0] - 1);
+    c.kf.set(kf[0], kf[1]);
+    c.sq!.load(rows, { seq: kf[0], doc: kf[1] });
+    for (const r of rows) this.#confirmed(c, r, false);
+    this.#holes.add(cutId);
+  }
+  /** The rows read at open are in (but for loadFrom's): a creator set from now on, until fill ends, arrived live. */
+  loaded(): void {
+    if (this.#holes.size) this.#late = [];
+  }
+  /** Creators set live while rows were still loading, in their order (null once none are loading). */
+  get late(): readonly [PathKey, string][] | null {
+    return this.#late;
+  }
+  /** Creators another History took in live while it loaded, set again here: this one replaces it. */
+  relive(late: readonly [PathKey, string][]): void {
+    for (const [k, a] of late) this.#creators.set(k, a);
+  }
+  /**
+   * Rows `loadFrom` held back, newest first: each batch the consecutive rows just below the oldest it holds, down to
+   * seq 1. false, taking nothing, if a compaction squashed some of them into a row read before it (the batches came
+   * from both sides of it): read the history again. A name the names table gave a version stays (renamed since). Once
+   * every cut is whole, creators are worked out again in load order, as a whole load at open gives them, and what
+   * arrived live since is applied again in its order.
+   */
+  fill(cutId: string, rows: readonly ConfirmedChange[]): boolean {
+    const c = this.#mustCut(cutId);
+    const lo = rows[0]?.seq ?? 0,
+      hi = lo + rows.length - 1;
+    if (!lo || rows.some((r, i) => r.seq !== lo + i) || c.log[lo - 1] || !c.log[hi]) throw new Error(`history load: ${cutId}'s rows changed`);
+    for (const r of rows) {
+      if (!(r.squashedInto! > hi)) continue;
+      // squashed into a row above this page: that row must be held as the squash that covers it (not missing, not as it
+      // was before the compaction)
+      const t = c.log[r.squashedInto! - 1];
+      if (!t || t.squashedInto || !(t.squashedFrom! <= r.seq)) return false;
+    }
+    c.sq!.fill(rows);
+    const late = this.#late;
+    this.#late = null;
+    for (const r of rows) {
+      const n = r.name ? nodeId(c.rec.id, r.seq) : "",
+        named = n && this.#names.get(n);
+      this.#confirmed(c, r, false, false); // creators: worked out once every cut is whole
+      if (named) this.#names.set(n, named);
+    }
+    this.#late = late;
+    this.#anc.clear();
+    if (lo > 1 || !this.#holes.delete(cutId) || this.#holes.size) return true;
+    this.#creators.clear();
+    for (const b of this.#cuts.values()) for (const r of b.log) for (const op of r?.ops ?? []) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), actorKey(r!.author));
+    for (const [k, a] of late ?? []) this.#creators.set(k, a);
+    this.#late = null;
+    return true;
+  }
+
   /** What an import taught this replica (lineage nodes, carried states, last authors, exports made), to persist. */
   knowledge(): { lineage: DagNode[]; states: [string, Doc][]; authors: [NodeId, Record<PathKey, Actor>][]; exports: [NodeId, { to: string; at: number }[]][] } {
     return { lineage: [...this.#lineage.values()], states: [...this.#states], authors: [...this.#importedAuthors], exports: [...this.#exportsMade] };
   }
-  /** Restore persisted knowledge (before the cuts that fork from lineage nodes); exports add to those held. */
+  /** Restore persisted knowledge (before the cuts that fork from lineage nodes); exports add to those held, once each. */
   loadKnowledge(k: Partial<ReturnType<History["knowledge"]>>): void {
     for (const n of k.lineage ?? []) this.#lineage.set(n.id, n);
     for (const [h, d] of k.states ?? []) this.#states.set(h, d);
     for (const [n, a] of k.authors ?? []) this.#importedAuthors.set(n, a);
-    for (const [n, e] of k.exports ?? []) this.#exportsMade.set(n, [...(this.#exportsMade.get(n) ?? []), ...e]);
+    for (const [n, e] of k.exports ?? []) {
+      const l = this.#exportsMade.get(n) ?? [];
+      for (const x of e) if (!l.some((y) => y.at === x.at && y.to === x.to)) l.push(x);
+      this.#exportsMade.set(n, l);
+    }
     this.#anc.clear();
   }
 
@@ -605,9 +678,16 @@ export class History {
     if (h) (ref.hash = h), (ref.hash8 = h.slice(0, 8));
     return ref;
   }
-  #confirmed(br: Cut, c: ConfirmedChange, keyframe = true): void {
+  #confirmed(br: Cut, c: ConfirmedChange, keyframe = true, creators = true): void {
+    if (!this.#byId.has(c.id)) this.#byId.set(c.id, c);
     const a = actorKey(c.author);
-    for (const op of c.ops) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), a);
+    if (creators)
+      for (const op of c.ops)
+        if (op.op === "insert" && op.nb) {
+          const k = E.pathKey(op.path);
+          this.#creators.set(k, a);
+          this.#late?.push([k, a]);
+        }
     if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? forkSealed(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
     if (c.name) this.#names.set(nodeId(br.rec.id, c.seq), { name: c.name, at: c.at, by: c.author });
     if (c.mergeOf) this.#anc.clear();
@@ -735,32 +815,39 @@ export class History {
   }
   /** Recorded remaps along one DAG path from ancestor `from` to `to` (first parent preferred), composed. */
   pathRemap(from: NodeId, to: NodeId, { prefer = "first" }: { prefer?: "first" | "second" } = {}): RemapMaps {
+    return E.composeMaps(...this.#path(from, to, prefer).map((e) => e.maps));
+  }
+  /** The recorded edges (maps, split lineage) along one DAG path from ancestor `from` to `to`, in order. */
+  #path(from: NodeId, to: NodeId, prefer: "first" | "second"): Edge[] {
     from = this.canon(from);
-    const steps: RemapMaps[] = [];
+    const steps: Edge[] = [];
     let cur = this.canon(to);
     while (cur !== from) {
       const ps = this.parents(cur);
       const order = prefer === "second" && ps.length > 1 ? [ps[1]!, ps[0]!] : ps;
       const p = order.find((q) => q === from || this.isAncestor(from, q));
       if (p === undefined) throw new Error(`no path ${from} -> ${to}`);
-      steps.push(this.edgeMap(p, cur));
+      steps.push(this.#edge(p, cur));
       cur = p;
     }
-    return E.composeMaps(...steps.reverse());
+    return steps.reverse();
   }
-  /** Edge maps: a change's intent maps; a fold's per-parent edge maps; an imported lineage edge's map. */
-  edgeMap(parent: NodeId, child: NodeId): RemapMaps {
+  /** An edge: a change's intent; a fold's per-parent maps and lineage; an imported lineage edge's. */
+  #edge(parent: NodeId, child: NodeId): Edge {
     const ln = this.#lineage.get(child);
-    if (ln) return ln.parents.find((p) => this.canon(p.id) === parent)?.remap ?? {};
+    if (ln) {
+      const p = ln.parents.find((p) => this.canon(p.id) === parent);
+      return { maps: p?.remap, lineage: p?.lineage };
+    }
     const c = this.changeAt(child);
-    if (!c) return {};
-    if (c.mergeOf) return this.canon(refNode(c.mergeOf)) === parent && this.canon(nodeId(c.branchId, c.seq - 1)) !== parent ? c.mergeEdges?.second ?? {} : c.mergeEdges?.first ?? {};
-    return c.intent?.maps ?? {};
+    if (!c?.mergeOf) return c?.intent ?? {};
+    const second = this.canon(refNode(c.mergeOf)) === parent && this.canon(nodeId(c.branchId, c.seq - 1)) !== parent;
+    return { maps: c.mergeEdges?.[second ? "second" : "first"], lineage: c.mergeEdges?.lineage?.[+second] };
   }
 
   // ------------------------------------------------------------ fold in, partial accept, revert, restore
   /** "Fold into …": a DAG merge of node `from` into cut `into`. */
-  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult; doc?: Doc } {
+  fold(into: string, from: NodeId, opts: FoldOptions & { remapPath?: "first" | "second" } = {}): FoldResult & { merge?: MergeResult; base?: ReturnType<History["mergeBase"]>; retry?: (choices: Choices) => FoldResult; doc?: Doc; edges?: ConfirmedChange["mergeEdges"] } {
     const { author = { kind: "human", id: this.name } as Actor, choices, prefer = "ours", missingBase = "dialog", remapPath = "first" } = opts;
     const done = opts.check ? null : this.#done(opts.id);
     if (done) return done;
@@ -793,27 +880,32 @@ export class History {
       return r;
     }
     const baseNode = base.node ?? base.nodes![0]!;
-    const Mo = this.pathRemap(baseNode, x, { prefer: remapPath }),
-      Mt = this.pathRemap(baseNode, y, { prefer: remapPath });
+    // each side's recorded maps and split lineage since the base, so an edit of a clip the other side split reaches
+    // every piece (kit-docs: a fold used the maps only)
+    const side = (to: NodeId) => E.sideOf(this.#path(baseNode, to, remapPath).map((intent) => ({ intent }))).remap,
+      Ro = side(x),
+      Rt = side(y);
     const ours = this.stateOf(x)!,
       theirs = this.stateOf(y);
     if (!theirs) return { status: "missing-base", dialog: { text: "The version to fold in isn't held here.", options: ["ask", "all-cards"], lca: y } };
     const m = E.merge3(base.doc!, ours, theirs, this.schema, {
       prefer,
-      remaps: { ours: isEmptyMap(Mo) ? undefined : { maps: Mo }, theirs: isEmptyMap(Mt) ? undefined : { maps: Mt } },
+      remaps: { ours: Ro, theirs: Rt },
     });
     const unseen = opts.unchosen === "prefer" ? [] : unseenCards(m.conflicts, choices);
     if (m.conflicts.length && (!choices || unseen.length))
       return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(into, this.headSeq(into)), merge: m, base, ...(choices ? { unseen: unseen.map((c) => c.path) } : {}), retry: (ch: Choices) => this.fold(into, from, { ...opts, choices: ch }) };
     const doc = m.conflicts.length ? E.resolve(m, choices!) : m.doc;
-    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m, base, doc };
+    // the fold's edges: each parent's maps, and the split lineage of the side it brings in (theirs onto ours, first)
+    const edges = { first: m.edges.ours, second: m.edges.theirs, ...(Ro?.lineage || Rt?.lineage ? { lineage: [Rt?.lineage ?? {}, Ro?.lineage ?? {}] as [Splits, Splits] } : {}) };
+    if (opts.check) return { status: "confirmed", seq: this.headSeq(into), ref: this.#refAt(into, this.headSeq(into)), change: null, rebased: 0, notices: [], empty: true, merge: m, base, doc, edges };
     const r = this.commit(into, {
       doc,
       author,
       allowEmpty: true,
       kind: "merge",
       ...(opts.id ? { id: opts.id } : {}),
-      extra: { mergeOf: parseNode(y), mergeEdges: { first: m.edges.ours, second: m.edges.theirs }, mergeBase: base.node ? [base.node] : base.nodes! },
+      extra: { mergeOf: parseNode(y), mergeEdges: edges, mergeBase: base.node ? [base.node] : base.nodes! },
     });
     this.#anc.clear();
     if (r.status === "confirmed" && r.change) this.#mergeAuthors(r.change, y);
@@ -1164,14 +1256,15 @@ export class History {
       const rec: DagNode = { id, branchId: b, seq: s, hash: this.hashOf(id)!, kinds: kindsOf(id), parents: [], ...(owner ? { owner } : {}) };
       nodes.set(id, rec);
       for (const p0 of this.parents(id)) {
-        const maps = [this.edgeMap(p0, id)];
+        const es = [this.#edge(p0, id)];
         let p = p0;
         while (!isStop(p)) {
           const pp = this.parents(p)[0]!;
-          maps.push(this.edgeMap(pp, p));
+          es.push(this.#edge(pp, p));
           p = pp;
         }
-        rec.parents.push({ id: p, remap: E.composeMaps(...maps.reverse()) });
+        const e = E.sideOf(es.reverse().map((intent) => ({ intent }))).remap;
+        rec.parents.push({ id: p, remap: e?.maps ?? {}, ...(e?.lineage ? { lineage: e.lineage } : {}) });
         queue.push(p);
       }
     }
@@ -1359,7 +1452,10 @@ export class History {
       const b = pending.splice(i, 1)[0]!;
       this.#cuts.delete(b.id);
       const br = this.#mustCut(this.addCut({ id: b.id, name: b.name, forkOf: b.forkOf, owner: b.owner, root: b.root, tracking: true }).id);
-      (br.log as ConfirmedChange[]).push(...b.log.map((c) => ({ ...c })));
+      for (const c of b.log) {
+        (br.log as ConfirmedChange[]).push({ ...c });
+        if (!this.#byId.has(c.id)) this.#byId.set(c.id, br.log.at(-1)!);
+      }
     }
     this.#anc.clear();
   }

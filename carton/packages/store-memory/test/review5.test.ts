@@ -206,6 +206,7 @@ test("R5-8 a late conflict is kept as a notice for its writer, also after a rest
   await until(async () => (await b.notices(bob)).length > 0, 5000, "the notice");
   const n = (await b.notices(bob)) as Notice[];
   assert.equal(n[0]!.kind, "late-conflict");
+  assert.equal(n[0]!.cut, b.cut, "the cut the change was made on (ui 37efc2a)");
   await b.close();
   const again = await Carton.open({ adapter, store: bobStore, actor: bob });
   assert.equal((await again.notices(bob, { take: true }))[0]!.kind, "late-conflict");
