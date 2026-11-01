@@ -27,7 +27,7 @@ test.before(async () => {
   globalThis.window = { __cartonReact: React };
   require(outfile);
   ({ LiveStatus } = globalThis.window.__cartonSyncUi);
-});
+}, { timeout: 600_000 });
 
 const base = { shared: true, status: "syncing", pending: 0, host: "https://host.example", name: "Bob", peers: [] };
 const html = (st) => render(React.createElement(LiveStatus, { st }));

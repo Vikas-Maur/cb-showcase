@@ -394,13 +394,20 @@ onto the packages' APIs, so a package API change touches only the facade.
     hooks) and host Claude Code's (`cb carton-hook`, spawned with the hook's JSON on stdin): a Read of `timeline.tsx`
     freezes it, a Write/Edit of `project.json` is refused with a pointer to `cb source print --view`, the Stop lets go.
     Views are polled (a stat every 250 ms, only the views Carton printed): no watch handle inside the bundle, which on
-    Windows can block Cardboard's rename or trash of it. Stopgap until cardboard-adapter merges an agent's own `cb`
-    commit into the frozen file: such a commit during a freeze reprints the shared file from head (`printShared`).
+    Windows can block Cardboard's rename or trash of it. An agent's own `cb` commit during a freeze shows in the frozen
+    file at once (the Materializer's `foldAgentChanges`, cardboard-adapter `151a38e`); the person's and remote changes
+    stay out until the freeze ends. (The app's earlier stopgap reprinted the shared file from head when the newest
+    change was an agent's, which on Windows CI showed the person's edit during a turn: an in-process view save was the
+    newest change when another connection's write made the holder look. Guarded by `views-guards.test.js`.)
 - **Built:** `carton-node.cjs`, `engine-thread-main.js`, `helper-main.js`, `factory.js`, `fmsv.cjs` (1.4.0's own GUI
   save projection, cut out at build time) and `carton-ui.js`.
 - **Wired, tested on stand-ins only:** the editor's pages (H4–H7, the History tab, the Share panel) and main (H9: the
   actor environment, the Director's hooks, Stop and SubagentStop, host Claude Code's `--settings`, `carton:call`).
-  They need the Windows run.
+  They need the Windows run. Host Claude Code's file-tool hooks carry `if` conditions (`Read(**/timeline.tsx)`,
+  `Write|Edit|MultiEdit(**/timeline.tsx)` and `(**/project.json)`, one entry per tool and file): checked against real
+  Claude Code 2.1.309 (the bundled version) and 2.1.316 on Linux, driven by a stand-in Messages API
+  (`sync/hook-bench.js`, `sync/mock-claude.js`): the file at any depth, outside the project, and in another case
+  matches; any other file starts no process; `Edit(…)` covers Edit only. Windows paths are for the laptop run.
 - **Not wired yet:**
   - H3: Carton's merge3 in the apply's preview. `rn` still makes the preview; the commit that follows merges with
     Carton.

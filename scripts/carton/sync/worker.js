@@ -81,6 +81,13 @@ function person(bundlePath, projectId) {
   return cfg ? { kind: "human", id: cfg.account, name: cfg.name ?? cfg.account, group: localGroup() } : null;
 }
 
+/** R3: the project's Carton tells this replica's person as the host session's (see startLive). */
+async function setIdentity(lc, bundlePath, projectId) {
+  const p = person(bundlePath, projectId), had = lc.carton.identity?.();
+  if (!p || typeof lc.carton.setIdentity !== "function" || (had?.id === p.id && had?.name === p.name)) return;
+  await lc.carton.setIdentity({ id: p.id, name: p.name });
+}
+
 // The helper engine factory a cb call starts when the app is closed (H13's headless sync); it loads this bundle.
 const helperFactory = () => path.join(__dirname, "sync", "factory.js");
 
@@ -95,6 +102,11 @@ async function startLive(api, bundlePath, lc) {
       warnOnce("nosync:" + bundlePath, `${path.basename(bundlePath)} is shared, but this build can't open it with sync; edits stay on this computer`);
       return null;
     }
+    // R3: this replica's person is the host session's (the account, and the name chosen at share or join): its GUI
+    // saves, recorded as the generic "person", read as them in History, credits and presence, here and at teammates'
+    // (core's identity; the host keeps it per device credential). Set before Live connects, so the hello carries it;
+    // again only when it changed (a project shared before this build gets it at its first open).
+    await setIdentity(lc, bundlePath, projectId);
     // A clip added while the project is shared (by the person, an agent or cb) is shared as it was at share time.
     // The project's View is its holder (views.js); Live keeps a lease of its own only when there is none.
     const view = await viewOf(bundlePath);

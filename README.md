@@ -492,7 +492,10 @@ run below.
    local paths); anything else in `.scratch\views\` goes in.
 4. `cb`: the commands, WHO in `cb history`, `undo --turn`, the MCP tools, `cb source print --view <name>` (an agent's
    own view, below), and a `cb carton-hook` command host Claude Code runs for its hooks (which also tell the app what
-   the agent reads and writes, below).
+   the agent reads and writes, below). Its hooks on Read, Write and Edit run only for `timeline.tsx` and `project.json`
+   (Claude Code's `if` conditions, checked inside Claude Code): a call on any other file starts no process, so an
+   agent's ordinary reads cost nothing extra. A Claude Code too old for `if` runs them on every call, with the same
+   answers.
 5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent; `Stop` and
    `SubagentStop` hand a late conflict back to the agent once (then the cards it left are the person's); the
    Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below); the GUI save's base
@@ -606,6 +609,10 @@ with Carton off none of it runs at all.
   what they are doing. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
   panel says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
   message), access refused, the host out of reach.
+- **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
+  chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
+  before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that
+  made it, which the host knows, so nothing in the history is rewritten.)
 - **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
   through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
   (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
@@ -632,8 +639,9 @@ with Carton off none of it runs at all.
   Cardboard's Save As dialog has no switch for it, so set `CARTON_CBPROJ_HISTORY=1` in the environment of the app or
   of `cb` before saving. The file then also carries every version, with its author and name, and whoever opens it sees
   them on a read-only cut. History never includes your local data (pins, notices, sync settings). Saved while edits to
-  a shared project are still waiting to sync (offline), the file has no Carton history at all, only what you see (as
-  in 1.4.0), and the log says so. Save again once synced.
+  a shared project are still waiting to sync (offline; Carton counts them for whichever process saves, the app or
+  `cb`), the file has no Carton history at all, only what you see (as in 1.4.0), and the log says so. Save again once
+  synced.
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
@@ -642,7 +650,8 @@ that live on the host (`media.js`), the agent's media tools (`tools.js`), `cb`'s
 (`cbproj.js`). Sessions and tokens are in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
 
 Tests (Linux, Cardboard's own bundles; two libraries, each with its own app data and its own real library worker,
-syncing through a real host on 127.0.0.1): share with history, invite and join, concurrent edits, presence, media by
+syncing through a real host on 127.0.0.1): share with history, invite and join, concurrent edits, who made each edit
+(each side's GUI edits under their name at the other's, before and after the share, "You" for your own), presence, media by
 range, by URL and through the agent's `grab_frame`, media while it uploads, offline and rejoin, `cb` with the app open
 (from a print one version behind), and with it closed in cloud mode, another program's save and an offline restore
 with the app closed, a host too old for the app; `.cbproj` Save As, Open and "Bring in their changes" in both copies,

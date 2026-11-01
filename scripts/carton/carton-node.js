@@ -13,7 +13,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy } from "@carton/cardboard/node";
+import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
@@ -217,6 +217,13 @@ const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 // Who an actor id is (CARDBOARD_ACTOR's form). The person at the app shares the machine's undo group with windowless
 // agents (§8).
 const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : parseActorId(id) ?? identify({ declared: id }));
+// "You" in the History panel (R3): in a shared project, this replica's identity (live sync sets it from the host
+// session at share and join), as core tells the person's GUI saves there; before a share, the generic person they are
+// recorded as. GUI saves stay recorded as "person" either way.
+const meOf = (lc) => {
+  const who = lc.carton.identity?.();
+  return who ? { kind: "human", id: who.id, name: who.name, group: localGroup() } : actorOf("person");
+};
 
 // The History panels open in this process, per bundle (fromCarton handles): a person's GUI save's cards show in them at
 // once. Cards go to @carton/react as core returns them: core merges merge3(base, head, mine), so `ours` is head and
@@ -614,6 +621,8 @@ export const cardboard14 = {
   install,
   timelineOwned,
   timelineEvent,
+  // H11: which files in .scratch/views/ are Carton's (the store bridge's Save As walk and Open Project scrub)
+  cartonViewFile,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
   async sawDisk({ bundlePath, doc }) {
@@ -696,6 +705,65 @@ export const cardboard14 = {
     return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf, agentCards }, own) };
   },
   workerServices({ library, emit, bundleOf, lcOf, servers }) {
+    // A page's History panel: a fromCarton handle on the project's Carton, served to that page (serveUi).
+    const servePanel = async (projectId, client) => {
+      const lc = await lcOf(projectId);
+      if (!lc) return null;
+      const me = meOf(lc);
+      const handle = fromCarton(lc.carton, { me });
+      const ui = handle.ui ?? handle;
+      const bundlePath = bundleOf(projectId);
+      if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
+      panels.get(bundlePath).add(handle);
+      // Cards kept from earlier GUI saves are shown too, until resolved.
+      const person = keyOf(actorOf("person"));
+      const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
+      handle.reportConflicts((await kept()).flatMap((x) => x.value.cards));
+      // And agents' view-save cards still open, shown the person's way round (before the methods are wrapped).
+      views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []);
+      for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
+      // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
+      for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
+        const f = ui[m];
+        if (typeof f === "function") ui[m] = async (...a) => {
+          // The card behind a conflict, as reported (fromCarton forgets it once resolved).
+          const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
+          // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
+          const agents = views.isAgent(card);
+          const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
+          if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
+          // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
+          // resolved them first, they are already gone.
+          if (card && !agents) for (const x of await kept()) {
+            const cards = x.value.cards.filter((c) => !sameCard(c, card));
+            if (cards.length < x.value.cards.length) await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
+          }
+          return r;
+        };
+      }
+      // R3: "You" is told by this replica's identity once the project is shared (meOf). Core addresses a GUI save's
+      // late-conflict notice to its actor as recorded, the generic person, and fromCarton takes notices for its me:
+      // those are passed on here, as the kept ones above are.
+      const offs = [];
+      if (keyOf(me) !== person) offs.push(lc.carton.on((e) => { if (e.type === "notice" && e.notice?.to === person && e.notice.cards?.length) handle.reportConflicts(e.notice.cards, e.notice.by); }));
+      // The identity set or changed while the panel is open (a share, a join): it starts again with it (the page's
+      // remoteUi takes the fresh init in place of what it showed).
+      offs.push(lc.carton.on((e) => {
+        if (e.type !== "people" || keyOf(meOf(lc)) === keyOf(me) || servers.get(client) !== s) return;
+        close();
+        void servePanel(projectId, client).then((n) => n?.receive({ t: "hello" })).catch((err) => warnOnce("panel:" + bundlePath, "the History panel didn't start again: " + errText(err)));
+      }));
+      const close = () => {
+        for (const off of offs) off();
+        servers.delete(client);
+        panels.get(bundlePath)?.delete(handle);
+        s.close();
+        handle.dispose?.();
+      };
+      const s = serveUi(ui, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
+      servers.set(client, s);
+      return s;
+    };
     return {
       ping: async () => "pong",
       head: async ({ projectId }) => library.projects.read(projectId),
@@ -761,41 +829,8 @@ export const cardboard14 = {
       ui: async ({ projectId, client, message }) => {
         let s = servers.get(client);
         if (!s) {
-          const lc = await lcOf(projectId);
-          if (!lc) return { status: "unavailable" };
-          const handle = fromCarton(lc.carton, { me: actorOf("person") });
-          const ui = handle.ui ?? handle;
-          const bundlePath = bundleOf(projectId);
-          if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
-          panels.get(bundlePath).add(handle);
-          // Cards kept from earlier GUI saves are shown too, until resolved.
-          const person = keyOf(actorOf("person"));
-          const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
-          handle.reportConflicts((await kept()).flatMap((x) => x.value.cards));
-          // And agents' view-save cards still open, shown the person's way round (before the methods are wrapped).
-          views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []);
-          for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
-          // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
-          for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
-            const f = ui[m];
-            if (typeof f === "function") ui[m] = async (...a) => {
-              // The card behind a conflict, as reported (fromCarton forgets it once resolved).
-              const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
-              // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
-              const agents = views.isAgent(card);
-              const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
-              if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-              // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
-              // resolved them first, they are already gone.
-              if (card && !agents) for (const x of await kept()) {
-                const cards = x.value.cards.filter((c) => !sameCard(c, card));
-                if (cards.length < x.value.cards.length) await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
-              }
-              return r;
-            };
-          }
-          s = serveUi(ui, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
-          servers.set(client, s);
+          s = await servePanel(projectId, client);
+          if (!s) return { status: "unavailable" };
         }
         s.receive(message);
         return { status: "ok" };

@@ -52,7 +52,7 @@ test.before(async () => {
   });
   out = JSON.parse(r.stdout.trim().split("\n").pop() || "{}");
   if (out.error || r.status !== 0) throw new Error("facade run: " + (out.error ?? r.stdout + r.stderr));
-});
+}, { timeout: S.SETUP_MS });
 
 test("#1 a save with nothing of its own, rebased onto a newer head, gets head: the other writer's description stays", { skip: S.skip }, () => {
   assert.equal(out.a.status, "confirmed", JSON.stringify(out.a));
