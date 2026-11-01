@@ -243,7 +243,9 @@ export interface Carton {
   /**
    * This replica's pending changes on a shared cut (default: current), in queue order: each one's author and the
    * optimistic states just before and after it (the confirmed state at `seq` the queue is on, then each change's latest
-   * version applied in turn, as `head` builds its state). None on a cut this replica sequences itself.
+   * version applied in turn, as `head` builds its state). None on a cut this replica sequences itself. Only this handle's
+   * queue: none on a handle without sync (`cb`), nor for an edit held until its base can be rebuilt, while
+   * `pendingCount` counts every process's stored rows. Read-only; O(changes × records): two owned states per change.
    */
   pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc }[] }>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
