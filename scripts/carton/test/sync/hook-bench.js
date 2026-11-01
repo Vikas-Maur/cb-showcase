@@ -86,10 +86,14 @@ async function run(pc, bin, kind, settings, plan) {
         const plan = planFor(kind);
         const log = await run(pc, bin, kind, settingsFor(kind, hostSettings), plan);
         // log[i] is the request after tool call i-1 (log[0]: the prompt)
+        // the box's load with each run (it is shared): numbers from a busy box read differently
+        const load = +require("os").loadavg()[0].toFixed(2);
         for (let i = 1; i < log.length; i++) {
           const call = plan[i - 1];
           if (!call) continue;
-          const row = { kind, round: r, i: i - 1, tool: call.tool, file: path.basename(call.input.file_path), ms: +(log[i].at - log[i - 1].at).toFixed(2), denied: /project\.json is Cardboard's project file/.test(log[i].toolResult) };
+          // the stand-in's i-th request answers plan step i-1: a retried request would shift every row without a word
+          if (log[i].step !== i) throw new Error(`the stand-in's request ${i} was for step ${log[i].step}: a retried request; this run's rows can't be trusted`);
+          const row = { kind, round: r, i: i - 1, tool: call.tool, file: path.basename(call.input.file_path), ms: +(log[i].at - log[i - 1].at).toFixed(2), denied: /project\.json is Cardboard's project file/.test(log[i].toolResult), load };
           rows.push(row);
           console.log(JSON.stringify(row));
         }
