@@ -2123,6 +2123,64 @@
           ]
         }
       ]
+    },
+    {
+      "id": "save-growth",
+      "agent": "windows-sync",
+      "claim": "per-save cost stays flat over hundreds of GUI saves once R1 (foundation 9ec9de4, pins reloaded only when pinsGen changes) and R2 (cardboard-adapter's save-speed stage) are in: the final merge vs 06684af (windows-sync's last reviewed head, without R1/R2), 400 saves interleaved save by save, 3 and 200 items, real library worker on Cardboard 1.4.0's bundles (verify-perf's verify-ab.js, D: 06684af's ancestor fd61a05 grew ~13-14 -> 24-26 ms worker CPU per save over 400 saves)",
+      "needs": [
+        "cardboard",
+        "ffmpeg"
+      ],
+      "timeout": 45,
+      "steps": [
+        {
+          "label": "check out before = 06684af as a worktree (by full SHA), npm ci in its carton/ and tools/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; git fetch --no-tags --depth=1 origin \"$2\"; git worktree add --detach \"$3/before\" \"$2\"; git -C \"$3/before\" log -1 --format=\"before %H %s\"; git log -1 --format=\"final %H %s\"; (cd \"$3/before/carton\" && npm ci --no-audit --no-fund); (cd \"$3/before/tools\" && npm ci --no-audit --no-fund)",
+            "_",
+            "..",
+            "06684af4de21037b3685f65e90bb1a635ae1d5b8",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "save-ab.cjs: before:on vs final:on, interleaved save by save, 400 saves (3 warm-up) at 3 and 200 items, gap 0, worker CPU per save from /proc (Cardboard's own output stays on the runner)",
+          "run": [
+            "bash",
+            "-c",
+            "set -o pipefail; export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 CARTON_TEST_DIR=\"$1/sb\"; mkdir -p \"$1/sb\"; \"$2\" ci/save-ab.cjs --trees \"before=$1/before,final=..\" --cells before:on,final:on --out \"$3/save-ab\" --items 3,200 --saves 400 --rounds 1 --gap 0 >\"$1/ab.out\" 2>\"$1/ab.err\"; rc=$?; grep \"^{\\\"items\\\"\" \"$1/ab.out\"; if [ $rc -ne 0 ]; then echo \"save-ab.cjs exit $rc; its error (first lines naming our code only; the rest stays on the runner):\" >&2; grep -m8 -E \"^[A-Za-z]*Error|^ +at .*(ci/save-ab|scripts/carton)\" \"$1/ab.err\" >&2; fi; exit $rc",
+            "_",
+            "{tmp}",
+            "{node}",
+            "{results}"
+          ]
+        },
+        {
+          "label": "per 50 saves: medians of save, worker CPU, file; CPU slope",
+          "run": [
+            "{node}",
+            "ci/save-growth-summary.mjs",
+            "{results}/save-ab/rows.jsonl",
+            "50"
+          ],
+          "stdoutTo": "{results}/save-growth.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "save-growth.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^final:on items=3",
+            "^before:on items=3",
+            "^final:on items=200",
+            "^before:on items=200"
+          ]
+        }
+      ]
     }
   ]
 }
