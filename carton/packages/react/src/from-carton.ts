@@ -55,7 +55,11 @@ import type {
 import { diffSummary } from "./shots.ts";
 
 export interface FromCartonOptions {
-  /** The local person. The handle doesn't expose its actor, and "you" needs it. */
+  /**
+   * The local person. The handle doesn't expose its actor, and "you" needs it. A host whose GUI saves are recorded as
+   * the generic person (`human/person`) may pass the resolved person here (`setIdentity`); give it the GUI saves' group
+   * then (`me.group` or `group`), so Undo finds them.
+   */
   me: CoreActor;
   /** Your undo group (§8). Default: `me.group`, else your actor key. */
   group?: string;
@@ -217,6 +221,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   // notices to that actor, even when the app has resolved who the person is (setIdentity) and passes them as `me`.
   // Notices never cross machines, so one addressed to the generic person is always this person's own.
   const personKey = opts.me.kind === "human" && opts.me.id !== PERSON ? actorKey({ kind: "human", id: PERSON }) : null;
+  // This machine's own GUI saves, as core recorded them (the generic person): told as `me`. Only for what is known to be
+  // this machine's (a local change, your undo group); log() and credits() already come resolved by core.
+  const own = (a: CoreActor): CoreActor => (personKey !== null && a.kind === "human" && a.id === PERSON ? opts.me : a);
   const schema = carton.schema;
   const describeCard = opts.describeCard ?? defaultDescribeCard;
   const actors = new Map<string, Actor>();
@@ -609,7 +616,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (top.author.turn) for (edits = 0; edits < stack.length && stack[edits]!.author.turn === top.author.turn; edits++);
       const label = top.label.replace(/^Undo\s+(?:[^:]+:\s*)?/, "");
       // a turn is the agent's, even when its newest edit was a subagent's: "Undo Director: tighter intro"
-      const who = ui(top.author);
+      const who = ui(own(top.author));
       const author = who.kind === "subagent" && top.author.turn && who.parent ? (actors.get(who.parent) ?? who) : who;
       next = { id: top.changeId, author, label, at: top.at, edits };
     }
@@ -730,7 +737,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           void track(refreshCuts()); // tracked: settled() waits for it too
           break;
         }
-        appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
+        appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
@@ -775,7 +782,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       }
       case "notice": {
         const n = e.notice;
-        if (n.cards?.length && (n.to === meKey || n.to === myGroup || n.to === personKey)) addCards(n.cards, n.by);
+        if (n.cards?.length && (n.to === meKey || n.to === myGroup || n.to === personKey)) addCards(n.cards, n.by, n.cut ?? cutId);
         break;
       }
       default:
