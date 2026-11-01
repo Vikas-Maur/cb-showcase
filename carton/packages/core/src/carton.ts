@@ -240,9 +240,10 @@ export interface Carton {
   /**
    * This replica's pending changes on a shared cut (default: current), in queue order: each one's author and the
    * optimistic states just before and after it (the confirmed state at `seq` the queue is on, then each change's latest
-   * version applied in turn, as `head` builds its state). None on a cut this replica sequences itself.
+   * version applied in turn, as `head` builds its state), and how many times it was rebased (0: as committed). None on
+   * a cut this replica sequences itself.
    */
-  pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc }[] }>;
+  pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number }[] }>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
   checkout(ref: StateRef | string): Promise<Doc>;
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
@@ -1250,11 +1251,11 @@ class CartonImpl implements Carton {
     // as the optimistic head is built: the confirmed state the queue is on, then each change's latest version in turn
     const seq = sc.queue.headSeq(cut);
     let doc = sc.queue.confirmedState(cut, seq);
-    const changes: { id: ChangeId; author: Actor; before: Doc; after: Doc }[] = [];
+    const changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number }[] = [];
     for (const p of sc.queue.pending(cut)) {
       const v = p.versions[p.versions.length - 1]!;
       const after = v.ops.length ? E.apply(E.fork(doc, this.schema), v.ops, this.schema) : doc;
-      changes.push({ id: p.id, author: p.author, before: owned(doc, this.schema), after: owned(after, this.schema) });
+      changes.push({ id: p.id, author: p.author, before: owned(doc, this.schema), after: owned(after, this.schema), rebases: v.k });
       doc = after;
     }
     return { seq, changes };
