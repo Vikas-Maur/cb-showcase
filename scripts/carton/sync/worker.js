@@ -254,7 +254,9 @@ async function commitShared(lc, { doc, base, author, intent }) {
   // project.json after the holder's, dropping what it had merged in, with no confirmation to repair it). A confirmed
   // answer too (round 4 #1): a save that changed nothing confirms at once while the holder's own edits still wait.
   // To this handle's cut, named: the holder's current cut could change before it answers (and `head` is that cut's).
-  const w = await lc.write({ kind: "commit", cut: lc.carton.cut, doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}), head: true }, { actor: author });
+  // The person's own (a GUI save, a clip's share record) is the app's action, not a `cb` call: local's `gui` write
+  // freezes no timeline.tsx (an outside program's save, author "external", is told as before).
+  const w = await lc.write({ kind: "commit", cut: lc.carton.cut, doc, ...(base ? { base } : {}), ...(intent ? { intent } : {}), head: true }, { actor: author, ...(author?.kind === "human" ? { gui: true } : {}) });
   if (w.status === "error") throw new Error(w.error);
   if (w.status === "rejected") return { status: "rejected", reason: w.reason };
   const head = w.head?.doc ? w.head : await lc.carton.head();

@@ -867,7 +867,8 @@ export const cardboard14 = {
         const op = { kind: "undo", group: localGroup() }, actor = actorOf("person");
         const here = extensions.find((e) => typeof e.serveHere === "function");
         const bundlePath = bundleOf(projectId);
-        const r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor }));
+        // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
+        const r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true }));
         if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
         return r;
       },

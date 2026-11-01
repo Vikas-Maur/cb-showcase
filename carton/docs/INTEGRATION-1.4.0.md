@@ -292,6 +292,8 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   local's runWrite, with the Materializer told and the person's notices delivered) whenever that View holds the
   project's lease; before, local's write path reached the same holder through its control socket. Elsewhere (another
   process holds the lease, no View runs) it still goes through local's write path. `save-cost.test.js` counts it.
+  Either way it is a `gui` write (local-cli `3962f27`): the person's own action starts no `timeline.tsx` freeze, as a GUI
+  save on a shared cut handed to another process's holder doesn't either (an agent's freeze still holds).
 - With Carton off, or without history for the project, Cardboard's snapshot undo runs.
 
 **Remaps (H7).**
