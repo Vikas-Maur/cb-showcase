@@ -2,6 +2,7 @@
   "extends": "../../../tsconfig.node.json",
   "include": [
     ".",
-    "../src"
+    "../src",
+    "../bench"
   ]
 }

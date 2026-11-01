@@ -161,7 +161,11 @@ export class HmacAuth implements AuthProvider {
     }
     const keyP = typeof claims?.kid === "string" ? this.#keys.get(claims.kid) : undefined;
     if (!keyP) throw new AuthError("unknown signing key");
-    const ok = await crypto.subtle.verify("HMAC", await keyP, fromB64url(token.slice(dot + 1)) as Uint8Array<ArrayBuffer>, enc.encode(body));
+    const mac = fromB64url(token.slice(dot + 1));
+    // Canonical only: the MAC's last base64url character has unused bits, and a token differing there decodes to the
+    // same MAC, but it is not the token that was issued (the AuthProvider suite's tamper check).
+    if (b64url(mac) !== token.slice(dot + 1)) throw new AuthError("bad signature");
+    const ok = await crypto.subtle.verify("HMAC", await keyP, mac as Uint8Array<ArrayBuffer>, enc.encode(body));
     if (!ok) throw new AuthError("bad signature");
     const now = this.#sec();
     if (claims.v !== 1 || !Number.isInteger(claims.exp) || !Number.isInteger(claims.iat)) throw new AuthError("bad token");

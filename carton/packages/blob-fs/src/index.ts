@@ -16,8 +16,8 @@ import { createReadStream } from "node:fs";
 import { Readable } from "node:stream";
 import { join, dirname, sep } from "node:path";
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkRange, checkPartNumber, checkCompleteParts, randomId, BlobError } from "@carton/blob-memory/rules";
-import { keyToSegments, decodeSegment, encodeSegment, OBJECT_SUFFIX } from "./keys.ts";
+import { checkKey, checkRange, checkPartNumber, checkCompleteParts, randomId, BlobError, markCreated } from "@carton/blob-memory/rules";
+import { keyToSegments, decodeSegment, encodeSegment, OBJECT_SUFFIX, HASHED_DIR } from "./keys.ts";
 
 export { BadKeyError } from "./keys.ts";
 
@@ -34,6 +34,9 @@ export interface FsBlobStoreOptions {
   durable?: boolean;
   // Refuse multipart parts (but the last) under this size, to match S3/R2 (5 MiB). Default 0.
   minPartSize?: number;
+  // On Windows, how long a rename or delete keeps retrying while another handle has the file open (EPERM, EBUSY,
+  // EACCES). Default 5 s.
+  retryBudgetMs?: number;
 }
 
 interface Meta {
@@ -47,13 +50,19 @@ interface Meta {
 const isCode = (e: unknown, ...codes: string[]) => codes.includes((e as NodeJS.ErrnoException)?.code ?? "");
 
 // Windows refuses to replace or delete a file another handle has open; retry briefly (see the header).
-async function retrying<T>(fn: () => Promise<T>): Promise<T> {
+// The budget is time, not tries: on a busy Windows machine a reader (or Defender scanning the file just written) can
+// hold a file for well over a second (CI: a 400 ms lock cost a put 1,300 ms). Waits double from 10 ms up to 250 ms.
+export const DEFAULT_RETRY_BUDGET_MS = 5000;
+export async function retrying<T>(fn: () => Promise<T>, budgetMs = DEFAULT_RETRY_BUDGET_MS, onWindows = WIN): Promise<T> {
+  const start = Date.now();
   for (let i = 0; ; i++) {
     try {
       return await fn();
     } catch (e) {
-      if (!WIN || i >= 8 || !RETRY_CODES.has((e as NodeJS.ErrnoException)?.code ?? "")) throw e;
-      await new Promise((r) => setTimeout(r, 10 * 2 ** Math.min(i, 5)));
+      if (!onWindows || !RETRY_CODES.has((e as NodeJS.ErrnoException)?.code ?? "")) throw e;
+      const wait = Math.min(250, 10 * 2 ** Math.min(i, 5));
+      if (Date.now() - start + wait > budgetMs) throw e;
+      await new Promise((r) => setTimeout(r, wait));
     }
   }
 }
@@ -72,6 +81,7 @@ export class FsBlobStore implements BlobStore {
   readonly #minPart: number;
   readonly #dirs = new Set<string>();
   readonly #ready: Promise<void>;
+  readonly #retryBudget: number;
 
   constructor(opts: FsBlobStoreOptions) {
     const root = opts.root;
@@ -81,6 +91,7 @@ export class FsBlobStore implements BlobStore {
     this.#tmp = join(root, "tmp");
     this.#durable = opts.durable ?? true;
     this.#minPart = opts.minPartSize ?? 0;
+    this.#retryBudget = opts.retryBudgetMs ?? DEFAULT_RETRY_BUDGET_MS;
     this.#ready = this.#init();
     this.#ready.catch(() => {}); // surfaced by the first operation instead
   }
@@ -94,6 +105,10 @@ export class FsBlobStore implements BlobStore {
         if (now - (await stat(p)).mtimeMs > TMP_MAX_AGE_MS) await unlink(p);
       } catch {}
     }
+  }
+
+  #retry<T>(fn: () => Promise<T>): Promise<T> {
+    return retrying(fn, this.#retryBudget);
   }
 
   async #mkdirp(dir: string): Promise<void> {
@@ -151,7 +166,7 @@ export class FsBlobStore implements BlobStore {
 
   async #writeMeta(file: string, meta: Meta): Promise<void> {
     const { tmp } = await this.#writeTmp((fh) => fh.writeFile(JSON.stringify(meta)));
-    await retrying(() => rename(tmp, metaOf(file)));
+    await this.#retry(() => rename(tmp, metaOf(file)));
   }
 
   async #readMeta(file: string, fp: string): Promise<Meta | null> {
@@ -168,7 +183,7 @@ export class FsBlobStore implements BlobStore {
     await this.#ready;
     if (opts.ifAbsent) {
       const existing = await this.head(key);
-      if (existing) return existing;
+      if (existing) return markCreated(existing, false);
     }
     await this.#mkdirp(dirname(file));
     const { tmp, fp } = await this.#writeTmp(async (fh) => {
@@ -180,21 +195,21 @@ export class FsBlobStore implements BlobStore {
     if (opts.ifAbsent) {
       if (!(await this.#linkIfAbsent(tmp, file))) {
         await unlink(tmp).catch(() => {});
-        return (await this.head(key))!;
+        return markCreated((await this.head(key))!, false);
       }
       if (meta) await this.#writeMeta(file, meta);
     } else {
       // the sidecar goes first and names this version's fingerprint, so a reader never pairs new bytes with old
       // metadata (it may briefly see none)
       if (meta) await this.#writeMeta(file, meta);
-      else await retrying(() => unlink(metaOf(file))).catch(() => {});
-      await retrying(() => rename(tmp, file));
+      else await this.#retry(() => unlink(metaOf(file))).catch(() => {});
+      await this.#retry(() => rename(tmp, file));
     }
     await this.#syncDir(dirname(file));
     const info: BlobInfo = { key, size: data.byteLength, etag: `"${fp}"` };
     if (opts.contentType) info.contentType = opts.contentType;
     if (opts.sha256) info.sha256 = opts.sha256;
-    return info;
+    return opts.ifAbsent ? markCreated(info, true) : info;
   }
 
   // Atomic create-if-absent: a hard link fails with EEXIST if the key exists. FAT and exFAT have no hard links
@@ -213,7 +228,7 @@ export class FsBlobStore implements BlobStore {
       await stat(file);
       return false;
     } catch {}
-    await retrying(() => rename(tmp, file));
+    await this.#retry(() => rename(tmp, file));
     return true;
   }
 
@@ -292,7 +307,7 @@ export class FsBlobStore implements BlobStore {
     await this.#ready;
     for (const p of [file, metaOf(file)]) {
       try {
-        await retrying(() => unlink(p));
+        await this.#retry(() => unlink(p));
       } catch (e) {
         if (!isCode(e, "ENOENT", "ENOTDIR")) throw e;
       }
@@ -312,7 +327,9 @@ export class FsBlobStore implements BlobStore {
       dir = join(dir, encodeSegment(s));
     }
     const found: { key: string; file: string }[] = [];
-    await this.#walk(dir, segs.length ? segs.join("/") + "/" : "", segs.length === 0 ? false : segs.some((s) => encodeSegment(s).includes("~")), found);
+    await this.#walk(dir, segs.length ? segs.join("/") + "/" : "", false, found);
+    // keys too long to keep readable live flat under ~h, wherever their prefix: a narrowed walk looks there too
+    if (segs.length) await this.#walk(join(this.#objects, HASHED_DIR), "", true, found);
     const keys = found
       .filter((f) => f.key.startsWith(prefix) && (opts.cursor === undefined || f.key > opts.cursor))
       .sort((a, b) => (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
@@ -334,7 +351,8 @@ export class FsBlobStore implements BlobStore {
     try {
       entries = await readdir(dir, { withFileTypes: true });
     } catch (e) {
-      if (isCode(e, "ENOENT", "ENOTDIR")) return;
+      // a narrowed prefix whose folder would be too long to name holds nothing readable (its keys live under ~h)
+      if (isCode(e, "ENOENT", "ENOTDIR", "ENAMETOOLONG")) return;
       throw e;
     }
     for (const e of entries) {
@@ -417,7 +435,7 @@ export class FsBlobStore implements BlobStore {
         const { tmp, fp } = await store.#writeTmp(async (fh) => {
           await fh.writeFile(data);
         });
-        await retrying(() => rename(tmp, join(dir, `${partNumber}.part`)));
+        await store.#retry(() => rename(tmp, join(dir, `${partNumber}.part`)));
         return { partNumber, etag: `"${fp}"` };
       },
       async listParts() {
@@ -432,35 +450,61 @@ export class FsBlobStore implements BlobStore {
         await store.#mkdirp(dirname(file));
         const buf = new Uint8Array(COPY_CHUNK);
         let size = 0;
+        // One part open at a time (an upload may have 10,000), and each is re-checked through the handle it is
+        // copied from: a part renamed over since the check above has another fingerprint, and the whole complete
+        // fails before anything is published.
         const { tmp, fp } = await store.#writeTmp(async (out) => {
           for (const n of order) {
-            const src = await open(stored.get(n)!.file, "r");
+            const want = stored.get(n)!;
+            const fh = await open(want.file, "r").catch((e) => {
+              if (isCode(e, "ENOENT")) throw new BlobError("InvalidPart", `part ${n} is gone`);
+              throw e;
+            });
             try {
-              for (;;) {
-                const { bytesRead } = await src.read(buf, 0, buf.byteLength, null);
-                if (bytesRead === 0) break;
-                await out.write(buf, 0, bytesRead);
+              if (`"${fingerprint(await fh.stat({ bigint: true }))}"` !== want.etag) throw new BlobError("InvalidPart", `part ${n} was replaced during complete`);
+              for (let at = 0; at < want.size; ) {
+                const { bytesRead } = await fh.read(buf, 0, Math.min(buf.byteLength, want.size - at), at);
+                if (bytesRead === 0) throw new Error(`part ${n} ended early: ${at} of ${want.size} bytes`);
+                await writeAll(out, buf, bytesRead);
+                at += bytesRead;
                 size += bytesRead;
               }
             } finally {
-              await src.close();
+              await fh.close();
             }
           }
         });
         if (contentType) await store.#writeMeta(file, { fp, key, contentType });
         else if (store.#needsMeta(file)) await store.#writeMeta(file, { fp, key });
-        else await retrying(() => unlink(metaOf(file))).catch(() => {});
-        await retrying(() => rename(tmp, file));
+        else await store.#retry(() => unlink(metaOf(file))).catch(() => {});
+        await store.#retry(() => rename(tmp, file));
         await store.#syncDir(dirname(file));
         await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
         const info: BlobInfo = { key, size, etag: `"${fp}"` };
         if (contentType) info.contentType = contentType;
         return info;
       },
+      // Idempotent for a gone upload, but bound to the key (an id alone must not reach another project's upload).
       async abort() {
-        await rm(store.#uploadDir(uploadId), { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
+        const dir = store.#uploadDir(uploadId); // a malformed id is refused, never resolved to a path
+        try {
+          await store.#uploadMeta(key, uploadId);
+        } catch (e) {
+          if (e instanceof BlobError && /another key/.test(e.message)) throw e;
+          return;
+        }
+        await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 50 });
       },
     };
+  }
+}
+
+// FileHandle.write may write fewer bytes than asked; loop until all are written, and fail rather than spin.
+export async function writeAll(fh: Pick<FileHandle, "write">, buf: Uint8Array, length: number): Promise<void> {
+  for (let off = 0; off < length; ) {
+    const { bytesWritten } = await fh.write(buf, off, length - off);
+    if (!(bytesWritten > 0)) throw new Error(`write made no progress at ${off} of ${length} bytes`);
+    off += bytesWritten;
   }
 }
 
