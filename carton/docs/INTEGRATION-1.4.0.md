@@ -330,7 +330,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   `<view>.status` in the materializer's status format. A person's or an agent's own files there go in, as in 1.4.0.
   Open Project's scrub of a staged bundle removes the same, on or off.
 - **Export.** The shallow export, or the opt-in `VACUUM INTO` copy with the local tables dropped, is added as one
-  archive entry.
+  archive entry. The files Carton rewrites (`timeline.tsx`, `project.json`, `.scratch/views/*`) go in as buffer
+  entries read when the walk listed them: 1.4.0's zip writer (yazl `addFile`) takes a file's size at the walk and its
+  bytes at its turn, and a file rewritten in between threw on an unhandled emitter, stopping the worker (CI Linux).
 - **Import.** The id check calls Carton first, which compares lineage:
   - shared lineage offers "Bring in their changes": a DAG merge into the current cut, with cards;
   - no shared lineage forks a new id;
