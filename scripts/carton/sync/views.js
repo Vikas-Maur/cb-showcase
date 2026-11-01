@@ -35,8 +35,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
-import { Materializer, DisplacedFiles, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
-import { keepLease, holderSocketPath, CartonHolderEngine, CartonMaterializerEngine, preToolUse, parseActorId } from "@carton/local";
+import { Materializer, cartonMaterializerEngine, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
+import { keepLease, holderSocketPath, CartonHolderEngine, preToolUse, parseActorId } from "@carton/local";
 import { caughtUp } from "./live.js";
 
 const MATERIALIZE_MS = 40;
@@ -55,8 +55,8 @@ const views = new Map(); // key → Promise<View | null>
 const running = new Map(); // key → View, once started (the facade asks synchronously)
 
 /**
- * The engine the Materializer gets: local's CartonMaterializerEngine (cards kept for the save's author, a shared cut's
- * spacing), plus 1.4.0's numbered revs through the facade's map. A save that landed is in project.json (so in the app)
+ * The engine the Materializer gets: cardboard-adapter's cartonMaterializerEngine (cards for invalid records, a shared
+ * cut read as shared), plus 1.4.0's numbered revs through the facade's map. A save that landed is in project.json (so in the app)
  * before the Materializer answers it in the view's `.status`: an agent that reads "confirmed" finds it everywhere.
  * Anything else goes to the inner engine as it is.
  */
@@ -107,10 +107,13 @@ export class View {
     if (!codec) throw new Error("this build has no timeline.tsx printer for Carton");
     const mz = new Materializer({
       bundle: bundlePath,
-      engine: engineFor(new CartonMaterializerEngine(lc.carton), lc, () => this.materializeNow()),
+      engine: engineFor(cartonMaterializerEngine(lc.carton), lc, () => this.materializeNow()),
       host: cardboardFilesHost,
       codec,
       writeProject: false,
+      // `.carton/displaced` is the facade's (project.json's installs, its journal): the Materializer's start-up recovery
+      // would take an untagged file there as a timeline.tsx save
+      displacedDir: path.join(CARTON_DIR, "displaced-views"),
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
       onCards: (c) => {
@@ -118,10 +121,6 @@ export class View {
         try { Promise.resolve(this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, c)).catch(lost); } catch (e) { lost(e); }
       },
     });
-    // Stopgap until cardboard-adapter's `displacedDir` option: the Materializer's displaced files get a folder of their
-    // own. `.carton/displaced` is the facade's (project.json's installs and its journal), and the Materializer's
-    // recovery at start takes an untagged file there as a timeline.tsx save.
-    mz.held = new DisplacedFiles(path.join(bundlePath, CARTON_DIR, "displaced-views"), { now: () => mz.clock.now(), quietMs: mz.opts.quietMs, holdMs: mz.opts.quietMs, ...mz.busy });
     this.mz = mz;
     // Head moved in this handle: the shared file follows (unless frozen), project.json too.
     this.off = lc.carton.on((e) => this.#event(e));
@@ -274,12 +273,13 @@ export class View {
     if (op.event === "stop") return this.mz.hookStop(actor);
   }
 
-  /** A Director turn ended: it and its subagents stop holding the freeze. */
+  /**
+   * A Director turn ended: it and its subagents stop holding the freeze and let go of their pins (the turn's own Stop
+   * does both for the whole turn, a subagent's SubagentStop only for itself).
+   */
   async endTurn(id) {
-    const ids = [...this.mz.freeze.hooked.keys()].filter((k) => k === id || k.startsWith(id + "/"));
-    for (const k of ids) await this.mz.hookStop(this.mz.freeze.hooked.get(k));
-    // a turn that never got into `hooked` (no read, no cb call) still lets go of its pins
-    if (!ids.includes(id)) { const a = parseActorId(id); if (a) await this.mz.hookStop(a); }
+    const a = parseActorId(id);
+    if (a) await this.mz.hookStop(a);
   }
 
   async stop() {
