@@ -22,7 +22,7 @@
 import { StateUnknown, actorKey } from "@carton/core";
 import type { Actor, Carton, Doc, Notice, NoticeKind, StateRef, ConflictCard } from "@carton/core";
 import { branchToken, revBody, type CartonRev, type Rev } from "../header.ts";
-import type { HeldBase, MaterializerEngine, PinKeep, SaveResult } from "./materializer.ts";
+import type { HeldBase, MaterializerEngine, PinHold, PinKeep, SaveResult } from "./materializer.ts";
 
 const VIEWS = "views";
 /** The ref token core prints (`<cut name>@<seq>~<hash8>`), from a pin's header (`… b:<branch8> p:… by …`). */
@@ -133,8 +133,18 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     const old = rows.filter((r) => r.value.expires <= t);
     const live = rows.filter((r) => r.value.expires > t);
     const at = (r: PinRecord) => r.expires - ttlMs;
-    const held = new Set((keep?.hold ?? []).map((h) => `${h.branchId}|${STATE_TOKEN.exec(h.ref)?.[2] ?? ""}|${STATE_TOKEN.exec(h.ref)?.[3] ?? ""}`));
-    const past = keep ? live.sort((a, b) => at(b.value) - at(a.value)).slice(keep.count).filter((r) => t - at(r.value) >= keep.ms && !held.has(pinKey(r.value.ref))) : [];
+    // held states by their `b:` token (a header names its cut so), seq and hash8. A hold that can't be told (a file
+    // that can't be read) releases nothing: the expired records still go
+    let holds: readonly PinHold[] | null = [];
+    try {
+      holds = typeof keep?.hold === "function" ? await keep.hold() : (keep?.hold ?? []);
+    } catch {
+      holds = null;
+    }
+    const token = (branchId: string, ref: string) => `${branchToken(branchId)}|${STATE_TOKEN.exec(ref)?.[2] ?? ""}|${STATE_TOKEN.exec(ref)?.[3] ?? ""}`;
+    const held = new Set((holds ?? []).map((h) => token(h.branchId, h.ref)));
+    const heldRec = (r: StateRef) => held.has(`${branchToken(r.branchId)}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`);
+    const past = keep && holds ? live.sort((a, b) => at(b.value) - at(a.value)).slice(keep.count).filter((r) => t - at(r.value) >= keep.ms && !heldRec(r.value.ref)) : [];
     for (const r of past) await carton.release(r.value.ref, owner);
     const gone = [...old, ...past];
     if (gone.length) await store.write(gone.map((r) => ({ table: VIEWS, key: r.key, value: undefined })));
