@@ -58,3 +58,35 @@ test("a GUI write another process's holder served: the app's follower tells the 
   await engine.nudge();
   assert.deepEqual(calls.splice(0), ["cb", "external"]);
 });
+
+// The review's missing coverage: the facade may write through one LocalCarton and follow carton.db with another in the
+// same process (the worker opens a project twice). The note is per process, not per handle.
+test("a GUI write through one handle, followed by another handle in the same process: still no freeze; a cb call in the same look still freezes", { timeout: 60_000 }, async (t) => {
+  const { dir, projectId } = bundle("gui-follow-2");
+  const init = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: person });
+  const dbPath = init.dbPath;
+  await init.close();
+  const th = await EngineThread.start({ dbPath, factory: here("./support/real-factory.ts"), config: { projectDir: dir } });
+  const writer = await openLocal({ projectDir: dir, projectId, adapter, actor: person });
+  const followed = await openLocal({ projectDir: dir, projectId, adapter, actor: person });
+  const calls: string[] = [];
+  const mz: ViewPrinter = {
+    printView: async (name) => ({ name, path: name, ref: name }),
+    onCb: async () => void calls.push("cb"),
+    onExternalHeadChange: async () => { calls.push("external"); return "head"; },
+  };
+  const engine = new CartonHolderEngine(followed.carton, { materializer: mz, follow: { intervalMs: 0 } });
+  t.after(async () => { await engine.close(); await followed.close(); await writer.close(); await th.stop(); });
+  await engine.nudge();
+  calls.splice(0);
+  assert.equal((await writer.write({ kind: "commit", ops: [set("c1", "name", "gui through another handle")] }, { actor: person, gui: true })).status, "confirmed");
+  await engine.nudge();
+  assert.deepEqual(calls.splice(0), ["external"], "the other handle's GUI write freezes nothing");
+  // another process's cb call and a GUI write in one look: the cb call freezes
+  const cb = await openLocal({ projectDir: dir, projectId, adapter, actor: { kind: "agent", id: "codex/gui-follow", name: "Codex" } });
+  t.after(() => cb.close());
+  await writer.write({ kind: "commit", ops: [set("c2", "name", "gui")] }, { actor: person, gui: true });
+  assert.equal((await cb.write({ kind: "commit", ops: [set("c3", "name", "an agent's cb call")] })).status, "confirmed");
+  await engine.nudge();
+  assert.deepEqual(calls.splice(0), ["cb", "external"]);
+});
