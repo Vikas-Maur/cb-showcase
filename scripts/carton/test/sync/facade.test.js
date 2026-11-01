@@ -5,7 +5,9 @@
 //   #2 a stale save whose merge clashes keeps its other edits; the clash becomes a card, head's value stays;
 //   #6 a signed media URL goes onto the configured origin whole (scheme too), never http where the app said https;
 //   #7 one host media client per project from one share to the next (media fd87449), let go on the facade's release.
-// #1 and #2 need Cardboard's bundles (CARDBOARD_PRISTINE, as ../patches.test.js); #6 and #7 run anywhere.
+// H8's save path: a GUI save tells the worker's Materializer its project.json write is under way (an extension's
+//   hostWrite), and the install that lands it resolves `after` to the envelope written and the file's stamp.
+// #1, #2 and the save path need Cardboard's bundles (CARDBOARD_PRISTINE, as ../patches.test.js); #6 and #7 run anywhere.
 //   CARDBOARD_PRISTINE=… node --test --test-concurrency=1 scripts/carton/test/sync/facade.test.js
 const test = require("node:test");
 const assert = require("node:assert/strict");
@@ -34,6 +36,52 @@ const pick = (r) => ({ status: r.status, empty: !!r.empty, rebased: r.rebased ??
   const d = await commit(p1, { ...p1, name: "D's name", description: "D's description", stateUpdatedAt: p1.stateUpdatedAt + 2 }, "codex/d");
   const head = await api.headProject(bundle, { ...p0, stateUpdatedAt: -1 });
   process.stdout.write(JSON.stringify({ a: pick(a), b: pick(b), c: pick(c), d: pick(d), head: { name: head?.name, description: head?.description ?? null } }) + "\n");
+  process.exit(0);
+})().catch((e) => { process.stdout.write(JSON.stringify({ error: String(e?.stack ?? e) }) + "\n"); process.exit(1); });
+`;
+
+// In the child: GUI saves as the store makes them (commit, then writeNow's install of project.json with its rev and
+// envelope), with an extension that takes the facade's hostWrite.
+const GUI = String.raw`
+const fs = require("fs"), path = require("path");
+const [carton, bundle] = process.argv.slice(1);
+const mod = require(path.join(carton, "carton-node.cjs")), api = mod.cardboard14;
+const file = path.join(bundle, "project.json");
+const told = [];
+mod.extend({ name: "test", hostWrite: (b, after) => (told.push({ b, after }), true) });
+const onDisk = () => JSON.parse(fs.readFileSync(file, "utf8"));
+const stamp = () => { const st = fs.statSync(file, { bigint: true }); return st.ino + ":" + st.size + ":" + st.mtimeNs; };
+let n = 0;
+const gui = async (project, name) => {
+  const r = await api.commit({ bundlePath: bundle, base: project, doc: { ...project, name, stateUpdatedAt: project.stateUpdatedAt + 1 }, actor: "person", meta: { base: project.stateUpdatedAt } });
+  return r.doc;
+};
+const write = async (project) => {
+  const envelope = { ...onDisk(), project }, tmp = path.join(bundle, ".project.json." + ++n + ".tmp");
+  fs.writeFileSync(tmp, JSON.stringify(envelope));
+  return { envelope, ok: await api.install(tmp, file, undefined, project.stateUpdatedAt, envelope) };
+};
+const what = async (after, envelope) => {
+  const w = await after;
+  return w ? { stamp: w.project.stamp === stamp(), same: w.project.envelope === envelope } : null;
+};
+(async () => {
+  const p0 = onDisk().project;
+  // its own write
+  const s1 = await gui(p0, "one");
+  const w1 = await write(s1);
+  const one = { told: told.length, ok: w1.ok, got: await what(told[0].after, w1.envelope) };
+  // two saves, the first one's write replaced by the second's (the store's queue)
+  const s2 = await gui(s1, "two"), s3 = await gui(s2, "three");
+  const w3 = await write(s3);
+  const queued = { told: told.length, got: [await what(told[1].after, w3.envelope), await what(told[2].after, w3.envelope)] };
+  // a write that doesn't install (its state is no longer head): nothing, the Materializer reads the file
+  const s4 = await gui(s3, "four");
+  const stale = await write({ ...s1, stateUpdatedAt: s1.stateUpdatedAt });
+  const notHead = { ok: stale.ok, got: await told[3].after };
+  // a save that isn't the GUI's (no editor base): not told
+  await api.commit({ bundlePath: bundle, base: s4, doc: { ...s4, name: "cb", stateUpdatedAt: s4.stateUpdatedAt + 1 }, actor: "codex/x" });
+  process.stdout.write(JSON.stringify({ one, queued, notHead: { ...notHead, got: notHead.got ?? null }, last: told.length, bundle: told.every((t) => t.b === bundle) }) + "\n");
   process.exit(0);
 })().catch((e) => { process.stdout.write(JSON.stringify({ error: String(e?.stack ?? e) }) + "\n"); process.exit(1); });
 `;
@@ -67,6 +115,22 @@ test("#2 a stale save that clashes keeps its other edits: the clash is a card, h
   assert.ok(out.d.cards.some((p) => /name/.test(p)) && !out.d.cards.some((p) => /description/.test(p)), "one card, for the name: " + JSON.stringify(out.d.cards));
   assert.deepEqual([out.d.name, out.d.description], ["C's name", "D's description"], "what the save gets back");
   assert.deepEqual([out.head.name, out.head.description], ["C's name", "D's description"], "and what history holds");
+});
+
+test("H8 a GUI save's project.json write: the Materializer is told, and the install that lands it gives the envelope written with the file's stamp", { skip: S.skip }, () => {
+  const home = pc.home;
+  const r = spawnSync(process.execPath, ["-e", GUI, b.carton, path.join(pc.root, "Demo.cardboard")], {
+    env: { ...process.env, HOME: home, USERPROFILE: home, XDG_DATA_HOME: path.join(home, "appdata"), LOCALAPPDATA: path.join(home, "appdata"), CARDBOARD_CARTON: "1", CARDBOARD_ACTOR: "", CLAUDECODE: "" },
+    encoding: "utf8",
+    timeout: 120_000,
+  });
+  const g = JSON.parse(r.stdout.trim().split("\n").pop() || "{}");
+  assert.ok(!g.error && r.status === 0, "gui run: " + (g.error ?? r.stdout + r.stderr));
+  assert.deepEqual(g.one, { told: 1, ok: true, got: { stamp: true, same: true } }, "its own write: the envelope written, the file's stamp");
+  assert.deepEqual(g.queued, { told: 3, got: [{ stamp: true, same: true }, { stamp: true, same: true }] }, "a save whose write was replaced by a newer one's lands with it");
+  assert.deepEqual(g.notHead, { ok: false, got: null }, "a write that doesn't install: nothing (the file is read)");
+  assert.equal(g.last, 4, "a save that isn't the GUI's isn't told");
+  assert.equal(g.bundle, true);
 });
 
 test("#6 a signed media URL goes onto the configured origin whole: scheme, host and port", async () => {

@@ -29,6 +29,10 @@ const [workerFile, root] = process.argv.slice(2);
   }
 
   const tsx = path.join((await call("projects.bundleInfo", p.id)).bundlePath, "timeline.tsx");
+  // The agent edits timeline.tsx as it is once it shows the save just made (150): an edit of the file printed before
+  // that save (the Materializer rewrites it ~20 ms after a save; 1.4.0 ~300 ms) is merged with it, and the same field
+  // changed on both sides is a card (CI Linux, d2d95b1: the 160 became a card and the panel's first card was it).
+  for (let i = 0; i < 200 && !/fontSize=\{150\}/.test(fs.readFileSync(tsx, "utf8")); i++) await new Promise((r) => setTimeout(r, 25));
   fs.writeFileSync(tsx, fs.readFileSync(tsx, "utf8").replace(/fontSize=\{\d+\}/, "fontSize={160}"));
   for (let i = 0; i < 200 && !events.some((e) => e.change?.kind?.startsWith("timeline")); i++) await new Promise((r) => setTimeout(r, 25));
   out.watcher = events.filter((e) => e.kind === "change").map((e) => e.change.kind);

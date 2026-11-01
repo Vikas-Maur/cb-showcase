@@ -31,10 +31,36 @@ const errText = (e) => (e && e.message) || String(e);
 
 // Cardboard's own GUI save projection, cut out of the editor bundle at build time (scripts/carton/fmsv.js).
 let gui = null;
-const P = () => (gui ??= (() => {
+const P = () => (gui ??= remembered((() => {
   try { return require(path.join(__dirname, "fmsv.cjs")); }
   catch (e) { warnOnce("fmsv", "the editor's save projection is missing; GUI saves are diffed as they are: " + errText(e)); return (i) => i; }
-})());
+})()));
+// projectGuiSave projects every item of the save's base through P, on every GUI save: with a few hundred items that was
+// most of the save's work (P copies each item through JSON). P is a pure function of the item's values, and the base's
+// items are Carton's own records, deep-frozen and kept by identity while they don't change, so each one's projection
+// is computed once and reused: a save then projects only the items changed since the base it was made on. Only a
+// deep-frozen item is remembered (one that can never change); anything else is projected each time, as before. The
+// projection kept is frozen too, so nothing that reads it can change what the next save compares against.
+const frozenDeep = new WeakSet(), projections = new WeakMap();
+const isFrozenDeep = (v) => {
+  if (v === null || typeof v !== "object" || frozenDeep.has(v)) return true;
+  if (!Object.isFrozen(v)) return false;
+  for (const x of Object.values(v)) if (!isFrozenDeep(x)) return false;
+  frozenDeep.add(v); // its values can't change, so neither can the answer
+  return true;
+};
+const freezeAll = (v) => {
+  if (v !== null && typeof v === "object" && !Object.isFrozen(v)) { Object.freeze(v); for (const x of Object.values(v)) freezeAll(x); }
+  return v;
+};
+function remembered(p) {
+  return (item) => {
+    if (item === null || typeof item !== "object" || !isFrozenDeep(item)) return p(item);
+    let out = projections.get(item);
+    if (out === undefined) projections.set(item, (out = freezeAll(p(item))));
+    return out;
+  };
+}
 
 // ---------------------------------------------------------------- one Carton per bundle
 const opened = new Map(); // bundlePath → Promise<LocalCarton | null>
@@ -132,6 +158,10 @@ async function release(dir) {
 //                                               already a notice for the author. Foreign-save imports go through it too.
 //   materializeDoc(next, {bundlePath, projectId, current})
 //                                               fills in a record before head goes into project.json (R6)
+//   serveHere(bundlePath, op, actor)            (worker) ⌘Z served by the project's holder in this process, or null
+//   hostWrite(bundlePath, after)                (worker) a GUI save is committing and the store writes project.json
+//                                               next; `after` resolves once it has landed, to {project: {envelope,
+//                                               stamp}} or to nothing. true if the extension took it (views.js)
 //   release(dir, inside)                        a folder Cardboard is done with (Open Project's staging folder): let go
 //                                               of what is kept for bundles in it (`inside(bundlePath)` says which),
 //                                               before the facade closes their handles
@@ -161,9 +191,30 @@ function timelineEvent(bundlePath) {
     try { e.timelineEvent(bundlePath); } catch (err) { warnOnce("tevent:" + (e.name ?? "?"), "an extension's timelineEvent failed: " + errText(err)); }
   }
 }
+// The `views` row (local table) naming a worker lease whose holder prints no timeline.tsx: Live's own holder, where the
+// View didn't start (sync/live.js writes it each time that holder takes the lease).
+export const LEASE_PRINTS = ["leasePrints"];
+// Whether the worker prints this bundle's timeline.tsx: it holds the lease now, and that lease isn't one Live's own
+// holder recorded as printing nothing (review H8 r2 #6). Told the other way round on purpose (r3 #3): a record that
+// is late or failed leaves the file to the worker, as before r2, so cb never writes over a frozen timeline.tsx; only
+// a View-less worker, already a degraded state, can then go without the file's update.
 async function workerWritesTimeline(lc) {
   if (inWorker) return false;
-  try { const row = await lc.lease.read(); return row?.kind === "worker" && row.expires > Date.now(); } catch { return false; }
+  try {
+    const row = await lc.lease.read();
+    if (row?.kind !== "worker" || !(row.expires > Date.now())) return false;
+    const r = await lc.store.get("views", LEASE_PRINTS);
+    return !(r && r.prints === false && r.nonce === row.nonce);
+  } catch { return false; }
+}
+// Whether Cardboard's mirror leaves timeline.tsx to Carton after a save (the store bridge's mirrorOwned): the same test
+// install() makes before it drops Cardboard's print of the file, made before the print, so the print isn't made at all.
+// In the worker that is the Materializer running for the bundle; in cb, the worker holding the lease.
+async function mirrorOwned(bundlePath) {
+  if (timelineOwned(bundlePath)) return true;
+  if (inWorker) return false;
+  const lc = await open(bundlePath);
+  return !!lc && (await workerWritesTimeline(lc));
 }
 async function extOpenOptions(o) {
   let out = {};
@@ -305,11 +356,25 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     await setRev(lc, base.stateUpdatedAt, baseRef);
   }
   const baseDoc = imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
-  const mine = meta?.base !== undefined && baseRef ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
+  const gui = meta?.base !== undefined && !!baseRef;
+  const mine = gui ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
   const intent = meta?.intents?.length ? { gui: meta.intents } : undefined;
-  const r = await commitIn(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef });
+  // A GUI save: the store writes project.json once this returns. The worker's Materializer is told before head moves,
+  // so its rewrites wait for that write and take the file from it (hostWrite).
+  const landing = gui ? hostWrite(bundlePath) : null;
+  try {
+    const out = await committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, intent, gui });
+    landing?.expect(out.doc);
+    return out;
+  } catch (e) {
+    landing?.settle();
+    throw e;
+  }
+}
+async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, intent, gui }) {
+  const c = lc.carton;
+  const r = await commitIn(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui });
   if (r.status === "rejected") throw new Error("Carton rejected the change: " + r.reason);
-  const gui = meta?.base !== undefined && baseRef;
   // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased: the writer's
   // document is older than head in other fields, so the file gets head, below.)
   if (r.status === "confirmed" && r.empty && !gui && !r.rebased) return { ...r, doc, merged: false };
@@ -362,6 +427,47 @@ async function headProject(bundlePath, current, given) {
   return out;
 }
 
+// ---------------------------------------------------------------- a GUI save's project.json, for the Materializer
+// The worker's Materializer prints timeline.tsx from head and project.json's unversioned fields. After a GUI save the
+// store writes project.json itself (writeProject off): the Materializer is told the save is the host's (an extension's
+// hostWrite: onHeadChange("gui", {after})), so its rewrites wait for the write, and `after` gives it the envelope the
+// store wrote with the file's stamp, so it doesn't read and parse the file again. The store writes a project's
+// documents one at a time, and a document queued behind a running write may be replaced by a newer one (which holds
+// the save: it is made from head after it). So a save is resolved by the first project.json install that starts once
+// commit() has returned it to the store (`queued`): its own write, or the one that replaced it. An earlier write still
+// running then doesn't count. A save whose write never comes (the store's write failed before the install) is let go
+// after LANDING_MS with nothing, which the Materializer takes as "read the file" (it waits 5 s at most itself).
+const LANDING_MS = 6000;
+const landings = new Map(); // landingKey(bundle) → [{queued, settle}] in save order
+// the bundle as the file system names it: case-insensitively on Windows and macOS (the save's bundle path and the
+// write's folder come from different calls of Cardboard's store)
+const landingKey = (dir) => { const r = path.resolve(dir); return process.platform === "win32" || process.platform === "darwin" ? r.toLowerCase() : r; };
+function hostWrite(bundlePath) {
+  const ext = extensions.filter((e) => typeof e.hostWrite === "function");
+  if (!bundlePath || !ext.length) return null;
+  const key = landingKey(bundlePath);
+  let resolve;
+  const after = new Promise((r) => (resolve = r));
+  const l = { queued: false };
+  const timer = setTimeout(() => l.settle(), LANDING_MS);
+  timer.unref?.();
+  l.settle = (w) => {
+    clearTimeout(timer);
+    const list = landings.get(key);
+    if (list?.includes(l)) list.length === 1 ? landings.delete(key) : list.splice(list.indexOf(l), 1);
+    resolve(w);
+  };
+  // its document goes to the store's write queue now (commit() returns it); nothing to write: let go
+  l.expect = (doc) => (doc ? (l.queued = true) : l.settle());
+  let told = false;
+  for (const e of ext) {
+    try { told = !!e.hostWrite(bundlePath, after) || told; } catch (err) { warnOnce("hostWrite:" + (e.name ?? "?"), "an extension's hostWrite failed: " + errText(err)); }
+  }
+  if (!told) return clearTimeout(timer), null;
+  landings.set(key, [...(landings.get(key) ?? []), l]);
+  return l;
+}
+
 // ---------------------------------------------------------------- files: displace, then install
 const installs = new Map(); // target path → { files: DisplacedFiles, own, noLinks, timer }
 const SEEN_KEEP = 256;
@@ -373,10 +479,13 @@ const sha = (b) => createHash("sha256").update(b).digest("hex");
 const readSeen = (file) => { try { return JSON.parse(fs.readFileSync(seenFile(file), "utf8")); } catch { return {}; } };
 // What Carton wrote at each path, shared by every process on the machine: a displaced file with one of these hashes is
 // Carton's own and goes; anything else is held as a foreign save. Losing an entry to a race only keeps a file.
-const markSeen = async (file, hash) => {
-  const all = readSeen(file), name = path.basename(file);
+// `held`: the install's own copy of seen.json, read once when it took the bundle's install lock (every writer of the
+// file holds that lock, so the copy stays current while it is held; it is updated here and written whole, as before).
+// Under the lock .carton/ exists (the lock is a folder in it). Without one, the file is read and the folder made here.
+const markSeen = async (file, hash, held) => {
+  const all = held ?? readSeen(file), name = path.basename(file);
   all[name] = [hash, ...(all[name] ?? []).filter((h) => h !== hash)].slice(0, SEEN_KEEP);
-  fs.mkdirSync(path.dirname(seenFile(file)), { recursive: true });
+  if (!held) fs.mkdirSync(path.dirname(seenFile(file)), { recursive: true });
   const tmp = seenFile(file) + "." + process.pid + ".tmp";
   fs.writeFileSync(tmp, JSON.stringify(all));
   // On Windows a reader (another process, an indexer) holding the old file makes the rename fail busy for a moment.
@@ -431,7 +540,21 @@ const revIn = (file, bytes) => {
   return m ? Number(m[1]) : undefined;
 };
 
-async function install(tmp, file, seenStamp) {
+// `rev`: the rev the caller wrote into the file (the store's writeNow passes project.json's stateUpdatedAt), so a large
+// project.json isn't parsed again on every save just to read it back; without one, it is read from the file.
+// `envelope`: the object writeNow stringified into it, for the GUI saves this write lands (hostWrite, above): with the
+// file's stamp once the install put those bytes there (`own`, checked under the install lock), else nothing.
+async function install(tmp, file, seenStamp, rev, envelope) {
+  const due = path.basename(file) === "project.json" ? (landings.get(landingKey(path.dirname(file))) ?? []).filter((l) => l.queued) : [];
+  let out = false;
+  try { return (out = await installFile(tmp, file, seenStamp, rev)); } finally {
+    if (due.length) {
+      const stamp = out === true && envelope ? installs.get(file)?.own?.stamp : null;
+      for (const l of due) l.settle(stamp ? { project: { envelope, stamp } } : undefined);
+    }
+  }
+}
+async function installFile(tmp, file, seenStamp, rev) {
   const bundle = path.dirname(file);
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   const lc = await open(bundle);
@@ -443,7 +566,7 @@ async function install(tmp, file, seenStamp) {
     const bytes = fs.readFileSync(tmp);
     // A writer whose state is no longer head (another process committed and installed after it) doesn't install: the
     // newer state is, or is about to be, on disk. It returns false, so the store reads the disk again.
-    const ref = await refOf(lc, revIn(file, bytes));
+    const ref = await refOf(lc, Number.isFinite(rev) && path.basename(file) === "project.json" ? rev : revIn(file, bytes));
     if (ref) {
       const head = (await lc.carton.head()).ref;
       if (ref.branchId !== head.branchId || ref.seq < head.seq) return fs.rmSync(tmp, { force: true }), false;
@@ -454,17 +577,20 @@ async function install(tmp, file, seenStamp) {
       installs.set(file, s);
     }
     const journal = readJournal(bundle);
-    await sweep(file, s, journal);
+    // seen.json once per install, not once per step (sweep, markSeen, settle each read it): a save's install reads it
+    // once and writes it once
+    const seen = readSeen(file);
+    await sweep(file, s, journal, seen);
     // Taken over while waiting (this process was stalled): the new holder installs.
     if (!mine()) return fs.rmSync(tmp, { force: true }), false;
     const r = await displaceThenInstall(file, tmp, s.files.next, { ...BUSY, noLinks: s.noLinks, lastStamp: s.own?.stamp ?? null, ...(testHooks.between ? { between: testHooks.between } : {}) });
     // Taken over while installing (stalled for a minute): the last file displaced may be the successor's, newer than
     // ours. It is put back below, under the lock taken again, only if it is still newer than what is on disk then.
     if (!mine()) recover = r.displaced.at(-1) ?? null, installed = false;
-    await markSeen(file, sha(bytes));
+    await markSeen(file, sha(bytes), seen);
     // The file to put back isn't held yet: a review before the put-back would delete it as Carton's own. It is
     // journaled now, so a later sweep finds it if this process exits before the put-back decides.
-    await settle(file, s, r.displaced.filter((p) => p !== recover), journal, { seenStamp });
+    await settle(file, s, r.displaced.filter((p) => p !== recover), journal, { seenStamp, held: seen });
     if (recover) s.mine.add(recover), (journal[path.basename(recover)] = { at: Date.now(), stamp: await statStamp(recover, BUSY) });
     await writeJournal(bundle, journal);
     if (testHooks.installed) await testHooks.installed(file);
@@ -484,8 +610,8 @@ async function install(tmp, file, seenStamp) {
 // Carton wrote (its hash in seen.json) goes only if its bytes and stamp are still the same after the hold. An in-place
 // writer that opened it just before and writes after is caught then (P10 settle-2); anything else is a foreign save,
 // imported by the review. Each is journaled with when it was moved and its stamp then, for the sweep.
-async function settle(file, s, paths, journal, { seenStamp = null, firstOwn = s.own } = {}) {
-  const seen = new Set(readSeen(file)[path.basename(file)] ?? []);
+async function settle(file, s, paths, journal, { seenStamp = null, firstOwn = s.own, held } = {}) {
+  const seen = new Set((held ?? readSeen(file))[path.basename(file)] ?? []);
   for (const [i, p] of paths.entries()) {
     s.mine.add(p);
     const b = fs.readFileSync(p), st = await statStamp(p, BUSY);
@@ -493,7 +619,7 @@ async function settle(file, s, paths, journal, { seenStamp = null, firstOwn = s.
     const h = sha(b), mine = (i === 0 && seenStamp && st === seenStamp) || seen.has(h);
     if (!mine) s.foreign = true;
     // The file the writer read is known from now on, so a later process can sweep it if this one exits first.
-    else if (!seen.has(h)) await markSeen(file, h);
+    else if (!seen.has(h)) await markSeen(file, h, held);
     s.files.hold([p], mine ? { bytes: b, stamp: st } : i === 0 ? firstOwn : null);
   }
 }
@@ -564,12 +690,14 @@ const writeJournal = async (bundle, j) => {
 // Files an earlier process displaced and exited before its hold ended: one moved aside over 10 s ago, untouched since
 // (its stamp is the one journaled then) and holding a state Carton wrote, goes; anything else stays for a person to
 // look at (importing an old file now would revert newer changes). Runs under the install lock.
-async function sweep(file, s, journal) {
+async function sweep(file, s, journal, held) {
   const dir = path.join(path.dirname(file), ".carton", "displaced");
   let names;
   try { names = fs.readdirSync(dir); } catch { return; }
-  const seen = new Set(readSeen(file)[path.basename(file)] ?? []), now = Date.now();
-  for (const n of Object.keys(journal)) if (!names.includes(n)) delete journal[n];
+  const seen = new Set((held ?? readSeen(file))[path.basename(file)] ?? []), now = Date.now();
+  // (a set: a burst of saves leaves hundreds of files here until their review, and this runs at every install)
+  const present = new Set(names);
+  for (const n of Object.keys(journal)) if (!present.has(n)) delete journal[n];
   for (const n of names) {
     const p = path.join(dir, n), j = journal[n];
     if (s.mine.has(p) || !j || now - j.at < 10_000) continue;
@@ -621,6 +749,7 @@ export const cardboard14 = {
   install,
   timelineOwned,
   timelineEvent,
+  mirrorOwned,
   // H11: which files in .scratch/views/ are Carton's (the store bridge's Save As walk and Open Project scrub)
   cartonViewFile,
   headProject,
@@ -715,13 +844,31 @@ export const cardboard14 = {
       const bundlePath = bundleOf(projectId);
       if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());
       panels.get(bundlePath).add(handle);
-      // Cards kept from earlier GUI saves are shown too, until resolved.
+      // Cards kept from earlier GUI saves are shown too, until resolved: each on the cut its change was made on (core's
+      // notice says which). fromCarton files a reported card under the cut it is on, so a notice is reported only while
+      // the panel is on its cut: at the start, and again after the panel switches cut (review H8 r2 #3: one from cut A
+      // showed on B, and "Keep yours" committed it there). A notice from before core said its cut counts as this one's.
       const person = keyOf(actorOf("person"));
       const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
-      handle.reportConflicts((await kept()).flatMap((x) => x.value.cards));
-      // And agents' view-save cards still open, shown the person's way round (before the methods are wrapped).
-      views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []);
-      for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
+      const keptHere = async () => (await kept()).filter((x) => !x.value.cut || x.value.cut === lc.carton.cut);
+      // And agents' view-save cards still open on this cut, shown the person's way round (views.shown). fromCarton files
+      // a reported card under its own current cut, which follows the handle's only at its refresh (review H8 r3 #5: after
+      // another panel's switch its cuts topic already showed the new cut while a report still went under the old one):
+      // so it refreshes first, and nothing is reported if the handle's cut moved meanwhile (that switch reports again).
+      const reportHere = async () => {
+        const cut = lc.carton.cut;
+        await handle.refresh?.();
+        const keptNow = (await keptHere()).flatMap((x) => x.value.cards), agentsNow = await views.shown(lc);
+        if (lc.carton.cut !== cut) return;
+        handle.reportConflicts(keptNow);
+        for (const x of agentsNow) handle.reportConflicts(x.cards, x.by);
+      };
+      views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []); // (before the methods are wrapped)
+      await reportHere();
+      // The cut this panel shows changes (its own switch, another panel's on the same handle, cb's): that cut's kept
+      // cards then (review H8 r3 #5: compared with the panel's own cut, from its cuts topic, not the shared handle's).
+      let shownCut = lc.carton.cut;
+      const cutShown = (m) => (m?.t === "topic" && m.topic === "cuts" ? m.value : m?.t === "init" ? m.topics?.cuts : null)?.find?.((x) => x.current)?.id ?? null;
       // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
       for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
         const f = ui[m];
@@ -734,7 +881,7 @@ export const cardboard14 = {
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
           // resolved them first, they are already gone.
-          if (card && !agents) for (const x of await kept()) {
+          if (card && !agents) for (const x of await keptHere()) {
             const cards = x.value.cards.filter((c) => !sameCard(c, card));
             if (cards.length < x.value.cards.length) await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
           }
@@ -759,7 +906,15 @@ export const cardboard14 = {
         s.close();
         handle.dispose?.();
       };
-      const s = serveUi(ui, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
+      const s = serveUi(ui, (m) => {
+        emit({ kind: "carton", id: projectId, client, message: m });
+        const now = cutShown(m);
+        if (now && now !== shownCut) {
+          shownCut = now;
+          // fromCarton drops repeats; its cut follows the handle's, which keptHere and views.shown read
+          reportHere().catch((err) => warnOnce("panel:" + bundlePath, "kept conflict cards didn't show after a cut switch: " + errText(err)));
+        }
+      });
       servers.set(client, s);
       return s;
     };
@@ -773,11 +928,18 @@ export const cardboard14 = {
         const r = /^\d{13}$/.test(String(ref)) ? await refOf(lc, Number(ref)) : ref;
         return materializeProject(await lc.carton.checkout(r), current);
       },
-      // ⌘Z for the person's group, then head goes into project.json through the store (the pages adopt it).
+      // ⌘Z for the person's group, then head goes into project.json through the store (the pages adopt it). The page
+      // waits for it, so where this worker's View holds the project's lease its holder serves the undo here, in this
+      // process (request R4: local's write path would reach that same holder through its control socket); anywhere
+      // else (another process holds the lease, no View runs) it goes through local's write path as before.
       undo: async ({ projectId }) => {
         const lc = await lcOf(projectId);
         if (!lc) return { status: "unavailable" };
-        const r = await lc.write({ kind: "undo", group: localGroup() }, { actor: actorOf("person") });
+        const op = { kind: "undo", group: localGroup() }, actor = actorOf("person");
+        const here = extensions.find((e) => typeof e.serveHere === "function");
+        const bundlePath = bundleOf(projectId);
+        // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
+        const r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true }));
         if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
         return r;
       },

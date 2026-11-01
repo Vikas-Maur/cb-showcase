@@ -18,6 +18,7 @@
 // - `onChange` (the worker shares clips added since) runs 2 s after the last change on the current cut.
 import path from "node:path";
 import { keepLease, holderSocketPath, CartonHolderEngine } from "@carton/local";
+import { LEASE_PRINTS } from "../carton-node.js";
 
 const MATERIALIZE_MS = 40;
 const PEER_IDLE_MS = 30_000;
@@ -66,7 +67,12 @@ export class Live {
       engine,
       kind: "worker",
       socketPath: holderSocketPath(path.dirname(lc.dbPath), "worker"),
-      log: (e) => this.log({ project: this.projectId, ...e }),
+      // This worker lease prints no timeline.tsx (no View): said for cb and the facade's install, which otherwise leave
+      // the file to the worker holding the lease (carton-node.js workerWritesTimeline, review H8 r2 #6)
+      log: (e) => {
+        this.log({ project: this.projectId, ...e });
+        if (e?.type === "lease" && e.nonce) lc.store.write([{ table: "views", key: LEASE_PRINTS, value: { nonce: e.nonce, prints: false, at: Date.now() } }]).catch(() => {});
+      },
     }));
     await this.lease.start();
     // What the first connection caught up on (and anything this handle had pending) into project.json; a no-op when
