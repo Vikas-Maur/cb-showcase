@@ -16,7 +16,8 @@
 //   and the sidecar's diagnostics name the failure. The sequencer refuses such a change as a whole ("invalid") when
 //   nothing concurrent forced a merge, so the record is put back and the save committed again (`@carton/local`'s engine
 //   wrapper did this until it moved here, behaviour unchanged).
-// - Whether the cut is shared is read from it at each `head()` (its sequencer isn't "local"), unless the caller says.
+// - Whether the cut is shared is read from it at each `head()` and `pin()` (its sequencer isn't "local"), unless the
+//   caller says: a materializer that never reads head (the app's, writeProject false) pins for every write (round 22 #3).
 import { StateUnknown, actorKey } from "@carton/core";
 import type { Actor, Carton, Doc, Notice, NoticeKind, StateRef, ConflictCard } from "@carton/core";
 import { branchToken, revBody, type CartonRev, type Rev } from "../header.ts";
@@ -43,7 +44,7 @@ export interface CartonEngineOptions {
   cut?: string;
   /**
    * Whether that cut is shared (remote rewrites of the shared file are spaced 30 s apart). Default: read from the cut at
-   * each `head()` (its sequencer isn't "local").
+   * each `head()` and `pin()` (its sequencer isn't "local").
    */
   shared?: () => boolean;
   clock?: () => number;
@@ -105,6 +106,9 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     return out;
   };
   let isShared = false;
+  const readShared = async (): Promise<void> => {
+    if (!opts.shared) isShared = (await carton.cuts()).find((c) => c.id === cut())?.sequencer.kind !== "local";
+  };
   const pinKey = (r: StateRef) => `${r.branchId}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`;
   const pinsByOwner = new Map<string, number>();
   /** The author's cards row for a save (`@carton/local`'s `cardsRow`). */
@@ -170,12 +174,13 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
 
   return {
     async head() {
-      if (!opts.shared) isShared = (await carton.cuts()).find((c) => c.id === cut())?.sequencer.kind !== "local";
+      await readShared();
       return (await carton.head(cut())).doc;
     },
     async pin({ owner, cut: at, doc, seq, causal, ttlMs }) {
       // the cut is read once: the pin's store refresh may find a cut another process switched to (review 11 #1)
       const on = at ?? cut();
+      await readShared();
       const p = await carton.pin({ owner, cut: on, ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
       const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
       await store.write([{ table: VIEWS, key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord }]);

@@ -270,14 +270,14 @@ type Record_ = { t: number; path: string; [k: string]: unknown };
 type Attempt = { gen: string; base: string; hash?: string; id?: string; result?: SaveResult; seen?: string };
 /**
  * Whether a save's recorded result finishes this file instead of a commit: the same file (its generation, at the path
- * or displaced), or its bytes written again while nothing has happened at the path since (round 19 #3): the path's
- * `seen` token is the one the slot recorded with its result. It is written anew, before the event's own writes (so an
- * event whose token can't be stored fails and is retried), by Carton installing a file there (outside a save of the
- * path), by every review of a file there but this save's own (whatever its outcome: committed, head-equal, refused,
- * failed; content that doesn't parse too), by a late update of a view's sidecar, and by a finished save whose slot
- * couldn't be cleared. After any of them the same bytes
+ * or displaced), or its bytes written again while nothing has happened at the path since its attempt started (round
+ * 19 #3): the path's `seen` token is still the one the slot was made with (the token its own review wrote; round 22
+ * #2). It is written anew, before the event's own writes (so an event whose token can't be stored fails and is
+ * retried), by Carton installing a file there (outside a save of the path), by every review of a file there but this
+ * save's own (whatever its outcome: committed, head-equal, refused, failed; content that doesn't parse too), by a late
+ * update of a view's sidecar, and by a finished save whose slot couldn't be cleared. After any of them the same bytes
  * are a save of their own: a GUI saving an earlier state again after a later one, a stale buffer after a remote change
- * (rounds 20, 21). The token is shared by every process (a takeover helper's install counts) and never cached.
+ * (rounds 20-22). The token is shared by every process (a takeover helper's install counts) and never cached.
  */
 const finishes = (slot: Attempt | undefined, seen: string, gen: string, hash: string): boolean =>
   !!slot?.result && slot.hash === hash && (slot.gen === gen || (slot.seen !== undefined && slot.seen === seen));
@@ -1099,9 +1099,11 @@ export class Materializer {
 
   // ------------------------------------------------------------------ what Carton knows about each path
 
-  /** Something happened at `rel` (see `finishes`): a new token, read by every process. */
-  private async touch(rel: string): Promise<void> {
-    await this.engine.putMeta(["file", rel, "seen"], randomBytes(8).toString("hex"));
+  /** Something happened at `rel` (see `finishes`): a new token, read by every process. Returns it. */
+  private async touch(rel: string): Promise<string> {
+    const token = randomBytes(8).toString("hex");
+    await this.engine.putMeta(["file", rel, "seen"], token);
+    return token;
   }
   private async seen(rel: string): Promise<string> {
     return (await this.engine.getMeta<string>(["file", rel, "seen"])) ?? "";
@@ -1245,6 +1247,9 @@ export class Materializer {
           if (!f || (await this.isCurrent(rel, f.hash, f.stamp))) return;
           if (f.stamp !== stamp) return this.waitForQuiet(rel, f.stamp);
           if (await this.parses(rel, f.bytes)) return void (await this.readWithRetry(rel));
+          // something happened at the path: stored before the file counts as current, so a token that can't be stored
+          // leaves it to be refused again at its next event (round 22 #1)
+          await this.touch(rel);
           await this.setLast(rel, f.hash); // reported once; the file stays where its writer put it
           this.log.unparsed.push({ t: this.clock.now(), path: rel });
           await this.engine.notice(await this.actorOf(rel), { kind: "error", text: `${rel} doesn't parse; kept, not applied` });
@@ -1404,6 +1409,7 @@ export class Materializer {
       this.origin.delete(d.path);
       this.partials.set(d.path, { rel: d.rel, stamp: d.stamp, mtimeNs: d.mtimeNs, ...(d.viewGen !== undefined ? { viewGen: d.viewGen } : {}) });
       if (!this.reportedPartials.has(d.path)) {
+        // (its path's token was written by the install that displaced it: nothing happened at the path since)
         this.log.unparsed.push({ t: this.clock.now(), path: d.rel, displaced: true });
         const text = `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied`;
         await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text });
@@ -1467,7 +1473,10 @@ export class Materializer {
     const resumed = !!earlier && (earlier.gen === gen || (!!earlier.result && earlier.hash === hash && finishes(earlier, await this.seen(rel), gen, hash)));
     // any other file reviewed here is something happening at the path, whatever its outcome (committed, head-equal,
     // refused, failed): from now on an earlier save's bytes are a save of their own (round 21 #1)
-    if (!resumed) await this.touch(rel);
+    // The token this attempt starts from is the one it wrote: its slot keeps it, so whatever happens at the path while
+    // it commits (another process's install) still counts (round 22 #2). A resumed save that needs a new slot has none:
+    // only its own file finishes from it
+    const started = resumed ? null : await this.touch(rel);
     const text = bytes.toString("utf8");
     const actor = await this.actorOf(rel, true);
     const name = viewName(rel);
@@ -1585,11 +1594,11 @@ export class Materializer {
     const finishing = !!slot?.result && slot.hash === hash && finishes(slot, await this.seen(rel), gen, hash);
     if (!slot || (!finishing && (slot.gen !== gen || slot.base !== baseKey))) {
       const id = this.engine.newChangeId?.();
-      slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
+      slot = { gen, base: baseKey, hash, ...(id ? { id } : {}), ...(started !== null ? { seen: started } : {}) };
       await this.engine.putMeta(attemptKey, slot);
     }
     const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
-    if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res, seen: await this.seen(rel) });
+    if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res });
     const settle = async () => {
       // the save is finished: its slot (and the engine's record of its cards) can go. Never fatal: a leftover slot is
       // taken over by the path's next save, and finishes only this same file from now on (round 20 #1: the same bytes
@@ -1696,12 +1705,11 @@ export class Materializer {
   }
 
   /**
-   * A file at `rel` that doesn't parse, in place or displaced, refused before any save was attempted: something happened
-   * at the path (`finishes`), and a view's latest save refuses the view, unless a newer print has already started over
-   * (a file of unknown print, in place or recovered after a restart, counts as the latest).
+   * A file at `rel` that doesn't parse, in place or displaced, refused before any save was attempted (the path's token
+   * is written: by the caller, or by the install that displaced it): a view's latest save refuses the view, unless a newer print has already started over (a
+   * file of unknown print, in place or recovered after a restart, counts as the latest).
    */
   private async refuseUnparsed(rel: string, error: string, viewGen?: number): Promise<void> {
-    await this.touch(rel);
     const name = viewName(rel);
     const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
     const gen = viewGen ?? row?.printGen ?? 0;
