@@ -272,6 +272,23 @@ test("late conflicts addressed to you become cards; picking your side commits it
   ui.dispose();
 });
 
+test("a GUI save's notices, addressed to the generic person, reach the resolved person; a teammate's don't", async () => {
+  // Cardboard's GUI saves are recorded as human/person; with the person resolved (setIdentity), the app passes them as
+  // `me`, and core still addresses the save's notices to human/person (windows-sync).
+  const { carton, ui, emit } = await open();
+  await carton.setIdentity({ id: "alice", name: "Alice" });
+  await carton.commit({ ops: [set("a", "name", "Head")], author: bob });
+  const card = { kind: "field" as const, path: "items/a/name", base: "A", ours: "Head", theirs: "Mine" };
+  emit({ type: "notice", notice: { to: "human/bob", kind: "late-conflict", text: "", by: alice, cards: [card] } });
+  assert.equal(ui.conflicts().length, 0, "a teammate's notice isn't yours");
+  emit({ type: "notice", notice: { to: "human/person", kind: "late-conflict", text: "", by: bob, cards: [card] } });
+  assert.equal(ui.conflicts().length, 1, "your own GUI save's conflict shows as a card");
+  assert.equal(ui.conflicts()[0]!.mine.summary, "“Mine”");
+  emit({ type: "notice", notice: { to: "human/person", kind: "rejected", text: "", by: bob, cards: [{ ...card, path: "items/b/name" }] } });
+  assert.equal(ui.conflicts().length, 2, "and so does its rejection");
+  ui.dispose();
+});
+
 test("helpers: path keys, actors and card ops", () => {
   assert.deepEqual(splitPathKey("items/a~1b/#time"), ["items", "a/b", "#time"]);
   const ui = toUiActor({ kind: "external", id: "claude-code", name: "Claude Code", group: "alice@laptop" }, alice, "alice@laptop");

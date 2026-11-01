@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, deepEqual, describe, getIn, groupOf, lcs, pathKey, shots as engineShots } from "@carton/core";
+import { actorKey, deepEqual, describe, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -212,6 +212,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const clock = opts.clock ?? Date.now;
   const engine = opts.engine ?? { shots: engineShots, lcs, describe };
   const myGroup = opts.group ?? groupOf(opts.me);
+  const meKey = actorKey(opts.me);
+  // Core records Cardboard's GUI saves as the generic person (human/person) and addresses their conflict and rejection
+  // notices to that actor, even when the app has resolved who the person is (setIdentity) and passes them as `me`.
+  // Notices never cross machines, so one addressed to the generic person is always this person's own.
+  const personKey = opts.me.kind === "human" && opts.me.id !== PERSON ? actorKey({ kind: "human", id: PERSON }) : null;
   const schema = carton.schema;
   const describeCard = opts.describeCard ?? defaultDescribeCard;
   const actors = new Map<string, Actor>();
@@ -770,7 +775,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       }
       case "notice": {
         const n = e.notice;
-        if ((n.to === actorKey(opts.me) || n.to === myGroup) && n.cards?.length) addCards(n.cards, n.by);
+        if (n.cards?.length && (n.to === meKey || n.to === myGroup || n.to === personKey)) addCards(n.cards, n.by);
         break;
       }
       default:
