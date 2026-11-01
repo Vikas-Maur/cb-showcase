@@ -120,7 +120,7 @@ test("review 15 #4: a cut another process switches to while the save's changes a
   await w.remote(ripple);
   await w.tick(500);
   // while the materializer reads the changes after A's commit, another process forks a cut from before both and
-  // switches to it; this handle's checkout refresh finds the switch
+  // switches to it; local's follower adopts it on this handle
   const scan = w.engine.changesSince!.bind(w.engine);
   let armed = false;
   w.engine.changesSince = (seq, o) => ((armed = true), scan(seq, o));
@@ -130,6 +130,7 @@ test("review 15 #4: a cut another process switches to while the save's changes a
     if (armed && !alt) {
       alt = (await other.fork("Alt", { from: { branchId: w.carton.cut, seq: 1 }, id: "alt-cut" })).id;
       await other.switchTo(alt);
+      await w.follow();
     }
     return realCheckout(ref);
   };

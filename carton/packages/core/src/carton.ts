@@ -237,6 +237,14 @@ export interface Carton {
    * the store, so a handle without sync (`cb`) sees the app's waiting edits too. 0 for a cut no server sequences.
    */
   pendingCount(cut?: string): Promise<number>;
+  /**
+   * This replica's pending changes on a shared cut (default: current), in queue order: each one's author and the
+   * optimistic states just before and after it (the confirmed state at `seq` the queue is on, then each change's latest
+   * version applied in turn, as `head` builds its state), how many times it was rebased (0: as committed), and whether
+   * a rebase changed its edits (`edited`: its ops differ from those it was committed with, also across a restart or a
+   * reload of the queue). None on a cut this replica sequences itself.
+   */
+  pendingChanges(cut?: string): Promise<{ seq: number; changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number; edited: boolean }[] }>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
   checkout(ref: StateRef | string): Promise<Doc>;
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
@@ -369,6 +377,8 @@ interface PendingRow {
   /** Its latest version's rebase count. */
   k?: number;
   supersedes?: string[];
+  /** A rebase changed its ops (`pendingChanges`' `edited`), kept with `k`: once restored, its earlier versions are gone. */
+  edited?: boolean;
   /** The cards its rebases raised, by rebase count: what it reports when it settles. */
   cards?: { k: number; cards: ConflictCard[] }[];
   /** The bases it was pushed on (hello claims them; an emptied one is withdrawn). */
@@ -385,6 +395,8 @@ interface PendingRow {
   /** Its base as ops from the confirmed state at `head` (review SF4-2); absent when it sits on no pending change. */
   baseDelta?: Op[];
 }
+/** A rebase changed its ops: its latest version's differ from its first's, or did before it was restored. */
+const editedOf = (p: QueuedChange): boolean => !!p.edited || p.versions[p.versions.length - 1]!.hash !== p.versions[0]!.hash;
 const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
   const delta = q.baseDelta(p.branchId, v);
@@ -402,7 +414,7 @@ const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow
     kinds: v.kinds,
     policy: v.policy,
     ...(p.history ? { history: p.history } : {}),
-    ...(v.k ? { k: v.k, supersedes: v.supersedes } : {}),
+    ...(v.k ? { k: v.k, supersedes: v.supersedes, edited: editedOf(p) } : {}),
     ...(cards.length ? { cards } : {}),
     ...(p.sentBases.length ? { sentBases: [...p.sentBases] } : {}),
     ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -421,6 +433,7 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.history ? { history: p.history } : {}),
   k: p.k ?? 0,
   supersedes: p.supersedes ?? [],
+  ...(p.edited ? { edited: true } : {}),
   cards: p.cards ?? [],
   sentBases: p.sentBases ?? [],
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -1234,6 +1247,24 @@ class CartonImpl implements Carton {
       return { ref: this.#sharedRef(cut), doc: owned(sc.queue.optimistic(cut).doc, this.schema) };
     }
     return { ref: this.#h.ref(cut), doc: owned(this.#h.viewOf(this.#h.head(cut))!, this.schema) };
+  }
+  async pendingChanges(cut = this.#h.current) {
+    await this.#queue;
+    await this.#refresh(cut);
+    const sc = this.#isShared(cut) && this.#opts.sync ? await this.#ensureShared(cut) : undefined;
+    if (!sc) return { seq: this.#h.headSeq(cut), changes: [] };
+    this.#feedQueue(cut);
+    // as the optimistic head is built: the confirmed state the queue is on, then each change's latest version in turn
+    const seq = sc.queue.headSeq(cut);
+    let doc = sc.queue.confirmedState(cut, seq);
+    const changes: { id: ChangeId; author: Actor; before: Doc; after: Doc; rebases: number; edited: boolean }[] = [];
+    for (const p of sc.queue.pending(cut)) {
+      const v = p.versions[p.versions.length - 1]!;
+      const after = v.ops.length ? E.apply(E.fork(doc, this.schema), v.ops, this.schema) : doc;
+      changes.push({ id: p.id, author: p.author, before: owned(doc, this.schema), after: owned(after, this.schema), rebases: v.k, edited: editedOf(p) });
+      doc = after;
+    }
+    return { seq, changes };
   }
   async checkout(ref: StateRef | string) {
     await this.#whole();

@@ -51,6 +51,11 @@ const never: OwnFn = () => false;
  * nesting). Records equal to their base record keep the base object, so unchanged records are shared (P4's fast path).
  */
 export function fromHost(host: Readonly<Record<string, unknown>>, base: Doc | null = null, own: OwnFn = never): Doc {
+  return fromHostKeeping(host, base, own, NONE);
+}
+const NONE: ReadonlySet<unknown> = new Set();
+/** `fromHost`, with the ids of items known to equal their base record (`same`): those keep it as is, uncompared. */
+function fromHostKeeping(host: Readonly<Record<string, unknown>>, base: Doc | null, own: OwnFn, same: ReadonlySet<unknown>): Doc {
   const h = sliceOf(host);
   const out: Doc = { ...h };
   const hostTracks = h.tracks ?? [];
@@ -70,8 +75,9 @@ export function fromHost(host: Readonly<Record<string, unknown>>, base: Doc | nu
   });
   const bi = new Map(((base?.[ITEMS] ?? []) as Rec[]).map((i) => [i.id, i]));
   out[ITEMS] = (h.timelineItems ?? []).map((it) => {
-    let r = stripEphemeral(it, S.collections[ITEMS]!.record) as Rec;
     const b = bi.get(it.id);
+    if (b && same.has(it.id)) return b;
+    let r = stripEphemeral(it, S.collections[ITEMS]!.record) as Rec;
     for (const [f, key] of SEQ_FIELDS) {
       const list = r[f];
       if (!Array.isArray(list)) continue;
@@ -144,19 +150,24 @@ export function projectGuiSave(base: Doc, save: Readonly<Record<string, unknown>
   const saveHost = sliceOf(save);
   const baseHost = toHost(base);
   const bItems = new Map((baseHost.timelineItems ?? []).map((i) => [i.id, i]));
+  // an item whose every field equals P(base) is its base record: no change, and not compared again below
+  const same = new Set<unknown>();
   const items = (saveHost.timelineItems ?? []).map((it) => {
     const b = bItems.get(it.id);
     if (!b) return it;
     const pb = P(b);
     const out: Rec = { ...b };
+    let changed = false;
     for (const k of new Set([...Object.keys(pb), ...Object.keys(it)])) {
       if (deepEqual(it[k], pb[k])) continue; // equal to P(base): not a change
+      changed = true;
       if (it[k] === undefined) delete out[k];
       else out[k] = it[k];
     }
+    if (!changed) same.add(it.id);
     return out;
   });
-  return fromHost({ ...saveHost, timelineItems: items }, base);
+  return fromHostKeeping({ ...saveHost, timelineItems: items }, base, never, same);
 }
 
 /** P applied to every item of an engine doc. */
