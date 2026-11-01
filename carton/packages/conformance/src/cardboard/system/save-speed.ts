@@ -884,3 +884,129 @@ test("save speed review 3 #4: in a freeze, a host write that lands while a print
   await w.tick(100);
   assert.deepEqual(find(shown(w), "a").annotations, ["new"]);
 });
+
+// Review round 4 of this stage (GPT 6.1 Sol): a save confirmed rebased before it was recorded shows by what was
+// confirmed; a rebase that leaves a save's edits as they were keeps it as applied; a host write landing while the file
+// is checked unchanged gets it checked again.
+
+test("save speed review 4 #1: a pending save of the frozen file confirmed rebased before it was recorded shows by what was confirmed [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 5), clip("b", 5, 10)], offlineShared: true, materializer: { writeProject: false } });
+  const agent = w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } });
+  await agent.read();
+  const server = await serverOf(t, w);
+  await server.commit(BOB, (its) => void (find(its, "a").name = "teammate"));
+  const commitSave = w.engine.commit.bind(w.engine);
+  let once = false;
+  w.engine.commit = async (input) => {
+    const res = await commitSave(input);
+    if (!once) {
+      once = true;
+      // just after the save's commit: the server confirms it after the teammate's rename, its own rename lost
+      await server.commit(agent.actor, (its) => void (find(its, "b").opacity = 0.5), res.id);
+      await server.deliver();
+    }
+    return res;
+  };
+  await agent.editUntilDone(TIMELINE_FILE, (its) => {
+    find(its, "a").name = "agent";
+    find(its, "b").opacity = 0.5;
+  });
+  await w.tick(100);
+  assert.deepEqual((await w.carton.pendingChanges()).changes, []);
+  assert.deepEqual([find(shown(w), "a").name, find(shown(w), "b").opacity], ["a", 0.5], "its lost rename not shown; the teammate's hidden");
+  w.mz.onHeadChange("remote");
+  await w.tick(100);
+  assert.deepEqual([find(shown(w), "a").name, find(shown(w), "b").opacity], ["a", 0.5], "nor after the confirmation's rewrite");
+});
+
+test("save speed review 4 #2: a pending save of the frozen file rebased with its edits as they were (a teammate's edit elsewhere) stays as applied [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 5), clip("b", 5, 10), clip("c", 10, 15)], offlineShared: true, materializer: { writeProject: false } });
+  const agent = w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } });
+  await agent.read();
+  await w.gui((its) => void (find(its, "a").name = "person")); // hidden; the agent's rename over it is carded
+  await w.tick(100);
+  const server = await serverOf(t, w);
+  await server.commit(BOB, (its) => void (find(its, "c").name = "teammate"));
+  const commitSave = w.engine.commit.bind(w.engine);
+  let once = false;
+  w.engine.commit = async (input) => {
+    const res = await commitSave(input);
+    if (!once) {
+      once = true;
+      await server.deliver(); // just after the save's commit: rebased over an edit of another clip
+    }
+    return res;
+  };
+  await agent.editUntilDone(TIMELINE_FILE, (its) => {
+    find(its, "a").name = "agent";
+    find(its, "b").opacity = 0.5;
+  });
+  await w.mz.idle();
+  const save = (await w.carton.pendingChanges()).changes.find((c) => c.author.id === agent.actor.id)!;
+  assert.deepEqual([save.rebases, save.edited], [1, false], "rebased, its edits as they were");
+  const its = shown(w);
+  assert.deepEqual([find(its, "a").name, find(its, "b").opacity, find(its, "c").name], ["agent", 0.5, "c"], "as the agent saved it; the teammate's edit hidden");
+});
+
+test("save speed review 4 #3: in a freeze, a host write that lands while the file is checked unchanged gets it checked again [real engine]", async (t) => {
+  const codec = { ...jsonTimelineCodec };
+  const w = await openWorld(t, { items: [clip("a", 0, 5, { annotations: ["old"] })], codec, materializer: { writeProject: false } });
+  await w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } }).read();
+  const pj = w.abs(PROJECT_FILE);
+  const write = (env: Record<string, unknown>) => {
+    fs.writeFileSync(`${pj}.tmp`, JSON.stringify(env));
+    fs.renameSync(`${pj}.tmp`, pj);
+  };
+  let first!: (x: HostWrite) => void;
+  w.mz.onHeadChange("gui", { after: new Promise<HostWrite>((r) => (first = r)) });
+  await w.mz.printShared(); // while the first write lands
+  const env = JSON.parse(fs.readFileSync(pj, "utf8")) as { project: Record<string, unknown> & { timelineItems: Item[] } };
+  env.project.lastOpenedAt = "later"; // nothing the print shows
+  write(env);
+  first({ project: { envelope: env, stamp: (await statStamp(pj))! } });
+  const print = codec.print.bind(codec);
+  let release!: () => void;
+  let started!: () => void;
+  const entered = new Promise<void>((r) => (started = r));
+  const gate = new Promise<void>((r) => (release = r));
+  codec.print = (async (...args: Parameters<typeof print>) => {
+    const text = await print(...args);
+    started();
+    await gate;
+    return text;
+  }) as typeof codec.print;
+  const checking = w.tick(100); // the first write's check: the same bytes
+  await entered;
+  let second!: (x: HostWrite) => void;
+  w.mz.onHeadChange("gui", { after: new Promise<HostWrite>((r) => (second = r)) });
+  const newer = structuredClone(env);
+  find(newer.project.timelineItems, "a").annotations = ["new"];
+  write(newer);
+  second({ project: { envelope: newer, stamp: (await statStamp(pj))! } }); // lands while the check prints
+  await Promise.resolve();
+  release();
+  await checking;
+  codec.print = print;
+  await w.tick(100);
+  assert.deepEqual(find(shown(w), "a").annotations, ["new"]);
+});
+
+test("save speed review 4 #1: a save of the frozen file confirmed at its commit (absorbed: the same edit already pending) still shows as saved [real engine]", async (t) => {
+  const w = await openWorld(t, { items: [clip("a", 0, 5), clip("b", 5, 10)], offlineShared: true, materializer: { writeProject: false } });
+  const agent = w.agent("director/c1/t1", { hooked: true, actor: { turn: "t1", group: "local:me@m1" } });
+  await agent.read();
+  await w.gui((its) => {
+    find(its, "a").name = "same";
+    find(its, "b").startTime = 6;
+  }); // hidden by the freeze
+  await w.tick(100);
+  await agent.editUntilDone(TIMELINE_FILE, (its) => void (find(its, "a").name = "same")); // the same edit
+  await w.tick(100);
+  const res = w.mz.log.applied.at(-1)!;
+  assert.equal(res.status, "confirmed", "absorbed: confirmed at its commit, nothing of its own");
+  assert.equal(find(shown(w), "a").name, "same", "the agent's own edit shows");
+  await agent.editUntilDone(TIMELINE_FILE, (its) => void (find(its, "b").name = "next")); // a later print
+  w.mz.onHeadChange("local");
+  await w.tick(100);
+  assert.deepEqual([find(shown(w), "a").name, find(shown(w), "b").name, find(shown(w), "b").startTime], ["same", "next", 5], "still; the person's move hidden");
+});
