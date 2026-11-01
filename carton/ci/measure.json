@@ -1446,6 +1446,89 @@
           ]
         }
       ]
+    },
+    {
+      "id": "core-open-ab",
+      "agent": "foundation-core",
+      "claim": "open from keyframes (cf02743) vs 6cd9c3e: Carton.open + first head(), and open + head + log({limit:1}) (which waits for the whole history), on one store-sqlite file per size, 1k/10k/30k/100k changes (carton/bench/core/open-ab.ts; before = 6cd9c3e, after = cf02743; store-sqlite = the snapshot's)",
+      "timeout": 40,
+      "steps": [
+        {
+          "label": "check out before = 6cd9c3e and after = cf02743 as worktrees (by full SHA)",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; for s in \"$2\" \"$3\"; do git fetch --no-tags --depth=1 origin \"$s\"; done; git worktree add --detach \"$4/a\" \"$2\"; git worktree add --detach \"$4/c\" \"$3\"; git -C \"$4/a\" log -1 --format=\"before %H %s\"; git -C \"$4/c\" log -1 --format=\"after %H %s\"",
+            "_",
+            "..",
+            "6cd9c3e55470a846fa7532a2aeff811c3d6134c0",
+            "cf027433cd1352ff326fcae5634d657791f997ef",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "npm ci in each build's carton/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; for d in \"$1/a/carton\" \"$1/c/carton\"; do (cd \"$d\" && npm ci --no-audit --no-fund); done",
+            "_",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "open-ab.ts, project built through after's Carton (foundation's order), 11 runs per size",
+          "env": {
+            "GFV_LOCKED": "1",
+            "LOAD_WAIT": "0",
+            "RUNS": "11",
+            "OUT": "{results}/open-ab-after-first.json"
+          },
+          "run": [
+            "{node}",
+            "{tmp}/c/carton/bench/core/open-ab.ts",
+            ".",
+            "after={tmp}/c/carton",
+            "before={tmp}/a/carton"
+          ],
+          "stdoutTo": "{results}/open-ab-after-first.txt"
+        },
+        {
+          "label": "open-ab.ts, project built through before's Carton (order swapped), 11 runs per size",
+          "env": {
+            "GFV_LOCKED": "1",
+            "LOAD_WAIT": "0",
+            "RUNS": "11",
+            "OUT": "{results}/open-ab-before-first.json"
+          },
+          "run": [
+            "{node}",
+            "{tmp}/c/carton/bench/core/open-ab.ts",
+            ".",
+            "before={tmp}/a/carton",
+            "after={tmp}/c/carton"
+          ],
+          "stdoutTo": "{results}/open-ab-before-first.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "open-ab-after-first.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^n=100000 after",
+            "^n=100000 before"
+          ]
+        },
+        {
+          "file": "open-ab-before-first.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^n=100000 after",
+            "^n=100000 before"
+          ]
+        }
+      ]
     }
   ]
 }
