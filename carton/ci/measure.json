@@ -2151,7 +2151,7 @@
           "run": [
             "bash",
             "-c",
-            "set -o pipefail; export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 CARTON_TEST_DIR=\"$1/sb\"; mkdir -p \"$1/sb\"; \"$2\" ci/save-ab.cjs --trees \"before=$1/before,final=..\" --cells before:on,final:on --out \"$3/save-ab\" --items 3,200 --saves 400 --rounds 1 --gap 0 >\"$1/ab.out\" 2>\"$1/ab.err\"; rc=$?; grep \"^{\\\"items\\\"\" \"$1/ab.out\"; if [ $rc -ne 0 ]; then echo \"save-ab.cjs exit $rc; its error (first lines naming our code only; the rest stays on the runner):\" >&2; grep -m8 -E \"^[A-Za-z]*Error|^ +at .*(ci/save-ab|scripts/carton)\" \"$1/ab.err\" >&2; fi; exit $rc",
+            "set -o pipefail; export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9 NO_PROXY=localhost,127.0.0.1 CARTON_TEST_DIR=\"$1/sb\"; mkdir -p \"$1/sb\"; \"$2\" ci/save-ab.cjs --trees \"before=$1/before,final=$(cd .. && pwd)\" --cells before:on,final:on --out \"$3/save-ab\" --items 3,200 --saves 400 --rounds 1 --gap 0 >\"$1/ab.out\" 2>\"$1/ab.err\"; rc=$?; grep \"^{\\\"items\\\"\" \"$1/ab.out\"; if [ $rc -ne 0 ]; then echo \"save-ab.cjs exit $rc; its error (first lines naming our code only; the rest stays on the runner):\" >&2; grep -m8 -E \"^[A-Za-z]*Error|^ +at .*(ci/save-ab|scripts/carton)\" \"$1/ab.err\" >&2; fi; exit $rc",
             "_",
             "{tmp}",
             "{node}",
