@@ -127,8 +127,19 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
   assert.ok((await S.projectOf(bob, id)).media.some((m) => m.id === mediaId), "Bob's copy lists the clip");
   // S5-G2: the share is in the project itself, as a version by Alice: on Bob's computer, history shows it, and it gives
   // the clip its content id and shared record (size, the proxy).
-  const v = await S.until(() => bob.cb(["history", "Demo"]).json().versions.find((x) => x.by?.id === "Alice"), 20_000, "alice's share version at bob");
-  const cmp = bob.cb(["compare", "Demo", `${v.version.split("@")[0]}@${Number(v.version.split("@")[1]) - 1}`, v.version]);
+  // Alice's GUI edits from the tests above read as Alice at Bob's too (the identity work, R3), and the background share
+  // that began with the project's share can land before or after them: the share's version is whichever of her
+  // versions there brings the clip's content id, not necessarily her newest.
+  let cmp = null, seen = [];
+  await S.until(() => {
+    seen = [];
+    for (const v of bob.cb(["history", "Demo"]).json().versions.filter((x) => x.by?.id === "Alice").slice(0, 6)) {
+      cmp = bob.cb(["compare", "Demo", `${v.version.split("@")[0]}@${Number(v.version.split("@")[1]) - 1}`, v.version]);
+      seen.push(v.version + ": " + cmp.out.trim().replace(/\s+/g, " ").slice(0, 160));
+      if (/content|shared media/.test(cmp.out)) return true;
+    }
+    return false;
+  }, 20_000, "alice's share version at bob").catch((e) => { throw new Error(e.message + "; her versions there: " + JSON.stringify(seen)); });
   assert.match(cmp.out, /content|shared media/, cmp.out + cmp.err);
   // Bob has no file for it: main asks his worker where it lives, then answers cardboard-media:// from the range cache.
   const src = await bob.call("carton.liveMediaSource", { mediaId });
