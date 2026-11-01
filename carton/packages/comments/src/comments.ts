@@ -70,6 +70,12 @@ export interface CommentTarget {
 }
 
 const INDEXES = 3;
+/** A thread with no anchor: on the whole project, the same object every time (views keep their identity). */
+const GENERAL: Placement = Object.freeze({ status: "general", range: null, items: Object.freeze([]) as unknown as string[] });
+
+function samePlacement(x: Placement, y: Placement): boolean {
+  return x.status === y.status && x.why === y.why && x.range?.[0] === y.range?.[0] && x.range?.[1] === y.range?.[1] && x.items.length === y.items.length && x.items.every((v, i) => v === y.items[i]);
+}
 
 /** Could the changes between two versions move a thread placed on the first? */
 function affected(memo: { p: Placement; deps: Set<string> }, a: { items?: { media?: string }[]; range?: [number, number] }, ch: IndexChanges): boolean {
@@ -235,7 +241,7 @@ export class Comments {
       const a = th.root.anchor;
       const id = th.root.id;
       if (!a) {
-        out.set(id, { status: "general", range: null, items: [] });
+        out.set(id, GENERAL);
         continue;
       }
       const memo = this.#placed.get(id);
@@ -261,6 +267,8 @@ export class Comments {
         }
       }
       for (const x of p.items) deps.add(x);
+      // the same answer keeps the same object, so views built on it keep theirs
+      if (memo && samePlacement(memo.p, p)) p = memo.p;
       this.#placed.set(id, { anchor: a, hash: target.hash, p, deps });
       out.set(id, p);
       if (budget !== undefined && performance.now() - t0 > budget) {
