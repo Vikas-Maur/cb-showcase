@@ -5,7 +5,8 @@
 //
 // make: the same project as bench/core/open-ab.ts (P4 generator, 1,000 items, N Cardboard-shaped edits on one main
 // cut, through <carton dir>'s Carton in memory, copied into a store-sqlite file), so the numbers line up with F4.
-// cycles: CYCLES times (default 11), with the process's default heap: open the file with store-sqlite, Carton.open +
+// cycles: CYCLES times (default 11), with the process's default heap, each cycle in its own function (nothing of it
+// reachable at the GCs): open the file with store-sqlite, Carton.open +
 // head() (timed), then, with MODE=whole (default), log({limit: 1}) (timed: waits for the whole history), then close the
 // handle and the store, then two full GCs and record heapUsed and rss. MODE=head skips log(). One line per cycle, then
 // medians and the heap growth from cycle 1 to the last. env: N (100000), CYCLES (11), MODE (whole|head), OUT (JSON).
@@ -77,22 +78,29 @@ const gc2 = () => (globalThis.gc(), globalThis.gc());
 const rows = [];
 gc2();
 const base = process.memoryUsage();
-for (let i = 1; i <= CYCLES; i++) {
+// One cycle in its own function, so nothing of it (the handle, the store) is reachable when the GCs run: with the
+// handle still in a variable of the loop body, its History stayed reachable through the GCs (foundation, F4).
+async function cycle(i) {
   const f = `${file}.${name}.${i}.db`;
   copyFileSync(file, f);
-  const store = await sqlite.openSqliteStore(f);
+  let store = await sqlite.openSqliteStore(f);
   const t0 = performance.now();
-  const c = await core.Carton.open({ adapter, store });
+  let c = await core.Carton.open({ adapter, store });
   await c.head();
   const t1 = performance.now();
   if (MODE === "whole") await c.log({ limit: 1 });
   const t2 = performance.now();
   await c.close();
   await store.close?.();
+  c = store = null;
   for (const x of ["", "-wal", "-shm"]) rmSync(f + x, { force: true });
+  return { open: ms(t1 - t0), whole: MODE === "whole" ? ms(t2 - t0) : null };
+}
+for (let i = 1; i <= CYCLES; i++) {
+  const t = await cycle(i);
   gc2();
   const m = process.memoryUsage();
-  rows.push({ cycle: i, open: ms(t1 - t0), whole: MODE === "whole" ? ms(t2 - t0) : null, heapMB: mb(m.heapUsed), rssMB: mb(m.rss) });
+  rows.push({ cycle: i, ...t, heapMB: mb(m.heapUsed), rssMB: mb(m.rss) });
   const r = rows.at(-1);
   console.log(`${name} ${MODE} cycle ${i}: open+head ${r.open} ms${r.whole != null ? ` | +log(1) ${r.whole} ms` : ""} | after close+gc heapUsed ${r.heapMB} MB rss ${r.rssMB} MB`);
 }

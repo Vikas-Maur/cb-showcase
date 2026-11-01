@@ -1735,12 +1735,12 @@
           ]
         },
         {
-          "label": "after alone, whole: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "label": "after alone, whole: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
           "env": {
             "N": "100000",
             "CYCLES": "11",
             "MODE": "whole",
-            "OUT": "{results}/mem-after-whole.json"
+            "OUT": "{results}/mem2-after-whole.json"
           },
           "run": [
             "bash",
@@ -1755,15 +1755,15 @@
             "after={tmp}/c/carton",
             "{tmp}/p100k.db"
           ],
-          "stdoutTo": "{results}/mem-after-whole.txt"
+          "stdoutTo": "{results}/mem2-after-whole.txt"
         },
         {
-          "label": "before alone, whole: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "label": "before alone, whole: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
           "env": {
             "N": "100000",
             "CYCLES": "11",
             "MODE": "whole",
-            "OUT": "{results}/mem-before-whole.json"
+            "OUT": "{results}/mem2-before-whole.json"
           },
           "run": [
             "bash",
@@ -1778,15 +1778,15 @@
             "before={tmp}/a/carton",
             "{tmp}/p100k.db"
           ],
-          "stdoutTo": "{results}/mem-before-whole.txt"
+          "stdoutTo": "{results}/mem2-before-whole.txt"
         },
         {
-          "label": "bug alone, whole: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "label": "bug alone, whole: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
           "env": {
             "N": "100000",
             "CYCLES": "11",
             "MODE": "whole",
-            "OUT": "{results}/mem-bug-whole.json"
+            "OUT": "{results}/mem2-bug-whole.json"
           },
           "run": [
             "bash",
@@ -1801,15 +1801,15 @@
             "bug={tmp}/b/carton",
             "{tmp}/p100k.db"
           ],
-          "stdoutTo": "{results}/mem-bug-whole.txt"
+          "stdoutTo": "{results}/mem2-bug-whole.txt"
         },
         {
-          "label": "after alone, head: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "label": "after alone, head: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
           "env": {
             "N": "100000",
             "CYCLES": "11",
             "MODE": "head",
-            "OUT": "{results}/mem-after-head.json"
+            "OUT": "{results}/mem2-after-head.json"
           },
           "run": [
             "bash",
@@ -1824,15 +1824,15 @@
             "after={tmp}/c/carton",
             "{tmp}/p100k.db"
           ],
-          "stdoutTo": "{results}/mem-after-head.txt"
+          "stdoutTo": "{results}/mem2-after-head.txt"
         },
         {
-          "label": "before alone, head: 11 open/close cycles, heap after close + 2 GCs, default heap",
+          "label": "before alone, head: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
           "env": {
             "N": "100000",
             "CYCLES": "11",
             "MODE": "head",
-            "OUT": "{results}/mem-before-head.json"
+            "OUT": "{results}/mem2-before-head.json"
           },
           "run": [
             "bash",
@@ -1847,7 +1847,7 @@
             "before={tmp}/a/carton",
             "{tmp}/p100k.db"
           ],
-          "stdoutTo": "{results}/mem-before-head.txt"
+          "stdoutTo": "{results}/mem2-before-head.txt"
         },
         {
           "label": "bug alone, head: 11 open/close cycles, heap after close + 2 GCs, default heap",
@@ -1929,6 +1929,197 @@
           "mustMatch": [
             "^n=100000 after",
             "^n=100000 before"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "core-open-mem2",
+      "agent": "foundation-core",
+      "claim": "F4 note: with the harness fixed (each cycle in its own function, so the closed handle isn't reachable at the GCs), the heap after close + GC of a 100k project, per cycle, default heap: foundation measured ~12 MB flat for both builds (UNVERIFIED); 24083fc vs 6cd9c3e, cf02743 as the control",
+      "timeout": 30,
+      "steps": [
+        {
+          "label": "check out before = 6cd9c3e, bug = cf02743 (route 40 control) and after = 24083fc as worktrees (by full SHA)",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; cd \"$1\"; for s in \"$2\" \"$3\" \"$4\"; do git fetch --no-tags --depth=1 origin \"$s\"; done; git worktree add --detach \"$5/a\" \"$2\"; git worktree add --detach \"$5/b\" \"$3\"; git worktree add --detach \"$5/c\" \"$4\"; for d in a b c; do git -C \"$5/$d\" log -1 --format=\"$d %H %s\"; done",
+            "_",
+            "..",
+            "6cd9c3e55470a846fa7532a2aeff811c3d6134c0",
+            "cf027433cd1352ff326fcae5634d657791f997ef",
+            "24083fc88763b0ca437b710fa1b3e74d7a0efd89",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "npm ci in each build's carton/",
+          "run": [
+            "bash",
+            "-c",
+            "set -e; for d in a b c; do (cd \"$1/$d/carton\" && npm ci --no-audit --no-fund); done",
+            "_",
+            "{tmp}"
+          ]
+        },
+        {
+          "label": "the 100k project, built through after's Carton into one store-sqlite file (open-ab.ts's generator and edits)",
+          "env": {
+            "N": "100000"
+          },
+          "run": [
+            "{node}",
+            "ci/open-mem.mjs",
+            "make",
+            ".",
+            "{tmp}/c/carton",
+            "{tmp}/p100k.db"
+          ]
+        },
+        {
+          "label": "after alone, whole: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "whole",
+            "OUT": "{results}/mem2-after-whole.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "after={tmp}/c/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem2-after-whole.txt"
+        },
+        {
+          "label": "before alone, whole: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "whole",
+            "OUT": "{results}/mem2-before-whole.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "before={tmp}/a/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem2-before-whole.txt"
+        },
+        {
+          "label": "bug alone, whole: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "whole",
+            "OUT": "{results}/mem2-bug-whole.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "bug={tmp}/b/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem2-bug-whole.txt"
+        },
+        {
+          "label": "after alone, head: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "head",
+            "OUT": "{results}/mem2-after-head.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "after={tmp}/c/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem2-after-head.txt"
+        },
+        {
+          "label": "before alone, head: 11 open/close cycles, cycle scoped in a function, heap after close + 2 GCs, default heap",
+          "env": {
+            "N": "100000",
+            "CYCLES": "11",
+            "MODE": "head",
+            "OUT": "{results}/mem2-before-head.json"
+          },
+          "run": [
+            "bash",
+            "-c",
+            "T=$(command -v time >/dev/null && [ -x /usr/bin/time ] && echo '/usr/bin/time -v'); $T \"$@\"",
+            "_",
+            "{node}",
+            "--expose-gc",
+            "ci/open-mem.mjs",
+            "cycles",
+            ".",
+            "before={tmp}/a/carton",
+            "{tmp}/p100k.db"
+          ],
+          "stdoutTo": "{results}/mem2-before-head.txt"
+        }
+      ],
+      "reports": [
+        {
+          "file": "mem2-after-whole.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^after whole N=100000"
+          ]
+        },
+        {
+          "file": "mem2-before-whole.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^before whole N=100000"
+          ]
+        },
+        {
+          "file": "mem2-after-head.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^after head N=100000"
+          ]
+        },
+        {
+          "file": "mem2-before-head.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^before head N=100000"
           ]
         }
       ]
