@@ -134,7 +134,9 @@ export function cartonCommentStore(store: Store): CommentStore {
         base.push({ table: T.pending, key: [d.id], value: undefined });
       }
       const rows = newest(w.rows ?? []);
-      if (!rows.length && w.head === undefined && w.reset === undefined) return base.length ? store.write(base, baseConds) : true;
+      // only pending rows, and not part of the stream (a local edit, a refusal): their own conditions suffice. A write
+      // that names its generation (an answer's drop) goes through the checks below even with nothing else to write
+      if (!rows.length && w.head === undefined && w.reset === undefined && w.epoch === undefined) return base.length ? store.write(base, baseConds) : true;
       // decided on what is stored now: the revision first, then what it covers; any write of rows or the head in
       // between bumps it and fails this batch, which is then decided again on what that write left
       for (let attempt = 0; ; attempt++) {
@@ -189,7 +191,7 @@ export function memoryCommentStore(): CommentStore {
       return ids.map((id) => rows.get(id));
     },
     async write(w) {
-      if (w.reset === undefined && w.epoch !== undefined && (w.rows?.length || w.head !== undefined) && epoch !== w.epoch) throw new CommentStreamChanged();
+      if (w.reset === undefined && w.epoch !== undefined && epoch !== w.epoch) throw new CommentStreamChanged();
       for (const p of w.put ?? []) {
         const cur = pending.get(p.row.id) ?? null;
         if (p.prev ? !cur || !same(cur, p.prev) : cur) return false;

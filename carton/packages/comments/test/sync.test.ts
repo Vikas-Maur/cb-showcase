@@ -5,6 +5,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { Comments } from "../src/comments.ts";
 import { cartonCommentStore, type CommentStore } from "../src/store.ts";
+import { CommentSync, type CommentSyncEngine } from "../src/sync.ts";
+import type { Transport, TransportConnection } from "@carton/core/plugins";
 import type { CommentsEvent } from "../src/comments.ts";
 import { BOB, ME, clip, commentHost, openCarton, until } from "./helpers.ts";
 
@@ -235,4 +237,88 @@ test("refresh after another process wrote a reset's first page: the connection s
   const again = await Comments.open({ carton, me: ME });
   assert.deepEqual(again.all().map((c) => c.id).sort(), [...made, later].map((c) => c.id).sort(), "and so has the store");
   await Promise.all([again.close(), b.comments.close()]);
+});
+
+/** A transport that can hold back `commentAnswer` messages until released. */
+function gated(t: Transport) {
+  let holding = false;
+  const held: (() => void)[] = [];
+  return {
+    transport: {
+      async connect(url: string, o: Parameters<Transport["connect"]>[1]) {
+        const c = await t.connect(url, o);
+        const conn: TransportConnection = {
+          get open() {
+            return c.open;
+          },
+          send: (m) => c.send(m),
+          onMessage: (l) => c.onMessage((m) => (holding && (m as { type?: string }).type === "commentAnswer" ? void held.push(() => l(m)) : l(m))),
+          onClose: (f) => c.onClose(f),
+          close: () => c.close(),
+        };
+        return conn;
+      },
+    } as Transport,
+    hold: () => void (holding = true),
+    release: () => {
+      holding = false;
+      for (const f of held.splice(0)) f();
+    },
+  };
+}
+
+test("an answer older than the row held here, after another process reset the stream: the pending patch is never lost", async () => {
+  const host = commentHost();
+  const gate = gated(host.transport);
+  const carton = await openCarton(items());
+  const raw = cartonCommentStore(carton.store);
+  const a = await Comments.open({ carton, me: ME, sync: { transport: gate.transport, url: host.url, token: host.token("editor", "alice") } });
+  const c = await a.add({ body: "First", range: [1, 2] });
+  assert.ok(await a.settled());
+  gate.hold();
+  await a.edit(c.id, "Edited"); // the server stores it (seq 2); its answer waits
+  await until(() => host.room.head() === 2, 3000, "the edit reached the server");
+  // another process stored a newer row of it (seq 3, head 3); this handle reads it
+  await raw.write({ rows: [{ ...(await raw.read([c.id]))[0]!, body: "Elsewhere", seq: 3 }], head: 3, epoch: "" });
+  await a.refresh();
+  // then another process reset the stream (its new one has nothing yet)
+  await raw.write({ rows: [], head: 0, reset: "e2" });
+  gate.release(); // the old answer (seq 2) arrives: no row to keep, no head to move, only the pending row to drop
+  await until(async () => !!(await raw.read([c.id]))[0], 5000, "the comment is back in the store, from the server");
+  await until(() => !a.isPending(c.id) && a.get(c.id)?.body === "Edited", 5000, "and settled as the server has it");
+  await a.close();
+  const offline = await Comments.open({ carton, me: ME });
+  assert.equal(offline.get(c.id)?.body, "Edited");
+  await offline.close();
+});
+
+test("a restart while a reply waits to be stored: that reply never marks the new connection caught up", async () => {
+  const host = commentHost();
+  let open!: () => void;
+  const gate = new Promise<void>((r) => (open = r));
+  let first = true;
+  const engine: CommentSyncEngine = {
+    cut: () => "main",
+    head: () => 0,
+    pending: async () => [],
+    async take() {
+      if (first) {
+        first = false;
+        await gate;
+      }
+    },
+    async answered() {},
+    async refused() {},
+    status: () => {},
+  };
+  const sync = new CommentSync({ transport: host.transport, url: host.url, token: host.token("editor", "alice") }, engine);
+  sync.start();
+  await until(() => !first, 3000, "the first reply is being stored");
+  sync.restart();
+  open();
+  await new Promise((r) => setTimeout(r, 20));
+  assert.notEqual(sync.status.state, "up-to-date", "the old connection's reply doesn't count");
+  assert.equal(await sync.settled(50), false);
+  assert.ok(await sync.settled(5000), "the new connection catches up");
+  await sync.stop();
 });
