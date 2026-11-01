@@ -105,3 +105,45 @@ test("a merged save's put-back is Cardboard's own copy: an in-place edit sticks"
     if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
   }
 });
+
+// The put-back is an exact deep copy (as structuredClone made it, on every GUI save of a large project): the same
+// values, key order, undefined members and array holes, nothing shared with head's frozen records; a value that isn't
+// plain JSON (a Date) is copied as structuredClone copies it.
+test("a save's put-back copies head exactly and shares nothing with it", async () => {
+  const dir = path.join(ROOT, "facade-copy");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, "carton-node.cjs"), `
+    const deepFreeze = (o) => { if (o && typeof o === "object" && !Object.isFrozen(o)) { Object.freeze(o); for (const v of Object.values(o)) deepFreeze(v); } return o; };
+    const holes = [1, , 3];
+    exports.head = deepFreeze({ id: "p", stateUpdatedAt: 5, z: 1, a: undefined, when: new Date(7),
+      timelineItems: [{ id: "a", startTime: 0, keyframeTracks: [{ property: "x", keys: [[0, 1], [1, 2]] }], meta: { nested: { deep: [true, null, "s"] } } }],
+      media: [{ id: "m", data: { fileName: "clip.mp4", code: { source: "x" } } }], holes });
+    exports.cardboard14 = { commit: async () => ({ status: "confirmed", merged: false, doc: exports.head }) };
+  `);
+  const saved = process.env.CARTON_DIR;
+  process.env.CARTON_DIR = dir;
+  try {
+    const c = load(true);
+    const head = require(path.join(dir, "carton-node.cjs")).head;
+    const store = {
+      options: { root: ROOT },
+      byId: new Map([["p", { bundlePath: path.join(ROOT, "p.cardboard"), document: { id: "p", stateUpdatedAt: 1, timelineItems: [] } }]]),
+      async __cartonApplyMutation(id, mutate) {
+        const e = this.byId.get(id), next = mutate(e.document);
+        this.byId.set(id, { ...e, document: next });
+        return { document: next, changed: true };
+      },
+    };
+    const doc = (await c.applyMutation(store, "p", (d) => ({ ...d, stateUpdatedAt: 5 }))).document;
+    assert.deepStrictEqual(doc, structuredClone(head), "head's values, as structuredClone copies them");
+    assert.deepEqual(Object.keys(doc), Object.keys(head), "in head's key order, undefined members kept");
+    assert.ok("a" in doc && doc.a === undefined);
+    assert.ok(!(1 in doc.holes) && doc.holes.length === 3, "a hole stays a hole");
+    assert.ok(doc.when instanceof Date && doc.when.getTime() === 7);
+    const objects = (o, out = []) => { if (o && typeof o === "object") { out.push(o); for (const v of Object.values(o)) objects(v, out); } return out; };
+    const theirs = new Set(objects(head));
+    assert.ok(objects(doc).every((o) => !theirs.has(o) && !Object.isFrozen(o)), "every object is a new, unfrozen one");
+  } finally {
+    if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
+  }
+});
