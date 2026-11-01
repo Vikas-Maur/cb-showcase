@@ -7,7 +7,7 @@ import { exactTime, when } from "../format.ts";
 import { useAction, useAsync, useCartonUi, useLocale, useNow, usePreview, usePublishedShown, useSyncStatus, useUndoTurn, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { Credits } from "../model.ts";
-import { ActorName, Avatar, Button, cx } from "./ui.ts";
+import { ActorName, Avatar, Button, HoverMore, cx } from "./ui.ts";
 
 /** Syncing · Up to date · Offline: N edits waiting (§0.1, §13). Nothing for a cut that isn't shared. */
 export function SyncStatusWords({ className }: { className?: string }) {
@@ -128,7 +128,7 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
                   h("span", { className: "carton-credit-what" }, l.what),
                   h("span", { className: "carton-credit-who" }, h(Avatar, { actor: l.author, size: 16, named: true }), h(ActorName, { actor: l.author, detail: true })),
                   l.at != null
-                    ? h("time", { className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), "data-carton-tip": exactTime(l.at, locale) }, when(l.at, now, locale, words.justNow))
+                    ? h(HoverMore, { as: "time", className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), short: when(l.at, now, locale, words.justNow), more: exactTime(l.at, locale) })
                     : h("span", { className: "carton-credit-when" }),
                 ),
               ),

@@ -34,6 +34,8 @@ export interface ButtonProps {
   label?: string;
   pressed?: boolean;
   type?: "button" | "submit";
+  /** More about it for screen readers, with no tooltip (inside rows and cards, where one would cover the next). */
+  description?: string;
 }
 
 export function Button(p: ButtonProps) {
@@ -47,6 +49,7 @@ export function Button(p: ButtonProps) {
       "data-icon-only": p.children == null ? "" : undefined,
       "aria-label": p.label,
       "aria-pressed": p.pressed,
+      "aria-description": p.description,
       "aria-busy": p.busy || undefined,
       "data-carton-tip": p.title,
       disabled: p.disabled || p.busy,
@@ -84,10 +87,19 @@ export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?
 }
 
 /**
- * An actor's name in an author slot ("You", "Director", "Leo's Director"); nothing for a system actor. A native title
- * only when it says more than the name (a subagent's type, a model: actorDetail), or when the name is cut off with an
- * ellipsis (measured on hover): never one that repeats the name over the row below. `detail`: show the detail itself
- * (a details view: Credits).
+ * A short text that says more on hover, in its own place: "just now" becomes "Nov 1, 2026, 8:47 PM", "Director" becomes
+ * "Director › general-purpose · Opus 5.5". Never a tooltip: one would cover the row below (laptop report 90c4127, the
+ * user). Screen readers get the short text, and the element its own meaning (a <time>'s dateTime).
+ */
+export function HoverMore({ as = "span", short, more, className, ...rest }: { as?: string; short: ReactNode; more?: string; className?: string } & Record<string, unknown>) {
+  if (!more || more === short) return h(as, { className, ...rest }, short);
+  return h(as, { className: cx("carton-more", className), ...rest }, h("span", { className: "carton-more-short" }, short), h("span", { className: "carton-more-long", "aria-hidden": true }, more));
+}
+
+/**
+ * An actor's name in an author slot ("You", "Director", "Leo's Director"); nothing for a system actor. What more there
+ * is (a subagent's type, a model: actorDetail) shows in its place on hover; no tooltip. `detail`: show the detail
+ * itself (a details view: Credits).
  */
 export function ActorName({ actor, detail }: { actor: Actor; detail?: boolean }) {
   const ui = useCartonUi();
@@ -96,16 +108,8 @@ export function ActorName({ actor, detail }: { actor: Actor; detail?: boolean })
   const byKey = ui.actor.bind(ui);
   const label = actorLabel(actor, byKey, words.you);
   const more = actorDetail(actor, byKey, words.you);
-  const text = detail && more ? more : label;
-  const title = detail ? undefined : more;
-  const onMouseEnter = title
-    ? undefined
-    : (e: MouseEvent) => {
-        const el = e.currentTarget as HTMLElement;
-        if (el.scrollWidth > el.clientWidth + 1) el.title = text;
-        else el.removeAttribute("title");
-      };
-  return h("span", { className: "carton-actor-name", "data-kind": actor.kind, title, onMouseEnter }, text);
+  if (detail) return h("span", { className: "carton-actor-name", "data-kind": actor.kind }, more ?? label);
+  return h(HoverMore, { className: "carton-actor-name", "data-kind": actor.kind, short: label, more });
 }
 
 // ---------------------------------------------------------------- menus
@@ -189,6 +193,7 @@ export interface MenuItemProps {
   checked?: boolean;
   danger?: boolean;
   hint?: ReactNode;
+  /** What it does, in a line under its name (never a tooltip over the item below). */
   title?: string;
 }
 
@@ -203,12 +208,14 @@ export function MenuItem(p: MenuItemProps) {
       "aria-disabled": p.disabled || undefined,
       className: "carton-menu-item",
       "data-danger": p.danger || undefined,
-      "data-carton-tip": p.title,
+      "data-described": p.title ? "" : undefined,
       tabIndex: -1,
       onClick: () => !p.disabled && p.onSelect(),
     },
     h("span", { className: "carton-menu-icon" }, p.icon ? h(Icon, { name: p.icon }) : radio && p.checked ? h(Icon, { name: "check" }) : null),
-    h("span", { className: "carton-menu-text" }, p.children),
+    p.title
+      ? h("span", { className: "carton-menu-text" }, p.children, h("span", { className: "carton-menu-desc" }, p.title))
+      : h("span", { className: "carton-menu-text" }, p.children),
     p.hint != null ? h("span", { className: "carton-menu-hint" }, p.hint) : null,
   );
 }

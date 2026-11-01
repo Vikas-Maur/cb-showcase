@@ -1015,11 +1015,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.v.ref === ref) return rows[i]!.v;
     return undefined;
   };
-  // A version in words: its name, else what it did; a cut's head is "Current"; never its ref (an id).
+  // A version in words: its name, else what it did; the current cut's head is "Current", another cut's head that
+  // cut's name ("Main cut"); never its ref (an id).
   const refLabel = (ref: string): string => {
     const v = versionAt(ref);
     if (v?.name) return v.name;
-    if (cuts.some((c) => c.head === ref)) return "Current";
+    const head = cuts.find((c) => c.head === ref);
+    if (head) return head.current ? "Current" : head.label;
     return v?.summary || "Earlier version";
   };
   const diffCache = new Map<string, Promise<ShotDiff>>();

@@ -153,8 +153,9 @@ test(name("cuts menu: lists cuts (Bob's read-only), new cut from here, rename"),
   const trigger = $(m.container, ".carton-menu-trigger")!;
   assert.match(trigger.textContent ?? "", /Main cut/);
   await click(trigger);
+  // a read-only cut says why on a second line under its name (no tooltip)
   const items = $$(m.container, "[role=menuitemradio]").map((e) => e.textContent);
-  assert.ok(items.includes("Bob's Main cut"));
+  assert.ok(items.some((t) => t?.startsWith("Bob's Main cut")));
   assert.ok(items.includes("30s Instagram cut"));
   await click(byText(m.container, "[role=menuitem]", "New cut from here"));
   await type($(m.container, "input.carton-input"), "Teaser");
@@ -315,7 +316,8 @@ test(name("R1-15: the context-menu key opens the active version's actions; still
   await key(list, "ContextMenu");
   const menu = $(m.container, "[role=menu]");
   assert.ok(menu, "actions menu open");
-  assert.equal(byText(menu!, "[role=menuitem]", "Restore")?.getAttribute("aria-disabled"), "true");
+  // Restore's hint is a line under its name (no tooltip over the next item)
+  assert.equal($$(menu!, "[role=menuitem]").find((e) => e.textContent?.startsWith("Restore"))?.getAttribute("aria-disabled"), "true");
   assert.equal(document.activeElement?.closest("[role=menu]"), menu, "focus moved into the menu");
   await m.unmount();
 });
