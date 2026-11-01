@@ -5,7 +5,7 @@ import { createElement as h, type ReactNode } from "react";
 import { duration, exactTime, when } from "../format.ts";
 import { useAsync, useCartonUi, useLocale, useNow, useWords } from "../hooks.ts";
 import type { CompareSide, Comparison } from "../model.ts";
-import { ActorName, Avatar, Button, cx } from "./ui.ts";
+import { ActorName, Avatar, Button, HoverMore, cx } from "./ui.ts";
 
 export interface CompareCardProps {
   a: string;
@@ -29,7 +29,7 @@ function Side({ side, now }: { side: CompareSide; now: number }) {
       "dl",
       { className: "carton-facts" },
       h("dt", null, words.factWhen),
-      h("dd", null, h("time", { dateTime: new Date(side.at).toISOString(), "data-carton-tip": exactTime(side.at, locale) }, when(side.at, now, locale, words.justNow))),
+      h("dd", null, h(HoverMore, { as: "time", dateTime: new Date(side.at).toISOString(), short: when(side.at, now, locale, words.justNow), more: exactTime(side.at, locale) })),
       h("dt", null, words.factWho),
       h("dd", { className: "carton-compare-who" }, h(Avatar, { actor: side.author, size: 14, named: true }), h(ActorName, { actor: side.author })),
       h("dt", null, words.factClips),
@@ -72,7 +72,7 @@ export function CompareCard(p: CompareCardProps) {
     h(
       "div",
       { className: "carton-card-actions" },
-      p.onRestore ? h(Button, { icon: "restore", onClick: p.onRestore, title: words.restoreHint }, words.restore) : null,
+      p.onRestore ? h(Button, { icon: "restore", onClick: p.onRestore, description: words.restoreHint }, words.restore) : null,
       p.onWatch
         ? h(Button, { variant: "primary", icon: "eye", disabled: loaded.status !== "ready" || loaded.value.diff.shots === 0, onClick: () => p.onWatch!(p.a, p.b) }, words.watchTheChanges)
         : null,

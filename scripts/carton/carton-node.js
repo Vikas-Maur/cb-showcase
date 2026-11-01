@@ -18,7 +18,8 @@ import { describeCardboardCard, fromHost, materializeProject, projectGuiSave } f
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
-import { fromCarton, serveUi } from "@carton/react";
+import { fromCarton, serveUi, commentsUi, serveComments } from "@carton/react";
+import { Comments } from "@carton/comments";
 import { viewCards, canon, sameCard } from "./sync/view-cards.js";
 
 const warned = new Set();
@@ -456,6 +457,18 @@ function passedOthers(r, base) {
   const known = "baseDoc" in base ? base.baseSeq + (base.causal?.length ?? 0) : typeof base.seq === "number" ? base.seq + (base.pending?.length ?? 0) : null;
   if (known === null) return false;
   return (r.empty ? r.seq : r.seq - 1) > known;
+}
+
+/**
+ * The machine's current cut, as another process stored it (cb cut switch): adopted by this handle when it differs and is
+ * a cut this handle knows. True when it moved.
+ */
+async function followCurrent(lc) {
+  const stored = await lc.store.get("meta", ["current"]);
+  if (typeof stored !== "string" || stored === lc.carton.cut) return false;
+  if (!(await lc.carton.cuts()).some((c) => c.id === stored)) return false;
+  await lc.carton.switchTo(stored, { persist: false });
+  return true;
 }
 
 // What Cardboard's own code gets from a Carton state: a copy. Core's records are frozen, and Cardboard edits the
@@ -951,6 +964,19 @@ export const cardboard14 = {
         close();
         void servePanel(projectId, client).then((n) => n?.receive({ t: "hello" })).catch((err) => warnOnce("panel:" + bundlePath, "the History panel didn't start again: " + errText(err)));
       }));
+      // A cut switch made elsewhere (cb cut switch, another window) is stored as the machine's current cut. The handle
+      // takes it (@carton/local's follower, or here when no follower runs: persist false, so a third switch in between
+      // is never overwritten), but a switch on the handle tells its view model nothing: while a page shows the panel,
+      // a handle on another cut than the one the panel last showed refreshes it (laptop report 90c4127, bug 7). One
+      // small read a second.
+      let following = false;
+      const follow = setInterval(() => {
+        if (following) return;
+        following = true;
+        followCurrent(lc).then(() => (lc.carton.cut !== shownCut ? reportHere() : null)).catch(() => {}).finally(() => { following = false; });
+      }, 1000);
+      follow.unref?.();
+      offs.push(() => clearInterval(follow));
       const close = () => {
         for (const off of offs) off();
         servers.delete(client);
@@ -969,6 +995,26 @@ export const cardboard14 = {
       });
       servers.set(client, s);
       return s;
+    };
+    // Comments per project, opened on first ask and kept while the worker runs (comment servers per page client).
+    const commentServers = new Map();
+    const commentsOpen = new Map();
+    const commentsOf = (projectId) => {
+      let p = commentsOpen.get(projectId);
+      if (!p) {
+        p = (async () => {
+          const lc = await lcOf(projectId);
+          if (!lc) return null;
+          const comments = await Comments.open({ carton: lc.carton, anchor: { media: "mediaItemId" }, cut: () => lc.carton.cut });
+          // Kept with the project and not shared through a host here: nothing is waiting to sync, so no comment says so.
+          const source = new Proxy(comments, { get: (t, k) => (k === "isPending" ? (id) => (t.syncStatus() ? t.isPending(id) : false) : typeof t[k] === "function" ? t[k].bind(t) : t[k]) });
+          // threads are placed again whenever the cut's head moves
+          return { comments, ui: commentsUi(source, { versions: { on: (l) => lc.carton.on((e) => { if (e.type === "change" || e.type === "cut") l(); }) } }) };
+        })();
+        p.catch(() => commentsOpen.delete(projectId));
+        commentsOpen.set(projectId, p);
+      }
+      return p;
     };
     return {
       ping: async () => "pong",
@@ -1037,6 +1083,19 @@ export const cardboard14 = {
         // the turn (or subagent) ends: the person's copies of its cards stand on their own (view-cards.js)
         if (d.decision === "allow") await views.detach(lc, actorOf(id)).catch(() => {});
         return stopOutput(d);
+      },
+      // The panel's Comments tab: @carton/comments on the project's own Carton (kept beside its history), served to
+      // each page that asks (remoteComments there), as the History panel is.
+      comments: async ({ projectId, client, message }) => {
+        let s = commentServers.get(client);
+        if (!s) {
+          const c = await commentsOf(projectId);
+          if (!c) return { status: "unavailable" };
+          s = serveComments(c.ui, (m) => emit({ kind: "carton", id: projectId, client, message: m }));
+          commentServers.set(client, s);
+        }
+        s.receive(message);
+        return { status: "ok" };
       },
       // The History panel: @carton/react's view model, served to each page that asks (remoteUi there).
       ui: async ({ projectId, client, message }) => {

@@ -73,8 +73,10 @@ test(name("History rows: no tooltip that repeats the author; a subagent's says i
   assert.equal($(you, ".carton-avatar")!.getAttribute("aria-hidden"), "true");
   // a subagent: its agent in the slot, its type in the tooltip
   const sub = row("Trimmed 'Intro'");
-  assert.equal($(sub, ".carton-actor-name")!.textContent, "Director");
-  assert.equal($(sub, ".carton-actor-name")!.getAttribute("title"), "Director › Explore");
+  assert.equal($(sub, ".carton-actor-name .carton-more-short")!.textContent, "Director");
+  // its type shows in place on hover (laptop report: no tooltip over the next row)
+  assert.equal($(sub, ".carton-actor-name")!.getAttribute("title"), null);
+  assert.equal($(sub, ".carton-actor-name .carton-more-long")!.textContent, "Director › Explore");
   // the cut's start: no avatar, no name
   const start = row("Started the cut");
   assert.equal($(start, ".carton-avatar"), null);

@@ -56,7 +56,7 @@ export function CutsMenu(p: CutsMenuProps) {
 
   const menu = h(MenuButton, {
     label: words.cuts,
-    title: words.cuts,
+    // no tip: the trigger already says which cut, and a tip would sit over the History filters below it
     triggerClassName: cx("carton-cuts-trigger", p.className),
     onOpenChange: (open) => !open && setMode("menu"),
     trigger: [

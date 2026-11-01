@@ -37,7 +37,7 @@ export {
   type CartonProviderProps,
   type AsyncState,
 } from "./hooks.ts";
-export { Avatar, ActorName, Button, Dialog, MenuButton, MenuItem, MenuList, MenuSeparator, MenuLabel, InlineName } from "./components/ui.ts";
+export { Avatar, ActorName, HoverMore, Button, Dialog, MenuButton, MenuItem, MenuList, MenuSeparator, MenuLabel, InlineName } from "./components/ui.ts";
 export { HistoryPanel, VERSION_ROW_HEIGHT, type HistoryPanelProps } from "./components/HistoryPanel.ts";
 export { CutsMenu, type CutsMenuProps } from "./components/CutsMenu.ts";
 export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.ts";

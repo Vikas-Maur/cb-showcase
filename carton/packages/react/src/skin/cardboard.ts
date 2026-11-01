@@ -27,6 +27,10 @@ export const baseCss = `
 :where(.carton-strip-scroll){overflow-x:auto;overflow-y:hidden}
 :where(.carton-ghost){position:absolute;left:0;top:0;will-change:transform}
 :where([data-carton-tip]){position:relative}
+:where(.carton-more) > :where(.carton-more-long){display:none}
+:where(.carton-more:hover) > :where(.carton-more-short){display:none}
+:where(.carton-more:hover) > :where(.carton-more-long){display:inline}
+:where(.carton-version, .carton-conflict-who, .carton-credit, .carton-compare-side dl, .carton-comment-head, .carton-comment-meta){-webkit-user-select:none;user-select:none}
 `;
 
 const S = '[data-carton-skin="cardboard"]';
@@ -286,6 +290,9 @@ export const cardboardSkin = `
 :where(.carton-sidebar${S}){font-size:inherit}
 :where(${S}) :where(.carton-sidebar .carton-panel-title){display:none}
 :where(${S}) :where(.carton-sidebar .carton-panel-head){padding-top:6px}
+:where(${S}) :where(.carton-sidebar-history){display:flex;flex-direction:column;flex:1 1 0;min-height:0}
+:where(${S}) :where(.carton-sidebar-history > .carton-history){flex:1 1 0;height:auto}
+:where(${S}) :where(.carton-sidebar-cuts){flex:none;padding:8px 10px 0}
 :where(${S}) :where(.carton-sidebar-watch){display:flex;flex-direction:column;gap:10px;padding:8px 12px 12px}
 :where(${S}) :where(.carton-sidebar-watch > .carton-btn){align-self:flex-start}
 :where(${S}) :where(.carton-conflicts-count){font-size:12px;font-weight:500;color:var(--cb-warn)}
@@ -362,10 +369,10 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-credit-when){color:var(--cb-fg-3)}
 
 /* ---------------------------------------------------------------- read-only preview banner (Cardboard's recovery look) */
-:where(${S}) :where(.carton-preview-banner){display:flex;align-items:center;gap:8px;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #fcd34d33;border-radius:10px;
+:where(${S}) :where(.carton-preview-banner){display:flex;flex-wrap:wrap;row-gap:6px;align-items:center;gap:8px;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #fcd34d33;border-radius:10px;
   background:#17140de6;color:#fde68a;font-size:12px;font-weight:500}
 :where(${S}) :where(.carton-preview-banner > .carton-icon){color:#fcd34dcc}
-:where(${S}) :where(.carton-preview-label){min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-preview-label){flex:1 1 120px;min-width:0;white-space:normal;text-wrap:balance}
 :where(${S}) :where(.carton-preview-banner .carton-badge){background:#fcd34d1a;color:#fcd77fcc}
 :where(${S}) :where(.carton-preview-blocked){color:#fde68acc;font-weight:400}
 :where(${S}) :where(.carton-preview-banner .carton-btn){margin-left:auto;height:28px;padding:0 10px 0 8px;font-size:12px}
@@ -420,6 +427,10 @@ export const cardboardSkin = `
 }
 /* the sidebar is narrow: Compare's two sides one above the other (after the Compare rules above, so it wins) */
 :where(${S}) :where(.carton-sidebar .carton-compare-sides){grid-template-columns:1fr}
+/* a menu item's description, on its own line under the name (no tooltip over the next item) */
+:where(${S}) :where(.carton-menu-item[data-described]){height:auto;min-height:32px;padding-top:6px;padding-bottom:6px;align-items:flex-start}
+:where(${S}) :where(.carton-menu-item[data-described] .carton-menu-text){display:flex;flex-direction:column;gap:1px;white-space:normal}
+:where(${S}) :where(.carton-menu-desc){font-size:11.5px;line-height:15px;color:var(--cb-fg-3);font-weight:400}
 `;
 
 /** Add a stylesheet once per document (by id). Returns the <style> element. */

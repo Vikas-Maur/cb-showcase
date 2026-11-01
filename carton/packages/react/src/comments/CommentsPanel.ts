@@ -10,7 +10,7 @@ import { createElement as h, memo, useCallback, useEffect, useMemo, useRef, useS
 import { actorColor, initials } from "../actors.ts";
 import { exactTime, when } from "../format.ts";
 import { useLocale, useNow } from "../hooks.ts";
-import { Button, cx } from "../components/ui.ts";
+import { Button, HoverMore, cx } from "../components/ui.ts";
 import type { Actor } from "../model.ts";
 import type { CommentPerson, CommentView, CommentsUi, ThreadView } from "./model.ts";
 import { commentWords, type CommentWords } from "./words.ts";
@@ -144,8 +144,8 @@ function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek, can }: RowP
   const hint = statusKey === "exact" || statusKey === "general" ? undefined : w.statusHint[statusKey];
   const head: ReactNode[] = [
     h(PersonAvatar, { key: "a", person: c.author, size: 18 }),
-    h("span", { key: "n", className: "carton-comment-name", title: name }, name),
-    h("time", { key: "t", className: "carton-comment-when", dateTime: new Date(c.at).toISOString(), "data-carton-tip": exactTime(c.at, locale) }, when(c.at, now, locale, w.justNow)),
+    h("span", { key: "n", className: "carton-comment-name" }, name),
+    h(HoverMore, { key: "t", as: "time", className: "carton-comment-when", dateTime: new Date(c.at).toISOString(), short: when(c.at, now, locale, w.justNow), more: exactTime(c.at, locale) }),
   ];
   if (isRoot) {
     const range = p?.range ?? null;
@@ -158,16 +158,16 @@ function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek, can }: RowP
         ),
       );
     else if (p?.status === "general") head.push(h("span", { key: "at", className: "carton-comment-at", "data-status": "general" }, w.wholeVersion));
-    if (status) head.push(h("span", { key: "s", className: "carton-badge", "data-tone": statusKey === "moved" ? "info" : "warning", "data-carton-tip": hint }, status));
+    if (status) head.push(h("span", { key: "s", className: "carton-badge", "data-tone": statusKey === "moved" ? "info" : "warning", "aria-description": hint }, status));
   }
-  if (c.pending) head.push(h("span", { key: "p", className: "carton-badge", "data-tone": "muted", "data-carton-tip": w.pendingHint }, w.pending));
+  if (c.pending) head.push(h("span", { key: "p", className: "carton-badge", "data-tone": "muted", "aria-description": w.pendingHint }, w.pending));
   if (can && c.mine && !c.deleted && !editing)
     head.push(
       h(
         "span",
         { key: "m", className: "carton-comment-mine", role: "group", "aria-label": w.actions },
-        h(Button, { variant: "ghost", size: "sm", icon: "pencil", label: w.edit, title: w.edit, onClick: () => setEditing(true) }),
-        h(Button, { variant: "ghost", size: "sm", icon: "x", label: w.delete, title: w.delete, onClick: () => void ui.remove(c.id) }),
+        h(Button, { variant: "ghost", size: "sm", icon: "pencil", label: w.edit, onClick: () => setEditing(true) }),
+        h(Button, { variant: "ghost", size: "sm", icon: "x", label: w.delete, onClick: () => void ui.remove(c.id) }),
       ),
     );
   return h(
@@ -306,7 +306,7 @@ export function CommentsPanel(p: CommentsPanelProps) {
           "div",
           { role: "alert", className: "carton-comments-notice" },
           h("span", null, notice),
-          h(Button, { variant: "ghost", size: "sm", icon: "x", label: w.dismiss, title: w.dismiss, onClick: () => ui.dismissNotice() }),
+          h(Button, { variant: "ghost", size: "sm", icon: "x", label: w.dismiss, onClick: () => ui.dismissNotice() }),
         )
       : null,
     line ? h("p", { role: "status", className: "carton-comments-status", "data-state": status.state }, line) : null,

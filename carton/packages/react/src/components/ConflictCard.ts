@@ -99,7 +99,7 @@ export const ConflictCard = memo(function ConflictCard(p: ConflictCardProps) {
         h("p", { className: "carton-card-sub" }, c.reason ?? words.conflictLead),
         p.onReveal && c.item ? h("button", { type: "button", className: "carton-see carton-see-reveal", onClick: () => p.onReveal!(c) }, h(Icon, { name: "target", size: 13 }), words.showOnTimeline) : null,
       ),
-      p.onDismiss ? h(Button, { variant: "ghost", icon: "x", label: words.setAside, title: words.setAsideHint, onClick: p.onDismiss }) : null,
+      p.onDismiss ? h(Button, { variant: "ghost", icon: "x", label: words.setAside, description: words.setAsideHint, onClick: p.onDismiss }) : null,
     ),
     h(
       "div",

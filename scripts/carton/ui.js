@@ -12,7 +12,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, ConflictStack, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, remoteUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 function connect(projectId, bridge) {
@@ -49,23 +49,47 @@ function useConn(projectId, bridge) {
   return [conn, ready];
 }
 
-const PANELS = { history: { label: "History", icon: "history" }, share: { label: "Share", icon: "users" } };
+const PANELS = { history: { label: "History", icon: "history" }, comments: { label: "Comments", icon: "comment" }, share: { label: "Share", icon: "users" } };
 // Which side panel is open, for the stage layer of this page (both parts live in this module, so it stays in it): the
 // card stack folds to its pill while a panel takes the room beside the chat.
 const sidePanel = { value: null, subs: new Set(), set(v) { this.value = v; for (const f of this.subs) f(v); } };
 const WIDTH = { key: "carton.sidePanelWidth", min: 300, max: 640, initial: 384 };
 
-/** History in the side panel: the versions, Compare with current, and "Watch the changes" in place of the list. */
+/**
+ * History in the side panel: the cut it shows, with its switcher (switch, New cut, rename, Fold into…, which opens
+ * Fold in: all, some or none of it), then the versions, Compare with current, and "Watch the changes" in their place.
+ */
 function HistorySide() {
   const cuts = useCuts();
   const [watch, setWatch] = useState(null);
+  const [fold, setFold] = useState(null);
   const current = cuts.find((c) => c.current)?.head;
   if (watch) {
     return h("div", { className: "carton-sidebar-watch" },
       h(Button, { variant: "ghost", icon: "arrowLeft", onClick: () => setWatch(null) }, words.history),
       h(WatchTheChanges, { a: watch.a, b: watch.b }));
   }
-  return h(HistoryPanel, { currentRef: current, onWatch: (a, b) => setWatch({ a, b }) });
+  return h("div", { className: "carton-sidebar-history" },
+    h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) })),
+    h(HistoryPanel, { currentRef: current, onWatch: (a, b) => setWatch({ a, b }) }),
+    fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
+}
+
+/** The project's timecoded comments (@carton/comments, served by the worker): pinned at the playhead, a timecode seeks. */
+function useComments(projectId, bridge) {
+  const conn = useMemo(() => {
+    const client = projectId + ":c:" + Math.random().toString(36).slice(2);
+    const r = remoteComments((message) => bridge.call("comments", [{ projectId, client, message }]).catch((e) => console.warn("[carton] comments lost the worker:", e?.message ?? e)));
+    const off = bridge.onEvent((ev) => { if (ev?.client === client && ev.message) r.receive(ev.message); });
+    return { ...r, close: off };
+  }, [projectId, bridge]);
+  useEffect(() => { injectCommentsSkin(document); return () => { if (typeof conn.close === "function") conn.close(); }; }, [conn]);
+  return conn;
+}
+function CommentsSide({ projectId, bridge }) {
+  const conn = useComments(projectId, bridge);
+  const [selected, setSelected] = useState(null);
+  return h(CommentsPanel, { className: "carton-sidebar-comments", comments: conn.ui, at: () => bridge.playhead?.() ?? null, onSeek: (t) => bridge.seek?.(t), selected, onSelect: setSelected });
 }
 
 /** The chat sidebar's resize handle: drag its left edge. The width is kept for next time. */
@@ -105,7 +129,7 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
     setPanel(null);
   };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
-  const tabs = share ? ["history", "share"] : ["history"];
+  const tabs = share ? ["history", "comments", "share"] : ["history", "comments"];
   // Cardboard's own classes, as its chat sidebar uses them: same width, rule, handle, header and buttons.
   return h("aside", { ref, tabIndex: -1, className: "carton-sidebar relative shrink-0 overflow-hidden bg-[var(--desktop-panel)] outline-none", style: { width }, "data-carton-skin": "cardboard", "aria-label": PANELS[panel].label, onKeyDown },
     h("div", { className: "pointer-events-none absolute inset-y-0 left-0 z-10 w-px bg-white/[0.06]" }),
@@ -123,7 +147,7 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
           className: "flex size-control-sm shrink-0 cursor-pointer items-center justify-center rounded-ui-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-white/30" },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
-        panel === "share" && share ? h(share, { projectId, active: true, bridge }) : h(HistorySide, null))));
+        panel === "share" && share ? h(share, { projectId, active: true, bridge }) : panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, null))));
 }
 
 /** The side panel, beside the chat: opened and closed from the title bar's icons, which show the one open. */

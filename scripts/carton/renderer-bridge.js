@@ -107,6 +107,9 @@ module.exports = String.raw`window.__carton = (() => {
     get stale() { return stale; },
     // The project the editor shows (the stage's Carton layer follows it).
     get projectId() { return store?.state().projectId ?? null; },
+    // Comments: a new comment is pinned at the playhead; a timecode clicked moves the playhead there.
+    playhead() { return on && store ? store.state().currentTime ?? 0 : 0; },
+    seek(t) { if (on && store && Number.isFinite(t)) store.state().setPlaybackPosition?.(t); },
     // "Show on timeline" (a conflict card's See it): the clip selected and the playhead at its start. False when the
     // editor doesn't show it (another project, or the clip isn't in this version).
     reveal(itemId) {
