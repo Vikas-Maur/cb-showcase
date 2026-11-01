@@ -72,8 +72,8 @@ same header. `engine` is a `MaterializerEngine` over Carton and carton.db (`@car
 - **A host that writes for its own changes** (the app's GUI save writes project.json after its commit) tells it:
   `onHeadChange("gui", { after })`. The rewrites wait until `after` settles (5 s at most; a write that lands later
   still reaches the file), and with what it resolves to (project.json's envelope and stamp, `HostWrite`) project.json
-  isn't read again. A print made meanwhile (`cb source print`, an agent's save) is checked once the write has landed,
-  also in a freeze.
+  isn't read again. A print made, or found unchanged, meanwhile (`cb source print`, an agent's save) is checked once
+  the write has landed, also in a freeze.
 - **Per-agent views** `.scratch/views/<name>.tsx` are applied live and never rewritten except by their owner's print.
   The base of a save is the last applied save of the same print, so earlier edits are never merged twice (R4-02).
   After each apply, `.scratch/views/<name>.status` says `confirmed`, `pending`, `conflicts` or `error`.

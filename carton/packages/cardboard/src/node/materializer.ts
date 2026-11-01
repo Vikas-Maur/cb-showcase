@@ -1130,7 +1130,8 @@ export class Materializer {
       // unchanged: the file is Carton's print of this state, made from the same project.json (a print made from an
       // older one, while the host was still writing its save, is made again)
       // a host write landed while this print (or the check that it is unchanged) is made, or still landing once it is
-      // installed: it may be from project.json before that write (one whose wait ended earlier is checked when it lands)
+      // installed or found unchanged: it may be from project.json before that write (one whose wait ended earlier is
+      // checked when it lands)
       landedBefore = this.landedWrites;
       const src = await this.projectSource();
       const same = !force && !!cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body;
@@ -1154,10 +1155,9 @@ export class Materializer {
       this.sharedEnv = src.key;
       this.sharedHeader = header;
       this.shownPin = { branchId: pinned.branchId, ref: pinned.ref };
-      if (this.landing.size) this.printedLanding = true;
       this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
     } finally {
-      if (landedBefore !== null && this.landedWrites !== landedBefore) this.printedLanding = true;
+      if (landedBefore !== null && (this.landedWrites !== landedBefore || this.landing.size)) this.printedLanding = true;
       // not stored with another write (unchanged, or a failure before it): on its own, so the pin can be released early
       if (carry.rows.length) await this.writeMeta(carry.rows).catch((e) => void this.log.errors.push({ t: this.clock.now(), path: TIMELINE_FILE, error: `the shared file's pin record: ${e instanceof Error ? e.message : String(e)}` }));
     }
@@ -1960,10 +1960,13 @@ export class Materializer {
           // a change on a shared cut can be rebased before it is confirmed (a remote edit takes one of its edits away):
           // it shows on top of the view as it is at each print, and joins the view once confirmed. As applied only
           // while its edits are those it was committed with (a rebase that changed them, or a confirmation, before this
-          // read: by what is). A save absorbed at its commit (no change of its own) joins the view as saved
+          // read: by what is). A save absorbed at its commit (no change of its own) joins the view as saved. A retry of the
+          // save (answered from its stored result) keeps what its first attempt recorded, read before any confirmation
           if (res.id && this.engine.pendingChanges && this.engine.shared()) {
-            const pending = (await this.engine.pendingChanges(this.freeze.cut ?? undefined)).changes.find((p) => p.id === res.id);
-            this.freeze.saves.set(res.id, { base: baseDoc, saved, key: pending && !pending.edited ? this.editsKey(pending) : "" });
+            if (!this.freeze.saves.has(res.id)) {
+              const pending = (await this.engine.pendingChanges(this.freeze.cut ?? undefined)).changes.find((p) => p.id === res.id);
+              this.freeze.saves.set(res.id, { base: baseDoc, saved, key: pending && !pending.edited ? this.editsKey(pending) : "" });
+            }
           } else {
             this.freeze.view = this.host.merge3(baseDoc, this.freeze.view!, saved);
             for (const id of own) if (!this.freeze.causal.includes(id)) this.freeze.causal.push(id);
