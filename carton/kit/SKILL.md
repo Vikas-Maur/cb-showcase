@@ -1,7 +1,8 @@
----
-name: carton
-description: "Work safely in a Cardboard project that other people and agents edit too: read its history, see who changed a clip, work in a cut of your own and fold it in, undo your own turn, and handle conflict cards with the `cb` commands (history, cut, fold, credits, restore, undo --turn, conflicts, resolve, publish). Use when you edit a Cardboard project with `cb` or timeline.tsx and `cb history` shows a BY column, or when a `cb` result says confirmed, pending or conflicts."
----
+--- name: carton description: "Work safely in a Cardboard project that other people and agents edit too: read its
+history, see who changed a clip, work in a cut of your own and fold it in, undo your own turn, and handle conflict cards
+with the `cb` commands (history, cut, fold, credits, restore, undo --turn, conflicts, resolve, publish). Use when you
+edit a Cardboard project with `cb` or timeline.tsx and `cb history` shows a BY column, or when a `cb` result says
+confirmed, pending or conflicts." ---
 
 # Carton: versions, cuts and conflicts in Cardboard
 
@@ -47,8 +48,9 @@ The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the
    and the `.status` file says how it went (`confirmed`, `pending`, `conflicts`, `rejected` or `error`). If the answer
    is "views need the app open", edit as usual (`timeline.tsx`, `cb source apply`, or MCP `apply_timeline`). Small
    edits, one idea per save. Save from the version you printed: never paste an old file over a newer one.
-   While your turn runs, Carton holds back others' changes from `timeline.tsx` until your turn ends (a print of it
-   shows head again), so print again before you rely on what others did.
+   While your turn runs, Carton holds back its automatic rewrites of `timeline.tsx` with others' changes. A plain print,
+   a cut switch, or an agent change that can't merge cleanly can still show newer state before your turn ends. Print
+   again before you rely on what others did.
 4. **Read the result** of every save (table above).
 5. **After your turn, check your cards.** `cb conflicts <project>` lists the open cards of your edits, numbered:
 

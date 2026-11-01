@@ -77,8 +77,9 @@ anything.
   event holds the file again. An agent that isn't hooked holds it for 60 s after each save or `cb` call.
 - **`cb` talks to the app over a local socket, one JSON line per message.** A `cb` save carries the whole project,
   and an answer can carry the head. The reader drops the connection when the part of a message it is still waiting
-  for passes 64 Mi characters (counted after UTF-8 decoding, not in bytes), and `cb` fails after its retries. So a
-  save of a very large project can fail; there is no firm size below which it is sure to pass.
+  for passes 64 Mi UTF-16 code units (counted after UTF-8 decoding, not in bytes), and `cb` fails after its retries.
+  A message within that cap always passes this check; a larger one may pass or fail, depending on how it arrives in
+  pieces.
 - **The file-tool hook runs on every matching tool call.** `hookSettings` gives host Claude Code a PreToolUse matcher
   `Read|Write|Edit|MultiEdit`, so a hook process starts for every Read or edit of any file; it acts only on the
   project's `timeline.tsx` and `project.json`. Claude Code's `if` conditions on each hook (`Read(**/timeline.tsx)`,
