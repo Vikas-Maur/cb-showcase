@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { adopt, tokenFor, now, stats, type HostName } from "./common.ts";
 import { guard, endTest } from "./guard.ts";
+import { RUNS_DIR } from "./paths.ts";
 
 const { values: a } = parseArgs({
   options: {
@@ -28,6 +29,13 @@ const { values: a } = parseArgs({
     backoff: { type: "string", default: "" },
     tag: { type: "string", default: "" },
     "settle-sec": { type: "string", default: "600" },
+    // the first namespace this run uses (cfl<base>…), so two runs can go at once
+    "ns-base": { type: "string", default: "0" },
+    // presence updates a second per party while editing; seconds every party then sits connected and idle
+    "presence-hz": { type: "string", default: "0" },
+    "idle-sec": { type: "string", default: "0" },
+    // SyncClient options under test (e.g. maxBackoffMs), passed to every party
+    client: { type: "string", default: "" },
   },
 });
 const host = a.host as HostName;
@@ -36,8 +44,8 @@ const profile = a.profile!;
 const chaos = a.chaos!;
 const outageSec = Number(a["outage-sec"]);
 const HERE = import.meta.dirname;
-export const RUNS_DIR = process.env.CARTON_LAB_RUNS ?? "/home/ubuntu/.t3/projects/cardboard-showcase/_inspect/carton-build/cf-lab/runs";
 mkdirSync(RUNS_DIR, { recursive: true });
+const NB = Number(a["ns-base"]);
 const netns = (...args: string[]) => execFileSync("bash", [join(HERE, "netns.sh"), ...args], { stdio: ["ignore", "ignore", "inherit"] });
 
 const runId = `sync-${host}-${profile}${chaos ? `-${chaos}` : ""}-${N}p-r${a.rep}${a.tag ? `-${a.tag}` : ""}-${Date.now().toString(36)}`;
@@ -46,12 +54,13 @@ const branch = "main";
 const total = N * E;
 
 // worst case: each edit one push (and up to 3 again on rejects), a few connects per party per minute of chaos
-const minutes = (S + (chaos === "outage" ? outageSec : 0) + 120) / 60;
+const minutes = (S + (chaos === "outage" ? outageSec : 0) + Number(a["idle-sec"]) + 120) / 60;
 const reconnects = N * (chaos ? Math.ceil(minutes * 12) : 2);
-const g = await guard({ test: runId, workersReq: reconnects + 10, doReq: total * 4 + reconnects + 20, doRowsWritten: total * 6 + 50, doRowsRead: total * 200 + 5000, doGBs: N * minutes * 60 * 0.128 });
+const presenceMsgs = N * Number(a["presence-hz"]) * S;
+const g = await guard({ test: runId, workersReq: reconnects + 10, doReq: total * 4 + reconnects + 20 + presenceMsgs, doRowsWritten: total * 6 + 50, doRowsRead: total * 200 + 5000, doGBs: minutes * 60 * 0.128 }); // one room: a DO is billed per object, never per socket; this is no hibernation at all
 const t0 = Date.now();
-netns("up", String(N));
-for (let i = 0; i < N; i++) netns("profile", String(i), profile);
+netns("up", String(NB + N));
+for (let i = 0; i < N; i++) netns("profile", String(NB + i), profile);
 
 console.log(`${runId}: adopting the cut`);
 await adopt(host, projectId, branch);
@@ -62,8 +71,8 @@ for (let i = 0; i < N; i++) {
   // people and agents: every third party is an agent (a Director subagent), as in a real session
   const kind = i % 3 === 2 ? "agent" : "human";
   const who = `${kind === "agent" ? "agent" : "person"}${i}`;
-  const cfg = { host, projectId, branch, token: await tokenFor(projectId, who), who, kind, edits: E, intervalMs: (S * 1000) / E, seed: 1000 * Number(a.rep) + i + 1, ...(a.transport ? { transport: JSON.parse(a.transport) } : {}), ...(a.backoff ? { backoffMs: Number(a.backoff) } : {}) };
-  const proc = spawn("bash", [join(HERE, "netns.sh"), "exec", String(i), process.execPath, join(HERE, "party.ts"), JSON.stringify(cfg)], { stdio: ["pipe", "pipe", "pipe"] });
+  const cfg = { host, projectId, branch, token: await tokenFor(projectId, who), who, kind, edits: E, intervalMs: (S * 1000) / E, seed: 1000 * Number(a.rep) + i + 1, ...(a.transport ? { transport: JSON.parse(a.transport) } : {}), ...(a.backoff ? { backoffMs: Number(a.backoff) } : {}), ...(a.client ? { client: JSON.parse(a.client) } : {}), presenceHz: Number(a["presence-hz"]) };
+  const proc = spawn("bash", [join(HERE, "netns.sh"), "exec", String(NB + i), process.execPath, join(HERE, "party.ts"), JSON.stringify(cfg)], { stdio: ["pipe", "pipe", "pipe"] });
   const lines: Record<string, any>[] = [];
   const waiters: { p: (l: any) => boolean; ok: (l: any) => void }[] = [];
   createInterface({ input: proc.stdout! }).on("line", (s) => {
@@ -90,7 +99,7 @@ console.log(`${runId}: ${N} parties up to date; editing for ${S}s`);
 // link chaos
 const chaosLog: { t: number; i: number; hole: "on" | "off" }[] = [];
 const timers: NodeJS.Timeout[] = [];
-const hole = (i: number, on: boolean) => { netns("hole", String(i), on ? "on" : "off"); chaosLog.push({ t: now(), i, hole: on ? "on" : "off" }); };
+const hole = (i: number, on: boolean) => { netns("hole", String(NB + i), on ? "on" : "off"); chaosLog.push({ t: now(), i, hole: on ? "on" : "off" }); };
 if (chaos === "flap") {
   // every party's link drops for 5 s every 30 s, each at its own phase
   for (const p of parties) {
@@ -108,8 +117,10 @@ const tGo = now();
 for (const p of parties) p.send("go");
 await Promise.all(parties.map((p) => p.waitFor((l) => l.ev === "edits-done", (S + outageSec + 120) * 1000, "edits-done")));
 // stop the chaos once the edits are made (an outage still running is waited out by the settle below)
-if (chaos === "flap") { for (const t of timers) clearTimeout(t), clearInterval(t); for (const p of parties) netns("hole", String(p.i), "off"); }
+if (chaos === "flap") { for (const t of timers) clearTimeout(t), clearInterval(t); for (const p of parties) netns("hole", String(NB + p.i), "off"); }
 const tEdits = now();
+const idleSec = Number(a["idle-sec"]);
+if (idleSec > 0) { console.log(`${runId}: idle for ${idleSec}s`); await new Promise((r) => setTimeout(r, idleSec * 1000)); }
 
 // settled: nothing pending anywhere and one head everywhere, twice in a row
 let last = "";
@@ -128,7 +139,7 @@ const finals = await Promise.all(parties.map((p) => { p.send("final"); return p.
 for (const p of parties) p.send("quit");
 await new Promise((r) => setTimeout(r, 500));
 for (const p of parties) p.proc.kill();
-for (let i = 0; i < N; i++) netns("hole", String(i), "off");
+for (let i = 0; i < N; i++) netns("hole", String(NB + i), "off");
 
 // ---------------------------------------------------------------- analysis
 const commits = new Map<string, { party: number; t: number; online: boolean }>();
@@ -182,7 +193,8 @@ const ms = (x: ReturnType<typeof stats>) => Object.fromEntries(Object.entries(x)
 const result = {
   runId, projectId, host, profile, chaos: chaos || null, parties: N, editsPerParty: E, seconds: S, rep: Number(a.rep),
   window: { start: new Date(t0).toISOString(), end: new Date().toISOString() },
-  timing: { editingMs: Math.round(tEdits - tGo), settleMs: Math.round(tSettled - tEdits) },
+  timing: { editingMs: Math.round(tEdits - tGo), settleMs: Math.round(tSettled - tEdits), idleSec },
+  presenceHz: Number(a["presence-hz"]), presenceSent: parties.reduce((s, p) => s + (p.lines.find((l) => l.ev === "edits-done")?.presenceSent ?? 0), 0),
   commits: commits.size,
   confirmed: [...outcome.values()].filter((o) => o.kind === "confirmed").length,
   absorbed, rejectedByValidation: [...outcome.values()].filter((o) => o.kind === "rejected").length,
@@ -193,7 +205,11 @@ const result = {
   clientStats: finals.map((f) => f.stats),
   loopLagMs: { p99max: Math.max(...finals.map((f) => f.loopLagMs?.p99 ?? 0)), max: Math.max(...finals.map((f) => f.loopLagMs?.max ?? 0)) },
   load: (await import("node:os")).loadavg(),
-  chaosLog,
+  chaosLog: chaosLog.map((c) => ({ ...c, t: Math.round(c.t - tGo) })),
+  // per party: its connection's story (ms after the edits began), and how long its commits took to confirm, by when
+  // they were made, so an outage's cost reads off directly
+  timeline: parties.map((p) => p.lines.filter((l) => ["status", "offline", "online", "error", "keyframe"].includes(l.ev)).map((l) => [Math.round(l.t - tGo), l.ev, String(l.status ?? l.why ?? l.code ?? l.seq ?? "").slice(0, 80)])),
+  commitsByParty: parties.map((p) => [...commits].filter(([, c]) => c.party === p.i).map(([id, c]) => { const o = outcome.get(id); return [Math.round(c.t - tGo), o ? Math.round(o.t - c.t) : null, o?.kind ?? "none"]; })),
 };
 writeFileSync(join(RUNS_DIR, `${runId}.json`), JSON.stringify(result, null, 1));
 const pushes = finals.reduce((s, f) => s + f.stats.pushMsgs, 0), reconn = finals.reduce((s, f) => s + f.stats.reconnects, 0);

@@ -2,7 +2,7 @@
 # the live showcase Worker. Locked: no open creation, so every session comes from an invite only ADMIN_TOKEN can make
 # (both secrets are set with `wrangler secret put`, never here), and the daily write cap below.
 name = "carton-lab-r2"
-main = "../../packages/server-cloudflare/src/worker.ts"
+main = "lab-worker.ts"
 compatibility_date = "2026-10-23"
 workers_dev = true
 preview_urls = false

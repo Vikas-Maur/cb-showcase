@@ -24,6 +24,10 @@ interface Cfg {
   /** Transport options under test (e.g. a dead-link timeout), passed straight through. */
   transport?: Record<string, unknown>;
   backoffMs?: number;
+  /** Presence updates a second while editing (a cursor or playhead being dragged); 0 = none. */
+  presenceHz?: number;
+  /** Other SyncClient options under test (maxBackoffMs…). */
+  client?: Record<string, unknown>;
 }
 const cfg = JSON.parse(process.argv[2]!) as Cfg;
 // this process's own scheduling delay: on a busy box it inflates every latency measured here, so it is reported
@@ -49,6 +53,7 @@ const client = sync.createSyncClient(q, {
   schemaVersion: SCHEMA_VERSION,
   blobs: hostMessageBlobs({ origin, projectId: cfg.projectId, token: cfg.token }),
   ...(cfg.backoffMs !== undefined ? { backoffMs: cfg.backoffMs } : {}),
+  ...(cfg.client ?? {}),
   onEvent: (e) => {
     if (e.type === "status") out({ ev: "status", status: e.status });
     else if (e.type === "offline") out({ ev: "offline", why: e.why });
@@ -80,8 +85,11 @@ function commitOne(): void {
   }
 }
 
+let presenceSent = 0;
 async function edit(): Promise<void> {
   const t0 = now();
+  const hz = cfg.presenceHz ?? 0;
+  const presence = hz > 0 ? setInterval(() => (client.sendPresence({ kind: cfg.kind, id: cfg.who }, { at: Math.round(now() - t0), playhead: Math.round(rand() * 6000) / 100 }), presenceSent++), 1000 / hz) : null;
   for (let i = 0; i < cfg.edits; i++) {
     // evenly paced with ±40% jitter, so parties don't edit in lockstep
     const at = t0 + i * cfg.intervalMs + (rand() - 0.5) * 0.8 * cfg.intervalMs;
@@ -89,7 +97,8 @@ async function edit(): Promise<void> {
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     commitOne();
   }
-  out({ ev: "edits-done", n: committed.length });
+  if (presence) clearInterval(presence);
+  out({ ev: "edits-done", n: committed.length, presenceSent });
 }
 
 const rl = createInterface({ input: process.stdin });
