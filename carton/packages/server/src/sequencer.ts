@@ -24,6 +24,8 @@ import type { AuthContext, AuthProvider, BlobStore, SequencerConnection, Sequenc
 import type { Change, CutRecord, Doc, Op, Rec, TimelineConfig } from "@carton/core";
 import { sequencer as rules, sha256Hex, sync } from "@carton/core";
 import { Tables, type Row, type StoredBranch, FLAG_STRUCTURAL, FLAG_WITHDRAWN } from "./tables.ts";
+import { createCommentRoom, type CommentPeer } from "@carton/comments/server";
+import type { CommentPatchMsg, CommentsRequest } from "@carton/comments";
 
 type ClientMessage = sync.ClientMessage;
 type ServerMessage = sync.ServerMessage;
@@ -64,6 +66,11 @@ export interface ConnectionState {
    * `at`. Kept here, not beside the connection, so a socket restored after hibernation has no fresh burst.
    */
   identity?: { tokens: number; at: number };
+  /**
+   * The connection asked for the project's comments (`comments`, REQ-C1): the comment rows others write are sent to it
+   * from then on. Kept here, so a socket restored after hibernation still gets them.
+   */
+  comments?: true;
 }
 
 /** An actor a connection shows on a branch: only what names it (`actorKey`: kind, id, agentId). */
@@ -248,6 +255,22 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   };
   const emit = (e: SequencerEvent) => opts.onEvent?.(e);
 
+  // ---------------------------------------------------------------- comments (REQ-C1, @carton/comments/server)
+  // Comments are their own tables and messages in the same storage, never changes: the room keeps every rule (who may
+  // read, write, edit; the rate limits; the 100,000 cap; ops applied once). This core routes the two message kinds in
+  // turn with everything else, after the checks every message passes, and gives the room each connection as one
+  // stable peer (its rate buckets are per peer). Nothing about changes, presence or people depends on it.
+  const comments = createCommentRoom({ storage: opts.storage, clock, nameOf: (a) => tables.person(a.credential)?.name });
+  const commentPeers = new WeakMap<HostConnection, CommentPeer>();
+  const peerOf = (c: HostConnection): CommentPeer => {
+    let p = commentPeers.get(c);
+    if (!p) commentPeers.set(c, (p = { auth: c.auth, send: (m) => send(c, m as unknown as ServerMessage) }));
+    return p;
+  };
+  function* commentSubscribers(): Iterable<CommentPeer> {
+    for (const o of conns.values()) if (stateOf(o).comments) yield peerOf(o);
+  }
+
   // ---------------------------------------------------------------- connections and fan-out
   const conns = new Map<string, HostConnection>();
   const stateOf = (c: HostConnection): ConnectionState => (c.state ??= { subs: [], deadEpoch: -1 });
@@ -261,6 +284,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   };
   /** What the sequencer holds for a connection besides its state, keyed by the connection itself (never its id). */
   function retire(c: HostConnection): void {
+    comments.forget(peerOf(c));
     outboxes.delete(c);
     presenceBuckets.delete(c);
     clearTrailing(c);
@@ -1151,6 +1175,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     const from = (msg as { type?: unknown; from?: unknown } | null)?.type === "fork" ? (msg as { from?: unknown }).from : "";
     if (typeof named !== "string" || typeof from !== "string") return send(c, { type: "error", code: "bad-request", reason: "a message must name its cut by a string id" });
     if (!WRITE_ROLES.has(c.auth.role) && c.auth.branches && !c.auth.branches.includes(named)) return send(c, { type: "error", code: "forbidden", reason: `this token can't read ${named}` });
+    const kind = (msg as { type?: unknown }).type;
+    if (kind === "comments") {
+      stateOf(c).comments = true;
+      return comments.onComments(peerOf(c), msg as unknown as CommentsRequest);
+    }
+    if (kind === "comment") return comments.onComment(peerOf(c), msg as unknown as CommentPatchMsg, commentSubscribers());
     switch (msg?.type) {
       case "hello":
         return onHello(c, msg);
@@ -1208,6 +1238,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       conns.delete(c.id);
       outboxes.delete(c);
       presenceBuckets.delete(c);
+      comments.forget(peerOf(c));
       // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
       // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
       // Not while another connection shows the same actor there: the same person reconnected (the old socket timed out

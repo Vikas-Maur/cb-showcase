@@ -23,8 +23,9 @@ export interface HostFixture {
   /** Restart the host on the same storage (hibernation / process restart). */
   restart?(): Promise<void>;
   close(): Promise<void>;
-  /** A token for this exact credential (a reconnect of the same device), or for another project. */
-  tokenFor?(o: { credential: string; account?: string; role?: Role; projectId?: string }): Promise<string>;
+  /** A token for this exact credential (a reconnect of the same device), or for another project; `branches`: a session
+   * scoped to those cuts (a Published cut's watch link). */
+  tokenFor?(o: { credential: string; account?: string; role?: Role; projectId?: string; branches?: string[] }): Promise<string>;
   /** Rows the host's storage has read and written so far (P5 cost accounting), when it can tell. */
   rows?(): Promise<{ rowsRead: number; rowsWritten: number }>;
   /** The BlobStore a client of this host passes as `blobs`, so messages over 1 MiB travel as envelopes. */

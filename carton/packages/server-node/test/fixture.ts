@@ -19,8 +19,8 @@ export function issuer(auth: ReturnType<typeof createHmacAuth>, projectId = PROJ
       const account = `acct-${++devN}`;
       return auth.issue({ account, credential: `${account}/dev-${devN}-${Math.random().toString(36).slice(2, 8)}`, role, projectId, ttlMs: 3600_000 });
     },
-    tokenFor: (o: { credential: string; account?: string; role?: Role; projectId?: string }) =>
-      auth.issue({ account: o.account ?? o.credential.split("/")[0]!, credential: o.credential, role: o.role ?? "editor", projectId: o.projectId ?? projectId, ttlMs: 3600_000 }),
+    tokenFor: (o: { credential: string; account?: string; role?: Role; projectId?: string; branches?: string[] }) =>
+      auth.issue({ account: o.account ?? o.credential.split("/")[0]!, credential: o.credential, role: o.role ?? "editor", projectId: o.projectId ?? projectId, ttlMs: 3600_000, ...(o.branches ? { branches: o.branches } : {}) }),
   };
 }
 
