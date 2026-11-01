@@ -6,6 +6,7 @@
 //   POST /api/lab/projects/:p/vault-drop-uploads   drop the project's unfinished vault uploads (their parts stay in
 //                                     the DO's SQLite otherwise: the vault has no lifecycle rule), and its size after
 //   POST /api/lab/r2-abort-uploads    abort every unfinished R2 multipart upload the adapter has records for
+//   POST /api/lab/r2-wipe             delete every object in the bucket, 500 a call (the lab's final cleanup)
 // Deletes are free on R2 and count as rows written on the vault.
 import worker, { ProjectRoom, BlobVault as RealBlobVault } from "../../packages/server-cloudflare/src/worker.ts";
 import type { DurableObjectState } from "../../packages/server-cloudflare/src/cf.ts";
@@ -70,6 +71,15 @@ export default {
         cursor = page.truncated ? page.cursor : undefined;
       } while (cursor && aborted < 300);
       return Response.json({ aborted });
+    }
+    // the lab's last cleanup: every object in the bucket, 500 a call ({deleted, left})
+    if (path === "/api/lab/r2-wipe") {
+      if (!(await admin(req, env))) return Response.json({ error: "admin token required" }, { status: 401 });
+      if (!env.BLOBS) return Response.json({ deleted: 0, left: false });
+      const page = await env.BLOBS.list({ limit: 500 });
+      const keys = page.objects.map((o) => o.key);
+      if (keys.length) await env.BLOBS.delete(keys);
+      return Response.json({ deleted: keys.length, left: page.truncated });
     }
     const m = LAB.exec(path);
     if (!m) return worker.fetch(req, env);
