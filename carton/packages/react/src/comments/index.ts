@@ -7,3 +7,4 @@ export { CommentMarkers, markerGroups, type CommentMarkersProps } from "./Commen
 export { commentWords, type CommentWords } from "./words.ts";
 export { createMockComments, mockPeople, type MockComments } from "./mock.ts";
 export { commentsBaseCss, commentsSkin, injectCommentsSkin } from "./skin.ts";
+export { serveComments, remoteComments, type CommentsServerMessage, type CommentsClientMessage } from "./remote.ts";
