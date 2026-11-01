@@ -102,3 +102,23 @@ test("the Worker answers a refused write 429 with Retry-After and the code", asy
   assert.equal(r.headers.get("retry-after"), "123");
   assert.deepEqual(await r.json(), { error: "full", code: "DailyWriteCap" });
 });
+
+test("a streamed part reserves its declared size before the store sees it", async () => {
+  const { ns, rooms } = counterRooms();
+  const got: number[] = [];
+  const inner = createMemoryBlobStore();
+  const streaming = Object.assign(Object.create(inner), {
+    createMultipart: async (k: string) => {
+      const u = await inner.createMultipart(k);
+      return { ...u, key: u.key, uploadId: u.uploadId, uploadPart: u.uploadPart.bind(u), listParts: u.listParts.bind(u), complete: u.complete.bind(u), abort: u.abort.bind(u), uploadPartStream: async (n: number, body: ReadableStream<Uint8Array>, size: number) => (got.push(size), u.uploadPart(n, new Uint8Array(await new Response(body).arrayBuffer()))) };
+    },
+  });
+  const store = cappedBlobStore(streaming, writeCapOf({ PROJECT_ROOM: ns, WRITE_CAP_BYTES_PER_DAY: String(6 << 20) }));
+  const up = (await store.createMultipart("s")) as Awaited<ReturnType<typeof store.createMultipart>> & { uploadPartStream?: (n: number, b: ReadableStream<Uint8Array>, s: number) => Promise<unknown> };
+  assert.ok(up.uploadPartStream, "the capped handle still takes streams");
+  await up.uploadPartStream!(1, new Blob([new Uint8Array(5 << 20)]).stream(), 5 << 20);
+  await assert.rejects(up.uploadPartStream!(2, new Blob([new Uint8Array(2 << 20)]).stream(), 2 << 20), WriteCapError);
+  assert.deepEqual(got, [5 << 20], "the refused part never reached the store");
+  const [db] = [...rooms.values()];
+  assert.equal((db!.prepare("SELECT bytes FROM carton_write_cap").get() as { bytes: number }).bytes, 5 << 20);
+});

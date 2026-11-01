@@ -94,6 +94,9 @@ export function reserveIn(sql: { exec(q: string, ...b: unknown[]): { toArray(): 
   return { ok: true, bytes: bytes + addBytes, ops: ops + addOps };
 }
 
+/** A multipart handle that may also take a streamed part (fix/cf-stream-parts adds it to the contract). */
+type Streams = MultipartUpload & { uploadPartStream?(n: number, body: ReadableStream<Uint8Array>, size: number): Promise<{ partNumber: number; etag: string }> };
+
 /** `inner` with every write reserved against `cap` first; `inner` itself when there is no cap. */
 export function cappedBlobStore(inner: BlobStore, cap: WriteCap | undefined): BlobStore {
   if (!cap) return inner;
@@ -104,6 +107,15 @@ export function cappedBlobStore(inner: BlobStore, cap: WriteCap | undefined): Bl
       await cap.reserve(data.byteLength);
       return u.uploadPart(n, data);
     },
+    // a streamed part (MultipartUpload.uploadPartStream, where the store has it) reserves its declared size first
+    ...(typeof (u as Streams).uploadPartStream === "function"
+      ? {
+          async uploadPartStream(n: number, body: ReadableStream<Uint8Array>, size: number) {
+            await cap.reserve(size);
+            return (u as Streams).uploadPartStream!(n, body, size);
+          },
+        }
+      : {}),
     listParts: () => u.listParts(),
     async complete(parts): Promise<BlobInfo> {
       await cap.reserve(0);
