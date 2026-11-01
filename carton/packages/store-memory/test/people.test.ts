@@ -60,12 +60,12 @@ test("people: this store's generic person is told as setIdentity's person, in lo
   await c.close();
 });
 
-/** Until hosts-plugins' half of the people (the server's record) is merged here: run, but not counted. */
-const SERVER_HALF = { todo: "needs hosts-plugins' half (the server's people, notes/foundation-core.md); a normal test once merged", timeout: 30_000 };
+/** Two replicas through the host (hosts-plugins' half of the people, 1581eb3, merged at 0d8a14a). */
+const TWO_REPLICAS = { timeout: 30_000 };
 
 test(
   "people: two replicas share a cut; each one's GUI edits, before the share (from two processes), after it and from a process started later, are told as its person at both ends",
-  SERVER_HALF,
+  TWO_REPLICAS,
   async () => {
     const w = world();
     const meA = person("alice@laptop"),
@@ -119,7 +119,7 @@ test(
   },
 );
 
-test("people: a replica can't take another account's name: refused, and its edits stay its own", SERVER_HALF, async () => {
+test("people: a replica can't take another account's name: refused, and its edits stay its own", TWO_REPLICAS, async () => {
   const w = world();
   const a = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), projectId: "p" }, actor: person("alice@laptop"), sync: w.sync("alice") });
   await a.setIdentity({ id: "alice", name: "Alice" });

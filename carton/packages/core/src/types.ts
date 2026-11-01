@@ -218,7 +218,7 @@ export interface Change extends Declaration {
   /** A fold-in: the node merged into this branch. */
   mergeOf?: NodeRef;
   /** A fold-in's per-parent edge maps (the transform applied to each parent's content), for remaps per lineage edge. */
-  mergeEdges?: { first: RemapMaps; second: RemapMaps };
+  mergeEdges?: { first: RemapMaps; second: RemapMaps; lineage?: [Lineage, Lineage] };
   /** The merge base node(s) used (several for a criss-cross's virtual base). */
   mergeBase?: NodeId[];
   /** revert/undo/restore: the change(s) it inverts. */
@@ -372,7 +372,7 @@ export interface DagNode {
   seq: number;
   hash: string;
   kinds: LineageKind[];
-  parents: { id: NodeId; remap: RemapMaps }[];
+  parents: { id: NodeId; remap: RemapMaps; lineage?: Lineage }[];
   owner?: string;
   branchName?: string;
 }
@@ -537,7 +537,11 @@ export type CartonEvent =
   | { type: "pending"; branchId: string; id: ChangeId }
   | { type: "notice"; notice: Notice }
   | { type: "sync"; status: "offline" | "syncing" | "up-to-date" | "stopped"; waiting: number }
-  /** A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1). */
+  /**
+   * A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1).
+   * Emitted once the rows that came with it are settled into History (after their `change` events), so state read in
+   * the handler (credits for a card's other side, head, log) is current (web-demo REQ-U1).
+   */
   | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
   | { type: "presence"; branchId: string; actor: Actor; state: unknown }
   | { type: "warning"; branchId: string; warnings: SoftWarning[] }

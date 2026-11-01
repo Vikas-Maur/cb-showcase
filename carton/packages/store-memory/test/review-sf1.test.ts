@@ -145,6 +145,7 @@ test("SF1-1: a handle opened before a compaction can still fork a version it squ
   const store = createMemoryStore();
   const a = await oldAndNew(store, () => now, (t) => (now += t));
   const stale = await Carton.open({ adapter, store, keyframeEvery: 2 });
+  await stale.log(); // it holds the older versions (opened from a keyframe, it reads them after open)
   assert.deepEqual(await a.compact(), { squashed: 3 });
   await assert.rejects(a.checkout(`${a.cut}@1`), /state not held|state unknown/i);
   const f = await stale.fork("from a squashed version", { from: `${a.cut}@1` });
