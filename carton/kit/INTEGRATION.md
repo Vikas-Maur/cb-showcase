@@ -397,9 +397,11 @@ const silences = { kind: "remove-silences", maps: { [t]: [step(silent)] }, linea
 
 A concurrent edit is then mapped through the intent once, not guessed: an agent's trim of a later clip, made before the
 ripple, lands on the moved clip. Record lineage too. When a commit is rebased over a split (on a local cut, a shared
-cut's queue, or a shared cut's commit made on an older version), or a split over an edit, an edit made on the old clip
-also reaches the other pieces. A fold doesn't use lineage yet, and edits to a clip's time fields (`startTime`,
-`endTime`, `trimStart`, `trimEnd`, `playbackSpeed`) or its track never follow it ([LIMITS.md](LIMITS.md)). Save several
+cut's queue, or a shared cut's commit made on an older version), a split over an edit, or a cut folded into one that
+split the clip, an edit made on the old clip also reaches the other pieces, a move to another track included. A retime
+of a clip the other side split (its time fields: `startTime`, `endTime`, `trimStart`, `trimEnd`, `playbackSpeed`) is a
+conflict card instead, by design. Merges and `.cbproj` links made before this lineage was recorded carry none
+([LIMITS.md](LIMITS.md)). Save several
 intents of one save as one (a later one composes after the earlier, `composeMaps`). A commit with an `intent` skips
 inference; without one, Carton infers a ripple only when it is unambiguous (`inferRipple`, L9).
 
@@ -527,8 +529,9 @@ project ID already exists in your library", C9).
   aren't in it. `exportCbproj` writes whatever `head.doc` you give it, so give it that version
   (`checkout(shallow.head)`), not `head()`, which includes waiting edits. `carton.pendingCount(cut)` says how many there
   are, whichever process made them (it reads the store, so `cb`'s handle, which has no sync, sees the app's); wait for
-  0, or export the confirmed head. Before each export, a handle reads the export records other processes wrote, so the
-  app's next `.cbproj` knows a version `cb` exported meanwhile.
+  0, or export the confirmed head. Before each write (an export included), a handle reads the export records other
+  processes wrote since it last looked, so the app's next `.cbproj` knows a version `cb` exported meanwhile; `head()`
+  and reads don't.
 - **Open a project you don't have:** `Carton.open({ …, init: { import: contents.shallow } })`. Their cuts arrive
   read-only, and a cut of your own starts from their head.
 - **Open a project you have:** instead of the error, offer "Bring in their changes":

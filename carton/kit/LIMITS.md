@@ -14,15 +14,20 @@ holds; they don't say how fast the built code is.
 
 ## For everyone
 
-- **Opening a project still reads every change row** (new). Keyframes are stored (every 64 changes, and at named,
-  fold, export and published versions), so only the changes after the newest one are replayed. But every row of every
-  cut is still read into memory on each open, and every `cb` call opens the project. Compaction is optional.
+- **Opening a project still reads every change row, after open returns** (new). Keyframes are stored (every 64 changes,
+  and at named, fold, export and Published versions). On a local cut, open and the first `head()` read only the newest
+  keyframe and the rows after it; the older rows load in the background, newest first, in pages. Every call that can
+  reach them waits for them (`log`, `credits`, `diff`, `checkout`, every write…), so a commit right after open pays for
+  them once; `head()`, `cuts()`, `pendingCount()` and `notices()` don't wait. Shared and tracking cuts (and a cut that
+  an older fork without its own fork state forks from) are read whole at open, as before. The whole log still goes into
+  memory, and every `cb` call opens the project. Compaction is optional.
+- **A compaction during the background load** (new). A handle holds older versions as its background load reads
+  them: a compaction another process makes before then squashes them for this handle too, as for one opened after it.
 - **Fonts aren't synced (L4), and no validator warns about them yet.** The Cardboard schema's soft checks cover overlaps
   only.
-- **A split's lineage isn't used by a fold** (new). When a commit is rebased over a split (on a local cut, a shared
-  cut's queue, or a shared cut's commit made on an older version), an edit made on the old clip also reaches the other
-  pieces. A fold doesn't use it: there the edit lands only on the piece that kept the clip's id. Edits to a clip's time
-  fields or its track never follow lineage.
+- **Split lineage from before the fix** (new). Merges and `.cbproj` lineage edges made before foundation's lineage
+  fix carry no split lineage, so an edit that reaches a split clip only through them reaches its first piece only. A
+  retime of a split clip is a card by design (PLAN §7).
 - **Ripple inference is a heuristic (L9).** Carton infers a ripple from an agent's file edit only when it is
   unambiguous. Recorded intents (H7) are the reliable path.
 - **FAT and exFAT have no hard links (L13).** There, a save from another program that lands in a very short window can
