@@ -153,7 +153,7 @@ class Bot {
 }
 
 for (const kind of hosts as ("node" | "cloudflare")[]) {
-  test(`§17 demo script on ${kind === "node" ? "server-node" : "server-cloudflare (wrangler dev)"}`, { timeout: 300_000 }, async () => {
+  test(`§17 demo script on ${kind === "node" ? "server-node" : "server-cloudflare (wrangler dev)"}`, { timeout: 300_000 }, async (t) => {
     const host: TestHost = await startHost(kind, "demo");
     let bot: Bot | null = null;
     const contexts: { close(): Promise<void> }[] = [];
@@ -263,6 +263,13 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       assert.equal(await bob.locator(".cb-conflicts .carton-card, .cb-conflicts [class*=conflict]").count() > 0, true);
       await waitClip(bob, "clip-4", "data-end", alices.end); // head's value stays until Bob picks (H5)
       await shot(bob, `${kind}-5-conflict-bob`);
+      // the card names the teammate on the other side, as History does (it says "Someone" until foundation-core emits
+      // `absorbed` after the settle, REQ-U1: see apps/web/test/card-author.test.ts); a todo step, so it reports without
+      // failing the story
+      await t.test("the conflict card names Alice on the other side", { todo: "REQ-U1 (foundation-core): `absorbed` comes before History has the teammate's change, so the card can't name them" }, async () => {
+        await bob.locator(".cb-conflicts", { hasText: "Alice" }).waitFor({ timeout: 5000 });
+        await bob.getByRole("button", { name: "Keep Alice's" }).waitFor({ timeout: 1000 });
+      });
       await bob.getByRole("button", { name: /^Keep yours/ }).first().click();
       await waitClip(alice, "clip-4", "data-end", bobs.end);
       await bob.getByTestId("conflicts").waitFor({ state: "detached", timeout: 5000 });
