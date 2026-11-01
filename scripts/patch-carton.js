@@ -35,7 +35,7 @@ const STORE = {
     slice: "Cr",
     updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
     readBundle: ['try{t=await jm(Pe(e,re),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile(Pe(e,re)):jm(Pe(e,re),"utf8"))}catch{return null}'],
-    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp)===!1?null:await Qo(c):await Bx(l,c)}"],
+    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt)===!1?null:await Qo(c):await Bx(l,c)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:a,document:c.project}),", "c.project"],
     attach: ["n.onWritten((h,y)=>f.afterWrite(h,y));", "n,f,t"],
     revFiles: [
@@ -55,6 +55,7 @@ const STORE = {
       ["return this.options.bundles.updateScoped(Lm(o),{ownedFields:[..._a],", "return this.options.bundles.updateScoped(Lm(o),{carton:__cm,ownedFields:[..._a],"],
     ],
     mirror: ["await Uh(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):Uh(this.mirrorPath(t),r,\"utf8\")))}"],
+    mirrorSync: ["async sync(t,r,n=[]){await this.recordRevision(t,r);let o=await this.print(t,n);await this.writeMirror(r,o),await this.scaffold(r)}", "async sync(t,r,n=[]){await this.recordRevision(t,r);if(!(__carton.on&&await __carton.mirrorOwned(r))){let o=await this.print(t,n);await this.writeMirror(r,o)}await this.scaffold(r)}"],
     archive: ["if(a&&(nS.has(i.name)||i.name===re)||", "if(__carton.skipInArchive(o,i.name,n)||a&&(nS.has(i.name)||i.name===re)||"],
     agents: [['Nh=e=>typeof e=="string",jh="# This is a Cardboard project', 'Nh=e=>typeof e=="string",jh=__carton.agentsMd("# This is a Cardboard project'], ['",n2=async e=>{let t=await On(', '"),n2=async e=>{let t=await On(']],
     // The timeline codec's names in this copy (the store bridge's parse), each proved where Cardboard calls it
@@ -82,7 +83,7 @@ const STORE = {
     slice: "Zs",
     updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
     readBundle: ['try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile((0,rt.join)(e,Mt)):(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8"))}catch{return null}'],
-    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
+    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
     attach: ["n.onWritten((y,x)=>m.afterWrite(y,x));", "n,m,t"],
     revFiles: [
@@ -102,6 +103,7 @@ const STORE = {
       ["return this.options.bundles.updateScoped(vI(i),{ownedFields:[...My],", "return this.options.bundles.updateScoped(vI(i),{carton:__cm,ownedFields:[...My],"],
     ],
     mirror: ["await(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\"))}", "await(__carton.on?__carton.writeFile(this.mirrorPath(t),r):(0,Gr.writeFile)(this.mirrorPath(t),r,\"utf8\")))}"],
+    mirrorSync: ["async sync(t,r,n=[]){await this.recordRevision(t,r);let i=await this.print(t,n);await this.writeMirror(r,i),await this.scaffold(r)}", "async sync(t,r,n=[]){await this.recordRevision(t,r);if(!(__carton.on&&await __carton.mirrorOwned(r))){let i=await this.print(t,n);await this.writeMirror(r,i)}await this.scaffold(r)}"],
     archive: ["if(o&&(rH.has(a.name)||a.name===Mt)||", "if(__carton.skipInArchive(i,a.name,n)||o&&(rH.has(a.name)||a.name===Mt)||"],
     agents: [['OC=e=>typeof e=="string",$C="# This is a Cardboard project', 'OC=e=>typeof e=="string",$C=__carton.agentsMd("# This is a Cardboard project'], ['",HQ=async e=>{', '"),HQ=async e=>{']],
     codec: {
@@ -150,6 +152,8 @@ const patchStore = (replace, k) => {
   // Carton never wrote is imported when read; the store tells the bridge where the library is.
   around(replace, "applyMutation", "t,r,n", () => "__carton.applyMutation(this,t,r,n)");
   replace(...s.updateScoped);
+  // (the install is given the rev the file is written with, the project's stateUpdatedAt, so it doesn't parse the whole
+  // file again to read it: writeNow has the document it just stringified)
   replace(...s.install);
   // The bundle loader behind read() and the library's rescan: a project.json caught mid-install is waited for, not
   // taken for a removed project.
@@ -174,6 +178,11 @@ const patchStore = (replace, k) => {
   replace(...s.applyWrite);
   for (const [from, to] of s.writeTimeline) replace(from, to);
   replace(...s.mirror);
+  // H8: after each save Cardboard's mirror prints the whole timeline and rewrites timeline.tsx (sync). Where the file
+  // isn't Cardboard's (the worker's Materializer prints it, or, in cb, the worker holding the lease does), that print
+  // was made, written to a temp file and deleted unread on every save: the save now skips it (recordRevision's .revs
+  // and the bundle's scaffold still run). With Carton off, or where the file is Cardboard's, sync runs as in 1.4.0.
+  replace(...s.mirrorSync);
   // H11: no .carton/ and none of Carton's view files in .scratch/views/ in a .cbproj (the store bridge's skipInArchive,
   // given the folder the walk reads, `n` in both copies, so it can tell Carton's files by their content).
   replace(...s.archive);

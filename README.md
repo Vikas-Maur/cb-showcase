@@ -524,7 +524,10 @@ run below.
    or not (the person's edits made meanwhile come with it). An agent that writes or edits `project.json` directly is
    refused and pointed to its own view. The views are checked for saves by reading their size and time a few times a
    second, not by a file watcher: on Windows an open watch inside the bundle could stop Cardboard renaming the
-   project or moving it to the trash.
+   project or moving it to the trash. Where the materializer writes `timeline.tsx`, Cardboard's own regeneration of it
+   after each save is skipped (it printed the whole timeline, wrote it to a temp file and deleted it unread, on every
+   save). Your Ctrl+Z shows in `timeline.tsx` at once, as your edits do: it is yours, not an agent's, so it doesn't
+   freeze the file (it used to, for a minute, hiding the undo and your next edits from any agent that read it).
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
 thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
@@ -660,11 +663,16 @@ with the app closed, a host too old for the app; `.cbproj` Save As, Open and "Br
 with history, and saved offline (`cbproj-offline.test.js`); which files in `.scratch\views\` are Carton's, against
 the files Carton's own materializer writes (`views.test.js`); the save path's merges (`facade.test.js`); an agent's
 view-save cards on both sides, through the worker's History panel (`view-cards.test.js`, needs no Cardboard bundles);
-and the panel's words when sync fails (`ui.test.js`).
+the panel's words when sync fails (`ui.test.js`); and what a GUI save costs the worker, counted rather than timed so
+a busy machine can't hide it: no print of `timeline.tsx` made and thrown away, the editor's save projection run only
+for the items that changed, a bound on file system calls per save (each one a trip through NTFS on Windows), and
+Ctrl+Z showing in `timeline.tsx` at once (`save-cost.test.js`). The timings are `save-bench.js`'s, a measurement and
+not a test: a GUI save's round trip to the worker and how soon `timeline.tsx` shows it, Carton off and on alternated
+round by round (run it alone, on a quiet machine, on mains power).
 
 ```sh
 set CARDBOARD_PRISTINE=C:\cb-pristine
-node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js
 ```
 
 Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview

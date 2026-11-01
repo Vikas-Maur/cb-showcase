@@ -3,7 +3,8 @@
 // LOCALAPPDATA) makes it a separate machine: its own install key, sessions and sync settings.
 // Protocol, one JSON object per line:
 //   stdin  {id, method, args}         a library:call, as main makes it (e.g. "carton.liveShare"); "test.cartonOpen":
-//                                     the bundles the facade has a Carton open for
+//                                     the bundles the facade has a Carton open for; "test.counters": what
+//                                     count-calls.cjs counted since the last call (when it was --require'd)
 //   stdout {id, ok, data | error}     its answer
 //   stdout {event}                    what the worker posted to main (project changes, {kind:"carton"} events)
 //   node worker-proc.js <library-worker.js> <root>
@@ -25,6 +26,11 @@ console.info = console.log;
     const { id, method, args } = JSON.parse(line);
     if (method === "exit") process.exit(0);
     // The bundles the facade in this process has a Carton open for (the same carton-node.cjs the worker loaded).
+    // What the worker did since the last call, as count-calls.cjs counts it (save-cost.test.js; null without it).
+    if (method === "test.counters") {
+      out({ id, ok: true, data: globalThis.__cartonTestCounters?.() ?? null });
+      continue;
+    }
     if (method === "test.cartonOpen") {
       try { out({ id, ok: true, data: require(require("path").join(process.env.CARTON_DIR, "carton-node.cjs")).internals.openBundles() }); }
       catch (e) { out({ id, ok: false, error: String(e?.message ?? e) }); }
