@@ -16,7 +16,7 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncode
 import type { FieldSpec, Schema } from "./schema.ts";
 import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { ReplicaQueue, type HistoryFields, type QueuedChange, type RestoreInput } from "./sync/queue.ts";
+import { ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
@@ -399,7 +399,17 @@ interface PendingRow {
   baseDelta?: Op[];
 }
 /** A rebase changed its ops: its latest version's differ from its first's, or did before it was restored. */
-const editedOf = (p: QueuedChange): boolean => !!p.edited || p.versions[p.versions.length - 1]!.hash !== p.versions[0]!.hash;
+const editedOf = (p: QueuedChange): boolean => {
+  if (p.edited) return true;
+  const v = p.versions[p.versions.length - 1]!, first = p.versions[0]!;
+  // the hash covers the intent too: a remap re-expressed over the same ops edits nothing (review R6-12). Its ops are
+  // compared only when the hashes differ, once per latest version
+  if (v.hash === first.hash) return false;
+  let e = OPS_CHANGED.get(v);
+  if (e === undefined) OPS_CHANGED.set(v, (e = E.canonical(v.ops) !== E.canonical(first.ops)));
+  return e;
+};
+const OPS_CHANGED = new WeakMap<QueueVersion, boolean>();
 const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
   const delta = q.baseDelta(p.branchId, v);
@@ -946,6 +956,7 @@ class CartonImpl implements Carton {
     this.#rest = rest.length ? { h, cuts: rest } : null;
     this.#loadErr = null;
     h.loaded();
+    this.#drain();
   }
   /**
    * (Carton.open, last) Start loading the rows opening held back, once open has returned and the caller has its head: a
@@ -1040,8 +1051,9 @@ class CartonImpl implements Carton {
       if (rows.some((r) => r.squashedFrom! <= this.#h.headSeq(id))) return this.#rebuild();
       if (rows.length) (loaded = true), this.#h.load(id, rows);
     }
-    // another process's rows: its replica id and what it learnt of people may be new too
-    if (loaded) await this.#loadPeople();
+    // another process's rows: its replica id and what it learnt of people may be new too; and events waiting for them
+    // (rows another handle fetched: R6-10)
+    if (loaded) await this.#loadPeople(), this.#drain();
     // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
     if (pins || this.#pinsStale || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) {
       const h = this.#h,
@@ -2334,16 +2346,28 @@ class CartonImpl implements Carton {
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     this.#tell(cut);
   }
-  /** The due events of the cut (#due) whose rows History holds now, in order. */
-  #tell(cut: string): void {
+  /** The due events of the cut (#due) whose rows History holds now, in order; `all`: every one, on what it holds. */
+  #tell(cut: string, all = false): void {
     const due = this.#due.get(cut);
     if (!due) return;
     const head = this.#h.headSeq(cut);
     let n = 0;
-    while (n < due.length && due[n]!.at <= head) n++;
+    while (n < due.length && (all || due[n]!.at <= head)) n++;
     const ready = due.splice(0, n);
     if (!due.length) this.#due.delete(cut);
     for (const d of ready) this.#emit(d.ev);
+  }
+  /**
+   * #tell on the serialized chain, after any settle under way has told its `change` events (so a batch's notice or
+   * absorption never comes before them): for every cut, or `cut`, with `all`.
+   */
+  #drain(cut?: string, all = false): void {
+    if (!this.#due.size) return;
+    const run = () => {
+      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all);
+    };
+    // a listener that throws doesn't break the chain
+    this.#queue = this.#queue.then(run, run).catch(() => {});
   }
   /**
    * History a connection makes available (Stage F): a joined cut's lineage (F2) and the rows a keyframe catch-up
@@ -2356,7 +2380,9 @@ class CartonImpl implements Carton {
         if (this.#joining.has(cut)) await this.#joinLineage(cut);
         if (this.#gap(cut)) await this.#backfill(cut);
       } catch {
-        // not connected, or the server couldn't answer: the next event tries again
+        // not connected, or the server couldn't answer: the next event tries again. Events waiting for the skipped rows
+        // are told now, on what History holds, rather than held for a fetch that may not come (R6-11)
+        this.#drain(cut, true);
       } finally {
         this.#fetching.delete(cut);
       }
@@ -2727,6 +2753,9 @@ class CartonImpl implements Carton {
     for (const sc of this.#shared.values()) sc.close();
     this.#shared.clear();
     this.#closed = true;
+    // events still waiting for rows (their fetch under way) are told before the listeners go, on what History holds:
+    // their outcomes are stored, and nothing would tell them later (R6-11)
+    for (const c of [...this.#due.keys()]) this.#tell(c, true);
     this.#listeners.clear();
     this.#due.clear();
   }
