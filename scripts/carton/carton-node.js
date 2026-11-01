@@ -1018,9 +1018,9 @@ export const cardboard14 = {
       let r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true }));
       // local's write path answers a clash as `conflicts` (the cards)
       if (r?.status === "conflicts" && r.conflicts?.length && bundlePath) r = { ...r, conflicts: await keepStepCards(lc, bundlePath, actor, which, r.conflicts) };
-      const project = await materializeIn(library, projectId);
+      // what is left to undo and redo, read while head goes into project.json
+      const [project, can] = await Promise.all([materializeIn(library, projectId), canStep(lc, since).catch(() => null)]);
       if (project) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
-      const can = await canStep(lc, since).catch(() => null);
       return { ...r, ...(project ? { project } : {}), ...(can ? { can } : {}) };
     };
     return {
