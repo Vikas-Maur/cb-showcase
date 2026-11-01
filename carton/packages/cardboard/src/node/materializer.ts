@@ -96,9 +96,10 @@ export interface MaterializerEngine {
   /**
    * The confirmed changes on `cut` (default: the current one) after `seq` and before `until`, outside `skip`, newest
    * first, read as they are asked for (a caller can stop early), each with the states just before and after it: whether
-   * a save repeated an edit of a change it never saw (rounds 13-15).
+   * a save repeated an edit of a change it never saw (rounds 13-15); and who made it, when known (an agent's `cb` change
+   * joins a frozen shared file's view).
    */
-  changesSince?(seq: number, o?: { cut?: string; until?: number; skip?: ReadonlySet<string> }): AsyncIterable<{ id: string; seq: number; before: Doc; after: Doc }>;
+  changesSince?(seq: number, o?: { cut?: string; until?: number; skip?: ReadonlySet<string> }): AsyncIterable<{ id: string; seq: number; before: Doc; after: Doc; author?: Actor | null }>;
   /** A fresh change id, recorded before committing so a retry commits with the same id (dedup by id). */
   newChangeId?(): string;
   notice(to: Actor, notice: { kind: "error" | "conflicts"; text: string; change?: string }): Promise<void>;
@@ -269,14 +270,14 @@ type Record_ = { t: number; path: string; [k: string]: unknown };
 type Attempt = { gen: string; base: string; hash?: string; id?: string; result?: SaveResult; seen?: string };
 /**
  * Whether a save's recorded result finishes this file instead of a commit: the same file (its generation, at the path
- * or displaced), or its bytes written again while nothing has happened at the path since (round 19 #3): the path's
- * `seen` token is the one the slot recorded with its result. It is written anew, before the event's own writes (so an
- * event whose token can't be stored fails and is retried), by Carton installing a file there (outside a save of the
- * path), by every review of a file there but this save's own (whatever its outcome: committed, head-equal, refused,
- * failed; content that doesn't parse too), by a late update of a view's sidecar, and by a finished save whose slot
- * couldn't be cleared. After any of them the same bytes
+ * or displaced), or its bytes written again while nothing has happened at the path since its attempt started (round
+ * 19 #3): the path's `seen` token is still the one the slot was made with (the token its own review wrote; round 22
+ * #2). It is written anew, before the event's own writes (so an event whose token can't be stored fails and is
+ * retried), by Carton installing a file there (outside a save of the path), by every review of a file there but this
+ * save's own (whatever its outcome: committed, head-equal, refused, failed; content that doesn't parse too), by a late
+ * update of a view's sidecar, and by a finished save whose slot couldn't be cleared. After any of them the same bytes
  * are a save of their own: a GUI saving an earlier state again after a later one, a stale buffer after a remote change
- * (rounds 20, 21). The token is shared by every process (a takeover helper's install counts) and never cached.
+ * (rounds 20-22). The token is shared by every process (a takeover helper's install counts) and never cached.
  */
 const finishes = (slot: Attempt | undefined, seen: string, gen: string, hash: string): boolean =>
   !!slot?.result && slot.hash === hash && (slot.gen === gen || (slot.seen !== undefined && slot.seen === seen));
@@ -371,7 +372,7 @@ export class Materializer {
   // freeze (§6.4): the shared file isn't rewritten for non-agent changes while a local agent is active. `baseSeq` is
   // the confirmed seq the freeze view was derived from and `causal` the agent saves merged into it since: its pin
   // carries both, so a save from it meets every other change since, and never those saves a second time.
-  readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown };
+  readonly freeze = { hooked: new Map<string, Actor>(), heard: new Map<string, number>(), lastForeign: -Infinity, lastCb: -Infinity, active: false, view: null as Doc | null, baseSeq: 0, causal: [] as string[], cut: null as string | null, timer: null as unknown, scanned: 0 };
   /** The shared file's current ref, as core resolves it (`<cut>@<seq>~<hash8> b:<branch8>`). */
   private sharedRef: string | null = null;
   /** The cut `sharedRef` was pinned on. */
@@ -631,6 +632,7 @@ export class Materializer {
   private restartFreeze(h: HeldBase): void {
     this.freeze.view = h.baseDoc;
     this.freeze.baseSeq = h.baseSeq;
+    this.freeze.scanned = h.baseSeq;
     this.freeze.causal = [...h.causal];
     this.freeze.cut = h.cut ?? this.engine.cut?.() ?? null;
   }
@@ -690,14 +692,15 @@ export class Materializer {
   }
 
   /**
-   * Head moved. `local` and `gui`: rewrite promptly (coalesced). `remote`: at most every 30 s while shared. Nothing for
-   * non-agent changes while a freeze is active. project.json follows head promptly either way.
+   * Head moved. `local` and `gui`: rewrite promptly (coalesced). `remote`: at most every 30 s while shared. While a
+   * freeze is active, only local agents' changes reach the shared file, promptly, whatever told of them (a `cb` commit
+   * here or in another local process, or on a shared cut its confirmation): `foldAgentChanges`; nothing for non-agent
+   * changes. project.json follows head promptly either way.
    */
   onHeadChange(cause: "local" | "gui" | "remote"): void {
     if (this.closed) return;
     this.scheduleProjectWrite(cause);
-    if (this.freeze.active) return;
-    if (cause === "remote" && this.engine.shared()) {
+    if (cause === "remote" && this.engine.shared() && !this.freeze.active) {
       if (this.remoteTimer) return;
       const at = Math.max(this.clock.now(), this.lastRemoteRewrite + this.opts.remoteRewriteMs);
       this.remoteTimer = this.clock.setTimeout(() => {
@@ -713,8 +716,61 @@ export class Materializer {
       this.localTimer = null;
       this.fire(() => this.orRetry("shared", async () => {
         if (!this.freeze.active) await this.writeSharedNow(cause);
+        else if (await this.foldAgentChanges()) await this.writeSharedNow("cb");
       }));
     }, this.opts.localRewriteMs);
+  }
+
+  /**
+   * During a freeze, local agents' own `cb` changes join the freeze view as their file saves do (R8-01, windows-sync
+   * H8): an agent reads its own `cb` edit in the frozen timeline.tsx at once, as in 1.4.0, while the person's and remote
+   * changes stay out until the freeze ends. Each confirmed change on the freeze's cut not read yet (a change pending on
+   * a shared cut joins once confirmed), made by an agent or a
+   * subagent, is merged into the view with the state just before it as its base, oldest first. On a shared cut only an
+   * actor hooked here counts (an agent of a remote teammate is a remote change; a windowless local agent's change there
+   * waits for the freeze to end). The view then holds exactly that change (its id joins the view's causal past) only
+   * if the merge gained exactly its edits; a change that overwrote or built on a change still hidden (the person's edit
+   * of the same clip) doesn't merge so: the freeze restarts at that change's own state, which shows what was confirmed
+   * up to it, as for a save (rounds 13-15), and what the view held past that state (saves applied in this freeze, `cb`
+   * changes folded earlier) is folded in again on top, oldest first (round 23 #1). Returns whether the view changed.
+   */
+  private async foldAgentChanges(): Promise<boolean> {
+    if (!this.freeze.view || !this.engine.changesSince) return false;
+    const cut = this.freeze.cut ?? undefined;
+    const found: { id: string; seq: number; before: Doc; after: Doc; author?: Actor | null }[] = [];
+    let top = this.freeze.scanned;
+    for await (const c of this.engine.changesSince(this.freeze.scanned, { ...(cut !== undefined ? { cut } : {}), skip: new Set(this.freeze.causal) })) {
+      top = Math.max(top, c.seq);
+      if (this.localAgent(c.author)) found.push(c);
+    }
+    let changed = false;
+    const queue = found.reverse();
+    for (let i = 0; i < queue.length; i++) {
+      const c = queue[i]!;
+      const view = this.freeze.view!;
+      const merged = this.host.merge3(c.before, view, c.after);
+      if (this.host.changes && sameEdits(this.host.changes(view, merged), this.host.changes(c.before, c.after))) {
+        this.freeze.view = merged;
+        this.freeze.causal.push(c.id);
+      } else {
+        const held = new Set(this.freeze.causal);
+        const p = await this.engine.pin({ owner: "shared-view", ttlMs: 7 * DAY, seq: c.seq, ...(cut !== undefined ? { cut } : {}) });
+        this.restartFreeze({ baseDoc: p.doc, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) });
+        const again: typeof found = [];
+        for await (const d of this.engine.changesSince(c.seq, cut !== undefined ? { cut } : {})) if (held.has(d.id)) again.push(d);
+        queue.splice(i + 1, queue.length, ...[...queue.slice(i + 1), ...again].sort((a, b) => a.seq - b.seq));
+      }
+      changed = true;
+    }
+    this.freeze.scanned = Math.max(this.freeze.scanned, top);
+    return changed;
+  }
+  /** Whether a change by `a` is a local agent's (see `foldAgentChanges`). */
+  private localAgent(a: Actor | null | undefined): boolean {
+    if (!a || (a.kind !== "agent" && a.kind !== "subagent")) return false;
+    if (!this.engine.shared()) return true; // a cut only this replica writes: every agent on it is local
+    const h = this.freeze.hooked.get(a.id);
+    return !!h && (h.group ?? null) === (a.group ?? null);
   }
 
   /** Runs a rewrite; if it fails, it is tried again (`retryWrite`) and the failure still reaches the caller's log. */
@@ -740,7 +796,11 @@ export class Materializer {
         this.writeRetryTimers.delete(which);
         this.fire(async () => {
           try {
-            if (which === "shared") await this.writeSharedNow("retry");
+            if (which === "shared") {
+              // a failed fold too: the agents' changes it missed are read again before the view is printed (round 23 #3)
+              if (this.freeze.active) await this.foldAgentChanges();
+              await this.writeSharedNow("retry");
+            }
             else if (this.opts.writeProject) await this.writeProjectNow("retry");
           } catch (e) {
             this.log.errors.push({ t: this.clock.now(), path: which === "shared" ? TIMELINE_FILE : PROJECT_FILE, error: `rewrite retry: ${e instanceof Error ? e.message : String(e)}` });
@@ -1050,9 +1110,11 @@ export class Materializer {
 
   // ------------------------------------------------------------------ what Carton knows about each path
 
-  /** Something happened at `rel` (see `finishes`): a new token, read by every process. */
-  private async touch(rel: string): Promise<void> {
-    await this.engine.putMeta(["file", rel, "seen"], randomBytes(8).toString("hex"));
+  /** Something happened at `rel` (see `finishes`): a new token, read by every process. Returns it. */
+  private async touch(rel: string): Promise<string> {
+    const token = randomBytes(8).toString("hex");
+    await this.engine.putMeta(["file", rel, "seen"], token);
+    return token;
   }
   private async seen(rel: string): Promise<string> {
     return (await this.engine.getMeta<string>(["file", rel, "seen"])) ?? "";
@@ -1196,6 +1258,9 @@ export class Materializer {
           if (!f || (await this.isCurrent(rel, f.hash, f.stamp))) return;
           if (f.stamp !== stamp) return this.waitForQuiet(rel, f.stamp);
           if (await this.parses(rel, f.bytes)) return void (await this.readWithRetry(rel));
+          // something happened at the path: stored before the file counts as current, so a token that can't be stored
+          // leaves it to be refused again at its next event (round 22 #1)
+          await this.touch(rel);
           await this.setLast(rel, f.hash); // reported once; the file stays where its writer put it
           this.log.unparsed.push({ t: this.clock.now(), path: rel });
           await this.engine.notice(await this.actorOf(rel), { kind: "error", text: `${rel} doesn't parse; kept, not applied` });
@@ -1356,6 +1421,9 @@ export class Materializer {
       this.partials.set(d.path, { rel: d.rel, stamp: d.stamp, mtimeNs: d.mtimeNs, ...(d.viewGen !== undefined ? { viewGen: d.viewGen } : {}) });
       if (!this.reportedPartials.has(d.path)) {
         this.log.unparsed.push({ t: this.clock.now(), path: d.rel, displaced: true });
+        // something happened at the path: the install that displaced it wrote no token if it was a save's own
+        // regeneration (round 23 #2)
+        await this.touch(d.rel);
         const text = `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied`;
         await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text });
         await this.refuseUnparsed(d.rel, text, d.viewGen);
@@ -1418,7 +1486,10 @@ export class Materializer {
     const resumed = !!earlier && (earlier.gen === gen || (!!earlier.result && earlier.hash === hash && finishes(earlier, await this.seen(rel), gen, hash)));
     // any other file reviewed here is something happening at the path, whatever its outcome (committed, head-equal,
     // refused, failed): from now on an earlier save's bytes are a save of their own (round 21 #1)
-    if (!resumed) await this.touch(rel);
+    // The token this attempt starts from is the one it wrote: its slot keeps it, so whatever happens at the path while
+    // it commits (another process's install) still counts (round 22 #2). A resumed save that needs a new slot has none:
+    // only its own file finishes from it
+    const started = resumed ? null : await this.touch(rel);
     const text = bytes.toString("utf8");
     const actor = await this.actorOf(rel, true);
     const name = viewName(rel);
@@ -1536,11 +1607,11 @@ export class Materializer {
     const finishing = !!slot?.result && slot.hash === hash && finishes(slot, await this.seen(rel), gen, hash);
     if (!slot || (!finishing && (slot.gen !== gen || slot.base !== baseKey))) {
       const id = this.engine.newChangeId?.();
-      slot = { gen, base: baseKey, hash, ...(id ? { id } : {}) };
+      slot = { gen, base: baseKey, hash, ...(id ? { id } : {}), ...(started !== null ? { seen: started } : {}) };
       await this.engine.putMeta(attemptKey, slot);
     }
     const res = slot.result ?? (await this.engine.commit({ doc: saved, base, author: actor, meta: { file: rel, ...(name ? { view: name } : {}) }, ...(slot.id ? { id: slot.id } : {}) }));
-    if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res, seen: await this.seen(rel) });
+    if (!slot.result && res.status !== "rejected") await this.engine.putMeta(attemptKey, { ...slot, result: res });
     const settle = async () => {
       // the save is finished: its slot (and the engine's record of its cards) can go. Never fatal: a leftover slot is
       // taken over by the path's next save, and finishes only this same file from now on (round 20 #1: the same bytes
@@ -1647,12 +1718,11 @@ export class Materializer {
   }
 
   /**
-   * A file at `rel` that doesn't parse, in place or displaced, refused before any save was attempted: something happened
-   * at the path (`finishes`), and a view's latest save refuses the view, unless a newer print has already started over
-   * (a file of unknown print, in place or recovered after a restart, counts as the latest).
+   * A file at `rel` that doesn't parse, in place or displaced, refused before any save was attempted (the caller has
+   * written the path's token): a view's latest save refuses the view, unless a newer print has already started over (a
+   * file of unknown print, in place or recovered after a restart, counts as the latest).
    */
   private async refuseUnparsed(rel: string, error: string, viewGen?: number): Promise<void> {
-    await this.touch(rel);
     const name = viewName(rel);
     const row = name ? await this.engine.getMeta<ViewRow>(["view", name]) : undefined;
     const gen = viewGen ?? row?.printGen ?? 0;
@@ -1711,6 +1781,9 @@ const isSubagent = (a: Actor): boolean => a.kind === "subagent" || !!a.agentId;
 const turnOf = (a: Actor): string => a.turn ?? (isSubagent(a) && a.id.includes("/") ? a.id.slice(0, a.id.lastIndexOf("/")) : a.id);
 /** Meta row: the pin owners a turn's subagents printed with, released when the turn itself stops. */
 const turnPinsKey = (turn: string): string[] => ["turn-pins", turn];
+
+/** Whether two lists of edits (`MaterializerHost.changes`) are the same edits. */
+const sameEdits = (a: string[], b: string[]): boolean => a.length === b.length && [...a].sort().join("\n") === [...b].sort().join("\n");
 
 /** `.scratch/views/<name>.tsx` -> name. */
 export function viewName(rel: string): string | null {
