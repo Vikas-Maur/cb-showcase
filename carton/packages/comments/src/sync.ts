@@ -255,6 +255,8 @@ export class CommentSync {
           return;
         }
         await this.#engine.take(m.rows, m.head, m.reset === true, live);
+        // restarted while this waited: the reply was another connection's, and says nothing of the new one
+        if (!live()) return;
         if (m.more) return this.#request(conn);
         this.#caughtUp = true;
         this.#backoff = BACKOFF_MIN;
@@ -264,6 +266,7 @@ export class CommentSync {
       }
       // fan-out: in the server's order, after everything it sent before; the position moves once caught up
       await this.#engine.take(m.rows, this.#caughtUp ? m.head : null, false, live);
+      if (!live()) return;
       this.#wake();
       return;
     }
@@ -275,6 +278,7 @@ export class CommentSync {
       if (m.row) await this.#engine.answered(sent, m.row, this.#caughtUp && m.row.seq !== undefined ? m.row.seq : null, live);
       else if (m.refused === "rate-limited") this.#rateLimited(m.retryMs ?? 1000);
       else await this.#engine.refused(sent, m.refused ?? "bad-request", m.reason ?? "refused", live);
+      if (!live()) return;
       this.#wake();
       void this.#pump();
       return;

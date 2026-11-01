@@ -72,3 +72,37 @@ test("Save As offline with an edit waiting to sync: the file has the edit and no
   const pkg = JSON.parse(z2.read(SHALLOW).toString("utf8"));
   assert.match(JSON.stringify(pkg.states[pkg.headHash]), /Written offline/);
 });
+
+test("Save As takes the files Carton rewrites as they were when Cardboard listed them: a rewrite before their turn in the zip can't fail it", t, async () => {
+  // CI Linux (cbproj.test step 6): an agent's cb edit reached timeline.tsx during Bob's Save As; Cardboard's zip writer
+  // (yazl's addFile: the size when listed, the bytes at the file's turn) threw on an emitter nothing listens to, and the
+  // library worker went down. The Save As hook (cbproj.js exportEntries) now hands those files over read whole.
+  S.facade(b);
+  const api = globalThis.__cartonCbproj;
+  const dir = path.join(S.TMP, "saveas-as-listed.cardboard");
+  fs.rmSync(dir, { recursive: true, force: true });
+  const files = {
+    "timeline.tsx": "export default <timeline />;\n",
+    "project.json": JSON.stringify({ format: "cardboard-project", version: 1, project: { id: "p" } }),
+    ".scratch/views/turn.tsx": "// cardboard:rev x\nexport default <timeline />;\n",
+    ".scratch/views/turn.status": '{"status":"applied"}',
+    ".scratch/views/gone.status": '{"status":"pending"}',
+    "media/clip.mp4": "0123456789",
+    "notes.md": "the person's notes",
+  };
+  for (const [rel, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true }); fs.writeFileSync(path.join(dir, rel), text); }
+  const listed = Object.keys(files).map((rel) => ({ archivePath: rel, sourcePath: path.join(dir, rel), size: fs.statSync(path.join(dir, rel)).size }));
+  fs.rmSync(path.join(dir, ".scratch/views/gone.status")); // removed by Carton after the walk listed it
+  const out = await api.exportEntries(dir, listed);
+  // then Carton rewrites them (another size each) before the zip reaches them
+  for (const rel of ["timeline.tsx", "project.json", ".scratch/views/turn.tsx", ".scratch/views/turn.status"]) fs.writeFileSync(path.join(dir, rel), files[rel] + "// rewritten, longer\n");
+  const by = new Map(out.map((e) => [e.archivePath, e]));
+  for (const rel of ["timeline.tsx", "project.json", ".scratch/views/turn.tsx", ".scratch/views/turn.status"]) {
+    const e = by.get(rel);
+    assert.ok(e?.bytes, rel + " goes in as a buffer: " + JSON.stringify(e && { ...e, bytes: undefined }));
+    assert.equal(Buffer.from(e.bytes).toString("utf8"), files[rel], rel + " as it was when listed");
+    assert.equal(e.size, Buffer.byteLength(files[rel]), rel + "'s size is its bytes'");
+  }
+  assert.ok(!by.has(".scratch/views/gone.status"), "a file gone since the walk is left out");
+  for (const rel of ["media/clip.mp4", "notes.md"]) assert.deepEqual(by.get(rel), listed.find((e) => e.archivePath === rel), rel + " stays Cardboard's entry");
+});

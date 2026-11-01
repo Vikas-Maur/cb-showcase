@@ -12,6 +12,9 @@
 //   CARTON_CBPROJ_HISTORY=1 in the environment of the app or of cb, the file also carries `.carton-export/history.db`,
 //   store-sqlite's copy of carton.db without core's LOCAL_TABLES (path map, pins, notices, views, ephemeral data, sync
 //   lease, pending rows), as the adapter's exportCbproj is given it.
+//   The files Carton rewrites while the project is open (timeline.tsx, project.json, the views) go in read whole when
+//   Cardboard lists them (asListed): its zip writer reads a file only at its turn, and one rewritten before then
+//   (an agent's or a teammate's edit) made it throw and took the library worker down.
 //   On a cut shared live with edits still waiting to sync (offline), the file gets neither: core exports confirmed
 //   versions only, so its history would lack edits its project.json shows, and a teammate bringing it in would silently
 //   miss them. The file is then a 1.4.0 file (it still holds everything you see), and the log says why.
@@ -124,7 +127,7 @@ function sweepHistoryCopies(bundle) {
  * written). A failure leaves the file without them (said in the log): the Save As still happens, as a 1.4.0 file.
  */
 async function exportEntries(bundle, entries) {
-  const out = entries.filter((e) => !inExportDir(e.archivePath));
+  const out = await asListed(entries.filter((e) => !inExportDir(e.archivePath)));
   if (!hasHistory(bundle)) return out;
   sweepHistoryCopies(bundle);
   const name = path.basename(bundle);
@@ -160,6 +163,32 @@ async function exportEntries(bundle, entries) {
     warnOnce("export:" + bundle, `the .cbproj of ${name} was saved without its history (a teammate can open it, but not bring its changes back in): ${errText(e)}`);
   }
   return out;
+}
+
+// The files Carton itself rewrites while a project is open (the Materializer's timeline.tsx and views with their
+// sidecars, the facade's project.json), and how large one is read whole.
+const rewritten = (p) => { const n = p.replace(/\\/g, "/"); return n === "timeline.tsx" || n === "project.json" || n.startsWith(".scratch/views/"); };
+const AS_LISTED_MAX = 64 * 1024 * 1024;
+
+/**
+ * Cardboard's zip writer (yazl's addFile) takes a file's size when the entry is added and reads the file only when its
+ * turn comes, after the files before it (clips can take a while): a file replaced in between makes it throw "file
+ * data stream has unexpected number of bytes" on an emitter nothing listens to, and the library worker goes down (CI
+ * Linux, cbproj.test step 6: an agent's cb edit reached timeline.tsx during Bob's Save As). With Carton on, those files
+ * change without the person doing anything (an agent's edit, a teammate's), so the ones Carton rewrites go in as they
+ * are when Cardboard listed them, read whole (a buffer entry, its size from the bytes); one gone since is left out, as
+ * if it had gone before the walk. Anything else is Cardboard's as in 1.4.0.
+ */
+async function asListed(entries) {
+  return (await Promise.all(entries.map(async (e) => {
+    if (e.bytes || !e.sourcePath || !rewritten(e.archivePath) || !(e.size <= AS_LISTED_MAX)) return e;
+    try {
+      const bytes = await fs.promises.readFile(e.sourcePath);
+      return { ...e, bytes, size: bytes.byteLength };
+    } catch (err) {
+      return err?.code === "ENOENT" ? null : e;
+    }
+  }))).filter(Boolean);
 }
 
 /** After Cardboard wrote (or failed to write) the zip: the history copy made for it goes. */

@@ -296,6 +296,39 @@ test("offline and rejoin: Bob edits while the host is down; his edit waits, then
   await S.until(async () => (await bob.call("carton.liveStatus", { projectId: id })).status === "up-to-date", 20_000, "bob up to date");
 });
 
+test("late conflict: Alice and Bob change the title's size while the host is down; the save that lands second is a card in its own History panel", t, async () => {
+  need("the share", "the join");
+  // Core records a GUI save as the generic person and addresses its late-conflict notice to human/person; with "You" the
+  // resolved person (R3), @carton/react takes those notices itself (ui 879da20; the app no longer passes them on).
+  const panel = async (pc) => {
+    const client = "late-" + pc.name;
+    const msgs = () => pc.events().filter((e) => e.change?.kind === "carton" && e.change.client === client).map((e) => e.change.message);
+    assert.equal((await pc.call("carton.ui", { projectId: id, client, message: { t: "hello" } }))?.status, "ok");
+    const init = await S.until(() => msgs().find((x) => x.t === "init"), 20_000, pc.name + "'s panel");
+    return () => { const last = msgs().filter((x) => x.t === "topic" && x.topic === "conflicts").pop(); return (last ? last.value : init.topics.conflicts) ?? []; };
+  };
+  const sizeCards = (cards) => cards.filter((c) => /fontSize$/.test(c.path ?? ""));
+  const panels = { Alice: await panel(alice), Bob: await panel(bob) };
+  assert.deepEqual([sizeCards(panels.Alice()), sizeCards(panels.Bob())], [[], []], "no size card before");
+  const port = host.port;
+  await host.stop();
+  for (const pc of [alice, bob]) await S.until(async () => (await pc.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, pc.name + " offline");
+  await S.guiSave(alice, id, (it) => (it.type === "text" ? { ...it, fontSize: 61 } : null));
+  await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, fontSize: 62 } : null));
+  host = await S.startHost(path.join(S.TMP, "host"), port);
+  for (const pc of [alice, bob]) await S.until(async () => (await pc.call("carton.liveStatus", { projectId: id })).status === "up-to-date", 60_000, pc.name + " up to date");
+  // whichever save the host took first stands at both; the other is a card at its own computer only
+  const size = await S.until(async () => { const [a, b] = [S.textOf(await S.projectOf(alice, id)).fontSize, S.textOf(await S.projectOf(bob, id)).fontSize]; return a === b && a; }, 20_000, "both on one size");
+  assert.ok(size === 61 || size === 62, "one of the two saves: " + size);
+  const loser = size === 61 ? "Bob" : "Alice", winner = size === 61 ? "Alice" : "Bob";
+  const cards = await S.until(() => { const c = sizeCards(panels[loser]()); return c.length && c; }, 20_000, `the size card in ${loser}'s History panel`);
+  assert.equal(cards.length, 1, JSON.stringify(cards));
+  assert.deepEqual(sizeCards(panels[winner]()), [], `no card at ${winner}'s`);
+  // the size back to the offline test's 90, which the next tests start from
+  await S.guiSave(alice, id, (it) => (it.type === "text" ? { ...it, fontSize: 90 } : null));
+  for (const pc of [alice, bob]) await S.until(async () => S.textOf(await S.projectOf(pc, id)).fontSize === 90, 30_000, "90 again at " + pc.name);
+});
+
 test("cb on the shared project with the app open: the agent's edit goes through the worker's lease and reaches Bob", t, async () => {
   need("the share", "the join");
   // The agent prints the timeline as it is now, in its own view (H8: the shared timeline.tsx stays frozen a minute
