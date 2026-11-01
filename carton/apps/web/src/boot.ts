@@ -3,12 +3,12 @@
 
 import { createElement as h } from "react";
 import type { Root } from "react-dom/client";
-import type { Actor, Carton, CutRecord, Doc, SyncError } from "@carton/core";
+import { parseNode, type Actor, type Carton, type CutRecord, type Doc, type SyncError } from "@carton/core";
 import { fromCarton, CartonProvider } from "@carton/react";
 import { openIdbStore } from "@carton/store-idb";
 import { webSocketTransport } from "@carton/server-node/transport";
 import { App } from "./app.ts";
-import { gatedTransport, openEditorComments } from "./comments.ts";
+import { gatedTransport, openEditorComments, type ShownVersion } from "./comments.ts";
 import { injectCommentsSkin } from "@carton/react";
 import { describeCardWith } from "./cards.ts";
 import { parseDescriptor, watchHash } from "./descriptor.ts";
@@ -59,12 +59,23 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const live = await LiveDoc.open(carton);
   // Timecoded comments on the same transport, URL and token (REQ-C3). Only the tab holding the push lock shares them,
   // as with edits; viewers read. Placed again when the head on screen moves (LiveDoc), not on every presence event.
+  // A History preview is on screen instead of the head: comments are placed on it and new ones pinned to it. A preview
+  // whose version can't be named ({cut, seq}) takes no new comment (it would land on the head's content).
   injectCommentsSkin(document);
+  const previewDoc = cell<Doc | null>(null);
+  let shown: ShownVersion | null = null;
+  let unnamed = false;
   const { comments, ui: commentsView } = await openEditorComments({
     carton,
     sync: lock.holding() ? { transport: gate.transport, url: session.wsUrl, token: () => session.token() } : null,
-    versions: { on: (l) => live.subscribe(l) },
-    canComment: () => session.role !== "viewer" && !waiting.get(),
+    versions: {
+      on: (l) => {
+        const offs = [live.subscribe(l), previewDoc.subscribe(l)];
+        return () => offs.forEach((off) => off());
+      },
+    },
+    shown: () => shown,
+    canComment: () => session.role !== "viewer" && !waiting.get() && !unnamed,
   });
   const presence = new PresenceSender((s) => carton.sync?.presence(s));
   const images = new ImageCache((key) => readBlob(session, key));
@@ -74,7 +85,6 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   const mediaReady = cell(false);
   media.ready.then(() => mediaReady.set(true), () => {});
   session.onToken(() => media.refreshToken());
-  const previewDoc = cell<Doc | null>(null);
 
   // Publishing gives a watch link: the Published cut is handed to the host as its own shared cut, and a viewer
   // invite (owners only) lets anyone with the link watch it (§0.1 "Published cut: what the share link shows").
@@ -124,7 +134,17 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
     },
     shareUrl: (cut) => links.get(cut.id),
     describeCard: describeCardWith(() => live.doc),
-    onPreview: (pv) => previewDoc.set(pv ? (pv.doc as Doc) : null),
+    onPreview: (pv) => {
+      let at: { branchId: string; seq: number } | null = null;
+      try {
+        at = pv ? parseNode(pv.ref) : null;
+      } catch {
+        at = null;
+      }
+      shown = pv && at && Number.isInteger(at.seq) ? { cut: at.branchId, seq: at.seq, doc: pv.doc as Doc } : null;
+      unnamed = !!pv && !shown;
+      previewDoc.set(pv ? (pv.doc as Doc) : null);
+    },
   });
   ui.subscribe("cuts", () => live.invalidate());
 

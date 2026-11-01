@@ -375,6 +375,14 @@ for (const kind of hosts as ("node" | "cloudflare")[]) {
       await alice.locator(".carton-comment-body", { hasText: "Agreed, I'll look" }).waitFor({ timeout: 10_000 });
       await shot(bob, `${kind}-c1-reply-bob`);
 
+      // a draft survives switching to History and back (review R4-2)
+      await alice.getByTestId("side-comments").click();
+      await alice.locator(".carton-comments-compose textarea").fill("half a thought");
+      await alice.getByTestId("side-history").click();
+      await alice.getByTestId("side-comments").click();
+      assert.equal(await alice.locator(".carton-comments-compose textarea").inputValue(), "half a thought");
+      await alice.locator(".carton-comments-compose textarea").fill("");
+
       // a viewer reads the thread and has no box to write in
       const viewer = await joinAs(viewerCtx, seed.viewer, "Vic");
       pages.push(["viewer", viewer]);

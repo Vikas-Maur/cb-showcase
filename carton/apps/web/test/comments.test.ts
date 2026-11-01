@@ -13,7 +13,7 @@ import { createMemoryStore } from "@carton/store-memory";
 import { webSocketTransport } from "@carton/server-node/transport";
 import { serveDemo, type DemoNodeHost } from "../scripts/serve-node.ts";
 import { seedDemo, type SeedResult } from "../scripts/seed.ts";
-import { FollowedVersion, gatedTransport, openEditorComments, openWatchComments } from "../src/comments.ts";
+import { FollowedVersion, gatedTransport, onScreen, openEditorComments, openWatchComments } from "../src/comments.ts";
 import { parseJoinHash } from "../src/descriptor.ts";
 import { moveOps } from "../src/edit.ts";
 import { openProject } from "../src/project.ts";
@@ -99,6 +99,7 @@ test("comments over a real host: live with replies, a viewer reads only, a moved
   // Alice moves clip-2 past the end, where nothing else shows: the comment follows it there, "moved"
   const before = await alice.comments.placements();
   assert.equal(before.get(root.id)?.status, "exact");
+  const earlier = await alice.carton.head();
   const end = Math.max(...((await alice.carton.head()).doc.timelineItems as Rec[]).map((r) => r.endTime as number));
   const by = end + 1 - (c2.startTime as number);
   await alice.carton.commit({ ops: moveOps(c2, (c2.startTime as number) + by), wait: 5000 });
@@ -106,6 +107,19 @@ test("comments over a real host: live with replies, a viewer reads only, a moved
   assert.equal(after.get(root.id)?.status, "moved", JSON.stringify(after.get(root.id)));
   assert.ok(Math.abs(after.get(root.id)!.range![0] - (at + by)) < 1e-3, JSON.stringify(after.get(root.id)));
   await until(async () => (await bob.comments.placements()).get(root.id)?.status === "moved", 8000, "Bob's copy follows too");
+
+  // a History preview of the version before the move: threads sit where that version shows them, and a comment written
+  // while it is on screen is pinned to it (review R4-1), not to the head
+  const preview = { cut: earlier.ref.branchId, seq: earlier.ref.seq, doc: earlier.doc };
+  let shown: typeof preview | null = preview;
+  const screen = onScreen(alice.comments, alice.carton.schema, () => shown);
+  const onPreview = await screen.placements();
+  assert.equal(onPreview.get(root.id)?.status, "exact");
+  assert.ok(Math.abs(onPreview.get(root.id)!.range![0] - at) < 1e-3, JSON.stringify(onPreview.get(root.id)));
+  const pinned = (await screen.add({ body: "Before the move", range: [at, at] })) as { anchor?: { seq: number } };
+  assert.equal(pinned.anchor?.seq, earlier.ref.seq, "pinned to the previewed version");
+  shown = null;
+  assert.equal((await screen.placements()).get(root.id)?.status, "moved", "back on the head");
 
   // publish; Alice comments on the Published cut; a watch link reads that comment and nothing else
   const pub = await alice.carton.publish({ name: "Main cut (published)" });

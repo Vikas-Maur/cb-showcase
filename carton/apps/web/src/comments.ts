@@ -5,7 +5,7 @@
 import { Comments, type CommentsCarton } from "@carton/comments";
 import { hashDoc, type Carton, type Doc, type Schema, type StateRef } from "@carton/core";
 import type { Transport, TransportConnection } from "@carton/core/plugins";
-import { commentsUi, type CommentsUiHandle } from "@carton/react";
+import { commentsUi, type CommentsSource, type CommentsUiHandle } from "@carton/react";
 import { createMemoryStore } from "@carton/store-memory";
 
 /**
@@ -36,13 +36,51 @@ export function gatedTransport(inner: Transport, online: () => boolean): { trans
   };
 }
 
+/** A version on screen other than the head: a History preview, as `{cut, seq}` and its document. */
+export interface ShownVersion {
+  cut: string;
+  seq: number;
+  doc: Doc;
+}
+
+/**
+ * Comments as the panel and markers use them, on the version on screen: while a preview of an earlier version is
+ * shown, threads are placed on it, and a new comment is pinned to it (its time and clip are the preview's), not to the
+ * head. Without a preview, the Comments handle as is.
+ */
+export function onScreen(comments: Comments, schema: Schema, shown: () => ShownVersion | null): CommentsSource {
+  const hashes = new WeakMap<Doc, string>();
+  const hash = (doc: Doc) => hashes.get(doc) ?? (hashes.set(doc, hashDoc(doc, schema)), hashes.get(doc)!);
+  return {
+    threads: () => comments.threads(),
+    isPending: (id) => comments.isPending(id),
+    me: () => comments.me(),
+    syncStatus: () => comments.syncStatus(),
+    on: (l) => comments.on(l),
+    add: (input) => {
+      const v = shown();
+      return comments.add(v ? { ...input, version: { cut: v.cut, seq: v.seq } } : input);
+    },
+    reply: (id, body) => comments.reply(id, body),
+    edit: (id, body) => comments.edit(id, body),
+    resolve: (id, resolved) => comments.resolve(id, resolved),
+    remove: (id) => comments.remove(id),
+    placements: (opts) => {
+      const v = shown();
+      return v ? comments.placeOn({ cut: v.cut, seq: v.seq, hash: hash(v.doc), doc: v.doc }, opts) : comments.placements(opts);
+    },
+  };
+}
+
 /** The editor's comments: on its Carton, shared through the project's host, placed again whenever the head shown moves. */
 export async function openEditorComments(o: {
   carton: Carton;
   /** Shares comments; none in a tab that doesn't hold this person's push lock (its comments wait in the store). */
   sync: { transport: Transport; url: string; token: () => Promise<string> } | null;
-  /** Fires when the version on screen changed (LiveDoc: once per frame at most, not on presence). */
+  /** Fires when the version on screen changed (LiveDoc: once per frame at most, not on presence; a preview opened or closed). */
   versions: { on(listener: () => void): () => void };
+  /** The preview on screen, if any: comments are placed on it and new ones pinned to it. */
+  shown?: () => ShownVersion | null;
   canComment: () => boolean;
 }): Promise<{ comments: Comments; ui: CommentsUiHandle }> {
   const comments = await Comments.open({
@@ -51,7 +89,8 @@ export async function openEditorComments(o: {
     anchor: { media: "mediaItemId" },
     cut: () => o.carton.cut,
   });
-  return { comments, ui: commentsUi(comments, { versions: o.versions, canComment: o.canComment }) };
+  const source = o.shown ? onScreen(comments, o.carton.schema, o.shown) : comments;
+  return { comments, ui: commentsUi(source, { versions: o.versions, canComment: o.canComment }) };
 }
 
 /**

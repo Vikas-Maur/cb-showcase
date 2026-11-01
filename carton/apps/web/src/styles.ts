@@ -50,6 +50,8 @@ label.cb-field:has(.cb-input){grid-template-columns:90px 1fr}
 .cb-side-tabs{display:flex;gap:2px;padding:8px 12px 0;border-bottom:1px solid var(--border-subtle,#ffffff0f)}
 .cb-side-tab{background:none;border:0;border-bottom:2px solid transparent;color:var(--text-muted,#a1a1aa);font:inherit;font-size:13px;padding:6px 10px;cursor:pointer}
 .cb-side-tab[aria-selected=true]{color:var(--text,#f4f4f5);border-bottom-color:var(--accent,#f59e0b)}
+.cb-side-pane{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+.cb-side-pane[hidden]{display:none}
 .cb-comments{flex:1 1 auto;min-height:0;overflow:auto}
 .cb-tl-comments{position:absolute;inset:0}
 .cb-bottom{position:relative;border-top:1px solid var(--border-subtle,#ffffff0f);background:var(--desktop-panel,#151515)}

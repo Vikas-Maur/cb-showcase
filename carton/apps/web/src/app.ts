@@ -164,9 +164,9 @@ export function App(p: AppProps) {
         { className: "cb-side" },
         h(Conflicts),
         h(SideTabs, { side, setSide, comments: p.comments }),
-        side === "history"
-          ? h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) })
-          : h(CommentsPanel, { className: "cb-comments", comments: p.comments, at: commentAt, onSeek: seekTo, selected: thread, onSelect: setThread }),
+        // both stay mounted: switching tabs keeps a comment or reply being written, and History's scroll
+        h("div", { className: "cb-side-pane", hidden: side !== "history" }, h(HistoryPanel, { className: "cb-history", currentRef: current?.head ?? p.live.cut, onWatch: (a: string, b: string) => setWatch({ a, b }) })),
+        h("div", { className: "cb-side-pane", hidden: side !== "comments", "data-testid": "comments-pane" }, h(CommentsPanel, { className: "cb-comments", comments: p.comments, at: commentAt, onSeek: seekTo, selected: thread, onSelect: setThread })),
       ),
     ),
     h(
