@@ -28,9 +28,9 @@ holds; they don't say how fast the built code is.
 - **FAT and exFAT have no hard links (L13).** There, a save from another program that lands in a very short window can
   be overwritten. Carton moves `carton.db` out of such a bundle and warns.
 - **Where the history lives (L15).** In cloud-synced folders, on network shares (new: WAL needs shared memory), on
-  FAT/exFAT, and in folders it can't write (new), `carton.db` lives in app data instead of the bundle. Synced folders are
-  found by known locations (OneDrive, Dropbox, iCloud, Box, Windows' sync-root registry), not by file attributes, so a
-  sync client it doesn't know is missed. Two more gaps in the wiring: a `carton.db` made on another machine is set
+  FAT/exFAT, and in folders it can't write (new), `carton.db` lives in app data instead of the bundle. Synced folders
+  are found by known locations (OneDrive, Dropbox, iCloud, Box, Windows' sync-root registry), not by file attributes, so
+  a sync client it doesn't know is missed. Two more gaps in the wiring: a `carton.db` made on another machine is set
   aside and a fresh history starts, but nothing offers the set-aside history to the user yet; and `@carton/local` keeps
   the placement warning to itself, so `cb` never shows it.
 - **Bundles synced between machines by a file-sync client are imported as outside changes (L15), not merged as
@@ -50,10 +50,10 @@ holds; they don't say how fast the built code is.
   history.** Its newer versions come in as a separate cut `<cut>.<hash8>` linked to the versions both hold, so a fold
   still finds the right base. PLAN §13 asks for lineage that finds the base, not one cut per sender. Workaround: bring
   the later file in with its history (`importHistory` grows the tracking cut).
-- **No export of a state that includes waiting offline edits.** Every export is a confirmed version with its state
-  hash; a state with pending edits has none yet, and confirms later under another seq and hash, so a copy built on it
-  couldn't find its base. §13's "Offline edits (date)" variant, whose head could be exported, isn't built. Meanwhile:
-  `carton.pendingCount(cut)` to wait, or export the confirmed head.
+- **No export of a state that includes waiting offline edits.** Every export's history (the shallow export) ends at a
+  confirmed version with its state hash; a state with pending edits has none yet, and confirms later under another seq
+  and hash, so a copy built on it couldn't find its base. §13's "Offline edits (date)" variant, whose head could be
+  exported, isn't built. Meanwhile: `carton.pendingCount(cut)` to wait, or export the confirmed head.
 - **The first version.** `importProject` makes the current document `main@1`, as §16 says. `openLocal({ init })`
   instead records it as the root state at seq 0. Use `importProject` for migration.
 
@@ -69,13 +69,16 @@ anything.
 - **`cb` on a shared cut waits up to 5 s (L14)** for the server, then answers `pending`; offline it answers `pending`
   at once, and conflicts come later as notices.
 - **While an agent turn is running, the shared `timeline.tsx` is frozen (L16).** From the agent's first Read of it
-  until its turn's Stop, it doesn't show the person's or teammates' changes; the app always shows head. An agent's own
+  until its turn's Stop, Carton doesn't rewrite it with the person's or teammates' changes; the app always shows head.
+  The freeze holds back automatic rewrites only: a plain `cb source print`, a cut switch, or an agent change that
+  can't merge cleanly into the frozen file shows newer state before the Stop. An agent's own
   `cb` changes do show in it (cardboard-adapter's head; not yet in the snapshot the kit runs on). Claude Code sends no
   Stop when the user interrupts a turn, so a hooked agent's hold also ends 60 s after its last hook event, and its next
   event holds the file again. An agent that isn't hooked holds it for 60 s after each save or `cb` call.
-- **`cb` talks to the app over a local socket, one JSON line per message, at most 64 MiB.** A `cb` save carries the
-  whole project, and an answer can carry the head. A project whose JSON is larger can't be saved through `cb` while the
-  app holds it: the app drops the connection, and `cb` fails after its retries.
+- **`cb` talks to the app over a local socket, one JSON line per message.** A `cb` save carries the whole project,
+  and an answer can carry the head. The reader drops the connection when the part of a message it is still waiting
+  for passes 64 Mi characters (counted after UTF-8 decoding, not in bytes), and `cb` fails after its retries. So a
+  save of a very large project can fail; there is no firm size below which it is sure to pass.
 - **The file-tool hook runs on every matching tool call.** `hookSettings` gives host Claude Code a PreToolUse matcher
   `Read|Write|Edit|MultiEdit`, so a hook process starts for every Read or edit of any file; it acts only on the
   project's `timeline.tsx` and `project.json`. Claude Code's `if` conditions on each hook (`Read(**/timeline.tsx)`,
@@ -87,8 +90,8 @@ anything.
   print only through a process that runs the materializer: the app's library worker once H8 is wired. The default
   headless helper doesn't run one, so with the app closed `cb source print --view` answers "views need the app open".
 - **The standalone `carton` command can't reach a server.** It has no option for the host's URL or token, so its writes
-  to a shared cut fail. Inside Cardboard, `cb` goes through the app's engine. There is no `cb share` command yet (sharing
-  is `carton.share()`).
+  to a shared cut fail. Inside Cardboard, `cb` goes through the app's engine. There is no `cb share` command yet
+  (sharing is `carton.share()`).
 
 ## Shared cuts and live editing
 

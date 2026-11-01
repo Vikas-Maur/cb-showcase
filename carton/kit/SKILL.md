@@ -47,8 +47,8 @@ The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the
    and the `.status` file says how it went (`confirmed`, `pending`, `conflicts`, `rejected` or `error`). If the answer
    is "views need the app open", edit as usual (`timeline.tsx`, `cb source apply`, or MCP `apply_timeline`). Small
    edits, one idea per save. Save from the version you printed: never paste an old file over a newer one.
-   While your turn runs, `timeline.tsx` holds still for you: it doesn't show the person's or teammates' changes until
-   your turn ends, so print again before you rely on what others did.
+   While your turn runs, Carton holds back others' changes from `timeline.tsx` until your turn ends (a print of it
+   shows head again), so print again before you rely on what others did.
 4. **Read the result** of every save (table above).
 5. **After your turn, check your cards.** `cb conflicts <project>` lists the open cards of your edits, numbered:
 

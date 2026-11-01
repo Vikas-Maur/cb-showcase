@@ -244,11 +244,11 @@ memory).
   history unchanged.
 - `history` adds who made each version and on which cut (the `Version.author` and its cut).
 - `undo(id, rev)` becomes `carton.restore(ref)`: the old state, saved as a new version.
-- `undo --turn <turn>` reverts every change of one agent turn as one inverse change at head
-  (`write({ kind: "undoTurn", turn })`, or `cb undo --turn`). What someone else changed again since keeps their newer
-  value: each such path becomes a card for the turn's author (status `conflicts`, stored like a save's cards, so `cb
-  conflicts` lists them), and the rest of the turn is undone. A card's `theirs` is the value from before the turn, so
-  picking it finishes the undo there.
+- `undo --turn <turn>` reverts every change of one agent turn as one inverse change at head (`write({ kind: "undoTurn",
+  turn })`, or `cb undo --turn`). What someone else changed again since keeps their newer value: each such path becomes
+  a card for the actor who asked for the undo (status `conflicts`, stored like a save's cards, so `cb conflicts` lists
+  them), and the rest of the turn is undone. A card's `theirs` is the value from before the turn, so picking it finishes
+  the undo there.
 - Keep `recordRevision` writing `.revs` while you roll out, so switching Carton off loses nothing.
 - Name versions after the user's words: when a Director turn ends, `nameTurn(carton, { chat, turn }, label)`
   (`@carton/cardboard`) names its last version ("Make the intro tighter"). The label goes into the project's history
@@ -425,10 +425,12 @@ built from a list of namespaces.
 - **The freeze.** While an agent's turn runs, the shared `timeline.tsx` doesn't move under it: the agent's Read of the
   file, or its `cb` call, starts the freeze (`mz.hookRead(actor)`), and its Stop lets go (`mz.hookStop(actor)`: a
   subagent's Stop releases only what it pinned; the turn's Stop releases the whole turn's). Once no agent holds the
-  file, the person's and teammates' changes reach it; the app always shows head. An agent's
-  own `cb` changes show in the frozen file (cardboard-adapter's head; not yet in the snapshot the kit runs on). Claude
-  Code sends no Stop when the user interrupts a turn, so a hooked agent quiet for 60 s (`freezeIdleMs`) no longer holds
-  the file; its next hook event holds it again.
+  file, the person's and teammates' changes reach it; the app always shows head. The freeze holds back automatic
+  rewrites only: a plain `cb source print` reprints the file from head, and so does a cut switch. An agent's own `cb`
+  changes show in the frozen file (cardboard-adapter's head; not yet in the snapshot the kit runs on); one that doesn't
+  merge cleanly into it restarts the freeze from that change's own state, which can show newer edits. Claude Code sends
+  no Stop when the user interrupts a turn, so a hooked agent quiet for 60 s (`freezeIdleMs`) no longer holds the file;
+  its next hook event holds it again.
 - **Hook events reach the holder as a write:** `lc.write({ kind: "hook", event: "read" | "write" | "stop", file },
   { actor })` (`file`: project-relative, for `write` only). The holder calls its materializer's `hookRead`,
   `hookWrite` or `hookStop`. The answer is `confirmed`, with `hook: { event, delivered }` (`delivered: false` when no
@@ -514,15 +516,17 @@ project ID already exists in your library", C9).
   materializer's format. A person's or an agent's own files there travel, as in 1.4.0. The rule is
   `excludedFromExport(path, foldCase, content)` (`cartonViewFile`; `walkBundle` reads each candidate's head for you);
   with no content, a name Carton could have written is left out. These apply even with Carton off: `.carton/` holds
-  local paths and device pins. Write the shallow export as its own entry: `exportCbproj({ bundle, out, shallow: await
-  carton.exportShallow(), head: { doc, toProject: materializeProject } })`. The opt-in "Include history" adds
+  local paths and device pins. Write the shallow export as its own entry, with the version it ends at as the file's
+  `project.json`: `const shallow = await carton.exportShallow()`, then `exportCbproj({ bundle, out, shallow, head: {
+  doc: await carton.checkout(shallow.head), toProject: materializeProject } })`. The opt-in "Include history" adds
   `history.db` (`fullHistory: (to) => store.exportCopy(to, [...LOCAL_TABLES])`, with `LOCAL_TABLES` from
   `@carton/core`).
-- **What an export holds.** The head it writes is a confirmed version: edits still waiting for a shared cut's server
-  aren't in it. `carton.pendingCount(cut)` says how many there are, whichever process made them (it reads the store, so
-  `cb`'s handle, which has no sync, sees the app's); wait for 0, or export the confirmed head. Before each export, a
-  handle reads the export records other processes wrote, so the app's next `.cbproj` knows a version `cb` exported
-  meanwhile.
+- **What an export holds.** Its history ends at a confirmed version: edits still waiting for a shared cut's server
+  aren't in it. `exportCbproj` writes whatever `head.doc` you give it, so give it that version
+  (`checkout(shallow.head)`), not `head()`, which includes waiting edits. `carton.pendingCount(cut)` says how many there
+  are, whichever process made them (it reads the store, so `cb`'s handle, which has no sync, sees the app's); wait for
+  0, or export the confirmed head. Before each export, a handle reads the export records other processes wrote, so the
+  app's next `.cbproj` knows a version `cb` exported meanwhile.
 - **Open a project you don't have:** `Carton.open({ …, init: { import: contents.shallow } })`. Their cuts arrive
   read-only, and a cut of your own starts from their head.
 - **Open a project you have:** instead of the error, offer "Bring in their changes":

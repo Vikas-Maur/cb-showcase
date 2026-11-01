@@ -301,8 +301,8 @@ test("H11: a .cbproj with \"Include history\" is read back with importHistory: t
   const out = join(scratch("h11-history"), "Demo.cbproj");
   try {
     await carton.commit({ doc: withClip((await carton.head()).doc, "intro", { textContent: "agent's" }), author: agent("director/c/t1") });
-    const head = await carton.head();
-    await exportCbproj({ bundle: bundleDir, out, shallow: await carton.exportShallow(), head: { doc: head.doc, toProject: materializeProject }, fullHistory: (to) => store.exportCopy(to, [...LOCAL_TABLES]) });
+    const shallow = await carton.exportShallow();
+    await exportCbproj({ bundle: bundleDir, out, shallow, head: { doc: await carton.checkout(shallow.head), toProject: materializeProject }, fullHistory: (to) => store.exportCopy(to, [...LOCAL_TABLES]) });
   } finally {
     await carton.close();
     await store.close();
