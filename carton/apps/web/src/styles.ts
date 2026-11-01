@@ -91,6 +91,7 @@ label.cb-field:has(.cb-input){grid-template-columns:90px 1fr}
 .cb-gate{display:flex;align-items:center;justify-content:center;height:100%;padding:24px}
 .cb-gate-card{width:min(420px,100%);padding:24px;border-radius:12px;background:var(--surface-dialog,#1f1f1f);box-shadow:var(--shadow-surface-raised,0 16px 40px -12px #000000b3,0 0 0 1px #ffffff0a)}
 .cb-gate-card h1{margin:0 0 8px;font-size:18px;font-weight:600}
+.cb-gate-more{margin:12px 0 0}.cb-gate-more a{color:var(--text-secondary,#c2c2c2);text-underline-offset:3px}.cb-gate-more a:hover{color:var(--text-primary,#f5f5f5)}
 .cb-gate-form{display:flex;flex-direction:column;gap:12px;margin-top:16px}
 .cb-gate-form .cb-field{grid-template-columns:90px 1fr}
 .cb-watch-page{display:grid;grid-template-rows:50px minmax(0,1fr);height:100%}
