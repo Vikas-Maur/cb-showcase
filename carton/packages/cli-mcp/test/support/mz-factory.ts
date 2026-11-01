@@ -5,9 +5,9 @@ import { Carton, merge3 } from "@carton/core";
 import type { Doc, Rec } from "@carton/core";
 import { openSqliteStore } from "@carton/store-sqlite";
 import { jsonTimelineCodec } from "@carton/cardboard";
-import { Materializer } from "@carton/cardboard/node";
+import { cartonMaterializerEngine, Materializer } from "@carton/cardboard/node";
 import type { MaterializerHost } from "@carton/cardboard/node";
-import { CartonHolderEngine, CartonMaterializerEngine, nodeHasher } from "@carton/local";
+import { CartonHolderEngine, nodeHasher } from "@carton/local";
 import type { HelperFactoryOptions } from "@carton/local";
 import { adapter, schema } from "./real.ts";
 
@@ -25,7 +25,7 @@ const host: MaterializerHost = {
 export async function createHolderEngine({ dbPath, config }: HelperFactoryOptions) {
   const store = await openSqliteStore(dbPath);
   const carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor: { kind: "system", id: "engine", name: "Engine" } });
-  const mz = new Materializer({ bundle: String(config.projectDir), engine: new CartonMaterializerEngine(carton), host, codec: jsonTimelineCodec });
+  const mz = new Materializer({ bundle: String(config.projectDir), engine: cartonMaterializerEngine(carton), host, codec: jsonTimelineCodec });
   await mz.start();
   mz.watch();
   const engine = new CartonHolderEngine(carton, { materializer: mz });

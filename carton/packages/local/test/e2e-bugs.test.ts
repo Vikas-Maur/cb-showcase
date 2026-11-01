@@ -180,12 +180,12 @@ test("S3-1: a replica opened through @carton/local is named, never \"replica\": 
 });
 
 test("B5: a view save whose merge raises a card keeps it for its author (cb conflicts lists it), once", async () => {
-  const { CartonMaterializerEngine } = await import("../src/materializer-engine.ts");
+  const { cartonMaterializerEngine } = await import("@carton/cardboard/node");
   const { actorKey } = await import("../src/writes.ts");
   const store = createMemoryStore();
   const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: { kind: "system", id: "engine" } });
   try {
-    const eng = new CartonMaterializerEngine(c);
+    const eng = cartonMaterializerEngine(c);
     await eng.head();
     // the agent printed its view at this state ...
     const at = await c.head();
@@ -213,12 +213,12 @@ test("B5: a view save whose merge raises a card keeps it for its author (cb conf
 });
 
 test("B5: a retried view save never brings back a card its author resolved meanwhile; the engine passes cut, head and own through", async () => {
-  const { CartonMaterializerEngine } = await import("../src/materializer-engine.ts");
+  const { cartonMaterializerEngine } = await import("@carton/cardboard/node");
   const { actorKey } = await import("../src/writes.ts");
   const store = createMemoryStore();
   const c = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: { kind: "system", id: "engine" } });
   try {
-    const eng = new CartonMaterializerEngine(c);
+    const eng = cartonMaterializerEngine(c);
     await eng.head();
     // what cardboard's materializer reads through it: the current cut, its head key, an author's own inserts
     assert.equal(eng.cut(), c.cut);

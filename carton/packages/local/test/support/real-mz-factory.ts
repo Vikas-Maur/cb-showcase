@@ -1,14 +1,13 @@
 // The engine factory for R5-04: Carton (test adapter) + the cardboard materializer (JSON timeline codec, a plain host
 // for the test schema) on the lease holder, watching the bundle; CartonHolderEngine serves `cb` calls, including
-// `cb source print --view`. config: { projectDir, followMs? }.
+// `cb source print --view`. config: { projectDir, followMs?, freezeIdleMs? }.
 import { Carton, merge3 } from "@carton/core";
 import type { Doc, Rec } from "@carton/core";
 import { openSqliteStore } from "@carton/store-sqlite";
 import { jsonTimelineCodec } from "@carton/cardboard";
-import { Materializer } from "@carton/cardboard/node";
+import { cartonMaterializerEngine, Materializer } from "@carton/cardboard/node";
 import type { MaterializerHost } from "@carton/cardboard/node";
 import { CartonHolderEngine } from "../../src/open.ts";
-import { CartonMaterializerEngine } from "../../src/materializer-engine.ts";
 import { nodeHasher } from "../../src/hasher.ts";
 import type { HelperFactoryOptions } from "../../src/helper.ts";
 import { adapter, schema } from "./real.ts";
@@ -27,7 +26,7 @@ const host: MaterializerHost = {
 export async function createHolderEngine({ dbPath, config }: HelperFactoryOptions) {
   const store = await openSqliteStore(dbPath);
   const carton = await Carton.open({ adapter, store, hasher: nodeHasher, actor: { kind: "system", id: "engine", name: "Engine" } });
-  const mz = new Materializer({ bundle: String(config.projectDir), engine: new CartonMaterializerEngine(carton), host, codec: jsonTimelineCodec });
+  const mz = new Materializer({ bundle: String(config.projectDir), engine: cartonMaterializerEngine(carton), host, codec: jsonTimelineCodec, ...(config.freezeIdleMs !== undefined ? { freezeIdleMs: Number(config.freezeIdleMs) } : {}) });
   await mz.start();
   mz.watch();
   // config.followMs: how often the app looks for other processes' writes (B11); 0: only when nudged
