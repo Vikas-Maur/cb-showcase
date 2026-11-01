@@ -162,6 +162,23 @@ test("a cb call: a hooked agent's is hookRead (its Stop ends the freeze), anyone
   }
 });
 
+test("runWrite: the person's own action in the app (`gui`) is no cb call: it freezes nothing, whoever the actor (windows-sync R3)", async () => {
+  const c = await opened();
+  try {
+    const { mz, calls } = recorder();
+    const person: Actor = { kind: "human", id: "person" };
+    const w = (id: string, actor: Actor, gui: unknown) => runWrite(c, { id, actor, op: { kind: "pin", owner: id }, gui: gui as boolean }, { materializer: mz });
+    assert.equal((await w("g.person", person, true)).status, "confirmed");
+    await w("g.agent", agent, true);
+    assert.deepEqual([calls, mz.onCbs], [[], 0], "neither onCb nor hookRead");
+    await w("g.no", person, false);
+    await w("g.string", person, "yes");
+    assert.equal(mz.onCbs, 2, "only `gui: true` counts");
+  } finally {
+    await c.close();
+  }
+});
+
 test("tellBusy: one hookRead per hooked author; onCb once if anyone else (or nobody known) is among them", async () => {
   const { mz, calls } = recorder();
   await tellBusy(mz, [agent, agent, null, codex]);
