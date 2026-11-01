@@ -27,6 +27,9 @@
 // - An agent's own `cb` write during a freeze shows in the frozen timeline.tsx at once, as with 1.4.0 (the Materializer's
 //   foldAgentChanges, whatever told it of head: this holder's write, local's follower, a confirmation); the person's
 //   and remote changes stay out until the freeze ends.
+// - The person's GUI save: head moves in the save, and the store writes project.json after it. The facade tells the
+//   Materializer so (onHeadChange("gui", { after }), the extension's hostWrite): its rewrites wait for that write, and
+//   take project.json's envelope and stamp from it instead of reading the file again.
 // - Old prints: a timeline.tsx or view printed by Cardboard 1.4.0 carries a bare `stateUpdatedAt` rev. The facade
 //   maps each one it wrote to its state (`views` table `["rev", ms]`); the engine wrapper resolves them there, so such
 //   a file applies as an edit of that state instead of being refused ("state unknown: re-print").
@@ -35,8 +38,9 @@ import path from "node:path";
 import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
 import { Materializer, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
-import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId } from "@carton/local";
+import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId, fence, nextChangeId, localGroup } from "@carton/local";
 import { caughtUp } from "./live.js";
+import { cutOfChange } from "./view-cards.js";
 
 const MATERIALIZE_MS = 40;
 // How often the views Carton printed are checked for a save (a stat each; nothing when there are none).
@@ -60,7 +64,7 @@ const running = new Map(); // key → View, once started (the facade asks synchr
  * before the Materializer answers it in the view's `.status`: an agent that reads "confirmed" finds it everywhere.
  * Anything else goes to the inner engine as it is.
  */
-function engineFor(inner, lc, landed, mayCommit, cutOf) {
+function engineFor(inner, lc, landed, mayCommit, failed) {
   const old = async (rev) => {
     const ref = await lc.store.get("views", ["rev", Number(rev)]);
     if (!ref) return null;
@@ -73,14 +77,38 @@ function engineFor(inner, lc, landed, mayCommit, cutOf) {
       if (k === "commit") {
         return async (input) => {
           await mayCommit(input.meta?.file);
-          // the cut it lands on (the engine commits on the current one), for its cards (onCards): a card belongs there
-          if (input.id) {
-            cutOf.set(input.id, lc.carton.cut);
-            if (cutOf.size > 64) cutOf.delete(cutOf.keys().next().value);
+          let r;
+          try {
+            r = await t.commit(input.base?.kind === "legacy" ? { ...input, base: (await old(input.base.rev)) ?? input.base } : input);
+          } catch (e) {
+            failed(input.meta?.file);
+            throw e;
           }
-          const r = await t.commit(input.base?.kind === "legacy" ? { ...input, base: (await old(input.base.rev)) ?? input.base } : input);
           if (r?.status && r.status !== "rejected") await landed();
           return r;
+        };
+      }
+      const v = t[k];
+      return typeof v === "function" ? v.bind(t) : v;
+    },
+  });
+}
+
+/**
+ * lc.carton as the Materializer's engine sees it: on a shared cut a commit carries the View's lease as a Store condition
+ * (`fence(nonce)`, core's CommitInput.conditions), so core writes it only while this View still holds the lease. #mayCommit
+ * checks before the save; another process can take the lease between that check and the write, and the save would then be
+ * queued pending in a handle the new holder never reads (review H8 r2 #1). Now core refuses it whole, and the save waits
+ * for the lease as #mayCommit's do. `nonceFor(cut)`: the nonce for a shared cut, null for a local one (any handle commits
+ * there); it throws when the View doesn't hold the lease.
+ */
+function fencedCarton(carton, nonceFor) {
+  return new Proxy(carton, {
+    get(t, k) {
+      if (k === "commit") {
+        return async (input) => {
+          const n = await nonceFor(input?.cut ?? t.cut);
+          return t.commit(n ? { ...input, conditions: [...(input?.conditions ?? []), fence(n)] } : input);
         };
       }
       const v = t[k];
@@ -112,23 +140,31 @@ export class View {
     const { lc, bundlePath } = this;
     const codec = globalThis.__cartonTimelineCodec;
     if (!codec) throw new Error("this build has no timeline.tsx printer for Carton");
-    const cutOf = new Map(); // a view save's request id → the cut it was committed on
     const mz = new Materializer({
       bundle: bundlePath,
-      engine: engineFor(cartonMaterializerEngine(lc.carton), lc, () => this.materializeNow(), (file) => this.#mayCommit(file), cutOf),
+      engine: engineFor(cartonMaterializerEngine(fencedCarton(lc.carton, (cut) => this.#nonceFor(cut))), lc, () => this.materializeNow(), (file) => this.#mayCommit(file), (file) => {
+        if (file && !this.holds()) this.waiting.add(file);
+      }),
       host: cardboardFilesHost,
       codec,
       writeProject: false,
+      // this machine's actor group (local's localGroup()): on a shared cut a windowless agent of this machine's `cb`
+      // edit shows in the frozen timeline.tsx too, as a hooked agent's does; a teammate's agents stay out
+      group: localGroup(),
       // `.carton/displaced` is the facade's (project.json's installs, its journal): the Materializer's start-up recovery
       // would take an untagged file there as a timeline.tsx save
       displacedDir: path.join(CARTON_DIR, "displaced-views"),
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
+      // The cut: the one the save was committed on, as the Materializer reports it (its stored result's: also for a
+      // save it resumes after a restart, and a retry core answered by id with its first attempt's, reviews H8 r2 #2 and
+      // r3 #2). A result stored without one (an older build's) goes by the cut its change is on.
       onCards: (c) => {
-        const cut = cutOf.get(c.request) ?? lc.carton.cut;
-        cutOf.delete(c.request);
         const lost = (e) => warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e));
-        try { Promise.resolve(this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, { ...c, cut })).catch(lost); } catch (e) { lost(e); }
+        (async () => {
+          const cut = c.cut ?? (await cutOfChange(lc.store, c.change)) ?? lc.carton.cut;
+          await this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, { ...c, cut });
+        })().catch(lost);
       },
     });
     this.mz = mz;
@@ -203,6 +239,14 @@ export class View {
       }
       await new Promise((r) => setTimeout(r, 50));
     }
+  }
+
+  /** The lease nonce a commit on `cut` is fenced on: null on a local cut; throws while another process holds the lease. */
+  async #nonceFor(cut) {
+    const c = (await this.lc.carton.cuts()).find((x) => x.id === cut);
+    if (!c || c.sequencer?.kind === "local") return null;
+    if (!this.holds()) throw new Error("another process holds this shared project's sync just now; the save is applied once the app has it back");
+    return this.lease.current.nonce;
   }
 
   /** This handle holds the lease right now (not fenced, not stopped). */
@@ -296,6 +340,25 @@ export class View {
   }
 
   /**
+   * A write the app makes for the person (⌘Z), served by this View's holder in this process as its control socket would
+   * serve it: the same engine.serve (local's runWrite on this handle, with the Materializer told, the person's notices
+   * delivered, a retry on a lost append race), without the round trip through the socket to this same process (request
+   * R4). A `gui` write (local-cli 3962f27): the person's own action starts no freeze. Only while this View holds the
+   * lease; otherwise null, and the caller goes through @carton/local's write path, which finds whoever holds it.
+   */
+  /** A GUI save's project.json write is under way (the facade's hostWrite): see the extension's hook. */
+  hostWrite(after) {
+    if (this.stopped || !this.mz) return false;
+    this.mz.onHeadChange("gui", { after });
+    return true;
+  }
+
+  async serveHere(op, actor) {
+    if (this.stopped || !this.holds()) return null;
+    return this.holder.serve({ id: nextChangeId(), actor, op, gui: true });
+  }
+
+  /**
    * A Director turn ended: it and its subagents stop holding the freeze and let go of their pins (the turn's own Stop
    * does both for the whole turn, a subagent's SubagentStop only for itself).
    */
@@ -350,6 +413,12 @@ extend({
   // The facade: timeline.tsx is the Materializer's here (its install and Cardboard's watcher hand over).
   ownsTimeline: (bundlePath) => running.has(keyOf(bundlePath)),
   timelineEvent: (bundlePath) => running.get(keyOf(bundlePath))?.timelineEvent(),
+  // The facade's ⌘Z: served by the View's holder here when it holds the lease (null: the caller writes through local)
+  serveHere: (bundlePath, op, actor) => running.get(keyOf(bundlePath))?.serveHere(op, actor) ?? null,
+  // The facade's GUI save: head moves now and the store writes project.json after it; `after` resolves once that write
+  // has landed, to project.json's envelope and stamp (the Materializer's HostWrite) or to nothing. The rewrites wait for
+  // it and take the envelope from it instead of reading the file again. false: no View here (the facade drops it).
+  hostWrite: (bundlePath, after) => running.get(keyOf(bundlePath))?.hostWrite(after) ?? false,
   async release(dir, inside) {
     const stops = [];
     // A View still starting goes too (review H8 r1): left out, its start would finish after the release, take the

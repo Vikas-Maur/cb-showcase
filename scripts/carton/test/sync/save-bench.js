@@ -8,12 +8,16 @@
 // Prints every save as a JSON line, then the medians per mode and size. Numbers from here are UNVERIFIED until a
 // separate check confirms them (AGENTS.md rule 6). Run it alone (slot.sh), on a quiet machine:
 //   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> CARTON_TEST_DIR=<scratch> \
-//     node scripts/carton/test/sync/save-bench.js [--rounds 4] [--saves 20] [--items 3,200]
+//     node scripts/carton/test/sync/save-bench.js [--rounds 4] [--saves 20] [--items 3,200] [--max-ratio 4]
+// --max-ratio: fail (exit code 1) when a size's save median with Carton on is more than that many times its median
+// with Carton off. A generous bound for a gross regression only (the medians are a busy shared machine's); the save's
+// work itself is held by counts in save-cost.test.js.
 const fs = require("fs"), path = require("path");
 const S = require("./support.js");
 
 const arg = (name, d) => { const i = process.argv.indexOf("--" + name); return i > 0 ? process.argv[i + 1] : d; };
 const ROUNDS = Number(arg("rounds", 4)), SAVES = Number(arg("saves", 20)), SIZES = String(arg("items", "3,200")).split(",").map(Number);
+const MAX_RATIO = arg("max-ratio", null) === null ? null : Number(arg("max-ratio"));
 const median = (a) => { const s = [...a].sort((x, y) => x - y); return s.length ? (s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2) : NaN; };
 
 /** A timeline with a clip and `n` titles, applied with Cardboard's own cb. */
@@ -78,4 +82,13 @@ async function round(b, mode, items, r) {
     summary[`${mode}/${items}`] = { saves: rows.length, saveMedianMs: +median(rows.map((x) => x.save)).toFixed(2), fileMedianMs: +median(files).toFixed(2), fileMissing: rows.length - files.length };
   }
   console.log(JSON.stringify({ summary, unverified: true }));
+  if (MAX_RATIO !== null) {
+    for (const items of SIZES) {
+      const on = summary[`on/${items}`].saveMedianMs, off = summary[`off/${items}`].saveMedianMs;
+      if (!(on <= MAX_RATIO * off)) {
+        console.error(`${items} items: a save with Carton on (median ${on} ms) took more than ${MAX_RATIO}x one with it off (${off} ms)`);
+        process.exitCode = 1;
+      }
+    }
+  }
 })().catch((e) => { console.error(e); process.exitCode = 1; });
