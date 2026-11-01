@@ -1,5 +1,5 @@
 // The Share panel (Invite to edit, Join, who is here, the status words; PLAN §0.1, §12): bundled into carton-ui.js by
-// scripts/carton/build.js, so it runs on the editor's own React, and mounted by patches/ui.js's "Share" rail tab. It
+// scripts/carton/build.js, so it runs on the editor's own React, and opened by the "Share" button at the stage's top-right (scripts/carton/ui.js). It
 // talks to the library worker's live services through the pages' bridge (carton:call liveStatus, liveShare,
 // liveInvite, liveJoin) and follows `{kind: "carton", topic: "live"}` events. Editors' words only: Share, Invite to
 // edit, Join, Syncing · Up to date · Offline: N edits waiting.

@@ -1,27 +1,36 @@
-// The History panel's mount in the editor bundle (EditorRoute-*.js), prepended by patch-carton.js.
-// - The editor waits (at most 2 s, once) for main to say whether Carton is on, so the rail shows the History tab
-//   only when it is. With Carton off nothing else here runs.
-// - The panel loads carton-ui.js (@carton/react with Cardboard's skin) the first time it renders, and hands it the
-//   editor's own React (`o` in this bundle), so Carton's components run in the editor's tree, theme and portals.
-// - Idle panels stay mounted (the rail pre-mounts them); RY() is the editor's "this panel is showing" context, so the
-//   panel subscribes to Carton only while it shows.
+// Carton in the editor bundle (EditorRoute-*.js), prepended by patch-carton.js (scripts/carton/ui.js has the parts):
+// - __cbCartonSide: the History or Share panel, a full-height column beside the agent's chat sidebar, opened from the
+//   title bar's icons.
+// - __cbCartonStageHost: the stage (the preview's column, above the timeline, left of the chat), as Cardboard renders
+//   it but `relative`, plus a layer with the conflict cards' floating stack and the preview banner. It covers exactly
+//   the stage, never the timeline's controls or the chat.
+// - The editor waits (at most 2 s, once) for main to say whether Carton is on. With it off, patch-carton.js renders
+//   Cardboard's own stage div and no side column, and nothing here runs.
+// - Both load carton-ui.js (@carton/react with Cardboard's skin) at the editor's first render, on the editor's own
+//   React (`o` in this bundle), so Carton's components run in the editor's tree, theme and portals.
+// - The live-sync half (sync/patches/ui.js) adds __cbCartonPresence: the person's presence while the editor is open.
 module.exports = String.raw`await Promise.race([window.__carton?.ready, new Promise((r) => setTimeout(r, 2000))]);
 const __cbCartonUi = { mod: null, load: null };
-function __cbCartonPanel({ projectId }) {
+function __cbCartonModule() {
   const [m, setM] = o.useState(__cbCartonUi.mod);
-  const active = RY();
   o.useEffect(() => {
-    if (m || !active) return;
+    if (m) return undefined;
     let live = true;
     window.__cartonReact = o;
     (__cbCartonUi.load ??= import("./carton-ui.js")).then((x) => { __cbCartonUi.mod = x; if (live) setM(x); }, (e) => console.warn("[carton] the History panel did not load:", e?.message ?? e));
     return () => { live = false; };
-  }, [m, active]);
-  return m ? c.jsx(m.CartonPanel, { projectId, active, bridge: window.__carton }) : null;
+  }, [m]);
+  return m;
 }
-function __cbCartonIcon(p) {
-  return c.jsxs("svg", { ...p, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth: 1.75, strokeLinecap: "round", strokeLinejoin: "round", children: [
-    c.jsx("path", { d: "M3 12a9 9 0 1 0 2.6-6.4L3 8" }), c.jsx("path", { d: "M3 3v5h5" }), c.jsx("path", { d: "M12 7.5V12l3 2" }),
-  ] });
+function __cbCartonStageHost({ className, children }) {
+  const m = __cbCartonModule();
+  const projectId = window.__carton?.projectId ?? null;
+  o.useEffect(() => (typeof __cbCartonPresence === "function" ? __cbCartonPresence(projectId) : undefined), [projectId]);
+  return c.jsxs("div", { className: className + " relative", children: [children, m && projectId ? c.jsx(m.CartonStage, { projectId, bridge: window.__carton }, projectId) : null] });
+}
+function __cbCartonSide() {
+  const m = __cbCartonModule();
+  const projectId = window.__carton?.projectId ?? null;
+  return m && projectId ? c.jsx(m.CartonSide, { projectId, bridge: window.__carton }, projectId) : null;
 }
 `;

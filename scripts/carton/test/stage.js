@@ -16,10 +16,11 @@ const stage = (pristine, out, { carton = false } = {}) => {
   node("patch-main.js", path.join(dist, "main.js"));
   node("patch-worker.js", path.join(dist, "library-worker.js"));
   node("patch-renderer.js", path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
+  node("patch-strip.js", path.join(assets, "tabs-DV5oCzuF.js"));
   node("patch-cli.js", path.join(cli, "cardboard.mjs"), path.join(work, "cardboard.orig.mjs"));
   node("patch-cli-media.js", path.join(cli, "chunks", "chunk-LL26E55H.mjs"), path.join(work, "cli-media.orig.mjs"));
   if (carton) {
-    node("patch-carton.js", "--app", path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
+    node("patch-carton.js", "--app", path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"), path.join(assets, "tabs-DV5oCzuF.js"));
     node("patch-carton.js", "--cli", path.join(cli, "cardboard.mjs"), path.join(cli, "chunks", "chunk-LL26E55H.mjs"));
     // As build-windows.js does: the live-sync half's patches on top, when it has them.
     if (fs.existsSync(path.join(scripts, "patch-carton-sync.js"))) {

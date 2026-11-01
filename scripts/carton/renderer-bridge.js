@@ -105,6 +105,18 @@ module.exports = String.raw`window.__carton = (() => {
       } else store.adopt({ ...t, duration: duration(t.timelineItems), cartonPreview: { ref } });
     },
     get stale() { return stale; },
+    // The project the editor shows (the stage's Carton layer follows it).
+    get projectId() { return store?.state().projectId ?? null; },
+    // "Show on timeline" (a conflict card's See it): the clip selected and the playhead at its start. False when the
+    // editor doesn't show it (another project, or the clip isn't in this version).
+    reveal(itemId) {
+      if (!on || !store || !itemId) return false;
+      const st = store.state(), it = (st.timelineItems ?? []).find((i) => i.id === itemId);
+      if (!it) return false;
+      st.selectTimelineItem?.(itemId);
+      st.setPlaybackPosition?.(it.startTime);
+      return true;
+    },
     // For the History panel (carton-ui.js): the worker's carton namespace, and its events for the tabs.
     call: (method, args) => (on && handlers.has(method) ? Promise.resolve().then(() => handlers.get(method)(...(args ?? []))) : call(method, ...(args ?? []))),
     handle(name, fn) {
@@ -112,6 +124,12 @@ module.exports = String.raw`window.__carton = (() => {
       handlers.set(name, fn);
     },
     onEvent: (f) => store.on("carton:event", f),
+    // The title bar's History and Share icons (the tab strip, another page): main routes them to this page as
+    // carton:command, and the page says which panel is open, which main hands to the strip for the icons' pressed look.
+    onCommand: (f) => store.on("carton:command", f),
+    reportPanel(panel) {
+      if (on && store) Promise.resolve(store.invoke("carton:panel", { panel: panel ?? null })).catch(() => {});
+    },
   };
 })();
 `;

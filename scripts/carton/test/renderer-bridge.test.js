@@ -168,3 +168,37 @@ test("a save whose write is under way counts as unsaved: head is adopted only af
   assert.equal(reads, 2);
   assert.deepEqual(t.log.map((l) => l[0]), ["flush", "replace", "adopt"]);
 });
+
+test("See it, Show on timeline: the clip is selected and the playhead goes to its start; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const did = [];
+  t.store.raw({ timelineItems: [{ id: "clip-a", startTime: 4.5, endTime: 8 }], selectTimelineItem: (id) => did.push(["select", id]), setPlaybackPosition: (s) => did.push(["seek", s]) });
+  assert.equal(t.c.projectId, "p1");
+  assert.equal(t.c.reveal("clip-a"), true);
+  assert.deepEqual(did, [["select", "clip-a"], ["seek", 4.5]]);
+  assert.equal(t.c.reveal("gone"), false, "a clip this version doesn't have");
+  const off = load({ enabled: false });
+  await off.c.ready;
+  assert.equal(off.c.reveal("clip-a"), false);
+});
+
+test("the title bar's icons: the page hears carton:command and reports the panel open to main; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const heard = [], sent = [];
+  t.store.on = (channel) => { heard.push(channel); return () => {}; };
+  t.store.invoke = async (channel, payload) => { sent.push([channel, payload]); };
+  t.c.onCommand(() => {});
+  t.c.reportPanel("history");
+  t.c.reportPanel(null);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(heard, ["carton:command"]);
+  assert.deepEqual(sent, [["carton:panel", { panel: "history" }], ["carton:panel", { panel: null }]]);
+  const off = load({ enabled: false });
+  await off.c.ready;
+  const offSent = [];
+  off.store.invoke = async (channel, payload) => { offSent.push([channel, payload]); };
+  off.c.reportPanel("history");
+  assert.deepEqual(offSent, []);
+});

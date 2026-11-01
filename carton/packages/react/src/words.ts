@@ -88,6 +88,19 @@ export const words = {
   keepEarlier: "Keep earlier",
   keepLater: "Keep later",
   showingNow: "Showing now",
+  // "See it" (a card's sides on the timeline): a read-only preview with that side kept, or the clip selected
+  seePreview: "Preview",
+  yourEdit: "Your edit",
+  theirEdit: (name: string) => `${name}'s edit`,
+  seePreviewOf: (side: string) => `Preview: ${side}`,
+  showOnTimeline: "Show on timeline",
+  // The floating stack of cards: collapsed to a pill; a card set aside stays reachable from it, never decided
+  conflictsPill: (n: number) => plural(n, "conflict", "conflicts"),
+  hideConflicts: "Hide conflicts",
+  setAside: "Not now",
+  setAsideHint: "Set aside for now. It stays open, under the conflicts pill.",
+  setAsideList: (n: number) => `Set aside (${n})`,
+  showAgain: "Show again",
   conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,
 
   // Compare card
@@ -154,7 +167,8 @@ export const words = {
   noChanges: "No changes to watch. The two versions look the same.",
 
   // Read-only preview (§9, R2-16)
-  previewing: (label: string) => `Previewing ${label}`,
+  // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
+  previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
   readOnly: "Read-only",
   returnToCurrent: "Return to current to edit",
   previewBlocked: "This is a preview, so edits don't apply here.",
