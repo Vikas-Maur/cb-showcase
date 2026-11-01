@@ -64,12 +64,12 @@ function saveShared(dir: string, id: string, name: string) {
 }
 
 /** The app (engine thread: lease holder + cardboard's Materializer on the bundle) and another process's handle. */
-async function world(t: { after(f: () => Promise<void>): void }, name: string) {
+async function world(t: { after(f: () => Promise<void>): void }, name: string, config: Record<string, unknown> = {}) {
   const { dir, projectId } = bundle(name);
   const init = await openLocal({ projectDir: dir, projectId, adapter, init: { doc: doc0() }, actor: me });
   const dbPath = init.dbPath;
   await init.close();
-  const th = await EngineThread.start({ dbPath, factory: here("./support/real-mz-factory.ts"), config: { projectDir: dir } });
+  const th = await EngineThread.start({ dbPath, factory: here("./support/real-mz-factory.ts"), config: { projectDir: dir, ...config } });
   const other = await openLocal({ projectDir: dir, projectId, adapter, actor: me });
   t.after(async () => { await other.close(); await th.stop(); });
   await until(() => named(shared(dir), "c1") === "c1" && named(project(dir), "c1") === "c1", 10_000, "the app's first print", () => shared(dir));
@@ -123,6 +123,22 @@ test("a hooked agent's cb call freezes timeline.tsx until its Stop, which ends t
   assert.deepEqual(await hook("stop", { hook_event_name: "Stop" }), {});
   assert.deepEqual(answers.at(-1)?.hook, { event: "stop", delivered: true });
   await until(() => named(shared(dir), "c3") === "person 2", 5_000, "the shared file to catch up after the stop", () => shared(dir));
+});
+
+test("a hooked agent's cb call with no Stop (a turn the user interrupted): the freeze ends after its quiet time (dec0271)", { timeout: 60_000 }, async (t) => {
+  // the materializer's quiet time, short here (60 s in the app)
+  const idle = 2_000;
+  const { dir, projectId, person } = await world(t, "hook-cb-idle", { freezeIdleMs: idle });
+  const agent = parseActorId("claude-code/abcdef12")!;
+  const cb = await openLocal({ projectDir: dir, projectId, adapter, actor: agent });
+  t.after(() => cb.close());
+  const t0 = Date.now();
+  assert.equal((await cb.write({ kind: "commit", ops: [set("c1", "name", "the agent's cb edit")] })).status, "confirmed");
+  await person("c3", "person 2");
+  assert.equal(named(shared(dir), "c3"), "c3", "the agent is working: the shared file stays as it was");
+  // no Stop ever comes: the file catches up once the agent has been quiet for the idle time
+  await until(() => named(shared(dir), "c3") === "person 2", idle + 8_000, "the shared file to catch up after the quiet time", () => shared(dir));
+  assert.ok(Date.now() - t0 >= idle, `not before the quiet time: ${Date.now() - t0} ms`);
 });
 
 test("a hooked agent's change another process committed (the follower) freezes timeline.tsx until its Stop, too", { timeout: 60_000 }, async (t) => {

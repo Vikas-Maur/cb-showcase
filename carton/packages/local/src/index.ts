@@ -18,11 +18,13 @@ export { nodeHasher } from "./hasher.ts";
 export * from "./notices.ts";
 export * from "./hook-cli.ts";
 export * from "./hook-send.ts";
-export * from "./materializer-engine.ts";
 export { openLocal, readProjectId, nextChangeId, defaultFactory, CartonHolderEngine } from "./open.ts";
 export type { LocalOptions, LocalCarton, HolderEngineOptions } from "./open.ts";
 
-// The materializer (project.json, the shared timeline.tsx, per-agent views and their `.status` sidecars),
-// displace-then-install and `.cbproj` are `@carton/cardboard/node`'s (agreed with cardboard-adapter); re-exported here so
-// hosts that open a project through `@carton/local` find them in one place.
-export { displaceThenInstall, DisplacedFiles, Materializer, viewPath, statusPath } from "@carton/cardboard/node";
+// The materializer (project.json, the shared timeline.tsx, per-agent views and their `.status` sidecars), its engine on
+// Carton, displace-then-install and `.cbproj` are `@carton/cardboard/node`'s (agreed with cardboard-adapter); re-exported
+// here so hosts that open a project through `@carton/local` find them in one place. The holder's materializer gets
+// `cartonMaterializerEngine(carton)` as is (it reads whether the cut is shared and cards invalid records itself, `b4c9b5f`;
+// local's CartonMaterializerEngine wrapper is gone).
+export { cartonMaterializerEngine, displaceThenInstall, DisplacedFiles, Materializer, viewPath, statusPath } from "@carton/cardboard/node";
+export type { CartonEngine } from "@carton/cardboard/node";

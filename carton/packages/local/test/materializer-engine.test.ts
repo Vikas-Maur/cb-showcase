@@ -1,14 +1,13 @@
-// The holder's materializer engine (`CartonMaterializerEngine`) wraps cardboard-adapter's `cartonMaterializerEngine`.
-// cardboard's materializer uses an optional engine method only when the engine has it, so one the wrapper leaves out is
-// silently not used: without `changesSince`, the freeze can't tell a save that repeated an edit it hid (cardboard-adapter
-// review rounds 13-15), and in the app such a save is merged as before (round 13's double ripple).
+// The holder's materializer engine is cardboard-adapter's `cartonMaterializerEngine`, as is (`b4c9b5f`: local's wrapper
+// is gone, its jobs are the engine's). cardboard's materializer uses an optional engine method only when the engine has
+// it, so one missing is silently not used: without `changesSince`, the freeze can't tell a save that repeated an edit it
+// hid (cardboard-adapter review rounds 13-15), and in the app such a save is merged as before (round 13's double ripple).
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Carton } from "@carton/core";
 import type { Actor, Rec } from "@carton/core";
-import { cartonMaterializerEngine } from "@carton/cardboard/node";
+import { cartonMaterializerEngine } from "../src/index.ts";
 import { createMemoryStore } from "@carton/store-memory";
-import { CartonMaterializerEngine } from "../src/materializer-engine.ts";
 import { adapter, doc0 } from "./support/real.ts";
 
 const me: Actor = { kind: "human", id: "human:me" };
@@ -17,10 +16,10 @@ const set = (id: string, f: string, value: unknown) => ({ op: "set" as const, pa
 
 async function opened() {
   const c = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() }, actor: { kind: "system", id: "engine" } });
-  return { c, eng: new CartonMaterializerEngine(c) };
+  return { c, eng: cartonMaterializerEngine(c) };
 }
 
-test("the wrapper passes changesSince through: the confirmed changes after a seq, newest first, before and after", async () => {
+test("the holder's engine gives changesSince: the confirmed changes after a seq, newest first, before and after", async () => {
   const { c, eng } = await opened();
   try {
     const from = (await c.head()).ref.seq;
@@ -33,25 +32,22 @@ test("the wrapper passes changesSince through: the confirmed changes after a seq
       { seq: from + 2, before: 0.1, after: 0.2 },
       { seq: from + 1, before: 1, after: 0.1 },
     ]);
-    // what the adapter's own engine gives
-    const inner = cartonMaterializerEngine(c);
-    const theirs: number[] = [];
-    for await (const ch of inner.changesSince!(from, { cut: c.cut, until: from + 3 })) theirs.push(ch.seq);
-    const mine: number[] = [];
-    for await (const ch of eng.changesSince(from, { cut: c.cut, until: from + 3 })) mine.push(ch.seq);
-    assert.deepEqual(mine, theirs);
-    assert.deepEqual(mine, [from + 2, from + 1], "until is exclusive");
+    const until: number[] = [];
+    for await (const ch of eng.changesSince(from, { cut: c.cut, until: from + 3 })) until.push(ch.seq);
+    assert.deepEqual(until, [from + 2, from + 1], "until is exclusive");
   } finally {
     await c.close();
   }
 });
 
-test("every method cardboard-adapter's engine has, the wrapper has too (an optional one left out is silently unused)", async () => {
+test("the holder's engine has every optional method cardboard's materializer uses (one missing is silently unused)", async () => {
   const { c, eng } = await opened();
   try {
-    const inner = cartonMaterializerEngine(c) as unknown as Record<string, unknown>;
-    const missing = Object.keys(inner).filter((k) => typeof inner[k] === "function" && typeof (eng as unknown as Record<string, unknown>)[k] !== "function");
+    const e = eng as unknown as Record<string, unknown>;
+    const missing = ["changesSince", "newChangeId", "own", "cut", "headRef", "shared"].filter((k) => typeof e[k] !== "function");
     assert.deepEqual(missing, []);
+    await eng.head();
+    assert.equal(eng.shared!(), false, "a local cut: read from the cut, no option needed");
   } finally {
     await c.close();
   }
