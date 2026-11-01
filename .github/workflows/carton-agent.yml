@@ -88,6 +88,8 @@ jobs:
           key: carton-agent-tools-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.group }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/groups.json') }}
 
       - name: Test ${{ matrix.group }}
+        env:
+          CARTON_CI_AGENT: ${{ github.ref_name }}
         run: node ci/run-tests.mjs --group ${{ matrix.group }}
 
       - name: Upload results
