@@ -503,7 +503,10 @@ run below.
    header names; Carton's merge replaces Cardboard's. The header can be Cardboard's (`// cardboard:rev <number>`) or
    Carton's (`// cardboard:rev Main cut@12~3f9a1c0e b:… p:… by …`, as Carton's own prints of the timeline write it);
    only the first such line counts. For Carton's, the edit merges against that exact version and is saved as made on
-   it; a version Carton can't rebuild exactly is refused with "print it again". (Cardboard alone reads only a number
+   it; a version Carton can't rebuild exactly is refused with "print it again". With Carton on, `cb source print` and
+   the timeline file always carry Carton's header, so agents editing at once never merge against the wrong version (a
+   number names one exactly too; before, the newest version "at or before" it was taken, and with several writers that
+   could be a newer one, so an agent's edit put back another's older values). (Cardboard alone reads only a number
    there, so it took Carton's header for none and merged against the current timeline, reverting newer edits.)
 3. A `.cbproj` never carries `.carton\` or Carton's view files in `.scratch\views\` (on or off: the database holds
    local paths); anything else in `.scratch\views\` goes in.

@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
+import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, branchToken } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
@@ -264,6 +264,13 @@ const refOf = async (lc, rev) => {
   return ref;
 };
 const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
+// The header a print carries for a version (core's ref token: "<cut name>@<seq>~<hash8> b:<cut8>"), which the apply
+// resolves back to exactly that version; null if its cut is unknown here.
+async function headerOf(lc, ref) {
+  if (!ref || typeof ref !== "object" || typeof ref.seq !== "number" || !(ref.hash8 ?? ref.hash)) return null;
+  const cut = (await lc.carton.cuts()).find((x) => x.id === ref.branchId);
+  return cut ? `${cut.name}@${ref.seq}~${(ref.hash8 ?? ref.hash).slice(0, 8)} b:${branchToken(ref.branchId)}` : null;
+}
 
 // Who an actor id is (CARDBOARD_ACTOR's form). The person at the app shares the machine's undo group with windowless
 // agents (§8). "cli" is the store bridge's word for a `cb` that nothing named (no CARDBOARD_ACTOR): who it is comes
@@ -406,13 +413,17 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
   const c = lc.carton;
   const r = await commitIn(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui });
   if (r.status === "rejected") throw new Error("Carton rejected the change: " + r.reason);
-  // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased: the writer's
-  // document is older than head in other fields, so the file gets head, below.)
-  if (r.status === "confirmed" && r.empty && !gui && !r.rebased) return { ...r, doc, merged: false };
+  // Past changes its base didn't hold (they touched other records, so core took it without a rebase): head has them
+  // and the writer's document doesn't, so the file gets head, below (laptop #2: a cb writer's document went into
+  // project.json under head's rev, the next print showed the older values as that version, and its apply put them back)
+  const passed = passedOthers(r, await knownOf(lc, baseRef));
+  // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased, or past others:
+  // the writer's document is older than head in other fields, so the file gets head, below.)
+  if (r.status === "confirmed" && r.empty && !gui && !r.rebased && !passed) return { ...r, doc, merged: false };
   // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's
   // `head` is the holder's state when this handle can't read it (cb's handle has the confirmed rows only).
   const head = r.head?.doc ? r.head : await c.head();
-  if ((r.status === "confirmed" || r.status === "pending") && !r.rebased && !(gui && passedOthers(r, baseRef))) {
+  if ((r.status === "confirmed" || r.status === "pending") && !r.rebased && !passed) {
     // Nothing else was merged in. An agent's or the CLI's document is head as it stands. A GUI save is not: the
     // editor rounds times and drops fields it can't show, which Carton kept (B10), so the file gets head, under the
     // editor's own rev (its save's echo then only moves its base).
@@ -446,16 +457,23 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
 
 /**
  * A change confirmed past others its base didn't hold. They touched other records, so core confirmed it without a
- * rebase (`rebased` 0), but they are in head and not in the writer's document: for a GUI save, head is then not what
- * the editor shows, and must be written with a new rev the editor adopts (else its echo moved only the base, and the
- * person's next save, made on head, undid the other change: ui-words #3). Counted from seqs: no document is hashed.
- * Wrong only towards "passed" (an extra adopt in the editor), never towards losing the other change.
+ * rebase (`rebased` 0), but they are in head and not in the writer's document: head is then not what the writer's
+ * document shows, and must be written with a new rev. For a GUI save the editor then adopts it (else its echo moved
+ * only the base, and the person's next save, made on head, undid the other change: ui-words #3); for cb's, the next
+ * print shows head (laptop #2). Counted from seqs: no document is hashed. Wrong only towards "passed" (an extra write
+ * of head), never towards losing the other change. `known`: how many changes the base holds (knownOf).
  */
-function passedOthers(r, base) {
-  if (r.status !== "confirmed" || typeof r.seq !== "number" || !base || typeof base !== "object") return false;
-  const known = "baseDoc" in base ? base.baseSeq + (base.causal?.length ?? 0) : typeof base.seq === "number" ? base.seq + (base.pending?.length ?? 0) : null;
-  if (known === null) return false;
+function passedOthers(r, known) {
+  if (r.status !== "confirmed" || typeof r.seq !== "number" || known === null) return false;
   return (r.empty ? r.seq : r.seq - 1) > known;
+}
+// The changes a commit's base holds, as a seq on its cut: a held state's, a rev's StateRef, or a Carton header's (cb's
+// apply of a print). null when there is no base (the commit was made on head) or it can't be read.
+async function knownOf(lc, base) {
+  if (!base) return null;
+  if (typeof base === "object") return "baseDoc" in base ? base.baseSeq + (base.causal?.length ?? 0) : typeof base.seq === "number" ? base.seq + (base.pending?.length ?? 0) : null;
+  const on = await lc.carton.resolve(base).catch(() => null);
+  return on ? on.seq + (on.causal?.length ?? 0) : null;
 }
 
 // What Cardboard's own code gets from a Carton state: a copy. Core's records are frozen, and Cardboard edits the
@@ -823,6 +841,45 @@ export const cardboard14 = {
     }
     const first = revs.length ? Math.min(...revs) : Infinity;
     return [...revs, ...older.filter((r) => r < first)];
+  },
+  // Laptop #2: what a print of the project shows (cb source print, MCP's print_timeline, the mirror's timeline.tsx),
+  // under Carton's exact header: the version project.json's rev names, its records from Carton, or head when the rev
+  // names none Carton can rebuild. Header and records come from one version, so the apply merges against exactly what
+  // was printed. (A numeric header went through 1.4.0's revisionAtOrBefore, whose "first at or before" over several
+  // writers' revs could be a newer version: the print's older values then read as the agent's edits.) null: no history.
+  async printed({ bundlePath, project }) {
+    const lc = bundlePath && project ? await open(bundlePath, { projectId: project.id }) : null;
+    if (!lc) return null;
+    const c = lc.carton;
+    let header = await headerOf(lc, await refOf(lc, project.stateUpdatedAt).catch(() => undefined));
+    let doc = header ? (await c.resolve(header).catch(() => null))?.doc : null;
+    if (!doc) {
+      const h = await c.head();
+      [header, doc] = [await headerOf(lc, h.ref), h.doc];
+    }
+    if (!header) return null;
+    return { project: forCardboard({ ...materializeProject(doc, project), stateUpdatedAt: project.stateUpdatedAt }), rev: header };
+  },
+  // Laptop #2: 1.4.0's revisionAtOrBefore (a numeric header's base, MCP's edit at a rev) with history: the exact
+  // version the rev names (the rev map), never the first one at or before it in history order, which over several
+  // writers' revs (each process's clock, not save order) can be a newer version. A rev older than every version
+  // Carton recorded is a print from before history began: 1.4.0's .revs (`files`, `readFile`), as before. Any other
+  // rev names nothing Carton or .revs can rebuild: null (the apply's "print it again", never a guess).
+  async revisionAtOrBefore({ bundlePath, rev, slice, files, readFile }) {
+    if (rev === undefined || rev === null) return null;
+    const lc = await open(bundlePath);
+    const older = async () => {
+      for (const n of await files()) if (n <= rev) { const r = await readFile(n); if (r) return r.doc; }
+      return null;
+    };
+    if (!lc) return older();
+    const exact = await this.revision({ bundlePath, rev, slice, file: () => null });
+    if (exact) return exact.doc;
+    for (const v of await lc.carton.log({})) {
+      const r = await revOf(lc, v.ref);
+      if (typeof r === "number" && r <= rev) return null;
+    }
+    return older();
   },
   // `ref` in place of `rev`: a Carton header ref (H3, the apply's base), {ref, doc} if Carton rebuilds it exactly.
   async revision({ bundlePath, rev, ref: header, slice, file }) {
