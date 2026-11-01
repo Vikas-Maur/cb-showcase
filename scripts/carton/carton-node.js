@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
-import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
+import { describeCardboardCard, fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
@@ -266,8 +266,10 @@ const refOf = async (lc, rev) => {
 const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 
 // Who an actor id is (CARDBOARD_ACTOR's form). The person at the app shares the machine's undo group with windowless
-// agents (§8).
-const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : parseActorId(id) ?? identify({ declared: id }));
+// agents (§8). "cli" is the store bridge's word for a `cb` that nothing named (no CARDBOARD_ACTOR): who it is comes
+// from @carton/local's identity chain, as for Carton's own cb (Claude Code, Codex, Gemini from their environment, a
+// declared agent, else the person at this terminal), never an agent called "cli" (ui-words #4).
+const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group: localGroup() } : id === "cli" ? identify() : parseActorId(id) ?? identify({ declared: id }));
 // "You" in the History panel (R3): in a shared project, this replica's identity (live sync sets it from the host
 // session at share and join), as core tells the person's GUI saves there; before a share, the generic person they are
 // recorded as. GUI saves stay recorded as "person" either way.
@@ -338,6 +340,31 @@ async function importForeign(lc, project) {
   return r.head?.doc ? r.head : lc.carton.head();
 }
 
+// ui-words #3: the person's GUI saves whose answer the editor hadn't yet (a save made before the previous one's echo
+// says so: meta.after). A save that landed as it was is a ref (setRev); one merged with someone else's change has no
+// ref for the person's document, so it is held here, per bundle, as core's HeldBase: the person's document as it was
+// saved, on the version it was made on, with that save in its causal past. Kept for the last few saves of a bundle.
+const heldSaves = new Map();
+const HELD_PER_BUNDLE = 4;
+function holdSave(bundlePath, rev, held) {
+  let m = heldSaves.get(bundlePath);
+  if (!m) heldSaves.set(bundlePath, (m = new Map()));
+  m.set(rev, held);
+  while (m.size > HELD_PER_BUNDLE) m.delete(m.keys().next().value);
+}
+/**
+ * The version a GUI save made right after the editor's previous save (its echo not back) builds on: that save's state.
+ * Null when it isn't known here (a shared cut, a restart): the save is then made on its base, as before.
+ */
+async function afterSave(lc, bundlePath, after) {
+  if (typeof after !== "number") return null;
+  const held = heldSaves.get(bundlePath)?.get(after);
+  if (held) return { base: held, doc: held.baseDoc };
+  const ref = await refOf(lc, after);
+  if (!ref) return null;
+  try { return { base: ref, doc: await lc.carton.checkout(ref) }; } catch { return null; }
+}
+
 async function commit({ bundlePath, base, doc, actor, meta }) {
   if (meta?.materialize) return { doc, status: "materialized" };
   const lc = await open(bundlePath, { projectId: doc.id, doc: base ?? doc });
@@ -346,6 +373,9 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   // The version the edit was made on: the GUI's (its editor's), the apply's header, else what the writer read.
   const rev = meta?.base ?? meta?.rev ?? base?.stateUpdatedAt;
   let baseRef = await refOf(lc, rev), imported = null;
+  // A GUI save made before the editor's previous save was answered holds that save too: made on it, so the two never
+  // clash (ui-words #3). Unknown here: made on its base, as before.
+  const chained = meta?.base !== undefined && baseRef ? await afterSave(lc, bundlePath, meta.after) : null;
   // A Carton header names its version exactly: one that can't be rebuilt any more (the apply checked it a moment ago)
   // is never committed as an edit of head.
   if (typeof rev === "string" && !baseRef) throw new Error(`the version ${rev} the edit was made on is no longer available`);
@@ -355,7 +385,8 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     baseRef = imported.ref;
     await setRev(lc, base.stateUpdatedAt, baseRef);
   }
-  const baseDoc = imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
+  if (chained) baseRef = chained.base;
+  const baseDoc = chained?.doc ?? imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
   const gui = meta?.base !== undefined && !!baseRef;
   const mine = gui ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
   const intent = meta?.intents?.length ? { gui: meta.intents } : undefined;
@@ -381,7 +412,7 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
   // A pending save (shared cut, offline or the server slow) is the optimistic head: as a confirmation. The extension's
   // `head` is the holder's state when this handle can't read it (cb's handle has the confirmed rows only).
   const head = r.head?.doc ? r.head : await c.head();
-  if ((r.status === "confirmed" || r.status === "pending") && !r.rebased) {
+  if ((r.status === "confirmed" || r.status === "pending") && !r.rebased && !(gui && passedOthers(r, baseRef))) {
     // Nothing else was merged in. An agent's or the CLI's document is head as it stands. A GUI save is not: the
     // editor rounds times and drops fields it can't show, which Carton kept (B10), so the file gets head, under the
     // editor's own rev (its save's echo then only moves its base).
@@ -404,7 +435,27 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
   const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
   await setRev(lc, out.stateUpdatedAt, head.ref);
+  // The person's document isn't head: held, so the editor's next save made before this one's answer builds on it.
+  // Only on a cut this handle commits to itself (the change is known); a shared cut's next save uses its base.
+  if (gui && typeof doc.stateUpdatedAt === "number" && r.change?.id && (await c.cuts()).find((x) => x.id === c.cut)?.sequencer.kind === "local") {
+    const on = baseRef && typeof baseRef === "object" && "baseDoc" in baseRef ? { seq: baseRef.baseSeq, causal: baseRef.causal ?? [] } : await lc.carton.resolve(baseRef).catch(() => null);
+    if (on) holdSave(bundlePath, doc.stateUpdatedAt, { baseDoc: mine, baseSeq: on.seq, causal: [...on.causal, r.change.id] });
+  }
   return { ...r, doc: out, merged: true };
+}
+
+/**
+ * A change confirmed past others its base didn't hold. They touched other records, so core confirmed it without a
+ * rebase (`rebased` 0), but they are in head and not in the writer's document: for a GUI save, head is then not what
+ * the editor shows, and must be written with a new rev the editor adopts (else its echo moved only the base, and the
+ * person's next save, made on head, undid the other change: ui-words #3). Counted from seqs: no document is hashed.
+ * Wrong only towards "passed" (an extra adopt in the editor), never towards losing the other change.
+ */
+function passedOthers(r, base) {
+  if (r.status !== "confirmed" || typeof r.seq !== "number" || !base || typeof base !== "object") return false;
+  const known = "baseDoc" in base ? base.baseSeq + (base.causal?.length ?? 0) : typeof base.seq === "number" ? base.seq + (base.pending?.length ?? 0) : null;
+  if (known === null) return false;
+  return (r.empty ? r.seq : r.seq - 1) > known;
 }
 
 // What Cardboard's own code gets from a Carton state: a copy. Core's records are frozen, and Cardboard edits the
@@ -839,7 +890,8 @@ export const cardboard14 = {
       const lc = await lcOf(projectId);
       if (!lc) return null;
       const me = meOf(lc);
-      const handle = fromCarton(lc.carton, { me });
+      // Cards in the editor's words: what each side did differently, a clip by its media's file name, never ids.
+      const handle = fromCarton(lc.carton, { me, describeCard: describeCardboardCard });
       const ui = handle.ui ?? handle;
       const bundlePath = bundleOf(projectId);
       if (!panels.has(bundlePath)) panels.set(bundlePath, new Set());

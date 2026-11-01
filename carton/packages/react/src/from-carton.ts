@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, deepEqual, describe, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
+import { actorKey, deepEqual, describe, describeCard as coreDescribeCard, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -71,8 +71,13 @@ export interface FromCartonOptions {
   creditParts?: (itemId: string, schema: Schema) => { what: string; path: readonly string[] }[];
   /** A clip's display name for Credits. Default: the item id. */
   clipName?: (itemId: string) => string;
-  /** Plain words for a card. Default: a generic description from the card's path and values. */
-  describeCard?: (card: ConflictCard, schema: Schema) => { title: string; mine: string; theirs: string; reason?: string };
+  /**
+   * Plain words for a card: `mine` words core's `ours` side, `theirs` core's `theirs`. `doc` is the cut's head, when
+   * read (cards are worded at once without it, then again with it: it names the clip, its media and its track).
+   * Default: core's describeCard (what each side did differently, with the schema's labels, never ids). Cardboard:
+   * `@carton/cardboard`'s describeCardboardCard.
+   */
+  describeCard?: (card: ConflictCard, schema: Schema, doc?: Doc) => { title: string; mine: string; theirs: string; reason?: string };
   /** "Keep both" for a card, as the host expresses it (Cardboard: a new track or `alternatives`); null: not offered. */
   keepBoth?: (card: ConflictCard) => Choice | null;
   /** The side a late conflict shows until picked. H5: head's value stays, so "theirs". */
@@ -119,7 +124,6 @@ export function splitPathKey(key: string): string[] {
   return key.split("/").map((s) => s.replace(/~1/g, "/").replace(/~0/g, "~"));
 }
 
-/** A UI actor from a core actor. Keys follow core's actorKey(); a subagent's parent is its agent. */
 /**
  * The agent a subagent works for. The identity sources (`@carton/cardboard` parseActor, `@carton/local`) give a
  * subagent the agent's id plus `/sub-<type>-<id>` (§10: `director/<chat>/<turn>/sub-Explore-ab12`); an id without
@@ -130,15 +134,56 @@ const agentIdOf = (a: CoreActor): string => {
   return i > 0 ? a.id.slice(0, i) : a.id;
 };
 
-export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string): Actor {
-  if (!a) return { key: "system/carton", kind: "system", name: "Carton" };
-  const key = actorKey(a);
-  const kind: Actor["kind"] = a.kind === "external" ? "agent" : a.kind;
-  const isYou = key === actorKey(me) || (a.kind !== "human" && groupOf(a) === myGroup);
-  const name = a.kind === "subagent" ? a.name ?? a.agentType ?? a.id : a.kind === "external" ? `${a.name ?? a.id} (terminal)` : a.name ?? a.id;
-  const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: agentIdOf(a) }) : a.kind !== "human" && isYou ? actorKey(me) : undefined;
-  return { key, kind, name, ...(parent ? { parent } : {}), ...(a.agentType ? { subagentType: a.agentType } : {}), ...(isYou ? { isYou } : {}) };
+// Agents by their product name, from their id ("director/<chat>/<turn>", "claude-code/<session>", "codex/<name>",
+// "claude-code@<host>"), never the machine or the terminal they ran in.
+const PRODUCTS: Readonly<Record<string, string>> = { director: "Director", "claude-code": "Claude Code", codex: "Codex", gemini: "Gemini", cursor: "Cursor" };
+function productName(a: CoreActor): string {
+  const head = agentIdOf(a).split("/")[0]!.split("@")[0]!;
+  const known = PRODUCTS[head] ?? (a.provider && head.startsWith(a.provider) ? PRODUCTS[a.provider] : undefined);
+  if (known) return known;
+  // a declared or unknown agent: its recorded name, without a chain, a terminal or a self-given label ("Aider (fix)")
+  const n = (a.name ?? head).split(" › ")[0]!.replace(/ \(terminal\)$/, "").replace(/ \([^)]*\)$/, "").trim();
+  return n || head;
 }
+/** "claude-opus-5-5" → "Opus 5.5"; any other model as given. */
+export function modelWords(model: string | undefined): string | undefined {
+  if (!model) return undefined;
+  const m = /^claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?$/.exec(model);
+  return m ? `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}` : model;
+}
+/**
+ * Writers with no name of their own, on a person's machine: a terminal user (`terminal:<user>@<host>`), an outside
+ * program's save (`external:project.json`), and the bridge's defaults before ui-words ("cli" for a `cb` with no actor,
+ * "app" for the app's own writes). They are the person at that machine.
+ */
+const isPersonsWriter = (a: CoreActor): boolean => a.kind === "external" || (a.kind === "agent" && (a.id === "cli" || a.id === "app" || a.id.startsWith("external:")));
+
+/**
+ * A UI actor from a core actor, named in words an editor knows: the person is "You" (a `cb` they typed included), a
+ * teammate their name, an agent its product name, a subagent its agent's (its type kept for tooltips). Core tells an
+ * agent's change with its `owner`, the person behind the replica that made it: someone else's agent gets them as its
+ * parent ("Leo's Director"); with no owner known, an agent is yours when it is in your undo group. A system actor
+ * (the cut's start) has no name. Keys follow core's actorKey(); a subagent's parent is its agent.
+ */
+export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string): Actor {
+  if (!a) return SYSTEM;
+  const key = actorKey(a);
+  if (a.kind === "system") return { key, kind: "system", name: "" };
+  const meKey = actorKey(me);
+  const owner = a.owner;
+  const mine = owner ? me.kind === "human" && owner.id === me.id : groupOf(a) === myGroup;
+  const ownerKey = owner && !mine ? actorKey({ kind: "human", id: owner.id }) : undefined;
+  if (a.kind === "human" || isPersonsWriter(a)) {
+    if (key === meKey || (a.kind !== "human" && mine)) return { key: meKey, kind: "human", name: me.name ?? "You", isYou: true };
+    if (a.kind === "human") return { key, kind: "human", name: a.name ?? (a.id === PERSON ? "Teammate" : a.id) };
+    return owner ? { key: ownerKey!, kind: "human", name: owner.name } : { key, kind: "human", name: "Teammate" };
+  }
+  const name = productName(a);
+  const model = modelWords(a.model);
+  const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: agentIdOf(a) }) : mine ? meKey : ownerKey;
+  return { key, kind: a.kind === "subagent" ? "subagent" : "agent", name, ...(parent ? { parent } : {}), ...(a.agentType ? { subagentType: a.agentType } : {}), ...(model ? { model } : {}), ...(mine ? { isYou: true } : {}) };
+}
+const SYSTEM: Actor = { key: "system/carton", kind: "system", name: "" };
 
 /** Ops that apply one side of a card at the head. The provisional side needs none. */
 export function cardOps(card: ConflictCard, value: unknown): Op[] {
@@ -158,26 +203,13 @@ export function cardOps(card: ConflictCard, value: unknown): Op[] {
   return [value === undefined ? { op: "unset", path } : { op: "set", path, value }];
 }
 
-const short = (v: unknown): string => {
-  if (v === undefined || v === null) return "removed";
-  if (typeof v === "string") return `“${v.length > 60 ? v.slice(0, 57) + "…" : v}”`;
-  if (typeof v === "number") return Number.isInteger(v) ? String(v) : v.toFixed(2);
-  if (typeof v === "object") {
-    const e = Object.entries(v as Record<string, unknown>).filter(([, x]) => typeof x !== "object");
-    return e.length ? e.slice(0, 3).map(([k, x]) => `${k} ${short(x)}`).join(", ") : "changed";
-  }
-  return String(v);
-};
-
-/** Generic plain words for a card: the record's label and each side's value. */
-export function defaultDescribeCard(card: ConflictCard, schema: Schema): { title: string; mine: string; theirs: string; reason?: string } {
-  const path = splitPathKey(card.path);
-  const coll = schema.collections[path[0] ?? ""];
-  const rec = (card.ours ?? card.theirs ?? card.base) as Rec | undefined;
-  const label = coll ? (schema.label?.(path[0]!, path.length === 2 ? rec : undefined) ?? String(path[1])) : path[0] ?? card.path;
-  const field = path.slice(2).join(" ").replace(/^#/, "");
-  const title = coll ? `'${label}'${field ? ` ${field}` : ""}` : field || label;
-  return { title, mine: short(card.ours), theirs: short(card.theirs), ...(card.reason ? { reason: card.reason } : {}) };
+/**
+ * Generic plain words for a card (core's describeCard): the record's label (looked up in `doc` when given), and for each
+ * side only what it did differently, with the schema's field labels and times as History words them; never ids.
+ */
+export function defaultDescribeCard(card: ConflictCard, schema: Schema, doc?: Doc): { title: string; mine: string; theirs: string; reason?: string } {
+  const w = coreDescribeCard(card, schema, doc);
+  return { title: w.title, mine: w.ours, theirs: w.theirs, ...(w.reason ? { reason: w.reason } : {}) };
 }
 
 function defaultMeasure(doc: Doc, schema: Schema) {
@@ -223,19 +255,25 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const personKey = opts.me.kind === "human" && opts.me.id !== PERSON ? actorKey({ kind: "human", id: PERSON }) : null;
   // This machine's own GUI saves, as core recorded them (the generic person): told as `me`. Only for what is known to be
   // this machine's (a local change, your undo group); log() and credits() already come resolved by core.
-  const own = (a: CoreActor): CoreActor => (personKey !== null && a.kind === "human" && a.id === PERSON ? opts.me : a);
+  // The project's import made by this handle is this person's too (core's log() tells it so; this is the live event).
+  const own = (a: CoreActor): CoreActor => ((personKey !== null && a.kind === "human" && a.id === PERSON) || (a.kind === "system" && a.id === "import") ? opts.me : a);
   const schema = carton.schema;
   const describeCard = opts.describeCard ?? defaultDescribeCard;
   const actors = new Map<string, Actor>();
   const ui = (a: CoreActor | null | undefined): Actor => {
     const x = toUiActor(a, opts.me, myGroup);
     const known = actors.get(x.key);
-    if (known && known.name === x.name && known.parent === x.parent) return known;
+    if (known && known.name === x.name && known.parent === x.parent && known.isYou === x.isYou) return known;
     actors.set(x.key, x);
-    // A subagent's agent may never act itself: register it, so "Director › Explore" can be named.
-    if (a?.kind === "subagent" && x.parent && !actors.has(x.parent)) {
-      const agent = agentIdOf(a);
-      actors.set(x.parent, { key: x.parent, kind: "agent", name: agent === "director" || agent.startsWith("director/") ? "Director" : agent, parent: actorKey(opts.me), isYou: x.isYou });
+    // Someone else's agent is named by its owner ("Leo's Director"): the owner core told is registered as a person.
+    const owner = a?.owner;
+    const ownerKey = owner && !x.isYou ? actorKey({ kind: "human", id: owner.id }) : undefined;
+    if (owner && ownerKey && actors.get(ownerKey)?.name !== owner.name) actors.set(ownerKey, { key: ownerKey, kind: "human", name: owner.name });
+    // A subagent's agent may never act itself: register it, so the subagent reads as its agent. Its parent is whoever
+    // the subagent belongs to: you, its owner, or no one known (never you by default: a teammate's subagent isn't).
+    if (a?.kind === "subagent" && x.parent && (!actors.has(x.parent) || (ownerKey && !actors.get(x.parent)!.parent))) {
+      const parent = x.isYou ? actorKey(opts.me) : ownerKey;
+      actors.set(x.parent, { key: x.parent, kind: "agent", name: x.name, ...(parent ? { parent } : {}), ...(x.isYou ? { isYou: true } : {}) });
     }
     return x;
   };
@@ -317,7 +355,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       at: c.at,
       author: ui(c.author),
       kind,
-      summary: prev?.summary ?? (c.kind === "root" ? "Started the cut" : c.kind === "fork" ? "Made this cut" : ""),
+      summary: prev?.summary ?? (c.kind === "root" ? "Started the cut" : c.kind === "fork" ? "Made this cut" : c.kind === "import" ? "Imported the project" : ""),
       ...(prev?.details ? { details: prev.details } : {}),
       ...(c.name ? { name: c.name } : {}),
       ...(kind === "turn" ? { turn: { label: c.name ?? "", edits: turnEdits ?? 1 } } : {}),
@@ -680,6 +718,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const addCards = (list: readonly ConflictCard[], by: CoreActor | undefined, cut = cutId) => {
     const key = (onCut: string, c: ConflictCard) => `${onCut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
     const seen = new Set([...cardEntries.values()].map((e) => key(e.cut, e.card)));
+    const added: string[] = [];
     for (const card of list) {
       if (seen.has(key(cut, card))) continue;
       seen.add(key(cut, card));
@@ -702,19 +741,39 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           sig: cardSig(card),
         },
       });
-      // A rebase's cards (an edit made offline meeting a teammate's) don't say whose edit is at head: Credits does
-      if (!by) void nameOtherSide(id, card, cut);
+      added.push(id);
     }
     publishConflicts();
+    if (added.length) void track(completeCards(added, cut, !by));
   };
-  const nameOtherSide = async (id: string, card: ConflictCard, cut: string) => {
-    const segs = splitPathKey(card.path);
-    const record = schema.collections[segs[0] ?? ""] ? segs.slice(0, 2) : segs.slice(0, 1);
-    const who = await carton.credits(record, { cut }).catch(() => null);
-    const e = cardEntries.get(id);
-    if (!who || !e || disposed) return;
-    e.conflict = { ...e.conflict, theirs: { ...e.conflict.theirs, author: ui(who) } };
-    publishConflicts();
+  /**
+   * Cards are worded at once, then again with the cut's head (read once for the batch): it names the clip, its media
+   * and its track. A rebase's cards (an edit made offline meeting another) don't say whose edit is at head, or when:
+   * Credits does (`nameOther`), so a card between two of your own edits can tell them apart (earlier, later).
+   */
+  const completeCards = async (ids: readonly string[], cut: string, nameOther: boolean) => {
+    const doc = await carton.head(cut).then((h) => h.doc, () => undefined);
+    for (const id of ids) {
+      const first = cardEntries.get(id);
+      if (!first || disposed) return;
+      const segs = splitPathKey(first.card.path);
+      const record = schema.collections[segs[0] ?? ""] ? segs.slice(0, 2) : segs.slice(0, 1);
+      const who = nameOther ? await carton.credits(record, { cut, detail: true }).catch(() => null) : null;
+      const e = cardEntries.get(id);
+      if (!e || disposed) return;
+      let c = e.conflict;
+      if (doc) {
+        const w = describeCard(e.card, schema, doc);
+        // describeCard words core's sides; the person's edit is core's theirs here
+        if (w.title !== c.title || w.theirs !== c.mine.summary || w.mine !== c.theirs.summary)
+          c = { ...c, title: w.title, mine: { ...c.mine, summary: w.theirs }, theirs: { ...c.theirs, summary: w.mine } };
+      }
+      if (who) c = { ...c, theirs: { ...c.theirs, author: ui(who.actor), ...(who.at != null ? { at: who.at } : {}) } };
+      if (c !== e.conflict) {
+        e.conflict = c;
+        publishConflicts();
+      }
+    }
   };
 
   const onEvent = (e: CartonEvent) => {
@@ -983,8 +1042,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   let planFor = "";
 
   // A fold card: yours is the cut you fold into, theirs the cut you fold in; each side says which.
-  const toFoldConflict = (card: ConflictCard, theirs: Actor, intoCut?: string, fromCut?: string): Conflict => {
-    const w = describeCard(card, schema);
+  const toFoldConflict = (card: ConflictCard, theirs: Actor, intoCut?: string, fromCut?: string, doc?: Doc): Conflict => {
+    const w = describeCard(card, schema, doc);
     const where = (id?: string) => (id ? cuts.find((c) => c.id === id)?.label : undefined);
     const mineWhere = where(intoCut), theirWhere = where(fromCut);
     return {
@@ -1055,13 +1114,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const cardList: ConflictCard[] = r.status === "conflicts" || r.status === "compare" ? r.cards : [];
       for (const c of cardList) planCards.set(c.path, c);
       const fromHead = (await carton.log({ cut: fromId, limit: 1 }))[0];
-      const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author), intoId, fromId));
+      // the cut folded into names the cards' clips (and every change below): read once
+      const intoDoc = cardList.length || r.preview ? (await carton.head(intoId)).doc : undefined;
+      const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author), intoId, fromId, intoDoc));
       // §13 "every difference shown as a card": the cards are the whole plan, there is nothing else to leave out.
       if (r.status === "compare") return { ...base, conflicts: cardsOut, partial: false };
       const preview = r.preview;
       if (!preview) return { ...base, conflicts: cardsOut, partial: false };
       // One row per record the fold touches, so leaving one out (partial accept) is keyed by its record path.
-      const intoDoc = (await carton.head(intoId)).doc;
       const groups = new Map<string, Op[]>();
       for (const op of preview.ops) {
         if (op.op === "remap") continue;
@@ -1073,7 +1133,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       }
       const changes: FoldChange[] = [];
       for (const [key, ops] of groups) {
-        const words = engine.describe(ops, intoDoc, schema);
+        const words = engine.describe(ops, intoDoc!, schema);
         const record = !!schema.collections[splitPathKey(key)[0]!];
         const who = record ? await carton.credits(splitPathKey(key), { cut: fromId, detail: true }) : null;
         changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock() });
@@ -1358,7 +1418,7 @@ export function shotLabels(doc: Doc, shots: readonly { start: number; end: numbe
     }
     if (heap.length) {
       const it = items[heap[0]!.i]!;
-      out[s.i] = schema.label?.(tl.collection, it) ?? (typeof it.name === "string" ? it.name : undefined);
+      out[s.i] = schema.label?.(tl.collection, it, doc) ?? (typeof it.name === "string" ? it.name : undefined);
     }
   }
   return out;

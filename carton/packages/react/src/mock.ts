@@ -46,9 +46,9 @@ export const people = {
   bob: { key: "human/bob", kind: "human", name: "Bob Okafor" } as Actor,
   priya: { key: "human/priya", kind: "human", name: "Priya Shah" } as Actor,
   director: { key: "agent/director", kind: "agent", name: "Director", parent: "human/alice", isYou: true } as Actor,
-  explore: { key: "agent/director/sub-explore-4f1a", kind: "subagent", name: "Explore", subagentType: "Explore", parent: "agent/director", isYou: true } as Actor,
-  captions: { key: "agent/director/sub-captions-9b2c", kind: "subagent", name: "caption-fixer", subagentType: "caption-fixer", parent: "agent/director", isYou: true } as Actor,
-  terminal: { key: "agent/claude-code-terminal", kind: "agent", name: "Claude Code (terminal)", parent: "human/alice", isYou: true } as Actor,
+  explore: { key: "agent/director/sub-explore-4f1a", kind: "subagent", name: "Director", subagentType: "Explore", parent: "agent/director", isYou: true } as Actor,
+  captions: { key: "agent/director/sub-captions-9b2c", kind: "subagent", name: "Director", subagentType: "caption-fixer", parent: "agent/director", isYou: true } as Actor,
+  terminal: { key: "agent/claude-code-terminal", kind: "agent", name: "Claude Code", parent: "human/alice", isYou: true, model: "Opus 5.5" } as Actor,
   bobsDirector: { key: "agent/director-bob", kind: "agent", name: "Director", parent: "human/bob" } as Actor,
 };
 
@@ -251,8 +251,8 @@ export function createMockUi(opts: MockOptions = {}): MockUi {
     {
       id: "items/title-1/textContent",
       title: "Title text",
-      mine: { author: people.alice, summary: "“Summer sale”", at: now0 - 300_000 },
-      theirs: { author: people.bob, summary: "“Summer launch”", at: now0 - 240_000 },
+      mine: { author: people.alice, summary: "\"Summer sale\"", at: now0 - 300_000 },
+      theirs: { author: people.bob, summary: "\"Summer launch\"", at: now0 - 240_000 },
       canKeepBoth: true,
       provisional: "theirs",
     },

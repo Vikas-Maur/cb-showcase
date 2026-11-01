@@ -40,11 +40,14 @@ test("people: this store's generic person is told as setIdentity's person, in lo
   assert.deepEqual(a.identity(), { id: "alice", name: "Alice" });
   const alice = { kind: "human", id: "alice", name: "Alice", group: "alice@laptop" };
   assert.deepEqual(await byName(a, "gui edit"), { author: alice, as: me }, "told as the person, recorded as the generic one");
-  assert.deepEqual(await byName(a, "agent edit"), { author: director, as: undefined }, "an agent as recorded");
+  // ui-words: an agent is told as recorded plus its owner, the person behind the replica that made its change (so a
+  // teammate's reads "Alice's Director"); nothing it was recorded as changes, so no authoredAs
+  const owned = { ...director, owner: { id: "alice", name: "Alice" } };
+  assert.deepEqual(await byName(a, "agent edit"), { author: owned, as: undefined }, "an agent as recorded, with its owner");
   assert.deepEqual(await byName(a, "carol's"), { author: carol, as: undefined }, "a named human as recorded");
   assert.deepEqual(await a.credits(["items", "a"]), alice);
   assert.deepEqual(await a.credits(["items", "a"], { detail: true }), { actor: alice, at: (await a.credits(["items", "a"], { detail: true }))!.at, change: (await a.credits(["items", "a"], { detail: true }))!.change, authoredAs: me });
-  assert.deepEqual(await a.credits(["items", "b"]), director);
+  assert.deepEqual(await a.credits(["items", "b"]), owned);
   // another process on this machine (its own replica id): its GUI edits are this person's too, once its rows load
   const b = await Carton.open({ adapter, store, actor: me });
   await b.commit({ ops: [set("d", "name", "other process")] });

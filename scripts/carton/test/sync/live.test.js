@@ -95,7 +95,9 @@ test("people: Alice's GUI edits read as Alice at Bob's and Bob's as Bob at Alice
   // Every GUI save is recorded as the generic "person" (hashes and history untouched): each computer tells it as the
   // person behind the replica that made it, its own at once (the identity set at share and join), a teammate's as the
   // host says. Each computer's own GUI saves, by change id, as it tells them:
-  const told = (pc) => new Map(pc.cb(["history", "Demo"]).json().versions.filter((v) => v.by?.kind === "human" && v.change).map((v) => [v.change, v.by]));
+  // GUI edits only: the project's import is told as its person where it was made (ui-words) and names no one on a
+  // computer that joined (a system row there), so it is not one of them
+  const told = (pc) => new Map(pc.cb(["history", "Demo"]).json().versions.filter((v) => v.by?.kind === "human" && v.change && v.kind !== "import").map((v) => [v.change, v.by]));
   const own = (pc, who) => [...told(pc)].filter(([, by]) => by.id === who).map(([c]) => c);
   const mine = { Alice: own(alice, "Alice"), Bob: own(bob, "Bob") };
   assert.ok(mine.Alice.includes(beforeShare.change), "Alice's edit from before the share is hers on her computer: " + JSON.stringify([...told(alice)]));

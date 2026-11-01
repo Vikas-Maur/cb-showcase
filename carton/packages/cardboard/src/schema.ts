@@ -335,13 +335,32 @@ export const cardboardSchema: Schema = defineSchema({
   hard,
   soft,
   timeline: { ...TL, shots },
-  label: (coll, r) => {
+  // A record's name for people (History, cards): its own name or text; a clip without one is named after its media's
+  // file name (looked up in `doc`, when given); media by its file name, else its text, else its kind. Never
+  // "undefined"; an id fragment only when nothing else names it.
+  label: (coll, r, doc) => {
     if (!r) return "?";
-    if (coll === TRACKS) return String(r.name ?? r.id);
-    const caption = typeof r.captionText === "string" ? r.captionText.slice(0, 30) : undefined;
-    return String(r.name ?? r.textContent ?? caption ?? `${String(r.type)} ${String(r.id).slice(0, 6)}`);
+    if (coll === TRACKS) return words(r.name, 60) ?? (typeof r.type === "string" ? `${r.type} track` : "track");
+    if (coll === MEDIA) return mediaName(r) ?? `media ${String(r.id).slice(0, 6)}`;
+    const own = words(r.name, 60) ?? words(r.textContent) ?? words(r.captionText);
+    if (own) return own;
+    const m = doc && typeof r.mediaItemId === "string" ? (getIn(doc, [MEDIA, r.mediaItemId], cardboardSchema) as Rec | undefined) : undefined;
+    const file = m && (words((m.data as Rec | undefined)?.fileName, 60) ?? words((m.data as Rec | undefined)?.content));
+    return file ?? `${typeof r.type === "string" ? r.type : "clip"} ${String(r.id).slice(0, 6)}`;
   },
 });
+
+/** Text that names something: trimmed to `max` characters; undefined for anything else or blank. */
+function words(v: unknown, max = 40): string | undefined {
+  if (typeof v !== "string") return undefined;
+  const t = v.replace(/\s+/g, " ").trim();
+  return t ? (t.length > max ? t.slice(0, max - 1) + "…" : t) : undefined;
+}
+/** A media entry's name: its file name, else its text, else its kind ("video"). */
+export function mediaName(m: Rec): string | undefined {
+  const d = m.data as Rec | undefined;
+  return words(d?.fileName, 60) ?? words(d?.content) ?? words(d?.type);
+}
 
 /** An item of an engine doc by id. */
 export const itemOf = (doc: Doc, id: string): Rec | undefined => getIn(doc, [ITEMS, id], cardboardSchema) as Rec | undefined;

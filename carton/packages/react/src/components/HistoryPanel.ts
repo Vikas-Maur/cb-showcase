@@ -49,9 +49,10 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
   const v = p.v;
   // A turn without a label (the engine knows none) is titled by what it did.
   const title = v.name || v.turn?.label || v.summary;
+  // A system row (the cut's start) names no one: no avatar, no name, only its time.
   const meta = [
-    h(Avatar, { key: "a", actor: v.author, size: 14 }),
-    h(ActorName, { key: "n", actor: v.author }),
+    v.author.kind === "system" ? null : h(Avatar, { key: "a", actor: v.author, size: 14, named: true }),
+    v.author.kind === "system" ? null : h(ActorName, { key: "n", actor: v.author }),
     v.turn ? h("span", { key: "e", className: "carton-version-edits" }, words.turnEdits(v.turn.edits)) : null,
     h("time", { key: "t", dateTime: new Date(v.at).toISOString(), "data-carton-tip": exactTime(v.at, locale) }, when(v.at, p.now, locale, words.justNow)),
   ];

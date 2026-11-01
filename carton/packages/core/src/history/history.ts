@@ -584,7 +584,8 @@ export class History {
     }
     const change = {
       id: o.id ?? this.#nextId(),
-      author: o.author,
+      // a told `owner` (log, credits) is never recorded: it isn't part of who made the change, and the hash covers it
+      author: o.author.owner ? (({ owner: _o, ...a }) => a)(o.author) : o.author,
       branchId: cutId,
       intent,
       kinds: o.kinds ?? null,
@@ -1471,10 +1472,21 @@ export class History {
 /** The remap a change applied to its cut: its intent's maps, or for a fold the edge map it applied to its first parent. */
 const firstParentMap = (c: ConfirmedChange): RemapMaps | undefined => (c.mergeOf ? c.mergeEdges?.first : c.intent?.maps);
 
-/** "Undo Director: tighter intro": who (agents only) and what (default: the change's name, intent or kind). */
+/**
+ * "Undo Director: tighter intro": who (agents only, by the agent's name: a subagent's edit is its agent's) and what
+ * (default: the change's name, intent or kind). The person's own edits, typed in a terminal included (`external`), and
+ * the system's say no one.
+ */
 export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {
-  const who = c.author.kind === "human" ? "" : `${c.author.name ?? c.author.agentType ?? c.author.id}${c.author.kind === "external" ? " (terminal)" : ""}: `;
-  return `Undo ${who}${what}`;
+  const a = c.author;
+  const agent = a.kind === "agent" || a.kind === "subagent" ? agentName(a) : "";
+  return `Undo ${agent ? `${agent}: ` : ""}${what}`;
+}
+/** An agent's name for people: a subagent's is the agent that started it ("Director › Explore" is Director's). */
+function agentName(a: Actor): string {
+  const n = (a.name ?? "").replace(/ \(terminal\)$/, "");
+  const head = n.split(" › ")[0]!.trim();
+  return head || (a.kind === "subagent" ? (a.id.split("/")[0] === "director" ? "Director" : a.id.split("/")[0]!) : a.id);
 }
 
 const touchesTimeline = (schema: Schema, ops: readonly Op[]): boolean => !!schema.timeline && ops.some((op) => op.op === "remap" || op.path[0] === schema.timeline!.collection);

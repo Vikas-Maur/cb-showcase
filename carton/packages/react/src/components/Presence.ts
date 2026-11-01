@@ -5,7 +5,7 @@
 // requestAnimationFrame per frame. React renders the layer once.
 
 import { createElement as h, memo, useEffect, useMemo, useRef } from "react";
-import { actorColor, actorLabel } from "../actors.ts";
+import { actorColor, actorDetail, actorLabel } from "../actors.ts";
 import { useCartonUi, useCurrentCutId, usePeers, useWords } from "../hooks.ts";
 import type { Actor, Ghost, Peer } from "../model.ts";
 import { Avatar, cx } from "./ui.ts";
@@ -49,7 +49,8 @@ export function groupPeers(peers: readonly Peer[]): Group[] {
 const PeerAvatar = memo(function PeerAvatar({ peer, size }: { peer: Peer; size: number }) {
   const ui = useCartonUi();
   const words = useWords();
-  const label = actorLabel(peer.actor, ui.actor.bind(ui), words.you) + (peer.idle ? ` · ${words.idle}` : peer.activity ? ` · ${peer.activity}` : "");
+  // An avatar alone: its tooltip is its only label, so it says it all ("Director › Explore", the model).
+  const label = (actorDetail(peer.actor, ui.actor.bind(ui), words.you) ?? actorLabel(peer.actor, ui.actor.bind(ui), words.you)) + (peer.idle ? ` · ${words.idle}` : peer.activity ? ` · ${peer.activity}` : "");
   return h("span", { className: "carton-peer", "data-idle": peer.idle ? "" : undefined, "data-kind": peer.actor.kind }, h(Avatar, { actor: peer.actor, size, title: label }));
 });
 

@@ -12,7 +12,7 @@ export interface Actor {
   /** Stable key, e.g. `human/alice` or `agent/director/chat-1/turn-3/sub-explore-ab12`. */
   readonly key: string;
   readonly kind: "human" | "agent" | "subagent" | "system";
-  /** Display name: "Alice", "Director", "Claude Code (terminal)". */
+  /** Display name: "Alice", "Director", "Claude Code" (a subagent: its agent's product name). */
   readonly name: string;
   /** Key of the actor that started this one. */
   readonly parent?: string;
@@ -22,6 +22,8 @@ export interface Actor {
   readonly color?: string;
   /** True for the local person and the agents acting for them. */
   readonly isYou?: boolean;
+  /** The model an agent ran on, in words ("Opus 5.5"), when known: tooltips only (actorDetail). */
+  readonly model?: string;
 }
 
 /** What made a version. "turn" is a Director turn, shown as a checkpoint (the existing chat checkpoints). */

@@ -170,6 +170,9 @@ export interface Credit {
  * it is told as the person behind its replica (windows-sync R3): `Carton.setIdentity`, and the server's people.
  */
 export const PERSON = "person";
+const withoutOwner = ({ owner: _o, ...a }: Actor): Actor => a;
+/** The recorded author of a project's import (its hash covers it: never changed). `log()` tells it as the person. */
+const IMPORTER: Actor = { kind: "system", id: "import", name: "Import" };
 export type { Person, PersonRids } from "./sync/messages.ts";
 
 /** A Published cut, the cut it was published from, and whether that cut has moved on since. */
@@ -637,6 +640,11 @@ class CartonImpl implements Carton {
   #me: Person | null = null;
   /** This store's replica ids (meta ["rid", rid]): the person here made their changes. */
   #ownRids = new Set<string>();
+  /**
+   * This store joined the project from someone else's invite (meta ["joined"]): the project's import is then the
+   * sharer's, not this person's. Stores made before the marker are told as their own (only joins made since are known).
+   */
+  #joined = false;
   /** The last write of people the server sent: a reload waits for it, so it never reads the store from before it. */
   #peopleSaved: Promise<unknown> = Promise.resolve();
   #closed = false;
@@ -779,7 +787,7 @@ class CartonImpl implements Carton {
     if (init && "doc" in init && init.asChange) await this.#resumeImport(init.doc);
   }
   #importInit(cut: string, doc: Doc): void {
-    if (this.#h.headSeq(cut) === 0) this.#h.commit(cut, { doc, author: { kind: "system", id: "import", name: "Import" }, kind: "import", id: `import.${this.#meta.projectId}` });
+    if (this.#h.headSeq(cut) === 0) this.#h.commit(cut, { doc, author: { ...IMPORTER }, kind: "import", id: `import.${this.#meta.projectId}` });
   }
   /**
    * A project an older build left at its empty root (stopped between the root and the import, request 7), opened with
@@ -834,6 +842,8 @@ class CartonImpl implements Carton {
         { table: T.cuts, key: [j.cut.id], value: { ...j.cut, forkOf: null } },
         { table: T.keyframes, key: [j.cut.id, 0], value: j.doc0 },
         { table: T.meta, key: ["join", j.cut.id], value: { forkOf: j.cut.forkOf ?? null } },
+        // for good (["join", cut] goes once the lineage is here): the project's import is the sharer's (#who)
+        { table: T.meta, key: ["joined"], value: true },
       ],
       [{ table: T.meta, key: PROJECT, expect: "absent" }],
     );
@@ -1085,7 +1095,8 @@ class CartonImpl implements Carton {
     const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
     const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
     const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
-    return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids));
+    const joined = (await s.get<boolean>(T.meta, ["joined"])) === true;
+    return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids), (this.#joined = joined));
   }
   /**
    * A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite, with a
@@ -1268,7 +1279,8 @@ class CartonImpl implements Carton {
     for (const l of this.#listeners) l(e);
   }
   #actor(a?: Actor): Actor {
-    if (a) return a;
+    // `owner` is told (log, credits), never recorded: an actor read back and passed in commits without it
+    if (a) return a.owner ? withoutOwner(a) : a;
     const x = this.#opts.actor;
     if (x && "current" in x) return x.current() ?? { kind: "human", id: "unknown" };
     return x ?? { kind: "human", id: "unknown" };
@@ -1364,7 +1376,8 @@ class CartonImpl implements Carton {
     await this.#refresh(cut);
     const versions = this.#h.log(cut, opts).map((v) => {
       const who = this.#who(v.author, v.change);
-      return who === v.author ? v : { ...v, author: who, authoredAs: v.author! };
+      // an owner only adds to the actor as recorded: `authoredAs` is for an actor told as someone else
+      return who === v.author ? v : who && v.author && who.kind === v.author.kind && who.id === v.author.id ? { ...v, author: who } : { ...v, author: who, authoredAs: v.author! };
     });
     if (!opts.summary || !versions.length) return versions;
     // one state per page, walked forward: each version is described against the state just before it
@@ -1374,7 +1387,8 @@ class CartonImpl implements Carton {
     const summary = new Map<number, string>();
     for (let s = Math.max(1, lo); s <= versions[0]!.ref.seq; s++) {
       const c = log[s - 1]!;
-      const first = c.name ?? E.describe(c.ops, doc, this.schema, c.intent)[0];
+      // an import is the whole project arriving: one line, not its first field ("Changed the project name …")
+      const first = c.name ?? (c.kind === "import" ? "Imported the project" : E.describe(c.ops, doc, this.schema, c.intent)[0]);
       if (first) summary.set(s, first);
       doc = E.apply(doc, c.ops, this.schema);
     }
@@ -1419,9 +1433,10 @@ class CartonImpl implements Carton {
     await this.#whole();
     await this.#refresh(cut);
     const c = this.#h.creditsDetail(cut, record);
-    const who = c && this.#who(c.actor, c.actor.kind === "human" && c.actor.id === PERSON ? this.#creditChange(c.change, record) : c.change)!;
+    // a fold credits a record to who changed it on the cut folded in: the person (or an agent's owner) behind that change
+    const who = c && this.#who(c.actor, c.actor.kind !== "system" ? this.#creditChange(c.change, record) : c.change)!;
     if (!opts.detail) return who;
-    return c && who !== c.actor ? { ...c, actor: who!, authoredAs: c.actor } : c;
+    return c && who && who !== c.actor ? (who.kind === c.actor.kind && who.id === c.actor.id ? { ...c, actor: who } : { ...c, actor: who, authoredAs: c.actor }) : c;
   }
   // ---------------------------------------------------------------- people (windows-sync R3)
   identity(): Person | null {
@@ -1470,13 +1485,29 @@ class CartonImpl implements Carton {
   }
   /**
    * The generic person's change told by person: the person behind its replica, as the server said, else this replica's
-   * own person for this store's replicas. Anyone else (an agent, a named human) as recorded.
+   * own person for this store's replicas. An agent's change (a subagent's, a terminal's) is told as recorded plus its
+   * `owner`, the person behind the replica that made it, so a teammate's Director reads "Leo's Director"; with no
+   * known person (offline, no identity, a watch link) it stays as recorded. A named human as recorded.
    */
   #who(a: Actor | null, change: ChangeId | null): Actor | null {
-    if (a?.kind !== "human" || a.id !== PERSON || !change) return a;
+    // The project's import (`#importInit`) is recorded as the system's, but the person whose project it was made it:
+    // told as this replica's person, unless this store joined the project from someone else (then it stays the
+    // system's, which History shows with no name). The record, and its hash, stay as they are.
+    if (a?.kind === "system" && a.id === IMPORTER.id && change?.startsWith("import.") && !this.#joined) {
+      const p: Actor = { kind: "human", id: PERSON };
+      return this.#me ? { ...p, id: this.#me.id, name: this.#me.name } : p;
+    }
+    if (!a || !change || a.kind === "system" || (a.kind === "human" && a.id !== PERSON)) return a;
+    const p = this.#personOf(change);
+    if (!p) return a;
+    if (a.kind === "human") return { ...a, id: p.id, name: p.name };
+    const { owner: _recorded, ...rest } = a;
+    return { ...rest, owner: { id: p.id, name: p.name } };
+  }
+  /** The person behind the replica that made a change: as the server said, else this replica's own for its replicas. */
+  #personOf(change: ChangeId): Person | undefined {
     const rid = change.slice(0, Math.max(0, change.indexOf(".")));
-    const p = this.#people.get(rid) ?? (this.#me && (rid === this.#rid || this.#ownRids.has(rid)) ? this.#me : undefined);
-    return p ? { ...a, id: p.id, name: p.name } : a;
+    return this.#people.get(rid) ?? (this.#me && (rid === this.#rid || this.#ownRids.has(rid)) ? this.#me : undefined);
   }
   async undoStack(group?: string, opts: { cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;

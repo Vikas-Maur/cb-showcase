@@ -51,9 +51,31 @@ test("a timeline save names the version the editor shows, and carries the record
   await t.c.ready;
   t.c.intent({ kind: "remap", tracks: ["t1"], at: 4, delta: -2 });
   assert.deepEqual(t.c.saveMeta({ id: "p1", stateUpdatedAt: 101 }, { ownedFields: ["tracks", "timelineItems"] }), { actor: "person", base: 100, intents: [{ kind: "remap", tracks: ["t1"], at: 4, delta: -2 }] });
-  assert.deepEqual(t.c.saveMeta({ id: "p1", stateUpdatedAt: 102 }, { ownedFields: ["tracks", "timelineItems"] }), { actor: "person", base: 100, intents: undefined });
+  // ui-words #3: a save made before the previous one's echo says it holds that save too (after), so the worker makes
+  // it on that save, never on base 100, where it clashed with the first save at head (a card of you against you)
+  assert.deepEqual(t.c.saveMeta({ id: "p1", stateUpdatedAt: 102 }, { ownedFields: ["tracks", "timelineItems"] }), { actor: "person", base: 100, after: 101, intents: undefined });
   // A media or name save is the person's, with no timeline base.
   assert.deepEqual(t.c.saveMeta({ id: "p1", stateUpdatedAt: 103 }, { ownedMediaIds: ["m"] }), { actor: "person" });
+});
+
+test("after: only while the editor's own last save is unanswered; never after its echo or an adopt of head", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const scope = { ownedFields: ["tracks", "timelineItems"] };
+  t.c.saveMeta({ id: "p1", stateUpdatedAt: 101 }, scope);
+  assert.equal(t.c.saveMeta({ id: "p1", stateUpdatedAt: 102 }, scope).after, 101);
+  // the latest save's echo: the base is 102, the document is that save: no after
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 102, carton: true });
+  assert.equal(t.state().cartonBase, 102);
+  const m103 = t.c.saveMeta({ id: "p1", stateUpdatedAt: 103 }, scope);
+  assert.deepEqual([m103.base, m103.after], [102, undefined]);
+  assert.equal(t.c.saveMeta({ id: "p1", stateUpdatedAt: 104 }, scope).after, 103, "made before 103's echo");
+  // head adopted (a change from elsewhere): the editor shows head with its base, nothing of its own unanswered
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 200, carton: true });
+  assert.equal(t.state().cartonBase, 200);
+  assert.equal(t.c.saveMeta({ id: "p1", stateUpdatedAt: 201 }, scope).after, undefined);
+  // another project's save never chains to this one's
+  assert.equal(t.c.saveMeta({ id: "p2", stateUpdatedAt: 202 }, scope).after, undefined);
 });
 
 test("our own save's echo only moves the base", async () => {

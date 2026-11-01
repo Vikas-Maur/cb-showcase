@@ -132,7 +132,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
                       h(
                         "span",
                         { className: "carton-fold-meta" },
-                        h(Avatar, { actor: c.author, size: 14 }),
+                        h(Avatar, { actor: c.author, size: 14, named: true }),
                         h(ActorName, { actor: c.author }),
                         h("time", null, when(c.at, now, locale, words.justNow)),
                       ),

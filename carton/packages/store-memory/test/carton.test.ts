@@ -43,7 +43,9 @@ test("§16 migration: init asChange records the existing project as main@1, one 
   const log = await c.log();
   assert.deepEqual(log.map((v) => [v.ref.seq, v.kind]), [[1, "import"], [0, "root"]]);
   assert.deepEqual((await c.head()).doc.items, doc0().items);
-  assert.equal((await c.credits(["items", "a"]))?.id, "import");
+  // recorded as the import, told as the person whose project it was (ui-words: History says "You", never "Import")
+  const credit = await c.credits(["items", "a"], { detail: true });
+  assert.deepEqual([credit?.authoredAs?.id, credit?.actor.kind], ["import", "human"]);
 });
 
 test("two handles on one store act like two processes: concurrent commits both land, none lost", async () => {

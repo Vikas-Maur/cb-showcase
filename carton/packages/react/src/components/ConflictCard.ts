@@ -2,7 +2,8 @@
 // shows the provisional side, and the card says which one that is.
 
 import { createElement as h, memo } from "react";
-import { when } from "../format.ts";
+import { clockTime, when } from "../format.ts";
+import { actorLabel } from "../actors.ts";
 import { useAction, useCartonUi, useConflicts, useLocale, useNow, useWords } from "../hooks.ts";
 import type { Conflict, ConflictChoice, ConflictSide } from "../model.ts";
 import { ActorName, Avatar, Button, cx } from "./ui.ts";
@@ -18,7 +19,8 @@ export interface ConflictCardProps {
   className?: string;
 }
 
-function SideView({ side, which, showing }: { side: ConflictSide; which: "mine" | "theirs"; showing: boolean }) {
+/** `order`: both sides are one person's, told apart as their earlier and later edit (the name slot says which). */
+function SideView({ side, which, showing, order }: { side: ConflictSide; which: "mine" | "theirs"; showing: boolean; order?: { label: string } }) {
   const words = useWords();
   const locale = useLocale();
   const now = useNow();
@@ -28,9 +30,10 @@ function SideView({ side, which, showing }: { side: ConflictSide; which: "mine" 
     h(
       "div",
       { className: "carton-conflict-who" },
-      h(Avatar, { actor: side.author, size: 16 }),
-      h(ActorName, { actor: side.author }),
-      side.at != null ? h("time", { dateTime: new Date(side.at).toISOString() }, when(side.at, now, locale, words.justNow)) : null,
+      h(Avatar, { actor: side.author, size: 16, named: true }),
+      order ? h("span", { className: "carton-actor-name", "data-kind": side.author.kind }, order.label) : h(ActorName, { actor: side.author }),
+      // an ordered side's name carries its clock time ("Your earlier edit (10:04)"): no second, relative one
+      side.at != null && !order ? h("time", { dateTime: new Date(side.at).toISOString() }, when(side.at, now, locale, words.justNow)) : null,
       side.where ? h("span", { className: "carton-conflict-where" }, side.where) : null,
       showing ? h("span", { className: "carton-badge", "data-tone": "muted" }, words.showingNow) : null,
     ),
@@ -44,11 +47,28 @@ function keepLabel(side: ConflictSide, words: Words): string {
   return a.isYou && a.kind === "human" ? words.keepYours(side.where) : words.keepOf(a.name, side.where);
 }
 
+/**
+ * When both sides would read the same ("You" and "You": two of your own edits, or one teammate's two), they are told
+ * apart by order: the side shown now (head) landed first unless their times say otherwise. Null when the names differ.
+ */
+function byOrder(c: Conflict, name: (s: ConflictSide) => string, words: Words, locale: string | undefined): { mine: string; theirs: string; keepMine: string; keepTheirs: string } | null {
+  if (name(c.mine) !== name(c.theirs) || (c.mine.where ?? "") !== (c.theirs.where ?? "")) return null;
+  const earlier: ConflictChoice = c.mine.at != null && c.theirs.at != null ? (c.mine.at <= c.theirs.at ? "mine" : "theirs") : c.provisional === "mine" ? "mine" : "theirs";
+  const a = c.mine.author;
+  const who = a.kind === "human" && a.isYou ? null : name(c.mine);
+  const at = (s: ConflictSide) => (s.at != null ? clockTime(s.at, locale) : undefined);
+  const side = (k: "mine" | "theirs") => (k === earlier ? words.earlierEdit(who, at(c[k])) : words.laterEdit(who, at(c[k])));
+  const keep = (k: "mine" | "theirs") => (k === earlier ? words.keepEarlier : words.keepLater);
+  return { mine: side("mine"), theirs: side("theirs"), keepMine: keep("mine"), keepTheirs: keep("theirs") };
+}
+
 export const ConflictCard = memo(function ConflictCard(p: ConflictCardProps) {
   const ui = useCartonUi();
   const words = useWords();
+  const locale = useLocale();
   const [resolve, busy] = useAction((choice: ConflictChoice) => ui.resolve(p.conflict.id, choice));
   const c = p.conflict;
+  const order = byOrder(c, (s) => actorLabel(s.author, ui.actor.bind(ui), words.you), words, locale);
   const pick = (choice: ConflictChoice) => (p.onPick ? p.onPick(choice) : void resolve(choice));
   const showing = p.picked ?? c.provisional ?? "mine";
   const btn = (choice: ConflictChoice, label: string) =>
@@ -65,14 +85,14 @@ export const ConflictCard = memo(function ConflictCard(p: ConflictCardProps) {
     h(
       "div",
       { className: "carton-conflict-sides" },
-      h(SideView, { side: c.mine, which: "mine", showing: showing === "mine" }),
-      h(SideView, { side: c.theirs, which: "theirs", showing: showing === "theirs" }),
+      h(SideView, { side: c.mine, which: "mine", showing: showing === "mine", ...(order ? { order: { label: order.mine } } : {}) }),
+      h(SideView, { side: c.theirs, which: "theirs", showing: showing === "theirs", ...(order ? { order: { label: order.theirs } } : {}) }),
     ),
     h(
       "div",
       { className: "carton-card-actions" },
-      btn("mine", keepLabel(c.mine, words)),
-      btn("theirs", keepLabel(c.theirs, words)),
+      btn("mine", order ? order.keepMine : keepLabel(c.mine, words)),
+      btn("theirs", order ? order.keepTheirs : keepLabel(c.theirs, words)),
       c.canKeepBoth ? btn("both", words.keepBoth) : null,
     ),
   );

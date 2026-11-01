@@ -86,7 +86,7 @@ test("R2-2: a reviewed card whose source changed since stops the fold; the new v
   await carton.commit({ cut: v.id, ops: [set("a", "name", "Theirs, changed")], author: bob });
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: { "items/a/name": "theirs" } });
   assert.equal(r.ok, false);
-  assert.equal(r.conflicts?.[0]?.theirs.summary, "“Theirs, changed”", "the card as it is now comes back");
+  assert.equal(r.conflicts?.[0]?.theirs.summary, '"Theirs, changed"', "the card as it is now comes back");
   assert.equal((await item(carton, "a")).name, "Mine", "nothing folded in");
   ui.dispose();
 });

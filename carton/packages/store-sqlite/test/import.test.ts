@@ -26,7 +26,9 @@ test("a project is imported as main@1: one insert-all change, credited to the im
   assert.equal(head.doc.name, "Promo");
   const log = await r.carton.log();
   assert.deepEqual(log.map((v) => v.ref.seq), [1, 0]);
-  assert.equal(log[0].author?.id, IMPORT_AUTHOR.id);
+  // recorded as the import; log() tells it as the person whose project it was (ui-words)
+  assert.equal((log[0].authoredAs ?? log[0].author)?.id, IMPORT_AUTHOR.id);
+  assert.equal(log[0].author?.kind, "human");
   assert.equal(log[0].change, importChangeId("proj-1"));
   assert.equal(log[0].kind, "import");
   assert.deepEqual(names(await r.carton.checkout({ branchId: head.ref.branchId, seq: 0 })), [], "main@0 is the empty root");

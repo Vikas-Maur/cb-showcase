@@ -64,7 +64,8 @@ test("History follows commits: newest first, lazy summaries, a Director turn as 
   assert.equal(top.turn?.edits, 2);
   assert.equal(h.at("all", 1)!.kind, "edit", "the turn's earlier version is a plain row");
   assert.equal(h.count("turns"), 1);
-  assert.equal(top.author.name, "Explore");
+  // ui-words: a subagent's name is its agent's ("Director"); its type is kept for tooltips and details
+  assert.deepEqual([top.author.name, top.author.subagentType], ["Director", "Explore"]);
   assert.equal(ui.actor(top.author.parent!)?.name, "Director", "a subagent is named with its agent");
   assert.equal(top.author.isYou, true, "your agents are in your group");
   // Summaries come from describe(), only for rows someone reads.
@@ -168,8 +169,8 @@ test("fold in with a conflict card: the pick decides, nothing is lost", async ()
   assert.equal(plan.conflicts.length, 1);
   const card = plan.conflicts[0]!;
   assert.equal(card.id, "items/a/name");
-  assert.equal(card.mine.summary, "“Mine”");
-  assert.equal(card.theirs.summary, "“Theirs”");
+  assert.equal(card.mine.summary, '"Mine"');
+  assert.equal(card.theirs.summary, '"Theirs"');
   assert.equal(card.mine.where, "Main cut", "your side names the cut you fold into");
   assert.equal(card.theirs.where, "alt", "their side names the cut you fold in");
   const r = await ui.fold(v.id, main, { leaveOut: [], choices: { [card.id]: "theirs" } });
@@ -219,7 +220,7 @@ test("credits and the published cut", async () => {
   await settle();
   const cr = await ui.credits("c");
   assert.equal(cr.clip, "C");
-  assert.equal(cr.lines[0]!.author.name, "Explore");
+  assert.deepEqual([cr.lines[0]!.author.name, cr.lines[0]!.author.subagentType], ["Director", "Explore"], "Credits keep the subagent");
   const main = ui.cuts().find((c) => c.current)!;
   await ui.publish(main.id);
   assert.equal(ui.published()?.newerEdits, 0);
@@ -263,8 +264,8 @@ test("late conflicts addressed to you become cards; picking your side commits it
   assert.equal(ui.conflicts().length, 1);
   const card = ui.conflicts()[0]!;
   assert.equal(card.provisional, "theirs");
-  assert.equal(card.mine.summary, "“Mine”");
-  assert.equal(card.theirs.summary, "“Head”");
+  assert.equal(card.mine.summary, '"Mine"');
+  assert.equal(card.theirs.summary, '"Head"');
   assert.equal(card.theirs.author.name, "Bob");
   await ui.resolve(card.id, "mine");
   assert.equal(ui.conflicts().length, 0);
@@ -283,7 +284,7 @@ test("a GUI save's notices, addressed to the generic person, reach the resolved 
   assert.equal(ui.conflicts().length, 0, "a teammate's notice isn't yours");
   emit({ type: "notice", notice: { to: "human/person", kind: "late-conflict", text: "", by: bob, cards: [card] } });
   assert.equal(ui.conflicts().length, 1, "your own GUI save's conflict shows as a card");
-  assert.equal(ui.conflicts()[0]!.mine.summary, "“Mine”");
+  assert.equal(ui.conflicts()[0]!.mine.summary, '"Mine"');
   emit({ type: "notice", notice: { to: "human/person", kind: "rejected", text: "", by: bob, cards: [{ ...card, path: "items/b/name" }] } });
   assert.equal(ui.conflicts().length, 2, "and so does its rejection");
   ui.dispose();
@@ -323,8 +324,9 @@ test("your own GUI saves (the generic person) read as you in live History and Un
 
 test("helpers: path keys, actors and card ops", () => {
   assert.deepEqual(splitPathKey("items/a~1b/#time"), ["items", "a/b", "#time"]);
-  const ui = toUiActor({ kind: "external", id: "claude-code", name: "Claude Code", group: "alice@laptop" }, alice, "alice@laptop");
-  assert.equal(ui.name, "Claude Code (terminal)");
+  // ui-words: an agent in a terminal is its product, never "(terminal)"; it is yours (your group): parent you
+  const ui = toUiActor({ kind: "agent", id: "claude-code@laptop", name: "Claude Code (terminal)", provider: "claude-code", group: "alice@laptop" }, alice, "alice@laptop");
+  assert.equal(ui.name, "Claude Code");
   assert.equal(ui.kind, "agent");
   assert.equal(ui.isYou, true);
   assert.equal(ui.parent, "human/alice");
@@ -360,4 +362,47 @@ test("over the bridge: the renderer's rows ask for their summaries, the worker d
   assert.equal(client.ui.history().at("all", 20)!.summary, "", "rows nobody looked at stay undescribed");
   server.close();
   ui.dispose();
+});
+
+test("ui-words: authors in words an editor knows: You (a cb you typed too), product names, a subagent as its agent, no system name", () => {
+  const g = "alice@laptop";
+  const name = (a: Actor | null) => toUiActor(a, alice, g);
+  // the person's own writers on this machine: a terminal user, an outside save, the bridge's old "cli" and "app"
+  for (const a of [
+    { kind: "external", id: "terminal:alice@laptop", name: "Terminal", group: g },
+    { kind: "agent", id: "external:project.json", name: "external:project.json", group: g },
+    { kind: "agent", id: "cli", name: "cli", group: g },
+    { kind: "agent", id: "app", name: "app", group: g },
+  ] as Actor[]) assert.deepEqual([name(a).key, name(a).kind, name(a).isYou], ["human/alice", "human", true], a.id);
+  // a teammate's terminal: theirs, by the owner core told, else "Teammate"; never the machine
+  assert.equal(name({ kind: "external", id: "terminal:leo@studio", name: "Terminal", group: "leo@studio" }).name, "Teammate");
+  assert.equal(name({ kind: "external", id: "terminal:leo@studio", name: "Terminal", group: "leo@studio", owner: { id: "leo", name: "Leo" } }).name, "Leo");
+  // agents by product, whatever the id or the recorded name says
+  assert.equal(name({ kind: "agent", id: "director/c1/t2", name: "Director", group: g }).name, "Director");
+  assert.equal(name({ kind: "agent", id: "codex/fix-captions", name: "Codex (fix-captions) (terminal)", provider: "codex", group: g }).name, "Codex");
+  assert.equal(name({ kind: "agent", id: "claude-code/ab12cd34", name: "Claude Code", provider: "claude-code", model: "claude-opus-5-5", group: g }).model, "Opus 5.5");
+  // a subagent: its agent's name in the slot, its type kept for the tooltip
+  const sub = name({ kind: "subagent", id: "director/c1/t4/sub-general-purpose-ab12", name: "Director › general-purpose", agentType: "general-purpose", agentId: "ab12", group: g });
+  assert.deepEqual([sub.name, sub.subagentType, sub.parent], ["Director", "general-purpose", "agent/director/c1/t4"]);
+  // the cut's start and other system rows: no name
+  assert.deepEqual([name(null).kind, name(null).name], ["system", ""]);
+  assert.deepEqual([name({ kind: "system", id: "carton" }).kind, name({ kind: "system", id: "carton" }).name], ["system", ""]);
+  // a generic person who isn't you (a teammate's GUI save with no person known yet)
+  assert.equal(toUiActor({ kind: "human", id: "person" }, alice, g).name, "Teammate");
+});
+
+test("ui-words: the import row is the person's ('Imported the project', You); the cut's start names no one", async () => {
+  const me: Actor = { kind: "human", id: "person", group: "alice@laptop" };
+  const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), asChange: true }, actor: me });
+  const ui = make(carton, { me });
+  await ui.ready;
+  await settle();
+  const rows = ui.history().all!();
+  const imp = rows.find((v) => v.kind === "import")!;
+  assert.equal(imp.summary, "Imported the project");
+  assert.deepEqual([imp.author.isYou, imp.author.kind], [true, "human"]);
+  const root = rows.find((v) => v.seq === 0)!;
+  assert.deepEqual([root.summary, root.author.kind, root.author.name], ["Started the cut", "system", ""]);
+  ui.dispose();
+  await carton.close();
 });

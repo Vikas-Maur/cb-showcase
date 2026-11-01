@@ -4,7 +4,7 @@ import { ChangesPlayer, type Clock, type PlayerState } from "../src/player.ts";
 import { duration, seconds, when } from "../src/format.ts";
 import { windowRange } from "../src/virtual.ts";
 import { TopicHub } from "../src/hub.ts";
-import { actorChain, actorLabel, initials } from "../src/actors.ts";
+import { actorChain, actorDetail, actorLabel, initials } from "../src/actors.ts";
 import { makeShotDiff, people, createMockUi } from "../src/mock.ts";
 import { words } from "../src/words.ts";
 import type { Actor } from "../src/model.ts";
@@ -141,14 +141,20 @@ test("TopicHub coalesces a burst into one call per topic, on the next microtask"
   assert.equal(a, 2);
 });
 
-test("actors: a subagent is named with the agent that started it", () => {
+test("actors: a subagent's slot is the agent that started it; its type and a model are details", () => {
   const byKey = (k: string): Actor | undefined => Object.values(people).find((p) => p.key === k);
-  assert.equal(actorLabel(people.explore, byKey), "Director › Explore");
+  // ui-words: the slot stays short ("Director"); "Director › Explore" is the tooltip, and Credits' details
+  assert.equal(actorLabel(people.explore, byKey), "Director");
+  assert.equal(actorDetail(people.explore, byKey), "Director › Explore");
+  assert.equal(actorLabel(people.terminal, byKey, "You"), "Claude Code");
+  assert.equal(actorDetail(people.terminal, byKey, "You"), "Claude Code · Opus 5.5");
+  assert.equal(actorDetail(people.director, byKey, "You"), undefined, "nothing more than the slot: no tooltip");
+  assert.equal(actorLabel({ key: "system/carton", kind: "system", name: "" }, byKey, "You"), "", "a system row names no one");
   assert.equal(actorLabel(people.alice, byKey, "You"), "You");
   assert.equal(actorLabel(people.bob, byKey, "You"), "Bob Okafor");
   assert.equal(actorLabel(people.director, byKey, "You"), "Director", "your own agent");
   assert.equal(actorLabel(people.bobsDirector, byKey, "You"), "Bob Okafor's Director", "someone else's agent, by its owner");
-  assert.deepEqual(actorChain(people.explore, byKey).map((a) => a.name), ["Alice Moreau", "Director", "Explore"]);
+  assert.deepEqual(actorChain(people.explore, byKey).map((a) => a.subagentType ?? a.name), ["Alice Moreau", "Director", "Explore"]);
   assert.equal(initials("Bob Okafor"), "BO");
   assert.equal(initials("Émile"), "É");
   assert.equal(initials("  "), "?");

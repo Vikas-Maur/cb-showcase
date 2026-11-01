@@ -13,6 +13,8 @@
 // handle(name, fn): call(name, args) then runs fn(...args) here instead of going to main.
 module.exports = String.raw`window.__carton = (() => {
   let on = false, store = null, sent = null, intents = [], stale = false, bypass = false;
+  // The editor's own last timeline save not yet answered: the document holds it, whatever the base says (ui-words #3).
+  let unanswered = null;
   let settle;
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
@@ -34,8 +36,12 @@ module.exports = String.raw`window.__carton = (() => {
       if (!on || !store) return undefined;
       const st = store.state();
       if (!(scope?.ownedFields ?? []).some((f) => TIMELINE.has(f)) || st.projectId !== doc.id) return { actor: "person" };
-      sent = { id: doc.id, rev: doc.stateUpdatedAt };
-      const meta = { actor: "person", base: st.cartonBase ?? undefined, intents: intents.length ? intents : undefined };
+      // The base moves only when this editor's last save comes back (its echo) or it adopts head. A save made before
+      // then holds the earlier save too: it says so ("after"), so the worker makes it on that save, never on the
+      // version before both, where it clashed with the earlier save at head (a card of the person against themself).
+      const after = unanswered && unanswered.id === doc.id && (st.cartonBase == null || unanswered.rev > st.cartonBase) ? unanswered.rev : undefined;
+      sent = unanswered = { id: doc.id, rev: doc.stateUpdatedAt };
+      const meta = { actor: "person", base: st.cartonBase ?? undefined, ...(after !== undefined ? { after } : {}), intents: intents.length ? intents : undefined };
       intents = [];
       return meta;
     },
@@ -69,6 +75,7 @@ module.exports = String.raw`window.__carton = (() => {
       host.projects.replace(list.map((p) => (p.id === ev.id ? project : p)));
       const t = timelineOf(project);
       host.editor.adopt({ ...t, duration: duration(t.timelineItems), cartonBase: project.stateUpdatedAt ?? null });
+      unanswered = null; // the editor shows head now, with its base
       return { adopted: false, timeline: undefined };
     },
     // H6: true when Carton took the undo (Cardboard's snapshot undo then doesn't run). If Carton has no history for
@@ -94,6 +101,7 @@ module.exports = String.raw`window.__carton = (() => {
         store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
         store.adopt({ ...t, duration: duration(t.timelineItems), cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
         stale = false;
+        unanswered = null;
       } else store.adopt({ ...t, duration: duration(t.timelineItems), cartonPreview: { ref } });
     },
     get stale() { return stale; },
