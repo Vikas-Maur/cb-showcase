@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <link rel="icon" href="data:,">
-<title>What's new · Carton</title>
+<title>What's new · Cardboard showcase</title>
 <meta name="description" content="Everything we've built on Cardboard 1.4.0: a Windows version, faster imports, smoother playback, and Carton, version history and live editing for video.">
 <!-- The changelog: one static page, no script. Headings in Fraunces and text in Geist (both SIL OFL 1.1, licenses
      beside the files in fonts/), the free faces closest to cardboard.ai/changelog's own. -->
@@ -101,17 +101,20 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   footer{margin-top:64px;padding:24px 20px 40px}
 }
 @media (prefers-reduced-motion:reduce){summary::after{transition:none}}
+.nav .btn{gap:6px}
+.nav .btn svg{width:15px;height:15px;flex:none}
+@media (max-width:480px){.brand{font-size:18px;white-space:nowrap}.nav .btn{width:32px;padding:0;justify-content:center}.nav .btn .lbl{display:none}}
 </style>
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/">Carton</a>
+  <a class="brand" href="/">Cardboard showcase</a>
   <!-- The same bar as the landing page. GitHub and Download are placeholders for now: buttons, so a click does nothing
        on this script-free page. -->
   <nav class="nav">
     <a class="link" href="/changelog/" aria-current="page">Changelog</a>
-    <button class="btn dark" type="button" data-placeholder="github">GitHub</button>
-    <button class="btn" type="button" data-placeholder="windows-download">Download</button>
+    <button class="btn dark" type="button" data-placeholder="github" aria-label="GitHub"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5a11.5 11.5 0 0 0-3.6 22.4c.6.1.8-.3.8-.6v-2c-3.2.7-3.9-1.5-3.9-1.5-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.8.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.2 1.2a11 11 0 0 1 5.8 0c2.2-1.5 3.2-1.2 3.2-1.2.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .3.2.7.8.6A11.5 11.5 0 0 0 12 .5z"/></svg><span class="lbl">GitHub</span></button>
+    <button class="btn" type="button" data-placeholder="windows-download" aria-label="Download for Windows"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.1 10.4 4v7.3H3zm8.3-1.2L21 2.5v8.8h-9.7zM3 12.7h7.4V20L3 18.9zm8.3 0H21v8.8l-9.7-1.4z"/></svg><span class="lbl">Download</span></button>
   </nav>
 </header>
 
@@ -122,6 +125,35 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 
 <main>
 
+<article id="5">
+  <aside>
+    <time datetime="2026-11-01">November 1, 2026</time>
+    <div class="tags"><a class="tag" href="#5" aria-label="Link to update 5">#5</a><span class="tag preview">Preview</span></div>
+  </aside>
+  <div>
+    <h2 class="display">Sharing: edit one project together, live</h2>
+    <p class="lead">Share a project and edit it with your team at the same time. Everyone’s edits show up as they happen, and nobody’s work overwrites anyone else’s.</p>
+
+    <h3>Share from the title bar</h3>
+    <p>Click the Share icon in Cardboard’s title bar, enter the live server’s address and your name, and the project is shared. Then make invite links that can edit, comment, or only watch. Teammates paste the link under Join a shared project, and the project appears in their library with its history.</p>
+
+    <h3>See each other work</h3>
+    <p>Edits arrive as they happen, and avatars show who’s in the project. Each person’s edits are shown under their own name, and a teammate’s agent as theirs: “Leo’s Director”.</p>
+
+    <h3>Keep working offline</h3>
+    <p>Lose the connection and keep editing: your edits wait (“Offline: 3 edits waiting”), then sync when you’re back. If someone changed the same thing meanwhile, you get a conflict card instead of a lost edit.</p>
+
+    <details>
+      <summary>Improvements</summary>
+      <ul>
+        <li><b>Light on the network.</b> Footage stays on your computer until you share it. Small preview copies go up first, in short pieces a teammate can play while the rest uploads; full originals only when someone needs them.</li>
+        <li><b>Runs on Cloudflare’s free plan.</b> The live server runs on Cloudflare, or on any computer with Node. Storage, the server and sign-in are plug-ins that can be swapped.</li>
+      </ul>
+    </details>
+    <p class="note">Sharing is in preview and needs Carton on (<code>CARDBOARD_CARTON=1</code>). Names are typed when you share or join; sign-in, a members list and email invites come later.</p>
+  </div>
+</article>
+
 <article id="4">
   <aside>
     <time datetime="2026-11-01">November 1, 2026</time>
@@ -129,8 +161,8 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
   </aside>
   <div>
     <figure class="media card"><img src="/changelog/img/conflict-card.webp" width="680" height="476" alt="A conflict card: you set a clip's opacity to 90% while the Director set it to 50%. Both edits are kept, with buttons Keep yours and Keep Director's."></figure>
-    <h2 class="display">Carton: version history and live editing for video</h2>
-    <p class="lead">Cardboard keeps one copy of a project. Carton keeps every version of it, with who made each change. You, your teammates and your agents can now work on the same project without overwriting each other.</p>
+    <h2 class="display">Carton: version history for video</h2>
+    <p class="lead">Cardboard keeps one copy of a project. Carton keeps every version of it, with who made each change. You and your agents can now work on the same project without overwriting each other.</p>
 
     <h3>Nothing gets overwritten</h3>
     <p>Before, two saves at the same moment, say yours and the Director’s, could quietly undo one of them, even on different clips. Now every change is saved against the version it was made on. Changes to different things are combined. When two changes touch the same thing, both are kept and a conflict card asks you to pick, in plain words.</p>
@@ -144,11 +176,8 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
     <h3>Cuts: try another version of the edit</h3>
     <p>Make a separate cut, like a 30-second version or a client version, without copying any media. When you like it, fold all of it, or just part of it, back into the main cut.</p>
 
-    <h3>Edit together, live</h3>
-    <p>Share a project and edit it together. Everyone’s edits show up as they happen, avatars show who’s there, and you can keep working offline: your edits wait, then sync when you’re back. Teammates join with an invite link from the Share icon in Cardboard’s title bar. Comments pin to a moment in the video and move with the clip.</p>
-
     <h3>Made to drop into Cardboard</h3>
-    <p>Carton is one TypeScript module with no outside dependencies. It runs on Mac, Windows and Linux, in browsers and on Cloudflare. Every outside service (storage, the live server, sign-in) is a plug-in that can be swapped, and the live server can run on Cloudflare’s free plan.</p>
+    <p>Carton is one TypeScript module with no outside dependencies. It runs on Mac, Windows and Linux, in browsers and on Cloudflare. Every outside service it uses is a plug-in that can be swapped.</p>
 
     <details>
       <summary>Improvements</summary>
@@ -157,9 +186,7 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
         <li><b>Tools for agents.</b> The Director and your own agents get cuts, folds, credits and publishing as tools.</li>
         <li><b>Credits.</b> Select a clip to see who last changed it, down to the subagent.</li>
         <li><b>A steady timeline for agents.</b> While the Director works, the timeline file it reads doesn’t change under it. Your edits carry on in the editor and meet its edits through Carton.</li>
-        <li><b>Publish and invite.</b> Publish a cut, and share links that can edit, comment, or only watch.</li>
         <li><b>Bring in their changes.</b> Fold a teammate’s exported <code>.cbproj</code> into your project.</li>
-        <li><b>Light on the network.</b> Shared projects upload small preview copies first, and full originals only when someone needs them.</li>
       </ul>
     </details>
     <details>
