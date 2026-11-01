@@ -64,6 +64,10 @@ export interface WorldOptions {
   /** A whole project to start from instead (e.g. one Cardboard's CLI wrote). */
   project?: Record<string, unknown>;
   codec?: TimelineCodec;
+  /** Materializer options a host sets (the app: its own displaced folder, project.json its own). */
+  materializer?: { displacedDir?: string; writeProject?: boolean };
+  /** Runs on the bundle before the materializer is made and started (files an earlier process or the host left). */
+  beforeStart?: (bundle: string) => void;
 }
 
 export async function openWorld(t: TestContext, o: WorldOptions) {
@@ -88,7 +92,8 @@ export async function openWorld(t: TestContext, o: WorldOptions) {
   const carton = await Carton.open({ adapter: cardboardAdapter, store, init: { doc: fromHost(project, null), projectId: project.id }, actor: HUMAN, clock: () => clock.now() });
   let shared = false;
   const engine = cartonMaterializerEngine(carton, { shared: () => shared, clock: () => clock.now() });
-  const mz = (open.mz = new Materializer({ bundle, engine, host: cardboardFilesHost, codec: o.codec ?? jsonTimelineCodec, clock }));
+  o.beforeStart?.(bundle);
+  const mz = (open.mz = new Materializer({ bundle, engine, host: cardboardFilesHost, codec: o.codec ?? jsonTimelineCodec, clock, ...o.materializer }));
   await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 7 * 86_400_000 })).ref);
   await mz.adoptCurrentFiles();
   await mz.start();

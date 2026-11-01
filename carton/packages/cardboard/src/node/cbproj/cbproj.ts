@@ -8,15 +8,17 @@
 //                                 per lineage edge, and the last author per record. No micro-changes, no scrapped cuts.
 //   .carton-export/history.db     opt-in "Include history so they can see every version": a copy of carton.db with the
 //                                 local tables dropped (path map, pins, notices, views, ephemeral data, sync lease)
-// and without `.carton/` or `.scratch/views/` (H11: never ship Carton's database, its displaced files, or agents'
-// view files, whose headers name pins the recipient doesn't have).
+// and without `.carton/` or the view files Carton writes in `.scratch/views/` (H11: never ship Carton's database, its
+// displaced files, or agents' view files, whose headers name pins the recipient doesn't have). A person's or an agent's
+// own files in `.scratch/views/` travel, as in 1.4.0 (walk.ts, the app's rule too).
 //
 // Import. Reading a teammate's file gives the manifest, the shallow export and (if present) the full history. "Bring
 // in their changes" imports their lineage as tracking knowledge and folds their head into the current cut, with cards;
 // a missing merge base is said plainly, never replaced by an older one (core's fold). A file with history also brings
 // the sender's versions (S3-2): `importFullHistory` opens its copy and hands it to core's `Carton.importHistory`, which
 // fills their cuts in as read-only cuts with every version, author and name (Open Project: after `Carton.open` with
-// `init: {import}`; Bring in: between the shallow import and the fold).
+// `init: {import}`; Bring in: before the shallow import when the file extends a cut held here, else after it, and
+// before the fold).
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -26,7 +28,7 @@ import type { Choices, Doc, Schema, ShallowExport } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import { ZipReader, ZipWriter, sanitizeEntryName, type ZipWriteResult } from "./zip.ts";
 import { retryMissing } from "../displace.ts";
-import { walkBundle, excludedFromExport, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
+import { walkBundle, excludedFromExport, viewFileCandidate, readViewFileHead, VIEW_STATUS_MAX_BYTES, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
 
 export interface CbprojExportOptions {
   /** The project bundle (`<Name>.cardboard/`). */
@@ -80,7 +82,8 @@ export async function exportCbproj(o: CbprojExportOptions): Promise<CbprojExport
       entries.push(f.archivePath);
     }
     for (const f of o.extraFiles ?? []) {
-      if (excludedFromExport(f.archivePath)) continue;
+      const view = viewFileCandidate(f.archivePath) ? await readViewFileHead(f.sourcePath, path.posix.basename(f.archivePath)) : undefined;
+      if (excludedFromExport(f.archivePath, undefined, view)) continue;
       await zip.addFile(f.archivePath, f.sourcePath);
       entries.push(f.archivePath);
     }
@@ -121,6 +124,15 @@ const SHALLOW_MAX_BYTES = 256 * 1024 * 1024;
 // Two names that differ only in case land on one file on Windows and macOS.
 const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
 
+/** A member's content, to tell a Carton view file (`cartonViewFile`), or null when it can't be read (then it isn't). */
+async function memberContent(z: ZipReader, entry: ZipReader["entries"][number], name: string): Promise<Buffer | null> {
+  try {
+    return await z.readMember(entry, /\.status$/i.test(name) ? VIEW_STATUS_MAX_BYTES : MANIFEST_MAX_BYTES);
+  } catch {
+    return null;
+  }
+}
+
 /** Reads a `.cbproj`: the manifest, Carton's entries, and which bundle files it holds. */
 export async function readCbproj(file: string): Promise<CbprojContents> {
   const z = await ZipReader.open(file);
@@ -138,7 +150,9 @@ export async function readCbproj(file: string): Promise<CbprojContents> {
       // excluded folders. Unsafe names, and a second member that lands on the same path, are ignored too.
       const n = sanitizeEntryName(e.name.replace(/\\/g, "/").split("/").filter((seg) => seg !== "" && seg !== ".").join("/"));
       const key = n !== null && FOLD_CASE ? n.toLowerCase() : n;
-      if (n === null || key === null || taken.has(key) || n === EXPORT_DIR || n.startsWith(`${EXPORT_DIR}/`) || excludedFromExport(n)) {
+      // a member that lands directly in .scratch/views/ is told by its content: only Carton's view files are left out
+      const view = n !== null && viewFileCandidate(n) ? await memberContent(z, e, n) : undefined;
+      if (n === null || key === null || taken.has(key) || n === EXPORT_DIR || n.startsWith(`${EXPORT_DIR}/`) || excludedFromExport(n, undefined, view)) {
         ignored.push(e.name);
         continue;
       }
@@ -187,9 +201,9 @@ export type FullHistoryResult =
 /**
  * "Include history so they can see every version" (§13, L17; S3-2): the file's full-history copy is extracted, opened
  * (`openStore`) and taken by core's `importHistory`: the sender's cuts this replica doesn't hold in full become read-only
- * cuts with their versions, authors and names (a cut held as shallow lineage from the same file is filled in). Call it
- * after the shallow import (Open Project's `init: {import}`, or `bringInTheirChanges`, which does it with `history`).
- * Taking the same file twice takes nothing new.
+ * cuts with their versions, authors and names (a cut held as shallow lineage from the same file is filled in). Open
+ * Project calls it after its `init: {import}`; `bringInTheirChanges` (with `history`) calls it before the shallow import
+ * when the file extends lineage held here, after it otherwise. Taking the same file twice takes nothing new.
  */
 export async function importFullHistory(target: HistoryTarget, file: string, o: FullHistoryOptions): Promise<FullHistoryResult> {
   const dir = fs.mkdtempSync(path.join(o.tmpDir ?? os.tmpdir(), "cbproj-history-"));
@@ -255,6 +269,17 @@ async function sameCutConflict(target: CbprojTarget, pkg: ShallowExport): Promis
   return null;
 }
 
+/**
+ * Whether the file names a version on a cut this replica holds (its own, read-only, or shallow lineage): its history
+ * then extends what is here. Not for a fresh replica, or a project of the same id with no shared lineage: there its
+ * history would come in unrelated before core answers "no-shared-lineage", and the fold would merge it.
+ */
+async function extendsHeldLineage(target: CbprojTarget, pkg: ShallowExport): Promise<boolean> {
+  if (!target.cuts) return false;
+  const held = new Set((await target.cuts()).map((c) => c.id));
+  return pkg.nodes.some((n) => held.has(n.branchId));
+}
+
 export type BringInResult = (
   | { status: "no-carton-data" }
   | { status: "other-project" }
@@ -291,13 +316,20 @@ export async function bringInTheirChanges(
     cut: clash!.cut,
     reason: `This file comes from a copy of this project that has its own changes on "${clash!.cut}", and Carton couldn't bring them in (${detail}). Open the file as a new project instead.`,
   });
+  // their versions too, when the file has them (S3-2); a refused history never stops the fold (it is said). First when
+  // the file extends a cut held here (windows-sync's request): its versions, authors and names land in order, and the
+  // shallow step then finds them known, instead of core's `#unclash` setting a later file's newer versions of a cut
+  // held read-only apart as `<cut>.<hash8>`, a separate starting point. A diverged copy (S3-4) too: core's
+  // `importHistory` never touches this replica's own cuts, and the shallow step then takes the copy's cut in as before
+  const wantHistory = !!opts.history && !!target.importHistory && !opts.check;
+  const first = wantHistory && (await extendsHeldLineage(target, contents.shallow)) ? await importFullHistory(target as HistoryTarget, opts.history!.file, opts.history!) : undefined;
   try {
     const imp = await target.importShallow(contents.shallow);
-    if (imp.status === "other-project") return { status: "other-project" };
-    if (imp.status === "no-shared-lineage") return { status: "no-shared-lineage", ...(imp.newProjectId ? { newProjectId: imp.newProjectId } : {}) };
+    const early = first ? { history: first } : {};
+    if (imp.status === "other-project") return { status: "other-project", ...early };
+    if (imp.status === "no-shared-lineage") return { status: "no-shared-lineage", ...(imp.newProjectId ? { newProjectId: imp.newProjectId } : {}), ...early };
     if (clash && imp.status !== "imported" && imp.status !== "forked") return diverged(`it answered "${imp.status}"`);
-    // their versions too, when the file has them (S3-2); a refused history never stops the fold (it is said)
-    const history = opts.history && target.importHistory && !opts.check ? await importFullHistory(target as HistoryTarget, opts.history.file, opts.history) : undefined;
+    const history = first ?? (wantHistory ? await importFullHistory(target as HistoryTarget, opts.history!.file, opts.history!) : undefined);
     const h = history ? { history } : {};
     if (imp.status === "forked") return { status: "forked", ...(imp.cut ? { cut: imp.cut } : {}), ...h };
     const { choices, check, missingBase } = opts;

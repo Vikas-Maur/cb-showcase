@@ -12,6 +12,11 @@
 //   them). `cb conflicts` lists them and `cb resolve` picks one; the materializer's text notice for that save is then
 //   not stored as well.
 // - A 1.4.0 timestamp rev resolves only through the mapping written at migration (`recordLegacyRev`).
+// - A record that breaks a hard validator blocks with a card (§4.1): it keeps head's value, the rest of the save lands,
+//   and the sidecar's diagnostics name the failure. The sequencer refuses such a change as a whole ("invalid") when
+//   nothing concurrent forced a merge, so the record is put back and the save committed again (`@carton/local`'s engine
+//   wrapper did this until it moved here, behaviour unchanged).
+// - Whether the cut is shared is read from it at each `head()` (its sequencer isn't "local"), unless the caller says.
 import { StateUnknown, actorKey } from "@carton/core";
 import type { Actor, Carton, Doc, Notice, NoticeKind, StateRef, ConflictCard } from "@carton/core";
 import { branchToken, revBody, type CartonRev, type Rev } from "../header.ts";
@@ -36,12 +41,18 @@ interface PinRecord {
 export interface CartonEngineOptions {
   /** The cut the files show (default: the handle's current cut). */
   cut?: string;
-  /** Whether that cut is shared (remote rewrites of the shared file are spaced 30 s apart). */
+  /**
+   * Whether that cut is shared (remote rewrites of the shared file are spaced 30 s apart). Default: read from the cut at
+   * each `head()` (its sequencer isn't "local").
+   */
   shared?: () => boolean;
   clock?: () => number;
 }
 
-export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptions = {}): MaterializerEngine {
+/** This engine: every optional method of `MaterializerEngine` is there (the materializer uses one only when it is). */
+export type CartonEngine = MaterializerEngine & Required<Pick<MaterializerEngine, "changesSince" | "newChangeId" | "own" | "cut" | "headRef">>;
+
+export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptions = {}): CartonEngine {
   const store = carton.store;
   const cut = () => opts.cut ?? carton.cut;
   const now = opts.clock ?? Date.now;
@@ -80,6 +91,20 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     const pick = pool.find((c) => c.id === cut()) ?? pool.find((c) => c.name === m[1]) ?? pool[0]!;
     return on(pick.id);
   };
+  /** The records of `doc` that fail the schema's hard validators. */
+  const invalidRecords = (doc: Doc): { coll: string; key: string; id: string; error: string }[] => {
+    const hard = carton.schema.hard;
+    if (!hard) return [];
+    const out: { coll: string; key: string; id: string; error: string }[] = [];
+    for (const [coll, spec] of Object.entries(carton.schema.collections)) {
+      for (const r of (doc[coll] as Record<string, unknown>[] | undefined) ?? []) {
+        const errs = hard(coll, r, doc);
+        if (errs.length) out.push({ coll, key: spec.key, id: String(r[spec.key]), error: errs.join("; ") });
+      }
+    }
+    return out;
+  };
+  let isShared = false;
   const pinKey = (r: StateRef) => `${r.branchId}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`;
   const pinsByOwner = new Map<string, number>();
   /** The author's cards row for a save (`@carton/local`'s `cardsRow`). */
@@ -97,8 +122,55 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     if (old.length) await store.write(old.map((r) => ({ table: VIEWS, key: r.key, value: undefined })));
   };
 
+  /** One commit of a save: the first with its cards, then with head's side chosen for each. */
+  const commitOnce = async ({ doc, base, author, id }: Parameters<MaterializerEngine["commit"]>[0]): Promise<SaveResult> => {
+    const b = "baseDoc" in base ? base : base.kind === "carton" ? await refOf(base) : ((await getMeta<string>(["legacy", String(base.rev)])) ?? String(base.rev));
+    const withId = id ? { id } : {};
+    // the cut is read once, for both commits and the result: a state built on the save belongs to it (round 15 #4)
+    const on = cut();
+    let r = await carton.commit({ doc, base: b, author, cut: on, ...withId });
+    let cards: ConflictCard[] = [];
+    let kept = false;
+    if (r.status === "conflicts") {
+      // cards keep head's value; the save's other edits land. With an id, the cards are recorded first (and kept
+      // for the author, B5): a retry that gets the confirmation back by id (no merge, so no cards) still reports
+      // them, and never brings back a card resolved meanwhile
+      cards = r.cards;
+      if (id) {
+        await store.write([{ table: VIEWS, key: ["attempt-cards", id], value: cards }, cardsRow(author, id, cards)]);
+        kept = true;
+      }
+      r = await carton.commit({ doc, base: b, author, cut: on, choices: () => "ours", ...withId });
+    } else if (id && (r.status === "confirmed" || r.status === "pending")) {
+      // a retry answered by id (confirmed, or still pending on a shared cut offline): the cards recorded on the
+      // first attempt are still this save's
+      cards = (await getMeta<ConflictCard[]>(["attempt-cards", id])) ?? [];
+    }
+    if (cards.length && !kept && !id && (r.status === "confirmed" || r.status === "pending")) {
+      await store.write([cardsRow(author, r.status === "confirmed" ? (r.change?.id ?? `save-${now()}`) : r.id, cards)]);
+    } else if (kept && (r.status === "conflicts" || r.status === "rejected")) {
+      await store.write([{ table: "notices", key: cardsKey(author, id!), value: undefined }]); // the save didn't land
+    }
+    // the cut the change is on, as core answers it: a retry answered by id (dedup spans every cut) gets the original
+    // confirmation, on the cut the first attempt went to, even if the current cut has changed since (round 16 #1). An
+    // answer without a ref (an engine that leaves it out) is on the cut asked for
+    const at = (r.status === "confirmed" || r.status === "pending" ? r.ref?.branchId : undefined) ?? on;
+    const out = (s: SaveResult): SaveResult => (cards.length ? { ...s, status: "conflicts", cards, cut: at } : { ...s, cut: at });
+    switch (r.status) {
+      case "confirmed":
+        return out({ status: "confirmed", seq: r.seq, ...(r.change ? { id: r.change.id } : {}) });
+      case "pending":
+        return out({ status: "pending", id: r.id });
+      case "conflicts":
+        return { status: "rejected", reason: `unresolved cards: ${r.cards.map((c) => c.path).join(", ")}`, cards: r.cards };
+      case "rejected":
+        return { status: "rejected", reason: r.reason };
+    }
+  };
+
   return {
     async head() {
+      if (!opts.shared) isShared = (await carton.cuts()).find((c) => c.id === cut())?.sequencer.kind !== "local";
       return (await carton.head(cut())).doc;
     },
     async pin({ owner, cut: at, doc, seq, causal, ttlMs }) {
@@ -126,45 +198,35 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       }
       return toHeld(await carton.resolve(await refOf(rev)));
     },
-    async commit({ doc, base, author, id }) {
-      const b = "baseDoc" in base ? base : base.kind === "carton" ? await refOf(base) : ((await getMeta<string>(["legacy", String(base.rev)])) ?? String(base.rev));
-      const withId = id ? { id } : {};
-      // the cut is read once, for both commits and the result: a state built on the save belongs to it (round 15 #4)
-      const on = cut();
-      let r = await carton.commit({ doc, base: b, author, cut: on, ...withId });
-      let cards: ConflictCard[] = [];
-      let kept = false;
-      if (r.status === "conflicts") {
-        // cards keep head's value; the save's other edits land. With an id, the cards are recorded first (and kept
-        // for the author, B5): a retry that gets the confirmation back by id (no merge, so no cards) still reports
-        // them, and never brings back a card resolved meanwhile
-        cards = r.cards;
-        if (id) {
-          await store.write([{ table: VIEWS, key: ["attempt-cards", id], value: cards }, cardsRow(author, id, cards)]);
-          kept = true;
+    /**
+     * `commitOnce`'s merge cards are kept for the save's author (written before the choosing commit, so a retry never
+     * brings back a card resolved meanwhile); the invalid-record cards added here stay out (they can't be put back as the
+     * agent wrote them: the sidecar says why).
+     */
+    async commit(input) {
+      let doc = input.doc;
+      const invalid: ConflictCard[] = [];
+      for (let round = 0; round < 32; round++) {
+        const r = await commitOnce({ ...input, doc });
+        const refusedInvalid = r.status === "rejected" && /^invalid\b/.test(r.reason ?? "");
+        // putting the invalid records back can leave nothing to commit; the sequencer calls that "no ops". The answer
+        // names the engine's cut, as `commitOnce`'s do: a state built on this save belongs to it
+        if (r.status === "rejected" && r.reason === "no ops" && invalid.length) {
+          const c = cut();
+          return { status: "conflicts", cards: invalid, seq: (await carton.head(c)).ref.seq, cut: c };
         }
-        r = await carton.commit({ doc, base: b, author, cut: on, choices: () => "ours", ...withId });
-      } else if (id && (r.status === "confirmed" || r.status === "pending")) {
-        // a retry answered by id (confirmed, or still pending on a shared cut offline): the cards recorded on the
-        // first attempt are still this save's
-        cards = (await getMeta<ConflictCard[]>(["attempt-cards", id])) ?? [];
+        if (!refusedInvalid) return invalid.length ? { ...r, status: r.status === "rejected" ? r.status : "conflicts", cards: [...invalid, ...(r.cards ?? [])] } : r;
+        const bad = invalidRecords(doc);
+        if (!bad.length) return r;
+        const head = (await carton.head(cut())).doc;
+        for (const { coll, key, id, error } of bad) {
+          const was = ((head[coll] as Record<string, unknown>[] | undefined) ?? []).find((x) => String(x[key]) === id);
+          const recs = (doc[coll] as Record<string, unknown>[] | undefined) ?? [];
+          invalid.push({ kind: "invalid", path: `${coll}/${id}`, base: was, ours: was, theirs: recs.find((x) => String(x[key]) === id), reason: error });
+          doc = { ...doc, [coll]: was ? recs.map((x) => (String(x[key]) === id ? was : x)) : recs.filter((x) => String(x[key]) !== id) };
+        }
       }
-      if (cards.length && !kept && !id && (r.status === "confirmed" || r.status === "pending")) {
-        await store.write([cardsRow(author, r.status === "confirmed" ? (r.change?.id ?? `save-${now()}`) : r.id, cards)]);
-      } else if (kept && (r.status === "conflicts" || r.status === "rejected")) {
-        await store.write([{ table: "notices", key: cardsKey(author, id!), value: undefined }]); // the save didn't land
-      }
-      const out = (s: SaveResult): SaveResult => (cards.length ? { ...s, status: "conflicts", cards, cut: on } : { ...s, cut: on });
-      switch (r.status) {
-        case "confirmed":
-          return out({ status: "confirmed", seq: r.seq, ...(r.change ? { id: r.change.id } : {}) });
-        case "pending":
-          return out({ status: "pending", id: r.id });
-        case "conflicts":
-          return { status: "rejected", reason: `unresolved cards: ${r.cards.map((c) => c.path).join(", ")}`, cards: r.cards };
-        case "rejected":
-          return { status: "rejected", reason: r.reason };
-      }
+      return { status: "rejected", reason: "invalid" };
     },
     async notice(to: Actor, n) {
       // a save's cards are already the author's, with their own notice (B5)
@@ -205,6 +267,6 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     },
     getMeta,
     putMeta,
-    shared: () => opts.shared?.() ?? false,
+    shared: () => opts.shared?.() ?? isShared,
   };
 }
