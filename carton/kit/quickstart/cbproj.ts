@@ -17,13 +17,14 @@ const [cmd, a, b, ...rest] = process.argv.slice(2);
 if (cmd === "export" && a && b) {
   const lc = await openLocal({ projectDir: resolve(a) });
   try {
-    const head = await lc.carton.head();
+    // the history ends at a confirmed version; the file's project.json is that version, whatever project.json on disk
+    // says (head() would include edits still waiting for a server)
+    const shallow = await lc.carton.exportShallow();
     const r = await exportCbproj({
       bundle: resolve(a),
       out: resolve(b),
-      shallow: await lc.carton.exportShallow(),
-      // the file's project.json is the head, whatever project.json on disk says
-      head: { doc: head.doc, toProject: materializeProject },
+      shallow,
+      head: { doc: await lc.carton.checkout(shallow.head), toProject: materializeProject },
     });
     console.log(`Wrote ${b}: ${r.names.length} entries (${r.names.filter((n) => n.startsWith(".carton-export/")).join(", ")})`);
   } finally {

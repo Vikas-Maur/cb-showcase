@@ -48,19 +48,24 @@ Step 2. History in the library worker and the CLI (H1, H1b, H2, H11).
   and .scratch/views/ (on or off).
 - CHECKPOINT 2: copy carton/kit/conformance/store.test.ts and local.test.ts and run them. Your integration tests:
   4 concurrent `cb source apply` on different clips keep all 4 edits; a GUI save during an agent's apply keeps both;
-  with the switch off, the files written are byte-identical to today's; a .cbproj has no .carton/ entry.
+  with the switch off, the files written are byte-identical to today's; a .cbproj has no .carton/ entry and none of
+  the view files Carton wrote, while a person's own files in .scratch/views/ travel.
 
 Step 3. Apply and print (H3), the library worker (H8), the commands (CLI), and agents (H9).
 - Apply commits on the exact version the file's header names; a header nothing can rebuild is an error, never a
   two-way merge. In the library worker, start the engine thread and the materializer (`new Materializer(…)`,
   `mz.start()`, `mz.watch()`): it writes project.json and timeline.tsx, and prints and applies the agents' per-agent
-  views live (`cb source print --view`). register(program, …) and registerMcp(tool, …) from @carton/cli-mcp, with the
-  same data folder as the app. CARDBOARD_ACTOR for every agent the app starts; the Director's PreToolUse hook adds the
-  turn and subagent; Stop and SubagentStop hooks deliver late conflicts once.
+  views live (`cb source print --view`). Pass it to the lease holder's engine, so `cb`'s view prints and hook events
+  reach it. register(program, …) and registerMcp(tool, …) from @carton/cli-mcp, with the same data folder as the app.
+  CARDBOARD_ACTOR for every agent the app starts; the Director's PreToolUse hook adds the turn and subagent; Stop and
+  SubagentStop hooks deliver late conflicts once. Host Claude Code gets `hookSettings(…)` from @carton/local: Bash, and
+  Read|Write|Edit|MultiEdit for the freeze of timeline.tsx and the refusal of a write to project.json (add Claude
+  Code's `if` conditions per tool and file so other files start no process: INTEGRATION.md H9).
 - CHECKPOINT 3: walk the quickstart (carton/kit/README.md steps 2–4) on a real project with `cb`: history with
   authors down to the subagent, credits, a cut, `cb fold --check`, a fold with a card decided by --keep, `cb undo
-  --turn`. With the app open, an agent prints its own view, edits it, and its `.status` file says `confirmed`. Show
-  me the output.
+  --turn`. With the app open, an agent prints its own view, edits it, and its `.status` file says `confirmed`; while
+  its turn runs, timeline.tsx doesn't show the person's edit, and does once the turn ends; an Edit of project.json is
+  refused. Show me the output.
 
 Step 4. The editor (H4–H7) and the History panel.
 - The save carries its base; adopt moves the base atomically with no undo entry; ⌘Z undoes the person's actor
@@ -71,8 +76,12 @@ Step 4. The editor (H4–H7) and the History panel.
 Step 5 (optional). Sharing (H12, H13, the host).
 - Pick a host (INTEGRATION.md "Swapping backends"): server-node, the Cloudflare host, or createSequencer inside your
   API, with your AuthProvider and BlobStore. Give the engine thread the host's URL and a token file.
+- At share and at join, `carton.setIdentity({ id: <the session's account>, name })`, and pass that person as the
+  History panel's `me`, so a teammate's GUI edits show under their name (INTEGRATION.md "People and presence").
+- Save As with a shared cut: wait until `carton.pendingCount(cut)` is 0, or export the confirmed head.
 - CHECKPOINT 5: copy carton/kit/conformance/host.test.ts, system.test.ts and blob.test.ts, swap in your host, storage,
-  auth and bucket, and run them. Show me the counts.
+  auth and bucket, and run them. Then two installs on one shared project: each one's GUI edit shows the other's
+  name in History, and a teammate who quits drops out of presence. Show me the counts.
 
 Finally: list everything you couldn't do, every place you had to work around Carton, and what needs a run on real
 machines (gates G1 and G2 in INTEGRATION.md, "Rolling it out safely").
