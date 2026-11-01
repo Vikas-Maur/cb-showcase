@@ -32,7 +32,12 @@ export type WriteOp =
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
   | { kind: "restore"; ref: string; cut?: string; head?: boolean }
   | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
-  | { kind: "undo"; group?: string; cut?: string; head?: boolean }
+  /**
+   * ⌘Z (undo) and its redo for an actor group (default: the author's). `app` and `since` (core's UndoScope): the app's
+   * Ctrl+Z, which sees only what was made from the app in the editor's session, never a terminal's `cb`.
+   */
+  | { kind: "undo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
+  | { kind: "redo"; group?: string; cut?: string; head?: boolean; since?: number; app?: boolean }
   | { kind: "undoTurn"; turn: string; cut?: string; head?: boolean }
   | { kind: "fork"; name: string; from?: string; cutKind?: string }
   | { kind: "switch"; cut: string }
@@ -95,7 +100,7 @@ export const WAIT_MS = 5000;
  * receiving a write is simply asked again. (`submit`'s `idempotent: false` path stays for any future write without an
  * id; none uses it now.)
  */
-export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
+export const IDEMPOTENT: ReadonlySet<WriteOp["kind"]> = new Set(["commit", "fold", "restore", "revert", "undo", "redo", "undoTurn", "fork", "switch", "name", "pin", "printView", "closeCard", "share", "hook"]);
 
 /**
  * Run an idempotent write again when Carton lost its append race too many times in a row (many writers on one
@@ -117,7 +122,7 @@ export async function withRaceRetry<T>(idempotent: boolean, fn: () => Promise<T>
 export function destCut(op: WriteOp): string | undefined {
   switch (op.kind) {
     case "fold": return op.into;
-    case "commit": case "restore": case "revert": case "undo": case "undoTurn": case "pin": case "share": return op.cut;
+    case "commit": case "restore": case "revert": case "undo": case "redo": case "undoTurn": case "pin": case "share": return op.cut;
     default: return undefined;
   }
 }
@@ -500,7 +505,11 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
     // each runs under the request's id: a retried call (its holder died after receiving it) gets the first answer
     case "restore": r = await carton.restore(op.ref, { author, cut: op.cut, id: req.id }); break;
     case "revert": r = await carton.revert(op.changeId, { author, cut: op.cut, id: req.id }); break;
-    case "undo": r = await carton.undo(op.group ?? author.group, { cut: op.cut, author, id: req.id }); break;
+    case "undo": case "redo": {
+      const scope = { ...(op.since !== undefined ? { since: op.since } : {}), ...(op.app ? { app: true } : {}) };
+      r = await carton[op.kind](op.group ?? author.group, { cut: op.cut, author, id: req.id, ...scope });
+      break;
+    }
     case "undoTurn": {
       // what the turn changed that was changed again since stays at its newer value, as a card; the rest is undone
       const u = await undoTurn(carton, req.id, op.turn, author, op.cut);

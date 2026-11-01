@@ -9,7 +9,10 @@
 //   4. Fallback: the agent CLI recognised from its environment (Claude Code sets CLAUDECODE=1, Gemini CLI sets
 //      GEMINI_CLI=1, Codex sets CODEX_* variables), else a terminal user.
 // Every local actor gets the same undo group, `local:<os user>@<machine>`: your edits, the agent turns you started, and
-// windowless `cb` callers on this machine and OS user undo together (§8, R2-08). Remote teammates never share it.
+// windowless `cb` callers on this machine and OS user, as `cb undo` and History's Undo see it (§8). Remote teammates
+// never share it. An actor named by `CARDBOARD_ACTOR` (sources 1 and 2) is the app's own: Cardboard's main sets it for
+// every agent it starts, so it is marked `app`, as the person at the editor is. The app's Ctrl+Z sees only those
+// (laptop report 90c4127, bug 3): a terminal's `cb` is undone from History or with `cb undo --turn`.
 import { hostname, userInfo } from "node:os";
 import type { Actor } from "@carton/core";
 import type { IdentitySource } from "@carton/core/plugins";
@@ -80,7 +83,7 @@ export const cardboardActorIdentity: IdentitySource = {
   kind: "cardboard-actor",
   current(env = process.env) {
     const id = env.CARDBOARD_ACTOR?.trim();
-    return id ? parseActorId(id) : null;
+    return id ? parseActorId(id, { app: true }) : null;
   },
 };
 
@@ -90,8 +93,10 @@ export function claudeHookIdentity(hook: HookInput | null | undefined): Identity
     kind: "claude-code-hook",
     current(env = process.env) {
       if (!hook?.session_id) return null;
-      const base = env.CARDBOARD_ACTOR?.trim().replace(/\/sub-[^/]*$/, "") || `claude-code/${safePart(hook.session_id.slice(0, 8))}`;
-      return parseActorId(base + subagentSuffix(hook.agent_type, hook.agent_id));
+      const given = env.CARDBOARD_ACTOR?.trim().replace(/\/sub-[^/]*$/, "");
+      const base = given || `claude-code/${safePart(hook.session_id.slice(0, 8))}`;
+      // the app's agent when the app named it; a terminal's Claude Code with Carton's hooks otherwise
+      return parseActorId(base + subagentSuffix(hook.agent_type, hook.agent_id), given ? { app: true } : {});
     },
   };
 }
