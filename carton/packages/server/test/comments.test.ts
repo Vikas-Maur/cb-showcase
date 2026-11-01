@@ -113,6 +113,25 @@ test("a subscriber that disconnected, or was replaced under its id, gets nothing
   assert.deepEqual(fanned(replacement).map((r) => r.id), ["c1"]);
 });
 
+// The cap with a fixed clock (the host suite's burst can only bound it by the time a client sees, which a loaded host
+// stretches): 10 at once, then one each 500 ms; each connection has its own.
+test("each connection's comment cap through the core: 10 at once, then 2 a second; another connection's is its own", async () => {
+  let now = 1_000_000;
+  const { seq } = await world(d0(), { clock: () => now });
+  const a = fakeConn("alice/1"), b = fakeConn("bob/1");
+  for (let i = 0; i < 11; i++) await seq.handle(a, add(`r${i}`, `burst ${i}`));
+  assert.deepEqual(answers(a).map((x) => x.refused ?? "ok"), [...Array<string>(10).fill("ok"), "rate-limited"]);
+  assert.equal((answers(a).at(-1) as { retryMs?: number }).retryMs, 500);
+  await seq.handle(b, add("b0", "another connection"));
+  assert.ok(answers(b)[0]?.row);
+  now += 499;
+  await seq.handle(a, add("r11", "not yet"));
+  assert.equal(answers(a).at(-1)?.refused, "rate-limited");
+  now += 1;
+  await seq.handle(a, add("r12", "after the refill"));
+  assert.equal(answers(a).at(-1)?.row?.id, "r12");
+});
+
 test("the 100,000-comment cap holds through the core (the room's default limits)", async () => {
   const storage = sqliteStorage();
   const { seq } = await world(d0(), { storage });

@@ -513,14 +513,32 @@ export function sequencerHostSuite(name: string, make: () => Promise<HostFixture
       assert.equal(watch.got.some(fannedOut(onOther)), false);
     });
 
-    test("comments: a burst past a connection's cap is refused `rate-limited`, saying when to retry; others' are unaffected", async () => {
+    // The room's bucket (10 at once, then 2 a second) refills while the host works through a burst, so a loaded host
+    // may rightly take all of one (review C1: 14 sent together were taken by a host slowed to 1 s a commit). The time
+    // the client saw bounds the host's: from the first send to the last answer it takes at most 10 + 2 a second of
+    // it, under any load. A burst that took long enough for the refill to cover it shows nothing and is sent again on
+    // a fresh connection; the core's own tests show the cap with a fixed clock.
+    test("comments: a burst past a connection's cap is refused `rate-limited`, saying when to retry; others' are unaffected", async (t) => {
       const cut = newBranch();
-      const [a, b] = await Promise.all([fx.token("editor"), fx.token("editor")].map(async (t) => connect(await t)));
-      const answers = await Promise.all(Array.from({ length: 14 }, (_, i) => post(a, cut, commentId(), { add: { body: `burst ${i}`, cut, at: i } })));
-      const limited = answers.filter((x) => x.refused === "rate-limited");
-      assert.ok(limited.length >= 1 && limited.every((x) => (x.retryMs ?? 0) > 0), JSON.stringify(answers.map((x) => x.refused ?? "ok")));
-      assert.ok(answers.filter((x) => x.row).length >= 10, "the burst's first ten");
-      assert.ok((await post(b, cut, commentId(), { add: { body: "another connection", cut, at: 1 } })).row);
+      const BURST = 20;
+      for (let attempt = 1; ; attempt++) {
+        const [a, b] = await Promise.all([fx.token("editor"), fx.token("editor")].map(async (tok) => connect(await tok)));
+        const t0 = Date.now();
+        const answers = await Promise.all(Array.from({ length: BURST }, (_, i) => post(a, cut, commentId(), { add: { body: `burst ${i}`, cut, at: i } })));
+        const tookMs = Date.now() - t0 + 2; // each clock's millisecond
+        const taken = answers.filter((x) => x.row).length;
+        const limited = answers.filter((x) => x.refused === "rate-limited");
+        const seen = `${JSON.stringify(answers.map((x) => x.refused ?? "ok"))} in ${tookMs} ms`;
+        assert.equal(taken + limited.length, BURST, seen);
+        assert.ok(taken >= 10, `the burst's first ten: ${seen}`);
+        assert.ok(taken <= 10 + Math.floor((tookMs / 1000) * 2), `more than the cap and its refill: ${seen}`);
+        if (limited.length) {
+          assert.ok(limited.every((x) => (x.retryMs ?? 0) > 0), `saying when to retry: ${seen}`);
+          assert.ok((await post(b, cut, commentId(), { add: { body: "another connection", cut, at: 1 } })).row);
+          return;
+        }
+        if (attempt === 3) return t.skip(`each burst of ${BURST} took the host over ${(BURST - 10) / 2} s, so the refill covered it: too loaded to show the cap`);
+      }
     });
 
     test("comments are kept by the host: after a hibernation a subscription still gets others' comments; after a restart the rows are still there", async (t) => {
