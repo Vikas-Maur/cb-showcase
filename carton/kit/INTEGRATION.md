@@ -426,12 +426,13 @@ built from a list of namespaces.
   file, or its `cb` call, starts the freeze (`mz.hookRead(actor)`), and its Stop lets go (`mz.hookStop(actor)`: a
   subagent's Stop releases only what it pinned; the turn's Stop releases the whole turn's). Once no agent holds the
   file, the person's and remote teammates' changes reach it; the app always shows head. Local agents' saves still go
-  into the frozen file, each merged on its own base, and so do their `cb` changes (cardboard-adapter's head; not yet in
-  the snapshot the kit runs on). A plain `cb source print` and a cut switch reprint it from head; a save or `cb` change
-  that repeats an edit the file hides restarts the freeze from that change's state (so does a save whose check for that
-  reads more than its limit of changes, or fails). Either can show newer edits before the Stop. Claude Code sends
-  no Stop when the user interrupts a turn, so a hooked agent quiet for 60 s (`freezeIdleMs`) no longer holds the file;
-  its next hook event holds it again.
+  into the frozen file, each merged on its own base, and so do their confirmed `cb` changes; on a shared cut, only those
+  of agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). A plain `cb source print`
+  and a cut switch reprint it from head. A save that repeats an edit the file hides, or whose check for that reads more
+  than its limit of changes or fails, restarts the freeze from that save's state; a `cb` change restarts it from that
+  change's state when merging it wouldn't add exactly its edits (it repeats, overwrites or builds on an edit the file
+  hides). Each can show newer edits before the Stop. Claude Code sends no Stop when the user interrupts a turn, so a
+  hooked agent quiet for 60 s (`freezeIdleMs`) no longer holds the file; its next hook event holds it again.
 - **Hook events reach the holder as a write:** `lc.write({ kind: "hook", event: "read" | "write" | "stop", file },
   { actor })` (`file`: project-relative, for `write` only). The holder calls its materializer's `hookRead`,
   `hookWrite` or `hookStop`. The answer is `confirmed`, with `hook: { event, delivered }` (`delivered: false` when no
