@@ -21,7 +21,8 @@ function start(plan) {
       }
       // the step: how many of our tool calls this conversation has had answered
       const step = j.messages.filter((m) => m.role === "assistant").length;
-      const last = j.messages[j.messages.length - 1];
+      // the tool results are in the last user message (Claude Code may send a system message after it)
+      const last = [...j.messages].reverse().find((m) => m.role === "user");
       const results = Array.isArray(last?.content) ? last.content.filter((c) => c.type === "tool_result") : [];
       log.push({ at, step, toolResult: results.map((r) => (typeof r.content === "string" ? r.content : JSON.stringify(r.content))).join("\n").slice(0, 2000), isError: results.some((r) => r.is_error) });
       if (step < plan.length) {
