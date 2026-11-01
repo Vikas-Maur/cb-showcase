@@ -1,11 +1,10 @@
-// A conflict card names the teammate on the other side (REQ-U1; the fix is foundation-core's: emit `absorbed` after
-// the settle, so every consumer reads current state at the event). Over a real server-node host: Bob
+// A conflict card names the teammate on the other side (REQ-U1, fixed by foundation-core 2c58dbd: `absorbed` fires
+// after the settle, so every consumer reads current state at the event). Over a real server-node host: Bob
 // trims a clip end offline, Alice trims the same end differently, Bob reconnects: his rebase makes a card, and its
 // other side is Alice's edit. History names her; the card said "Someone".
 //
-// Why: core emits `absorbed` (carton.ts, the sync event switch) before `#settle` puts the confirmed rows, Alice's change
-// among them, into History, so `carton.credits(record)` asked at that event answers null; fromCarton's
-// `nameOtherSide` (from-carton.ts) asks once and keeps "Someone". Asked again after the rows are in, it answers Alice.
+// It said "Someone" while core emitted `absorbed` before the settle put the confirmed rows, Alice's change among them,
+// into History: `carton.credits(record)` asked at that event answered null, and fromCarton's `nameOtherSide` asks then.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, rmSync } from "node:fs";
@@ -78,7 +77,7 @@ const done = async (w: World) => {
   await w.host.close();
 };
 
-test("REQ-U1: credits asked at the card's event already names Alice", { todo: "foundation-core: `absorbed` is emitted before the settle puts Alice's change in History (null at the event)" }, async () => {
+test("REQ-U1: credits asked at the card's event already names Alice", async () => {
   const w = await rebaseCard("cause");
   try {
     assert.equal((w.creditAtEvent as { name?: string } | null)?.name, "Alice", "at the absorbed event");
@@ -88,7 +87,7 @@ test("REQ-U1: credits asked at the card's event already names Alice", { todo: "f
   }
 });
 
-test("REQ-U1: a rebase card names the teammate on the other side", { todo: "foundation-core: `absorbed` before the settle; fromCarton's nameOtherSide asks credits at that event (null then)" }, async () => {
+test("REQ-U1: a rebase card names the teammate on the other side", async () => {
   const w = await rebaseCard("card");
   try {
     await until(() => w.ui.conflicts()[0]?.theirs.author.name === "Alice", 5000, `the card naming Alice (it says ${w.ui.conflicts()[0]?.theirs.author.name})`);
