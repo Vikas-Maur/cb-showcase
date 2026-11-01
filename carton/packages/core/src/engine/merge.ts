@@ -368,10 +368,11 @@ function groupStage(ctx: Ctx): void {
           continue;
         }
         const r = alg.merge(b, r0, r1, (opts.kinds?.ours as EditKinds | undefined)?.[id as string], (opts.kinds?.theirs as EditKinds | undefined)?.[id as string]);
-        if (r.ok) {
-          if (r.how === "equal") for (const e of et) e.dup = true;
-          else consume(r.vals as Parameters<TimeAlgebra["put"]>[0], "composed");
-        } else card("group", r.reason);
+        if (r.ok && r.how === "equal") for (const e of et) e.dup = true;
+        // §7: a retime of a clip the other side split raises a card rather than move or trim one piece
+        else if (remaps.some((x) => (x.lineage[id as string]?.length ?? 0) > 1)) card("group", "a retime of a clip the other side split");
+        else if (r.ok) consume(r.vals as Parameters<TimeAlgebra["put"]>[0], "composed");
+        else card("group", r.reason);
       }
     }
   }
@@ -743,7 +744,7 @@ function lineageStage(ctx: Ctx): void {
       for (const e of other.under.get(pathKey([tl.collection, oldId])) ?? []) {
         if (e.g || e.drop || e.dup || e.path.length < 3) continue;
         const f = e.path[2] as string;
-        if (f === tl.lane || schema.collections[tl.collection]!.groupOf.get(f)) continue;
+        if (schema.collections[tl.collection]!.groupOf.get(f)) continue;
         for (const pc of pieces as (string | { id: string })[]) {
           const pid = typeof pc === "string" ? pc : pc.id;
           if (pid === oldId || !getIn(docs[n], [tl.collection, pid], schema)) continue;

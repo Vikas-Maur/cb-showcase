@@ -74,7 +74,13 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   History's arrays is frozen once, and a change freezes only what it writes.
 - **A split** records its lineage in the intent (`{ kind: "split", lineage: { c: ["c", "c-b"] } }`): a concurrent
   edit to the split clip meets the split (the source record is part of its declaration) and reaches every piece,
-  whichever lands first, on local and shared cuts.
+  whichever lands first: a rebase, a shared cut's commit made on an older version, a fold (each side's maps and
+  lineage composed along its path; a fold records the lineage it brings in on its edges, `mergeEdges.lineage`, and a
+  `.cbproj` lineage edge carries it as `parents[].lineage`), on local and shared cuts. Field edits and a track change
+  follow the lineage; a real retime of the split clip (a move or trim, not a ripple's shift) is a card (`items/<id>/#time`,
+  PLAN §7: "raise a card rather than guess"). A ripple on one side moves both pieces. Folds through merges or `.cbproj`
+  edges made before this (no `mergeEdges.lineage`, no `parents[].lineage`) don't know the split: an edit there reaches
+  the clip's first piece only.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
   (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the
@@ -85,9 +91,13 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   versions are still recognized in their copy. The import change (`asChange`) is a lineage point like an export
   (lineage kind `"import"`, its state carried, delta-encoded), so two copies of an imported project fold from it,
   not from the empty root. A hand-off closure lists it without its state.
-- **Every exported version is a lineage point**, whichever process exported it: an export writes a row (meta
-  `["export", node, at, nonce]`), and a handle reads the rows it hasn't seen at load and before each export it makes
-  (not on `head()` or a commit), so the app's next `.cbproj` carries a version `cb` sent meanwhile (local-cli request 9).
+- **Every exported version is a lineage point**, whichever process exported it. An export writes its row (meta
+  `["export", node, at, nonce]`) and the next row of a dense index (meta `["exported", n]`, `{node, to, at}`, written
+  only if absent: a concurrent export makes one of them retry). A handle reads all export rows at load, then before
+  every write only the index rows after the newest it has seen (usually none; not on `head()` or reads). So the app's
+  next `.cbproj` carries a version `cb` sent meanwhile, its compaction keeps that version, and a periodic keyframe
+  never replaces that version's keyframe (local-cli request 9). An older process's exports (no index row) are seen at
+  the next open.
 - **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
   file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
   in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
@@ -172,17 +182,39 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.
 - **Concurrent writers** on one store never fail a write for being busy: a writer that keeps losing the append race
   takes the append turn (`lease` table, `["append-turn"]`), and the others wait for it (`#mutate`).
-- **Keyframes (§5.4):** a cut's state is stored every K confirmed changes (`keyframeEvery`, default 64) or after
-  1 MiB of ops, in the same batch as the row, and at every named, fold, export and Published version. A new periodic
-  keyframe replaces the previous periodic one; milestone ones stay. Opening reads each cut's newest keyframe and
-  replays only the rows after it. A replica that caught up through a server keyframe fetches the rows it jumped and
-  checks that they rebuild it before History takes them.
+- **Keyframes (§5.4):** a cut's state is stored every K confirmed changes (`keyframeEvery`, default 64) or after 1 MiB
+  of ops, in the same batch as the row, and at every named, fold, export and Published version. A new periodic keyframe
+  replaces the previous periodic one; milestone ones stay. Opening reads each cut's newest keyframe and replays only the
+  rows after it, and a local cut reads only those rows at open (verify-ci F1): open and `head()` don't grow with the
+  log. Its older rows load in the background once open has returned (sync set up and all), newest first, a page of 4,096
+  at a time with the event loop free between pages, or all that's left at once as soon as a call waits for them; a
+  compaction by another process between two pages, or into rows the handle hasn't read yet, makes it read its history
+  again, whole (rebuilds run one at a time: one asked for while another runs starts after it; a cut switch made
+  meanwhile stays; one that fails leaves the history and its export cursor as they were). Everything that can reach them
+  waits for them, so no call sees part of a history: `log`, `credits`, `diff`, `checkout`/`resolve`/`preview`,
+  `undoStack`, every write (commit, fold, undo, restore, exports, imports, pins), `sync.waitFor` of a local change,
+  setting up a cut shared since open, and connecting a cut that is handing off (its upload carries the history). A call
+  that defaults to the current cut takes it before it waits, so switching cuts meanwhile doesn't move a commit. A commit
+  right after open therefore pays the older rows once. A load that fails is the error of every call waiting on it, or of
+  the next call if none was; the call after that loads again. `own()` throws until they're in. The handle holds the
+  older versions as its background load reads them: a compaction another process makes before then squashes them for
+  this handle too, as for one opened after it. Version names from the names table stay as they are (renamed since), and
+  creators come out as a whole load at open gives them, with what was confirmed live meanwhile applied after, in its
+  order (also through such a rebuild); a later rebuild gives them as a whole load does, as any rebuild did before.
+  `head()`, `cuts()`, `pendingCount()` and `notices()` don't wait; `close()` waits for a load under way and drops its
+  error; a connect still waiting then gives up. Shared and tracking cuts, and a cut an older fork without its own fork
+  state forks from, are read whole as before. Still O(changes), by design for now: that background read, and the
+  in-memory log it fills (History indexes the whole log: change ids, creators, credits, undo). The full fix is a store
+  index of change ids and an async History that pages old rows from the store on demand. A replica that caught up
+  through a server keyframe fetches the rows it jumped and checks that they rebuild it before History takes them.
 - **Retention (§5.4):** changes are kept forever. `compact({ cut?, olderThanDays = 90 })` is optional: on local cuts it
-  squashes each old auto-version's micro-changes (a run of one actor, in one group and turn) into its last change. Named,
-  fold, export, Published, undo, revert and restore versions, what they undid, fork points, folded-in and pinned
+  squashes each old auto-version's micro-changes (a run of one actor, in one group and turn) into its last change.
+  Named, fold, export, Published, undo, revert and restore versions, what they undid, fork points, folded-in and pinned
   versions, and the last K changes are never squashed. Seqs and ids stay; a squashed version leaves the log and its
-  state is no longer held (`StateUnknown`). A fork keeps its own copy of its fork state, so a fork made from a
-  version another process (or a handle that hadn't seen the compaction) squashes still opens.
+  state is no longer held (`StateUnknown`). A fork keeps its own copy of its fork state, so a fork made from a version
+  another process (or a handle that hadn't seen the compaction) squashes still opens. A handle holding rows that another
+  process's compaction squashed into rows it hasn't taken in yet reads its history again when it takes them in (applying
+  the squash on top of what it holds would lose what the run undid).
 
 ## Using it
 
@@ -207,7 +239,7 @@ that works on docs directly.
 
 `node scripts/size.mjs` checks the **history bundle** (esbuild minify, ESM, platform-neutral, gzip 9, bundling
 `core/src/history/index.ts` so engine parts History doesn't use are tree-shaken, exactly as P4 measured the
-prototype's 19.3 KB) against a **30 KB min+gz budget**. `node scripts/size-attr.mjs packages/core/src <scratch>`
+prototype's 19.3 KB) against a **32 KB min+gz budget** (raised from 30 KB on 2026-11-01, below). `node scripts/size-attr.mjs packages/core/src <scratch>`
 prints what each feature costs by stubbing it out (marginal bytes: a helper shared by two features counts only when both
 are stubbed). At `46f4b34` (UNVERIFIED, bytes; deterministic, not load-dependent; each stubbed copy keeps the package's
 `package.json`, so `sideEffects: false` applies as in the real package): the bundle is 82,084 min, 29,963 min+gz.
@@ -232,6 +264,17 @@ are stubbed). At `46f4b34` (UNVERIFIED, bytes; deterministic, not load-dependent
 | Keyframe milestones | 120 | 29 | no |
 
 The rest, about 20.7 KB (the bundle less these rows; gzip savings don't add exactly), is cuts, commit and rebase,
-fold and the merge DAG, states, and the merge engine (merge3, remaps, diff, apply, hashing). Since the budget was set
-(`c1d5488`, 28,571) the bundle grew by the shared-cut stages (F1–F4), the review rounds and the e2e-qa and kit-docs
-fixes; one path-escaping helper replaces three copies (−58).
+fold and the merge DAG, states, and the merge engine (merge3, remaps, diff, apply, hashing).
+PLAN §7's split lineage, added after the table (a fold composes each side's splits and records them on its edges and on
+`.cbproj` lineage edges; a track change reaches every piece; a retime of a split clip is a card): +136, 30,099.
+
+**Why 32 KB (orchestrator, 2026-11-01).** The 30 KB budget was set at `c1d5488` (the bundle then 28,571). By `46f4b34`
+it was 29,963: the shared-cut stages F1–F4 (+820), the review rounds and the e2e-qa, kit-docs, local-cli and
+cardboard-adapter fixes, less 121 for the slimmed sequencer rule and 58 for one path-escaping helper in place of three.
+Looked for and not found: dead code (every History method has a caller). Declined: error messages as codes (at most
+about 450 bytes; they are what an app developer gets from public calls, and tests and other packages match them) and
+dropping the portable SHA-256 (468; every browser and Worker host would need `setSyncHash` first). PLAN §7's split
+lineage (a fold and a `.cbproj` edge carry it; a retime of a split clip is a card) takes the bundle past 30 KB, so the
+budget is 32 KB: about 1.9 KB for the work still to come, and each raise is written up like this one. Still about 35
+times smaller than Automerge's 1.14 MB gz of WASM (PLAN §19's figure). Verified: the proposal's numbers were re-measured
+by a separate agent (`gfv-scratch/carton/verify-size/`).
