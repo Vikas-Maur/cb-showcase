@@ -69,6 +69,10 @@ holds; they don't say how fast the built code is.
   codex/fix-captions`); that is checked for shape only, not authenticated, and their late conflicts arrive as notices
   on their next `cb` call. With H9 wired, agents the app starts get a per-chat actor from the app without declaring
 anything.
+- **Ctrl+Z doesn't reach a terminal's agents** (new, by design, laptop report 90c4127). It covers the person's own
+  edits and the agent turns they started in the app, from the editor's session only. A `cb` agent in a terminal, even
+  on the same machine, is undone from History ("Undo turn") or with `cb undo --turn`. An undo that clashes with a
+  later change does nothing but raise its cards; there is no partial undo from Ctrl+Z.
 - **The hook's prefix is shell syntax** (`export CARDBOARD_ACTOR=…;`). Claude Code runs Bash commands in Git Bash on
   Windows, so it should work there, but that hasn't been run. An agent whose shell is cmd or PowerShell doesn't get it.
 - **`cb` on a shared cut waits up to 5 s (L14)** for the server, then answers `pending`; offline it answers `pending`
