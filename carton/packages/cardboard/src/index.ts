@@ -53,12 +53,13 @@ export const cardboardFilesHost = {
   diagnose,
 };
 
-export { cardboardSchema, hard, soft, diagnose, itemOf, ITEMS, TRACKS, MEDIA, TIME_FIELDS, ITEM_TYPES, TRACK_TYPES, ASPECT_RATIOS, LOCAL_ONLY, CARTON_MEDIA_FIELDS, SHARED_T1_KINDS } from "./schema.ts";
+export { cardboardSchema, mediaName, hard, soft, diagnose, itemOf, ITEMS, TRACKS, MEDIA, TIME_FIELDS, ITEM_TYPES, TRACK_TYPES, ASPECT_RATIOS, LOCAL_ONLY, CARTON_MEDIA_FIELDS, SHARED_T1_KINDS } from "./schema.ts";
 export { fromHost, toHost, projectGuiSave, projectDoc, sliceOf, materializeProject, SEQ_FIELDS, ROOT_FIELDS } from "./host.ts";
 export type { CardboardProject, ItemProjection } from "./host.ts";
 export { identityProjection, standInProjection } from "./projection.ts";
 export { inferRipple } from "./ripple.ts";
 export { nameTurn, turnName, type TurnRef } from "./turns.ts";
 export { parseActor, subagentActorId, cardboardIdentity } from "./identity.ts";
+export { describeCardboardCard, cardboardValue } from "./words.ts";
 export * from "./header.ts";
 export * from "./codec.ts";
