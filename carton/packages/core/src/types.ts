@@ -520,6 +520,8 @@ export type NoticeKind = "overwritten" | "lost-to-delete" | "late-conflict" | "r
 /** A message for one actor, returned at the start of its next `cb`/MCP result (late conflicts, overwrites). */
 export interface Notice {
   to: ActorKey;
+  /** The cut the change was made on (late conflicts and rejections), so its cards are resolved there. */
+  cut?: string;
   kind: NoticeKind;
   text: string;
   path?: PathKey;

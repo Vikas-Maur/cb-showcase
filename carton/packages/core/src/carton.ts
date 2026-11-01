@@ -1955,9 +1955,9 @@ class CartonImpl implements Carton {
     for (const o of spent) writes.push({ table: T.meta, key: ["noop", o.id], value: [cut, spentAt] });
     for (const o of outcomes) {
       const late = o.type === "confirmed" ? o.lateCards : o.type === "absorbed" ? o.cards : [];
-      if (late.length && (o.type === "confirmed" || o.type === "absorbed")) notices.push({ to: actorKey(authorOf(o.id)), kind: "late-conflict", text: `Your change ${o.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: o.id, cards: late });
+      if (late.length && (o.type === "confirmed" || o.type === "absorbed")) notices.push({ to: actorKey(authorOf(o.id)), cut, kind: "late-conflict", text: `Your change ${o.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: o.id, cards: late });
       // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
-      if (o.type === "rejected") notices.push({ to: actorKey(authorOf(o.id)), kind: "rejected", text: `Your change ${o.id} wasn't saved: ${o.reason === "too large" ? "it is larger than the server accepts; the edits after it still went through" : o.reason}`, change: o.id });
+      if (o.type === "rejected") notices.push({ to: actorKey(authorOf(o.id)), cut, kind: "rejected", text: `Your change ${o.id} wasn't saved: ${o.reason === "too large" ? "it is larger than the server accepts; the edits after it still went through" : o.reason}`, change: o.id });
     }
     const at = this.#opts.clock?.() ?? Date.now();
     notices.forEach((n, i) => writes.push({ table: T.notices, key: [n.to, at, i, randomHex(4)], value: { ...n, at } }));
