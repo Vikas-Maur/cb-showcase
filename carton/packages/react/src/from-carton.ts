@@ -90,10 +90,20 @@ export interface CartonUiHandle extends CartonUi {
   readonly hub: TopicHub<Topic>;
   /** Re-read cuts, history tail, undo and published state (after another process wrote). */
   refresh(): Promise<void>;
-  /** Show conflict cards a commit returned (the GUI's own commits), as late ones are shown. */
+  /**
+   * Show conflict cards a commit returned (the GUI's own commits), as late ones are shown. Cards follow core's
+   * convention: `ours` is the head on screen, `theirs` is the person's own edit (merge3(base, head, mine)).
+   */
   reportConflicts(cards: readonly ConflictCard[], by?: CoreActor): void;
+  /**
+   * The core card behind a Conflict, exactly as it was reported or raised (fields a host added, such as its own card
+   * id, included). `Conflict.id` is opaque: map a resolved card back with this, never by parsing the id.
+   */
+  cardFor<C extends ConflictCard = ConflictCard>(conflictId: string): C | undefined;
   /** Resolves when the first load finished. */
   readonly ready: Promise<void>;
+  /** Resolves when nothing is scheduled or running (refreshes, summaries, checks): for tests and hosts that wait. */
+  settled(): Promise<void>;
   dispose(): void;
 }
 
@@ -106,13 +116,23 @@ export function splitPathKey(key: string): string[] {
 }
 
 /** A UI actor from a core actor. Keys follow core's actorKey(); a subagent's parent is its agent. */
+/**
+ * The agent a subagent works for. The identity sources (`@carton/cardboard` parseActor, `@carton/local`) give a
+ * subagent the agent's id plus `/sub-<type>-<id>` (§10: `director/<chat>/<turn>/sub-Explore-ab12`); an id without
+ * that suffix is the agent's own (a subagent told apart by `agentId` only).
+ */
+const agentIdOf = (a: CoreActor): string => {
+  const i = a.id.lastIndexOf("/sub-");
+  return i > 0 ? a.id.slice(0, i) : a.id;
+};
+
 export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGroup: string): Actor {
   if (!a) return { key: "system/carton", kind: "system", name: "Carton" };
   const key = actorKey(a);
   const kind: Actor["kind"] = a.kind === "external" ? "agent" : a.kind;
   const isYou = key === actorKey(me) || (a.kind !== "human" && groupOf(a) === myGroup);
   const name = a.kind === "subagent" ? a.name ?? a.agentType ?? a.id : a.kind === "external" ? `${a.name ?? a.id} (terminal)` : a.name ?? a.id;
-  const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: a.id }) : a.kind !== "human" && isYou ? actorKey(me) : undefined;
+  const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: agentIdOf(a) }) : a.kind !== "human" && isYou ? actorKey(me) : undefined;
   return { key, kind, name, ...(parent ? { parent } : {}), ...(a.agentType ? { subagentType: a.agentType } : {}), ...(isYou ? { isYou } : {}) };
 }
 
@@ -201,11 +221,22 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     if (known && known.name === x.name && known.parent === x.parent) return known;
     actors.set(x.key, x);
     // A subagent's agent may never act itself: register it, so "Director › Explore" can be named.
-    if (a?.kind === "subagent" && x.parent && !actors.has(x.parent)) actors.set(x.parent, { key: x.parent, kind: "agent", name: a.id === "director" ? "Director" : a.id, parent: actorKey(opts.me), isYou: x.isYou });
+    if (a?.kind === "subagent" && x.parent && !actors.has(x.parent)) {
+      const agent = agentIdOf(a);
+      actors.set(x.parent, { key: x.parent, kind: "agent", name: agent === "director" || agent.startsWith("director/") ? "Director" : agent, parent: actorKey(opts.me), isYou: x.isYou });
+    }
     return x;
   };
   const me = ui(opts.me);
   const someone: Actor = { key: "system/someone", kind: "human", name: "Someone" };
+  // Work started on its own (refreshes after events, summaries, checks), so settled() can wait for it.
+  const inflight = new Set<Promise<unknown>>();
+  const track = <T>(p: Promise<T>): Promise<T> => {
+    inflight.add(p);
+    const done = () => void inflight.delete(p);
+    p.then(done, done);
+    return p;
+  };
 
   // ------------------------------------------------------------ history
   let cutId = carton.cut;
@@ -423,7 +454,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     while (running < (opts.describeConcurrency ?? 2) && queue.length) {
       const id = queue.pop()!; // newest asks first: the top of the list is what people read
       running++;
-      void summarize(id).finally(() => {
+      void track(summarize(id)).finally(() => {
         running--;
         queued.delete(id);
         pump();
@@ -572,7 +603,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       let edits = 1;
       if (top.author.turn) for (edits = 0; edits < stack.length && stack[edits]!.author.turn === top.author.turn; edits++);
       const label = top.label.replace(/^Undo\s+(?:[^:]+:\s*)?/, "");
-      next = { id: top.changeId, author: ui(top.author), label, at: top.at, edits };
+      // a turn is the agent's, even when its newest edit was a subagent's: "Undo Director: tighter intro"
+      const who = ui(top.author);
+      const author = who.kind === "subagent" && top.author.turn && who.parent ? (actors.get(who.parent) ?? who) : who;
+      next = { id: top.changeId, author, label, at: top.at, edits };
     }
     if (next?.id !== undo?.id || next?.edits !== undo?.edits || next?.label !== undo?.label) {
       undo = next;
@@ -645,6 +679,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         mineSide: "theirs",
         conflict: {
           id,
+          path: card.path,
           title: w.title,
           // describeCard words ours/theirs from core's point of view; here the person's edit is core's theirs.
           mine: { author: me, summary: w.theirs },
@@ -655,7 +690,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           sig: cardSig(card),
         },
       });
+      // A rebase's cards (an edit made offline meeting a teammate's) don't say whose edit is at head: Credits does
+      if (!by) void nameOtherSide(id, card, cut);
     }
+    publishConflicts();
+  };
+  const nameOtherSide = async (id: string, card: ConflictCard, cut: string) => {
+    const segs = splitPathKey(card.path);
+    const record = schema.collections[segs[0] ?? ""] ? segs.slice(0, 2) : segs.slice(0, 1);
+    const who = await carton.credits(record, { cut }).catch(() => null);
+    const e = cardEntries.get(id);
+    if (!who || !e || disposed) return;
+    e.conflict = { ...e.conflict, theirs: { ...e.conflict.theirs, author: ui(who) } };
     publishConflicts();
   };
 
@@ -676,7 +722,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         for (const id of rev) markRestDone(id); // folding in the rest reverts the inverse: no longer offered
         touchRest(e.branchId, c.paths ?? [], !!c.intent?.maps || c.ops.some((op) => op.op === "remap"), e.seq);
         if (e.branchId !== cutId) {
-          void refreshCuts();
+          void track(refreshCuts()); // tracked: settled() waits for it too
           break;
         }
         appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
@@ -825,10 +871,13 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   };
   /** A confirmed change on `cut`: invalidate the decisions of the partial folds whose records it touched. */
   const touchRest = (cut: string, paths: readonly string[], remap: boolean, seq: number) => {
-    seenSeq.set(cut, Math.max(seenSeq.get(cut) ?? -1, seq));
+    const before = seenSeq.get(cut);
+    seenSeq.set(cut, Math.max(before ?? -1, seq));
     const byRecord = restIndex.get(cut);
     if (!byRecord) return;
-    if (remap) {
+    // A gap (changes this handle never got an event for, written by another handle) can have touched anything: every
+    // decision on the cut is checked again. Only a contiguous run of seen changes may keep them.
+    if (remap || (before !== undefined && seq > before + 1)) {
       // A ripple moves many records at once: every decision on the cut is checked again.
       for (const ids of byRecord.values()) for (const id of ids) invalidateRest(id);
       return;
@@ -850,14 +899,21 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   // Refreshing cuts and undo after a burst of changes: once, after it settles.
   let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+  // Resolves the pending debounce's tracked promise; dispose() calls it too, so a settled() waiter never hangs.
+  let refreshDone: (() => void) | null = null;
   const scheduleRefresh = () => {
     if (refreshTimer) return;
-    refreshTimer = setTimeout(() => {
-      refreshTimer = null;
-      void refreshCuts();
-      void refreshUndo();
-      void checkRest();
-    }, 50);
+    // The debounce itself is tracked, so settled() waits through it rather than for a guessed time.
+    void track(
+      new Promise<void>((done) => {
+        refreshDone = done;
+        refreshTimer = setTimeout(() => {
+          refreshTimer = null;
+          refreshDone = null;
+          Promise.allSettled([refreshCuts(), refreshUndo(), checkRest()]).then(() => done());
+        }, 50);
+      }),
+    );
   };
 
   const refresh = async () => {
@@ -872,8 +928,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     sweepRest();
     await checkRest();
   };
-  const ready = refresh();
-  const poll = opts.pollMs ? setInterval(() => void refresh(), opts.pollMs) : null;
+  const ready = track(refresh());
+  const poll = opts.pollMs ? setInterval(() => void track(refresh()), opts.pollMs) : null;
   (poll as { unref?: () => void } | null)?.unref?.();
 
   // ------------------------------------------------------------ reads
@@ -921,6 +977,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const mineWhere = where(intoCut), theirWhere = where(fromCut);
     return {
       id: card.path,
+      path: card.path,
       title: w.title,
       mine: { author: me, summary: w.mine, ...(mineWhere ? { where: mineWhere } : {}) },
       theirs: { author: theirs, summary: w.theirs, ...(theirWhere ? { where: theirWhere } : {}) },
@@ -1114,12 +1171,18 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const i = pos.get(versionId);
       const r = i === undefined ? undefined : rows[i];
       if (!r?.core?.change || !r.v.foldRest) return { ok: false, error: "Nothing left to fold in" };
-      // Check again right before acting: the records may have changed since the flag was set.
+      // Check again right before acting: the records may have changed since the flag was set. Like checkRest(), the
+      // answer is kept only if no change landed while it was read.
+      const id = r.core.change;
+      const gen = restGen.get(id) ?? 0;
       if (!(await leftOut(r.core))) {
-        restDecision.set(r.core.change, false);
-        showRest(r.core.change);
+        if ((restGen.get(id) ?? 0) === gen) {
+          restDecision.set(id, false);
+          showRest(id);
+        }
         return { ok: false, error: "Nothing left to fold in" };
       }
+      if ((restGen.get(id) ?? 0) !== gen) return { ok: false, error: "Something changed. Try again." };
       const res = await carton.revert(r.core.change, { author: opts.me, cut: r.core.ref.branchId });
       if (res.status === "confirmed" || res.status === "pending") {
         markRestDone(r.core.change);
@@ -1191,14 +1254,23 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       hub.notify("preview");
     },
 
-    refresh,
+    refresh: () => track(refresh()),
     reportConflicts: (list, by) => addCards(list, by),
+    cardFor: <C extends ConflictCard = ConflictCard>(id: string) => (cardEntries.get(id)?.card ?? planCards.get(id)) as C | undefined,
+    async settled() {
+      // Work can start more work (a refresh schedules a check): wait until a pass finds nothing in flight.
+      for (let i = 0; i < 1000 && inflight.size && !disposed; i++) await Promise.allSettled([...inflight]);
+      await Promise.resolve();
+    },
     dispose() {
       disposed = true;
       off();
       clearInterval(idleTimer);
       if (poll) clearInterval(poll);
       if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = null;
+      refreshDone?.();
+      refreshDone = null;
     },
   };
   handle.renameCut = async (id, name) => {

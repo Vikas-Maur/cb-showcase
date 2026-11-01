@@ -51,7 +51,7 @@ export interface FfmpegProxyEncoder extends ProxyEncoder {
 }
 
 const PROBE_TIMEOUT_MS = 15_000;
-const STALL_MS = 120_000;
+export const STALL_MS = 120_000;
 
 // NVENC constant quality, capped at the profile's max rate, as our Windows build's Cardboard proxies do
 // (scripts/media-helpers.js measured CQ 30 for 1920 proxies). 28 at 720p is a starting point, not a measured one.
@@ -59,7 +59,7 @@ const NVENC_CQ = 28;
 // libx264's default CRF, capped at the profile's max rate.
 const X264_CRF = 23;
 
-const kbps = (bitsPerSecond: number): string => `${Math.round(bitsPerSecond / 1000)}k`;
+export const kbps = (bitsPerSecond: number): string => `${Math.round(bitsPerSecond / 1000)}k`;
 
 /** Rate control and pixel format per encoder. The probe passes these too (see the top of this file). */
 export function codecArgs(codec: FfmpegCodec, p: CollabProfile): string[] {
@@ -111,7 +111,7 @@ export function encodeArgs(codec: FfmpegCodec, input: string, output: string, p:
   ];
 }
 
-function commandOf(ffmpeg: string | readonly string[] | undefined): readonly string[] {
+export function commandOf(ffmpeg: string | readonly string[] | undefined): readonly string[] {
   if (ffmpeg === undefined) return ["ffmpeg"];
   return typeof ffmpeg === "string" ? [ffmpeg] : ffmpeg;
 }
@@ -208,11 +208,13 @@ export async function pipeFileToSink(path: string, sink: WritableStream<Uint8Arr
   }
 }
 
-interface RunOptions {
+export interface RunOptions {
   signal?: AbortSignal;
   stallMs: number;
   lowPriority: boolean;
   onProgress?: (fraction: number) => void;
+  /** ffmpeg's working folder: the segment encoder names its outputs relative to it (segment-encoder.ts says why). */
+  cwd?: string;
 }
 
 /** "HH:MM:SS.xx" (ffmpeg's Duration and out_time) to seconds. */
@@ -222,9 +224,9 @@ function clockSeconds(s: string): number | null {
 }
 
 /** Runs one ffmpeg encode, reporting `-progress` against the input's duration. Resolves when ffmpeg exits 0. */
-function runFfmpeg(cmd: readonly string[], args: string[], opts: RunOptions): Promise<void> {
+export function runFfmpeg(cmd: readonly string[], args: string[], opts: RunOptions): Promise<void> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(cmd[0], [...cmd.slice(1), ...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn(cmd[0], [...cmd.slice(1), ...args], { windowsHide: true, stdio: ["ignore", "pipe", "pipe"], cwd: opts.cwd });
     if (opts.lowPriority && child.pid !== undefined) {
       try {
         setPriority(child.pid, osConstants.priority.PRIORITY_BELOW_NORMAL);

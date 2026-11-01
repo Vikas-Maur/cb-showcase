@@ -13,6 +13,9 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "bin": {
+      "carton": "./dist/bin.js"
     }
   },
   "files": [
@@ -27,6 +30,10 @@
   "dependencies": {
     "@carton/core": "0.1.0",
     "@carton/local": "0.1.0",
-    "@carton/cardboard": "0.1.0"
+    "@carton/cardboard": "0.1.0",
+    "@carton/store-sqlite": "0.1.0"
+  },
+  "bin": {
+    "carton": "./src/bin.ts"
   }
 }

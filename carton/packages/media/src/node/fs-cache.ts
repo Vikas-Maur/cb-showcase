@@ -14,7 +14,7 @@ import { randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { isMediaHash } from "../bytes.ts";
-import type { LeafCache } from "../cache.ts";
+import { streamEntryName, type LeafCache } from "../cache.ts";
 import type { UploadState, UploadStateStore } from "../upload.ts";
 
 const RETRYABLE = new Set(["EPERM", "EBUSY", "EACCES"]);
@@ -117,6 +117,25 @@ export class FsLeafCache implements LeafCache {
   async putManifest(hash: string, bytes: Uint8Array): Promise<void> {
     await mkdir(this.#mediaDir(hash), { recursive: true });
     await writeFileAtomic(join(this.#mediaDir(hash), "manifest"), bytes);
+  }
+
+  // Beside the stream id's folder's would-be leaves; not numbered, so never counted or evicted as leaves (tiny, like
+  // manifests).
+  async getEntry(key: string): Promise<Uint8Array | null> {
+    const { stream, name } = streamEntryName(key);
+    try {
+      const b = await readFile(join(this.#mediaDir(stream), name));
+      return new Uint8Array(b.buffer, b.byteOffset, b.byteLength);
+    } catch (e) {
+      if (isMissing(e)) return null;
+      throw e;
+    }
+  }
+
+  async putEntry(key: string, bytes: Uint8Array): Promise<void> {
+    const { stream, name } = streamEntryName(key);
+    await mkdir(this.#mediaDir(stream), { recursive: true });
+    await writeFileAtomic(join(this.#mediaDir(stream), name), bytes);
   }
 
   /** Bytes of leaves on disk (after the first write has scanned the folder). */

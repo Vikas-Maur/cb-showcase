@@ -113,6 +113,7 @@ export const words = {
   publishedAs: (name: string) => `Published: ${name}`,
   newerEdits: "Newer edits exist",
   newerEditsCount: (n: number) => `${plural(n, "newer version", "newer versions")} not published`,
+  newerEditsHint: "The share link shows an earlier version of this cut.",
   upToDatePublished: "The share link shows the newest version",
   publishAgain: "Publish again",
   publish: "Publish",

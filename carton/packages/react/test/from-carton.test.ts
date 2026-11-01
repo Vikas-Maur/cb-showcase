@@ -24,7 +24,17 @@ const director = (turn: string): Actor => ({ kind: "agent", id: "director", name
 const explore = (turn: string): Actor => ({ kind: "subagent", id: "director", agentId: "ab12", agentType: "Explore", turn, chat: "c1", group: "alice@laptop" });
 const bob: Actor = { kind: "human", id: "bob", name: "Bob" };
 const set = (id: string, f: string, v: unknown) => ({ op: "set" as const, path: ["items", id, f], value: v });
-const settle = () => new Promise((r) => setTimeout(r, 80));
+// Every view model a test opens, so settle() waits for their own scheduled and running work, never a guessed time
+// (Windows wakes timers at about 15.6 ms; a fixed wait races the 50 ms refresh debounce: verify-ci #8).
+const live = new Set<ReturnType<typeof fromCarton>>();
+const make = (...a: Parameters<typeof fromCarton>) => {
+  const h = fromCarton(...a);
+  live.add(h);
+  return h;
+};
+const settle = async () => {
+  for (let i = 0; i < 3; i++) await Promise.all([...live].map((h) => h.settled()));
+};
 
 async function open() {
   const carton = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0(), cutName: "Main cut" }, actor: alice });
@@ -35,7 +45,7 @@ async function open() {
     taps.push(l);
     return realOn(l);
   };
-  const ui = fromCarton(carton, { me: alice, clipName: (id) => id.toUpperCase() });
+  const ui = make(carton, { me: alice, clipName: (id) => id.toUpperCase() });
   await ui.ready;
   return { carton, ui, emit: (e: CartonEvent) => taps.forEach((l) => l(e)) };
 }
@@ -62,6 +72,38 @@ test("History follows commits: newest first, lazy summaries, a Director turn as 
   await settle();
   assert.match(h.at("all", 2)!.summary, /Intro/);
   assert.match(h.at("all", 0)!.summary, /C/);
+  ui.dispose();
+});
+
+test("subagents named as the identity sources write them (director/<chat>/<turn>/sub-<type>-<id>): agent, turn, undo label", async () => {
+  const { carton, ui } = await open();
+  const agent: Actor = { kind: "agent", id: "director/c9/t7", name: "Director", chat: "c9", turn: "t7", group: "alice@laptop" };
+  const sub: Actor = { kind: "subagent", id: "director/c9/t7/sub-captions-ab12", name: "Director › captions", agentId: "ab12", agentType: "captions", chat: "c9", turn: "t7", group: "alice@laptop" };
+  await carton.commit({ ops: [set("a", "name", "by the agent")], author: agent });
+  await carton.commit({ ops: [set("b", "name", "by its subagent")], author: sub, name: "tighter intro" });
+  await settle();
+  const top = ui.history().at("all", 0)!;
+  assert.equal(top.kind, "turn");
+  assert.equal(top.turn?.edits, 2, "the agent's and its subagent's edits are one turn");
+  assert.equal(top.author.parent, "agent/director/c9/t7", "the subagent's agent is found from its id");
+  assert.equal(ui.actor(top.author.parent!)?.name, "Director");
+  await settle();
+  const turn = ui.undoTurn()!;
+  assert.equal(turn.author.name, "Director", "the turn is undone as the agent's");
+  assert.equal(turn.label, "tighter intro");
+  assert.equal(turn.edits, 2);
+  ui.dispose();
+});
+
+test("a rebase's card names the other side from Credits (who last changed that record), not \"Someone\"", async () => {
+  const { carton, ui, emit } = await open();
+  await carton.commit({ ops: [set("b", "name", "Bob's name")], author: bob });
+  await settle();
+  emit({ type: "absorbed", branchId: carton.cut, id: "x.1", cards: [{ kind: "field", path: "items/b/name", base: "b", ours: "Bob's name", theirs: "Alice's name" }] });
+  await settle();
+  const card = ui.conflicts()[0]!;
+  assert.equal(card.theirs.author.name, "Bob");
+  assert.equal(card.mine.author.isYou, true);
   ui.dispose();
 });
 
@@ -257,7 +299,13 @@ test("over the bridge: the renderer's rows ask for their summaries, the worker d
   assert.equal(h.count("all"), 31);
   assert.equal(h.at("all", 0)!.summary, "", "not described yet");
   for (let i = 0; i < 3; i++) h.at("all", i);
-  await settle();
+  // The request and the summaries travel through message hops: wait for them to arrive, not for a time.
+  const described = () => client.ui.history().at("all", 2)!.summary !== "";
+  await new Promise<void>((resolve, reject) => {
+    if (described()) return resolve();
+    const timer = setTimeout(() => (off(), reject(new Error("timed out waiting for the summaries"))), 5000);
+    const off = client.ui.subscribe("history", () => described() && (clearTimeout(timer), off(), resolve()));
+  });
   await settle();
   assert.match(client.ui.history().at("all", 0)!.summary, /c29/);
   assert.equal(client.ui.history().at("all", 20)!.summary, "", "rows nobody looked at stay undescribed");

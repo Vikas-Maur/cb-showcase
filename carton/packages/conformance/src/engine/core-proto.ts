@@ -371,7 +371,9 @@ export function coreProtoTests(S: Schema, opts: CoreProtoOptions = {}): void {
     assert.deepEqual(E.describe(E.diff(rbase, ag, S), rbase, S), ["Trimmed 'c7' end 33.0 s → 32.0 s", "Added text 'Over clip 7' on 'Titles' at 30.0 s"]);
     assert.deepEqual(E.describe(E.diff(rbase, human, S), rbase, S), ["Removed 3.0 s from 'V1' at 6.0 s (later items pulled left)", "Deleted video 'c2'"]);
     const g = E.describe(E.diff(base, edit(base, "a3", { colorGrade: { saturation: 1.3, contrast: 1 }, trackId: "titles" }), S), base, S);
-    assert.deepEqual(g, ["Moved 'CTA' to track 'Titles', colorGrade.saturation 1.1 → 1.3"]);
+    // a schema may give the field an editor's word (`labels`); unlabelled, it prints its path
+    const sat = S.collections.timelineItems?.labels?.["colorGrade.saturation"] ?? "colorGrade.saturation";
+    assert.deepEqual(g, [`Moved 'CTA' to track 'Titles', ${sat} 1.1 → 1.3`]);
   });
 
   // ------------------------------------------------------------------ sequencer

@@ -39,6 +39,25 @@ export interface RangeServerOptions {
   onRequest?: (info: RangeRequestInfo) => void;
   /** Don't keep the process alive for this server alone. Off by default: a tool may be mid-read when main code ends. */
   unref?: boolean;
+  /**
+   * Segmented proxies (stream.ts): the live HLS playlist of stream `id`, served at /s/<id>.m3u8, or null when unknown.
+   * `urlFor` gives the URL of each segment on this server (/m/<hash>), so a tool follows the stream while it uploads.
+   */
+  playlist?: (id: string, urlFor: (hash: string) => string, signal: AbortSignal) => Promise<string | null>;
+  /**
+   * A segment read through a playlist's URL (which names its stream) failed verification, on any attempt (a host that
+   * checks the damage removes the object, so the retry finds it gone, and still this is called): report the stream, so
+   * the next share makes a new one (e2e S5-5/S5-7: the reuse check reads bad/<stream>, it can't list part reports).
+   * Wire to `ProxyStreamReader.reportPartDamage`, which ignores a hash that isn't one of the stream's parts.
+   */
+  reportDamage?: (stream: string, hash: string) => Promise<unknown>;
+  /**
+   * A segment read through a playlist's URL was not there (and no attempt failed verification). Wire to
+   * `(stream, hash) => reader.reportPartDamage(hash, "missing")`, which reports the stream only if a HEAD finds the part
+   * still gone: a part restored meanwhile isn't damage. Separate from `reportDamage`, so wiring made before it existed
+   * never reports a missing part without that check.
+   */
+  reportMissing?: (stream: string, hash: string) => Promise<unknown>;
 }
 
 export interface RangeRequestInfo {
@@ -66,6 +85,8 @@ export interface RangeServer {
   readonly token: string;
   /** `http://127.0.0.1:<port>/m/<hash>?t=<token>`: what a tool gets. */
   url(hash: string): string;
+  /** `http://127.0.0.1:<port>/s/<stream>.m3u8?t=<token>`: a segmented proxy as a live HLS playlist (needs `playlist`). */
+  playlistUrl(stream: string): string;
   /** Stops listening, drops every connection (in-flight reads are aborted) and resolves once the server is closed. */
   close(): Promise<void>;
 }
@@ -73,6 +94,7 @@ export interface RangeServer {
 export { parseRange, type ByteSpan } from "../http-range.ts";
 
 const MEDIA_PATH = "/m/";
+const STREAM_PATH = "/s/";
 const DEFAULT_TYPE = "application/octet-stream";
 
 export async function startRangeServer(opts: RangeServerOptions): Promise<RangeServer> {
@@ -92,6 +114,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   };
 
   let hostOk = (_host: string | undefined): boolean => false; // set once the port is known
+  let mediaUrl = (_hash: string, _ext?: string, _stream?: string): string => ""; // likewise
 
   // Responses not closed yet. close() waits for them, so once it resolves every read it started has been told to abort
   // and the caller can shut the source down. (onRequest waits for the reads themselves to end.)
@@ -148,22 +171,45 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   };
 
   const respond = async (req: IncomingMessage, res: ServerResponse, ac: AbortController, info: RangeRequestInfo): Promise<void> => {
+    let ofStream = ""; // the stream a playlist's segment URL names (s=)
+    const seen = { mismatch: false }; // a read of this request failed verification, on any attempt
     try {
       if (!hostOk(req.headers.host)) return reply(res, 403, CLOSE);
       const url = req.url ?? "";
       const q = url.indexOf("?");
       const path = q < 0 ? url : url.slice(0, q);
-      if (!tokenOk(q < 0 ? null : new URLSearchParams(url.slice(q + 1)).get("t"))) return reply(res, 403, CLOSE);
+      const params = new URLSearchParams(q < 0 ? "" : url.slice(q + 1));
+      if (!tokenOk(q < 0 ? null : params.get("t"))) return reply(res, 403, CLOSE);
+      ofStream = params.get("s") ?? "";
       const head = req.method === "HEAD";
       // A request with another method may carry a body; closing is cheaper than reading it to keep the connection.
       if (!head && req.method !== "GET") return reply(res, 405, { Allow: "GET, HEAD", ...CLOSE });
-      const hash = path.length === MEDIA_PATH.length + 64 && path.startsWith(MEDIA_PATH) ? path.slice(MEDIA_PATH.length) : "";
+      const stream = path.length === STREAM_PATH.length + 64 + 5 && path.startsWith(STREAM_PATH) && path.endsWith(".m3u8") ? path.slice(STREAM_PATH.length, -5) : "";
+      if (isMediaHash(stream) && opts.playlist) {
+        info.hash = stream;
+        const text = await opts.playlist(stream, (h) => mediaUrl(h, ".m4s", stream), ac.signal);
+        if (ac.signal.aborted) return;
+        if (text === null) return reply(res, 404);
+        const body = Buffer.from(text, "utf8");
+        // A live playlist changes as segments land: never cached, re-read by the tool every target duration.
+        res.writeHead(200, { "Content-Type": "application/vnd.apple.mpegurl", "Content-Length": body.length, "Cache-Control": "no-store" });
+        info.length = info.bytes = head ? 0 : body.length;
+        res.end(head ? undefined : body);
+        return;
+      }
+      // /m/<hash>, or /m/<hash>.mp4 / .m4s: ffmpeg's HLS demuxer only follows segment URLs with a media extension.
+      const name = path.startsWith(MEDIA_PATH) ? path.slice(MEDIA_PATH.length).replace(/\.(mp4|m4s)$/, "") : "";
+      const hash = name.length === 64 ? name : "";
       if (!isMediaHash(hash)) return reply(res, 404);
       info.hash = hash;
 
       const stat = await source.stat(hash, ac.signal);
       if (ac.signal.aborted) return;
-      if (stat === null) return reply(res, 404);
+      if (stat === null) {
+        reply(res, 404);
+        await report(ofStream, hash, "missing");
+        return;
+      }
       const size = stat.size;
       const headers: OutgoingHttpHeaders = {
         "Accept-Ranges": "bytes",
@@ -190,7 +236,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
         res.end();
         return;
       }
-      await sendBody(res, source, hash, offset, length, status, headers, ac.signal, info);
+      await sendBody(res, source, hash, offset, length, status, headers, ac.signal, info, seen);
     } catch (e) {
       if (ac.signal.aborted) return; // the client left; there is no one to answer
       info.error = e;
@@ -198,6 +244,22 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
       // the response so it can't mistake it for a complete one. Before that, a plain 502 says "try again".
       if (res.headersSent) res.destroy();
       else reply(res, 502);
+      // A mismatch on the first attempt followed by a missing object on the retry is the mismatch: a host that checks a
+      // reported leaf removes the damaged object, so the retry can't find it.
+      const name = (e as Error)?.name;
+      const why = e instanceof LeafMismatchError || seen.mismatch ? "mismatch" : name === "MediaMissingError" ? "missing" : null;
+      if (why !== null && info.hash) await report(ofStream, info.hash, why);
+    }
+  };
+
+  const report = async (stream: string, hash: string, why: "mismatch" | "missing"): Promise<void> => {
+    const to = why === "mismatch" ? opts.reportDamage : opts.reportMissing;
+    if (to && isMediaHash(stream)) {
+      try {
+        await to(stream, hash);
+      } catch {
+        // best effort: the answer has gone out already
+      }
     }
   };
 
@@ -221,6 +283,7 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
   const allowed = [`127.0.0.1:${port}`, `localhost:${port}`];
   hostOk = (h) => h !== undefined && (h === allowed[0] || h.toLowerCase() === allowed[1]);
   const query = `?t=${encodeURIComponent(token)}`;
+  mediaUrl = (hash, ext = "", stream) => `http://127.0.0.1:${port}${MEDIA_PATH}${hash}${ext}${query}${stream ? `&s=${stream}` : ""}`;
 
   let closing: Promise<void> | undefined;
   return {
@@ -228,7 +291,11 @@ export async function startRangeServer(opts: RangeServerOptions): Promise<RangeS
     token,
     url(hash) {
       if (!isMediaHash(hash)) throw new TypeError(`not a media hash: ${String(hash).slice(0, 80)}`);
-      return `http://127.0.0.1:${port}${MEDIA_PATH}${hash}${query}`;
+      return mediaUrl(hash);
+    },
+    playlistUrl(stream) {
+      if (!isMediaHash(stream)) throw new TypeError(`not a stream id: ${String(stream).slice(0, 80)}`);
+      return `http://127.0.0.1:${port}${STREAM_PATH}${stream}.m3u8${query}`;
     },
     close() {
       closing ??= new Promise<void>((resolve) => {
@@ -275,6 +342,7 @@ async function sendBody(
   headers: OutgoingHttpHeaders,
   signal: AbortSignal,
   info: RangeRequestInfo,
+  seen: { mismatch: boolean },
 ): Promise<void> {
   let sent = 0;
   for (let attempt = 0; ; attempt++) {
@@ -296,6 +364,7 @@ async function sendBody(
     } catch (e) {
       // A leaf that failed verification before any of it reached the client costs the client nothing: read again,
       // once. The repair path has refetched the leaf by then; a second failure is answered with 502.
+      if (e instanceof LeafMismatchError) seen.mismatch = true;
       if (sent === 0 && attempt === 0 && e instanceof LeafMismatchError && !signal.aborted) continue;
       throw e;
     }

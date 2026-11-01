@@ -22,7 +22,9 @@
     "packages/local",
     "packages/cli-mcp",
     "packages/react",
-    "packages/conformance"
+    "packages/conformance",
+    "e2e",
+    "apps/web"
   ],
   "scripts": {
     "test": "npm run test --workspaces --if-present",
