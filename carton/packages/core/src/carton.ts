@@ -1300,6 +1300,8 @@ class CartonImpl implements Carton {
     }
     return { ref: this.#h.ref(cut), doc: owned(this.#h.viewOf(this.#h.head(cut))!, this.schema) };
   }
+  // Only this handle's queue: none on a handle without sync (`cb`), nor for an edit held until its base can be rebuilt,
+  // while `pendingCount` counts every process's stored rows. Read-only; O(changes × records): two owned states per change.
   async pendingChanges(cut = this.#h.current) {
     await this.#queue;
     await this.#refresh(cut);
