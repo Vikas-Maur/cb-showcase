@@ -11,6 +11,7 @@
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
 import { checkKey, checkPartNumber, checkRange } from "@carton/blob-memory/rules";
+import { SHA256_HEADER } from "@carton/blob-memory/signed";
 
 export interface HttpBlobStoreOptions {
   /** The host as this client reaches it, e.g. `https://carton.example` (in a page or Service Worker: `location.origin`). */
@@ -67,6 +68,26 @@ async function errorOf(res: Response, what: string): Promise<HttpBlobError> {
   return new HttpBlobError(res.status, `${what}: ${message}`, code);
 }
 
+/**
+ * The stored object's info a PUT's answer carries (a Carton host's 200 or 412: `key`, `size`, `etag`, `contentType`,
+ * `sha256`), under the caller's key; null for an answer without a JSON body holding a numeric `size`: a bucket's own
+ * answer on a presigned URL, or an older host's. Consumes the body.
+ */
+async function storedInfo(res: Response, key: string): Promise<BlobInfo | null> {
+  let j: Partial<Record<keyof BlobInfo, unknown>> | null = null;
+  try {
+    j = JSON.parse(await res.text());
+  } catch {
+    return null; // empty, or not JSON (a bucket's XML)
+  }
+  if (!j || typeof j !== "object" || typeof j.size !== "number") return null;
+  const info: BlobInfo = { key, size: j.size };
+  if (typeof j.etag === "string") info.etag = j.etag;
+  if (typeof j.contentType === "string") info.contentType = j.contentType;
+  if (typeof j.sha256 === "string") info.sha256 = j.sha256;
+  return info;
+}
+
 export function httpBlobStore(o: HttpBlobStoreOptions): HttpBlobStore {
   const base = o.baseUrl.replace(/\/+$/, "");
   const api = `${base}/api/projects/${encodeURIComponent(o.projectId)}`;
@@ -102,8 +123,8 @@ export function httpBlobStore(o: HttpBlobStoreOptions): HttpBlobStore {
     return (await res.json()) as T;
   }
 
-  // host-http signs `<origin>/blob/<p>/<key>` with the origin the host saw. The Node host puts its listen address there
-  // (127.0.0.1, or 0.0.0.0), which a browser that reached it by another name can't fetch (another origin, no CORS). The
+  // host-http signs `<origin>/blob/<p>/<key>` with the origin the client reached (its Host header). Behind a proxy
+  // without `trustProxy` or `publicOrigin` that is the proxy's upstream address, which a browser can't fetch. The
   // signature covers the path and query only, so the same path on the base we already reach works on every host.
   function rebase(signed: string): string {
     const u = new URL(signed, base + "/");
@@ -212,22 +233,33 @@ export function httpBlobStore(o: HttpBlobStoreOptions): HttpBlobStore {
     },
     async put(key, data, opts = {}) {
       checkKey(key);
+      const headers: Record<string, string> = {};
+      if (opts.contentType) headers["content-type"] = opts.contentType;
+      // create-only, applied by the host's store atomically: of two writers of a new key, one writes
+      if (opts.ifAbsent) headers["if-none-match"] = "*";
+      // the host refuses a body that doesn't hash to it (400), and its store keeps it for `head`
+      if (opts.sha256) headers[SHA256_HEADER] = opts.sha256;
+      const res = await doFetch(await sign("PUT", key, 300), { method: "PUT", headers, body: data as Uint8Array<ArrayBuffer> });
+      const kept = opts.ifAbsent === true && res.status === 412; // the key was there: an earlier writer's object stays
+      if (!res.ok && !kept) throw await errorOf(res, `PUT ${key}`);
+      // `put` resolves the stored object's info, which a host's answer carries (REQ-10): no read-back
+      const said = await storedInfo(res, key);
+      if (said) return said;
+      // An answer without it (a bucket's, an older host's 200 whatever happened): a create-only put reads back, as the
+      // stored object may be an earlier writer's; a plain put stored these bytes.
       if (opts.ifAbsent) {
-        // The signed PUT has no condition, so look first. Not atomic: two writers of a new key may both write. Carton's
-        // keys are content-addressed (same key, same bytes) or have one writer, so that race is harmless here.
-        const have = await head(key);
-        if (have) return have;
+        const stored = await head(key);
+        if (stored) return stored;
+        if (kept) throw new HttpBlobError(412, `PUT ${key}: the key was there, and is gone now`, "PreconditionFailed");
       }
-      // `sha256` can't travel: the signed PUT takes the body and its content type only.
-      const res = await doFetch(await sign("PUT", key, 300), {
-        method: "PUT",
-        headers: opts.contentType ? { "content-type": opts.contentType } : {},
-        body: data as Uint8Array<ArrayBuffer>,
-      });
-      if (!res.ok) throw await errorOf(res, `PUT ${key}`);
-      await res.body?.cancel();
       const etag = res.headers.get("etag");
-      return { key, size: data.byteLength, ...(etag ? { etag } : {}), ...(opts.contentType ? { contentType: opts.contentType } : {}) };
+      return {
+        key,
+        size: data.byteLength,
+        ...(etag ? { etag } : {}),
+        ...(opts.contentType ? { contentType: opts.contentType } : {}),
+        ...(opts.sha256 ? { sha256: opts.sha256.toLowerCase() } : {}),
+      };
     },
     async createMultipart(key, opts = {}) {
       checkKey(key);

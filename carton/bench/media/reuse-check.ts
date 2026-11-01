@@ -1,6 +1,7 @@
 // What the reuse check costs for a long finished stream proxy: `usableProxy` on a stream of N parts (default 2,000:
 // about 67 minutes of 2 s segments) whose parts are all there, so it is reused. Against a real host (server-node over
-// blob-fs, through hosts-plugins' `hostMediaBlobs` client, which has no list: what a teammate's app uses), and against
+// blob-fs, through hosts-plugins' `hostMediaBlobs` client, which has no list but answers many HEADs at once: what a teammate's app
+// uses), and against
 // blob-fs directly. Each also with a simulated round trip (20 ms: a remote host): on the host, every HTTP request the
 // client makes is counted and delayed (through its `fetch` option, wrapping the transport it uses by default); on
 // blob-fs, every store call. The S3/R2 listing path isn't measured here (no bucket on this box). The stream is seeded

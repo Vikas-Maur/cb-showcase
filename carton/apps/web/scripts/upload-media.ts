@@ -59,9 +59,10 @@ export async function uploadSampleMedia(o: UploadSampleOptions): Promise<Uploade
     }
     const poster = t1Key(hash, "poster.jpg");
     const filmstrip = t1Key(hash, "filmstrip.jpg");
-    // Keyed by the clip's hash, so a second seed run finds them and sends nothing.
-    await o.store.put(poster, await readFile(clip.poster), { contentType: "image/jpeg", ifAbsent: true });
-    await o.store.put(filmstrip, await readFile(clip.filmstrip), { contentType: "image/jpeg", ifAbsent: true });
+    // Keyed by the clip's hash. A clip the host already had (deduped) most likely has them too: look before sending, so
+    // a second seed run sends nothing. A new clip's go straight up, create-only (atomic on the host).
+    for (const [key, file] of [[poster, clip.poster], [filmstrip, clip.filmstrip]] as const)
+      if (!deduped || !(await o.store.head(key))) await o.store.put(key, await readFile(file), { contentType: "image/jpeg", ifAbsent: true });
     out.push({ clipId: clip.id, hash, size, poster, filmstrip, duration: clip.duration, deduped });
   }
   return out;

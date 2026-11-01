@@ -9,7 +9,7 @@ import { hostMediaBlobs } from '@carton/host-http/client';
 import { createHmacAuth } from '@carton/server';
 import { startNodeHost, type NodeHost } from '@carton/server-node';
 import type { BlobStore } from '../src/contracts.ts';
-import { damagedKey, mediaKey, streamEndKey } from '../src/keys.ts';
+import { damagedKey, mediaKey, proxyPointerKey, streamEndKey } from '../src/keys.ts';
 import { reportDamage } from '../src/damage.ts';
 import { nodeHasher } from '../src/node/node-hasher.ts';
 import { closeHashWorkers } from '../src/node/hash-file.ts';
@@ -30,12 +30,12 @@ after(async () => {
   s.cleanup();
 });
 
-async function host(name: string) {
+async function host(name: string, fetch?: typeof globalThis.fetch) {
   const blobs = createFsBlobStore({ root: join(s.dir, name, 'blobs'), durable: false });
   const h = await startNodeHost({ dataDir: join(s.dir, name, 'data'), auth, secret: SECRET, blobs, durability: 'normal' });
   hosts.push(h);
   const token = await auth.issue({ account: 'o', credential: 'o/dev', role: 'editor', projectId: 'p', ttlMs: 3600_000 });
-  return { blobs, store: hostMediaBlobs({ origin: h.httpUrl, projectId: 'p', token }) as unknown as BlobStore };
+  return { blobs, store: hostMediaBlobs({ origin: h.httpUrl, projectId: 'p', token, ...(fetch ? { fetch } : {}) }) as unknown as BlobStore };
 }
 
 const fill = (n: number, seed: number) => new Uint8Array(n).map((_, i) => (i * 31 + seed) & 0xff);
@@ -330,4 +330,31 @@ test('what one store holds vouches for nothing in another, and an end that chang
   end.parts[2] = 'ef'.repeat(32);
   a.objects.set(streamEndKey(id), new TextEncoder().encode(JSON.stringify(end)));
   assert.equal(await usableProxy(a, src, 'p1'), null);
+});
+
+test('through a Carton host, a 2,000-part stream is checked in 2 requests (POST /blobs/heads, REQ-11), and a gone part is still found', async () => {
+  const requests: string[] = [];
+  const counting = ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
+    requests.push(`${init?.method ?? 'GET'} ${new URL(String(input instanceof Request ? input.url : input)).pathname}`);
+    return fetch(input, init);
+  }) as typeof fetch;
+  const { blobs, store } = await host('heads', counting);
+  // Seeded straight into the host's blob store: only the check goes through the client.
+  const at = (k: string) => `projects/p/media/${k}`;
+  const id = 'ab'.repeat(16) + '12'.repeat(16);
+  const hashes = Array.from({ length: 2000 }, (_, i) => (i + 1).toString(16).padStart(64, '0'));
+  for (const h of hashes) await blobs.put(at(mediaKey(h)), new Uint8Array(3));
+  const json = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+  await blobs.put(at(streamEndKey(id)), json({ segments: 1999, durationSec: 3998, size: 6000, at: Date.now(), parts: hashes }));
+  await blobs.put(at(proxyPointerKey(src, 'p1')), json({ stream: id, encoder: 'libx264', at: Date.now() }));
+
+  const p = await usableProxy(store, src, 'p1');
+  assert.equal((p as { stream: string } | null)?.stream, id, 'reused');
+  const heads = requests.filter((r) => r.endsWith('/blobs/heads'));
+  assert.equal(heads.length, 2, '1,000 keys a request');
+  assert.ok(requests.length <= 12, `the whole check takes a few requests, not one per part: ${requests.length}`);
+
+  await blobs.delete(at(mediaKey(hashes[1500]!)));
+  assert.equal(await usableProxy(store, src, 'p1', { now: later }), null, 'a gone part is found');
+  assert.ok(await store.head(damagedKey(id)), 'and recorded');
 });

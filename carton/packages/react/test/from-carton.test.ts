@@ -272,6 +272,55 @@ test("late conflicts addressed to you become cards; picking your side commits it
   ui.dispose();
 });
 
+test("a GUI save's notices, addressed to the generic person, reach the resolved person; a teammate's don't", async () => {
+  // Cardboard's GUI saves are recorded as human/person; with the person resolved (setIdentity), the app passes them as
+  // `me`, and core still addresses the save's notices to human/person (windows-sync).
+  const { carton, ui, emit } = await open();
+  await carton.setIdentity({ id: "alice", name: "Alice" });
+  await carton.commit({ ops: [set("a", "name", "Head")], author: bob });
+  const card = { kind: "field" as const, path: "items/a/name", base: "A", ours: "Head", theirs: "Mine" };
+  emit({ type: "notice", notice: { to: "human/bob", kind: "late-conflict", text: "", by: alice, cards: [card] } });
+  assert.equal(ui.conflicts().length, 0, "a teammate's notice isn't yours");
+  emit({ type: "notice", notice: { to: "human/person", kind: "late-conflict", text: "", by: bob, cards: [card] } });
+  assert.equal(ui.conflicts().length, 1, "your own GUI save's conflict shows as a card");
+  assert.equal(ui.conflicts()[0]!.mine.summary, "“Mine”");
+  emit({ type: "notice", notice: { to: "human/person", kind: "rejected", text: "", by: bob, cards: [{ ...card, path: "items/b/name" }] } });
+  assert.equal(ui.conflicts().length, 2, "and so does its rejection");
+  ui.dispose();
+});
+
+test("a notice's cards belong to the cut its change was made on, not the cut open when it arrives", async () => {
+  const { carton, ui, emit } = await open();
+  const main = carton.cut;
+  const alt = await carton.fork("alt");
+  await ui.switchCut(main);
+  await settle();
+  // An offline GUI save on alt meets a teammate's edit there after the person has switched back to Main.
+  await carton.commit({ cut: alt.id, ops: [set("a", "name", "Head")], author: bob });
+  emit({ type: "notice", notice: { to: "human/person", cut: alt.id, kind: "late-conflict", text: "", by: bob, cards: [{ kind: "field", path: "items/a/name", base: "A", ours: "Head", theirs: "Mine" }] } });
+  assert.equal(ui.conflicts().length, 0, "not shown on Main");
+  await ui.switchCut(alt.id);
+  const card = ui.conflicts()[0]!;
+  await ui.resolve(card.id, "mine");
+  const name = async (cut: string) => ((await carton.head(cut)).doc.items as Rec[]).find((i) => i.id === "a")!.name;
+  assert.equal(await name(alt.id), "Mine", "Keep mine commits on alt");
+  assert.equal(await name(main), "A", "Main is untouched");
+  ui.dispose();
+});
+
+test("your own GUI saves (the generic person) read as you in live History and Undo", async () => {
+  const { carton, ui } = await open();
+  await carton.setIdentity({ id: "alice", name: "Alice" });
+  await carton.commit({ ops: [set("a", "name", "GUI")], author: { kind: "human", id: "person", group: "alice@laptop" } });
+  const top = ui.history().at("all", 0)!; // the live row, before any refresh from log()
+  assert.equal(top.author.isYou, true);
+  assert.equal(top.author.name, "Alice");
+  await settle();
+  assert.equal(ui.undoTurn()!.author.isYou, true, "Undo names you, not “person”");
+  assert.equal(ui.undoTurn()!.author.name, "Alice");
+  ui.dispose();
+});
+
 test("helpers: path keys, actors and card ops", () => {
   assert.deepEqual(splitPathKey("items/a~1b/#time"), ["items", "a/b", "#time"]);
   const ui = toUiActor({ kind: "external", id: "claude-code", name: "Claude Code", group: "alice@laptop" }, alice, "alice@laptop");

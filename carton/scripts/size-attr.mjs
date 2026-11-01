@@ -3,6 +3,7 @@
 import { build } from "esbuild";
 import { gzipSync } from "node:zlib";
 import { cpSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 const SRC = process.argv[2], W = process.argv[3];
 const measure = async (dir) => {
   const r = await build({ stdin: { contents: `export * from "./history/index.ts";`, resolveDir: dir, loader: "ts" }, bundle: true, minify: true, format: "esm", platform: "neutral", target: "es2023", write: false, logLevel: "silent" });
@@ -59,6 +60,8 @@ console.log(`full history bundle: ${base.min} B min, ${base.gz} B min+gz`);
 for (const [name, fn] of Object.entries(variants)) {
   rmSync(W, { recursive: true, force: true });
   cpSync(SRC, W, { recursive: true });
+  // the package's own package.json (`sideEffects: false`) beside the copy, so it tree-shakes as the real package does
+  cpSync(join(SRC, "..", "package.json"), join(W, "package.json"));
   fn(W);
   const m = await measure(W);
   console.log(`${name.padEnd(48)} ${String(base.min - m.min).padStart(6)} B min  ${String(base.gz - m.gz).padStart(5)} B gz`);

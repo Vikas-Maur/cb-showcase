@@ -37,7 +37,7 @@ checkpoint out only made each commit slower there (verify-ci S3c).
 | error | `code` | what to do |
 |---|---|---|
 | `BusyError` | `CARTON_DB_BUSY` | Another process held the lock longer than `busyTimeoutMs`. Retry later. |
-| `DatabaseHeldError` | `CARTON_DB_HELD` | Windows: carton.db or its -wal/-shm was still held by another process or program (an antivirus scan, a process being terminated) for the whole retry window (500 ms) at open. Retry the open shortly; `.cause` has SQLite's error. |
+| `DatabaseHeldError` | `CARTON_DB_HELD` | Windows: carton.db couldn't be opened within `openRetryMs` (default 250): most likely another process or program (an antivirus scan, the indexer, a backup tool, a process being terminated) still held it or its -wal/-shm; a lasting cause (permissions) can look the same. Retry the open shortly; `.cause` has SQLite's error. |
 | `MovedError` | `CARTON_DB_MOVED` | This handle's file was moved to `.to` by another process (placement change). Reopen through `openProjectStore`. |
 | `PlacementConflictError` | `CARTON_DB_PLACEMENT_CONFLICT` | Two separate histories at `.paths`. Carton never picks one: show both to the user. |
 | `UnwritableHistoryError` | `CARTON_DB_UNWRITABLE` | The history at `.path` can't be written (read-only file or attribute, ACL, folder), so it can't be moved where it belongs now. Nothing was copied. Ask the user to make it writable. |
@@ -47,6 +47,11 @@ was renamed `carton.from-<host>-<time>.db` and a fresh history started. Offer it
 
 ## Windows
 
-Paths may be non-ASCII; renames retry while antivirus holds a new file; an open that hits an I/O or can't-open error
-(a just-closed file still held) retries for up to 500 ms with backoff, then fails with `DatabaseHeldError`; sync roots come from `reg export`
+Paths may be non-ASCII; renames retry while antivirus holds a new file; an open (the whole of it, marking a new file
+included) that hits an I/O error, or can't open a file that exists (held a moment by a scanner or backup tool), retries
+on a fresh connection with backoff until `openRetryMs` (default 250 ms), then fails with `DatabaseHeldError`. Only
+failures a holder can cause are retried (opening, locks, shared memory, file checks); a failed read, write or fsync,
+a missing file, or corruption is reported at once. SQLite's own synchronous retries inside one attempt (up to about
+1.4 s by its source, not measured) come on top and can't be cut short, so open carton.db off a thread that must
+answer pings; sync roots come from `reg export`
 (UTF-16) and are cached for 10 minutes in app data; mapped network drives are detected through their UNC path.

@@ -1,0 +1,100 @@
+# One agent's test groups on GitHub's runners, for its own branch (not the integrated snapshot). Runs on a push to
+# ci/agent/<agent> (by _inspect/carton-build/ci-agent-push.sh), only the groups named in the head commit's
+# `CI-Groups:` trailer (carton/ci/plan-agent.mjs). No trailer: nothing runs.
+# The code under test is the pushed commit; the CI tooling (carton/ci: groups, tool downloads, the runner) is always
+# ci/carton's, so every agent gets the same setup as the matrix.
+# Nothing here builds, releases or deploys, and it has no secrets: each job uploads only its test results.
+name: Carton agent tests
+
+on:
+  push:
+    branches: ["ci/agent/**"]
+
+# A new push to the same ci/agent/<agent> cancels that agent's older run.
+concurrency:
+  group: carton-agent-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      count: ${{ steps.plan.outputs.count }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ci/carton
+          sparse-checkout: carton/ci
+      - id: plan
+        env:
+          CARTON_CI_MESSAGE: ${{ github.event.head_commit.message }}
+        run: node carton/ci/plan-agent.mjs
+
+  test:
+    needs: plan
+    if: needs.plan.outputs.count != '0'
+    name: ${{ matrix.group }} (${{ matrix.os }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: carton
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CI tooling from ci/carton
+        run: |
+          git fetch --no-tags --depth=1 origin ci/carton
+          rm -rf ci
+          git checkout FETCH_HEAD -- ci
+          echo "testing $(git rev-parse --short HEAD) with ci/carton's tooling at $(git rev-parse --short FETCH_HEAD)"
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: carton/package-lock.json
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Restore tools
+        id: tools
+        if: matrix.needs != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/carton-ci-cache
+          key: carton-agent-tools-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.group }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/groups.json') }}
+
+      - name: Fetch tools ${{ matrix.needs }}
+        run: node ci/fetch.mjs ${{ matrix.needs }}
+
+      # Saved before the tests run, so a failing test doesn't throw the download away. Never holds Cardboard's code
+      # (fetch.mjs unpacks it outside the cached folder).
+      - name: Save tools
+        if: matrix.needs != '' && steps.tools.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/carton-ci-cache
+          key: carton-agent-tools-${{ matrix.os }}-${{ runner.arch }}-${{ matrix.group }}-${{ hashFiles('carton/ci/fetch.mjs', 'carton/ci/groups.json') }}
+
+      - name: Test ${{ matrix.group }}
+        run: node ci/run-tests.mjs --group ${{ matrix.group }}
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: carton-results-${{ matrix.group }}-${{ matrix.os }}
+          path: ${{ runner.temp }}/carton-results
+          if-no-files-found: ignore
+          retention-days: 7
