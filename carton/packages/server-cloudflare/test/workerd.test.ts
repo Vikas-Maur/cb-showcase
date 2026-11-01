@@ -48,7 +48,7 @@ blobStoreSuite("do-blob (BlobVault in workerd)", async () => doBlobStore(vaultNs
 let devN = 0;
 async function fixture(): Promise<HostFixture> {
   const auth = createHmacAuth({ secret: SECRET });
-  const issue = (account: string, credential: string, role: Role, projectId = PROJECT) => auth.issue({ account, credential, role, projectId, ttlMs: 3600_000 });
+  const issue = (account: string, credential: string, role: Role, projectId = PROJECT, branches?: string[]) => auth.issue({ account, credential, role, projectId, ttlMs: 3600_000, ...(branches ? { branches } : {}) });
   return {
     host: { kind: "cloudflare (wrangler dev)", url: `ws://127.0.0.1:${dev.port}/api/projects/${PROJECT}/ws`, close: async () => {} },
     // the room closes a socket that shows presence and is silent for PRESENCE_TIMEOUT_MS (2 s here): these clients
@@ -64,7 +64,7 @@ async function fixture(): Promise<HostFixture> {
       const a = `cf-${++devN}`;
       return issue(a, `${a}/dev-${devN}-${Math.random().toString(36).slice(2, 8)}`, role);
     },
-    tokenFor: (o) => issue(o.account ?? o.credential.split("/")[0]!, o.credential, o.role ?? "editor", o.projectId),
+    tokenFor: (o) => issue(o.account ?? o.credential.split("/")[0]!, o.credential, o.role ?? "editor", o.projectId, o.branches),
     restart: () => dev.restart(),
     clientBlobs: (token) => hostMessageBlobs({ origin: dev.origin, projectId: PROJECT, token }),
     bigMessageBytes: 20 << 20, // under the room's 24 MiB cap (a Durable Object has 128 MB)

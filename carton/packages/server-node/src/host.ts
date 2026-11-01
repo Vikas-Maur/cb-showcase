@@ -126,10 +126,32 @@ function toRequest(req: IncomingMessage, origin: string): Request {
   const method = req.method ?? "GET";
   const init: RequestInit & { duplex?: "half" } = { method, headers };
   if (method !== "GET" && method !== "HEAD") {
-    init.body = Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>;
+    init.body = bodyOf(req);
     init.duplex = "half";
   }
   return new Request(new URL(req.url ?? "/", origin), init);
+}
+
+// A request's body as a web stream. A reader that stops early (a body over its budget, handleHttp's 413) only stops
+// reading. Cancelling Readable.toWeb's own stream destroys the request, and node's parser stops reading the socket for
+// a destroyed request (its push is refused): the rest of the body then sat unread in the kernel, the client stalled,
+// and the staged close (`closeInStages`) could only end in a reset (Windows CI, a chunked 413). Kept alive, the
+// request lets the staged close drop the rest.
+function bodyOf(req: IncomingMessage): ReadableStream<Uint8Array> {
+  const reader = (Readable.toWeb(req) as unknown as ReadableStream<Uint8Array>).getReader();
+  return new ReadableStream<Uint8Array>(
+    {
+      async pull(c) {
+        const { done, value } = await reader.read();
+        if (done) c.close();
+        else c.enqueue(value);
+      },
+      cancel() {
+        reader.releaseLock();
+      },
+    },
+    { highWaterMark: 0 },
+  );
 }
 
 // What the staged close drops of a body after the answer: until the client closes its side, or this much, or this long.
@@ -160,8 +182,7 @@ function closeInStages(req: IncomingMessage, res: ServerResponse): void {
     timer.unref?.();
     socket.once("close", () => clearTimeout(timer));
     socket.once("end", done);
-    // the body's reader (Readable.toWeb's, paused) no longer takes it: dropped as it comes, and counted. (A reader that
-    // cancelled destroyed the request: node drops the rest itself, held to LINGER_MS.)
+    // the body's reader (Readable.toWeb's, paused) no longer takes it: dropped as it comes, and counted
     req.removeAllListeners("data");
     req.on("data", (b: Buffer) => {
       if ((dropped += b.byteLength) > LINGER_BYTES) done();
