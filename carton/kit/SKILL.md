@@ -1,8 +1,7 @@
---- name: carton description: "Work safely in a Cardboard project that other people and agents edit too: read its
-history, see who changed a clip, work in a cut of your own and fold it in, undo your own turn, and handle conflict cards
-with the `cb` commands (history, cut, fold, credits, restore, undo --turn, conflicts, resolve, publish). Use when you
-edit a Cardboard project with `cb` or timeline.tsx and `cb history` shows a BY column, or when a `cb` result says
-confirmed, pending or conflicts." ---
+---
+name: carton
+description: "Work safely in a Cardboard project that other people and agents edit too: read its history, see who changed a clip, work in a cut of your own and fold it in, undo your own turn, and handle conflict cards with the `cb` commands (history, cut, fold, credits, restore, undo --turn, conflicts, resolve, publish). Use when you edit a Cardboard project with `cb` or timeline.tsx and `cb history` shows a BY column, or when a `cb` result says confirmed, pending or conflicts."
+---
 
 # Carton: versions, cuts and conflicts in Cardboard
 
