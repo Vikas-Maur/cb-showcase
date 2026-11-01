@@ -25,17 +25,20 @@ export function deepEqual(a: unknown, b: unknown): boolean {
   return n === 0;
 }
 
-const esc = (s: unknown): string => {
+/** One path segment escaped: `~` → `~0`, `/` → `~1`. */
+export const escapeSegment = (s: unknown): string => {
   const t = String(s);
   return t.includes("/") || t.includes("~") ? t.replaceAll("~", "~0").replaceAll("/", "~1") : t;
 };
+/** The inverse of `escapeSegment`. */
+export const unescapeSegment = (s: string): string => (s.includes("~") ? s.replaceAll("~1", "/").replaceAll("~0", "~") : s);
 /** Path -> `a/b/c` with `~` and `/` escaped (`~0`, `~1`). */
-export const pathKey = (path: Path): PathKey => path.map(esc).join("/");
+export const pathKey = (path: Path): PathKey => path.map(escapeSegment).join("/");
 /** The keys of every proper prefix of `path`, shortest first (built incrementally: no re-joining). */
 export function prefixKeys(path: Path): PathKey[] {
   const out = new Array<PathKey>(path.length);
   let acc = "";
-  for (let i = 0; i < path.length; i++) out[i] = acc = i ? acc + "/" + esc(path[i]) : esc(path[i]);
+  for (let i = 0; i < path.length; i++) out[i] = acc = i ? acc + "/" + escapeSegment(path[i]) : escapeSegment(path[i]);
   return out;
 }
 

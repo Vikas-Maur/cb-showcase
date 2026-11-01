@@ -1,0 +1,24 @@
+# Test-only config (r2): the real Worker wrapped by test-worker.ts. Local wrangler dev only, never deployed.
+name = "carton-test-r2"
+main = "test-worker.ts"
+compatibility_date = "2026-10-23"
+
+[[durable_objects.bindings]]
+name = "PROJECT_ROOM"
+class_name = "ProjectRoom"
+
+[[durable_objects.bindings]]
+name = "BLOB_VAULT"
+class_name = "BlobVault"
+
+[[durable_objects.bindings]]
+name = "STORAGE_PROBE"
+class_name = "StorageProbe"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProjectRoom", "BlobVault", "StorageProbe"]
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "carton-test"

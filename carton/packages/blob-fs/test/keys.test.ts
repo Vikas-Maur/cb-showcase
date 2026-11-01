@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { keyToSegments, encodeSegment, decodeSegment, BadKeyError, OBJECT_SUFFIX } from "../src/keys.ts";
+import { keyToSegments, encodeSegment, decodeSegment, BadKeyError, OBJECT_SUFFIX, HASHED_DIR, READABLE_MAX } from "../src/keys.ts";
 
 test("content-hash keys stay readable", () => {
   const h = "ab".repeat(32);
@@ -30,13 +30,29 @@ test("`.`, `..`, empty segments and NUL are refused", () => {
   assert.deepEqual(keyToSegments("a/.../b"), ["a", "..%2e", "b" + OBJECT_SUFFIX]); // "..." is a legal name
 });
 
-test("long segments hash to ≤255-byte names without colliding", () => {
+test("a key too long to keep readable is stored flat, hashed, and two such keys never collide", () => {
   const long1 = "x".repeat(400), long2 = "x".repeat(399) + "y";
-  const [n1] = keyToSegments(long1), [n2] = keyToSegments(long2);
-  assert.ok(Buffer.byteLength(n1!) <= 255 && Buffer.byteLength(n2!) <= 255);
-  assert.notEqual(n1, n2);
+  const p1 = keyToSegments(long1), p2 = keyToSegments(long2);
+  assert.equal(p1[0], HASHED_DIR);
+  assert.notDeepEqual(p1, p2);
+  for (const n of [...p1, ...p2]) assert.ok(Buffer.byteLength(n) <= 255);
   // a short key can never produce a hashed-looking name: `~` is always escaped
   assert.equal(encodeSegment("a~b"), "a%7eb");
+});
+
+test("every legal key's relative path is bounded (macOS limits a whole path to 1024 bytes)", () => {
+  const worst = [
+    "A".repeat(1024), // every byte escaped as %41
+    Array.from({ length: 5 }, () => "B".repeat(199)).join("/") + "/" + "C".repeat(24), // the suite's 1024-byte shape, capitals
+    Array.from({ length: 340 }, () => "Ω").join("/").slice(0, 1024), // short unicode segments
+    "é".repeat(512), // 1024 bytes of 2-byte characters
+  ];
+  for (const k of worst) {
+    const rel = keyToSegments(k).join("/");
+    assert.ok(Buffer.byteLength(rel) <= READABLE_MAX, `${Buffer.byteLength(rel)} bytes for a ${Buffer.byteLength(k)}-byte key`);
+  }
+  // and keys that fit stay readable
+  assert.equal(keyToSegments("projects/p/seq/segments/main/10000.json.gz").join("/"), "projects/p/seq/segments/main/10000.json.gz~b");
 });
 
 test("an object and a folder of the same name coexist (`a` and `a/b`)", () => {

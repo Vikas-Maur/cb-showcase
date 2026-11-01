@@ -24,13 +24,12 @@ import type {
   Doc,
   EditKinds,
   Intent,
-  Lineage,
   Op,
   Policy,
   RemapMaps,
   SequencerState,
 } from "../types.ts";
-import { apply, canonical, composeMaps, declare, diff, fork, hashDoc, inferRemaps, intentRemap, isEmptyMap, merge3, sha256Hex } from "../engine/index.ts";
+import { apply, canonical, composeMaps, declare, diff, fork, hashDoc, inferRemaps, intentRemap, isEmptyMap, merge3, sha256Hex, sideOf } from "../engine/index.ts";
 import { forkSealed } from "../engine/doc.ts";
 import type { ConfirmedId, KeyframeData } from "./messages.ts";
 
@@ -141,6 +140,12 @@ export interface RestoreInput extends CommitInput {
    * they were kept): the changes restored before it on the same `head`.
    */
   basePending?: readonly string[];
+  /**
+   * Its base exactly, as ops from the confirmed state at `head` (what the pending changes it sits on did, as it read
+   * them): rebuilt from these rather than from those changes' rows, which may be held or since confirmed in a rebased
+   * version (review SF4-2). Absent on a row from before; then the rows are used.
+   */
+  baseDelta?: Op[];
 }
 
 export const last = <T>(a: readonly T[]): T => a[a.length - 1]!;
@@ -156,6 +161,8 @@ export function policyFor(wanted: Policy, d: Declaration): Policy {
   for (const p of d.paths) if (p.charCodeAt(0) === 35 || p.includes("/#")) return "merge";
   return "lww";
 }
+
+const BASE_DELTA = new WeakMap<QueueVersion, Op[] | null>();
 
 export class ReplicaQueue {
   readonly schema: Schema;
@@ -221,6 +228,24 @@ export class ReplicaQueue {
   }
   pending(b: string): readonly QueuedChange[] {
     return this.queues.get(b)!;
+  }
+  /**
+   * A version's base as ops from the confirmed state its base names (`RestoreInput.baseDelta`, review SF4-2): what the
+   * pending changes it sits on did, as it read them. Empty when it sits on none; null when that confirmed state isn't
+   * held. Once per version (a version never changes).
+   */
+  baseDelta(b: string, v: QueueVersion): Op[] | null {
+    if (!v.base.pending.length) return [];
+    let d = BASE_DELTA.get(v);
+    if (d === undefined) {
+      try {
+        d = diff(this.confirmedState(b, v.base.seq), v.baseDoc, this.schema);
+      } catch {
+        d = null;
+      }
+      BASE_DELTA.set(v, d);
+    }
+    return d;
   }
   /** The confirmed state at `seq` (an error if this replica doesn't hold it, never a guess: §4.4). */
   confirmedState(b: string, seq: number): Doc {
@@ -360,6 +385,7 @@ export class ReplicaQueue {
     // ids restored on it (a row from before rows kept their pending base is taken as made after them)
     const storedOps = new Map<string, Op[]>();
     const onHead = new Map<number, string[]>();
+    const heldIds = new Set<string>();
     for (const ch of inputs) {
       const queue = this.queues.get(b)!;
       if (queue.some((p) => p.id === ch.id)) continue;
@@ -369,8 +395,11 @@ export class ReplicaQueue {
       const at = ch.head ?? head;
       // made on a state past this queue's head: it can't be rebased back onto an older one, it waits (the owner puts the
       // queue at its saved catch-up state first)
-      if (at > head) {
-        held.push(ch);
+      // the pending changes it was made on: one that waits makes it wait too, so it is never restored before (and
+      // without) a change it builds on (review SF4-1: its edit of a clip that change inserts was emptied and absorbed)
+      const deps = ch.basePending ?? onHead.get(at) ?? [];
+      if (at > head || deps.some((id) => heldIds.has(id))) {
+        held.push(ch), heldIds.add(ch.id);
         continue;
       }
       // its base: the confirmed state at `at` (this queue's, or the owner's: History, a saved catch-up state), never a
@@ -383,18 +412,21 @@ export class ReplicaQueue {
       }
       baseState ??= stateAt?.(at) ?? null;
       if (!baseState) {
-        held.push(ch);
+        held.push(ch), heldIds.add(ch.id);
         continue;
       }
       this.rids.add(ridOf(ch.id));
       const o = this.optimistic(b);
       // ...plus the pending changes it was made on, as they were: restored before it here, or confirmed since (then they
       // are its base, not concurrent: review SF3-3)
-      const deps = ch.basePending ?? onHead.get(at) ?? [];
       const log = this.logs.get(b)!;
       let baseDoc = baseState;
       const inBase = new Set<string>();
-      for (const id of deps) {
+      if (ch.baseDelta) {
+        // its base exactly as it read it (SF4-2)
+        baseDoc = apply(fork(baseDoc, S), ch.baseDelta, S);
+        for (const id of deps) inBase.add(id);
+      } else for (const id of deps) {
         const ops = storedOps.get(id) ?? (log.slice(at, head).find((r): r is ConfirmedChange => !r.placeholder && r.id === id)?.ops ?? null);
         if (!ops) continue; // absorbed or refused meanwhile: in neither its base nor the head
         if (ops.length) baseDoc = apply(fork(baseDoc, S), ops, S);
@@ -527,18 +559,11 @@ export class ReplicaQueue {
   private rebaseOne(v: QueueVersion, head: Doc, concurrent: readonly ConfirmedChange[]): { ops: Op[]; cards: ConflictCard[]; intent: Intent | null } {
     const S = this.schema;
     const mine = apply(fork(v.baseDoc, S), v.ops, S);
-    const recorded: RemapMaps[] = [];
-    const concKinds: EditKinds = {};
-    // lineage too: a concurrent split records only lineage, which must reach the pieces of a clip this change edits
-    // (kit-docs)
-    const concLineage: Lineage = {};
-    for (const c of concurrent) {
-      if (c.intent?.maps && !isEmptyMap(c.intent.maps)) recorded.push(c.intent.maps);
-      for (const op of c.ops) if (op.op === "remap") recorded.push(op.maps);
-      if (c.intent?.lineage) Object.assign(concLineage, c.intent.lineage);
-      if (c.kinds) Object.assign(concKinds, c.kinds);
-    }
-    const ours = intentRemap({ maps: recorded.length ? composeMaps(...recorded) : {}, lineage: concLineage });
+    // what landed meanwhile: its recorded maps (intents and first-class remap ops), lineage too (a concurrent split
+    // records only lineage, which must reach the pieces of a clip this change edits: kit-docs; composed in order, so a
+    // piece split again keeps every piece: review SF4-5) and kinds
+    const side = sideOf(concurrent.flatMap((c) => [c, ...c.ops.flatMap((op) => (op.op === "remap" ? [{ intent: op }] : []))]));
+    const ours = side.remap, concKinds = side.kinds;
     // the change's own remap: its recorded intent and any first-class remap op (a ripple stored as one op, P5)
     const remapOps = v.ops.filter((op): op is Extract<Op, { op: "remap" }> => op.op === "remap");
     const ownMaps: RemapMaps[] = [];

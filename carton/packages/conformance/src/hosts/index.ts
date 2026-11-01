@@ -1,13 +1,12 @@
 // SequencerHost, SequencerStorage, Transport and AuthProvider conformance (PLAN §3.1, §6.3). A new host or auth
 // plug-in is accepted when it passes these, and nothing else changes. Owner: hosts-plugins.
 //
-// `storageChecks` is plain code with no test runner, so the same checks also run inside workerd against a Durable
-// Object's `ctx.storage.sql` (server-cloudflare's test worker returns their results); `sequencerStorageSuite` wraps
-// them in node:test.
+// `storageChecks` (storage-checks.ts) is plain code with no test runner, so the same checks also run inside workerd
+// against a Durable Object's `ctx.storage.sql`; `sequencerStorageSuite` wraps them in node:test.
 
 import { describe, test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import type { AuthProvider, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
+import type { AuthProvider, BlobStore, Role, SequencerHost, SequencerStorage, Transport } from "@carton/core/plugins";
 
 export interface HostFixture {
   host: SequencerHost;
@@ -15,9 +14,24 @@ export interface HostFixture {
   auth: AuthProvider;
   /** A token for a fresh device credential with the given role. */
   token(role?: "owner" | "editor" | "viewer"): Promise<string>;
+  /** Within this, a connection that goes silent (no close, no keepalive, no pong) is dropped and its presence leaves
+   * its peers. The suite's silent-client test runs only when it is set; a host's default is minutes. */
+  presenceTimeoutMs?: number;
+  /** Drop the host's memory but keep its connections, as a Durable Object's hibernation does: what the host needs
+   * after it (who a connection shows, for its leaves) must come back from what it kept with each socket. */
+  hibernate?(): Promise<void>;
   /** Restart the host on the same storage (hibernation / process restart). */
   restart?(): Promise<void>;
   close(): Promise<void>;
+  /** A token for this exact credential (a reconnect of the same device), or for another project. */
+  tokenFor?(o: { credential: string; account?: string; role?: Role; projectId?: string }): Promise<string>;
+  /** Rows the host's storage has read and written so far (P5 cost accounting), when it can tell. */
+  rows?(): Promise<{ rowsRead: number; rowsWritten: number }>;
+  /** The BlobStore a client of this host passes as `blobs`, so messages over 1 MiB travel as envelopes. */
+  clientBlobs?(token: string): BlobStore;
+  /** The size of the big change the live suite sends as an envelope (default 33 MiB, over every WebSocket cap; a host
+   * with a smaller message cap, such as a Durable Object's, says what it carries). */
+  bigMessageBytes?: number;
 }
 
 // ------------------------------------------------------------------ AuthProvider
@@ -66,9 +80,16 @@ export function authProviderSuite(name: string, make: () => Promise<AuthProvider
     test("any change to a token makes it invalid", async (t) => {
       if (!auth.issue) return t.skip("no issue()");
       const tok = await auth.issue({ account: "a", credential: "a/dev", role: "viewer", projectId: "p", ttlMs: 60_000 });
-      const flip = (i: number) => tok.slice(0, i) + (tok[i] === "A" ? "B" : "A") + tok.slice(i + 1);
+      // Flip the low bits of a character's base64url value: at the end of a base64 run those bits can be unused, so
+      // a lax decoder maps the changed token to the same bytes (a token it never issued, which must still be refused).
+      const B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+      const flip = (i: number, bit: number) => {
+        const v = B64.indexOf(tok[i]!);
+        const c = v < 0 ? (tok[i] === "A" ? "B" : "A") : B64[v ^ bit]!;
+        return tok.slice(0, i) + c + tok.slice(i + 1);
+      };
       for (const i of [0, 5, Math.floor(tok.length / 3), Math.floor(tok.length / 2), tok.length - 2, tok.length - 1])
-        if (flip(i) !== tok) assert.equal(await auth.verify(flip(i)), null, `flipped char ${i}`);
+        for (const bit of [1, 2, 32]) assert.equal(await auth.verify(flip(i, bit)), null, `flipped bit ${bit} of char ${i}`);
       assert.equal(await auth.verify(tok + "A"), null, "appended");
       assert.equal(await auth.verify(tok.slice(0, -1)), null, "truncated");
     });
@@ -86,116 +107,9 @@ export function authProviderSuite(name: string, make: () => Promise<AuthProvider
 
 // ------------------------------------------------------------------ SequencerStorage
 
-export interface StorageCheck {
-  name: string;
-  run(s: SequencerStorage): void;
-}
-
-const ok = (cond: unknown, msg: string): void => {
-  if (!cond) throw new Error(msg);
-};
+import { storageChecks, type StorageCheck } from "./storage-checks.ts";
+export { storageChecks, type StorageCheck };
 const num = (v: unknown): number => (typeof v === "bigint" ? Number(v) : (v as number));
-
-// The invariants of `SequencerStorage`, as checks that need no test runner. Each runs on fresh tables of its own.
-export function storageChecks(): StorageCheck[] {
-  return [
-    {
-      name: "exec binds ? parameters and returns rows keyed by column name",
-      run(s) {
-        s.exec("CREATE TABLE sc_bind (k TEXT PRIMARY KEY, n INTEGER, f REAL, z TEXT) WITHOUT ROWID");
-        s.exec("INSERT INTO sc_bind (k, n, f, z) VALUES (?, ?, ?, ?)", "a", 42, 1.5, null);
-        s.exec("INSERT INTO sc_bind (k, n, f, z) VALUES (?, ?, ?, ?)", "b'; DROP TABLE sc_bind; --", -7, 0, "x");
-        const rows = s.exec("SELECT k, n, f, z FROM sc_bind ORDER BY k");
-        ok(rows.length === 2, `2 rows, got ${rows.length}`);
-        ok(rows[0]!.k === "a" && num(rows[0]!.n) === 42 && rows[0]!.f === 1.5 && rows[0]!.z === null, `row 0 ${JSON.stringify(rows[0], (_, v) => (typeof v === "bigint" ? String(v) : v))}`);
-        ok(rows[1]!.k === "b'; DROP TABLE sc_bind; --" && num(rows[1]!.n) === -7, "parameters are bound, never spliced");
-        ok(s.exec("SELECT count(*) AS c FROM sc_bind WHERE n > ?", 0).map((r) => num(r.c))[0] === 1, "aggregate with a binding");
-        ok(s.exec("SELECT * FROM sc_bind WHERE k = ?", "nope").length === 0, "no rows is an empty array");
-      },
-    },
-    {
-      name: "BLOBs round-trip as bytes; large integers stay exact",
-      run(s) {
-        s.exec("CREATE TABLE sc_blob (k INTEGER PRIMARY KEY, b BLOB, big INTEGER) WITHOUT ROWID");
-        const bytes = new Uint8Array(256).map((_, i) => i);
-        s.exec("INSERT INTO sc_blob (k, b, big) VALUES (?, ?, ?)", 1, bytes, 2 ** 52 + 1);
-        const [r] = s.exec("SELECT b, big FROM sc_blob WHERE k = ?", 1);
-        const b = r!.b instanceof ArrayBuffer ? new Uint8Array(r!.b) : (r!.b as Uint8Array);
-        ok(b instanceof Uint8Array && b.byteLength === 256 && b.every((x, i) => x === i), "blob bytes differ");
-        ok(num(r!.big) === 2 ** 52 + 1, "2^52 + 1 survived");
-      },
-    },
-    {
-      name: "transaction commits as a unit, and a throw rolls back every statement it ran",
-      run(s) {
-        s.exec("CREATE TABLE sc_tx (k INTEGER PRIMARY KEY, v TEXT) WITHOUT ROWID");
-        const r = s.transaction(() => {
-          s.exec("INSERT INTO sc_tx (k, v) VALUES (?, ?)", 1, "one");
-          s.exec("INSERT INTO sc_tx (k, v) VALUES (?, ?)", 2, "two");
-          return "done";
-        });
-        ok(r === "done", "transaction returns fn's value");
-        let threw = false;
-        try {
-          s.transaction(() => {
-            s.exec("INSERT INTO sc_tx (k, v) VALUES (?, ?)", 3, "three");
-            s.exec("UPDATE sc_tx SET v = ? WHERE k = ?", "changed", 1);
-            throw new Error("boom");
-          });
-        } catch (e) {
-          threw = (e as Error).message === "boom";
-        }
-        ok(threw, "the throw reaches the caller");
-        const rows = s.exec("SELECT k, v FROM sc_tx ORDER BY k");
-        ok(rows.length === 2 && rows[0]!.v === "one", `rolled back: ${JSON.stringify(rows)}`);
-        let dupThrew = false;
-        try {
-          s.transaction(() => {
-            s.exec("INSERT INTO sc_tx (k, v) VALUES (?, ?)", 4, "four");
-            s.exec("INSERT INTO sc_tx (k, v) VALUES (?, ?)", 1, "dup"); // primary-key violation
-          });
-        } catch {
-          dupThrew = true;
-        }
-        ok(dupThrew && s.exec("SELECT k FROM sc_tx WHERE k = ?", 4).length === 0, "a constraint error rolls back the whole transaction");
-      },
-    },
-    {
-      name: "WITHOUT ROWID primary-key range reads, ascending and descending with LIMIT (the §6.3 access paths)",
-      run(s) {
-        s.exec("CREATE TABLE sc_rng (branch TEXT, seq INTEGER, id TEXT, PRIMARY KEY (branch, seq)) WITHOUT ROWID");
-        s.transaction(() => {
-          for (let i = 1; i <= 50; i++) {
-            s.exec("INSERT INTO sc_rng (branch, seq, id) VALUES (?, ?, ?)", "b", i, `c${i}`);
-            s.exec("INSERT INTO sc_rng (branch, seq, id) VALUES (?, ?, ?)", "a", i, `x${i}`);
-          }
-        });
-        const tail = s.exec("SELECT seq, id FROM sc_rng WHERE branch = ? AND seq > ? ORDER BY seq", "b", 45);
-        ok(tail.map((r) => num(r.seq)).join() === "46,47,48,49,50", `tail ${tail.map((r) => r.seq)}`);
-        const newest = s.exec("SELECT seq FROM sc_rng WHERE branch = ? AND seq <= ? ORDER BY seq DESC LIMIT 1", "b", 30);
-        ok(newest.length === 1 && num(newest[0]!.seq) === 30, "descending LIMIT 1");
-        const head = s.exec("SELECT seq FROM sc_rng WHERE branch = ? ORDER BY seq DESC LIMIT 1", "a");
-        ok(num(head[0]!.seq) === 50, "head of a branch");
-      },
-    },
-    {
-      name: "stats, when offered, count rows written: 1 per row into a WITHOUT ROWID table (P5)",
-      run(s) {
-        if (!s.stats) return;
-        s.exec("CREATE TABLE sc_rows (branch TEXT, seq INTEGER, v TEXT, PRIMARY KEY (branch, seq)) WITHOUT ROWID");
-        const w0 = s.stats().rowsWritten;
-        s.transaction(() => {
-          s.exec("INSERT INTO sc_rows (branch, seq, v) VALUES (?, ?, ?)", "b", 1, "x");
-        });
-        const w1 = s.stats().rowsWritten;
-        ok(w1 - w0 === 1, `one change row should be 1 row written, was ${w1 - w0}`);
-        const r0 = s.stats().rowsRead;
-        s.exec("SELECT v FROM sc_rows WHERE branch = ? AND seq = ?", "b", 1);
-        ok(s.stats().rowsRead >= r0, "rowsRead never decreases");
-      },
-    },
-  ];
-}
 
 export interface StorageSuiteOptions {
   /** Close and reopen the same storage (a restart); enables the durability check. */
@@ -230,20 +144,11 @@ export function sequencerStorageSuite(name: string, make: () => Promise<Sequence
   });
 }
 
+
 // ------------------------------------------------------------------ SequencerHost and Transport
-// Filled in once `createSequencer` lands (sync-sequencer): hello/push/ack through the host, fan-out, presence
-// relay, auth refusal, restart safety and rid binding across reconnects.
 
-export function sequencerHostSuite(name: string, make: () => Promise<HostFixture>): void {
-  describe(`SequencerHost conformance: ${name}`, () => {
-    test("pending: needs createSequencer from @carton/server", (t) => t.todo("waiting for sync-sequencer"));
-    void make;
-  });
-}
-
-export function transportSuite(name: string, make: () => Promise<HostFixture>): void {
-  describe(`Transport conformance: ${name}`, () => {
-    test("pending: needs createSequencer from @carton/server", (t) => t.todo("waiting for sync-sequencer"));
-    void make;
-  });
-}
+export { sequencerHostSuite, transportSuite, HOST_SUITE_DOC } from "./host-suite.ts";
+export { httpApiSuite, type HttpFixture } from "./http-suite.ts";
+export { helloAtSchema } from "./schema.ts";
+export { rawWebSocket, type RawConnection } from "./raw-ws.ts";
+export { liveSyncSuite } from "./live-suite.ts";

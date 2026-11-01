@@ -3,7 +3,7 @@
 // against it doesn't break on R2 or S3.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkPartNumber, checkRange, checkCompleteParts, randomId, BlobError } from "./rules.ts";
+import { checkKey, checkPartNumber, checkRange, checkCompleteParts, randomId, BlobError, markCreated } from "./rules.ts";
 
 export { BlobError } from "./rules.ts";
 
@@ -44,9 +44,10 @@ export class MemoryBlobStore implements BlobStore {
   async put(key: string, data: Uint8Array, opts: { contentType?: string; sha256?: string; ifAbsent?: boolean } = {}): Promise<BlobInfo> {
     checkKey(key);
     const old = this.#objects.get(key);
-    if (opts.ifAbsent && old) return { ...old.info };
+    if (opts.ifAbsent && old) return markCreated({ ...old.info }, false);
     // A copy: the caller may reuse its buffer, and a blob is the bytes as they were at put time.
-    return this.#store(key, data.slice(), opts.contentType, opts.sha256);
+    const info = this.#store(key, data.slice(), opts.contentType, opts.sha256);
+    return opts.ifAbsent ? markCreated(info, true) : info;
   }
 
   async get(key: string, range?: ByteRange): Promise<Uint8Array | null> {
@@ -84,7 +85,8 @@ export class MemoryBlobStore implements BlobStore {
   // Keys in UTF-8 byte order (S3's and R2's order); for the keys we use (ASCII) that's plain string order.
   async list(prefix: string, opts: { cursor?: string; limit?: number } = {}): Promise<{ blobs: BlobInfo[]; cursor?: string }> {
     const limit = Math.max(1, Math.min(opts.limit ?? 1000, 1000));
-    const keys = [...this.#objects.keys()].filter((k) => k.startsWith(prefix) && (opts.cursor === undefined || k > opts.cursor)).sort(byteOrder);
+    const cursor = opts.cursor;
+    const keys = [...this.#objects.keys()].filter((k) => k.startsWith(prefix) && (cursor === undefined || byteOrder(k, cursor) > 0)).sort(byteOrder);
     const page = keys.slice(0, limit);
     const out: { blobs: BlobInfo[]; cursor?: string } = { blobs: page.map((k) => ({ ...this.#objects.get(k)!.info })) };
     if (keys.length > limit) out.cursor = page[page.length - 1]!;
@@ -145,7 +147,12 @@ export class MemoryBlobStore implements BlobStore {
         store.#uploads.delete(uploadId);
         return store.#store(key, out, up.contentType);
       },
+      // Idempotent for a gone upload, but bound to the key: through a scoped store an id alone must not reach
+      // another project's upload.
       async abort() {
+        const up = store.#uploads.get(uploadId);
+        if (!up) return;
+        if (up.key !== key) throw new BlobError("NoSuchUpload", `no multipart upload ${uploadId} for ${key}`);
         store.#uploads.delete(uploadId);
       },
     };

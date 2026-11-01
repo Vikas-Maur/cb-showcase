@@ -34,6 +34,7 @@
     "@carton/store-memory": "0.1.0",
     "@carton/blob-memory": "0.1.0",
     "@carton/cardboard": "0.1.0",
+    "@carton/media": "0.1.0",
     "@carton/server": "0.1.0"
   }
 }

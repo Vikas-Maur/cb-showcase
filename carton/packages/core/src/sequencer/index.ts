@@ -94,6 +94,10 @@ export interface LocalSequencer {
    * persisted keyframe, §5.4), so the rows up to it are taken without replaying their ops.
    */
   load(rows: readonly ConfirmedChange[], keyframe?: { seq: number; doc: Doc }): void;
+  /** Open from a keyframe (§5.4): an empty log starts after `seq` rows held back; `fill` adds them later. */
+  skipTo(seq: number): void;
+  /** The rows `skipTo` held back (any held-back seq; others are ignored). */
+  fill(rows: readonly ConfirmedChange[]): void;
 }
 
 export const actorKey = (a: Actor | null | undefined): string => (a ? `${a.kind}/${a.id}${a.agentId ? `/${a.agentId}` : ""}` : "unknown");
@@ -222,6 +226,13 @@ export function createLocalSequencer(doc: Doc, schema: Schema, opts: Partial<Rul
         append(r);
         if (kf && r.seq === kf.seq) head = fork(kf.doc, schema);
       }
+    },
+    skipTo(seq) {
+      if (log.length) throw new Error("sequencer: skipTo on a log");
+      log.length = tails.length = seq;
+    },
+    fill(rows) {
+      for (const r of rows) if (r.seq <= log.length && !log[r.seq - 1]) (log[r.seq - 1] = r), (tails[r.seq - 1] = tailOf(r));
     },
   };
 }

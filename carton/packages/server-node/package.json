@@ -5,13 +5,18 @@
   "type": "module",
   "license": "UNLICENSED",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./transport": "./src/transport.ts"
   },
   "publishConfig": {
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      },
+      "./transport": {
+        "types": "./dist/transport.d.ts",
+        "default": "./dist/transport.js"
       }
     }
   },
@@ -26,6 +31,14 @@
   },
   "dependencies": {
     "@carton/core": "0.1.0",
-    "@carton/server": "0.1.0"
+    "@carton/cardboard": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/host-http": "0.1.0",
+    "@carton/blob-memory": "0.1.0",
+    "@carton/blob-fs": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/conformance": "0.1.0",
+    "@carton/media": "0.1.0"
   }
 }

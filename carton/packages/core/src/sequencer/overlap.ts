@@ -24,8 +24,8 @@ export type OverlapKind = typeof NONE | typeof LEAF | typeof STRUCTURE;
 const HASH = 35; // "#"
 
 /** Escape one path segment the way the engine's `pathKey` does: `~` → `~0`, `/` → `~1`. */
-export const escapeSegment = (s: string): string =>
-  s.includes("/") || s.includes("~") ? s.replaceAll("~", "~0").replaceAll("/", "~1") : s;
+export { escapeSegment } from "../engine/json.ts";
+import { escapeSegment } from "../engine/json.ts";
 
 /** The path key of a track's position, folded into a change's paths so a reorder clash is a path clash. */
 export const trackOrderPath = (track: string): string => `#trackOrder/${escapeSegment(track)}`;
