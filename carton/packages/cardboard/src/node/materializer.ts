@@ -731,7 +731,8 @@ export class Materializer {
    * waits for the freeze to end). The view then holds exactly that change (its id joins the view's causal past) only
    * if the merge gained exactly its edits; a change that overwrote or built on a change still hidden (the person's edit
    * of the same clip) doesn't merge so: the freeze restarts at that change's own state, which shows what was confirmed
-   * up to it, as for a save (rounds 13-15). Returns whether the view changed.
+   * up to it, as for a save (rounds 13-15), and what the view held past that state (saves applied in this freeze, `cb`
+   * changes folded earlier) is folded in again on top, oldest first (round 23 #1). Returns whether the view changed.
    */
   private async foldAgentChanges(): Promise<boolean> {
     if (!this.freeze.view || !this.engine.changesSince) return false;
@@ -743,15 +744,21 @@ export class Materializer {
       if (this.localAgent(c.author)) found.push(c);
     }
     let changed = false;
-    for (const c of found.reverse()) {
+    const queue = found.reverse();
+    for (let i = 0; i < queue.length; i++) {
+      const c = queue[i]!;
       const view = this.freeze.view!;
       const merged = this.host.merge3(c.before, view, c.after);
       if (this.host.changes && sameEdits(this.host.changes(view, merged), this.host.changes(c.before, c.after))) {
         this.freeze.view = merged;
         this.freeze.causal.push(c.id);
       } else {
+        const held = new Set(this.freeze.causal);
         const p = await this.engine.pin({ owner: "shared-view", ttlMs: 7 * DAY, seq: c.seq, ...(cut !== undefined ? { cut } : {}) });
         this.restartFreeze({ baseDoc: p.doc, baseSeq: p.seq, causal: [], ...(p.cut !== undefined ? { cut: p.cut } : {}) });
+        const again: typeof found = [];
+        for await (const d of this.engine.changesSince(c.seq, cut !== undefined ? { cut } : {})) if (held.has(d.id)) again.push(d);
+        queue.splice(i + 1, queue.length, ...[...queue.slice(i + 1), ...again].sort((a, b) => a.seq - b.seq));
       }
       changed = true;
     }
@@ -789,7 +796,11 @@ export class Materializer {
         this.writeRetryTimers.delete(which);
         this.fire(async () => {
           try {
-            if (which === "shared") await this.writeSharedNow("retry");
+            if (which === "shared") {
+              // a failed fold too: the agents' changes it missed are read again before the view is printed (round 23 #3)
+              if (this.freeze.active) await this.foldAgentChanges();
+              await this.writeSharedNow("retry");
+            }
             else if (this.opts.writeProject) await this.writeProjectNow("retry");
           } catch (e) {
             this.log.errors.push({ t: this.clock.now(), path: which === "shared" ? TIMELINE_FILE : PROJECT_FILE, error: `rewrite retry: ${e instanceof Error ? e.message : String(e)}` });
@@ -1409,8 +1420,10 @@ export class Materializer {
       this.origin.delete(d.path);
       this.partials.set(d.path, { rel: d.rel, stamp: d.stamp, mtimeNs: d.mtimeNs, ...(d.viewGen !== undefined ? { viewGen: d.viewGen } : {}) });
       if (!this.reportedPartials.has(d.path)) {
-        // (its path's token was written by the install that displaced it: nothing happened at the path since)
         this.log.unparsed.push({ t: this.clock.now(), path: d.rel, displaced: true });
+        // something happened at the path: the install that displaced it wrote no token if it was a save's own
+        // regeneration (round 23 #2)
+        await this.touch(d.rel);
         const text = `${d.rel} (a save Carton moved aside) doesn't parse; kept in ${CARTON_DIR}/displaced, not applied`;
         await this.engine.notice(await this.actorOf(d.rel), { kind: "error", text });
         await this.refuseUnparsed(d.rel, text, d.viewGen);
@@ -1705,8 +1718,8 @@ export class Materializer {
   }
 
   /**
-   * A file at `rel` that doesn't parse, in place or displaced, refused before any save was attempted (the path's token
-   * is written: by the caller, or by the install that displaced it): a view's latest save refuses the view, unless a newer print has already started over (a
+   * A file at `rel` that doesn't parse, in place or displaced, refused before any save was attempted (the caller has
+   * written the path's token): a view's latest save refuses the view, unless a newer print has already started over (a
    * file of unknown print, in place or recovered after a restart, counts as the latest).
    */
   private async refuseUnparsed(rel: string, error: string, viewGen?: number): Promise<void> {
