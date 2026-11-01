@@ -167,6 +167,48 @@ test("#1 a view save on a shared cut waits for the lease: never left pending whi
   }
 });
 
+test("the freeze holds when the holder hears of another connection's write after the agent saved its view (CI Windows, director-turn step 5)", opt, async () => {
+  const bundle = path.join(DIR, "freeze.cardboard");
+  fs.rmSync(bundle, { recursive: true, force: true });
+  fs.mkdirSync(bundle, { recursive: true });
+  const env = envelope();
+  fs.writeFileSync(path.join(bundle, "project.json"), JSON.stringify(env));
+  const project = env.project, title = project.timelineItems.find((i) => i.type === "text").id;
+  const store = A.createMemoryStore();
+  const c = await A.Carton.open({ adapter: A.cardboardAdapter, store, projectId: project.id, init: { doc: A.fromHost(project, null) }, actor: PERSON });
+  const lc = { carton: c, store, lease: new A.Lease(store), dbPath: path.join(bundle, ".carton", "carton.db") };
+  globalThis.__cartonTimelineCodec = A.jsonTimelineCodec;
+  const api = { bundleOf: () => bundle, materialize: async () => { fs.writeFileSync(path.join(bundle, "project.json"), JSON.stringify({ ...env, project: A.materializeProject((await c.head()).doc, project) })); } };
+  const v = new A.View({ api, bundlePath: bundle, lc });
+  try {
+    await v.start();
+    const actor = { kind: "agent", id: "director/chat/turn", chat: "chat", turn: "turn" };
+    const shared = () => fs.readFileSync(path.join(bundle, "timeline.tsx"), "utf8");
+    // the turn starts: its first read freezes timeline.tsx; it prints its own view
+    await v.hook(actor, { event: "read" });
+    const print = await v.mz.printView("turn", actor, { hooked: true });
+    // the person edits in the GUI (this handle)
+    assert.equal((await c.commit({ ops: [{ op: "set", path: ["timelineItems", title, "textContent"], value: "PERSON-WHILE-FROZEN" }] })).status, "confirmed");
+    // the agent saves its view (the Materializer commits it in this handle, as its author)
+    const file = path.join(bundle, print.path);
+    fs.writeFileSync(file, fs.readFileSync(file, "utf8").replace(/"fontSize": \d+/, '"fontSize": 123'));
+    v.mz.onFsEvent(print.path);
+    await until(async () => (await c.head()).doc.timelineItems.find((i) => i.id === title).fontSize === 123, 20_000, "the agent's save");
+    await v.mz.idle();
+    assert.ok(!shared().includes("PERSON-WHILE-FROZEN"), "frozen after the agent's save");
+    // then local's follower hears of another connection's write (a lease renewal, a sidecar, a notice: any data_version
+    // move) and asks the printer to look at head
+    await v.holder.materializer.onExternalHeadChange();
+    await v.mz.idle();
+    assert.ok(!shared().includes("PERSON-WHILE-FROZEN"), "the person's edit stays out of timeline.tsx until the turn stops");
+    await v.hook(actor, { event: "stop" });
+    await until(() => shared().includes("PERSON-WHILE-FROZEN"), 20_000, "the person's edit after the Stop");
+  } finally {
+    await v.stop();
+    await c.close();
+  }
+});
+
 test("a View released while it is still starting doesn't take the lease or timeline.tsx afterwards", opt, async () => {
   // views.js as the worker runs it, with stand-ins for the packages: a Materializer whose start waits until told (`\r?`: a Windows checkout has CRLF lines)
   const src = fs.readFileSync(path.join(ROOT, "scripts", "carton", "sync", "views.js"), "utf8").replace(/^import .*;\r?\n/gm, "").replaceAll("export class ", "class ").replaceAll("export function ", "function ");
