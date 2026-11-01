@@ -42,6 +42,8 @@ import { caughtUp } from "./live.js";
 const MATERIALIZE_MS = 40;
 // How often the views Carton printed are checked for a save (a stat each; nothing when there are none).
 const POLL_MS = 250;
+// How long a view save on a shared cut waits for this worker to hold the lease again (#mayCommit).
+const LEASE_WAIT_MS = 5000;
 // A cb write that changes the timeline (the stopgap below).
 const CHANGES = new Set(["commit", "restore", "revert", "undo", "undoTurn", "fold"]);
 const errText = (e) => (e && e.message) || String(e);
@@ -52,6 +54,7 @@ const fold = process.platform === "win32" || process.platform === "darwin";
 const keyOf = (p) => { const r = path.resolve(p); return fold ? r.toLowerCase() : r; };
 
 const views = new Map(); // key → Promise<View | null>
+const paths = new Map(); // key → the bundle path a View is for, from its start (release() reads it before it runs)
 const running = new Map(); // key → View, once started (the facade asks synchronously)
 
 /**
@@ -60,7 +63,7 @@ const running = new Map(); // key → View, once started (the facade asks synchr
  * before the Materializer answers it in the view's `.status`: an agent that reads "confirmed" finds it everywhere.
  * Anything else goes to the inner engine as it is.
  */
-function engineFor(inner, lc, landed) {
+function engineFor(inner, lc, landed, mayCommit, cutOf) {
   const old = async (rev) => {
     const ref = await lc.store.get("views", ["rev", Number(rev)]);
     if (!ref) return null;
@@ -72,6 +75,12 @@ function engineFor(inner, lc, landed) {
       if (k === "resolve") return async (rev) => (rev?.kind === "legacy" && (await old(rev.rev))) || t.resolve(rev);
       if (k === "commit") {
         return async (input) => {
+          await mayCommit(input.meta?.file);
+          // the cut it lands on (the engine commits on the current one), for its cards (onCards): a card belongs there
+          if (input.id) {
+            cutOf.set(input.id, lc.carton.cut);
+            if (cutOf.size > 64) cutOf.delete(cutOf.keys().next().value);
+          }
           const r = await t.commit(input.base?.kind === "legacy" ? { ...input, base: (await old(input.base.rev)) ?? input.base } : input);
           if (r?.status && r.status !== "rejected") await landed();
           return r;
@@ -95,6 +104,7 @@ export class View {
     this.polling = null;
     this.stamps = new Map(); // printed view name → its file's stamp
     this.syncArgs = null; // the holder's sync start, kept until Live runs
+    this.waiting = new Set(); // view files whose save waited for the lease in vain (#mayCommit)
     this.live = false;
     this.off = null;
     this.timer = null;
@@ -105,9 +115,10 @@ export class View {
     const { lc, bundlePath } = this;
     const codec = globalThis.__cartonTimelineCodec;
     if (!codec) throw new Error("this build has no timeline.tsx printer for Carton");
+    const cutOf = new Map(); // a view save's request id → the cut it was committed on
     const mz = new Materializer({
       bundle: bundlePath,
-      engine: engineFor(cartonMaterializerEngine(lc.carton), lc, () => this.materializeNow()),
+      engine: engineFor(cartonMaterializerEngine(lc.carton), lc, () => this.materializeNow(), (file) => this.#mayCommit(file), cutOf),
       host: cardboardFilesHost,
       codec,
       writeProject: false,
@@ -117,8 +128,10 @@ export class View {
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
       onCards: (c) => {
+        const cut = cutOf.get(c.request) ?? lc.carton.cut;
+        cutOf.delete(c.request);
         const lost = (e) => warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e));
-        try { Promise.resolve(this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, c)).catch(lost); } catch (e) { lost(e); }
+        try { Promise.resolve(this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, { ...c, cut })).catch(lost); } catch (e) { lost(e); }
       },
     });
     this.mz = mz;
@@ -189,6 +202,25 @@ export class View {
     await this.mz.printShared().catch((e) => warnOnce("print:" + this.bundlePath, `timeline.tsx didn't show an agent's edit in ${path.basename(this.bundlePath)}: ${errText(e)}`));
   }
 
+  /**
+   * PLAN §6.2: a save on a shared cut goes through the project's lease holder. This View's handle is it, unless
+   * another process took the lease over (a cb helper, while this worker's loop stalled): a commit here would then be a
+   * pending row that holder never reads, lost at its next settle (review H8 r1 #1). So a view save waits for keepLease to
+   * take the lease back (a handover within ~2 s); failing that it throws, and the Materializer reads the file again
+   * later (its retry with a growing delay). A local cut has no lease to respect: any handle commits there.
+   */
+  async #mayCommit(file) {
+    const cut = (await this.lc.carton.cuts()).find((c) => c.id === this.lc.carton.cut);
+    if (!cut || cut.sequencer?.kind === "local") return;
+    for (const end = Date.now() + LEASE_WAIT_MS; !this.holds(); ) {
+      if (this.stopped || Date.now() > end) {
+        if (file) this.waiting.add(file);
+        throw new Error("another process holds this shared project's sync just now; the save is applied once the app has it back");
+      }
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  }
+
   /** This handle holds the lease right now (not fenced, not stopped). */
   holds() {
     const h = this.lease?.current;
@@ -251,6 +283,12 @@ export class View {
     if (this.polling) return;
     this.polling = setInterval(() => {
       if (this.stopped) return;
+      // saves that waited for the lease in vain (#mayCommit): read again once this View holds it, whatever the
+      // Materializer's own retries came to
+      if (this.waiting.size && this.holds()) {
+        for (const rel of this.waiting) this.mz.onFsEvent(rel);
+        this.waiting.clear();
+      }
       for (const [n, was] of this.stamps) {
         const now = this.#stamp(n);
         if (now === was) continue;
@@ -300,6 +338,7 @@ function startView(api, bundlePath, lc) {
   const own = api.bundleOf(lc.carton.projectId);
   if (!own || keyOf(own) !== key) return Promise.resolve(null);
   const view = new View({ api, bundlePath, lc });
+  paths.set(key, bundlePath);
   p = view.start().then(
     () => {
       if (views.get(key) !== p) return view.stop().then(() => null); // released while starting
@@ -309,7 +348,7 @@ function startView(api, bundlePath, lc) {
     (e) => {
       warnOnce("view:" + bundlePath, `agents' views and the timeline.tsx freeze are off for ${path.basename(bundlePath)}: ${errText(e)}`);
       void view.stop();
-      if (views.get(key) === p) views.delete(key);
+      if (views.get(key) === p) views.delete(key), paths.delete(key);
       return null;
     },
   );
@@ -329,11 +368,14 @@ extend({
   timelineEvent: (bundlePath) => running.get(keyOf(bundlePath))?.timelineEvent(),
   async release(dir, inside) {
     const stops = [];
+    // A View still starting goes too (review H8 r1): left out, its start would finish after the release, take the
+    // lease and own timeline.tsx in a bundle Cardboard is moving or trashing. Its start sees it was released and stops.
     for (const [key, p] of views) {
-      const v = running.get(key);
-      if (!v || !inside(v.bundlePath)) continue;
+      const bundlePath = running.get(key)?.bundlePath ?? paths.get(key);
+      if (!bundlePath || !inside(bundlePath)) continue;
       views.delete(key);
       running.delete(key);
+      paths.delete(key);
       stops.push(p.then((x) => x?.stop()));
     }
     await Promise.all(stops);
