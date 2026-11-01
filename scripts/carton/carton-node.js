@@ -969,11 +969,26 @@ export const cardboard14 = {
       // is never overwritten), but a switch on the handle tells its view model nothing: while a page shows the panel,
       // a handle on another cut than the one the panel last showed refreshes it (laptop report 90c4127, bug 7). One
       // small read a second.
-      let following = false;
+      // Versions another process adds to the cut shown (a cb apply, a helper that held the lease) tell this handle's view
+      // model nothing either: a newer version on that cut than the panel last saw refreshes it too (laptop report
+      // follow-up: a cb edit never showed in the open panel).
+      let following = false, seenSeq = null;
+      const headSeq = async () => (await lc.carton.log({ cut: lc.carton.cut, limit: 1 }))[0]?.ref.seq ?? 0;
       const follow = setInterval(() => {
         if (following) return;
         following = true;
-        followCurrent(lc).then(() => (lc.carton.cut !== shownCut ? reportHere() : null)).catch(() => {}).finally(() => { following = false; });
+        followCurrent(lc)
+          .then(async () => {
+            if (lc.carton.cut !== shownCut) {
+              seenSeq = null;
+              return reportHere();
+            }
+            const seq = await headSeq();
+            if (seenSeq !== null && seq !== seenSeq) await handle.refresh?.();
+            seenSeq = seq;
+          })
+          .catch(() => {})
+          .finally(() => { following = false; });
       }, 1000);
       follow.unref?.();
       offs.push(() => clearInterval(follow));
