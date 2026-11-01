@@ -43,3 +43,27 @@ export function demoDoc(media: readonly SampleMedia[], name = "Weekend reel"): D
   const mediaRecs: Rec[] = media.map((m) => ({ id: m.id, contentHash: m.hash, data: { fileName: `${m.name}.mp4`, type: "video" } }));
   return { name, aspectRatio: "16:9", [TRACKS]: tracks, [ITEMS]: items, [MEDIA]: mediaRecs };
 }
+
+const mediaCache = new Map<string, SampleMedia>();
+/**
+ * The media the timeline shows, by record id: the descriptor's (with the seed's T1 keys), and every record in the
+ * document with a content hash (a clip added since, from a browser or the desktop app), its poster and filmstrip at
+ * the T1 keys a browser upload writes. The same object for an unchanged record, so views don't redo work.
+ */
+export function mediaOf(doc: Doc, known: Record<string, SampleMedia>): Record<string, SampleMedia> {
+  const out: Record<string, SampleMedia> = { ...known };
+  for (const r of (doc[MEDIA] ?? []) as Rec[]) {
+    const id = String(r.id), hash = r.contentHash;
+    if (out[id] || typeof hash !== "string") continue;
+    const data = (r.data ?? {}) as { fileName?: string; duration?: number; size?: number };
+    const k = `${id}\n${hash}\n${data.duration}`;
+    let m = mediaCache.get(k);
+    if (!m) {
+      const file = String(data.fileName ?? id);
+      m = { id, name: file.replace(/\.[^.]+$/, "") || file, hash, size: Number(data.size) || 0, duration: Number(data.duration) || 0, poster: `t1/${hash}/poster.jpg`, filmstrip: `t1/${hash}/filmstrip.jpg` };
+      mediaCache.set(k, m);
+    }
+    out[id] = m;
+  }
+  return out;
+}

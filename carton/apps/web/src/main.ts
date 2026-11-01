@@ -2,7 +2,9 @@
 // server log and neither host needs SPA routing):
 //   #join=<project>.<invite>  → ask the person's name, join, open the project (the invite then leaves the URL)
 //   #p=<project>              → reopen with this install's saved session
-//   (nothing)                 → how to get in
+//   #new                      → New project: a name, the person's name; the browser becomes its owner (a host with
+//                               open creation only)
+//   (nothing)                 → the landing page: New project, and the projects this browser made or joined
 // It mounts a Preact root (`react` is aliased to preact/compat at build time) with @carton/react on the cardboard skin.
 // index.html paints a static shell first (no script needed), then this small entry replaces it.
 
@@ -10,6 +12,7 @@ import { createElement as h, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 import { parseJoinHash } from "./descriptor.ts";
+import { knownProjects, rememberProject, roleWords } from "./projects.ts";
 import { Session, type KeyStore } from "./session.ts";
 import { appCss } from "./styles.ts";
 import { Btn } from "./ui.ts";
@@ -86,6 +89,98 @@ function message(title: string, text: string) {
   root.render(h(Card, { title }, h("p", { className: "cb-dim" }, text)));
 }
 
+/** What this host allows (open creation, the largest upload); a host from before them allows neither. */
+async function hostInfo(): Promise<{ openCreate: boolean; maxUploadBytes: number | null }> {
+  try {
+    const r = await fetch(`${baseUrl}/api/host`);
+    const d = r.ok ? ((await r.json()) as { openCreate?: boolean; maxUploadBytes?: number | null }) : {};
+    return { openCreate: d.openCreate === true, maxUploadBytes: typeof d.maxUploadBytes === "number" ? d.maxUploadBytes : null };
+  } catch {
+    return { openCreate: false, maxUploadBytes: null };
+  }
+}
+
+const ago = (ms: number) => {
+  const m = Math.round((Date.now() - ms) / 60_000);
+  if (m < 1) return "just now";
+  if (m < 60) return `${m} min ago`;
+  const hrs = Math.round(m / 60);
+  if (hrs < 24) return `${hrs} h ago`;
+  return new Date(ms).toLocaleDateString();
+};
+
+function Landing({ openCreate }: { openCreate: boolean }) {
+  const list = knownProjects(keys);
+  return h(
+    Card,
+    { title: "Carton" },
+    h("p", { className: "cb-dim" }, openCreate ? "Edit video together, live. Start a project and invite people, or open one you've been invited to." : "Open an invite link to edit a project, or a share link to watch one."),
+    openCreate ? h("div", { className: "cb-gate-actions" }, h(Btn, { variant: "primary", "data-testid": "new-project", onClick: () => (location.hash = "#new") }, "New project")) : null,
+    list.length
+      ? h(
+          "section",
+          { className: "cb-projects", "data-testid": "project-list" },
+          h("h2", null, "Your projects"),
+          h(
+            "ul",
+            null,
+            list.map((p) =>
+              h(
+                "li",
+                { key: p.projectId },
+                h("a", { href: `#p=${p.projectId}`, "data-testid": "project-open" }, h("span", { className: "cb-project-name" }, p.name), h("span", { className: "cb-dim" }, `${roleWords[p.role] ?? ""} · ${ago(p.at)}`)),
+              ),
+            ),
+          ),
+        )
+      : null,
+    h("p", { className: "cb-gate-more" }, h("a", { href: "/changelog/" }, "See what we’ve built →")),
+  );
+}
+
+function NewProjectScreen() {
+  const [title, setTitle] = useState("");
+  const [name, setName] = useState(localStorage.getItem("carton.name") ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async (e: Event) => {
+    e.preventDefault();
+    if (!name.trim() || !title.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      localStorage.setItem("carton.name", name.trim());
+      const { emptyDoc, newProjectId, shareNewProject } = await import("./create.ts");
+      const { webSocketTransport } = await import("@carton/server-node/transport");
+      const projectId = newProjectId();
+      const session = await Session.create({ baseUrl, projectId, account: accountFor(projectId, name.trim()), keys });
+      keys.set(`carton.name.${projectId}`, name.trim());
+      await shareNewProject({ session, doc: emptyDoc(title.trim()), actor: { kind: "human", id: session.account, name: name.trim(), group: session.account }, name: name.trim(), transport: webSocketTransport() });
+      rememberProject(keys, { projectId, name: title.trim(), role: "owner" });
+      history.replaceState(null, "", `${location.pathname}#p=${projectId}`);
+      await boot(session, name.trim());
+    } catch (err) {
+      setError((err as Error).message);
+      setBusy(false);
+    }
+  };
+  const field = (label: string, value: string, set: (v: string) => void, testid: string, placeholder: string, autoFocus = false) =>
+    h("label", { className: "cb-field" }, h("span", null, label), h("input", { className: "cb-input", value, autoFocus, "data-testid": testid, placeholder, onInput: (e: Event) => set((e.target as HTMLInputElement).value) }));
+  return h(
+    Card,
+    { title: "New project" },
+    h("p", { className: "cb-dim" }, "An empty timeline with a video track and a captions track. You'll own it: add video, then invite people to edit, comment or watch."),
+    h(
+      "form",
+      { onSubmit: submit, className: "cb-gate-form" },
+      field("Project name", title, setTitle, "new-title", "Weekend reel", true),
+      field("Your name", name, setName, "new-person", "Alice"),
+      h("div", { className: "cb-gate-actions" }, h(Btn, { type: "button", onClick: () => (location.hash = "") }, "Cancel"), h(Btn, { type: "submit", variant: "primary", disabled: busy || !name.trim() || !title.trim(), "data-testid": "create" }, busy ? "Creating…" : "Create project")),
+    ),
+    error ? h("p", { className: "cb-error", role: "alert" }, error) : null,
+  );
+}
+
 async function route(): Promise<void> {
   const join = parseJoinHash(location.hash);
   if (join) {
@@ -107,15 +202,10 @@ async function route(): Promise<void> {
     if (!session) return message("Your session ended", "Open the invite link again to rejoin. Your edits waiting to sync are kept in this browser.");
     return boot(session, keys.get(`carton.name.${p}`) ?? session.account);
   }
+  const info = await hostInfo();
+  if (location.hash === "#new" && info.openCreate) return void root.render(h(NewProjectScreen));
   // the landing card links the changelog: a static page in public/changelog/, no part of this bundle
-  root.render(
-    h(
-      Card,
-      { title: "Carton web demo" },
-      h("p", { className: "cb-dim" }, "Open an invite link to edit a project, or a share link to watch one."),
-      h("p", { className: "cb-gate-more" }, h("a", { href: "/changelog/" }, "See what we’ve built →")),
-    ),
-  );
+  root.render(h(Landing, { openCreate: info.openCreate }));
 }
 
 addEventListener("hashchange", () => location.reload());

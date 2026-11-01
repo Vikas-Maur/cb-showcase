@@ -15,6 +15,7 @@
 
 import { MediaReader, MemoryLeafCache, serveMedia, webCryptoHasher, type ReaderEvent } from "@carton/media";
 import { httpBlobStore } from "./http-blobs.ts";
+import { withPieces } from "./pieces.ts";
 import { MEDIA_PATH, type SessionMessage, type WorkerMessage } from "./media-protocol.ts";
 
 /** The parts of ServiceWorkerGlobalScope this uses (the DOM typings this app compiles with have no worker scope). */
@@ -104,7 +105,8 @@ export function installMediaWorker(sw: WorkerScope, opts: MediaWorkerOptions = {
       p.token = s.token;
       return p;
     }
-    const store = httpBlobStore({ baseUrl: s.baseUrl, projectId: s.projectId, token: () => p!.token, ...(opts.fetch ? { fetch: opts.fetch } : {}) });
+    // a clip still uploading from a teammate's browser plays from its pieces (pieces.ts)
+    const store = withPieces(httpBlobStore({ baseUrl: s.baseUrl, projectId: s.projectId, token: () => p!.token, ...(opts.fetch ? { fetch: opts.fetch } : {}) }));
     p = { baseUrl: s.baseUrl, projectId: s.projectId, token: s.token, reader: new MediaReader({ store, hasher, cache, contentType: () => "video/mp4", onEvent }) };
     remember(projects, key, p, MAX_PROJECTS);
     return p;

@@ -2,7 +2,7 @@
 # `deploy/carton` branch with `npm run deploy:cloudflare` (root directory `carton`). That script builds the web client
 # into ./dist/site first, so the page and the API always ship together. Local development stays on wrangler.toml.
 # Secrets are set in the dashboard (Worker → Settings → Variables and Secrets), never here: AUTH_SECRET (required; signs
-# invites and sessions) and ADMIN_TOKEN (lets the owner make the first invite).
+# invites and sessions) and, optionally, ADMIN_TOKEN (makes a first owner invite; open creation below needs none).
 # The name must match the Worker's name in the Cloudflare dashboard.
 name = "carton"
 main = "src/worker.ts"
@@ -50,3 +50,11 @@ PRESENCE_TIMEOUT_MS = "120000"
 # the most keys one POST /blobs/heads checks (default 200, at most 1000): each is one to four R2 calls, and a Worker
 # request's subrequests are limited per plan; the client asks again for the rest
 # BLOB_HEADS_PER_REQUEST = "200"
+# Open creation (the free web demo): anyone who opens the site may create a project and become its owner, with no
+# admin token (the desktop app's Share then needs only the host address and a name). Each project id is claimed once
+# and never one already in use, so nobody can take over an existing project with it. The safety caps:
+# OPEN_CREATE_PER_DAY, new projects per IP address per UTC day; MAX_UPLOAD_BYTES, the largest file one upload stores
+# (200 MiB: blobs live in the BlobVault Durable Object for now).
+OPEN_CREATE = "1"
+OPEN_CREATE_PER_DAY = "10"
+MAX_UPLOAD_BYTES = "209715200"

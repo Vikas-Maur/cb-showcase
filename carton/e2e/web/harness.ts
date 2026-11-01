@@ -67,12 +67,16 @@ export async function buildClient(): Promise<void> {
   });
 }
 
-export async function startHost(kind: "node" | "cloudflare", name: string): Promise<TestHost> {
+/**
+ * `config`: the Worker's wrangler config file in packages/server-cloudflare (default wrangler.toml, local dev; the
+ * production one, wrangler.production.toml, runs with its own vars: no R2, open creation on).
+ */
+export async function startHost(kind: "node" | "cloudflare", name: string, o: { config?: string; openCreate?: boolean } = {}): Promise<TestHost> {
   const dir = join(scratch, `${kind}-${name}`);
   rmSync(dir, { recursive: true, force: true });
   mkdirSync(dir, { recursive: true });
   if (kind === "node") {
-    const d = await serveDemo({ dataDir: dir, staticDir: distDir, port: 0 });
+    const d = await serveDemo({ dataDir: dir, staticDir: distDir, port: 0, ...(o.openCreate ? { openCreate: true } : {}) });
     return { kind, url: d.url, adminToken: d.adminToken, close: () => d.close() };
   }
   // the Worker and its Durable Objects in workerd, with R2 simulated locally; the client as its static assets.
@@ -83,7 +87,7 @@ export async function startHost(kind: "node" | "cloudflare", name: string): Prom
   const secret = randomBytes(32).toString("base64url");
   const proc = spawn(
     process.execPath,
-    [wranglerEntry(), "dev", "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--log-level", process.env.CARTON_E2E_HOSTLOG ? "debug" : "warn", "--show-interactive-dev-session=false"],
+    [wranglerEntry(), "dev", ...(o.config ? ["-c", o.config] : []), "--port", String(port), "--ip", "127.0.0.1", "--inspector-port", String(inspector), "--persist-to", join(dir, "state"), "--assets", distDir, "--var", `AUTH_SECRET:${secret}`, "--var", `ADMIN_TOKEN:${adminToken}`, "--log-level", process.env.CARTON_E2E_HOSTLOG ? "debug" : "warn", "--show-interactive-dev-session=false"],
     {
       cwd: join(carton, "packages", "server-cloudflare"),
       stdio: ["ignore", "pipe", "pipe"],

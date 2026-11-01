@@ -394,6 +394,14 @@ The first owner of a project comes from the admin token:
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -d '{"role":"owner"}' http://127.0.0.1:8787/api/admin/projects/my-project/invites
 ```
 
+**Open creation** (the free web demo): a host started with `openCreate` (server-node) or `OPEN_CREATE = "1"` (the
+Worker; on in `wrangler.production.toml`) lets anyone make a project with no admin token:
+`POST /api/projects/<new id>/create {account, installKey}` answers the first owner's session. Each project id is
+claimed once and never one already in use (409), so an existing project can't be taken over. Its caps: new projects
+per IP address per UTC day (`perDay` / `OPEN_CREATE_PER_DAY`, default 10), and the largest file one upload stores
+(`maxUploadBytes` / `MAX_UPLOAD_BYTES`, default 200 MiB with open creation, none without). `GET /api/host` tells a
+client which of these the host has.
+
 The answer holds an invite. Exchange it with `POST /api/projects/my-project/join {invite, account, installKey}` for a
 session. The install key is the device's own secret, kept in the OS keychain or app data and never in the bundle.
 The session's credential is `account/<hash of the install key>`, and replica ids are bound to it (§6.3).

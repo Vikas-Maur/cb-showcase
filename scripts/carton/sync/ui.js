@@ -47,18 +47,32 @@ function Invite({ projectId, bridge }) {
 
 function ShareForm({ projectId, bridge, onShared }) {
   const [hostUrl, setHost] = useState(localStorage.getItem("carton.host") ?? ""), [secret, setSecret] = useState(""), [name, setName] = useState(localStorage.getItem("carton.name") ?? "");
+  // A host with open creation needs only its address and a name; the token field shows only for a host that asks
+  // (unknown until the address is checked: shown, but optional, while it is being checked).
+  const [needsToken, setNeedsToken] = useState(null);
+  useEffect(() => {
+    setNeedsToken(null);
+    let url;
+    try { url = new URL(hostUrl.trim()); } catch { return undefined; }
+    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    let live = true;
+    const t = setTimeout(() => bridge.call("liveHostInfo", [{ host: url.origin }]).then((i) => live && setNeedsToken(!i.openCreate), () => live && setNeedsToken(true)), 300);
+    return () => { live = false; clearTimeout(t); };
+  }, [hostUrl, bridge]);
   const [share, busy, error] = useAction(async () => {
     localStorage.setItem("carton.host", hostUrl);
     localStorage.setItem("carton.name", name);
-    // An owner invite from the host, or the host's admin token (used once to make one; never kept).
-    const r = await bridge.call("liveShare", [{ projectId, host: hostUrl, name, ...(secret.startsWith("ct1.") ? { invite: secret } : { adminToken: secret }) }]);
+    // An owner invite from the host, or the host's admin token (used once to make one; never kept); neither for a
+    // host with open creation.
+    const s = secret.trim();
+    const r = await bridge.call("liveShare", [{ projectId, host: hostUrl, name, ...(s ? (s.startsWith("ct1.") ? { invite: s } : { adminToken: s }) : {}) }]);
     onShared(r);
   });
   return h("form", { className: "flex flex-col gap-2", onSubmit: (e) => { e.preventDefault(); share(); } },
     h("h3", { className: "text-sm font-medium" }, "Share this project"),
     h("p", { className: "text-xs text-muted-foreground" }, "Teammates you invite edit it with you, live. Its history goes with it; footage stays on this computer until you share it."),
     field("Carton host", { value: hostUrl, onChange: (e) => setHost(e.target.value), placeholder: "https://carton.example.com", required: true }),
-    field("Owner invite or admin token", { value: secret, onChange: (e) => setSecret(e.target.value), type: "password", required: true }),
+    needsToken === false ? null : field(needsToken ? "Owner invite or admin token" : "Owner invite or admin token (if the host asks)", { value: secret, onChange: (e) => setSecret(e.target.value), type: "password", required: !!needsToken, "data-carton-secret": "" }),
     field("Your name", { value: name, onChange: (e) => setName(e.target.value), placeholder: "Alice", required: true }),
     h(Button, { type: "submit", busy, variant: "primary" }, "Share"),
     error ? h("p", { className: "text-xs text-destructive", role: "alert" }, error) : null);

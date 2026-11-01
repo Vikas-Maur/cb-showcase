@@ -19,6 +19,8 @@ import { startMedia } from "./media-client.ts";
 import { PresenceSender } from "./presence.ts";
 import { holdPushLock, openProject, putBlob, readBlob, readDescriptor } from "./project.ts";
 import type { KeyStore, Session } from "./session.ts";
+import { rememberProject } from "./projects.ts";
+import { Uploads, addVideo } from "./upload.ts";
 
 /** A small observable value for the views (no framework store needed). */
 function cell<T>(v: T) {
@@ -55,6 +57,8 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
   carton.on((e) => {
     if (e.type === "sync-error" || e.type === "sync") syncProblem.set(carton.sync?.error() ?? null);
   });
+  // the landing page's list: this browser made or joined it
+  rememberProject(keys, { projectId: session.projectId, name: descriptor.name, role: session.role });
   const lock = await holdPushLock(`${session.projectId}:${session.account}`, carton, waiting.set, () => location.reload());
   const live = await LiveDoc.open(carton);
   // Timecoded comments on the same transport, URL and token (REQ-C3). Only the tab holding the push lock shares them,
@@ -179,15 +183,22 @@ export async function boot({ session, name, root, keys, baseUrl, message }: { se
     }
   });
 
+  // Adding video from this browser (upload.ts): the host's largest upload, the files this page plays itself while
+  // they upload, and the uploads in progress.
+  const maxUploadBytes = await fetch(`${baseUrl}/api/host`).then(async (r) => (r.ok ? (((await r.json()) as { maxUploadBytes?: number | null }).maxUploadBytes ?? null) : null), () => null);
+  const local = new Map<string, string>();
+  const uploads = new Uploads();
+  const addFile = (file: File) => addVideo({ file, session, carton: handle, me, doc: () => live.doc, maxUploadBytes, local, jobs: uploads, baseUrl, committed: () => void live.refresh(), stillsUp: () => images.bump() });
+
   // test and demo hooks (the e2e reads state through these; nothing secret: the page already holds it)
-  Object.assign(window, { __carton: { carton, ui, live, presence, me, session: { projectId: session.projectId, account: session.account, role: session.role }, links, comments } });
+  Object.assign(window, { __carton: { carton, ui, live, presence, me, session: { projectId: session.projectId, account: session.account, role: session.role }, links, comments, uploads, hasBlob: (key: string) => session.api(`/blobs/head?key=${encodeURIComponent(key)}`).then(() => true, (e: { status?: number }) => (e.status === 404 ? false : Promise.reject(e))) } });
 
   await ui.ready;
   root.render(
     h(
       CartonProvider,
       { ui },
-      h(App, { carton, ui, live, session, me, name, comments: commentsView, media: descriptor.media, presence, images, mediaUrl: media.url, mediaReady, syncProblem, previewDoc, waiting, setOffline, isOffline: () => offline }),
+      h(App, { carton, ui, live, session, me, name, comments: commentsView, media: descriptor.media, uploads, addVideo: addFile, localUrl: (hash: string) => local.get(hash), presence, images, mediaUrl: media.url, mediaReady, syncProblem, previewDoc, waiting, setOffline, isOffline: () => offline }),
     ),
   );
   presence.active("Joined");

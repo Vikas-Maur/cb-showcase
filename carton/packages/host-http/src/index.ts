@@ -7,6 +7,10 @@
 //   POST /api/projects/:p/refresh            {token, installKey}           → session (same credential)
 //   POST /api/projects/:p/invites            {role, ttlMs?, branches?}  owner  → {invite}
 //   POST /api/admin/projects/:p/invites      {role}  Bearer ADMIN_TOKEN    → {invite}   (bootstrap; off without one)
+//   POST /api/projects/:p/create             {account, installKey}  → owner session  (open creation: a host that lets
+//                                            anyone make a project, `openCreate`; once per project id, never one in
+//                                            use, a few a day per network; 403 when the host doesn't, 409, 429)
+//   GET  /api/host                                                         → {openCreate, perDay?, maxUploadBytes}
 //   GET  /api/projects/:p/ws                 WebSocket (token: Bearer, or the carton.auth.<token> subprotocol)
 //   GET  /api/projects/:p/session            any valid session → {role}  (the transport's probe after a failed handshake)
 //   POST /api/projects/:p/blobs/sign         {key, method, expiresIn}      → {url}  (PUT needs edit rights)
@@ -16,6 +20,8 @@
 //                                            for a prefix of the keys: at most the host's maxBlobHeads; ask again
 //                                            for the rest)
 //   POST /api/projects/:p/blobs/damaged      {key: "m/<hash>", leaf}       → {damaged, removed?}  (§11 repair path)
+//   POST /api/projects/:p/blobs/pieces-done  {hash}  editor  → {removed}  (a clip's live pieces, lv/<hash>/…, removed
+//                                            once its whole object m/<hash> is there: see PIECES below)
 //   POST /api/projects/:p/uploads            {key, contentType?}  editor   → {uploadId}
 //   PUT  /api/projects/:p/uploads/:id/:n?key=  part bytes          editor   → {partNumber, etag}
 //   GET  /api/projects/:p/uploads/:id?key=                         editor   → {parts}   (resume after a cut link)
@@ -67,11 +73,40 @@ export interface HttpDeps {
   maxBlobHeads?: number;
   // after an envelope upload: a host whose sequencer sweeps on a schedule makes sure the sweep will run
   onEnvelope?(projectId: string): Promise<void> | void;
+  // Open creation: anyone may make a project and be its first owner, with no admin token (the free web demo). Off
+  // without it.
+  openCreate?: OpenCreate;
+  // who is asking, for openCreate's daily limit: the client's IP address as the host knows it
+  clientOf?(req: Request): string;
+  // the largest file one upload may store (a multipart object, or a signed PUT); none by default
+  maxUploadBytes?: number;
 }
+
+/** A host's open creation (HttpDeps.openCreate): its record of project ids in use, and its daily limit. */
+export interface OpenCreate {
+  /** New projects one client (IP address) may make per UTC day. */
+  readonly perDay: number;
+  /**
+   * Claim `projectId` for a new project made by `client`: "ok" once per id, ever; "taken" for an id already claimed or
+   * in use (a project made any other way); "limit" when the client has made `perDay` projects today.
+   */
+  claim(projectId: string, client: string): Promise<"ok" | "taken" | "limit">;
+  /** Record an id as in use without counting it (an admin invite made the project). */
+  mark(projectId: string): Promise<void>;
+}
+
+/** The UTC day of `ms`, as the daily limit counts (`2026-11-01`). */
+export const dayOf = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+
+/** Defaults for open creation, used by the hosts when a setting is not given. */
+export const OPEN_CREATE_PER_DAY = 10;
+export const OPEN_CREATE_MAX_UPLOAD = 200 * 1024 * 1024;
 
 const PROJECT = /^\/(?:api\/(?:admin\/)?projects|blob)\/([A-Za-z0-9._~-]{1,128})(\/.*)?$/;
 const MAX_JSON = 64 * 1024;
 const ROLES = new Set(["owner", "editor", "commenter", "viewer"]);
+const ACCOUNT = /^[A-Za-z0-9._~-]{1,128}$/;
+const mb = (n: number) => `${Math.round(n / (1024 * 1024))} MB`;
 
 export { teamMediaStore, projectMediaStore, isTeamMediaStore, mediaLockScope, type TeamMediaStore, type TeamMediaOptions } from "./team.ts";
 
@@ -130,6 +165,9 @@ export function blobSigner(deps: HttpDeps, origin: string, projectId: string): B
 export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response | null> {
   const url = new URL(req.url);
   if (url.pathname === "/api/health") return json({ ok: true });
+  // what a client needs to know before it creates or uploads (the web app's New project, the desktop Share form)
+  if (url.pathname === "/api/host" && req.method === "GET")
+    return json({ openCreate: !!deps.openCreate, ...(deps.openCreate ? { perDay: deps.openCreate.perDay } : {}), maxUploadBytes: deps.maxUploadBytes ?? null });
   const m = PROJECT.exec(url.pathname);
   if (!m) return url.pathname.startsWith("/api/") ? err(404, "no such route") : null;
   const projectId = m[1]!, rest = m[2] ?? "";
@@ -142,7 +180,8 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
     if (url.pathname.startsWith("/blob/")) {
       const store = deps.blobsFor(projectId);
       if (!store) return err(404, "this host has no blob store");
-      return await serveSignedBlob(req, store, blobSigner(deps, url.origin, projectId), { ...(deps.maxBodyBytes ? { maxPutBytes: deps.maxBodyBytes } : {}), aroundPut: (k, write) => withMediaLock(mediaLockScope(store, projectId), k, write) });
+      const maxPut = Math.min(deps.maxBodyBytes ?? Infinity, deps.maxUploadBytes ?? Infinity);
+      return await serveSignedBlob(req, store, blobSigner(deps, url.origin, projectId), { ...(Number.isFinite(maxPut) ? { maxPutBytes: maxPut } : {}), aroundPut: (k, write) => withMediaLock(mediaLockScope(store, projectId), k, write) });
     }
     if (url.pathname.startsWith("/api/admin/")) {
       if (req.method !== "POST" || rest !== "/invites") return err(404, "no such route");
@@ -151,7 +190,26 @@ export async function handleHttp(req: Request, deps: HttpDeps): Promise<Response
       const b = await body<{ role?: string; ttlMs?: number }>(req);
       const role = (b.role ?? "owner") as AuthContext["role"];
       if (!ROLES.has(role)) return err(400, "bad role");
-      return json({ invite: await invites().createInvite(projectId, role, b.ttlMs) });
+      const invite = await invites().createInvite(projectId, role, b.ttlMs);
+      // a project made this way is in use: open creation never hands it to someone else
+      await deps.openCreate?.mark(projectId);
+      return json({ invite });
+    }
+    // open creation: the first owner's session, with no admin token, for a project id never used on this host
+    if (req.method === "POST" && rest === "/create") {
+      const oc = deps.openCreate;
+      if (!oc) return err(403, "this host doesn't let anyone create projects: ask its owner for an invite");
+      const b = await body<{ account?: string; installKey?: string }>(req);
+      const account = String(b.account ?? ""), installKey = String(b.installKey ?? "");
+      // checked before the claim, which can't be undone
+      if (!ACCOUNT.test(account)) return err(400, "bad account id");
+      if (installKey.length < 16 || installKey.length > 512) return err(400, "bad install key");
+      const { createInvite, join } = invites();
+      const claimed = await oc.claim(projectId, deps.clientOf?.(req) ?? "unknown");
+      if (claimed === "limit") return err(429, `This host takes ${oc.perDay} new projects a day from one network. Try again tomorrow.`);
+      if (claimed === "taken") return err(409, "a project with this id already exists on this host");
+      const j = await join(await createInvite(projectId, "owner", 60_000), account, installKey);
+      return json({ token: j.token, context: j.context });
     }
     // routes that need no session
     if (req.method === "POST" && rest === "/join") {
@@ -300,7 +358,7 @@ async function checkDamagedLocked(store: BlobStore, key: string, hash: string, l
 
 // Keys named by content (@carton/media: `m/<hash>` bytes, `mf/<hash>` manifests, `px/<hash>/…` proxy pointers, `t1/<hash>/…`
 // T1 extras, §11): reading one needs its content hash, which only a document that uses the media gives away.
-const CONTENT_KEYS = ["m/", "mf/", "px/", "t1/"];
+const CONTENT_KEYS = ["m/", "mf/", "px/", "t1/", "lv/"];
 
 /**
  * What a reader scoped to some cuts (a Published cut's watch link, §14) may read from the media scope: media named by
@@ -368,11 +426,16 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
   }
   if (req.method === "POST" && rest === "/blobs/heads") return headsFor(req, ctx, store, deps);
   if (!canPush(ctx)) return err(403, "read-only role");
+  if (req.method === "POST" && rest === "/blobs/pieces-done") {
+    const b = await body<{ hash?: string }>(req);
+    return piecesDone(store, String(b.hash ?? ""));
+  }
   const up = /^\/uploads(?:\/([^/]+)(?:\/(\d+|complete))?)?$/.exec(rest);
   if (!up) return err(404, "no such route");
   const [, id, sub] = up;
   if (!id && req.method === "POST") {
-    const b = await body<{ key?: string; contentType?: string }>(req);
+    const b = await body<{ key?: string; contentType?: string; size?: number }>(req);
+    if (deps.maxUploadBytes !== undefined && typeof b.size === "number" && b.size > deps.maxUploadBytes) return err(413, `This file is bigger than this host takes (${mb(deps.maxUploadBytes)}).`);
     const u = await store.createMultipart(String(b.key ?? ""), b.contentType ? { contentType: b.contentType } : {});
     return json({ uploadId: u.uploadId, key: u.key });
   }
@@ -387,6 +450,11 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
       if (e instanceof BodyTooLarge) return err(413, "part too large");
       throw e;
     }
+    // every part but the last has one size, so part n of this size means at least n × it in the whole file
+    if (deps.maxUploadBytes !== undefined && Number(sub) * data.length > deps.maxUploadBytes) {
+      await handle.abort().catch(() => {});
+      return err(413, `This file is bigger than this host takes (${mb(deps.maxUploadBytes)}).`);
+    }
     return json(await handle.uploadPart(Number(sub), data));
   }
   if (req.method === "GET" && !sub) return json({ parts: await handle.listParts() });
@@ -395,11 +463,40 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
     const parts = b.parts;
     if (!Array.isArray(parts) || parts.length === 0 || parts.length > MAX_PARTS || parts.some((p) => !p || typeof p.etag !== "string" || p.etag.length > 256 || !Number.isInteger(p.partNumber)))
       return err(400, `parts must be 1..${MAX_PARTS} {partNumber, etag} entries`);
-    return json(await withMediaLock(mediaLockScope(store, projectId), key, () => handle.complete(parts as { partNumber: number; etag: string }[])));
+    const info = await withMediaLock(mediaLockScope(store, projectId), key, () => handle.complete(parts as { partNumber: number; etag: string }[]));
+    // the whole file over the cap (parts of uneven sizes passed the per-part check): not kept
+    if (deps.maxUploadBytes !== undefined && info.size > deps.maxUploadBytes) {
+      await store.delete(key).catch(() => {});
+      return err(413, `This file is bigger than this host takes (${mb(deps.maxUploadBytes)}).`);
+    }
+    return json(info);
   }
   if (req.method === "DELETE" && !sub) {
     await handle.abort();
     return json({});
   }
   return err(404, "no such route");
+}
+
+// PIECES: a clip uploaded from a browser plays for teammates while it uploads. A multipart object is invisible until it
+// completes, so the uploader first puts the file up in pieces, each its own object (`lv/<hash>/<n>`, whole leaves, so
+// a reader verifies them against the manifest at mf/<hash> like any media), with `lv/<hash>/info` ({size, pieceSize,
+// pieces}) first; then the whole file as m/<hash>. Once m/<hash> is there the pieces are redundant: any editor may have
+// them removed, and only then.
+const MEDIA_HASH = /^[0-9a-f]{64}$/;
+async function piecesDone(store: BlobStore, hash: string): Promise<Response> {
+  if (!MEDIA_HASH.test(hash)) return err(400, "hash must be a media hash");
+  if (!(await store.head(`m/${hash}`))) return err(409, "the whole file isn't there yet");
+  const infoBytes = await store.get(`lv/${hash}/info`);
+  if (!infoBytes) return json({ removed: 0 });
+  let pieces = 0;
+  try {
+    pieces = Number((JSON.parse(new TextDecoder().decode(infoBytes)) as { pieces?: number }).pieces);
+  } catch {
+    pieces = 0;
+  }
+  if (!Number.isInteger(pieces) || pieces < 0 || pieces > MAX_PARTS) pieces = 0;
+  await eachLimit(Array.from({ length: pieces }, (_, i) => i), HEADS_AT_ONCE, (i) => store.delete(`lv/${hash}/${i}`));
+  await store.delete(`lv/${hash}/info`);
+  return json({ removed: pieces });
 }

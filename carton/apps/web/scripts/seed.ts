@@ -7,14 +7,11 @@
 
 import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { Carton, hashDoc, type CutRecord } from "@carton/core";
 import type { BlobStore } from "@carton/core/plugins";
-import { cardboardAdapter } from "@carton/cardboard";
-import { createMemoryStore } from "@carton/store-memory";
 import { webSocketTransport } from "@carton/server-node/transport";
 import { demoDoc, type SampleMedia } from "../src/demo-doc.ts";
-import { DESCRIPTOR_KEY, joinHash, type ProjectDescriptor } from "../src/descriptor.ts";
-import { putBlob } from "../src/project.ts";
+import { joinHash, type ProjectDescriptor } from "../src/descriptor.ts";
+import { shareNewProject } from "../src/create.ts";
 import { Session, memoryKeys } from "../src/session.ts";
 
 export interface SeedResult {
@@ -58,26 +55,7 @@ export async function seedDemo(o: { baseUrl: string; adminToken: string; project
   }
 
   const doc = demoDoc(media, o.name);
-  const carton = await Carton.open({
-    adapter: cardboardAdapter,
-    store: createMemoryStore(),
-    init: { doc, projectId, cutName: "Main cut" },
-    actor: { kind: "system", id: "seed", name: "Carton" },
-    name: "Alice",
-    sync: { transport: webSocketTransport(), url: session.wsUrl, token: () => session.token() },
-  });
-  await carton.share();
-  let cut: CutRecord | undefined;
-  for (let i = 0; i < 200; i++) {
-    cut = (await carton.cuts()).find((c) => c.id === carton.cut);
-    if (cut?.sequencer.kind === "server") break;
-    await new Promise((r) => setTimeout(r, 50));
-  }
-  if (cut?.sequencer.kind !== "server") throw new Error("the host didn't take the Main cut (hand-off timed out)");
-  const doc0 = await carton.checkout(`${cut.id}@0`);
-  const descriptor: ProjectDescriptor = { v: 1, projectId, name: String(doc.name), cut, doc0, rootHash: hashDoc(doc0, cardboardAdapter.schema), media: Object.fromEntries(media.map((x) => [x.id, x])) };
-  await putBlob(session, DESCRIPTOR_KEY, new TextEncoder().encode(JSON.stringify(descriptor)), "application/json");
-  await carton.close();
+  const descriptor = await shareNewProject({ session, doc, actor: { kind: "system", id: "seed", name: "Carton" }, name: "Alice", transport: webSocketTransport(), media: Object.fromEntries(media.map((x) => [x.id, x])) });
   const link = (invite: string) => `${o.baseUrl}/${joinHash(projectId, invite)}`;
   return { projectId, alice: link(await session.invite("owner")), bob: link(await session.invite("editor")), viewer: link(await session.invite("viewer")), descriptor };
 }
