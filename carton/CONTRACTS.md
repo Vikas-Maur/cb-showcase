@@ -72,15 +72,16 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   changed records, which the diff takes as they are) is frozen once a state holding it has been handed out, so keep
   building on copies, not on the objects you committed. The cost is the array copy a head always had: each of
   History's arrays is frozen once, and a change freezes only what it writes.
-- **A split** records its lineage in the intent (`{ kind: "split", lineage: { c: ["c", "c-b"] } }`): a concurrent
-  edit to the split clip meets the split (the source record is part of its declaration) and reaches every piece,
-  whichever lands first: a rebase, a shared cut's commit made on an older version, a fold (each side's maps and
-  lineage composed along its path; a fold records the lineage it brings in on its edges, `mergeEdges.lineage`, and a
-  `.cbproj` lineage edge carries it as `parents[].lineage`), on local and shared cuts. Field edits and a track change
-  follow the lineage; a real retime of the split clip (a move or trim, not a ripple's shift) is a card (`items/<id>/#time`,
-  PLAN §7: "raise a card rather than guess"). A ripple on one side moves both pieces. Folds through merges or `.cbproj`
-  edges made before this (no `mergeEdges.lineage`, no `parents[].lineage`) don't know the split: an edit there reaches
-  the clip's first piece only.
+- **A split** records its lineage in the intent (`{ kind: "split", lineage: { c: ["c", "c-b"] } }`): a concurrent edit
+  to the split clip meets the split (the source record is part of its declaration) and reaches every piece, whichever
+  lands first: a rebase, a shared cut's commit made on an older version, a fold (each side's maps and lineage composed
+  along its path; a fold records the lineage it brings in on its edges, `mergeEdges.lineage`, and a `.cbproj` lineage
+  edge carries it as `parents[].lineage`), on local and shared cuts. Field edits and a track change follow the lineage;
+  a real retime of the split clip (a move or trim, not a ripple's shift) is a card (`items/<id>/#time`, PLAN §7: "raise
+  a card rather than guess"). A ripple on one side moves both pieces. Folds through merges or `.cbproj` edges made
+  before this (no `mergeEdges.lineage`, no `parents[].lineage`) don't know the split: an edit there reaches the clip's
+  first piece only. `carton.lineage(from, to)` reads the lineage composed between two versions (`{ cut, seq }`, `from`
+  before `to`; null: none), for code that maps old ids itself (comments' anchors).
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
   (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the
