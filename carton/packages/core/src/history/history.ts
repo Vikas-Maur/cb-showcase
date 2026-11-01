@@ -817,6 +817,11 @@ export class History {
   pathRemap(from: NodeId, to: NodeId, { prefer = "first" }: { prefer?: "first" | "second" } = {}): RemapMaps {
     return E.composeMaps(...this.#path(from, to, prefer).map((e) => e.maps));
   }
+  /** Split lineage (§7: old id -> its pieces) along one DAG path from ancestor `from` to `to`, composed; null: none. */
+  pathLineage(from: NodeId, to: NodeId): Splits | null {
+    if (this.canon(from) !== this.canon(to) && !this.isAncestor(from, to)) return null;
+    return E.sideOf(this.#path(from, to, "first").map((intent) => ({ intent }))).remap?.lineage ?? null;
+  }
   /** The recorded edges (maps, split lineage) along one DAG path from ancestor `from` to `to`, in order. */
   #path(from: NodeId, to: NodeId, prefer: "first" | "second"): Edge[] {
     from = this.canon(from);

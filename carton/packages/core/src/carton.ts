@@ -38,6 +38,7 @@ import type {
   FullExport,
   EditKinds,
   Intent,
+  Lineage,
   MergeResult,
   NodeId,
   Notice,
@@ -313,6 +314,11 @@ export interface Carton {
   /** Credits: who last changed a record, down to the subagent; `detail`: also when, and in which change. */
   credits(record: PathKey | readonly string[], opts?: { cut?: string; detail?: false }): Promise<Actor | null>;
   credits(record: PathKey | readonly string[], opts: { cut?: string; detail: true }): Promise<Credit | null>;
+  /**
+   * The split lineage (§7: an old item id -> the ids of its pieces) recorded between version `from` and a later version
+   * `to`, composed along History's DAG path (changes, folds, `.cbproj` edges). null: no split, or `from` isn't before `to`.
+   */
+  lineage(from: { cut: string; seq: number }, to: { cut: string; seq: number }): Promise<Lineage | null>;
   /** Notices for an actor (late conflicts, overwrites); `take` removes them. */
   notices(actor?: Actor, opts?: { take?: boolean }): Promise<Notice[]>;
 
@@ -1285,6 +1291,11 @@ class CartonImpl implements Carton {
     const node = this.#node(ref);
     const { branchId, seq } = parseNode(node);
     return { ref: { branchId, seq, pending: [] }, doc: Object.freeze(doc), readOnly: true };
+  }
+  async lineage(from: { cut: string; seq: number }, to: { cut: string; seq: number }): Promise<Lineage | null> {
+    await this.#whole();
+    await this.#refresh();
+    return this.#h.pathLineage(nodeId(from.cut, from.seq), nodeId(to.cut, to.seq));
   }
   credits(record: PathKey | readonly string[], opts?: { cut?: string; detail?: false }): Promise<Actor | null>;
   credits(record: PathKey | readonly string[], opts: { cut?: string; detail: true }): Promise<Credit | null>;
