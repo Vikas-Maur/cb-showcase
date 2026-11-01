@@ -25,6 +25,13 @@ a{color:inherit}
 .brand{font-family:var(--display);font-weight:340;font-variation-settings:"opsz" 72;font-size:22px;letter-spacing:-.01em;text-decoration:none}
 .btn{display:inline-flex;align-items:center;height:34px;padding:0 14px;border-radius:10px;background:#fff;color:#000;font-size:14px;font-weight:600;letter-spacing:0;text-decoration:none}
 .btn:hover{background:#e5e5e5}
+button.btn{border:0;font-family:var(--sans);line-height:1;cursor:pointer}
+.btn.dark{background:#1f1f1f;color:#fff}
+.btn.dark:hover{background:#2a2a2a}
+.nav{display:flex;align-items:center;gap:8px}
+.nav .link{color:#a3a3a3;font-size:15px;text-decoration:none;padding:0 10px;letter-spacing:0}
+.nav .link:hover,.nav .link[aria-current]{color:#fff}
+@media (max-width:640px){.top{padding:14px 16px}.brand{font-size:20px}.nav{gap:6px}.nav .link{padding:0 6px;font-size:14px}.nav .btn{padding:0 10px;font-size:13px;height:32px}}
 
 .hero{text-align:center;padding:96px 24px 40px}
 .hero h1{margin:0;font-size:56px;line-height:1.1}
@@ -99,7 +106,13 @@ footer{max-width:968px;margin:96px auto 0;padding:24px 24px 48px;border-top:1px 
 <body>
 <header class="top">
   <a class="brand" href="/">Carton</a>
-  <a class="btn" href="/">Open the demo</a>
+  <!-- The same bar as the landing page. GitHub and Download are placeholders for now: buttons, so a click does nothing
+       on this script-free page. -->
+  <nav class="nav">
+    <a class="link" href="/changelog/" aria-current="page">Changelog</a>
+    <button class="btn dark" type="button" data-placeholder="github">GitHub</button>
+    <button class="btn" type="button" data-placeholder="windows-download">Download</button>
+  </nav>
 </header>
 
 <section class="hero">
