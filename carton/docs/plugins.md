@@ -237,6 +237,20 @@ every host runs the same function. The host:
      same project see the names. A later option is to send a watch link only the display names of the authors in its
      cut, keyed by the rids of that cut's rows and never with account ids, so its viewers see who made the cut without
      learning the team's accounts or anyone outside the cut.
+   - **Comments** (REQ-C1, `@carton/comments`). The sequencer routes two more message kinds to the comment room of
+     `@carton/comments/server`, in turn with everything else and after the checks every message passes (a cut named
+     by a string; a scoped reader only its own cuts; a live token): `comments {branchId, since}` subscribes the
+     connection and answers a page of rows, and `comment {branchId, n, id, patch, op?}` is checked, stored, answered
+     and sent to every subscriber that may read its cut. A host needs nothing more: the room keeps its own tables in
+     the sequencer's storage (`comments`, `comment_log`, `comment_ops`, `comment_meta`, created on first use), the
+     Durable Object's included, and the subscription rides in `ConnectionState.comments`, which a host that hibernates
+     keeps with the socket (server-cloudflare's attachment). The room's rules: owners, editors and commenters comment,
+     viewers read; a scoped session (a watch link) reads, and with a commenting role writes, only its cuts' comments;
+     only a comment's author (the session's account, never a claim) edits or deletes it; per connection 10 comments at
+     once then 2 a second, and 20 catch-up pages then 5 a second (in memory: a Durable Object hibernates only after
+     about 10 s without a message, longer than either takes to refill); an op is applied once; at most 100,000
+     comments a project. The conformance host suite checks the fan-out, the roles and authorship, a watch link's
+     scope, the rate limit, and that a subscription and the rows survive a hibernation and a restart.
 4. **Keeps the rest thin:**
    - pass the newest document `schemaVersion` it accepts to `createSequencer`, so a newer client is refused at
      `hello`. Take the default from the adapter the host ships with (`CARDBOARD_SCHEMA_VERSION` from
@@ -392,6 +406,7 @@ add none of their own. Measured in a local `ProjectRoom`, with wrangler dev coun
 | A device's first `hello` (its replica-id claim) | 1, once |
 | A later `hello` | 0 |
 | Presence | 0 (relayed, never stored; a client sends at most 10 a second, coalesced, and the sequencer drops anything over 20 a second per connection) |
+| A comment written, edited, resolved or deleted | 4 (its row, its place in the stream, the old place's delete or, for a new one, the count, and the op it applied; the host suite checks it) |
 | Archiving a change to a blob segment | +1 (a DELETE is billed like an INSERT) |
 
 Archiving is the line to watch: every archived row costs one more row written. `maintain()` follows §18 (rows
