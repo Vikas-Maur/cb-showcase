@@ -17,10 +17,16 @@ export interface ConflictCardProps {
   /** The pick made so far, when the parent holds it. */
   picked?: ConflictChoice;
   className?: string;
+  /** "See it": preview the timeline with this side kept (read-only). Offered on the side not showing now. */
+  onPreview?: (side: ConflictChoice, label: string) => void;
+  /** "See it": select the card's clip on the timeline. Offered when the card is about a clip. */
+  onReveal?: (conflict: Conflict) => void;
+  /** Set the card aside for now ("Not now"): it stays open, never decided by this. */
+  onDismiss?: () => void;
 }
 
 /** `order`: both sides are one person's, told apart as their earlier and later edit (the name slot says which). */
-function SideView({ side, which, showing, order }: { side: ConflictSide; which: "mine" | "theirs"; showing: boolean; order?: { label: string } }) {
+function SideView({ side, which, showing, order, onPreview }: { side: ConflictSide; which: "mine" | "theirs"; showing: boolean; order?: { label: string }; onPreview?: () => void }) {
   const words = useWords();
   const locale = useLocale();
   const now = useNow();
@@ -36,6 +42,8 @@ function SideView({ side, which, showing, order }: { side: ConflictSide; which: 
       side.at != null && !order ? h("time", { dateTime: new Date(side.at).toISOString() }, when(side.at, now, locale, words.justNow)) : null,
       side.where ? h("span", { className: "carton-conflict-where" }, side.where) : null,
       showing ? h("span", { className: "carton-badge", "data-tone": "muted" }, words.showingNow) : null,
+      // the side not showing can be seen on the timeline, read-only, before picking it
+      !showing && onPreview ? h("button", { type: "button", className: "carton-see", onClick: onPreview }, h(Icon, { name: "eye", size: 13 }), words.seePreview) : null,
     ),
     h("p", { className: "carton-conflict-what" }, side.summary),
   );
@@ -68,7 +76,11 @@ export const ConflictCard = memo(function ConflictCard(p: ConflictCardProps) {
   const locale = useLocale();
   const [resolve, busy] = useAction((choice: ConflictChoice) => ui.resolve(p.conflict.id, choice));
   const c = p.conflict;
-  const order = byOrder(c, (s) => actorLabel(s.author, ui.actor.bind(ui), words.you), words, locale);
+  const name = (s: ConflictSide) => actorLabel(s.author, ui.actor.bind(ui), words.you);
+  const order = byOrder(c, name, words, locale);
+  // what a side is called in a preview's banner: "Your later edit", "Director's edit"
+  const sideLabel = (k: "mine" | "theirs") => (order ? order[k] : c[k].author.isYou && c[k].author.kind === "human" ? words.yourEdit : words.theirEdit(name(c[k])));
+  const see = (k: "mine" | "theirs") => (p.onPreview ? () => p.onPreview!(k, sideLabel(k)) : undefined);
   const pick = (choice: ConflictChoice) => (p.onPick ? p.onPick(choice) : void resolve(choice));
   const showing = p.picked ?? c.provisional ?? "mine";
   const btn = (choice: ConflictChoice, label: string) =>
@@ -80,13 +92,20 @@ export const ConflictCard = memo(function ConflictCard(p: ConflictCardProps) {
       "header",
       { className: "carton-card-head" },
       h(Icon, { name: "warning", className: "carton-conflict-icon" }),
-      h("div", null, h("h3", { className: "carton-card-title" }, c.title), h("p", { className: "carton-card-sub" }, c.reason ?? words.conflictLead)),
+      h(
+        "div",
+        null,
+        h("h3", { className: "carton-card-title" }, c.title),
+        h("p", { className: "carton-card-sub" }, c.reason ?? words.conflictLead),
+        p.onReveal && c.item ? h("button", { type: "button", className: "carton-see carton-see-reveal", onClick: () => p.onReveal!(c) }, h(Icon, { name: "target", size: 13 }), words.showOnTimeline) : null,
+      ),
+      p.onDismiss ? h(Button, { variant: "ghost", icon: "x", label: words.setAside, title: words.setAsideHint, onClick: p.onDismiss }) : null,
     ),
     h(
       "div",
       { className: "carton-conflict-sides" },
-      h(SideView, { side: c.mine, which: "mine", showing: showing === "mine", ...(order ? { order: { label: order.mine } } : {}) }),
-      h(SideView, { side: c.theirs, which: "theirs", showing: showing === "theirs", ...(order ? { order: { label: order.theirs } } : {}) }),
+      h(SideView, { side: c.mine, which: "mine", showing: showing === "mine", onPreview: see("mine"), ...(order ? { order: { label: order.mine } } : {}) }),
+      h(SideView, { side: c.theirs, which: "theirs", showing: showing === "theirs", onPreview: see("theirs"), ...(order ? { order: { label: order.theirs } } : {}) }),
     ),
     h(
       "div",

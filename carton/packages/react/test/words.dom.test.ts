@@ -81,3 +81,38 @@ test(name("History rows: no tooltip that repeats the author; a subagent's says i
   assert.equal($(start, ".carton-actor-name"), null);
   await m.unmount();
 });
+
+test(name("the floating stack: newest on top with the rest peeking, collapses to a pill, a card set aside stays open and listed"), async () => {
+  const { ConflictStack } = await import("../src/index.ts");
+  const ui = createMockUi({ versions: 5 });
+  const card = (id: string, title: string) => ({ id, title, mine: { author: people.alice, summary: "0.9" }, theirs: { author: people.director, summary: "0.5" }, canKeepBoth: false, provisional: "theirs" as const, item: "item-" + id });
+  ui.setConflicts([card("c3", "'Outro' opacity"), card("c2", "'Logo' timing"), card("c1", "'Intro' text")]);
+  const seen: string[] = [];
+  const m = await render(wrap(ui, h(ConflictStack, { onPreview: (c: { id: string }, side: string, label: string) => seen.push(`preview ${c.id} ${side} ${label}`), onReveal: (c: { id: string }) => seen.push(`reveal ${c.id}`) })));
+  await flush();
+  const top = () => $(m.container, ".carton-stack-cards .carton-conflict")!;
+  assert.match(top().textContent ?? "", /'Outro' opacity/, "the newest on top");
+  assert.equal($$(m.container, ".carton-stack-peek").length, 2, "the two behind peek out");
+  // See it: Preview the side not showing (yours), Show on timeline
+  (byText(top(), "button", "Preview") as HTMLElement).click();
+  (byText(top(), "button", "Show on timeline") as HTMLElement).click();
+  await flush();
+  assert.deepEqual(seen, ["preview c3 mine Your edit", "reveal c3"]);
+  // Not now: set aside, the next comes up; it is listed under "Set aside", never resolved
+  ($(top(), "[aria-label='Not now']") as HTMLElement).click();
+  await flush();
+  assert.match(top().textContent ?? "", /'Logo' timing/);
+  assert.equal(ui.conflicts().length, 3, "setting aside decides nothing");
+  (byText(m.container, "button", "Set aside (1)") as HTMLElement).click();
+  await flush();
+  assert.match($(m.container, ".carton-stack-aside")!.textContent ?? "", /'Outro' opacity/);
+  // collapse to the pill, and back
+  ($(m.container, "[aria-label='Hide conflicts']") as HTMLElement).click();
+  await flush();
+  assert.equal($(m.container, ".carton-stack-pill")!.textContent, "3 conflicts");
+  assert.equal($(m.container, ".carton-stack-cards"), null);
+  ($(m.container, ".carton-stack-pill") as HTMLElement).click();
+  await flush();
+  assert.ok($(m.container, ".carton-stack-cards .carton-conflict"));
+  await m.unmount();
+});

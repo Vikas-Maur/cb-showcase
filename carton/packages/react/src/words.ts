@@ -88,6 +88,19 @@ export const words = {
   keepEarlier: "Keep earlier",
   keepLater: "Keep later",
   showingNow: "Showing now",
+  // "See it" (a card's sides on the timeline): a read-only preview with that side kept, or the clip selected
+  seePreview: "Preview",
+  yourEdit: "Your edit",
+  theirEdit: (name: string) => `${name}'s edit`,
+  seePreviewOf: (side: string) => `Preview: ${side}`,
+  showOnTimeline: "Show on timeline",
+  // The floating stack of cards: collapsed to a pill; a card set aside stays reachable from it, never decided
+  conflictsPill: (n: number) => plural(n, "conflict", "conflicts"),
+  hideConflicts: "Hide conflicts",
+  setAside: "Not now",
+  setAsideHint: "Set aside for now. It stays open, under the conflicts pill.",
+  setAsideList: (n: number) => `Set aside (${n})`,
+  showAgain: "Show again",
   conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,
 
   // Compare card

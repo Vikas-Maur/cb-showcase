@@ -42,6 +42,7 @@ export { HistoryPanel, VERSION_ROW_HEIGHT, type HistoryPanelProps } from "./comp
 export { CutsMenu, type CutsMenuProps } from "./components/CutsMenu.ts";
 export { FoldInDialog, type FoldInDialogProps } from "./components/FoldInDialog.ts";
 export { ConflictCard, ConflictList, type ConflictCardProps } from "./components/ConflictCard.ts";
+export { ConflictStack, type ConflictStackProps } from "./components/ConflictStack.ts";
 export { CompareCard, type CompareCardProps } from "./components/CompareCard.ts";
 export { SyncStatusWords, PublishedStatus, UndoTurnButton, CreditsPopover, PreviewBanner } from "./components/status.ts";
 export { PresenceAvatars, GhostLayer, groupPeers, type PresenceProps, type GhostLayerProps } from "./components/Presence.ts";

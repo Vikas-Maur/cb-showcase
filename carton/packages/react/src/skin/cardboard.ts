@@ -247,6 +247,66 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-conflict-who .carton-badge){margin-left:auto}
 :where(${S}) :where(.carton-conflict-what){margin-top:4px;font-size:13px;line-height:18px;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-conflicts){display:flex;flex-direction:column;gap:8px}
+/* "See it": quiet text buttons on a card (Preview a side, Show on timeline) */
+:where(${S}) :where(.carton-see){display:inline-flex;align-items:center;gap:4px;height:22px;padding:0 6px;border:0;border-radius:5px;background:transparent;
+  color:var(--cb-fg-2);font:inherit;font-size:12px;line-height:16px;cursor:pointer;transition:background var(--cb-fast) var(--cb-ease),color var(--cb-fast) var(--cb-ease)}
+:where(${S}) :where(.carton-see:hover){background:#ffffff0f;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-see:focus-visible){outline:2px solid var(--cb-ring);outline-offset:1px}
+:where(${S}) :where(.carton-conflict-who .carton-see){margin:-3px -4px -3px auto}
+:where(${S}) :where(.carton-card-head .carton-see-reveal){margin:4px 0 0 -6px}
+/* ---------------------------------------------------------------- the floating stack of conflict cards */
+:where(${S}) :where(.carton-stack){display:flex;flex-direction:column;align-items:stretch;gap:8px;width:340px;max-width:100%}
+:where(${S}) :where(.carton-stack[data-collapsed]){align-items:flex-end;width:auto}
+:where(${S}) :where(.carton-stack-head){display:flex;align-items:center;gap:4px;align-self:flex-end;height:32px;padding:0 3px 0 10px;border:1px solid #ffffff14;
+  border-radius:9px;background:#1b1b1be6;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:var(--cb-shadow-near)}
+:where(${S}) :where(.carton-stack-count){display:inline-flex;align-items:center;gap:6px;margin-right:4px;font-size:12px;font-weight:500;color:var(--cb-warn)}
+:where(${S}) :where(.carton-stack-head .carton-btn[data-icon-only]){width:26px;height:26px}
+:where(${S}) :where(.carton-stack-cards){position:relative;display:grid}
+:where(${S}) :where(.carton-stack-cards[data-behind="1"]){padding-top:8px}
+:where(${S}) :where(.carton-stack-cards[data-behind="2"]){padding-top:16px}
+:where(${S}) :where(.carton-stack-peek){position:absolute;height:44px;border:1px solid #ffffff1f;border-radius:10px;background:#2a2a2a;box-shadow:var(--cb-shadow-near)}
+:where(${S}) :where(.carton-stack-cards > .carton-conflict){position:relative;box-shadow:var(--cb-shadow);animation:carton-pop var(--cb-base) var(--cb-decel)}
+:where(${S}) :where(.carton-stack-pill){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border-radius:999px;cursor:pointer;
+  border:1px solid color-mix(in srgb, var(--cb-warn) 35%, transparent);background:color-mix(in srgb, var(--cb-warn) 14%, #1c1c1c);color:var(--cb-warn);
+  font:inherit;font-size:12px;font-weight:500;box-shadow:var(--cb-shadow-near);transition:background var(--cb-fast) var(--cb-ease)}
+:where(${S}) :where(.carton-stack-pill:hover){background:color-mix(in srgb, var(--cb-warn) 22%, #1c1c1c)}
+:where(${S}) :where(.carton-stack-aside){width:300px;padding:8px;border:1px solid #ffffff12;border-radius:10px;background:var(--cb-popover);box-shadow:var(--cb-shadow);animation:carton-pop var(--cb-fast) var(--cb-decel)}
+:where(${S}) :where(.carton-stack-aside-head){padding:2px 4px 6px;font-size:11px;font-weight:500;color:var(--cb-fg-3);text-transform:uppercase;letter-spacing:.04em}
+:where(${S}) :where(.carton-stack-aside li){display:flex;align-items:center;gap:8px;padding:4px 4px 4px 6px;border-radius:6px}
+:where(${S}) :where(.carton-stack-aside li:hover){background:#ffffff08}
+:where(${S}) :where(.carton-stack-aside-title){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12.5px;color:var(--cb-fg-1)}
+/* ---------------------------------------------------------------- Carton's layer over Cardboard's stage (the preview's
+   column): History and Share at its top-right, their panel on its right side, the card stack in its bottom-right
+   corner. The layer passes clicks through; only its own controls take them. */
+:where(.carton-stage${S}){position:absolute;inset:0;z-index:30;pointer-events:none;background:none}
+:where(.carton-stage${S}) > *{pointer-events:auto}
+:where(${S}) :where(.carton-stage-tools){position:absolute;top:12px;right:12px;display:flex;gap:6px}
+:where(${S}) :where(.carton-stage-btn){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px 0 10px;border:1px solid #ffffff14;border-radius:8px;
+  background:#1b1b1be6;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--cb-fg-1);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;
+  box-shadow:var(--cb-shadow-near);transition:background var(--cb-fast) var(--cb-ease),border-color var(--cb-fast) var(--cb-ease)}
+:where(${S}) :where(.carton-stage-btn:hover){background:#262626f2;border-color:#ffffff24}
+:where(${S}) :where(.carton-stage-btn:focus-visible, .carton-side-tab:focus-visible){outline:2px solid var(--cb-ring);outline-offset:1px}
+:where(${S}) :where(.carton-stage-btn .carton-icon){color:var(--cb-fg-2)}
+:where(.carton-stage${S}) > :where(.carton-stage-banner){position:absolute;top:12px;left:12px;right:220px;display:flex;justify-content:center;pointer-events:none}
+:where(.carton-stage${S}[data-panel]) > :where(.carton-stage-banner){right:352px}
+:where(${S}) :where(.carton-stage-banner > *){pointer-events:auto;box-shadow:var(--cb-shadow)}
+:where(.carton-stage${S}) > :where(.carton-stage-stack){position:absolute;right:12px;bottom:12px;max-height:calc(100% - 60px);display:flex;flex-direction:column;justify-content:flex-end;pointer-events:none}
+:where(.carton-stage${S}[data-panel]) > :where(.carton-stage-stack){right:352px}
+:where(${S}) :where(.carton-stage-stack > *){pointer-events:auto}
+:where(${S}) :where(.carton-side){position:absolute;top:0;right:0;bottom:0;width:340px;display:flex;flex-direction:column;background:var(--cb-panel);
+  border-left:1px solid #ffffff0f;box-shadow:-16px 0 40px -20px #000000cc;outline:none;animation:carton-side-in var(--cb-base) var(--cb-decel)}
+@keyframes carton-side-in{from{transform:translateX(12px);opacity:0}to{transform:none;opacity:1}}
+:where(${S}) :where(.carton-side-head){display:flex;align-items:center;gap:8px;flex:none;height:48px;padding:0 8px 0 10px;border-bottom:1px solid #ffffff0f}
+:where(${S}) :where(.carton-side-tabs){display:flex;gap:2px;margin-right:auto;padding:2px;border-radius:8px;background:#ffffff08}
+:where(${S}) :where(.carton-side-tab){display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border:0;border-radius:6px;background:transparent;
+  color:var(--cb-fg-3);font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;transition:color var(--cb-fast) var(--cb-ease)}
+:where(${S}) :where(.carton-side-tab:hover){color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-side-tab[aria-selected=true]){background:var(--cb-raised);color:var(--cb-fg-1);box-shadow:0 0 0 1px #ffffff0d}
+:where(${S}) :where(.carton-side-body){flex:1;min-height:0;display:flex;flex-direction:column;overflow-x:hidden;overflow-y:auto}
+:where(${S}) :where(.carton-side .carton-panel-title){display:none}
+:where(${S}) :where(.carton-side .carton-panel-head){padding-top:10px}
+:where(${S}) :where(.carton-side-watch){display:flex;flex-direction:column;gap:10px;padding:8px 12px 12px}
+:where(${S}) :where(.carton-side-watch > .carton-btn){align-self:flex-start}
 :where(${S}) :where(.carton-conflicts-count){font-size:12px;font-weight:500;color:var(--cb-warn)}
 :where(${S}) :where(.carton-compare-sides){display:grid;grid-template-columns:1fr 1fr;gap:6px}
 :where(${S}) :where(.carton-compare-side){padding:10px;border-radius:8px;background:var(--cb-sunken)}
@@ -377,6 +437,8 @@ export const cardboardSkin = `
 @media (prefers-reduced-motion: reduce){
   :where(${S}) *, :where(${S}) *::before, :where(${S}) *::after{animation:none!important;transition:none!important}
 }
+/* the side panel is narrow: Compare's two sides one above the other (after the Compare rules above, so it wins) */
+:where(${S}) :where(.carton-side .carton-compare-sides){grid-template-columns:1fr}
 `;
 
 /** Add a stylesheet once per document (by id). Returns the <style> element. */
