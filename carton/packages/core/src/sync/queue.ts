@@ -89,6 +89,8 @@ export interface QueuedChange {
   held?: true;
   meta: Record<string, unknown>;
   history?: HistoryFields;
+  /** Restored after a rebase that changed its ops (its versions before the restored one are gone: `RestoreInput.edited`). */
+  edited?: boolean;
 }
 
 export interface QueueBranch {
@@ -140,6 +142,8 @@ export interface RestoreInput extends CommitInput {
   sentBases: readonly number[];
   /** Refused here after a copy was sent: it waits for its withdraw, then is reported rejected with this. */
   rejecting?: string;
+  /** A rebase changed its ops from those it was committed with (its stored ops are its latest version's). */
+  edited?: boolean;
   /** The confirmed seq its ops were made on; default: the queue's head. */
   head?: number;
   /**
@@ -482,6 +486,7 @@ export class ReplicaQueue {
         meta: ch.meta ?? {},
         ...(ch.history ? { history: pickHistory(ch.history) } : {}),
         ...(ch.rejecting !== undefined ? { rejecting: ch.rejecting } : {}),
+        ...(ch.edited ? { edited: true } : {}),
       };
       queue.push(p);
       this.invalidate(b);
