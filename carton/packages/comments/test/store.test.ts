@@ -76,6 +76,9 @@ for (const [kind, make] of kinds) {
       // rows of the generation before the reset are another stream's: refused, so their handle reloads
       await assert.rejects(store.write({ rows: [row("old", 7)], head: 7, epoch: "" }), CommentStreamChanged);
       assert.ok(await store.write({ rows: [row("m", 2)], head: 2, epoch: "e2" }));
+      // a pending drop that names the old generation (an answer from before the reset) is refused too: it stays
+      await assert.rejects(store.write({ drop: [pend("p", 1)], epoch: "" }), CommentStreamChanged);
+      assert.deepEqual((await store.pending()).map((q) => q.id), ["p"]);
       assert.deepEqual((await store.load()).comments.map((c) => c.id).sort(), ["m", "n"]);
     } finally {
       await close();
