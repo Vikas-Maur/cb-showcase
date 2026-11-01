@@ -400,7 +400,8 @@ test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the p
     assert.ok(!p.isError, p.text);
     assert.match(p.text, /fontSize=\{55\}/, "the pull caught up through a helper before the tool read");
     assert.equal(S.textOf(S.fileOf(alice)).fontSize, 55, "and head went into Alice's project.json");
-    const rev = Number(p.text.match(/cardboard:rev[^\d]*(\d+)/)?.[1]);
+    // (1.4.0's numeric rev, when the print has one: a Carton header is the print's own, and MCP's rev is a number)
+    const rev = Number(p.text.match(/cardboard:rev (\d+)\s*$/m)?.[1]);
     const a = await m.tool("apply_timeline", { project: "Demo", edits: [{ oldText: "fontSize={55}", newText: "fontSize={66}" }], ...(rev ? { rev } : {}) });
     assert.ok(!a.isError, a.text);
     assert.doesNotMatch(a.text, /Not saved to Cardboard storage/, "no whole-file PUT was tried");
@@ -428,7 +429,8 @@ test("app closed: another program's save, and the agent's edit on it, go through
     const p = await m.tool("print_timeline", { project: "Demo" });
     assert.ok(!p.isError, p.text);
     assert.match(p.text, /From an editor/);
-    const rev = Number(p.text.match(/cardboard:rev[^\d]*(\d+)/)?.[1]);
+    // (1.4.0's numeric rev, when the print has one: a Carton header is the print's own, and MCP's rev is a number)
+    const rev = Number(p.text.match(/cardboard:rev (\d+)\s*$/m)?.[1]);
     const a = await m.tool("apply_timeline", { project: "Demo", edits: [{ oldText: "fontSize={66}", newText: "fontSize={44}" }], ...(rev ? { rev } : {}) });
     assert.ok(!a.isError, a.text);
   } catch (e) {

@@ -276,7 +276,8 @@ test("Carton on, for real: history with authors, credits, cuts, fold, undo --tur
   const dir = path.join(b, ".carton", "displaced");
   for (const n of fs.existsSync(dir) ? fs.readdirSync(dir) : []) assert.ok(seen.has(require("crypto").createHash("sha256").update(fs.readFileSync(path.join(dir, n))).digest("hex")), "foreign file left: " + n);
   // cb undo <rev> with a 1.4.0 rev (as cb history printed before Carton, or a timeline header) reaches that version.
-  const header = Number(/cardboard:rev (\d+)/.exec(fs.readFileSync(path.join(b, "timeline.tsx"), "utf8"))[1]);
+  // (the project's rev: with Carton on the timeline's header is Carton's own, laptop #2)
+  const header = JSON.parse(fs.readFileSync(path.join(b, "project.json"), "utf8")).project.stateUpdatedAt;
   assert.ok(header > 1e12);
   const undoRev = cb(carton.cli, root, ["undo", "Demo cut", String(header)], real());
   assert.equal(undoRev.code, 0, undoRev.out);

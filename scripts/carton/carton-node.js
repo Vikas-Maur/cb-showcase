@@ -15,6 +15,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
 import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, branchToken } from "@carton/cardboard";
+import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
@@ -869,21 +870,22 @@ export const cardboard14 = {
     return [...revs, ...older.filter((r) => r < first)];
   },
   // Laptop #2: what a print of the project shows (cb source print, MCP's print_timeline, the mirror's timeline.tsx),
-  // under Carton's exact header: the version project.json's rev names, its records from Carton, or head when the rev
-  // names none Carton can rebuild. Header and records come from one version, so the apply merges against exactly what
-  // was printed. (A numeric header went through 1.4.0's revisionAtOrBefore, whose "first at or before" over several
-  // writers' revs could be a newer version: the print's older values then read as the agent's edits.) null: no history.
+  // under Carton's exact header: the version project.json's rev names, its records from Carton. Header and records
+  // come from one version, so the apply merges against exactly what was printed. (A numeric header went through 1.4.0's
+  // revisionAtOrBefore, whose "first at or before" over several writers' revs could be a newer version: the print's
+  // older values then read as the agent's edits.) null, and 1.4.0's print of project.json under its numeric rev (which
+  // revisionAtOrBefore now takes exactly): no history, or a version this process can't rebuild (on a shared cut, one
+  // still pending in the lease holder, which project.json shows: never this process's older confirmed head instead).
   async printed({ bundlePath, project }) {
     const lc = bundlePath && project ? await open(bundlePath, { projectId: project.id }) : null;
     if (!lc) return null;
-    const c = lc.carton;
-    let header = await headerOf(lc, await refOf(lc, project.stateUpdatedAt).catch(() => undefined));
-    let doc = header ? (await c.resolve(header).catch(() => null))?.doc : null;
-    if (!doc) {
-      const h = await c.head();
-      [header, doc] = [await headerOf(lc, h.ref), h.doc];
-    }
-    if (!header) return null;
+    const c = lc.carton, ref = await refOf(lc, project.stateUpdatedAt).catch(() => undefined);
+    // a confirmed version (a pending one is the holder's to rebuild), its state hash computed if the ref lacks it, and
+    // the header checked as the apply will resolve it
+    if (!ref || typeof ref !== "object" || ref.pending?.length) return null;
+    const doc = (await c.resolve({ branchId: ref.branchId, seq: ref.seq }).catch(() => null))?.doc;
+    const header = doc ? await headerOf(lc, { ...ref, hash: ref.hash ?? hashDoc(doc, c.schema) }) : null;
+    if (!header || !(await c.resolve(header).then(() => true, () => false))) return null;
     return { project: forCardboard({ ...materializeProject(doc, project), stateUpdatedAt: project.stateUpdatedAt }), rev: header };
   },
   // Laptop #2: 1.4.0's revisionAtOrBefore (a numeric header's base, MCP's edit at a rev) with history: the exact
@@ -899,8 +901,12 @@ export const cardboard14 = {
       return null;
     };
     if (!lc) return older();
-    const exact = await this.revision({ bundlePath, rev, slice, file: () => null });
+    const exact = await this.revision({ bundlePath, rev, slice, file: () => null }).catch(() => null);
     if (exact) return exact.doc;
+    // a version this process can't rebuild (pending in a shared cut's lease holder) that project.json shows: the file
+    // is that version, as printed
+    const onDisk = readProject(bundlePath);
+    if (onDisk && onDisk.stateUpdatedAt === rev) return slice ? slice(onDisk) : { tracks: onDisk.tracks ?? [], timelineItems: onDisk.timelineItems ?? [], aspectRatio: onDisk.aspectRatio };
     for (const v of await lc.carton.log({})) {
       const r = await revOf(lc, v.ref);
       if (typeof r === "number" && r <= rev) return null;

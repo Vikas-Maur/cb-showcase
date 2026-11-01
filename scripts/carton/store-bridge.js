@@ -282,7 +282,7 @@ module.exports = ({ dir, slice, who, codec }) => {
     listRevisions: (mirror, bundlePath) => (carton() ? carton().revisions({ bundlePath, files: () => mirror.__cartonListRevisions(bundlePath) }) : mirror.__cartonListRevisions(bundlePath)),
     readRevision: (mirror, bundlePath, rev) => (carton() ? carton().revision({ bundlePath, rev, file: () => mirror.__cartonReadRevision(bundlePath, rev) }) : mirror.__cartonReadRevision(bundlePath, rev)),
     // Laptop #2: a numeric rev's version exactly (the rev map), 1.4.0's .revs only for a rev older than Carton's history.
-    revisionAtOrBefore: (mirror, bundlePath, rev) => (carton() ? carton().revisionAtOrBefore({ bundlePath, rev, slice: (d) => ${slice}(d), files: () => mirror.__cartonListRevisions(bundlePath), readFile: (n) => mirror.__cartonReadRevision(bundlePath, n) }) : mirror.__cartonRevisionAtOrBefore(bundlePath, rev)),
+    revisionAtOrBefore: (mirror, bundlePath, rev) => (carton()?.revisionAtOrBefore ? carton().revisionAtOrBefore({ bundlePath, rev, slice: (d) => ${slice}(d), files: () => mirror.__cartonListRevisions(bundlePath), readFile: (n) => mirror.__cartonReadRevision(bundlePath, n) }) : mirror.__cartonRevisionAtOrBefore(bundlePath, rev)),
     // Laptop #2: a print under Carton's exact header, the version it names as Carton has it; null: 1.4.0's print.
     printed: async (mirror, project) => {
       const c = carton();
