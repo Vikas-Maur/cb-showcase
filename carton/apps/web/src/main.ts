@@ -107,7 +107,15 @@ async function route(): Promise<void> {
     if (!session) return message("Your session ended", "Open the invite link again to rejoin. Your edits waiting to sync are kept in this browser.");
     return boot(session, keys.get(`carton.name.${p}`) ?? session.account);
   }
-  message("Carton web demo", "Open an invite link to edit a project, or a share link to watch one.");
+  // the landing card links the changelog: a static page in public/changelog/, no part of this bundle
+  root.render(
+    h(
+      Card,
+      { title: "Carton web demo" },
+      h("p", { className: "cb-dim" }, "Open an invite link to edit a project, or a share link to watch one."),
+      h("p", { className: "cb-gate-more" }, h("a", { href: "/changelog/" }, "See what we’ve built →")),
+    ),
+  );
 }
 
 addEventListener("hashchange", () => location.reload());
