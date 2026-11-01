@@ -13,7 +13,7 @@ const fs = require("fs"), path = require("path");
 const S = require("./support.js");
 
 const t = { skip: S.noBuild };
-let b, host, alice, bob, id, link;
+let b, host, alice, bob, id, link, beforeShare;
 // An agent's own copy of the timeline at head (cb source print --view: the lease holder prints it).
 const printView = (pc, name) => {
   const r = pc.cb(["source", "print", "Demo", "--view", name], { CARDBOARD_ACTOR: "codex/" + name });
@@ -45,6 +45,10 @@ test.after(async () => {
 
 test("share with history: the cut goes to the host with its versions, and the project says it is shared", t, async () => {
   assert.deepEqual(await alice.call("carton.liveStatus", { projectId: id }), { shared: false });
+  // Alice edits in the app before she shares (R3: the people test below finds it credited to her at Bob's)
+  await S.guiSave(alice, id, (it) => (it.type === "text" ? { ...it, endTime: 2.4 } : null));
+  beforeShare = alice.cb(["history", "Demo"]).json().versions[0];
+  assert.equal(beforeShare.by?.id, "person", "before the share, a GUI save is the person's, with no account behind it");
   const r = await alice.call("carton.liveShare", { projectId: id, host: host.origin, adminToken: S.ADMIN, name: "Alice" });
   assert.equal(r.status, "shared", JSON.stringify(r));
   const st = await S.until(async () => { const s = await alice.call("carton.liveStatus", { projectId: id }); return s.status === "up-to-date" && s; }, 20_000, "alice up to date");
@@ -75,6 +79,33 @@ test("concurrent edits: both computers save the same clip's different fields at 
   ]);
   for (const pc of [alice, bob]) {
     await S.until(async () => { const x = S.textOf(await S.projectOf(pc, id)); return x.fontSize === 150 && x.textContent === "Hello from Bob"; }, 20_000, pc.name + " has both edits");
+  }
+});
+
+test("people: Alice's GUI edits read as Alice at Bob's and Bob's as Bob at Alice's, made before the share and after; each one's own are You", t, async () => {
+  // Every GUI save is recorded as the generic "person" (hashes and history untouched): each computer tells it as the
+  // person behind the replica that made it, its own at once (the identity set at share and join), a teammate's as the
+  // host says. Each computer's own GUI saves, by change id, as it tells them:
+  const told = (pc) => new Map(pc.cb(["history", "Demo"]).json().versions.filter((v) => v.by?.kind === "human" && v.change).map((v) => [v.change, v.by]));
+  const own = (pc, who) => [...told(pc)].filter(([, by]) => by.id === who).map(([c]) => c);
+  const mine = { Alice: own(alice, "Alice"), Bob: own(bob, "Bob") };
+  assert.ok(mine.Alice.includes(beforeShare.change), "Alice's edit from before the share is hers on her computer: " + JSON.stringify([...told(alice)]));
+  assert.ok(mine.Alice.length >= 2 && mine.Bob.length >= 1, "edits after the share too: " + JSON.stringify(mine));
+  for (const [pc, who, other] of [[bob, "Alice", alice], [alice, "Bob", bob]]) {
+    await S.until(() => { const t2 = told(pc); return mine[who].every((c) => t2.get(c)?.id === who && t2.get(c)?.name === who); }, 20_000, `${who}'s GUI edits as ${who} at ${pc.name}'s: ` + JSON.stringify([...told(pc)].filter(([c]) => mine[who].includes(c))));
+    assert.ok(![...told(pc)].some(([, by]) => by.id === "person"), `no GUI edit reads as the generic person at ${pc.name}'s (${other.name}'s view)`);
+  }
+  // The History panel: your own edits are You, the teammate's under their name.
+  for (const [pc, me, them] of [[alice, "Alice", "Bob"], [bob, "Bob", "Alice"]]) {
+    const client = "people-" + pc.name;
+    const msgs = () => pc.events().filter((e) => e.change?.kind === "carton" && e.change.client === client).map((e) => e.change.message);
+    assert.equal((await pc.call("carton.ui", { projectId: id, client, message: { t: "hello" } }))?.status, "ok");
+    const init = await S.until(() => msgs().find((x) => x.t === "init"), 20_000, pc.name + "'s panel");
+    assert.equal(init.me.key, "human/" + me, "You: " + JSON.stringify(init.me));
+    const actors = new Map([init.me, ...init.actors].map((a) => [a.key, a]));
+    const by = (change) => { const v = init.history.find((x) => x.id === change); const a = v && (typeof v.author === "string" ? actors.get(v.author) : v.author); return a && { key: a.key, name: a.name, isYou: !!a.isYou }; };
+    for (const c of mine[me]) assert.deepEqual(by(c), { key: "human/" + me, name: me, isYou: true }, `${pc.name}'s own edit ${c} is You`);
+    for (const c of mine[them]) assert.deepEqual(by(c), { key: "human/" + them, name: them, isYou: false }, `${them}'s edit ${c} at ${pc.name}'s`);
   }
 });
 

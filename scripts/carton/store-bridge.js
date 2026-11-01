@@ -25,7 +25,11 @@ module.exports = ({ dir, slice, who, codec }) => {
   // A file Carton wrote in .scratch/views/: a view, "<view>.tsx" whose first cardboard:rev line is Carton's
   // ("<cut>@<seq>~<hash8> b:<cut8>", as core's refString prints it; Cardboard 1.4.0's is a bare number), or its status
   // sidecar "<view>.status", Carton's JSON with exactly its fields (the materializer's StatusBody). A file that doesn't
-  // read as one of them, or can't be read, is not Carton's: it is kept.
+  // read as one of them, or can't be read, is not Carton's: it is kept. The rule is cardboard-adapter's cartonViewFile,
+  // which its .cbproj export and reader use: with Carton on, the facade's (viewRule, set below). With Carton off
+  // Carton's code isn't loaded, so this copy of it tells the files (views.test.js holds it to the adapter's, file for
+  // file); only the files are read here.
+  let viewRule = () => null;
   const VIEW_TSX = /^[a-z0-9._-]+\.tsx$/i, VIEW_STATUS = /^[a-z0-9._-]+\.status$/i;
   const REV_LINE = /^[ \t]*\/\/[ \t]*cardboard:rev[ \t]+([^\r\n]*?)[ \t]*\r?$/m;
   const CARTON_REV = /^.+@\d+~[0-9a-f]{8} b:[0-9A-Za-z_-]+(?: p:[0-9A-Za-z]+)?(?: by .*)?$/;
@@ -42,11 +46,18 @@ module.exports = ({ dir, slice, who, codec }) => {
     try {
       const st = fs.lstatSync(file);
       if (!st.isFile()) return false;
-      if (status) return st.size <= 16 * 1024 * 1024 && cartonStatus(JSON.parse(fs.readFileSync(file, "utf8")));
+      const rule = viewRule();
+      if (status) {
+        if (st.size > 16 * 1024 * 1024) return false;
+        const bytes = fs.readFileSync(file);
+        return rule ? !!rule(name, bytes) : cartonStatus(JSON.parse(bytes.toString("utf8")));
+      }
       // the header block is at the top of a print
       fd = fs.openSync(file, "r");
       const head = Buffer.alloc(Math.min(st.size, 64 * 1024));
-      const m = REV_LINE.exec(head.toString("utf8", 0, fs.readSync(fd, head, 0, head.length, 0)));
+      const read = fs.readSync(fd, head, 0, head.length, 0);
+      if (rule) return !!rule(name, head.subarray(0, read));
+      const m = REV_LINE.exec(head.toString("utf8", 0, read));
       return !!m && CARTON_REV.test(m[1]);
     } catch { return false; } finally { if (fd !== null) try { fs.closeSync(fd); } catch {} }
   };
@@ -89,6 +100,7 @@ module.exports = ({ dir, slice, who, codec }) => {
     }
     return api;
   };
+  viewRule = () => carton()?.cartonViewFile ?? null;
   // Who is acting: the caller that started this write (as(), below), else CARDBOARD_ACTOR, which main sets for the
   // agents it starts, else the default. The context follows the write through the store's own promise chain.
   const acting = new (require("node:async_hooks").AsyncLocalStorage)();

@@ -135,10 +135,9 @@ async function exportEntries(bundle, entries) {
       // Round 2 #4: a shared cut's head is its optimistic state (confirmed versions plus this computer's edits still
       // waiting for the server), but exportShallow exports confirmed versions only. Rather than a file whose history
       // lacks edits its project.json shows (a teammate's bring-in would miss them without a word), no history at all.
-      // Round 4 #2: cb's handle has no sync, so its head shows none of them: the edits the holder keeps waiting are
-      // counted from the store too (core keeps each as a row of table `pending`, key [cut, id]).
-      const stored = await lc.store.range("pending", { prefix: [c.cut] }).catch(() => []);
-      const waiting = Math.max((await c.head()).ref.pending?.length ?? 0, stored.length);
+      // Round 4 #2: cb's handle has no sync, so its head shows none of them: core's pendingCount reads the edits the
+      // holder keeps waiting from the store, for any handle.
+      const waiting = await c.pendingCount(c.cut);
       if (waiting) {
         console.warn(`[carton] the .cbproj of ${name} was saved without its history: ${waiting} edit${waiting === 1 ? " is" : "s are"} still waiting to sync, and a file's history can only hold synced versions. The file has everything you see; save it again once you are back online so a teammate can bring its changes in.`);
         return;

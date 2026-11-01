@@ -150,3 +150,25 @@ test("the store bridge's rule is cardboard-adapter's cartonViewFile, file for fi
     for (const on of [false, true]) assert.equal(bridge(on).cartonView(path.join(p.views, n)), want, `${n} (Carton ${on ? "on" : "off"})`);
   }
 });
+
+// With Carton on, the rule is the facade's (cardboard-adapter's cartonViewFile): the bridge only reads the file (a
+// view's first 64 KiB, a status sidecar whole) and hands it over. A stand-in facade records what it was asked.
+test("with Carton on, the store bridge asks the facade's cartonViewFile", { skip }, async () => {
+  const p = await printed();
+  const dir = fs.mkdtempSync(path.join(ROOT, "facade-"));
+  fs.writeFileSync(path.join(dir, "carton-node.cjs"), "globalThis.__asked = []; module.exports = { cardboard14: { cartonViewFile: (name, bytes) => (globalThis.__asked.push([name, bytes.length]), name.startsWith('yes')) } };");
+  fs.writeFileSync(path.join(p.views, "yes.tsx"), "x".repeat(70_000));
+  fs.writeFileSync(path.join(p.views, "no.status"), "{}");
+  const saved = process.env.CARTON_DIR;
+  process.env.CARTON_DIR = dir;
+  try {
+    const c = bridge(true);
+    assert.equal(c.cartonView(path.join(p.views, "yes.tsx")), true);
+    assert.equal(c.cartonView(path.join(p.views, "no.status")), false);
+    assert.equal(c.cartonView(path.join(p.views, "notes.md")), false, "a name that is never Carton's isn't read");
+    assert.equal(c.skipInArchive(".scratch/views", "yes.tsx", p.views), true);
+    assert.deepEqual(globalThis.__asked, [["yes.tsx", 64 * 1024], ["no.status", 2], ["yes.tsx", 64 * 1024]]);
+  } finally {
+    if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
+  }
+});

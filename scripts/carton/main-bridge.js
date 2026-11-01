@@ -141,9 +141,20 @@ module.exports = String.raw`var __cartonMain = (() => {
     hostSettings() {
       if (!on) return [];
       const hook = (event) => [{ type: "command", command: "cb carton-hook " + event }];
+      // H8: the file tools the holder's Materializer hears of (a Read, Write or Edit of timeline.tsx: freeze, credit)
+      // and the Write/Edit of project.json the hook refuses. Each behind Claude Code's "if" condition (permission-rule
+      // syntax, checked inside Claude Code): a call on any other file starts no process, where a bare matcher started
+      // cb for every Read and Edit an agent made. One entry per tool and file: a rule names one tool (Edit's covers
+      // neither Write nor MultiEdit) and one pattern. "**/" matches the file at any depth, and outside the project too
+      // (cb then answers nothing), in any case on Windows. A Claude Code without "if" runs them on every call: slower,
+      // same answers.
+      const files = (tool, names) => ({ matcher: tool, hooks: names.map((f) => ({ ...hook("pre-tool-use")[0], if: tool + "(**/" + f + ")" })) });
       return ["--settings", JSON.stringify({ hooks: {
-        // the Bash prefixer, and (H8) the file tools the holder's Materializer hears of (freeze, credit)
-        PreToolUse: [{ matcher: "Bash", hooks: hook("pre-tool-use") }, { matcher: "Read|Write|Edit|MultiEdit", hooks: hook("pre-tool-use") }],
+        PreToolUse: [
+          { matcher: "Bash", hooks: hook("pre-tool-use") },
+          files("Read", ["timeline.tsx"]),
+          ...["Write", "Edit", "MultiEdit"].map((tool) => files(tool, ["timeline.tsx", "project.json"])),
+        ],
         Stop: [{ hooks: hook("stop") }],
         SubagentStop: [{ hooks: hook("subagent-stop") }],
       } })];

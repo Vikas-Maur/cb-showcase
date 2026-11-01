@@ -122,8 +122,14 @@ test("host Claude Code gets the hooks through --settings; carton:call forwards t
   assert.equal(flag, "--settings");
   const h = JSON.parse(json).hooks;
   assert.deepEqual([h.PreToolUse[0].matcher, h.PreToolUse[0].hooks[0].command, h.Stop[0].hooks[0].command, h.SubagentStop[0].hooks[0].command], ["Bash", "cb carton-hook pre-tool-use", "cb carton-hook stop", "cb carton-hook subagent-stop"]);
-  // H8: the file tools the holder's Materializer hears of
-  assert.deepEqual([h.PreToolUse[1].matcher, h.PreToolUse[1].hooks[0].command], ["Read|Write|Edit|MultiEdit", "cb carton-hook pre-tool-use"]);
+  // H8: the file tools the holder's Materializer hears of, each only for its files (Claude Code's `if`: any other
+  // file starts no process)
+  const files = h.PreToolUse.slice(1).flatMap((e) => e.hooks.map((x) => [e.matcher, x.command, x.if]));
+  const cmd = "cb carton-hook pre-tool-use";
+  assert.deepEqual(files, [
+    ["Read", cmd, "Read(**/timeline.tsx)"],
+    ...["Write", "Edit", "MultiEdit"].flatMap((t) => [[t, cmd, `${t}(**/timeline.tsx)`], [t, cmd, `${t}(**/project.json)`]]),
+  ]);
   m.library({ call: async (method, ...args) => [method, ...args] });
   assert.deepEqual(await m.call("undo", [{ projectId: "p1" }]), ["carton.undo", { projectId: "p1" }]);
   assert.throws(() => m.call("../x", []), /Unknown Carton method/);

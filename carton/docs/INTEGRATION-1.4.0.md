@@ -400,7 +400,11 @@ onto the packages' APIs, so a package API change touches only the facade.
   save projection, cut out at build time) and `carton-ui.js`.
 - **Wired, tested on stand-ins only:** the editor's pages (H4–H7, the History tab, the Share panel) and main (H9: the
   actor environment, the Director's hooks, Stop and SubagentStop, host Claude Code's `--settings`, `carton:call`).
-  They need the Windows run.
+  They need the Windows run. Host Claude Code's file-tool hooks carry `if` conditions (`Read(**/timeline.tsx)`,
+  `Write|Edit|MultiEdit(**/timeline.tsx)` and `(**/project.json)`, one entry per tool and file): checked against real
+  Claude Code 2.1.309 (the bundled version) and 2.1.316 on Linux, driven by a stand-in Messages API
+  (`sync/hook-bench.js`, `sync/mock-claude.js`): the file at any depth, outside the project, and in another case
+  matches; any other file starts no process; `Edit(…)` covers Edit only. Windows paths are for the laptop run.
 - **Not wired yet:**
   - H3: Carton's merge3 in the apply's preview. `rn` still makes the preview; the commit that follows merges with
     Carton.

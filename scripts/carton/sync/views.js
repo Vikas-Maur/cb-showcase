@@ -35,8 +35,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
-import { Materializer, cartonMaterializerEngine, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
-import { keepLease, holderSocketPath, CartonHolderEngine, preToolUse, parseActorId } from "@carton/local";
+import { Materializer, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
+import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId } from "@carton/local";
 import { caughtUp } from "./live.js";
 
 const MATERIALIZE_MS = 40;
