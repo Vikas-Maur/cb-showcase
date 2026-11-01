@@ -632,6 +632,16 @@ export class ZipReader {
   }
 
   /**
+   * The first `n` bytes of a stored member, to tell what it is by its head (a view's `// cardboard:rev` line), whatever
+   * its size. Not CRC-checked: the rest isn't read (a member kept is checked whole when it is extracted).
+   */
+  async readMemberHead(entry: ZipEntry, n: number): Promise<Buffer> {
+    if (entry.method !== STORED) throw new Error(`Project file has a compressed member: ${entry.name}`);
+    if (entry.flags & FLAG_ENCRYPTED) throw new Error(`Project file has an encrypted member: ${entry.name}`);
+    return readExact(this.fh, Math.min(entry.size, n), await this.dataStart(entry));
+  }
+
+  /**
    * Streams a member to `destPath` (replacing it), through `<destPath>.part` so the file appears only whole and
    * CRC-checked.
    */
