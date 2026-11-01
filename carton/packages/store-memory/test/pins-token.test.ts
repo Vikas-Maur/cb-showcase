@@ -111,3 +111,33 @@ test("a release right after this handle's own pin needs no read of the pins: the
   assert.equal((await k.store.range("pins")).length, 0, "the row is gone from the store");
   await c.close();
 });
+
+test("a pin another process writes while a compaction is under way (after it read the pins, before its write lands): the write fails on the token, the retry reads the pins again, and the pinned version is kept", async () => {
+  const data = createMemoryData();
+  const inner = createMemoryStore({ shared: data });
+  let pinning: (() => Promise<unknown>) | null = null,
+    compactionWrites = 0;
+  // A's store: the moment the compaction's write (rows given `squashedInto`) is about to land, B pins version 5
+  const store: Store = { ...inner, info: inner.info, get: inner.get, range: inner.range, close: inner.close, write: async (w, c) => {
+    if (w.some((x) => x.table === "changes" && (x.value as { squashedInto?: number } | undefined)?.squashedInto)) {
+      compactionWrites++;
+      const p = pinning;
+      pinning = null;
+      if (p) await p();
+    }
+    return inner.write(w, c);
+  } };
+  const a = await Carton.open({ adapter, store, init: { doc: doc0() }, actor: alice });
+  for (let i = 1; i <= 120; i++) await a.commit({ ops: [set("b", "name", `b ${i}`)] }); // the newest 64 are never squashed
+  const b = await Carton.open({ adapter, store: createMemoryStore({ shared: data }), actor: bob });
+  let pb: { header: string } | undefined;
+  pinning = async () => (pb = await b.pin({ owner: "view-b", seq: 5 }));
+  const { squashed } = await a.compact({ olderThanDays: 0 });
+  assert.ok(pb, "B pinned during the compaction");
+  assert.equal(compactionWrites, 2, "the first write failed on the token; the retry landed");
+  assert.ok(squashed > 0, "the compaction squashed versions");
+  const row = await inner.get<{ squashedInto?: number }>("changes", [a.cut, 5]);
+  assert.equal(row?.squashedInto, undefined, "the version pinned meanwhile is not squashed");
+  assert.equal(item(await b.checkout(pb!.header), "b")!.name, "b 5");
+  for (const x of [a, b]) await x.close();
+});

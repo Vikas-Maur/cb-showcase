@@ -186,8 +186,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   retry reads the pins again. The calls that refresh (`head()`, reads, every write) read that one key, and the whole
   pins table only when it moved: their cost no longer grows with the pins (a GUI save prints the shared file and pins
   it). A handle's own pin write leaves its snapshot and token current. A compaction reads the pins table always, as it
-  keeps every pinned version. A core from before the token writes pin rows alone: a handle of this core sees such a pin
-  at its next open or rebuild, or after another process's pin moves the token, and its compaction keeps it.
+  keeps every pinned version, and its write is conditioned on the token it read: a pin another process writes while it
+  plans fails that write, and the retry keeps the new pin too. A core from before the token writes pin rows alone: a
+  handle of this core sees such a pin at its next open or rebuild, or after another process's pin moves the token; its
+  compaction keeps one written before it read the pins, not one landing in between.
 - **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
   whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
   pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.

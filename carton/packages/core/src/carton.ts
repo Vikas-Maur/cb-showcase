@@ -1062,16 +1062,19 @@ class CartonImpl implements Carton {
    * retry reads the pins again, and no pin is ever missed by a handle that skips the read. `done`, once it landed: this
    * handle's snapshot and token are the store's.
    */
+  /** The pins token is still the one this handle holds (read with its pins, or written by its own last pin write). */
+  #pinsGenCond(): StoreCondition {
+    return { table: T.meta, key: [...PINS_GEN], expect: this.#pinsGen === undefined ? "absent" : { equals: this.#pinsGen } };
+  }
   #pinWrite(ref: StateRef): { writes: StoreWrite[]; conds: StoreCondition[]; done: () => void } {
     const key = [ref.branchId, ref.seq, ref.hash8 ?? ref.hash?.slice(0, 8) ?? ""];
     const k = key.join("|"),
       was = this.#pinSnap.get(k),
       value = this.#h.pinRow(key[0] as string, key[1] as number, key[2] as string);
-    const gen = randomHex(8),
-      prev = this.#pinsGen;
+    const gen = randomHex(8);
     return {
       writes: [{ table: T.pins, key, value }, { table: T.meta, key: [...PINS_GEN], value: gen }],
-      conds: [{ table: T.pins, key, expect: was === undefined ? "absent" : { equals: was } }, { table: T.meta, key: [...PINS_GEN], expect: prev === undefined ? "absent" : { equals: prev } }],
+      conds: [{ table: T.pins, key, expect: was === undefined ? "absent" : { equals: was } }, this.#pinsGenCond()],
       done: () => {
         if (value === undefined) this.#pinSnap.delete(k);
         else this.#pinSnap.set(k, value);
@@ -1756,7 +1759,10 @@ class CartonImpl implements Carton {
           squashed += this.#compactCut(rec.id, cutoff, plan);
         }
       },
-      { extra: () => ({ writes: plan }), idempotent: true, pins: true },
+      // the pins as read for this plan: a pin another process writes before the plan lands moves the token, the write
+      // fails, and the retry reads the pins again (no pinned version is squashed). A pin row written without the token (a
+      // core from before it) is read here too, but a compaction can't see one that lands after that read
+      { extra: () => ({ writes: plan, conds: [this.#pinsGenCond()] }), idempotent: true, pins: true },
     );
     if (squashed) {
       // rows were rewritten, not appended: History is rebuilt from the store, behind every other write
