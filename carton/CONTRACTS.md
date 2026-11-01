@@ -207,7 +207,7 @@ that works on docs directly.
 
 `node scripts/size.mjs` checks the **history bundle** (esbuild minify, ESM, platform-neutral, gzip 9, bundling
 `core/src/history/index.ts` so engine parts History doesn't use are tree-shaken, exactly as P4 measured the
-prototype's 19.3 KB) against a **30 KB min+gz budget**. `node scripts/size-attr.mjs packages/core/src <scratch>`
+prototype's 19.3 KB) against a **32 KB min+gz budget** (raised from 30 KB on 2026-11-01, below). `node scripts/size-attr.mjs packages/core/src <scratch>`
 prints what each feature costs by stubbing it out (marginal bytes: a helper shared by two features counts only when both
 are stubbed). At `46f4b34` (UNVERIFIED, bytes; deterministic, not load-dependent; each stubbed copy keeps the package's
 `package.json`, so `sideEffects: false` applies as in the real package): the bundle is 82,084 min, 29,963 min+gz.
@@ -232,6 +232,16 @@ are stubbed). At `46f4b34` (UNVERIFIED, bytes; deterministic, not load-dependent
 | Keyframe milestones | 120 | 29 | no |
 
 The rest, about 20.7 KB (the bundle less these rows; gzip savings don't add exactly), is cuts, commit and rebase,
-fold and the merge DAG, states, and the merge engine (merge3, remaps, diff, apply, hashing). Since the budget was set
-(`c1d5488`, 28,571) the bundle grew by the shared-cut stages (F1–F4), the review rounds and the e2e-qa and kit-docs
-fixes; one path-escaping helper replaces three copies (−58).
+fold and the merge DAG, states, and the merge engine (merge3, remaps, diff, apply, hashing).
+
+**Why 32 KB (orchestrator, 2026-11-01).** The 30 KB budget was set at `c1d5488` (the bundle then 28,571). By `46f4b34`
+it was 29,963: the shared-cut stages F1–F4 (+820), the review rounds and the e2e-qa, kit-docs, local-cli and
+cardboard-adapter fixes, less 121 for the slimmed sequencer rule and 58 for one path-escaping helper in place of three.
+Looked for and not found: dead code (every History method has a caller). Declined: error messages as codes (about 450
+bytes measured for one code assignment; they are what an app developer gets from public calls, and tests and other
+packages match them) and dropping the portable SHA-256 (468; every browser and Worker host would need `setSyncHash`
+first). PLAN §7's split lineage (a fold and a `.cbproj` edge carry it; a retime of a split clip is a card) takes the
+bundle past 30 KB, so the budget is 32 KB: about 1.9 KB for the work still to come, and each raise is written up like
+this one. The budget is about 35 times smaller than Automerge's 1.14 MB gz of WASM (verified arithmetic: PLAN §19's
+figure ÷ 32,000; the WASM size is PLAN's, not re-measured). Verified: a separate agent re-measured these numbers and the
+table (`gfv-scratch/carton/verify-size/check.CWyU1Xcy/`, `recheck.Gz7NpS1a/`: all match).
