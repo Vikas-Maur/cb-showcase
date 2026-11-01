@@ -128,6 +128,10 @@ export class History {
   readonly #pins = new Map<string, Pin>(); // `${cut}|${seq}|${hash8}`
   readonly #views = new Map<string, View>();
   readonly #creators = new Map<PathKey, string>(); // sequence element path -> author key (M4 nesting)
+  // change id -> its row, the first cut that holds it (a write retried with its id is found without a scan of every log)
+  readonly #byId = new Map<ChangeId, ConfirmedChange>();
+  readonly #holes = new Set<string>(); // cuts loadFrom left rows out of, until fill brings them
+  #late: [PathKey, string][] | null = null; // creators set live while #holes (loaded() .. the last fill)
   readonly #names = new Map<NodeId, { name: string; at: number; by?: Actor }>();
   readonly #local = { pathMap: {} as Record<string, string>, notices: [] as Notice[], ephemeral: {} as Record<string, unknown>, lease: null as unknown };
   readonly #anc = new Map<NodeId, Map<string, number>>();
@@ -289,7 +293,8 @@ export class History {
       return ln ? this.#states.get(ln.hash) ?? null : null;
     }
     if (s > br.log.length || s < 0) return null;
-    if (s > 0 && br.log[s - 1]!.squashedInto) return null; // compacted away (§5.4)
+    const row = br.log[s - 1];
+    if (s > 0 && (!row || row.squashedInto)) return null; // compacted away (§5.4), or not loaded yet (loadFrom)
     if (br.sq && s === br.log.length) return live ? br.sq.head : E.fork(br.sq.head, this.schema); // stateOf never hands out the live head
     let k = s;
     while (!br.kf.has(k)) k--;
@@ -321,8 +326,7 @@ export class History {
   }
   /** Where a change id was confirmed, on any cut this replica holds. */
   findChange(id: ChangeId): ConfirmedChange | null {
-    for (const c of this.#cuts.values()) for (let i = c.log.length - 1; i >= 0; i--) if (c.log[i]!.id === id) return c.log[i]!;
-    return null;
+    return this.#byId.get(id) ?? null;
   }
   #mustCut(cutId: string): Cut {
     const c = this.#cuts.get(cutId);
@@ -346,6 +350,68 @@ export class History {
     else (c.log as ConfirmedChange[]).push(...fresh);
     // keyframes of a batch are rebuilt lazily by stateOf: the sequencer's head is already past them
     for (const r of fresh) this.#confirmed(c, r, false);
+  }
+
+  /**
+   * Open from a keyframe (§5.4, F1): a local cut's rows from the keyframe's own row on, the rows before it held back
+   * for `fill`. Its head and seq are whole at once; an older version is readable only after `fill`.
+   */
+  loadFrom(cutId: string, rows: readonly ConfirmedChange[], kf: readonly [number, Doc]): void {
+    const c = this.#mustCut(cutId);
+    c.sq!.skipTo(kf[0] - 1);
+    c.kf.set(kf[0], kf[1]);
+    c.sq!.load(rows, { seq: kf[0], doc: kf[1] });
+    for (const r of rows) this.#confirmed(c, r, false);
+    this.#holes.add(cutId);
+  }
+  /** The rows read at open are in (but for loadFrom's): a creator set from now on, until fill ends, arrived live. */
+  loaded(): void {
+    if (this.#holes.size) this.#late = [];
+  }
+  /** Creators set live while rows were still loading, in their order (null once none are loading). */
+  get late(): readonly [PathKey, string][] | null {
+    return this.#late;
+  }
+  /** Creators another History took in live while it loaded, set again here: this one replaces it. */
+  relive(late: readonly [PathKey, string][]): void {
+    for (const [k, a] of late) this.#creators.set(k, a);
+  }
+  /**
+   * Rows `loadFrom` held back, newest first: each batch the consecutive rows just below the oldest it holds, down to
+   * seq 1. false, taking nothing, if a compaction squashed some of them into a row read before it (the batches came
+   * from both sides of it): read the history again. A name the names table gave a version stays (renamed since). Once
+   * every cut is whole, creators are worked out again in load order, as a whole load at open gives them, and what
+   * arrived live since is applied again in its order.
+   */
+  fill(cutId: string, rows: readonly ConfirmedChange[]): boolean {
+    const c = this.#mustCut(cutId);
+    const lo = rows[0]?.seq ?? 0,
+      hi = lo + rows.length - 1;
+    if (!lo || rows.some((r, i) => r.seq !== lo + i) || c.log[lo - 1] || !c.log[hi]) throw new Error(`history load: ${cutId}'s rows changed`);
+    for (const r of rows) {
+      if (!(r.squashedInto! > hi)) continue;
+      // squashed into a row above this page: that row must be held as the squash that covers it (not missing, not as it
+      // was before the compaction)
+      const t = c.log[r.squashedInto! - 1];
+      if (!t || t.squashedInto || !(t.squashedFrom! <= r.seq)) return false;
+    }
+    c.sq!.fill(rows);
+    const late = this.#late;
+    this.#late = null;
+    for (const r of rows) {
+      const n = r.name ? nodeId(c.rec.id, r.seq) : "",
+        named = n && this.#names.get(n);
+      this.#confirmed(c, r, false, false); // creators: worked out once every cut is whole
+      if (named) this.#names.set(n, named);
+    }
+    this.#late = late;
+    this.#anc.clear();
+    if (lo > 1 || !this.#holes.delete(cutId) || this.#holes.size) return true;
+    this.#creators.clear();
+    for (const b of this.#cuts.values()) for (const r of b.log) for (const op of r?.ops ?? []) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), actorKey(r!.author));
+    for (const [k, a] of late ?? []) this.#creators.set(k, a);
+    this.#late = null;
+    return true;
   }
 
   /** What an import taught this replica (lineage nodes, carried states, last authors, exports made), to persist. */
@@ -612,9 +678,16 @@ export class History {
     if (h) (ref.hash = h), (ref.hash8 = h.slice(0, 8));
     return ref;
   }
-  #confirmed(br: Cut, c: ConfirmedChange, keyframe = true): void {
+  #confirmed(br: Cut, c: ConfirmedChange, keyframe = true, creators = true): void {
+    if (!this.#byId.has(c.id)) this.#byId.set(c.id, c);
     const a = actorKey(c.author);
-    for (const op of c.ops) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), a);
+    if (creators)
+      for (const op of c.ops)
+        if (op.op === "insert" && op.nb) {
+          const k = E.pathKey(op.path);
+          this.#creators.set(k, a);
+          this.#late?.push([k, a]);
+        }
     if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? forkSealed(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
     if (c.name) this.#names.set(nodeId(br.rec.id, c.seq), { name: c.name, at: c.at, by: c.author });
     if (c.mergeOf) this.#anc.clear();
@@ -1379,7 +1452,10 @@ export class History {
       const b = pending.splice(i, 1)[0]!;
       this.#cuts.delete(b.id);
       const br = this.#mustCut(this.addCut({ id: b.id, name: b.name, forkOf: b.forkOf, owner: b.owner, root: b.root, tracking: true }).id);
-      (br.log as ConfirmedChange[]).push(...b.log.map((c) => ({ ...c })));
+      for (const c of b.log) {
+        (br.log as ConfirmedChange[]).push({ ...c });
+        if (!this.#byId.has(c.id)) this.#byId.set(c.id, br.log.at(-1)!);
+      }
     }
     this.#anc.clear();
   }
