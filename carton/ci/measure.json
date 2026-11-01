@@ -1529,6 +1529,60 @@
           ]
         }
       ]
+    },
+    {
+      "id": "comments-reanchor",
+      "agent": "comments",
+      "claim": "re-anchoring 1,000 comments on a 10,000-item timeline: one edit re-places them in ~14 ms median (incremental), the longest synchronous step ~8 ms (max-slice) (packages/comments/bench/reanchor.ts 9; raw: gfv-scratch/carton/comments/bench/reanchor-3.txt)",
+      "timeout": 15,
+      "steps": [
+        {
+          "label": "reanchor.ts 9 runs, process 1 of 3 (no CPU lock on a runner)",
+          "cwd": "packages/comments",
+          "run": [
+            "bash",
+            "-c",
+            "\"$1\" bench/reanchor.ts 9 >> \"$2\"",
+            "_",
+            "{node}",
+            "{results}/reanchor.txt"
+          ]
+        },
+        {
+          "label": "reanchor.ts 9 runs, process 2 of 3 (no CPU lock on a runner)",
+          "cwd": "packages/comments",
+          "run": [
+            "bash",
+            "-c",
+            "\"$1\" bench/reanchor.ts 9 >> \"$2\"",
+            "_",
+            "{node}",
+            "{results}/reanchor.txt"
+          ]
+        },
+        {
+          "label": "reanchor.ts 9 runs, process 3 of 3 (no CPU lock on a runner)",
+          "cwd": "packages/comments",
+          "run": [
+            "bash",
+            "-c",
+            "\"$1\" bench/reanchor.ts 9 >> \"$2\"",
+            "_",
+            "{node}",
+            "{results}/reanchor.txt"
+          ]
+        }
+      ],
+      "reports": [
+        {
+          "file": "reanchor.txt",
+          "kind": "text",
+          "mustMatch": [
+            "^incremental\\s+median",
+            "^max-slice\\s+median"
+          ]
+        }
+      ]
     }
   ]
 }
