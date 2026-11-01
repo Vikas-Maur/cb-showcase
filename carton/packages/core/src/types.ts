@@ -537,7 +537,15 @@ export type CartonEvent =
   | { type: "pending"; branchId: string; id: ChangeId }
   | { type: "notice"; notice: Notice }
   | { type: "sync"; status: "offline" | "syncing" | "up-to-date" | "stopped"; waiting: number }
-  /** A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1). */
+  /**
+   * A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1).
+   * Emitted once the rows that came with it are settled into History (after their `change` events), so state read in
+   * the handler (credits for a card's other side, head, log) is current (web-demo REQ-U1). A settle that couldn't store
+   * it tells it with the one that does; after a keyframe catch-up, once the skipped rows are in History (fetched, or
+   * loaded from the store another handle saved them to). If they can't be fetched (offline, a server that can't serve
+   * history), or the handle stops or closes first, it is told on what History holds: credits for those rows are then
+   * unknown. A settle's `notice` events (a late conflict's cards) come the same way (review R6-8, R6-10, R6-11).
+   */
   | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
   | { type: "presence"; branchId: string; actor: Actor; state: unknown }
   | { type: "warning"; branchId: string; warnings: SoftWarning[] }

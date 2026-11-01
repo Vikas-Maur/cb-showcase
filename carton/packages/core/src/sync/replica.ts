@@ -157,11 +157,15 @@ export class SharedCut {
   }
 
   // ---------------------------------------------------------------- writing
-  /** Queue a change on this cut. Returns at once: `pending` (or `confirmed` when the cut is still local). */
-  commit(input: CommitInput): ReturnType<ReplicaQueue["commit"]> {
+  /**
+   * Queue a change on this cut. Returns at once: `pending` (or `confirmed` when the cut is still local). `deferEmpty`:
+   * an empty change's confirmation isn't recorded here; its owner records it with `settleEmpty` once its store kept the
+   * spent id, so no wait is told before then (Carton: review R6-9).
+   */
+  commit(input: CommitInput, o: { deferEmpty?: boolean } = {}): ReturnType<ReplicaQueue["commit"]> {
     const r = this.queue.commit(this.branchId, input);
     // an empty change is confirmed at once with no event: its wait must say so too (round 2 finding 11)
-    if (r.empty) this.log.record(this.branchId, r.id, { status: "confirmed", id: r.id, seq: this.queue.headSeq(this.branchId) });
+    if (r.empty && !o.deferEmpty) this.log.record(this.branchId, r.id, { status: "confirmed", id: r.id, seq: this.queue.headSeq(this.branchId) });
     this.refreshState();
     return r;
   }
@@ -173,6 +177,29 @@ export class SharedCut {
     const r = this.queue.restoreAll(this.branchId, inputs, stateAt);
     this.refreshState();
     return r;
+  }
+  /**
+   * Take back a change the store never kept (`ReplicaQueue.unqueue`); one that may have been sent is refused here and
+   * withdrawn (`rejectLocally`), with `reason`.
+   */
+  unqueue(id: string, reason: string): void {
+    if (!this.queue.unqueue(this.branchId, id)) this.queue.rejectLocally(this.branchId, id, reason);
+    this.refreshState();
+  }
+  /** Run the pusher now (changes queued behind one taken back waited at it). */
+  wake(): void {
+    this.client?.pump();
+  }
+  /** A change committed `held` was kept by the store: it may be sent now, and what was queued after it. */
+  kept(id: string): void {
+    if (this.queue.unhold(this.branchId, id)) this.client?.pump();
+  }
+  /**
+   * The outcome of an empty change committed with `deferEmpty`, once its owner's store kept it: its spent id, or what
+   * won that id there (another process's change). Its waits answer from then on (R6-9).
+   */
+  settleEmpty(id: string, o: WriteOutcome): void {
+    this.log.record(this.branchId, id, o);
   }
   /**
    * The outcome of change `id` within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed@seq, conflicts (late cards,
