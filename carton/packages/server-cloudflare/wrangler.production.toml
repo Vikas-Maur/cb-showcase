@@ -1,6 +1,6 @@
 # Carton on Cloudflare: the PRODUCTION Worker, deployed by Cloudflare's GitHub integration (Workers Builds) from the
-# `deploy/carton` branch with `npm run deploy:cloudflare` (root directory `carton`). That script builds the web client
-# into ./dist/site first, so the page and the API always ship together. Local development stays on wrangler.toml.
+# `deploy/carton` branch with `npm run deploy:cloudflare` (root directory `carton`). That script builds the static files
+# into ./dist/site first (build-site.mjs), so they and the API always ship together. Local development stays on wrangler.toml.
 # Secrets are set in the dashboard (Worker → Settings → Variables and Secrets), never here: AUTH_SECRET (required; signs
 # invites and sessions) and, optionally, ADMIN_TOKEN (makes a first owner invite; open creation below needs none).
 # The name must match the Worker's name in the Cloudflare dashboard.
@@ -8,7 +8,8 @@ name = "carton"
 main = "src/worker.ts"
 compatibility_date = "2026-10-23"
 
-# The static web client. The Worker answers /api/* and /blob/* first; everything else is a file from here.
+# The static files (build-site.mjs: a plain landing page and the changelog; the web demo isn't served for now). The
+# Worker answers /api/* and /blob/* first; everything else is a file from here.
 [assets]
 directory = "./dist/site"
 binding = "ASSETS"
