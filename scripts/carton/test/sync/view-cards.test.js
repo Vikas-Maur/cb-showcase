@@ -233,7 +233,8 @@ test("taking the agent's value commits it as the person's choice; the card close
 });
 
 test("keeping yours commits nothing; the agent's card closes too", opt, () => {
-  assert.deepEqual(out.two.shown, { mine: "0.50", theirs: "0.70", mineYou: true, mineKind: "human", theirsName: "Director", theirsKind: "agent", provisional: "mine" });
+  // the panel words cards in Cardboard's units (ui-words: describeCardboardCard): opacity in percent
+  assert.deepEqual(out.two.shown, { mine: "50%", theirs: "70%", mineYou: true, mineKind: "human", theirsName: "Director", theirsKind: "agent", provisional: "mine" });
   assert.deepEqual([out.two.opacity, out.two.newVersions, out.two.agentAfter, out.two.humanAfter], [0.5, 0, 0, 0]);
 });
 
@@ -252,7 +253,7 @@ test("the agent decides first: a pick made on the card still holds, an open pane
 test("the Director's Stop hook takes its notices: what it left stays the person's", opt, () => {
   assert.ok(out.four.taken.includes(out.four.path), "the hook got the card: " + JSON.stringify(out.four));
   assert.equal(out.four.agentAfterTake, 0, "taken: the agent's rows are gone");
-  assert.deepEqual(out.four.shown, { mine: "0.30", theirs: "0.40", mineYou: true, mineKind: "human", theirsName: "Director", theirsKind: "agent", provisional: "mine" });
+  assert.deepEqual(out.four.shown, { mine: "30%", theirs: "40%", mineYou: true, mineKind: "human", theirsName: "Director", theirsKind: "agent", provisional: "mine" });
   assert.deepEqual([out.four.opacity, out.four.humanAfter], [0.4, 0]);
 });
 

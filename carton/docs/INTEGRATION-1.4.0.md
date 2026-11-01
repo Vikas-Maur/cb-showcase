@@ -266,6 +266,16 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   the group is the undo group (H6). Main forwards the payload into the scope (H1).
 - The save is built synchronously, in the same tick that reads `cartonBase`, so no adopt can slip in between.
 - On the save's ack, `cartonBase` advances to the saved `rev`, but only if it still equals the base that was sent.
+- A save sent before the previous one's echo holds that save too, while `cartonBase` still names the version before
+  both. It also carries `after`: the previous save's `rev` (ui-words #3). The worker makes it on that save's state: the
+  version it was recorded as when it landed as sent, or, when it was merged with another change, the person's
+  document held in memory as core's `HeldBase` (that save in its causal past). Unknown there (a shared cut, a
+  restart), the save is made on `base` as before. Without `after`, the second save clashed with the first at head: a
+  conflict card of the person against themself.
+- A GUI save is written under its own `rev` (so its echo only moves the base) only when head is the person's document.
+  Core confirms a save without a rebase when the changes since its base touched other records; the worker counts
+  them from seqs (`passedOthers`) and writes head under a new `rev` then, which the editor adopts. Before, the echo
+  moved the base past a change the editor never showed, and the person's next save undid it.
 
 **Read-only preview (H4).**
 - Compare and the A/B toggle load an earlier version into the editor with the raw setter and set `cartonPreview`.

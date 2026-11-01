@@ -436,7 +436,9 @@ What changes with it on:
   Two of them at once could lose one's edit, even on different clips (seen with 1.4.0's own `cb` here). A GUI save
   wrote the whole timeline and could revert an agent's clip. Now each change is committed to `.carton\carton.db`
   against the exact version it was made on. A stale one is merged in, and a clash becomes a conflict card. Nothing is
-  overwritten.
+  overwritten. Two quick edits of yours never clash with each other: a save sent before the previous one's answer came
+  back builds on that save, and a save that landed past an agent's change on another clip brings that change into the
+  editor (it used to stay out of the editor, and your next save undid it).
 - **History** keeps every version, not the last 20, with who made it, down to the Director's turn and subagent.
   `cb history` shows who made each version, and each Director turn is named from your prompt ("Make the intro
   tighter"). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
@@ -449,7 +451,13 @@ What changes with it on:
 - **History tab** in the editor's left rail: versions, compare, restore, cuts, fold in. Opening an old version shows
   it read-only until "Return to current". Conflict cards wait there: your own edits that clashed, and an agent's view
   edit that clashed with yours (see "An agent's edit and yours at once" below). On an agent's card your value is the
-  one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back).
+  one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back). A card says what each
+  side did, in the editor's words ("Moved 1.5 s → 3.0 s", "Opacity 50%", "Removed"), with the clip named by its file;
+  two edits of your own read "Your earlier edit" and "Your later edit", with "Keep earlier" and "Keep later".
+- **Who made each version** reads as you'd say it: "You" (a `cb` you typed included), a teammate's name, "Director",
+  "Claude Code", "Codex", and a teammate's agent as theirs ("Leo's Director"). A subagent shows as the agent that
+  started it; its type and the model are in the tooltip. The project's import reads "Imported the project" by you;
+  the cut's start names no one. A clip without a name is named by its media's file name.
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
   `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
 

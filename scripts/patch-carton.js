@@ -245,7 +245,7 @@ if (mode === "--cli") {
   });
   patch(mainFile, (replace) => {
     replace("var cxe=Object.create;", require("./carton/main-bridge") + "var cxe=Object.create;");
-    // H1: the GUI save's Carton fields (base, actor, intents) reach the worker in the scope.
+    // H1: the GUI save's Carton fields (base, after, actor, intents) reach the worker in the scope.
     replace(
       '_e.handle("project:patch",async({document:t,scope:r})=>{',
       '__cartonMain.library(St),_e.handle("carton:call",({method:t,args:r})=>__cartonMain.call(t,r??[])),_e.handle("project:patch",async({document:t,scope:r,carton:__cm})=>{',
