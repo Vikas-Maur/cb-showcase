@@ -27,6 +27,17 @@ exports.cardboard14 = {
       await after(t);
       out({ probed: t.id }, () => "probed");
     });
+    // The store bridge's TimelineCodec in cb's process (codec.test.js): its print of the project with --rev beside
+    // Cardboard's own `source print`, and its parse of the print and of each file given, the project unchanged after.
+    program.command("codec-probe").argument("<project>").requiredOption("--rev <rev>").option("--parse <file...>").action(async (ref, o) => {
+      const t = await open(ref), codec = globalThis.__cartonTimelineCodec;
+      const project = await t.lib.projects.read(t.id), before = JSON.stringify(project);
+      const printed = await codec.print(project, o.rev);
+      const parse = async (text) => { try { return { project: await codec.parse(text, project) }; } catch (e) { return { error: e.message, name: e.name, diagnostics: e.diagnostics ?? null }; } };
+      const parsed = [];
+      for (const f of o.parse ?? []) parsed.push(await parse(fs.readFileSync(f, "utf8")));
+      out({ printed, own: await t.lib.timeline.print(t.id), project, roundTrip: await parse(printed), again: await codec.print(project, o.rev), parsed, untouched: JSON.stringify(project) === before }, () => "probed");
+    });
   },
   registerMcp: (tool, { z, projectParam, open, result }) => tool("timeline_cuts", "Cuts (fake)", { project: projectParam }, true, async ({ project }) => {
     const t = await open(project);

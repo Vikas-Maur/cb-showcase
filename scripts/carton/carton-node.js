@@ -16,9 +16,10 @@ import { createHash } from "node:crypto";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy } from "@carton/cardboard/node";
 import { fromHost, materializeProject, projectGuiSave } from "@carton/cardboard";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi } from "@carton/react";
+import { viewCards, canon, sameCard } from "./sync/view-cards.js";
 
 const warned = new Set();
 const warnOnce = (key, msg) => {
@@ -45,10 +46,22 @@ function open(bundlePath, { projectId, doc } = {}) {
       const id = projectId ?? doc?.id ?? readProject(bundlePath)?.id;
       const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db"));
       // A project without history yet starts from its document on disk (§16, main@1).
-      const first = exists ? null : doc ?? readProject(bundlePath);
+      let first = exists ? null : doc ?? readProject(bundlePath);
       // R1: extensions add openLocal options (live sync: the worker's handle gets the project's sync connection, the
       // person's actor and the replica's name; cb gets the helper that syncs headlessly).
-      const lc = await openLocal({ projectDir: bundlePath, projectId: id, init: first ? { doc: fromHost(first, null) } : undefined, ...(await extOpenOptions({ bundlePath, projectId: id })) });
+      const more = await extOpenOptions({ bundlePath, projectId: id });
+      const openWith = (start) => openLocal({ projectDir: bundlePath, projectId: id, init: start ? { doc: fromHost(start, null) } : undefined, ...more });
+      let lc;
+      try { lc = await openWith(first); } catch (e) {
+        // A carton.db another machine made (a folder copied from another computer, or one a sync client brought) is
+        // never adopted as this machine's replica: the stores set it aside (carton.from-<host>-<t>.db, kept for its
+        // history) and open an empty one (L15). That project then starts its own history from project.json, as a
+        // project without one does; without this its history stayed off for good ("holds no project").
+        if (first || !/holds no project/.test(errText(e))) throw e;
+        first = doc ?? readProject(bundlePath);
+        if (!first) throw e;
+        lc = await openWith(first);
+      }
       if (first) await setRev(lc, first.stateUpdatedAt, (await lc.carton.head()).ref);
       return lc;
     })().catch((e) => (warnOnce("open:" + bundlePath, `history is off for ${path.basename(bundlePath)}: ${errText(e)}`), opened.delete(bundlePath), null));
@@ -77,6 +90,11 @@ async function release(dir) {
   const inside = (p) => under(dir, p) || (process.platform === "win32" && under(dir.toLowerCase(), p.toLowerCase()));
   for (const [file, s] of installs) if (inside(file)) { clearTimeout(s.timer); installs.delete(file); }
   for (let i = hosts.length - 1; i >= 0; i--) if (inside(hosts[i].root)) hosts.splice(i, 1);
+  // The extensions let go first: what they run on a handle (a View's Materializer and holder) stops while it is open.
+  for (const e of extensions) {
+    if (typeof e.release !== "function") continue;
+    try { await e.release(dir, inside); } catch (err) { warnOnce("release:" + (e.name ?? "?"), "an extension's release failed: " + errText(err)); }
+  }
   const closing = [];
   for (const [bundlePath, p] of opened) {
     if (!inside(bundlePath)) continue;
@@ -86,10 +104,6 @@ async function release(dir) {
     closing.push(p.then((lc) => lc?.close()).catch((e) => warnOnce("close:" + bundlePath, `couldn't close the history of ${path.basename(bundlePath)}: ${errText(e)}`)));
   }
   await Promise.all(closing);
-  for (const e of extensions) {
-    if (typeof e.release !== "function") continue;
-    try { await e.release(dir, inside); } catch (err) { warnOnce("release:" + (e.name ?? "?"), "an extension's release failed: " + errText(err)); }
-  }
 }
 
 // ---------------------------------------------------------------- extensions
@@ -106,6 +120,8 @@ async function release(dir) {
 //                           returns a function that stops it
 //   materialize(projectId)  head into project.json, and the pages adopt it
 //   actorOf(id)             an actor id ("person", "director/<chat>/<turn>", "external:project.json") as an Actor
+//   agentCards(bundlePath, saveCards)
+//                           the Materializer's onCards: an agent's view-save cards go to the person's History panels
 // Hooks an extension may also have (each optional; one that throws is skipped, logged once):
 //   openOptions({bundlePath, projectId})        more openLocal options for the project's handle (R1)
 //   commitShared(lc, {doc, base, author, intent, gui})
@@ -117,10 +133,38 @@ async function release(dir) {
 //   materializeDoc(next, {bundlePath, projectId, current})
 //                                               fills in a record before head goes into project.json (R6)
 //   release(dir, inside)                        a folder Cardboard is done with (Open Project's staging folder): let go
-//                                               of what is kept for bundles in it (`inside(bundlePath)` says which)
+//                                               of what is kept for bundles in it (`inside(bundlePath)` says which),
+//                                               before the facade closes their handles
+//   ownsTimeline(bundlePath), timelineEvent(bundlePath)
+//                                               (worker) the bundle's timeline.tsx is the extension's (H8, views.js):
+//                                               the facade doesn't install Cardboard's print of it, and Cardboard's
+//                                               watcher hands its changes over instead of applying them
 // An extension that throws is left out (logged once); Carton and the save path go on without it.
 const extensions = [], openers = new Set(), ready = new Map(); // ready: bundlePath → LocalCarton
 export function extend(ext) { extensions.push(ext); }
+
+// H8: timeline.tsx is the library worker's Materializer's while one runs for the bundle (sync/views.js): Cardboard's
+// own regeneration of it (its mirror's write) and its watcher's apply hand over to it. In the worker an extension says
+// so; in any other process (cb), the worker holding the project's lease means one runs there (it prints the file from
+// head once cb's change lands, and keeps it frozen while an agent works).
+let inWorker = false;
+function timelineOwned(bundlePath) {
+  for (const e of extensions) {
+    if (typeof e.ownsTimeline !== "function") continue;
+    try { if (e.ownsTimeline(bundlePath)) return true; } catch (err) { warnOnce("owns:" + (e.name ?? "?"), "an extension's ownsTimeline failed: " + errText(err)); }
+  }
+  return false;
+}
+function timelineEvent(bundlePath) {
+  for (const e of extensions) {
+    if (typeof e.timelineEvent !== "function") continue;
+    try { e.timelineEvent(bundlePath); } catch (err) { warnOnce("tevent:" + (e.name ?? "?"), "an extension's timelineEvent failed: " + errText(err)); }
+  }
+}
+async function workerWritesTimeline(lc) {
+  if (inWorker) return false;
+  try { const row = await lc.lease.read(); return row?.kind === "worker" && row.expires > Date.now(); } catch { return false; }
+}
 async function extOpenOptions(o) {
   let out = {};
   for (const e of extensions) {
@@ -158,7 +202,16 @@ async function setRev(lc, rev, ref) {
   if (typeof rev !== "number" || !ref) return;
   await lc.store.write([{ table: REVS, key: ["rev", rev], value: ref }, { table: REVS, key: refKey(ref), value: rev }]);
 }
-const refOf = (lc, rev) => (typeof rev === "number" ? lc.store.get(REVS, ["rev", rev]) : Promise.resolve(undefined));
+// A string is a Carton header ref (what the apply reads off a file the Materializer printed: "Main cut@3~3f9a1c0e
+// b:… p:… by …"): its exact version when core can rebuild it, as the string core's commit and checkout take; else
+// undefined, never a guess (H3).
+const refOf = async (lc, rev) => {
+  if (typeof rev === "number") return lc.store.get(REVS, ["rev", rev]);
+  const ref = typeof rev === "string" ? rev.trim() : "";
+  if (!ref) return undefined;
+  try { await lc.carton.resolve(ref); } catch (e) { if (e?.code === "STATE_UNKNOWN") return undefined; throw e; }
+  return ref;
+};
 const revOf = (lc, ref) => lc.store.get(REVS, refKey(ref));
 
 // Who an actor id is (CARDBOARD_ACTOR's form). The person at the app shares the machine's undo group with windowless
@@ -167,12 +220,10 @@ const actorOf = (id) => (id === "person" ? { id: "person", kind: "human", group:
 
 // The History panels open in this process, per bundle (fromCarton handles): a person's GUI save's cards show in them at
 // once. Cards go to @carton/react as core returns them: core merges merge3(base, head, mine), so `ours` is head and
-// `theirs` the person's edit, which fromCarton shows as "mine". It shows identical cards (same field and values) once,
-// so resolving a card removes every kept card identical to it, and no other.
+// `theirs` the person's edit, which fromCarton shows as "mine". It shows identical cards (same field and values, as
+// `sameCard` tells them apart) once, so resolving a card removes every kept card identical to it, and no other. An
+// agent's view-save cards are the other way round; sync/view-cards.js shows them to the person (`agentCards`).
 const panels = new Map();
-// As fromCarton tells cards apart: keys in order, and a missing value is not null.
-const canon = (v) => (v === undefined ? "undefined" : JSON.stringify(v, (_k, x) => (x && typeof x === "object" && !Array.isArray(x) ? Object.fromEntries(Object.entries(x).sort(([a], [b]) => (a < b ? -1 : 1))) : x)));
-const sameCard = (a, b) => a.path === b.path && canon(a.ours) === canon(b.ours) && canon(a.theirs) === canon(b.theirs);
 
 // Cards a commit raised, as a notice for its author in carton.db's notices table, where `cb conflicts`, the Stop hook
 // and the History panel read them (core keeps notices only for confirmed and pending commits).
@@ -181,6 +232,20 @@ async function keepCards(lc, author, cards) {
   const to = keyOf(author), at = Date.now(), rand = () => Math.random().toString(16).slice(2, 10);
   const text = `${cards.length} of your edits clashed with a change made meanwhile; the other change was kept. Choose with cb conflicts / cb resolve, or in History.`;
   await lc.store.write([{ table: "notices", key: [to, at, 0, rand()], value: { to, kind: "late-conflict", text, cards, at } }]);
+}
+
+// An agent's view save that clashed with the person's edit (the Materializer's onCards, which the sync half wires in the
+// library worker): its cards are kept for the person and shown at once in the project's open History panels, the
+// person's way round. The agent's own card is the engine's (cb conflicts, the .status sidecar); a pick on either side
+// closes both (sync/view-cards.js).
+const views = viewCards({ actorOf, keyOf, me: actorOf("person") });
+export async function agentCards(bundlePath, saveCards) {
+  const lc = await open(bundlePath);
+  if (!lc) return { status: "off" };
+  if (!saveCards?.cards?.length) return { status: "none" };
+  const { by, cards, person } = await views.keep(lc, saveCards);
+  for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(cards, by);
+  return { status: person ? "shown" : "kept", cards: cards.length };
 }
 
 // A Director turn's name in History, from the user's prompt: its first sentence, at most six words ("tighter intro").
@@ -223,6 +288,9 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   // The version the edit was made on: the GUI's (its editor's), the apply's header, else what the writer read.
   const rev = meta?.base ?? meta?.rev ?? base?.stateUpdatedAt;
   let baseRef = await refOf(lc, rev), imported = null;
+  // A Carton header names its version exactly: one that can't be rebuilt any more (the apply checked it a moment ago)
+  // is never committed as an edit of head.
+  if (typeof rev === "string" && !baseRef) throw new Error(`the version ${rev} the edit was made on is no longer available`);
   if (!baseRef && base && rev === base.stateUpdatedAt) {
     // What the writer read isn't a state Carton wrote: a foreign save. Import it first, attributed as one.
     imported = await importForeign(lc, base);
@@ -361,6 +429,8 @@ async function install(tmp, file, seenStamp) {
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   const lc = await open(bundle);
   if (!lc) return fs.promises.rename(tmp, file);
+  // H8: Cardboard's print of timeline.tsx isn't installed where the worker's Materializer writes it.
+  if (path.basename(file) === "timeline.tsx" && (timelineOwned(bundle) || (await workerWritesTimeline(lc)))) return fs.rmSync(tmp, { force: true }), true;
   let installed = true, recover = null;
   const done = await withInstallLock(bundle, async (mine) => {
     const bytes = fs.readFileSync(tmp);
@@ -542,6 +612,8 @@ export const cardboard14 = {
   },
   commit,
   install,
+  timelineOwned,
+  timelineEvent,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
   async sawDisk({ bundlePath, doc }) {
@@ -563,13 +635,15 @@ export const cardboard14 = {
     const first = revs.length ? Math.min(...revs) : Infinity;
     return [...revs, ...older.filter((r) => r < first)];
   },
-  async revision({ bundlePath, rev, slice, file }) {
+  // `ref` in place of `rev`: a Carton header ref (H3, the apply's base), {ref, doc} if Carton rebuilds it exactly.
+  async revision({ bundlePath, rev, ref: header, slice, file }) {
     const lc = await open(bundlePath);
-    const ref = lc ? await refOf(lc, Number(rev)) : undefined;
+    const ref = lc ? await refOf(lc, header ?? Number(rev)) : undefined;
     if (!ref) return file();
     // (the mirror's revision readers hand it to Cardboard's restore and diff code: a copy, as for head)
     const p = forCardboard(materializeProject(await lc.carton.checkout(ref), readProject(bundlePath)));
-    return { rev: Number(rev), at: new Date(Number(rev)).toISOString(), doc: slice ? slice(p) : { tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio } };
+    const doc = slice ? slice(p) : { tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio };
+    return header !== undefined ? { ref, doc } : { rev: Number(rev), at: new Date(Number(rev)).toISOString(), doc };
   },
   async history({ bundlePath, rows }) {
     const lc = await open(bundlePath);
@@ -598,16 +672,26 @@ export const cardboard14 = {
   registerMcp(tool, { z, projectParam, open: target, result, after, skip }) {
     registerMcp(tool, { z, projectParam, result, skip, open: async (project) => context(await target(project), null, after) });
   },
+  // H8: host Claude Code's hooks also tell the project's lease holder (the worker's Materializer) what the agent does:
+  // a Read of timeline.tsx freezes it, a Write/Edit of it or project.json is credited to the agent, and a stop the
+  // late-conflict hook lets through lets go (@carton/local's runHook and sendHookEvent: carton.db read-only for the
+  // lease row, then the holder's socket; never a helper). carton.db is where the facade's handles open it.
   async hook({ event, input, env, bundlePath }) {
-    return runHook(event === "subagent-stop" ? "stop" : event, input, { env, openStore: async () => (bundlePath ? (await open(bundlePath))?.store ?? null : null) });
+    return runHook(event === "subagent-stop" ? "stop" : event, input, {
+      env,
+      openStore: async () => (bundlePath ? (await open(bundlePath))?.store ?? null : null),
+      projectDir: bundlePath ?? null,
+      ...(bundlePath ? { send: (e) => sendHookEvent({ projectDir: bundlePath, ...e }) } : {}),
+    });
   },
   worker({ library, emit }) {
+    inWorker = true;
     const bundleOf = (projectId) => library.projects.bundlePathFor?.(projectId) ?? null;
     const lcOf = async (projectId) => open(bundleOf(projectId), { projectId });
     const servers = new Map(); // client → serveUi
     const own = cardboard14.workerServices({ library, emit, bundleOf, lcOf, servers });
     const materialize = async (projectId) => { if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) }); };
-    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf }, own) };
+    return { ...own, ...extensionServices({ library, emit, bundleOf, open: (b) => open(b), carton: lcOf, onOpen, materialize, actorOf, agentCards }, own) };
   },
   workerServices({ library, emit, bundleOf, lcOf, servers }) {
     return {
@@ -636,12 +720,41 @@ export const cardboard14 = {
         const want = { turn: safePart(String(turn)), chat: chat ? safePart(String(chat)) : null };
         for (const v of await lc.carton.log({ limit: 200 })) {
           if (v.author?.turn !== want.turn || (want.chat && v.author?.chat !== want.chat)) continue;
-          if (!v.name) await lc.carton.name(v.ref, label);
+          if (!v.name) {
+            await lc.carton.name(v.ref, label);
+            // Core tells no one of a name: the History panels open on this project show it through their own
+            // nameVersion (a row keyed as fromCarton keys it; core's name is idempotent, so the repeat writes nothing new).
+            const row = v.change ?? `${v.ref.branchId}@${v.ref.seq}`;
+            for (const h of panels.get(bundleOf(projectId)) ?? []) await h.nameVersion?.(row, label).catch(() => {});
+          }
           return { status: "named" };
         }
         return { status: "none" };
       },
-      notices: async ({ bundlePath, actor, take }) => ((await open(bundlePath))?.carton.notices(actorOf(actor), { take }) ?? []),
+      notices: async ({ bundlePath, actor, take }) => {
+        const lc = await open(bundlePath);
+        if (!lc) return [];
+        // The Director's Stop hook takes its notices as its turn ends: what it left of its view saves' cards stays the
+        // person's (R3-09).
+        if (take) await views.detach(lc, actorOf(actor));
+        return lc.carton.notices(actorOf(actor), { take });
+      },
+      // The Director's Stop and SubagentStop (main): @carton/local's late-conflict hook, as host Claude Code's runs it
+      // (cb carton-hook): a stop with cards the agent hasn't been held on yet (its view saves' clashes too) blocks once;
+      // the next one lets it stop and hands what it left to the person (a copy under `@human`, R3-09), keeping the
+      // agent's own row, so `cb conflicts` and `cb resolve` still have it. `actor` is the id main gives the turn's cb
+      // calls ("director/<chat>/<turn>"), `input` the hook's (a subagent's id and type).
+      stopHook: async ({ bundlePath, actor, input }) => {
+        const lc = await open(bundlePath);
+        const a = typeof actor === "string" ? parseActorId(actor) : null;
+        if (!lc || !a) return {};
+        const turn = a.chat && a.turn ? { chat: a.chat, turn: a.turn } : null;
+        const id = actorIdForHook(input ?? {}, turn);
+        const d = await new StoreNoticeBox(lc.store).run(id, (box) => stopHook(input ?? {}, box, turn));
+        // the turn (or subagent) ends: the person's copies of its cards stand on their own (view-cards.js)
+        if (d.decision === "allow") await views.detach(lc, actorOf(id)).catch(() => {});
+        return stopOutput(d);
+      },
       // The History panel: @carton/react's view model, served to each page that asks (remoteUi there).
       ui: async ({ projectId, client, message }) => {
         let s = servers.get(client);
@@ -657,17 +770,22 @@ export const cardboard14 = {
           const person = keyOf(actorOf("person"));
           const kept = async () => (await lc.store.range("notices", { prefix: [person] })).filter((x) => x.value?.cards?.length);
           handle.reportConflicts((await kept()).flatMap((x) => x.value.cards));
+          // And agents' view-save cards still open, shown the person's way round (before the methods are wrapped).
+          views.present(ui, handle, lc, () => panels.get(bundlePath) ?? []);
+          for (const x of await views.shown(lc)) handle.reportConflicts(x.cards, x.by);
           // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
           for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
             const f = ui[m];
             if (typeof f === "function") ui[m] = async (...a) => {
               // The card behind a conflict, as reported (fromCarton forgets it once resolved).
               const card = m === "resolve" ? handle.cardFor?.(a[0]) : undefined;
-              const r = await f.apply(ui, a);
+              // An agent's card: the person's pick mapped back, and its card closed on both sides (view-cards.js).
+              const agents = views.isAgent(card);
+              const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
               if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
               // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
               // resolved them first, they are already gone.
-              if (card) for (const x of await kept()) {
+              if (card && !agents) for (const x of await kept()) {
                 const cards = x.value.cards.filter((c) => !sameCard(c, card));
                 if (cards.length < x.value.cards.length) await lc.store.write([{ table: "notices", key: x.key, value: cards.length ? { ...x.value, cards } : undefined }]);
               }
@@ -730,6 +848,8 @@ async function context(target, as, after) {
   });
   const project = {
     carton,
+    // the bundle: `source print --view` answers the view's file and status file as absolute paths
+    projectDir: target.bundlePath,
     async write(op, o) {
       for (const k of ["ref", "from"]) if (op && op[k] !== undefined) op = { ...op, [k]: await ref(op[k]) };
       // A write left pending (a shared cut: offline, or the server slow) changed the holder's head, which this handle

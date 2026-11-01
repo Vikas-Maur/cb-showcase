@@ -82,9 +82,12 @@ async function startHost(dir, port, env = {}) {
 }
 
 /** One computer: its library, its app data, its library worker, and cb on that library. */
-async function computer(name, b) {
-  const home = path.join(TMP, name), root = path.join(home, "library");
-  fs.rmSync(home, { recursive: true, force: true });
+// `same`: another library on the same machine as that computer (its home and app data: its install key, sessions and
+// settings), as a second library folder of one person's.
+async function computer(name, b, { same } = {}) {
+  const home = same ? same.home : path.join(TMP, name), root = path.join(home, same ? name : "library");
+  if (!same) fs.rmSync(home, { recursive: true, force: true });
+  fs.rmSync(root, { recursive: true, force: true });
   fs.mkdirSync(root, { recursive: true });
   const env = { ...process.env, HOME: home, USERPROFILE: home, XDG_DATA_HOME: path.join(home, "appdata"), LOCALAPPDATA: path.join(home, "appdata"), CARDBOARD_CARTON: "1", CARTON_DIR: b.carton, CARDBOARD_ACTOR: "", CLAUDECODE: "", CLAUDE_CODE_ENTRYPOINT: "" };
   const cb = (args, extra = {}) => {
@@ -207,4 +210,20 @@ function zipOf(file) {
   };
 }
 
-module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf };
+/**
+ * The view files Carton's materializer writes in `.scratch/views/` for view `name` (H11): the print, under Carton's
+ * header line, and its status sidecar. views.test.js checks these read as Carton's, as the materializer's own do.
+ */
+const cartonViewFiles = (name) => ({
+  [name + ".tsx"]: "// Cardboard timeline. Edit and save it.\n// cardboard:rev main@3~5e1f0c2a b:b7e1c2d3 p:ad2f48ea by director/c/t1\nexport default (<timeline aspect=\"16:9\" />);\n",
+  [name + ".status"]: JSON.stringify({ status: "confirmed", ref: "main@3~5e1f0c2a b:b7e1c2d3", seq: 3, conflicts: [], diagnostics: [], change: "c1", at: 1730000000000 }),
+});
+/** A person's or an agent's own files in `.scratch/views/`: never Carton's. */
+const ownViewFiles = () => ({
+  "plan.md": "An agent's own notes, in .scratch/views/\n",
+  // Cardboard 1.4.0's own print: its rev is a bare number
+  "mine.tsx": "// cardboard:rev 1730000000000\nexport default (<timeline aspect=\"16:9\" />);\n",
+  "todo.status": JSON.stringify({ status: "done", next: "trim the intro" }),
+});
+
+module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf, cartonViewFiles, ownViewFiles };

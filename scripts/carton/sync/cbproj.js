@@ -16,11 +16,12 @@
 //   versions only, so its history would lack edits its project.json shows, and a teammate bringing it in would silently
 //   miss them. The file is then a 1.4.0 file (it still holds everything you see), and the log says why.
 // - Open Project, a project you don't have: Cardboard imports it as 1.4.0 does. The patch's preamble first removes any
-//   `.carton/` and `.scratch/views/` the file planted in the staged bundle (Carton on or off: a crafted file's
-//   carton.db could name a sync lease or a helper recipe a later cb run would load). Then, before the bundle is first
-//   read, its history starts from the sender's shallow export (`init: {import}`), a writable cut forked from theirs,
-//   so the two copies share a lineage and later exchanges fold in with the right base; with the file's history, the
-//   sender's cuts come in as read-only cuts with every version, author and name. `.carton-export/` is then removed.
+//   `.carton/` and Carton view files in `.scratch/views/` the file planted in the staged bundle (Carton on or off: a
+//   crafted file's carton.db could name a sync lease or a helper recipe a later cb run would load); other files there
+//   stay. Then, before the bundle is first read, its history starts from the sender's shallow export (`init:
+//   {import}`), a writable cut forked from theirs, so the two copies share a lineage and later exchanges fold in with
+//   the right base; with the file's history, the sender's cuts come in as read-only cuts with every version, author and
+//   name. `.carton-export/` is then removed.
 // - Open Project, a project you have with history: in place of "This project ID already exists in your library",
 //   "Bring in their changes" — their lineage (and history, if the file has it) is imported as tracking knowledge and
 //   their head is folded into your current cut. Where you both changed the same thing, theirs goes in and yours is
@@ -29,7 +30,7 @@
 //   copy of the project that went its own way, or no shared lineage is said plainly. Head then goes into
 //   project.json, and the import answers with your project.
 // - A file without Carton's entry, a project without history, or Carton off: 1.4.0's import and its error.
-// View files and Carton's database never come in: the .cbproj walk leaves them out (skipInArchive), readCbproj ignores
+// Carton's view files and database never come in: the .cbproj walk leaves them out (skipInArchive), readCbproj ignores
 // them, the preamble removes them from a staged bundle, and nothing here applies them.
 import fs from "node:fs";
 import path from "node:path";
@@ -193,8 +194,8 @@ async function takeHistory(c, file, label) {
  * A staged bundle Cardboard has just extracted from a .cbproj, before it is first read: its history starts from the
  * sender's shallow export, a writable cut forked from theirs, then takes the file's history if it has one.
  * `.carton-export/` never stays in a bundle. Without the entry, or if it can't be used, the facade starts the history
- * from project.json as for any project (main@1). The preamble has already removed a planted `.carton/` and
- * `.scratch/views/`; a bundle that still has a carton.db is refused rather than opened.
+ * from project.json as for any project (main@1). The preamble has already removed a planted `.carton/` and Carton's
+ * view files; a bundle that still has a carton.db is refused rather than opened.
  */
 async function seed(bundle) {
   const name = path.basename(bundle);

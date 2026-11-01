@@ -24,6 +24,8 @@ import { webSocketTransport } from "@carton/server-node";
 import { hostMessageBlobs } from "@carton/host-http/client";
 import * as host from "./host.js";
 import * as store from "./store.js";
+// views.js first: its onOpen starts a project's View (the holder) before Live looks for it.
+import { viewOf } from "./views.js";
 import { Live, caughtUp } from "./live.js";
 import * as media from "./media.js";
 import "./cbproj.js";
@@ -94,7 +96,9 @@ async function startLive(api, bundlePath, lc) {
       return null;
     }
     // A clip added while the project is shared (by the person, an agent or cb) is shared as it was at share time.
-    const live = new Live({ api, bundlePath, projectId, lc, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : undefined) });
+    // The project's View is its holder (views.js); Live keeps a lease of its own only when there is none.
+    const view = await viewOf(bundlePath);
+    const live = new Live({ api, bundlePath, projectId, lc, view, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : undefined) });
     await live.start();
     holding.set(lc, live);
     // A share whose hand-off outlasted liveShare's wait publishes its descriptor once the host has the cut.

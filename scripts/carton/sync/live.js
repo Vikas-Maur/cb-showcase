@@ -3,7 +3,9 @@
 // absorbed cards with no plumbing of its own, and the worker's own saves are the holder's.
 // - The holder is @carton/local's: `keepLease` runs a Holder of kind "worker" around `CartonHolderEngine(lc.carton)`.
 //   It takes the lease (asking a headless helper to hand over first, §6.2), serves `cb` writes on its control socket,
-//   connects sync under its nonce, and takes the lease back 2 s after being fenced.
+//   connects sync under its nonce, and takes the lease back 2 s after being fenced. It is the project's View's
+//   (views.js: the one holder per project, with the Materializer as its printer), and Live's own only when the project
+//   has no View (its Materializer didn't start); then project.json follows here too.
 // - Not on an engine thread (documented deviation from §6.2): the facade's handle lives on the worker's main loop,
 //   so the holder's pings are answered there. A `cb` call that finds the main loop stalled past 100 ms takes over with
 //   a helper; fencing stops this holder, and keepLease takes the lease back by handover. With the cut shared, cb hands
@@ -22,8 +24,9 @@ const PEER_IDLE_MS = 30_000;
 const ON_CHANGE_MS = 2000;
 
 export class Live {
-  constructor({ api, bundlePath, projectId, lc, log, onChange }) {
+  constructor({ api, bundlePath, projectId, lc, log, onChange, view }) {
     this.onChange = onChange ?? null;
+    this.view = view ?? null; // the project's View (views.js): its holder, and project.json follows there
     this.changeTimer = null;
     this.api = api;
     this.bundlePath = bundlePath;
@@ -43,6 +46,10 @@ export class Live {
     const { lc } = this;
     // Events first, so nothing the first connection brings is missed.
     this.off = lc.carton.on((e) => this.#event(e));
+    if (this.view) {
+      this.#publish();
+      return;
+    }
     const engine = new CartonHolderEngine(lc.carton);
     // A cb write this holder serves changes head: project.json follows, pending or confirmed (core says nothing until
     // the server answers, and offline that is never).
@@ -115,6 +122,7 @@ export class Live {
   }
 
   #materializeSoon() {
+    if (this.view) return this.view.materializeSoon();
     if (this.timer || this.stopped) return;
     this.timer = setTimeout(() => {
       this.timer = null;
@@ -124,6 +132,7 @@ export class Live {
 
   /** This handle is the lease holder right now (not fenced, not stopped): its own writes are the pusher's. */
   holds() {
+    if (this.view) return !this.stopped && this.view.holds();
     const h = this.lease?.current;
     return !this.stopped && !!h && !h.stopped && !!h.nonce;
   }
@@ -148,6 +157,7 @@ export class Live {
     clearTimeout(this.timer);
     clearTimeout(this.changeTimer);
     this.off?.();
+    // the View's holder is the View's to stop
     await this.lease?.stop().catch(() => {});
   }
 }
