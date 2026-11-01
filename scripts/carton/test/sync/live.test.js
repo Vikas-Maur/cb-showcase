@@ -12,8 +12,12 @@ const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path");
 const S = require("./support.js");
 
-const t = { skip: S.noBuild };
-let b, host, alice, bob, id, link;
+const t = { skip: S.noBuild, timeout: S.TEST_MS };
+let b, host, alice, bob, id, link, beforeShare;
+// The steps run in order, each on what the ones before left. One that needs a step that failed fails at once, saying
+// which, instead of waiting out its own timeouts on a project that was never shared (CI: fail fast).
+const done = new Set();
+const need = (...steps) => { const miss = steps.filter((x) => !done.has(x)); if (miss.length) throw new Error(`not run: ${miss.join(" and ")} failed earlier`); };
 // An agent's own copy of the timeline at head (cb source print --view: the lease holder prints it).
 const printView = (pc, name) => {
   const r = pc.cb(["source", "print", "Demo", "--view", name], { CARDBOARD_ACTOR: "codex/" + name });
@@ -31,7 +35,7 @@ test.before(async () => {
   await alice.startWorker();
   await bob.startWorker();
   id = (await alice.call("projects.list"))[0].id;
-});
+}, { timeout: S.SETUP_MS });
 test.after(async () => {
   // Each computer's worker log, for a failure's post-mortem.
   for (const pc of [alice, bob]) if (pc?.worker()) {
@@ -41,10 +45,14 @@ test.after(async () => {
   for (const pc of [alice, bob]) pc?.kill();
   S.killHelpers();
   await host?.stop().catch(() => {});
-});
+}, { timeout: S.STOP_MS });
 
 test("share with history: the cut goes to the host with its versions, and the project says it is shared", t, async () => {
   assert.deepEqual(await alice.call("carton.liveStatus", { projectId: id }), { shared: false });
+  // Alice edits in the app before she shares (R3: the people test below finds it credited to her at Bob's)
+  await S.guiSave(alice, id, (it) => (it.type === "text" ? { ...it, endTime: 2.4 } : null));
+  beforeShare = alice.cb(["history", "Demo"]).json().versions[0];
+  assert.equal(beforeShare.by?.id, "person", "before the share, a GUI save is the person's, with no account behind it");
   const r = await alice.call("carton.liveShare", { projectId: id, host: host.origin, adminToken: S.ADMIN, name: "Alice" });
   assert.equal(r.status, "shared", JSON.stringify(r));
   const st = await S.until(async () => { const s = await alice.call("carton.liveStatus", { projectId: id }); return s.status === "up-to-date" && s; }, 20_000, "alice up to date");
@@ -52,9 +60,11 @@ test("share with history: the cut goes to the host with its versions, and the pr
   assert.equal(st.account, "Alice");
   assert.equal(st.holder, true, "the worker holds the sync lease");
   if (process.env.CARTON_TEST_FREEZE === "1") assert.equal(await alice.call("carton.testFrozen", { projectId: id }), true, "frozen mode: the facade's handle returns frozen docs");
+  done.add("the share");
 });
 
 test("invite and join: Bob joins from the link in his own library and gets the project with its history", t, async () => {
+  need("the share");
   ({ link } = await alice.call("carton.liveInvite", { projectId: id, role: "editor" }));
   assert.match(link, /^http:\/\/127\.0\.0\.1:\d+\/#join=/);
   const j = await bob.call("carton.liveJoin", { link, name: "Bob" });
@@ -66,9 +76,11 @@ test("invite and join: Bob joins from the link in his own library and gets the p
   assert.equal(h.code, 0, h.out + h.err);
   const by = h.json().versions.map((v) => v.by?.id ?? null);
   assert.ok(by.includes("director/chat1/turn2/sub-Explore-a1") && by.includes("director/chat1/turn1"), JSON.stringify(by));
+  done.add("the join");
 });
 
 test("concurrent edits: both computers save the same clip's different fields at once; both keep both", t, async () => {
+  need("the share", "the join");
   await Promise.all([
     S.guiSave(alice, id, (it) => (it.type === "text" ? { ...it, fontSize: 150 } : null)),
     S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Hello from Bob" } : null)),
@@ -78,7 +90,36 @@ test("concurrent edits: both computers save the same clip's different fields at 
   }
 });
 
+test("people: Alice's GUI edits read as Alice at Bob's and Bob's as Bob at Alice's, made before the share and after; each one's own are You", t, async () => {
+  need("the share", "the join");
+  // Every GUI save is recorded as the generic "person" (hashes and history untouched): each computer tells it as the
+  // person behind the replica that made it, its own at once (the identity set at share and join), a teammate's as the
+  // host says. Each computer's own GUI saves, by change id, as it tells them:
+  const told = (pc) => new Map(pc.cb(["history", "Demo"]).json().versions.filter((v) => v.by?.kind === "human" && v.change).map((v) => [v.change, v.by]));
+  const own = (pc, who) => [...told(pc)].filter(([, by]) => by.id === who).map(([c]) => c);
+  const mine = { Alice: own(alice, "Alice"), Bob: own(bob, "Bob") };
+  assert.ok(mine.Alice.includes(beforeShare.change), "Alice's edit from before the share is hers on her computer: " + JSON.stringify([...told(alice)]));
+  assert.ok(mine.Alice.length >= 2 && mine.Bob.length >= 1, "edits after the share too: " + JSON.stringify(mine));
+  for (const [pc, who, other] of [[bob, "Alice", alice], [alice, "Bob", bob]]) {
+    await S.until(() => { const t2 = told(pc); return mine[who].every((c) => t2.get(c)?.id === who && t2.get(c)?.name === who); }, 20_000, `${who}'s GUI edits as ${who} at ${pc.name}'s: ` + JSON.stringify([...told(pc)].filter(([c]) => mine[who].includes(c))));
+    assert.ok(![...told(pc)].some(([, by]) => by.id === "person"), `no GUI edit reads as the generic person at ${pc.name}'s (${other.name}'s view)`);
+  }
+  // The History panel: your own edits are You, the teammate's under their name.
+  for (const [pc, me, them] of [[alice, "Alice", "Bob"], [bob, "Bob", "Alice"]]) {
+    const client = "people-" + pc.name;
+    const msgs = () => pc.events().filter((e) => e.change?.kind === "carton" && e.change.client === client).map((e) => e.change.message);
+    assert.equal((await pc.call("carton.ui", { projectId: id, client, message: { t: "hello" } }))?.status, "ok");
+    const init = await S.until(() => msgs().find((x) => x.t === "init"), 20_000, pc.name + "'s panel");
+    assert.equal(init.me.key, "human/" + me, "You: " + JSON.stringify(init.me));
+    const actors = new Map([init.me, ...init.actors].map((a) => [a.key, a]));
+    const by = (change) => { const v = init.history.find((x) => x.id === change); const a = v && (typeof v.author === "string" ? actors.get(v.author) : v.author); return a && { key: a.key, name: a.name, isYou: !!a.isYou }; };
+    for (const c of mine[me]) assert.deepEqual(by(c), { key: "human/" + me, name: me, isYou: true }, `${pc.name}'s own edit ${c} is You`);
+    for (const c of mine[them]) assert.deepEqual(by(c), { key: "human/" + them, name: them, isYou: false }, `${them}'s edit ${c} at ${pc.name}'s`);
+  }
+});
+
 test("presence: what Alice is doing shows on Bob's computer, and goes when she stops", t, async () => {
+  need("the share", "the join");
   await alice.call("carton.livePresence", { projectId: id, state: { activity: "Editing captions" } });
   const peer = await S.until(() => bob.events().filter((e) => e.change?.kind === "carton" && e.change.topic === "live" && e.change.id === id).map((e) => e.change.live.peers).reverse()[0]?.find((p) => p.activity === "Editing captions"), 10_000, "alice's presence at bob");
   assert.equal(peer.actor.id, "Alice");
@@ -87,6 +128,7 @@ test("presence: what Alice is doing shows on Bob's computer, and goes when she s
 });
 
 test("media: Alice's clips are shared (content id, collab proxy); Bob streams one by range and a tool reads it by URL", t, async () => {
+  need("the share", "the join");
   // Sharing the project started sharing its clips in the background; this waits for that, and skips what is done.
   const results = await alice.call("carton.liveShareMedia", { projectId: id });
   const r = results.find((x) => x.proxy?.stream && x.proxy.size > 0);
@@ -96,8 +138,16 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
   assert.ok((await S.projectOf(bob, id)).media.some((m) => m.id === mediaId), "Bob's copy lists the clip");
   // S5-G2: the share is in the project itself, as a version by Alice: on Bob's computer, history shows it, and it gives
   // the clip its content id and shared record (size, the proxy).
-  const v = await S.until(() => bob.cb(["history", "Demo"]).json().versions.find((x) => x.by?.id === "Alice"), 20_000, "alice's share version at bob");
-  const cmp = bob.cb(["compare", "Demo", `${v.version.split("@")[0]}@${Number(v.version.split("@")[1]) - 1}`, v.version]);
+  // (Her GUI edits read as Alice too, R3: the share version is the one of hers that changed the clip's record.)
+  const compare = (v) => bob.cb(["compare", "Demo", `${v.version.split("@")[0]}@${Number(v.version.split("@")[1]) - 1}`, v.version]);
+  const shareVersion = () => {
+    for (const v of bob.cb(["history", "Demo"]).json().versions.filter((x) => x.by?.id === "Alice")) {
+      const cmp = compare(v);
+      if (/content|shared media/.test(cmp.out)) return { v, cmp };
+    }
+    return null;
+  };
+  const { cmp } = await S.until(shareVersion, 30_000, "alice's share version at bob");
   assert.match(cmp.out, /content|shared media/, cmp.out + cmp.err);
   // Bob has no file for it: main asks his worker where it lives, then answers cardboard-media:// from the range cache.
   const src = await bob.call("carton.liveMediaSource", { mediaId });
@@ -131,6 +181,7 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
 });
 
 test("media shared again: the first re-share checks every part of the stream it reuses; the next, through the same host client, asks about none", t, async () => {
+  need("the share", "the join");
   // Media remembers a stream it found whole per host client object for 10 minutes (media fd87449); the worker keeps one
   // client per project (sync/media.js storeFor), so the memory carries from one share to the next.
   const first = (await alice.call("carton.liveShareMedia", { projectId: id })).find((x) => x.proxy?.stream && x.proxy.size > 0);
@@ -156,6 +207,7 @@ test("media shared again: the first re-share checks every part of the stream it 
 });
 
 test("media before its upload finishes: Bob plays Alice's new clip from its first segments, and a tool follows it live", t, async () => {
+  need("the share", "the join");
   // The host holds each stream's end entry, so the proxy stays "still uploading" for as long as the test needs.
   host.send("hold-ends");
   await host.next((x) => x.held);
@@ -231,6 +283,7 @@ test("media before its upload finishes: Bob plays Alice's new clip from its firs
 });
 
 test("offline and rejoin: Bob edits while the host is down; his edit waits, then reaches Alice when it is back", t, async () => {
+  need("the share", "the join");
   const port = host.port;
   await host.stop();
   await S.until(async () => (await bob.call("carton.liveStatus", { projectId: id })).status === "offline", 20_000, "bob offline");
@@ -244,6 +297,7 @@ test("offline and rejoin: Bob edits while the host is down; his edit waits, then
 });
 
 test("cb on the shared project with the app open: the agent's edit goes through the worker's lease and reaches Bob", t, async () => {
+  need("the share", "the join");
   // The agent prints the timeline as it is now, in its own view (H8: the shared timeline.tsx stays frozen a minute
   // after a cb call, such as the media add above, so an agent working beside others prints its own).
   await S.until(async () => S.textOf(await S.projectOf(alice, id)).fontSize === 90, 10_000, "bob's 90 at alice");
@@ -269,6 +323,7 @@ test("cb on the shared project with the app open: the agent's edit goes through 
 });
 
 test("offline, cb with the app open from a print one version behind: Alice's file keeps Bob's change and the agent's", t, async () => {
+  need("the share", "the join");
   const printed = printView(alice, "c11");
   assert.match(printed, /fontSize=\{77\}/, "the view is at head");
   await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, textContent: "Bob again" } : null));
@@ -293,6 +348,7 @@ test("offline, cb with the app open from a print one version behind: Alice's fil
 });
 
 test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the pull brings Bob's edit in, the agent's edit reaches Bob, no whole-file PUT", t, async () => {
+  need("the share", "the join");
   await alice.stopWorker();
   await S.guiSave(bob, id, (it) => (it.type === "text" ? { ...it, fontSize: 55 } : null));
   await S.sleep(1000);
@@ -319,6 +375,7 @@ test("app closed, agent in cb's cloud mode (H13): a headless helper syncs; the p
 });
 
 test("app closed: another program's save, and the agent's edit on it, go through the helper to Bob; an offline restore shows in Alice's file at once", t, async () => {
+  need("the share", "the join");
   // Alice's app is still closed. Another program saves her project.json: a version Carton didn't write. cb imports it
   // through the lease holder (a headless helper), as it does its own saves (review round 3 #3: the import went straight
   // into cb's own handle, which can't commit on a shared cut, so that save and the cb saves on it had no history).
@@ -363,6 +420,7 @@ test("app closed: another program's save, and the agent's edit on it, go through
 });
 
 test("a host older than the app: Bob's panel says the host needs an update, instead of \"Syncing\" for ever", t, async () => {
+  need("the share", "the join");
   const port = host.port;
   await host.stop();
   host = await S.startHost(path.join(S.TMP, "host"), port, { CARTON_TEST_SCHEMA_VERSION: "1" });

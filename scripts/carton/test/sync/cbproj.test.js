@@ -18,7 +18,7 @@ const { spawnSync } = require("child_process");
 const { pathToFileURL } = require("url");
 const S = require("./support.js");
 
-const t = { skip: S.noBuild };
+const t = { skip: S.noBuild, timeout: S.TEST_MS };
 let b, alice, bob, carol, dave, erin, id, bobClip;
 const SHALLOW = ".carton-export/shallow.json", FULL = ".carton-export/history.db";
 const HISTORY = { CARTON_CBPROJ_HISTORY: "1" };
@@ -138,11 +138,11 @@ test.before(async () => {
   dave = await S.computer("cbproj-dave", b);
   S.seed(alice, b);
   id = JSON.parse(fs.readFileSync(path.join(bundleOf(alice), "project.json"), "utf8")).project.id;
-});
+}, { timeout: S.SETUP_MS });
 test.after(async () => {
   for (const pc of [alice, bob, carol]) if (pc?.worker()) fs.writeFileSync(path.join(S.TMP, pc.name + "-worker.log"), pc.worker().stderr());
   for (const pc of [alice, bob, carol, dave, erin]) pc?.kill();
-});
+}, { timeout: S.STOP_MS });
 
 test("Save As (cb) with history: the file carries the shallow export and the history copy as their own entries, never Carton's database or view files", t, async () => {
   plantViews(bundleOf(alice), { ...S.cartonViewFiles("director_c_t1"), ...S.ownViewFiles() });

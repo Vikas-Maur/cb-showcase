@@ -28,7 +28,7 @@ import type { Choices, Doc, Schema, ShallowExport } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import { ZipReader, ZipWriter, sanitizeEntryName, type ZipWriteResult } from "./zip.ts";
 import { retryMissing } from "../displace.ts";
-import { walkBundle, excludedFromExport, viewFileCandidate, readViewFileHead, VIEW_STATUS_MAX_BYTES, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
+import { walkBundle, excludedFromExport, viewFileCandidate, readViewFileHead, VIEW_HEAD_BYTES, VIEW_STATUS_MAX_BYTES, CARTON_DIR, EXPORT_DIR, FULL_ENTRY, MANIFEST, MANIFEST_MAX_BYTES, SHALLOW_ENTRY, VIEWS_DIR } from "./walk.ts";
 
 export interface CbprojExportOptions {
   /** The project bundle (`<Name>.cardboard/`). */
@@ -127,7 +127,9 @@ const FOLD_CASE = process.platform === "win32" || process.platform === "darwin";
 /** A member's content, to tell a Carton view file (`cartonViewFile`), or null when it can't be read (then it isn't). */
 async function memberContent(z: ZipReader, entry: ZipReader["entries"][number], name: string): Promise<Buffer | null> {
   try {
-    return await z.readMember(entry, /\.status$/i.test(name) ? VIEW_STATUS_MAX_BYTES : MANIFEST_MAX_BYTES);
+    // as the walk reads a file on disk (`readViewFileHead`): a view by its head, whatever its size (round 22 #4); a
+    // sidecar whole, up to the size a sidecar can have
+    return /\.status$/i.test(name) ? await z.readMember(entry, VIEW_STATUS_MAX_BYTES) : await z.readMemberHead(entry, VIEW_HEAD_BYTES);
   } catch {
     return null;
   }

@@ -207,7 +207,7 @@ test.before(async () => {
   });
   out = JSON.parse(r.stdout.trim().split("\n").pop() || "{}");
   if (out.error || r.status !== 0) throw new Error("view-cards run: " + (out.error ?? r.stdout + r.stderr));
-});
+}, { timeout: 600_000 });
 
 const opt = { skip: noBuild };
 

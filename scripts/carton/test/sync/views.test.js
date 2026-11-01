@@ -9,6 +9,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), os = require("os"), path = require("path");
 const S = require("./support.js");
+// An ES module by path (on Windows an absolute path must be a file:// URL for import())
+const load = (file) => import(require("url").pathToFileURL(file).href);
 
 const CARDBOARD = path.join(__dirname, "..", "..", "..", "..", "carton", "packages", "cardboard");
 const skip = !fs.existsSync(path.join(CARDBOARD, "..", "..", "node_modules", "@carton", "core")) && "run `npm ci` in carton/ for Carton's materializer";
@@ -25,10 +27,10 @@ const bridge = (on) => {
 
 /** A bundle in which Carton's materializer printed an agent's view and applied a save of it (so it wrote its status). */
 async function printed() {
-  const { Materializer, PROJECT_FILE, viewPath, statusPath } = await import(path.join(CARDBOARD, "src", "node", "materializer.ts"));
-  const { jsonTimelineCodec } = await import(path.join(CARDBOARD, "src", "codec.ts"));
-  const { findRev } = await import(path.join(CARDBOARD, "src", "header.ts"));
-  const { FakeClock, FakeEngine, plainHost } = await import(path.join(CARDBOARD, "test", "helpers", "fake-engine.ts"));
+  const { Materializer, PROJECT_FILE, viewPath, statusPath } = await load(path.join(CARDBOARD, "src", "node", "materializer.ts"));
+  const { jsonTimelineCodec } = await load(path.join(CARDBOARD, "src", "codec.ts"));
+  const { findRev } = await load(path.join(CARDBOARD, "src", "header.ts"));
+  const { FakeClock, FakeEngine, plainHost } = await load(path.join(CARDBOARD, "test", "helpers", "fake-engine.ts"));
   fs.mkdirSync(ROOT, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(ROOT, "b-"));
   const items = [{ id: "a", trackId: "V1", type: "video", name: "a", startTime: 0, endTime: 5, trimStart: 0, trimEnd: 5 }];
@@ -129,7 +131,7 @@ test("the end-to-end tests' Carton view files read as Carton's", { skip }, async
 // isn't loaded): it must tell every file as cardboard-adapter's cartonViewFile does, which its .cbproj export and
 // reader use.
 test("the store bridge's rule is cardboard-adapter's cartonViewFile, file for file", { skip }, async () => {
-  const { cartonViewFile } = await import(path.join(CARDBOARD, "src", "node", "cbproj", "walk.ts"));
+  const { cartonViewFile } = await load(path.join(CARDBOARD, "src", "node", "cbproj", "walk.ts"));
   const p = await printed();
   const view = fs.readFileSync(p.view, "utf8"), status = JSON.parse(fs.readFileSync(p.status, "utf8"));
   const files = {
@@ -148,5 +150,27 @@ test("the store bridge's rule is cardboard-adapter's cartonViewFile, file for fi
   for (const n of [...Object.keys(files), path.basename(p.view), path.basename(p.status)]) {
     const want = cartonViewFile(n, fs.readFileSync(path.join(p.views, n)));
     for (const on of [false, true]) assert.equal(bridge(on).cartonView(path.join(p.views, n)), want, `${n} (Carton ${on ? "on" : "off"})`);
+  }
+});
+
+// With Carton on, the rule is the facade's (cardboard-adapter's cartonViewFile): the bridge only reads the file (a
+// view's first 64 KiB, a status sidecar whole) and hands it over. A stand-in facade records what it was asked.
+test("with Carton on, the store bridge asks the facade's cartonViewFile", { skip }, async () => {
+  const p = await printed();
+  const dir = fs.mkdtempSync(path.join(ROOT, "facade-"));
+  fs.writeFileSync(path.join(dir, "carton-node.cjs"), "globalThis.__asked = []; module.exports = { cardboard14: { cartonViewFile: (name, bytes) => (globalThis.__asked.push([name, bytes.length]), name.startsWith('yes')) } };");
+  fs.writeFileSync(path.join(p.views, "yes.tsx"), "x".repeat(70_000));
+  fs.writeFileSync(path.join(p.views, "no.status"), "{}");
+  const saved = process.env.CARTON_DIR;
+  process.env.CARTON_DIR = dir;
+  try {
+    const c = bridge(true);
+    assert.equal(c.cartonView(path.join(p.views, "yes.tsx")), true);
+    assert.equal(c.cartonView(path.join(p.views, "no.status")), false);
+    assert.equal(c.cartonView(path.join(p.views, "notes.md")), false, "a name that is never Carton's isn't read");
+    assert.equal(c.skipInArchive(".scratch/views", "yes.tsx", p.views), true);
+    assert.deepEqual(globalThis.__asked, [["yes.tsx", 64 * 1024], ["no.status", 2], ["yes.tsx", 64 * 1024]]);
+  } finally {
+    if (saved === undefined) delete process.env.CARTON_DIR; else process.env.CARTON_DIR = saved;
   }
 });

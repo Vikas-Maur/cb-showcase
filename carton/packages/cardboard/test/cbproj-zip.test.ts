@@ -10,11 +10,13 @@ import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
 import { ZipReader, ZipWriter, safeEntryPath, sanitizeEntryName } from "../src/node/cbproj/zip.ts";
+import { readCbproj } from "../src/node/cbproj/cbproj.ts";
 import {
   CARTON_DIR,
   EXPORT_DIR,
   FULL_ENTRY,
   MANIFEST,
+  MANIFEST_MAX_BYTES,
   SHALLOW_ENTRY,
   VIEWS_DIR,
   cartonViewFile,
@@ -660,6 +662,32 @@ test("cartonViewFile: Carton's view (its header) and status sidecar (exactly its
   for (const [name, content] of yes) assert.equal(cartonViewFile(name, content), true, `${name}: ${content.slice(0, 60)}`);
   for (const [name, content] of no) assert.equal(cartonViewFile(name, content), false, `${name}: ${content?.slice(0, 60)}`);
   assert.equal(cartonViewFile("a.tsx", Buffer.from(CARTON_HEADER)), true, "bytes as well as text");
+});
+
+test("review 22 #4: a view Carton wrote, larger than any manifest, is still told by its head when a .cbproj is read, as the walk tells it; a person's large .tsx there is kept", async () => {
+  const dir = scratch("large-view");
+  const views = path.join(dir, ...VIEWS_DIR.split("/"));
+  await fsp.mkdir(views, { recursive: true });
+  const big = (file: string, head: string) => {
+    const fd = fs.openSync(file, "w");
+    fs.writeSync(fd, `${head}\n/*`);
+    const spaces = Buffer.alloc(1024 * 1024, 32);
+    for (let i = 0; i <= MANIFEST_MAX_BYTES / spaces.length; i++) fs.writeSync(fd, spaces);
+    fs.writeSync(fd, "*/\nexport default null;\n");
+    fs.closeSync(fd);
+  };
+  big(path.join(views, "director.tsx"), "// cardboard:rev main@3~deadbeef b:00000000");
+  big(path.join(views, "mine.tsx"), "// my own long notes");
+  assert.deepEqual((await walkBundle(dir)).map((f) => f.archivePath), [`${VIEWS_DIR}/mine.tsx`], "the walk leaves Carton's view out");
+  const file = scratch("large-view.cbproj");
+  const zip = await ZipWriter.create(file);
+  await zip.addBuffer(MANIFEST, Buffer.from(JSON.stringify({ format: "cardboard-project", version: 1, project: { id: "p", name: "P" }, media: [] })));
+  for (const n of ["director.tsx", "mine.tsx"]) await zip.addFile(`${VIEWS_DIR}/${n}`, path.join(views, n));
+  await zip.close();
+  const contents = await readCbproj(file);
+  assert.deepEqual(contents.ignored, [`${VIEWS_DIR}/director.tsx`], "Carton's view isn't a bundle file because it is large");
+  assert.deepEqual(contents.files, [`${VIEWS_DIR}/mine.tsx`]);
+  await fsp.rm(dir, { recursive: true, force: true });
 });
 
 test("Carton's names fold case where the file system does; Cardboard's never do", async () => {

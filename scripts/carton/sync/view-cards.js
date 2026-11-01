@@ -33,6 +33,11 @@
 //     shown too (identical cards show once).
 //   - The view's `.status` sidecar is the record of that save's result (the Materializer's file): it keeps listing the
 //     card until the view is saved again. `cb conflicts` is the live list.
+// - A card belongs to the cut the save landed on (`cut` on the person's row): History shows it only on that cut, and a
+//   pick commits there, whichever cut is current when it is made (review H8 r1 #2: shown on another cut, "Keep the
+//   agent's" changed that cut and left the clash on its own).
+// - Identical cards from two agents show once; a pick closes the card for every agent that has it (review H8 r1 #4: only
+//   the agent named on the shown copy lost it, and the other's Stop hook would still hold its turn for it).
 import { apply } from "@carton/core";
 import { casUpdate, SKIP, HUMAN_CARDS } from "@carton/local";
 import { cardOps } from "@carton/react";
@@ -44,9 +49,9 @@ export const sameCard = (a, b) => a.path === b.path && canon(a.ours) === canon(b
 
 // A card shown for an agent carries the agent's notice key: fromCarton keeps a host's fields on a card (cardFor
 // returns them), so a pick on it is known for an agent's.
-const AGENT = "cartonAgent";
+const AGENT = "cartonAgent", CUT = "cartonCut";
 const plain = (card) => {
-  const { [AGENT]: _k, ...c } = card;
+  const { [AGENT]: _k, [CUT]: _c, ...c } = card;
   return c;
 };
 const handed = (v) => !!(v.handedAt || v.handedToHuman);
@@ -71,8 +76,11 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
    * never taken for a decided one.
    */
   async function shown(lc) {
-    const out = [], open = new Map();
+    const out = [], open = new Map(), here = lc.carton.cut;
     for (const { key: rowKey, value: v } of await rows(lc.store)) {
+      // another cut's card waits there (a row without a cut: @carton/local's hand-over copy, or one kept before cuts
+      // were recorded, shows as before)
+      if (v.cut && v.cut !== here) continue;
       const by = agentOf(v), key = v.agentKey ?? keyOf(by);
       let cards = v.cards;
       if (!handed(v)) {
@@ -86,20 +94,28 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
             return left.length === cur.cards?.length ? SKIP : left.length ? { ...cur, cards: left } : undefined;
           }, v);
       }
-      if (cards.length) out.push({ by, cards: cards.map((c) => ({ ...c, [AGENT]: key })) });
+      if (cards.length) out.push({ by, cards: cards.map((c) => ({ ...c, [AGENT]: key, [CUT]: v.cut ?? here })) });
     }
     return out;
   }
 
-  /** The card is gone on both sides: from every `@human` row and from the agent's notices. */
-  async function close(lc, card, agentKey) {
+  /**
+   * The card is gone on both sides: from the person's rows on its cut, and from the notices of every agent behind them
+   * (identical cards from two agents show as one).
+   */
+  async function close(lc, card, agentKey, cut = null) {
+    const has = (v) => v?.cards?.some((c) => sameCard(c, card));
+    const onCut = (v) => !cut || !v.cut || v.cut === cut;
     const drop = (cur) => {
-      if (!cur?.cards?.some((c) => sameCard(c, card))) return SKIP;
+      if (!has(cur)) return SKIP;
       const cards = cur.cards.filter((c) => !sameCard(c, card));
       return cards.length ? { ...cur, cards } : undefined;
     };
-    for (const prefix of [[HUMAN_CARDS], [agentKey]])
-      for (const r of await lc.store.range(TABLE, { prefix })) if (r.value?.cards?.some((c) => sameCard(c, card))) await casUpdate(lc.store, TABLE, r.key, drop, r.value);
+    const people = (await rows(lc.store)).filter((r) => onCut(r.value) && has(r.value));
+    const agents = new Set([agentKey, ...people.map((r) => r.value.agentKey ?? keyOf(agentOf(r.value)))]);
+    for (const r of people) await casUpdate(lc.store, TABLE, r.key, drop, r.value);
+    for (const key of agents)
+      for (const r of await lc.store.range(TABLE, { prefix: [key] })) if (has(r.value)) await casUpdate(lc.store, TABLE, r.key, drop, r.value);
   }
 
   // Each panel's own resolve (fromCarton's, before the facade wraps it): it can drop a card without committing.
@@ -121,9 +137,9 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       if (!actor || actor.id === me.id) return { by: undefined, cards: c.cards, person: true };
       const agentKey = keyOf(actor), at = typeof c.at === "number" ? c.at : now(), n = c.cards.length;
       const text = `${n} of ${actor.name ?? actor.id}'s edits in ${c.file ?? "a view"} clashed with yours; yours was kept. Choose in History.`;
-      const value = { to: HUMAN_CARDS, kind: "late-conflict", text, cards: [...c.cards], at, from: actor.id, agent: actor, agentKey, file: c.file ?? null, batch: c.batch ?? null, ...(c.change ? { change: c.change } : {}), ...(c.request ? { request: c.request } : {}) };
+      const value = { to: HUMAN_CARDS, kind: "late-conflict", text, cards: [...c.cards], at, from: actor.id, agent: actor, agentKey, cut: c.cut ?? lc.carton.cut, file: c.file ?? null, batch: c.batch ?? null, ...(c.change ? { change: c.change } : {}), ...(c.request ? { request: c.request } : {}) };
       await lc.store.write([{ table: TABLE, key: [HUMAN_CARDS, at, 0, "save:" + (c.batch ?? at)], value }]);
-      return { by: actor, cards: c.cards.map((x) => ({ ...x, [AGENT]: agentKey })) };
+      return { by: actor, cards: c.cards.map((x) => ({ ...x, [AGENT]: agentKey, [CUT]: value.cut })) };
     },
 
     /** The agent's turn ends (its notices are about to be taken): its open cards stay the person's. */
@@ -196,14 +212,14 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
       const card = handle.cardFor(id);
       if (!isAgent(card)) return false;
       if (choice === "both") throw new Error("Keep both isn't offered for this card");
-      const raw = raws.get(handle), agentKey = card[AGENT], c = plain(card);
+      const raw = raws.get(handle), agentKey = card[AGENT], cut = card[CUT] ?? lc.carton.cut, c = plain(card);
       if (!raw) throw new Error("This card's panel isn't set up for agents' cards");
       // A side's value, committed by the person who chose it, as a document: when it is there already core finds nothing
       // to change and History gets no version (ops setting a field to the value it has would make one). A clash with a
       // change made since (a moment's window) comes back as the person's own card.
       const take = async (value) => {
-        const head = await lc.carton.head();
-        const r = await lc.carton.commit({ doc: apply(structuredClone(head.doc), cardOps(c, value), lc.carton.schema), base: head.ref, author: me });
+        const head = await lc.carton.head(cut);
+        const r = await lc.carton.commit({ cut, doc: apply(structuredClone(head.doc), cardOps(c, value), lc.carton.schema), base: head.ref, author: me });
         if (r.status === "rejected") throw new Error(r.reason);
         if (r.status === "conflicts") handle.reportConflicts(r.cards);
       };
@@ -214,12 +230,15 @@ export function viewCards({ actorOf, keyOf, me, now = Date.now }) {
         // before this one re-read), this pick is the latest: the person's value is put back. (The person's copy of a
         // card the agent decided may already be gone: `shown` prunes it.)
         const same = (x) => sameCard(x, c);
-        const open = (await openFor(lc.store, agentKey)).some(same) || (await rows(lc.store)).some((r) => handed(r.value) && r.value.cards.some(same));
+        const people = (await rows(lc.store)).filter((r) => (!r.value.cut || r.value.cut === cut) && r.value.cards.some(same));
+        const agents = new Set([agentKey, ...people.map((r) => r.value.agentKey ?? keyOf(agentOf(r.value)))]);
+        let open = people.some((r) => handed(r.value));
+        for (const key of agents) open ||= (await openFor(lc.store, key)).some(same);
         if (!open) await take(c.ours);
       }
       // fromCarton's own resolve with its "theirs" (the side on screen) drops the card from this panel and commits nothing
       await raw(id, "theirs");
-      await close(lc, c, agentKey);
+      await close(lc, c, agentKey, cut);
       return true;
     },
   };
