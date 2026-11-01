@@ -304,7 +304,10 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   project's lease; before, local's write path reached the same holder through its control socket. Elsewhere (another
   process holds the lease, no View runs) it still goes through local's write path. `save-cost.test.js` counts it.
   Either way it is a `gui` write (local-cli `3962f27`): the person's own action starts no `timeline.tsx` freeze, as a GUI
-  save on a shared cut handed to another process's holder doesn't either (an agent's freeze still holds).
+  save on a shared cut handed to another process's holder doesn't either (an agent's freeze still holds). Served by
+  another process's holder, its row is another connection's write: the worker's follower knows it by its request id
+  (`LocalCarton.write` notes every `gui` request, `noteGuiWrite`) and tells the head move with no one busy (windows-sync
+  review round 4 #1; before, it froze the file as for a `cb` call).
 - With Carton off, or without history for the project, Cardboard's snapshot undo runs.
 
 **Remaps (H7).**

@@ -550,7 +550,8 @@ run below.
    save). Your Ctrl+Z shows in `timeline.tsx` at once, as your edits do: it is yours, not an agent's, so it doesn't
    freeze the file (it used to, for a minute, hiding the undo and your next edits from any agent that read it). The
    worker undoes it in its own process when it holds the project's sync lease, without a round trip through its own
-   control socket.
+   control socket. When another process holds the lease for a moment (a helper that took over while the app was
+   busy) and saves your edit or your undo, the app still knows the change as yours and freezes nothing.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
 thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
