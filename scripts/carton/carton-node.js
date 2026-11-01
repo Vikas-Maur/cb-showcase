@@ -158,6 +158,10 @@ async function release(dir) {
 //                                               already a notice for the author. Foreign-save imports go through it too.
 //   materializeDoc(next, {bundlePath, projectId, current})
 //                                               fills in a record before head goes into project.json (R6)
+//   serveHere(bundlePath, op, actor)            (worker) ⌘Z served by the project's holder in this process, or null
+//   hostWrite(bundlePath, after)                (worker) a GUI save is committing and the store writes project.json
+//                                               next; `after` resolves once it has landed, to {project: {envelope,
+//                                               stamp}} or to nothing. true if the extension took it (views.js)
 //   release(dir, inside)                        a folder Cardboard is done with (Open Project's staging folder): let go
 //                                               of what is kept for bundles in it (`inside(bundlePath)` says which),
 //                                               before the facade closes their handles
@@ -352,11 +356,25 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
     await setRev(lc, base.stateUpdatedAt, baseRef);
   }
   const baseDoc = imported?.doc ?? (baseRef ? await c.checkout(baseRef) : (await c.head()).doc);
-  const mine = meta?.base !== undefined && baseRef ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
+  const gui = meta?.base !== undefined && !!baseRef;
+  const mine = gui ? projectGuiSave(baseDoc, doc, P()) : fromHost(doc, baseDoc);
   const intent = meta?.intents?.length ? { gui: meta.intents } : undefined;
-  const r = await commitIn(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui: meta?.base !== undefined && !!baseRef });
+  // A GUI save: the store writes project.json once this returns. The worker's Materializer is told before head moves,
+  // so its rewrites wait for that write and take the file from it (hostWrite).
+  const landing = gui ? hostWrite(bundlePath) : null;
+  try {
+    const out = await committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, intent, gui });
+    landing?.expect(out.doc);
+    return out;
+  } catch (e) {
+    landing?.settle();
+    throw e;
+  }
+}
+async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, intent, gui }) {
+  const c = lc.carton;
+  const r = await commitIn(lc, { doc: mine, base: baseRef, author: actorOf(actor), intent, gui });
   if (r.status === "rejected") throw new Error("Carton rejected the change: " + r.reason);
-  const gui = meta?.base !== undefined && baseRef;
   // Nothing of its own, and nothing else merged in: the writer's document is head. (Empty but rebased: the writer's
   // document is older than head in other fields, so the file gets head, below.)
   if (r.status === "confirmed" && r.empty && !gui && !r.rebased) return { ...r, doc, merged: false };
@@ -407,6 +425,44 @@ async function headProject(bundlePath, current, given) {
   const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
   await setRev(lc, out.stateUpdatedAt, head.ref);
   return out;
+}
+
+// ---------------------------------------------------------------- a GUI save's project.json, for the Materializer
+// The worker's Materializer prints timeline.tsx from head and project.json's unversioned fields. After a GUI save the
+// store writes project.json itself (writeProject off): the Materializer is told the save is the host's (an extension's
+// hostWrite: onHeadChange("gui", {after})), so its rewrites wait for the write, and `after` gives it the envelope the
+// store wrote with the file's stamp, so it doesn't read and parse the file again. The store writes a project's
+// documents one at a time, and a document queued behind a running write may be replaced by a newer one (which holds
+// the save: it is made from head after it). So a save is resolved by the first project.json install that starts once
+// commit() has returned it to the store (`queued`): its own write, or the one that replaced it. An earlier write still
+// running then doesn't count. A save whose write never comes (the store's write failed before the install) is let go
+// after LANDING_MS with nothing, which the Materializer takes as "read the file" (it waits 5 s at most itself).
+const LANDING_MS = 6000;
+const landings = new Map(); // bundle (resolved) → [{queued, settle}] in save order
+function hostWrite(bundlePath) {
+  const ext = extensions.filter((e) => typeof e.hostWrite === "function");
+  if (!bundlePath || !ext.length) return null;
+  const key = path.resolve(bundlePath);
+  let resolve;
+  const after = new Promise((r) => (resolve = r));
+  const l = { queued: false };
+  const timer = setTimeout(() => l.settle(), LANDING_MS);
+  timer.unref?.();
+  l.settle = (w) => {
+    clearTimeout(timer);
+    const list = landings.get(key);
+    if (list?.includes(l)) list.length === 1 ? landings.delete(key) : list.splice(list.indexOf(l), 1);
+    resolve(w);
+  };
+  // its document goes to the store's write queue now (commit() returns it); nothing to write: let go
+  l.expect = (doc) => (doc ? (l.queued = true) : l.settle());
+  let told = false;
+  for (const e of ext) {
+    try { told = !!e.hostWrite(bundlePath, after) || told; } catch (err) { warnOnce("hostWrite:" + (e.name ?? "?"), "an extension's hostWrite failed: " + errText(err)); }
+  }
+  if (!told) return clearTimeout(timer), null;
+  landings.set(key, [...(landings.get(key) ?? []), l]);
+  return l;
 }
 
 // ---------------------------------------------------------------- files: displace, then install
@@ -483,7 +539,19 @@ const revIn = (file, bytes) => {
 
 // `rev`: the rev the caller wrote into the file (the store's writeNow passes project.json's stateUpdatedAt), so a large
 // project.json isn't parsed again on every save just to read it back; without one, it is read from the file.
-async function install(tmp, file, seenStamp, rev) {
+// `envelope`: the object writeNow stringified into it, for the GUI saves this write lands (hostWrite, above): with the
+// file's stamp once the install put those bytes there (`own`, checked under the install lock), else nothing.
+async function install(tmp, file, seenStamp, rev, envelope) {
+  const due = path.basename(file) === "project.json" ? (landings.get(path.resolve(path.dirname(file))) ?? []).filter((l) => l.queued) : [];
+  let out = false;
+  try { return (out = await installFile(tmp, file, seenStamp, rev)); } finally {
+    if (due.length) {
+      const stamp = out === true && envelope ? installs.get(file)?.own?.stamp : null;
+      for (const l of due) l.settle(stamp ? { project: { envelope, stamp } } : undefined);
+    }
+  }
+}
+async function installFile(tmp, file, seenStamp, rev) {
   const bundle = path.dirname(file);
   // Without history for this project there is nothing to import a foreign save into: write as 1.4.0 does.
   const lc = await open(bundle);

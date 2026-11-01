@@ -27,6 +27,9 @@
 // - An agent's own `cb` write during a freeze shows in the frozen timeline.tsx at once, as with 1.4.0 (the Materializer's
 //   foldAgentChanges, whatever told it of head: this holder's write, local's follower, a confirmation); the person's
 //   and remote changes stay out until the freeze ends.
+// - The person's GUI save: head moves in the save, and the store writes project.json after it. The facade tells the
+//   Materializer so (onHeadChange("gui", { after }), the extension's hostWrite): its rewrites wait for that write, and
+//   take project.json's envelope and stamp from it instead of reading the file again.
 // - Old prints: a timeline.tsx or view printed by Cardboard 1.4.0 carries a bare `stateUpdatedAt` rev. The facade
 //   maps each one it wrote to its state (`views` table `["rev", ms]`); the engine wrapper resolves them there, so such
 //   a file applies as an edit of that state instead of being refused ("state unknown: re-print").
@@ -35,7 +38,7 @@ import path from "node:path";
 import { extend } from "../carton-node.js";
 import { cardboardFilesHost } from "@carton/cardboard";
 import { Materializer, CARTON_DIR, VIEWS_DIR, TIMELINE_FILE } from "@carton/cardboard/node";
-import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId, fence, nextChangeId } from "@carton/local";
+import { keepLease, holderSocketPath, CartonHolderEngine, cartonMaterializerEngine, preToolUse, parseActorId, fence, nextChangeId, localGroup } from "@carton/local";
 import { caughtUp } from "./live.js";
 import { cutOfChange } from "./view-cards.js";
 
@@ -44,9 +47,6 @@ const MATERIALIZE_MS = 40;
 const POLL_MS = 250;
 // How long a view save on a shared cut waits for this worker to hold the lease again (#mayCommit).
 const LEASE_WAIT_MS = 5000;
-// `views` rows [SAVE_CUT, request id] → {cut, at}: the cut a view save was committed on, until its cards are reported.
-const SAVE_CUT = "saveCut";
-const SAVE_CUT_KEEP_MS = 7 * 24 * 3600_000;
 const errText = (e) => (e && e.message) || String(e);
 const warned = new Set();
 const warnOnce = (key, msg) => { if (!warned.has(key)) { warned.add(key); console.warn("[carton] " + msg); } };
@@ -64,7 +64,7 @@ const running = new Map(); // key → View, once started (the facade asks synchr
  * before the Materializer answers it in the view's `.status`: an agent that reads "confirmed" finds it everywhere.
  * Anything else goes to the inner engine as it is.
  */
-function engineFor(inner, lc, landed, mayCommit, cutOf, failed) {
+function engineFor(inner, lc, landed, mayCommit, failed) {
   const old = async (rev) => {
     const ref = await lc.store.get("views", ["rev", Number(rev)]);
     if (!ref) return null;
@@ -77,32 +77,12 @@ function engineFor(inner, lc, landed, mayCommit, cutOf, failed) {
       if (k === "commit") {
         return async (input) => {
           await mayCommit(input.meta?.file);
-          // the cut it lands on (the engine commits on the current one), for its cards (onCards): a card belongs there.
-          // Also stored: a save the Materializer resumes after a restart reports its cards without a commit here
-          // (review H8 r2 #2), and one with conflicts only made no change to look the cut up by.
-          // A retry of a save already committed (its process stopped before the Materializer stored the result, and it
-          // starts again, maybe on another cut) keeps its first attempt's cut: core answers the retry by its id with the
-          // first attempt's result (review H8 r3 #2).
-          let cut = lc.carton.cut;
-          if (input.id) {
-            const prior = (await lc.store.get("views", [SAVE_CUT, input.id]).catch(() => null))?.cut;
-            if (prior) cut = prior;
-            else await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: { cut, at: Date.now() } }]).catch(() => {});
-            cutOf.set(input.id, cut);
-            if (cutOf.size > 64) cutOf.delete(cutOf.keys().next().value);
-          }
           let r;
           try {
             r = await t.commit(input.base?.kind === "legacy" ? { ...input, base: (await old(input.base.rev)) ?? input.base } : input);
           } catch (e) {
             failed(input.meta?.file);
             throw e;
-          }
-          if (input.id && !r?.cards?.length) await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: undefined }]).catch(() => {});
-          // the engine names the cut core's answer is on (a retry answered by id: the first attempt's)
-          else if (input.id && r?.cut && r.cut !== cut) {
-            cutOf.set(input.id, r.cut);
-            await lc.store.write([{ table: "views", key: [SAVE_CUT, input.id], value: { cut: r.cut, at: Date.now() } }]).catch(() => {});
           }
           if (r?.status && r.status !== "rejected") await landed();
           return r;
@@ -160,40 +140,34 @@ export class View {
     const { lc, bundlePath } = this;
     const codec = globalThis.__cartonTimelineCodec;
     if (!codec) throw new Error("this build has no timeline.tsx printer for Carton");
-    const cutOf = new Map(); // a view save's request id → the cut it was committed on
     const mz = new Materializer({
       bundle: bundlePath,
-      engine: engineFor(cartonMaterializerEngine(fencedCarton(lc.carton, (cut) => this.#nonceFor(cut))), lc, () => this.materializeNow(), (file) => this.#mayCommit(file), cutOf, (file) => {
+      engine: engineFor(cartonMaterializerEngine(fencedCarton(lc.carton, (cut) => this.#nonceFor(cut))), lc, () => this.materializeNow(), (file) => this.#mayCommit(file), (file) => {
         if (file && !this.holds()) this.waiting.add(file);
       }),
       host: cardboardFilesHost,
       codec,
       writeProject: false,
+      // this machine's actor group (local's localGroup()): on a shared cut a windowless agent of this machine's `cb`
+      // edit shows in the frozen timeline.tsx too, as a hooked agent's does; a teammate's agents stay out
+      group: localGroup(),
       // `.carton/displaced` is the facade's (project.json's installs, its journal): the Materializer's start-up recovery
       // would take an untagged file there as a timeline.tsx save
       displacedDir: path.join(CARTON_DIR, "displaced-views"),
       // a clash in an agent's save is a card for the person too (view-cards.js); open panels are found by the library's
       // own path string for the bundle
-      // The cut: the one recorded at the commit, or (a save the Materializer resumes after a restart, its result
-      // already stored: no commit here, review H8 r2 #2) the cut its change is on.
+      // The cut: the one the save was committed on, as the Materializer reports it (its stored result's: also for a
+      // save it resumes after a restart, and a retry core answered by id with its first attempt's, reviews H8 r2 #2 and
+      // r3 #2). A result stored without one (an older build's) goes by the cut its change is on.
       onCards: (c) => {
-        const known = cutOf.get(c.request);
-        cutOf.delete(c.request);
         const lost = (e) => warnOnce("cards:" + bundlePath, "an agent's conflict cards didn't reach the History panel: " + errText(e));
         (async () => {
-          const stored = c.request ? (await lc.store.get("views", [SAVE_CUT, c.request]).catch(() => null))?.cut : null;
-          const cut = known ?? c.cut ?? stored ?? (await cutOfChange(lc.store, c.change)) ?? lc.carton.cut;
+          const cut = c.cut ?? (await cutOfChange(lc.store, c.change)) ?? lc.carton.cut;
           await this.api.agentCards?.(this.api.bundleOf(this.projectId) ?? bundlePath, { ...c, cut });
-          if (c.request) await lc.store.write([{ table: "views", key: [SAVE_CUT, c.request], value: undefined }]).catch(() => {});
         })().catch(lost);
       },
     });
     this.mz = mz;
-    // a save's cut kept past a week was never reported (its process stopped before it knew whether it had cards)
-    try {
-      for (const r of await lc.store.range("views", { prefix: [SAVE_CUT] }))
-        if (!(Date.now() - (r.value?.at ?? 0) < SAVE_CUT_KEEP_MS)) await lc.store.write([{ table: "views", key: r.key, value: undefined }]);
-    } catch (e) { warnOnce("savecut:" + bundlePath, "old view-save records weren't cleared: " + errText(e)); }
     // Head moved in this handle: the shared file follows (unless frozen), project.json too.
     this.off = lc.carton.on((e) => this.#event(e));
     await mz.start();
@@ -372,6 +346,13 @@ export class View {
    * R4). A `gui` write (local-cli 3962f27): the person's own action starts no freeze. Only while this View holds the
    * lease; otherwise null, and the caller goes through @carton/local's write path, which finds whoever holds it.
    */
+  /** A GUI save's project.json write is under way (the facade's hostWrite): see the extension's hook. */
+  hostWrite(after) {
+    if (this.stopped || !this.mz) return false;
+    this.mz.onHeadChange("gui", { after });
+    return true;
+  }
+
   async serveHere(op, actor) {
     if (this.stopped || !this.holds()) return null;
     return this.holder.serve({ id: nextChangeId(), actor, op, gui: true });
@@ -434,6 +415,10 @@ extend({
   timelineEvent: (bundlePath) => running.get(keyOf(bundlePath))?.timelineEvent(),
   // The facade's ⌘Z: served by the View's holder here when it holds the lease (null: the caller writes through local)
   serveHere: (bundlePath, op, actor) => running.get(keyOf(bundlePath))?.serveHere(op, actor) ?? null,
+  // The facade's GUI save: head moves now and the store writes project.json after it; `after` resolves once that write
+  // has landed, to project.json's envelope and stamp (the Materializer's HostWrite) or to nothing. The rewrites wait for
+  // it and take the envelope from it instead of reading the file again. false: no View here (the facade drops it).
+  hostWrite: (bundlePath, after) => running.get(keyOf(bundlePath))?.hostWrite(after) ?? false,
   async release(dir, inside) {
     const stops = [];
     // A View still starting goes too (review H8 r1): left out, its start would finish after the release, take the

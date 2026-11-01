@@ -251,8 +251,9 @@ module.exports = ({ dir, slice, who, codec }) => {
       return { document: doc, changed: true };
     },
     // H1, H3: displace-then-install in place of rename(tmp, file). rev: project.json's stateUpdatedAt as writeNow wrote
-    // it (the install then needn't parse the file for it).
-    install: (tmp, file, seenStamp, rev) => (carton() ? carton().install(tmp, file, seenStamp, rev) : require("node:fs/promises").rename(tmp, file)),
+    // it (the install then needn't parse the file for it); envelope: what writeNow stringified, which a GUI save's
+    // Materializer takes with the file's stamp instead of reading project.json again (H8).
+    install: (tmp, file, seenStamp, rev, envelope) => (carton() ? carton().install(tmp, file, seenStamp, rev, envelope) : require("node:fs/promises").rename(tmp, file)),
     // H8 (worker): the bundle's timeline.tsx is the Materializer's (sync/views.js): Cardboard's watcher hands a change
     // of it over instead of applying it.
     // (a facade without them never owns it: Cardboard's own apply runs)

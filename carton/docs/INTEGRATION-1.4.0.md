@@ -117,7 +117,7 @@ behind the hook, not counting the packages.
 
 | # | Cardboard concept (its source's terms) | Where (anchors) | Carton change | Lines [E] |
 |---|---|---|---|---|
-| H1 | **Project store mutations and writes.** `chain` serializes a project's mutations. `applyMutation(id, mutate)` applies one to `latest()`. `latest()` re-reads disk when the stamp `ino:size:mtimeNs` changed and nothing is unsaved. `enqueue` coalesces writes. `writeNow` renames `.project.json.<uuid>.tmp` over `project.json`. `updateScoped(doc, scope)` overlays `scope.ownedFields` (the GUI sends whole `tracks`/`timelineItems`) | CLI and Worker: `applyMutation`, `updateScoped`, the rename in `writeNow`, `read`'s `seenOnDisk.set`, the store's construction (`onWritten`). Main: `project:patch` forwards the save's `carton` field into the scope (11) | **Each mutation becomes one change**, committed against the exact document it was applied to (CAS in `.carton/carton.db`). A stale base is rebased with merge3, and the store adopts the merged head. Versioned fields become ops. Ephemeral fields go to the `ephemeral` table in the same transaction. A GUI save's arrays are diffed through the GUI projection against the renderer's own base (B3), not against the worker's latest. The rename becomes **displace-then-install**. A document Carton never wrote is imported as a foreign write | ~80 per copy |
+| H1 | **Project store mutations and writes.** `chain` serializes a project's mutations. `applyMutation(id, mutate)` applies one to `latest()`. `latest()` re-reads disk when the stamp `ino:size:mtimeNs` changed and nothing is unsaved. `enqueue` coalesces writes. `writeNow` renames `.project.json.<uuid>.tmp` over `project.json`. `updateScoped(doc, scope)` overlays `scope.ownedFields` (the GUI sends whole `tracks`/`timelineItems`) | CLI and Worker: `applyMutation`, `updateScoped`, the rename in `writeNow` (and, proved by itself, the envelope it stringifies), `read`'s `seenOnDisk.set`, the store's construction (`onWritten`). Main: `project:patch` forwards the save's `carton` field into the scope (11) | **Each mutation becomes one change**, committed against the exact document it was applied to (CAS in `.carton/carton.db`). A stale base is rebased with merge3, and the store adopts the merged head. Versioned fields become ops. Ephemeral fields go to the `ephemeral` table in the same transaction. A GUI save's arrays are diffed through the GUI projection against the renderer's own base (B3), not against the worker's latest. The rename becomes **displace-then-install**, given the envelope written: after a GUI save the worker's Materializer takes it with the installed file's stamp instead of reading `project.json` again (H8). A document Carton never wrote is imported as a foreign write | ~80 per copy |
 | H1b | **Other writers of `project.json`.** CLI cloud pull writes it with the atomic helper `Ee`. Open Project (`.cbproj` and bundle import) writes it into a staging folder, then renames the folder into the library | CLI: cloud pull, Open Project. Worker: Open Project (3) | Cloud pull goes through the materializer (H13 replaces it with sync). An opened project's document becomes its first version, `main@1` | ~20 each |
 | H2 | **Revisions and undo.** `recordRevision` keeps the newest 20 `.revs/<rev>.json` slices. `listRevisions` and `readRevision` read them. `history(id)` lists them. `undo(id, rev?)` writes an older slice as a new revision. These back `cb history`, `cb undo`, MCP `timeline_history` and `undo_timeline` | CLI and Worker: `listRevisions`, `readRevision`, recordRevision's own reads, `history`, `undo`'s write. cb: the history table, the `undo` command, `undo_timeline` (20) | `listRevisions` and `readRevision` read **Carton's history first** (every version, its `rev` = `stateUpdatedAt`), then any older `.revs`. So `history`, `undo <rev>`, the apply base and MCP edits at a `rev` all work on unlimited history through Cardboard's own code (B6). `recordRevision` keeps writing `.revs`, so switching Carton off loses nothing. `history` adds WHO and the cut. `undo --turn <id>` (and `undo_timeline {turn}`) reverts one agent turn as one inverse change at head (C10) | ~40 |
 | H3 | **Timeline apply.** `apply(id, source, {prefer, dryRun})` parses `timeline.tsx` (literals only) and ingests new paths. The base is the `.revs` slice at or before the file's `// cardboard:rev` header, **falling back to the current document** when that slice was pruned (B2). It 3-way merges with `rn(base, current, file)`, with item-level conflicts and the whole nested value replaced (B4). It writes through `writeTimeline` → `updateScoped`. `applyEdits` does the same for MCP's `{oldText,newText}` edits at a `rev`. `writeMirror` rewrites `timeline.tsx` in place | CLI and Worker: the parse's rev, the base lookup, the `rn` call, the apply's and `writeTimeline`'s scope, `writeMirror`'s write (14) | The base is the exact version the header names, in either form: 1.4.0's `// cardboard:rev <ms>` (through the rev map) or Carton's `// cardboard:rev <cut>@<seq>~<hash8> b:<cut8> p:<nonce> by <who>`, which the Materializer prints (only the first rev line counts). A header `rev` that Carton and `.revs` can't reconstruct is an **error**, never a 2-way merge (principle 9). A file with no header keeps 1.4.0's meaning: edits on top of head. merge3 replaces `rn`: field-level, field groups decided as units (B13), remaps applied as intents, conflict cards kept as data. Its result keeps `rn`'s shape (`ops`, `conflicts`), so `cb`'s printer and MCP results don't change. The apply's result adds `carton: {status: confirmed\|pending\|conflicts, ref}`. `timeline.tsx` is written with displace-then-install | ~60 per copy |
@@ -409,12 +409,16 @@ onto the packages' APIs, so a package API change touches only the facade.
     newest change when another connection's write made the holder look. Guarded by `views-guards.test.js`.)
     A view save on a shared cut is committed with the View's lease as a store condition (`fence(nonce)` in core's
     `CommitInput.conditions`, through the engine's handle): a lease taken by another process after the save's check
-    makes core refuse it whole, and the save waits for the lease. (Core checks the conditions before a shared cut's
-    enqueue but doesn't carry them into the pending row's write, so a takeover in that last moment can still leave the
-    save pending in this handle: a request to foundation-core.) Each save's cut is kept in a local `views` row from its
-    first attempt until its cards are reported: a save the Materializer resumes after a restart reports them without a
-    commit here, a retry is answered with the first attempt's result, and a conflicts-only save has no change to look
-    up (core's spent id, `meta` `["noop", id]`, names its cut too). A worker lease leaves `timeline.tsx` to the worker
+    makes core refuse it whole, and the save waits for the lease (core carries the conditions into the very write that
+    queues a shared cut's change, foundation-core R6-2). An agent's view-save cards go to History on the cut the save
+    was committed on, as the Materializer reports it (`SaveCards.cut`, from the save's stored result: also for a save it
+    resumes after a restart, and a retry core answers with the first attempt's result). The Materializer gets this
+    machine's actor group (`localGroup()`), so on a shared cut a windowless local agent's `cb` edit shows in the
+    frozen file too. A GUI save tells the Materializer that the store is writing `project.json` for it
+    (`onHeadChange("gui", {after})`, through the facade's `hostWrite`): its rewrites wait for that write, and the
+    install that lands it gives the envelope written with the file's stamp, so the Materializer doesn't read and parse
+    `project.json` again to print `timeline.tsx` (`save-cost.test.js` counts the reads, `facade.test.js` the hand-over).
+    A worker lease leaves `timeline.tsx` to the worker
     unless Live's own holder (no View) recorded that its lease prints nothing (`views` `["leasePrints"]`): a record
     that is late or failed can then only keep the file from updating in that degraded state, never let `cb` print over a
     View's freeze. History shows a kept GUI conflict on the cut core's notice names: each panel reports it when the cut
@@ -447,7 +451,7 @@ Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and a
 patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
 file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
 
-### A.1 The anchors patch-carton.js replaces (107)
+### A.1 The anchors patch-carton.js replaces (109)
 
 Each copy's first ten are the timeline codec's proofs, replaced by themselves: each shows a name the codec calls
 where Cardboard's own apply, `writeTimeline` or store calls it (§4.2).
@@ -465,6 +469,7 @@ ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
 ok  Worker 1 @1263655   35B  "this.applyMutation(t,s=>K1(r(s)),n)"
 ok  Worker 1 @1263890   27B  "async applyMutation(t,r,n){"
 ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
+ok  Worker 1 @1265976   36B  "d=JSON.stringify(o);this.lastWritten"
 ok  Worker 1 @1266073   38B  "l=await G1(c),await(0,Bt.rename)(c,s)}"
 ok  Worker 1 @1255225   71B  "try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),\"utf8\")}catch{return null}"
 ok  Worker 1 @1262348   59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
@@ -534,6 +539,7 @@ ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
 ok  CLI    1 @158555    35B  "this.applyMutation(t,c=>Jo(r(c)),n)"
 ok  CLI    1 @158790    27B  "async applyMutation(t,r,n){"
 ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
+ok  CLI    1 @160751    36B  "u=JSON.stringify(a);this.lastWritten"
 ok  CLI    1 @160835    28B  "d=await Qo(l),await Bx(l,c)}"
 ok  CLI    1 @150270    50B  "try{t=await jm(Pe(e,re),\"utf8\")}catch{return null}"
 ok  CLI    1 @157257    59B  "return this.seenOnDisk.set(t,{stamp:a,document:c.project}),"

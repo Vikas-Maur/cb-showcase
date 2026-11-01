@@ -35,7 +35,9 @@ const STORE = {
     slice: "Cr",
     updateScoped: ["n=>qx(n,pd(n,t,r))", "n=>(__carton.on&&__carton.scope(r),qx(n,pd(n,t,r)))"],
     readBundle: ['try{t=await jm(Pe(e,re),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile(Pe(e,re)):jm(Pe(e,re),"utf8"))}catch{return null}'],
-    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt)===!1?null:await Qo(c):await Bx(l,c)}"],
+    install: ["d=await Qo(l),await Bx(l,c)}", "d=await Qo(l),__carton.on?d=await __carton.install(l,c,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,a)===!1?null:await Qo(c):await Bx(l,c)}"],
+    // the envelope writeNow writes ({format, version, project, media}): the name it stringifies
+    envelope: ["u=JSON.stringify(a);this.lastWritten", "a"],
     read: ["return this.seenOnDisk.set(t,{stamp:a,document:c.project}),", "c.project"],
     attach: ["n.onWritten((h,y)=>f.afterWrite(h,y));", "n,f,t"],
     revFiles: [
@@ -83,7 +85,8 @@ const STORE = {
     slice: "Zs",
     updateScoped: ["n=>YZ(n,dw(n,t,r))", "n=>(__carton.on&&__carton.scope(r),YZ(n,dw(n,t,r)))"],
     readBundle: ['try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8")}catch{return null}', 'try{t=await(__carton.on?__carton.readFile((0,rt.join)(e,Mt)):(0,Bt.readFile)((0,rt.join)(e,Mt),"utf8"))}catch{return null}'],
-    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
+    install: ["l=await G1(c),await(0,Bt.rename)(c,s)}", "l=await G1(c),__carton.on?l=await __carton.install(c,s,this.seenOnDisk.get(t.id)?.stamp,t.stateUpdatedAt,o)===!1?null:await G1(s):await(0,Bt.rename)(c,s)}"],
+    envelope: ["d=JSON.stringify(o);this.lastWritten", "o"],
     read: ["return this.seenOnDisk.set(t,{stamp:o,document:s.project}),", "s.project"],
     attach: ["n.onWritten((y,x)=>m.afterWrite(y,x));", "n,m,t"],
     revFiles: [
@@ -153,7 +156,11 @@ const patchStore = (replace, k) => {
   around(replace, "applyMutation", "t,r,n", () => "__carton.applyMutation(this,t,r,n)");
   replace(...s.updateScoped);
   // (the install is given the rev the file is written with, the project's stateUpdatedAt, so it doesn't parse the whole
-  // file again to read it: writeNow has the document it just stringified)
+  // file again to read it: writeNow has the document it just stringified; and that envelope itself, which the worker's
+  // Materializer takes with the file's stamp after a GUI save instead of reading project.json again: H8's save path.
+  // The proof, replaced by itself, shows the name is what writeNow stringifies)
+  replace(s.envelope[0], s.envelope[0]);
+  if (!s.install[1].includes(`t.stateUpdatedAt,${s.envelope[1]})`)) throw new Error("patch-carton.js: the install isn't given writeNow's envelope");
   replace(...s.install);
   // The bundle loader behind read() and the library's rescan: a project.json caught mid-install is waited for, not
   // taken for a removed project.

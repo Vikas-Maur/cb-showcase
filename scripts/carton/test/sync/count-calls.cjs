@@ -5,18 +5,23 @@
 //             NTFS (and often the virus scanner), so their number is what a save costs there
 //   mirror    Cardboard's own print of timeline.tsx written to its temp file (the store bridge's writeFile)
 //   project   calls of the editor's GUI save projection P (fmsv.cjs): how many items a save projects
+//   projectReads
+//             whole reads of a bundle's project.json (readFileSync, promises.readFile): after a GUI save the
+//             Materializer takes the file the store just wrote from the facade (hostWrite) instead of reading it again
 //   socket    writes on a net socket (local's control socket, a Unix socket or a named pipe): a write the app hands to
 //             a lease holder over it, and the holder's answer
 const fs = require("fs");
 const Module = require("module");
 let counts, inside = false;
-const reset = () => (counts = { fs: 0, byCall: {}, mirror: 0, project: 0, socket: 0 });
+const reset = () => (counts = { fs: 0, byCall: {}, mirror: 0, project: 0, projectReads: 0, socket: 0 });
 reset();
 const MIRROR_TMP = /[\\/]\.timeline\.tsx\.[0-9a-f-]+\.tmp$/;
+const PROJECT_JSON = /\.cardboard[\\/]project\.json$/;
 const count = (name, file) => {
   counts.fs++;
   counts.byCall[name] = (counts.byCall[name] ?? 0) + 1;
   if (name === "promises.writeFile" && typeof file === "string" && MIRROR_TMP.test(file)) counts.mirror++;
+  if ((name === "readFileSync" || name === "promises.readFile") && typeof file === "string" && PROJECT_JSON.test(file)) counts.projectReads++;
 };
 for (const [obj, prefix] of [[fs, ""], [fs.promises, "promises."]]) {
   for (const k of Object.keys(obj)) {

@@ -44,7 +44,7 @@ test("a GUI save with Carton on: no discarded print, one projection per changed 
     const per = (n) => n / SAVES;
     const calls = Object.entries(c.byCall).sort((x, y) => y[1] - x[1]).map(([k, n]) => `${k} ${per(n)}`).join(", ");
     // every count, whichever assertion fails (and in the output when none does)
-    const all = `per save: ${per(c.fs)} file system calls, ${per(c.mirror)} discarded prints, ${per(c.project)} projections; ${calls}`;
+    const all = `per save: ${per(c.fs)} file system calls, ${per(c.mirror)} discarded prints, ${per(c.project)} projections, ${per(c.projectReads)} project.json reads; ${calls}`;
     tc.diagnostic(all);
     // Cardboard's mirror prints the whole timeline after each save; where the Materializer owns timeline.tsx that print
     // was written to a temp file and deleted unread (store bridge mirrorOwned).
@@ -57,6 +57,11 @@ test("a GUI save with Carton on: no discarded print, one projection per changed 
     // the review of displaced files. Bound: ~1.5x the 86 counted when it was set (Linux, 60 items); each is a round
     // trip through NTFS on Windows.
     assert.ok(per(c.fs) <= 130, `${per(c.fs)} file system calls per save (bound 130); ` + all);
+    // project.json, read whole: Cardboard reads it twice after its own write, and the install checks its bytes once.
+    // The Materializer doesn't read it again to print timeline.tsx: the facade hands it the envelope the store wrote,
+    // with the file's stamp (hostWrite). Without that it reads the file after every save: 4 per save (Linux, 60
+    // items). Bound 3.5: a stray read in every other save passes, the extra read in each save doesn't.
+    assert.ok(per(c.projectReads) <= 3.5, `project.json read ${per(c.projectReads)} times per save (bound 3.5); ` + all);
   } finally {
     await pc.stopWorker();
     S.killHelpers();
