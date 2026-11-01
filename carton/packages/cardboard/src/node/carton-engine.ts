@@ -3,7 +3,8 @@
 //
 // - Pins carry the owner they were made for, and each owner's refs are kept in the local `views` table, one key per
 //   ref, so a turn ending (`release(owner)`) releases every pin it took, whichever process made them, and a long-lived
-//   owner (the shared file's prints) never rewrites a growing list. Records past their pin's expiry are pruned.
+//   owner (the shared file's prints) never rewrites a growing list. Records past their pin's expiry are pruned, and an
+//   owner that asks (`keep`: the shared file's prints) has its older pins released (see `prune`).
 // - A save's cards keep head's value (as the system proof's materializer did): the first commit reports them, then the
 //   save is committed with head's side chosen for each card, and the cards go to the materializer (status sidecar,
 //   notices, the human's conflict cards).
@@ -21,7 +22,7 @@
 import { StateUnknown, actorKey } from "@carton/core";
 import type { Actor, Carton, Doc, Notice, NoticeKind, StateRef, ConflictCard } from "@carton/core";
 import { branchToken, revBody, type CartonRev, type Rev } from "../header.ts";
-import type { HeldBase, MaterializerEngine, SaveResult } from "./materializer.ts";
+import type { HeldBase, MaterializerEngine, PinKeep, SaveResult } from "./materializer.ts";
 
 const VIEWS = "views";
 /** The ref token core prints (`<cut name>@<seq>~<hash8>`), from a pin's header (`… b:<branch8> p:… by …`). */
@@ -51,7 +52,7 @@ export interface CartonEngineOptions {
 }
 
 /** This engine: every optional method of `MaterializerEngine` is there (the materializer uses one only when it is). */
-export type CartonEngine = MaterializerEngine & Required<Pick<MaterializerEngine, "changesSince" | "newChangeId" | "own" | "cut" | "headRef">>;
+export type CartonEngine = MaterializerEngine & Required<Pick<MaterializerEngine, "changesSince" | "newChangeId" | "own" | "cut" | "headRef" | "pendingChanges" | "putMetas">>;
 
 export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptions = {}): CartonEngine {
   const store = carton.store;
@@ -111,6 +112,7 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
   };
   const pinKey = (r: StateRef) => `${r.branchId}|${r.seq}|${r.hash8 ?? r.hash?.slice(0, 8) ?? ""}`;
   const pinsByOwner = new Map<string, number>();
+  const keepByOwner = new Map<string, PinKeep>();
   /** The author's cards row for a save (`@carton/local`'s `cardsRow`). */
   const cardsRow = (author: Actor, change: string, cards: readonly ConflictCard[]) => {
     const at = now();
@@ -119,11 +121,22 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
     return { table: "notices", key: cardsKey(author, change), value };
   };
 
-  /** Drops this owner's records whose pin has expired (core has released those pins itself). */
-  const prune = async (owner: string): Promise<void> => {
+  /**
+   * Drops this owner's records whose pin has expired (core has released those pins itself). With `keep`, the owner's
+   * other pins past it are released too: all but the newest `keep.count` and those pinned in the last `keep.ms` (a pin's
+   * time is its expiry less `ttlMs`: an owner pins with one time to live). Runs before a pin of the owner (never after
+   * it: a record for the state being pinned again could otherwise release it).
+   */
+  const prune = async (owner: string, ttlMs: number, keep?: PinKeep): Promise<void> => {
     const t = now();
-    const old = (await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] })).filter((r) => r.value.expires <= t);
-    if (old.length) await store.write(old.map((r) => ({ table: VIEWS, key: r.key, value: undefined })));
+    const rows = await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] });
+    const old = rows.filter((r) => r.value.expires <= t);
+    const live = rows.filter((r) => r.value.expires > t);
+    const at = (r: PinRecord) => r.expires - ttlMs;
+    const past = keep ? live.sort((a, b) => at(b.value) - at(a.value)).slice(keep.count).filter((r) => t - at(r.value) >= keep.ms) : [];
+    for (const r of past) await carton.release(r.value.ref, owner);
+    const gone = [...old, ...past];
+    if (gone.length) await store.write(gone.map((r) => ({ table: VIEWS, key: r.key, value: undefined })));
   };
 
   /** One commit of a save: the first with its cards, then with head's side chosen for each. */
@@ -177,18 +190,20 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       await readShared();
       return (await carton.head(cut())).doc;
     },
-    async pin({ owner, cut: at, doc, seq, causal, ttlMs }) {
+    async pin({ owner, cut: at, doc, seq, causal, ttlMs, keep, deferRecord }) {
       // the cut is read once: the pin's store refresh may find a cut another process switched to (review 11 #1)
       const on = at ?? cut();
       await readShared();
-      const p = await carton.pin({ owner, cut: on, ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
-      const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
-      await store.write([{ table: VIEWS, key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord }]);
       // now and then, per owner: long-lived owners (the shared file's prints) keep pinning new states
       const n = (pinsByOwner.get(owner) ?? 0) + 1;
       pinsByOwner.set(owner, n);
-      if (n % 64 === 0) await prune(owner);
-      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on };
+      if (keep) keepByOwner.set(owner, keep); // an owner's rule holds for its pins that don't repeat it
+      if (n % 64 === 0) await prune(owner, ttlMs, keepByOwner.get(owner));
+      const p = await carton.pin({ owner, cut: on, ttlMs, ...(doc ? { doc } : {}), ...(seq !== undefined ? { seq } : {}), ...(causal?.length ? { causal } : {}) });
+      const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
+      const record = { key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord };
+      if (!deferRecord) await store.write([{ table: VIEWS, ...record }]);
+      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on, ...(deferRecord ? { record } : {}) };
     },
     async release(owner) {
       const rows = await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] });
@@ -270,8 +285,14 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
         page = await carton.log({ cut: c, limit: PAGE, before: page[page.length - 1]!.ref.seq });
       }
     },
+    async pendingChanges(at?: string) {
+      return carton.pendingChanges(at ?? cut());
+    },
     getMeta,
     putMeta,
+    async putMetas(rows) {
+      if (rows.length) await store.write(rows.map((r) => ({ table: VIEWS, key: r.key, value: r.value })));
+    },
     shared: () => opts.shared?.() ?? isShared,
   };
 }

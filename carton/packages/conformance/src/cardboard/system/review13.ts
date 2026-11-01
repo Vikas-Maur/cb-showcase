@@ -49,7 +49,7 @@ test("review 13 #1: a head-equal save committed after the cut switched away and 
       n++;
       if (n < 4) {
         await other.switchTo((await other.fork(`Cut ${n}`)).id);
-        await w.carton.head(); // this handle's store refresh finds the new cut
+        await w.follow(); // local's follower adopts the new cut
       } else {
         await other.switchTo(main);
         await w.carton.switchTo(main); // local's follower switches the handle back

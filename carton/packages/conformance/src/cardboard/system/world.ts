@@ -13,7 +13,7 @@ import { Carton } from "@carton/core";
 import type { Actor, Doc, Rec, Op } from "@carton/core";
 import { createMemoryStore } from "@carton/store-memory";
 import { cardboardAdapter, cardboardFilesHost, fromHost, toHost, findRev, jsonTimelineCodec, type TimelineCodec } from "@carton/cardboard";
-import { Materializer, cartonMaterializerEngine, TIMELINE_FILE, PROJECT_FILE, type Clock } from "@carton/cardboard/node";
+import { Materializer, cartonMaterializerEngine, TIMELINE_FILE, PROJECT_FILE, type Clock, type MaterializerOptions } from "@carton/cardboard/node";
 
 export const SCRATCH = process.env.CARTON_SCRATCH ?? path.join(os.homedir(), "gfv-scratch", "carton", "cardboard-adapter", "conformance");
 export type Item = Rec & { id: string };
@@ -65,7 +65,12 @@ export interface WorldOptions {
   project?: Record<string, unknown>;
   codec?: TimelineCodec;
   /** Materializer options a host sets (the app: its own displaced folder, project.json its own). */
-  materializer?: { displacedDir?: string; writeProject?: boolean };
+  materializer?: Partial<Pick<MaterializerOptions, "displacedDir" | "writeProject" | "keepPrints" | "group" | "onCards">>;
+  /**
+   * The cut is shared while this replica is offline (handed off, no server yet): commits stay pending, and the engine
+   * reads that the cut is shared from it (no `setShared`).
+   */
+  offlineShared?: boolean;
   /** Runs on the bundle before the materializer is made and started (files an earlier process or the host left). */
   beforeStart?: (bundle: string) => void;
 }
@@ -89,9 +94,13 @@ export async function openWorld(t: TestContext, o: WorldOptions) {
   fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
   const clock = new VirtualClock();
   const store = createMemoryStore();
-  const carton = await Carton.open({ adapter: cardboardAdapter, store, init: { doc: fromHost(project, null), projectId: project.id }, actor: HUMAN, clock: () => clock.now() });
+  // offline: a transport that never connects (the cut waits as handed off, its commits pending)
+  const offline = { connect: async () => Promise.reject(Object.assign(new Error("offline"), { code: "unreachable" })) };
+  const sync = o.offlineShared ? { sync: { transport: offline as never, url: "inproc://offline", token: "t", autoConnect: false } } : {};
+  const carton = await Carton.open({ adapter: cardboardAdapter, store, init: { doc: fromHost(project, null), projectId: project.id }, actor: HUMAN, clock: () => clock.now(), ...sync });
+  if (o.offlineShared) await carton.share();
   let shared = false;
-  const engine = cartonMaterializerEngine(carton, { shared: () => shared, clock: () => clock.now() });
+  const engine = cartonMaterializerEngine(carton, { ...(o.offlineShared ? {} : { shared: () => shared }), clock: () => clock.now() });
   o.beforeStart?.(bundle);
   const mz = (open.mz = new Materializer({ bundle, engine, host: cardboardFilesHost, codec: o.codec ?? jsonTimelineCodec, clock, ...o.materializer }));
   await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 7 * 86_400_000 })).ref);
@@ -130,6 +139,14 @@ export async function openWorld(t: TestContext, o: WorldOptions) {
     gui: (fn: (items: Item[]) => void) => commitAt(HUMAN, fn, "gui"),
     remote: (fn: (items: Item[]) => void, who: Actor = BOB) => commitAt(who, fn, "remote"),
     setShared: (v: boolean) => void (shared = v),
+    /**
+     * What `@carton/local`'s follower does when another process stored a cut switch (`adoptCut`): this handle adopts the
+     * stored current cut, without storing it again. Core never moves a handle's cut itself (foundation `90077ed`).
+     */
+    follow: async () => {
+      const stored = await carton.store.get<string>("meta", ["current"]);
+      if (stored && stored !== carton.cut && (await carton.cuts()).some((c) => c.id === stored)) await carton.switchTo(stored, { persist: false });
+    },
     writeAtomic,
     writeInPlace: (rel: string, content: string) => {
       fs.writeFileSync(abs(rel), content);

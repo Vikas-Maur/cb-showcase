@@ -1,6 +1,7 @@
 // Regressions found by review rounds 11 and 12 (GPT 6.1 Sol), on the real engine, history and materializer: a freeze
-// view belongs to the cut it was pinned on (B6), a pin or a head read can find a cut another process switched to, and a
-// save is a no-op only against the current cut's head.
+// view belongs to the cut it was pinned on (B6), a pin or a head read can find a cut another process switched to (the
+// handle adopts it through local's follower, `w.follow()`, which can run while the materializer awaits one), and a save
+// is a no-op only against the current cut's head.
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -26,7 +27,7 @@ test("review 11 #1: a cut another process switches to while a head-equal save is
   await w.remote((its) => void (find(its, "c").name = "main rename")); // hidden by the freeze
   await w.tick(500);
   // while the materializer pins head to check A's save, another process makes Cut B, switches to it and edits y there;
-  // this handle's next store refresh finds the switch
+  // local's follower adopts the switch on this handle
   const realPin = w.engine.pin.bind(w.engine);
   let cutB: string | undefined;
   w.engine.pin = async (o) => {
@@ -35,7 +36,7 @@ test("review 11 #1: a cut another process switches to while a head-equal save is
       cutB = (await other.fork("Cut B")).id;
       await other.switchTo(cutB);
       await commitOn(other, (its) => void (find(its, "y").name = "Cut B edit"));
-      await w.carton.head();
+      await w.follow();
     }
     return p;
   };
@@ -77,7 +78,7 @@ test("review 11 #1: a head-equal save is checked against the head of the cut it 
     if (o.owner === "shared-file" && !cutB) {
       cutB = (await other.fork("Cut B", { from: before })).id;
       await other.switchTo(cutB);
-      await w.carton.head();
+      await w.follow();
     }
     return p;
   };
@@ -134,7 +135,7 @@ test("review 12 #1: a head-equal save is not taken as unchanged against an old c
       const cut = n < 4 ? await other.fork(`Cut ${n}`) : await other.fork("Cut 4", { from: before });
       await other.switchTo(cut.id);
       if (n === 4) last = cut.id;
-      await w.carton.head();
+      await w.follow();
     }
     return p;
   };
@@ -158,6 +159,7 @@ test("review 12 #1: a project.json save equal to head is committed on the cut fo
   const env = JSON.parse(fs.readFileSync(w.abs(PROJECT_FILE), "utf8")) as { project: { timelineItems: Item[] } };
   await w.remote((its) => void (find(its, "c").name = "main rename"));
   // while the materializer reads head to check the app's save, another process switches to a cut forked before the rename
+  // (and local's follower adopts it)
   const realHead = w.engine.head.bind(w.engine);
   let cutB: string | undefined;
   w.engine.head = async () => {
@@ -165,7 +167,7 @@ test("review 12 #1: a project.json save equal to head is committed on the cut fo
     if (!cutB) {
       cutB = (await other.fork("Cut B", { from: before })).id;
       await other.switchTo(cutB);
-      await w.carton.head();
+      await w.follow();
     }
     return d;
   };
@@ -190,11 +192,11 @@ test("review 12 #1's class: project.json's rewrite isn't skipped against an old 
   w.engine.head = async () => {
     const d = await realHead();
     if (!cutB) {
-      // another process switches to a cut of its own with an edit; this handle's head read finds it
+      // another process switches to a cut of its own with an edit; local's follower adopts it
       cutB = (await other.fork("Cut B")).id;
       await other.switchTo(cutB);
       await commitOn(other, (its) => void (find(its, "y").name = "Cut B edit"));
-      await w.carton.head();
+      await w.follow();
     }
     return d;
   };

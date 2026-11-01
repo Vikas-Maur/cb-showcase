@@ -58,8 +58,16 @@ same header. `engine` is a `MaterializerEngine` over Carton and carton.db (`@car
   to 100 ms), `.cbproj` export included; the app's readers wait while `.carton/install.lock` is held. A writer that
   keeps re-creating the file stops an install after 50 displaced files (`InstallGaveUp`), with nothing lost.
 - **The shared `timeline.tsx`** keeps 1.4.0's header contract: `// cardboard:rev main@57~3f9a1c0e b:<branch> p:<nonce>
-  by <actor>`, regenerated after every applied save. While a local agent is active it shows the freeze view, and while
-  the cut is shared remote changes rewrite it at most every 30 s.
+  by <actor>`, regenerated after every applied save. While a local agent is active it shows the freeze view: the
+  person's and remote changes stay out, local agents' own edits (file saves and `cb` changes, on a shared cut also their
+  edits still pending offline) show at once. While the cut is shared remote changes rewrite it at most every 30 s.
+- **How old a print can be** (R7-01): each print is pinned, and superseded prints are released once they are past the
+  newest 256 and older than a day (`keepPrints`). A save on a released print still applies exactly when it named a
+  confirmed version (no pin needed); one on a freeze view or on edits still pending offline is refused "state unknown:
+  re-print". Never a wrong base.
+- **A host that writes for its own changes** (the app's GUI save writes project.json after its commit) tells it:
+  `onHeadChange("gui", { after })`. The rewrites wait until `after` settles (5 s at most), and with what it resolves to
+  (project.json's envelope and stamp, `HostWrite`) project.json isn't read again.
 - **Per-agent views** `.scratch/views/<name>.tsx` are applied live and never rewritten except by their owner's print.
   The base of a save is the last applied save of the same print, so earlier edits are never merged twice (R4-02).
   After each apply, `.scratch/views/<name>.status` says `confirmed`, `pending`, `conflicts` or `error`.
