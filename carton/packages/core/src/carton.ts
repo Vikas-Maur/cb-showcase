@@ -14,13 +14,14 @@
 
 import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncoder, Store, StoreCondition, StoreKey, StoreWrite, Transport } from "./plugins.ts";
 import type { FieldSpec, Schema } from "./schema.ts";
-import type { PresenceState } from "./sync/messages.ts";
+import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { ReplicaQueue, type HistoryFields, type QueuedChange } from "./sync/queue.ts";
+import { ReplicaQueue, type HistoryFields, type QueuedChange, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards } from "./history/history.ts";
 import * as E from "./engine/index.ts";
+import { freezeDeep, seal } from "./engine/doc.ts";
 import type {
   Actor,
   CartonEvent,
@@ -48,6 +49,7 @@ import type {
   ShallowExport,
   ShotDiff,
   StateRef,
+  SyncError,
   UndoEntry,
   Version,
 } from "./types.ts";
@@ -63,7 +65,9 @@ export interface OpenOptions {
    * Create the project when the store is empty: a Main cut at `doc`, or (`import`) from a teammate's shallow `.cbproj`
    * of a project this machine doesn't have: their cuts become tracking cuts and a writable cut forks from their head.
    * `asChange`: §16 migration of an existing project: the cut starts empty and `doc` is `main@1`, one insert-all
-   * change by `{kind: "system", id: "import"}` (otherwise `doc` is the root state at seq 0).
+   * change by `{kind: "system", id: "import"}` (otherwise `doc` is the root state at seq 0). The root and the import are
+   * one store write; a project still at an empty root with no change (left by an older build) gets the import when
+   * opened with `asChange`.
    * `join`: a cut a host already sequences, opened from an invite on a machine that holds nothing of the project.
    */
   init?: { doc: Doc; projectId?: string; cutName?: string; asChange?: boolean } | { import: ShallowExport } | { join: JoinInit };
@@ -150,10 +154,19 @@ export interface Preview {
 
 /** Who last changed a record, when, and in which change (`at`/`change` are null for a record from an imported `.cbproj`). */
 export interface Credit {
+  /** Who: the generic person told by person where known (`authoredAs` then holds the actor as recorded). */
   actor: Actor;
   at: number | null;
   change: ChangeId | null;
+  authoredAs?: Actor;
 }
+
+/**
+ * The id of the generic person: Cardboard's GUI saves are `{kind: "human", id: "person"}` on every computer. A change by
+ * it is told as the person behind its replica (windows-sync R3): `Carton.setIdentity`, and the server's people.
+ */
+export const PERSON = "person";
+export type { Person, PersonRids } from "./sync/messages.ts";
 
 /** A Published cut, the cut it was published from, and whether that cut has moved on since. */
 export interface Publication {
@@ -194,6 +207,12 @@ export interface CartonSync {
    * caller that reports it can mark that notice delivered rather than have it told again on the next call.
    */
   waitFor(id: ChangeId, ms: number, cut?: string): Promise<WriteOutcome>;
+  /**
+   * Why the cut's sync is failing (default: the current cut), or null: a hello refused (an older host: "update the
+   * server"), a token the host doesn't accept, a host it can't reach. Cleared by a later welcome or ack; each change
+   * is also a `sync-error` event (web-demo REQ-8).
+   */
+  error(cut?: string): SyncError | null;
 }
 
 export interface CartonMedia {
@@ -212,6 +231,11 @@ export interface Carton {
 
   /** Head of a cut (default: current): its ref and an owned copy of its state. */
   head(cut?: string): Promise<{ ref: StateRef; doc: Doc }>;
+  /**
+   * How many edits wait for a shared cut's server (default: the current cut), whichever process made them: read from
+   * the store, so a handle without sync (`cb`) sees the app's waiting edits too. 0 for a cut no server sequences.
+   */
+  pendingCount(cut?: string): Promise<number>;
   /** The state at a ref (`git checkout` as a read). Throws StateUnknown for a ref it can't rebuild exactly. */
   checkout(ref: StateRef | string): Promise<Doc>;
   /** A ref's state and causal past (the pending ids a commit on it builds on). */
@@ -243,7 +267,12 @@ export interface Carton {
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
   /** `id`: a stable cut id, so a retried call returns the cut it already made. */
   fork(name: string, opts?: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string }): Promise<CutRecord>;
-  switchTo(cut: string): Promise<void>;
+  /**
+   * Make `cut` the current cut, this handle's and the machine's (`meta ["current"]`, last writer wins). With
+   * `persist: false`, the handle's only, nothing written: for a process that adopts a switch another one stored, so a
+   * third process's switch in between is never overwritten by the adoption.
+   */
+  switchTo(cut: string, opts?: { persist?: boolean }): Promise<void>;
   /** Fold `from` (a cut id or a ref) into `into` (default: current cut). */
   /** With `check: true`, nothing is committed and `preview` tells what the fold would bring in. */
   fold(from: string | StateRef, opts?: FoldOptions & { into?: string }): Promise<FoldResult & { preview?: FoldPreview }>;
@@ -302,6 +331,16 @@ export interface Carton {
   readonly sync: CartonSync | null;
   /** Present when opened with `media`. */
   readonly media: CartonMedia | null;
+  /**
+   * The person at this replica (windows-sync R3): `id` the sync session's account (the server refuses any other), `name`
+   * what teammates see. Kept in the store and sent to the server on every connection. From then on `log()` and
+   * `credits()` tell a change by the generic person (`PERSON`) as the person behind its replica: this store's own
+   * replicas as this person, a teammate's as the server says (every replica id their device credential used, edits
+   * from before a share included). The recorded actor stays in `authoredAs`; hashes and history are untouched.
+   */
+  setIdentity(who: Person): Promise<void>;
+  /** This replica's person (`setIdentity`), or null. */
+  identity(): Person | null;
   close(): Promise<void>;
 }
 
@@ -320,11 +359,126 @@ interface PendingRow {
   kinds: EditKinds | null;
   policy: Policy;
   history?: HistoryFields;
+  // where the queue had it (web-demo REQ-7), so a restart resumes it rather than committing it afresh; absent: none
+  /** Its latest version's rebase count. */
+  k?: number;
+  supersedes?: string[];
+  /** The cards its rebases raised, by rebase count: what it reports when it settles. */
+  cards?: { k: number; cards: ConflictCard[] }[];
+  /** The bases it was pushed on (hello claims them; an emptied one is withdrawn). */
+  sentBases?: number[];
+  /** Refused here after a copy was sent: withdrawn, then reported rejected with this reason. */
+  rejecting?: string;
+  /**
+   * Its causal base: the confirmed seq its ops were made on, and the pending changes they sit on (its version's `base`).
+   * Restored on a newer head, it is rebased onto what was confirmed since (SF2-2, SF3-3); a seq past the stored rows is
+   * kept as a saved catch-up state (`["queue-head", cut, seq]`) for as long as a row needs it (SF1-4, SF3-1).
+   */
+  head?: number;
+  basePending?: string[];
+  /** Its base as ops from the confirmed state at `head` (review SF4-2); absent when it sits on no pending change. */
+  baseDelta?: Op[];
 }
-const pendingRow = (p: QueuedChange, order: number): PendingRow => {
+const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
-  return { id: p.id, author: p.author, ops: v.ops, at: p.created, order, intent: v.intent, kinds: v.kinds, policy: v.policy, ...(p.history ? { history: p.history } : {}) };
+  const delta = q.baseDelta(p.branchId, v);
+  const cards = p.versions.filter((x) => x.cards.length).map((x) => ({ k: x.k, cards: x.cards }));
+  return {
+    id: p.id,
+    author: p.author,
+    ops: v.ops,
+    at: p.created,
+    order,
+    head: v.base.seq,
+    basePending: [...v.base.pending],
+    ...(delta?.length ? { baseDelta: delta } : {}),
+    intent: v.intent,
+    kinds: v.kinds,
+    policy: v.policy,
+    ...(p.history ? { history: p.history } : {}),
+    ...(v.k ? { k: v.k, supersedes: v.supersedes } : {}),
+    ...(cards.length ? { cards } : {}),
+    ...(p.sentBases.length ? { sentBases: [...p.sentBases] } : {}),
+    ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
+  };
 };
+/** A stored pending row as the queue takes it back (`ReplicaQueue.restore`). */
+const restoreInput = (p: PendingRow): RestoreInput => ({
+  id: p.id,
+  author: p.author,
+  ops: p.ops,
+  at: p.at,
+  intent: p.intent,
+  kinds: p.kinds,
+  policy: p.policy,
+  inferIntent: false,
+  ...(p.history ? { history: p.history } : {}),
+  k: p.k ?? 0,
+  supersedes: p.supersedes ?? [],
+  cards: p.cards ?? [],
+  sentBases: p.sentBases ?? [],
+  ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
+  ...(p.head !== undefined ? { head: p.head } : {}),
+  ...(p.basePending ? { basePending: p.basePending } : {}),
+  ...(p.baseDelta ? { baseDelta: p.baseDelta } : {}),
+});
+/**
+ * The problem a machine code names (web-demo REQ-9): a sequencer refusal's `ErrorMsg.code`, or a transport's for a
+ * failed connect (hosts-plugins' TransportError). Read before the words, which are for people and change.
+ */
+const CODED: Record<string, SyncError["code"]> = {
+  "schema-too-new": "update-server",
+  unauthorized: "unauthorized",
+  forbidden: "unauthorized",
+  "bad-request": "server",
+  unreachable: "unreachable",
+  closed: "unreachable",
+  protocol: "server",
+};
+/**
+ * A state handed to a caller (`head`, `checkout`, `resolve`): its own collection arrays (add, remove or reorder freely),
+ * its records and root values frozen. They are History's own (shared with every state that didn't change them), so one
+ * edited in place would change History's head and the next commit would find nothing to save (kit-docs: "documents are
+ * values: replace the record you change"). Frozen, such an edit throws instead. A record keeps its identity, which
+ * diffs and hashes rely on to skip what didn't change. The cost per call is the fork it always was: a collection
+ * array of History's is sealed once (engine/doc.ts `seal`), and apply keeps it sealed by freezing only what a change
+ * writes into it; `doc` is History's own state (`History.viewOf`), never forked twice.
+ */
+function owned(doc: Doc, schema: Schema): Doc {
+  for (const k of Object.keys(doc)) {
+    const v = doc[k];
+    if (Array.isArray(v) && schema.collections[k]) seal(v as Rec[]);
+    else freezeDeep(v);
+  }
+  return E.fork(doc, schema);
+}
+/** A sync client's error, classified for a status line (the words are kept as they came). */
+function syncError(message: string, code?: string): SyncError {
+  const words = message.replace(/^connect: /, "");
+  const coded = code ? CODED[code] : undefined;
+  if (coded) return { code: coded, message: words };
+  // no code (an older host, another transport): by the words. A failed connect is unreachable unless the host said it
+  // refused (a message that only mentions a token is not a refusal: REQ-9b); otherwise the token or its scope
+  // ("token expired", "this token is for another project", "can't read …", a write refused as forbidden, read-only or
+  // under another device's id: SF3-7)
+  const connect = /^connect: /.test(message);
+  const kind: SyncError["code"] = /newer than this server|schemaVersion \d+ is newer/.test(message)
+    ? "update-server"
+    : connect
+      ? /unauthori[sz]ed|forbidden|\b40[13]\b/i.test(message)
+        ? "unauthorized"
+        : "unreachable"
+      : /unauthori[sz]ed|forbidden|token expired|token is for another project|this token|can't read|foreign id|read-only branch/i.test(message)
+        ? "unauthorized"
+        : /^unknown branch/.test(message)
+          ? "unknown-cut"
+          : /over the server's limit|too large/i.test(message)
+            ? "too-large"
+            : "server";
+  return { code: kind, message: words };
+}
+/** Confirmed states past the stored rows that pending rows were made on (meta `[QUEUE_HEAD, cut, seq]`): `#gapWrites`. */
+const QUEUE_HEAD = "queue-head";
 /** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
 const TURN = ["append-turn"] as const;
 /** A turn its holder never gave back is free after this long (a crashed writer; one append takes far less). */
@@ -401,6 +555,23 @@ class CartonImpl implements Carton {
    * have dropped its pending row (it left the queue), and its notice must still go to its author.
    */
   #authors = new Map<ChangeId, Actor>();
+  /**
+   * The ids each shared cut's queue in this handle has held: only their pending rows are this handle's to remove once
+   * they leave the queue. Another process's row (it committed without the sync lease, F5) stays for the next holder
+   * to start, unless its id is confirmed (review SF1-2: a running holder's settle deleted it).
+   */
+  #queued = new Map<string, Set<ChangeId>>();
+  /**
+   * Outcome events (confirmed, absorbed, rejected) whose settling batch threw, per cut: their notices go out with the
+   * next settle of the cut, and a wait answers `pending` until one stores them (review SF1-6).
+   */
+  #unsettled = new Map<string, SharedCutEvent[]>();
+  /** Per cut, why its sync is failing, until a welcome or an ack (`sync.error`, `sync-error` events). */
+  #syncErrors = new Map<string, SyncError>();
+  /** Per cut, the catch-up states saved (`[QUEUE_HEAD, cut, seq]`, by seq; the store key, for an older one-key row). */
+  #gapSaved = new Map<string, Map<number, { key: StoreKey; doc: Doc }>>();
+  /** Per cut, stored pending rows whose base nobody can rebuild yet: kept as stored, retried at each settle (SF3-1). */
+  #heldRows = new Map<string, PendingRow[]>();
   readonly media: CartonMedia | null = null;
   #opts: OpenOptions;
   #h!: History;
@@ -414,6 +585,13 @@ class CartonImpl implements Carton {
   #noops: { id: ChangeId; cut: string; seq: number }[] = [];
   #pinSnap = new Map<string, PinRow>();
   #ridSaved = false;
+  /** People by replica id, as the server said (meta ["person", rid]); this replica's own person (meta ["identity"]). */
+  #people = new Map<string, Person>();
+  #me: Person | null = null;
+  /** This store's replica ids (meta ["rid", rid]): the person here made their changes. */
+  #ownRids = new Set<string>();
+  /** The last write of people the server sent: a reload waits for it, so it never reads the store from before it. */
+  #peopleSaved: Promise<unknown> = Promise.resolve();
   #closed = false;
   /** Joined cuts whose lineage is still to fetch from their server (meta ["join", cut]). */
   #joining = new Set<string>();
@@ -423,6 +601,8 @@ class CartonImpl implements Carton {
   #kf = new Map<string, { periodic: number; bytes: number }>();
   /** Rows a backfill fetched and checked, by cut and seq, for the next settlement to store in place of placeholders. */
   #filled = new Map<string, Map<number, ConfirmedChange>>();
+  /** Export rows (meta ["export", node, at, nonce]) this handle has taken in: read at load, written by its own exports. */
+  #exportRows = new Set<string>();
 
   constructor(opts: OpenOptions) {
     this.#opts = opts;
@@ -436,6 +616,7 @@ class CartonImpl implements Carton {
           return this.state().status;
         },
         state: (cut?: string) => self.#shared.get(cut ?? self.#h.current)?.state() ?? offline,
+        error: (cut?: string) => self.#syncErrors.get(cut ?? self.#h.current) ?? null,
         connect: async (o = {}) => {
           self.#connected = { nonce: o.nonce ?? randomHex(8), ...(o.fence ? { fence: o.fence } : {}) };
           self.#settleConds = o.conditions ?? [];
@@ -448,7 +629,8 @@ class CartonImpl implements Carton {
           self.#connected = null;
           for (const sc of self.#shared.values()) await sc.disconnect(o);
         },
-        presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#actor(), state),
+        // as this replica's person once set (windows-sync R3): teammates' cursors are told apart, never all "person"
+        presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#who(self.#actor(), `${self.#rid}.0`)!, state),
         waitFor: async (id, ms, cut) => {
           const b = cut ?? self.#h.current;
           const sc = self.#shared.get(b);
@@ -457,7 +639,7 @@ class CartonImpl implements Carton {
             // a settled outcome answers once it is in the store and History (its author's notice written, its pending
             // row gone, the confirmed row in log() and credits()), so a caller that reports it can mark that notice
             // delivered rather than have it told again on the next call
-            if (o.status !== "pending") await self.#settle(b, { type: "remote", rows: [] });
+            if (o.status !== "pending" && !(await self.#settle(b, { type: "remote", rows: [] }))) return { status: "pending", id };
             return o;
           }
           const done = self.#h.confirmedById(id);
@@ -485,25 +667,50 @@ class CartonImpl implements Carton {
       const h = History.create(this.schema, init.asChange ? emptyDoc(this.schema) : init.doc, { name: this.#opts.name ?? "replica", rid: this.#rid, nextId: () => `${this.#rid}.${++this.#n}`, clock: this.#opts.clock, projectId: init.projectId ?? null, keyframeEvery: this.#opts.keyframeEvery, cut: init.cutName ?? "Main cut" });
       const cut = h.cut(h.current)!;
       meta = { projectId: h.projectId!, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
-      const ok = await s.write(
-        [
-          { table: T.meta, key: PROJECT, value: meta },
-          { table: T.meta, key: CURRENT, value: cut.id },
-          { table: T.cuts, key: [cut.id], value: cut },
-          { table: T.keyframes, key: [cut.id, 0], value: h.stateOf(nodeId(cut.id, 0)) },
-        ],
-        [{ table: T.meta, key: PROJECT, expect: "absent" }],
-      );
-      if (!ok) return this.load(); // another process created it first: open theirs
+      const root: StoreWrite[] = [
+        { table: T.meta, key: PROJECT, value: meta },
+        { table: T.meta, key: CURRENT, value: cut.id },
+        { table: T.cuts, key: [cut.id], value: cut },
+        { table: T.keyframes, key: [cut.id, 0], value: h.stateOf(nodeId(cut.id, 0)) },
+      ];
+      const absent: StoreCondition[] = [{ table: T.meta, key: PROJECT, expect: "absent" }];
+      let ok: boolean;
       if (init.asChange) {
+        // the empty root and its import change in one write (local-cli request 7): a process stopped in between would
+        // leave an empty project that every later open took as made
         this.#meta = meta;
-        await this.#rebuild();
-        await this.#mutate(cut.id, () => this.#h.commit(cut.id, { doc: init.doc, author: { kind: "system", id: "import", name: "Import" }, kind: "import", id: `import.${this.#meta.projectId}` }), { idempotent: true });
-        return;
-      }
+        this.#h = h;
+        h.onConfirmed = (c, change) => this.#confirmed.push({ cut: c, change });
+        h.onNoop = (id, c, seq) => this.#noops.push({ id, cut: c, seq });
+        this.#confirmed.length = this.#noops.length = 0;
+        this.#importInit(cut.id, init.doc);
+        ok = await this.#flush(root, absent);
+        this.#confirmed.length = this.#noops.length = 0;
+      } else ok = await s.write(root, absent);
+      if (!ok) return this.load(); // another process created it first: open theirs
+      this.#meta = meta;
+      await this.#rebuild();
+      return;
     }
     this.#meta = await this.#checkSchema(meta);
     await this.#rebuild();
+    const init = this.#opts.init;
+    if (init && "doc" in init && init.asChange) await this.#resumeImport(init.doc);
+  }
+  #importInit(cut: string, doc: Doc): void {
+    if (this.#h.headSeq(cut) === 0) this.#h.commit(cut, { doc, author: { kind: "system", id: "import", name: "Import" }, kind: "import", id: `import.${this.#meta.projectId}` });
+  }
+  /**
+   * A project an older build left at its empty root (stopped between the root and the import, request 7), opened with
+   * `asChange`: the import is committed now. Only a project that is nothing but that: one local cut, no change on it,
+   * the empty root; a change that lands first (another process's import or edit) wins, and this one stands down.
+   */
+  async #resumeImport(doc: Doc): Promise<void> {
+    const cuts = this.#h.cuts();
+    const c = cuts[0];
+    if (cuts.length !== 1 || !c || c.forkOf || c.shallow || c.sequencer.kind !== "local" || this.#h.headSeq(c.id) !== 0) return;
+    if (this.#h.hashOf(nodeId(c.id, 0)) !== E.hashDoc(emptyDoc(this.schema), this.schema)) return;
+    await this.#mutate(c.id, () => this.#importInit(c.id, doc), { idempotent: true });
   }
   /**
    * Every process on a project must hash and merge its states alike (R2-03): one whose schema differs from the one the
@@ -560,9 +767,9 @@ class CartonImpl implements Carton {
     const lineage = (await s.range<DagNode>(T.lineage)).map((e) => e.value);
     const states = (await s.range<Doc>(T.states)).map((e): [string, Doc] => [e.key[0] as string, e.value]);
     const authors = (await s.range<Record<PathKey, Actor>>(T.meta, { prefix: ["authors"] })).map((e): [NodeId, Record<PathKey, Actor>] => [e.key[1] as string, e.value]);
-    const exportsBy = new Map<NodeId, { to: string; at: number }[]>();
-    for (const e of await s.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) (exportsBy.get(e.key[1] as string) ?? exportsBy.set(e.key[1] as string, []).get(e.key[1] as string)!).push(e.value);
-    h.loadKnowledge({ lineage, states, authors, exports: [...exportsBy] });
+    h.loadKnowledge({ lineage, states, authors });
+    this.#exportRows = new Set();
+    await this.#takeExports(h);
     const cuts = (await s.range<CutRecord>(T.cuts)).map((e) => e.value);
     const done = new Set<string>();
     const byId = new Map(cuts.map((c) => [c.id, c]));
@@ -573,7 +780,8 @@ class CartonImpl implements Carton {
         const p = byId.get(parseNode(c.forkOf).branchId);
         if (p) await add(p, [...stack, c.id]);
       }
-      const root = c.forkOf || c.shallow ? null : ((await s.get<Doc>(T.keyframes, [c.id, 0])) ?? null);
+      // a root cut's state at 0, or a fork's own copy of its fork state (SF1-1; older forks have none and rebuild it)
+      const root = c.shallow ? null : ((await s.get<Doc>(T.keyframes, [c.id, 0])) ?? null);
       h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}) });
       if (c.protected !== undefined || c.sequencer.kind !== "local" || c.source) h.updateCut(c.id, { ...(c.protected !== undefined ? { protected: c.protected } : {}), sequencer: c.sequencer, ...(c.source ? { source: c.source } : {}) });
       done.add(c.id);
@@ -595,6 +803,7 @@ class CartonImpl implements Carton {
     const current = await s.get<string>(T.meta, CURRENT);
     if (current && byId.has(current)) h.current = current;
     this.#joining = new Set((await s.range(T.meta, { prefix: ["join"] })).map((e) => e.key[1] as string));
+    await this.#loadPeople();
     this.#kf = kfState;
     h.onConfirmed = (cut, change) => this.#confirmed.push({ cut, change });
     h.onNoop = (id, cut, seq) => this.#noops.push({ id, cut, seq });
@@ -611,16 +820,44 @@ class CartonImpl implements Carton {
     const s = this.store;
     for (const e of await s.range<CutRecord>(T.cuts)) {
       const known = this.#h.cut(e.key[0] as string);
-      if (!known) return this.#rebuild();
+      // a cut this handle doesn't know, or one whose shape changed (shallow lineage filled in by importHistory in
+      // another handle, a fork point, tracking: review SF1-7): rebuilt from the store
+      if (!known || !!known.shallow !== !!e.value.shallow || !!known.tracking !== !!e.value.tracking || (known.forkOf ?? null) !== (e.value.forkOf ?? null)) return this.#rebuild();
       // another process renamed it (or changed its kind, protection, sequencer): take the stored record
       if (E.canonical(known) !== E.canonical(e.value)) this.#h.updateCut(e.value.id, { name: e.value.name, kind: e.value.kind, sequencer: e.value.sequencer, ...(e.value.protected !== undefined ? { protected: e.value.protected } : {}), ...(e.value.source ? { source: e.value.source } : {}) });
     }
     const cuts = cut ? [cut] : this.#h.cuts().filter((c) => !c.shallow).map((c) => c.id);
+    let loaded = false;
     for (const id of cuts) {
       const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [id], gt: [id, this.#h.headSeq(id)] })).map((e) => e.value);
-      if (rows.length) this.#h.load(id, rows);
+      if (rows.length) (loaded = true), this.#h.load(id, rows);
     }
+    // another process's rows: its replica id and what it learnt of people may be new too
+    if (loaded) await this.#loadPeople();
     await this.#loadPins(this.#h);
+  }
+  /**
+   * The export rows this handle hasn't taken in yet, another process's too: each exported version is a lineage point
+   * (R4-01), so a `.cbproj` this handle writes after `cb` sent one carries that version (local-cli request 9). Read at
+   * load and before each export, not on every refresh: nothing else here depends on them.
+   */
+  async #takeExports(h: History): Promise<void> {
+    const by = new Map<NodeId, { to: string; at: number }[]>();
+    for (const e of await this.store.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) {
+      const k = e.key.join("|");
+      if (this.#exportRows.has(k)) continue;
+      this.#exportRows.add(k);
+      by.set(e.key[1] as string, [...(by.get(e.key[1] as string) ?? []), e.value]);
+    }
+    if (by.size) h.loadKnowledge({ exports: [...by] });
+  }
+  /** People as the store holds them (any process may add to them): the server's, this replica's, this store's rids. */
+  async #loadPeople(): Promise<void> {
+    const s = this.store;
+    await this.#peopleSaved;
+    this.#people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
+    this.#me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
+    this.#ownRids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
   }
   /** A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite. */
   #pinWrite(ref: StateRef): { write: StoreWrite; cond: StoreCondition } {
@@ -710,7 +947,7 @@ class CartonImpl implements Carton {
     if (n) this.#h.noteNoop(id, n[0], n[1]);
   }
   /** Run a History mutation under the handle's queue, persist what it confirmed, and retry after losing a race. */
-  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId } = {}): Promise<R> {
+  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId; exports?: boolean } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
       // Starvation-free appends (VERIFIED S8): a writer that lost the race twice takes the append turn, and while it
@@ -722,6 +959,7 @@ class CartonImpl implements Carton {
       try {
         for (let lost = 0; ; ) {
           await this.#refresh(cut);
+          if (opts.exports) await this.#takeExports(this.#h);
           await this.#noopOf(opts.id);
           this.#confirmed.length = 0;
           this.#noops.length = 0;
@@ -796,10 +1034,11 @@ class CartonImpl implements Carton {
     this.#h.resolve(ref); // checks the hash: never a guess
     return nodeId(r.branchId, r.seq);
   }
+  /** History's own state for a ref (read-only: the live head itself for a cut's name; fork it before changing it). */
   #doc(ref: StateRef | string): Doc {
-    if (typeof ref === "string" && this.#h.cut(ref)) return this.#h.stateOf(this.#h.head(ref))!;
+    if (typeof ref === "string" && this.#h.cut(ref)) return this.#h.viewOf(this.#h.head(ref))!;
     if (typeof ref === "string" && /^[^~\s]+@\d+$/.test(ref)) {
-      const d = this.#h.stateOf(ref);
+      const d = this.#h.viewOf(ref);
       if (!d) throw new StateUnknown(ref, "state not held");
       return d;
     }
@@ -818,6 +1057,10 @@ class CartonImpl implements Carton {
   }
 
   // ------------------------------------------------------------ reading
+  async pendingCount(cut = this.#h.current): Promise<number> {
+    await this.#queue;
+    return (await this.store.range(T.pending, { prefix: [cut] })).length;
+  }
   async head(cut = this.#h.current) {
     await this.#queue;
     await this.#refresh(cut);
@@ -825,18 +1068,18 @@ class CartonImpl implements Carton {
     const sc = this.#isShared(cut) && this.#opts.sync ? await this.#ensureShared(cut) : undefined;
     if (sc) {
       this.#feedQueue(cut);
-      return { ref: this.#sharedRef(cut), doc: E.fork(sc.queue.optimistic(cut).doc, this.schema) };
+      return { ref: this.#sharedRef(cut), doc: owned(sc.queue.optimistic(cut).doc, this.schema) };
     }
-    return { ref: this.#h.ref(cut), doc: this.#h.stateOf(this.#h.head(cut))! };
+    return { ref: this.#h.ref(cut), doc: owned(this.#h.viewOf(this.#h.head(cut))!, this.schema) };
   }
   async checkout(ref: StateRef | string) {
     await this.#refresh();
-    return E.fork(this.#doc(ref), this.schema);
+    return owned(this.#doc(ref), this.schema);
   }
   async resolve(ref: StateRef | string) {
     await this.#refresh();
     const r = this.#h.resolve(ref);
-    return { doc: r.doc, seq: r.seq, causal: r.causal };
+    return { doc: owned(r.doc, this.schema), seq: r.seq, causal: r.causal };
   }
   async cuts() {
     await this.#refresh();
@@ -845,7 +1088,10 @@ class CartonImpl implements Carton {
   async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    const versions = this.#h.log(cut, opts);
+    const versions = this.#h.log(cut, opts).map((v) => {
+      const who = this.#who(v.author, v.change);
+      return who === v.author ? v : { ...v, author: who, authoredAs: v.author! };
+    });
     if (!opts.summary || !versions.length) return versions;
     // one state per page, walked forward: each version is described against the state just before it
     const lo = versions[versions.length - 1]!.ref.seq;
@@ -887,7 +1133,65 @@ class CartonImpl implements Carton {
   async credits(record: PathKey | readonly string[], opts: { cut?: string; detail?: boolean } = {}): Promise<Actor | Credit | null> {
     const cut = opts.cut ?? this.#h.current;
     await this.#refresh(cut);
-    return opts.detail ? this.#h.creditsDetail(cut, record) : this.#h.credits(cut, record);
+    const c = this.#h.creditsDetail(cut, record);
+    const who = c && this.#who(c.actor, c.actor.kind === "human" && c.actor.id === PERSON ? this.#creditChange(c.change, record) : c.change)!;
+    if (!opts.detail) return who;
+    return c && who !== c.actor ? { ...c, actor: who!, authoredAs: c.actor } : c;
+  }
+  // ---------------------------------------------------------------- people (windows-sync R3)
+  identity(): Person | null {
+    return this.#me;
+  }
+  async setIdentity(who: Person): Promise<void> {
+    const id = typeof who?.id === "string" ? who.id.trim() : "",
+      name = typeof who?.name === "string" ? who.name.trim() : "";
+    if (!id || !name || name.length > 200) throw new Error("Carton.setIdentity: an id and a name (1-200 characters)");
+    const me = { id, name };
+    await this.store.write([{ table: T.meta, key: ["identity"], value: me }]);
+    this.#me = me;
+    for (const sc of this.#shared.values()) sc.identify();
+    this.#emit({ type: "people" });
+  }
+  /** What the server says about people: kept (the store too, so history is told by person offline), then told. */
+  #takePeople(people: readonly PersonRids[]): void {
+    const writes: StoreWrite[] = [];
+    for (const p of people) {
+      if (typeof p?.id !== "string" || typeof p.name !== "string" || !Array.isArray(p.rids)) continue;
+      for (const rid of p.rids) {
+        const had = this.#people.get(rid);
+        if (typeof rid !== "string" || (had?.id === p.id && had.name === p.name)) continue;
+        this.#people.set(rid, { id: p.id, name: p.name });
+        writes.push({ table: T.meta, key: ["person", rid], value: { id: p.id, name: p.name } });
+      }
+    }
+    if (!writes.length) return;
+    // knowledge, not history: a write that fails is learnt again at the next welcome
+    this.#peopleSaved = this.#peopleSaved.then(() => this.store.write(writes)).catch(() => {});
+    this.#emit({ type: "people" });
+  }
+  /**
+   * The change whose author a credit names. A fold credits a record to who last changed it on the cut folded in
+   * (`lastAuthors`), not to the fold: that cut's change then, or null where it isn't held here (a shallow joiner), so a
+   * generic person is never told as whoever folded.
+   */
+  #creditChange(change: ChangeId | null, record: PathKey | readonly string[]): ChangeId | null {
+    const ch = change ? this.#h.findChange(change) : null;
+    const key = typeof record === "string" ? record : E.pathKey(record);
+    if (ch?.kind !== "merge" || !ch.lastAuthors?.[key]) return change;
+    const from = ch.mergeOf,
+      rec = from && this.#h.cut(from.branchId);
+    if (!from || !rec || rec.shallow || from.seq > this.#h.headSeq(from.branchId)) return null;
+    return this.#h.creditsDetail(from.branchId, key, from.seq)?.change ?? null;
+  }
+  /**
+   * The generic person's change told by person: the person behind its replica, as the server said, else this replica's
+   * own person for this store's replicas. Anyone else (an agent, a named human) as recorded.
+   */
+  #who(a: Actor | null, change: ChangeId | null): Actor | null {
+    if (a?.kind !== "human" || a.id !== PERSON || !change) return a;
+    const rid = change.slice(0, Math.max(0, change.indexOf(".")));
+    const p = this.#people.get(rid) ?? (this.#me && (rid === this.#rid || this.#ownRids.has(rid)) ? this.#me : undefined);
+    return p ? { ...a, id: p.id, name: p.name } : a;
   }
   async undoStack(group?: string, opts: { cut?: string } = {}) {
     const cut = opts.cut ?? this.#h.current;
@@ -1038,14 +1342,19 @@ class CartonImpl implements Carton {
         if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author: this.#actor(opts.author), publish: opts.kind === "published", ...(opts.id ? { id: `${opts.id}.held` } : {}) });
         rec = this.#h.cut(rec.id)!;
       },
-      { extra: () => (made ? { writes: [{ table: T.cuts, key: [rec.id], value: rec }], conds: [{ table: T.cuts, key: [rec.id], expect: "absent" }] } : {}), idempotent: !!opts.id },
+      {
+        // the fork's root state is kept with it: it never depends on its fork version's state surviving (a compaction
+        // in another process, or one this handle hasn't seen, may squash it: review SF1-1)
+        extra: () => (made ? { writes: [{ table: T.cuts, key: [rec.id], value: rec }, { table: T.keyframes, key: [rec.id, 0], value: this.#h.stateOf(nodeId(rec.id, 0))! }], conds: [{ table: T.cuts, key: [rec.id], expect: "absent" }] } : {}),
+        idempotent: !!opts.id,
+      },
     );
     return rec;
   }
-  async switchTo(cut: string): Promise<void> {
+  async switchTo(cut: string, opts: { persist?: boolean } = {}): Promise<void> {
     await this.#refresh();
     this.#h.current = cut;
-    await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
+    if (opts.persist !== false) await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
   }
   async renameCut(cut: string, name: string): Promise<CutRecord> {
     let rec!: CutRecord;
@@ -1225,7 +1534,9 @@ class CartonImpl implements Carton {
         continue;
       }
       const p = run[run.length - 1];
-      if (p && (groupOf(p.author) !== groupOf(c.author) || p.author.turn !== c.author.turn)) flush();
+      // one actor per run: the surviving change keeps its author, so a run of several (two agents of one turn, a
+      // subagent and its agent) would move the credit for what the others made (review SF1-5)
+      if (p && (actorKey(p.author) !== actorKey(c.author) || groupOf(p.author) !== groupOf(c.author) || p.author.turn !== c.author.turn)) flush();
       run.push(c);
     }
     flush();
@@ -1244,7 +1555,10 @@ class CartonImpl implements Carton {
     let n = 0;
     for (const c of h.changes(cut).slice(from - 1, lastRow.seq - 1)) {
       // rows squashed earlier point at this run's last change now; their keyframes go (their states are gone)
-      writes.push({ table: T.changes, key: [cut, c.seq], value: { ...c, ops: [], intent: null, kinds: null, squashedInto: lastRow.seq } }, { table: T.keyframes, key: [cut, c.seq], value: undefined });
+      // its version's state goes, its hash stays: a teammate's copy that has this version is still recognized as ours
+      // (review SF3-5)
+      const hash = c.squashedHash ?? h.hashOf(nodeId(cut, c.seq));
+      writes.push({ table: T.changes, key: [cut, c.seq], value: { ...c, ops: [], intent: null, kinds: null, squashedInto: lastRow.seq, ...(hash ? { squashedHash: hash } : {}) } }, { table: T.keyframes, key: [cut, c.seq], value: undefined });
       if (!c.squashedInto) n++;
     }
     return n;
@@ -1261,9 +1575,12 @@ class CartonImpl implements Carton {
         // an exported version keeps a keyframe (§5.4): a later fold of the copy comes back to it
         const { branchId, seq } = parseNode(pkg.head);
         const doc = seq > 0 && branchId === cut ? this.#h.stateOf(pkg.head) : null;
-        return { writes: [...(made ? [{ table: T.meta, key: ["export", pkg.head, made.at, randomHex(4)], value: made }] : []), ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        const key = ["export", pkg.head, made?.at ?? 0, randomHex(4)];
+        if (made) this.#exportRows.add(key.join("|"));
+        return { writes: [...(made ? [{ table: T.meta, key, value: made }] : []), ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
+      exports: true,
     });
     return pkg;
   }
@@ -1307,7 +1624,9 @@ class CartonImpl implements Carton {
     for (const c of (await from.range<CutRecord>(T.cuts)).map((e) => e.value)) {
       if (c.shallow) continue;
       const log = (await from.range<ConfirmedChange>(T.changes, { prefix: [c.id] })).map((e) => e.value);
-      const root = c.forkOf ? null : ((await from.get<Doc>(T.keyframes, [c.id, 0])) ?? null);
+      // a root cut's state at 0, or a fork's own copy of its fork state (SF1-1: it may be all that is left of a version
+      // compaction squashed; review SF2-4). A fork without one is rebuilt from its fork version.
+      const root = (await from.get<Doc>(T.keyframes, [c.id, 0])) ?? null;
       if (!c.forkOf && !root) continue; // a root cut without its root state can't be rebuilt here
       branches.push({ id: c.id, name: c.name, forkOf: c.forkOf, owner: c.owner, root, log });
       for (const e of await from.range<{ name: string; at: number; by?: Actor }>(T.names, { prefix: [c.id] })) names.push({ key: e.key, value: e.value });
@@ -1368,6 +1687,11 @@ class CartonImpl implements Carton {
   async initShared(): Promise<void> {
     for (const c of this.#h.cuts()) if (this.#isShared(c.id)) await this.#ensureShared(c.id);
   }
+  #queuedIn(cut: string): Set<ChangeId> {
+    let s = this.#queued.get(cut);
+    if (!s) this.#queued.set(cut, (s = new Set()));
+    return s;
+  }
   #isShared(cut: string): boolean {
     const k = this.#h.cut(cut)?.sequencer.kind;
     return k === "server" || k === "handingOff";
@@ -1389,18 +1713,33 @@ class CartonImpl implements Carton {
       url: sync.url,
       token: sync.token,
       schemaVersion: this.#opts.adapter.schemaVersion,
-      client: { adoptPayload: () => this.#adoptPayload(cut), ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
+      client: { adoptPayload: () => this.#adoptPayload(cut), identity: () => this.#me, onPeople: (p) => this.#takePeople(p), ...(sync.blobs ? { blobs: sync.blobs } : {}), ...(sync.maxMessageBytes ? { maxMessageBytes: sync.maxMessageBytes } : {}) },
     });
     this.#shared.set(cut, sc);
     // edits an earlier session queued and the server never answered: back in the queue in their queue order. Each row
     // holds its latest version's ops, relative to the stored confirmed head plus the rows before it (rewritten at every
-    // settlement), so re-queuing them in order rebuilds the same optimistic state
+    // settlement), so re-queuing them in order rebuilds the same optimistic state; each resumes where it was (its
+    // rebase count, the cards its rebases raised, the bases it was sent on: REQ-7), not as a fresh change
+    // the queue was ahead of the stored rows (a keyframe catch-up whose skipped rows weren't saved yet): back to that
+    // state first, as the catch-up left it, so rows written on it restore exactly and the backfill fetches the rest
+    // (SF1-4; a state that doesn't check is ignored)
+    const saved = await this.#savedStates(cut);
+    this.#gapSaved.set(cut, saved);
+    const top = Math.max(0, ...saved.keys());
+    if (top > sc.queue.headSeq(cut)) sc.queue.jumpTo(cut, { seq: top, doc: saved.get(top)!.doc, stateHash: E.hashDoc(saved.get(top)!.doc, this.schema) });
     const pending = (await this.store.range<PendingRow>(T.pending, { prefix: [cut] })).map((e) => e.value).sort((x, y) => x.order - y.order);
+    const queued = this.#queuedIn(cut);
+    const restore: RestoreInput[] = [];
     for (const p of pending) {
       if (this.#h.confirmedById(p.id) || sc.queue.pending(cut).some((q) => q.id === p.id)) continue;
+      queued.add(p.id);
       this.#authors.set(p.id, p.author);
-      sc.commit({ id: p.id, author: p.author, ops: p.ops, at: p.at, intent: p.intent, kinds: p.kinds, policy: p.policy, inferIntent: false, ...(p.history ? { history: p.history } : {}) });
+      restore.push(restoreInput(p));
     }
+    // in order, each on its own base, rebased onto what was confirmed since (SF2-2, SF3-3); one whose base can't be
+    // rebuilt yet waits, kept as stored (SF3-1)
+    const { held } = sc.restoreAll(restore, (seq) => this.#stateFor(cut, seq));
+    if (held.length) this.#heldRows.set(cut, pending.filter((p) => held.some((h) => h.id === p.id)));
     sc.on((e) => this.#onShared(cut, e));
     if (this.#connected) void sc.connect(this.#connected);
     return sc;
@@ -1431,8 +1770,27 @@ class CartonImpl implements Carton {
     });
     return { rows, rec, doc0: this.#h.stateOf(nodeId(cut, 0))!, closure: this.#h.closure(cut, n) };
   }
+  #clearSyncError(cut: string): void {
+    if (this.#syncErrors.delete(cut)) this.#emit({ type: "sync-error", branchId: cut, error: null });
+  }
   #onShared(cut: string, e: SharedCutEvent): void {
     switch (e.type) {
+      // a sync failure, until a welcome or an ack says the host accepts this replica again (web-demo REQ-8)
+      case "error": {
+        const err = syncError(e.error, e.code);
+        const was = this.#syncErrors.get(cut);
+        if (!was || was.code !== err.code || was.message !== err.message) {
+          this.#syncErrors.set(cut, err);
+          this.#emit({ type: "sync-error", branchId: cut, error: err });
+        }
+        // nothing to store: no settle (one between a refusal and its outcome's own settle would act on half of it)
+        return;
+      }
+      // a welcome, or the server's answer to a push or a withdraw, says the host takes this replica again
+      case "online":
+      case "confirmed":
+        this.#clearSyncError(cut);
+        break;
       case "state":
         this.#emit({ type: "sync", status: e.state.status === "connecting" ? "syncing" : e.state.status, waiting: e.state.pending });
         break;
@@ -1440,18 +1798,20 @@ class CartonImpl implements Carton {
         this.#emit({ type: "presence", branchId: e.branchId, actor: e.actor as Actor, state: e.state });
         return;
       case "absorbed":
+        // an absorption the server acknowledged (a withdraw) clears it too; one decided here proves nothing (SF3-8)
+        if (e.withdrawn) this.#clearSyncError(cut);
         this.#emit({ type: "absorbed", branchId: cut, id: e.id, cards: e.cards });
         break;
     }
     void this.#settle(cut, e);
-    if (e.type !== "error") this.#fetchHistory(cut);
+    this.#fetchHistory(cut);
   }
   /**
    * Confirmed rows go into the store and then History, pending rows are rewritten from the queue, late conflicts
    * become notices, and a finished hand-off is recorded on the cut; serialized behind every other write of this
    * handle. A write that fails leaves History where the store is, and the next event settles again.
    */
-  #settle(cut: string, e: SharedCutEvent): Promise<void> {
+  #settle(cut: string, e: SharedCutEvent): Promise<boolean> {
     // after every pending row still being written, checked again after each wait (a write that starts while the
     // settle waits, of a change confirmed meanwhile, counts too): a change settled at once (refused before it was sent)
     // must find its author there, and no row may land after the settle rewrote or removed it (it would come back
@@ -1465,17 +1825,70 @@ class CartonImpl implements Carton {
         for (const w of busy) waited.add(w);
         await Promise.allSettled(busy);
       }
-      return this.#settleShared(cut, e);
+      await this.#settleShared(cut, e);
+      return true;
     };
-    return (this.#queue = this.#queue.then(run, run).catch((err: unknown) => {
+    // false: it couldn't be stored (an outcome it carried waits in #unsettled for the next settle)
+    const p = this.#queue.then(run, run).catch((err: unknown) => {
       this.#emit({ type: "notice", notice: { to: actorKey(this.#actor()), kind: "rejected", text: `couldn't save what the server confirmed (it is retried): ${String(err)}` } });
-    }));
+      return false;
+    });
+    this.#queue = p;
+    return p;
+  }
+  /** The catch-up states saved for the cut, any holder's, each checked against its hash (never an unchecked state). */
+  async #savedStates(cut: string, known?: Map<number, { key: StoreKey; doc: Doc }>): Promise<Map<number, { key: StoreKey; doc: Doc }>> {
+    const saved = new Map(known);
+    for (const e of await this.store.range<KeyframeData>(T.meta, { prefix: [QUEUE_HEAD, cut] }))
+      if (typeof e.value?.seq === "number" && !saved.has(e.value.seq) && E.hashDoc(e.value.doc, this.schema) === e.value.stateHash) saved.set(e.value.seq, { key: e.key, doc: e.value.doc });
+    return saved;
+  }
+  /** A confirmed state of the cut for a stored row's base: History's (up to its head), or a saved catch-up state. */
+  #stateFor(cut: string, seq: number): Doc | null {
+    if (seq <= this.#h.headSeq(cut)) return this.#h.stateOf(nodeId(cut, seq));
+    return this.#gapSaved.get(cut)?.get(seq)?.doc ?? null;
+  }
+  /**
+   * The confirmed states past what the store holds (`stored`: History's head once the batch is saved) that pending rows
+   * are made on, and the queue's own head: a keyframe catch-up whose skipped rows aren't fetched yet, or rows not
+   * settled yet. A restart puts the queue at the newest and restores each row on its own (SF1-4). One stays while a row
+   * needs it, another process's too (`need`; review SF3-1), and goes once the store can rebuild it. `saved`: what is
+   * saved after the batch.
+   */
+  #gapWrites(cut: string, q: ReplicaQueue, stored: number, need: Iterable<number>, prune: boolean): { writes: StoreWrite[]; saved: Map<number, { key: StoreKey; doc: Doc }> } {
+    const was = this.#gapSaved.get(cut) ?? new Map<number, { key: StoreKey; doc: Doc }>();
+    const saved = new Map(was);
+    const writes: StoreWrite[] = [];
+    const want = new Set([...need, q.headSeq(cut)].filter((s) => s > stored));
+    for (const seq of want) {
+      if (saved.has(seq)) continue;
+      let doc: Doc;
+      try {
+        doc = q.confirmedState(cut, seq);
+      } catch {
+        continue; // not held here (inside a stretch known only through a keyframe): nothing to save
+      }
+      const key: StoreKey = [QUEUE_HEAD, cut, seq];
+      writes.push({ table: T.meta, key, value: { seq, doc, stateHash: E.hashDoc(doc, this.schema) } satisfies KeyframeData });
+      saved.set(seq, { key, doc });
+    }
+    if (prune)
+      for (const [seq, s] of was)
+        if (!want.has(seq)) {
+          writes.push({ table: T.meta, key: s.key, value: undefined });
+          saved.delete(seq);
+        }
+    return { writes, saved };
   }
   async #settleShared(cut: string, e: SharedCutEvent): Promise<void> {
     const sc = this.#shared.get(cut);
     if (!sc || this.#closed || this.#fenced) return;
     const q = sc.queue;
     const writes: StoreWrite[] = [];
+    // this event's outcome, and any whose earlier batch couldn't be stored, are kept until this batch is: a read below
+    // can fail too (review SF2-5)
+    const outcomes = [...(this.#unsettled.get(cut) ?? []).filter((x) => x !== e), e].filter((x): x is Extract<SharedCutEvent, { type: "confirmed" | "absorbed" | "rejected" }> => x.type === "confirmed" || x.type === "absorbed" || x.type === "rejected");
+    if (outcomes.length) this.#unsettled.set(cut, outcomes);
     // rows the server confirmed (ours and others'), up to the first stretch known only through a keyframe
     const rows = q.rows(cut);
     const fresh: ConfirmedChange[] = [];
@@ -1493,21 +1906,56 @@ class CartonImpl implements Carton {
       const known = await this.store.get(T.ids, [r.id]);
       if (known === undefined) writes.push({ table: T.ids, key: [r.id], value: [cut, r.seq] });
     }
-    // pending rows: exactly the queue's pending changes, each its latest version in queue order
+    // stored rows that waited for their base: back in the queue once it can be rebuilt (SF3-1)
+    const held = this.#heldRows.get(cut);
+    if (held?.length) {
+      const r = sc.restoreAll(held.filter((p) => !this.#h.confirmedById(p.id)).map(restoreInput), (seq) => this.#stateFor(cut, seq));
+      const still = held.filter((p) => r.held.some((h) => h.id === p.id));
+      if (still.length) this.#heldRows.set(cut, still);
+      else this.#heldRows.delete(cut);
+    }
+    const heldIds = new Set((this.#heldRows.get(cut) ?? []).map((p) => p.id));
+    // pending rows: the queue's pending changes, each its latest version in queue order. A row goes once its change
+    // left this handle's queue, or once its id is confirmed; another process's row stays for the next holder (SF1-2),
+    // and one waiting for its base stays as stored
+    // the saved states another holder wrote too, so they are pruned when no row needs them (review SF4-7): read before
+    // the rows, since a row and the state it is made on are written in one batch (one seen here has its row below)
+    this.#gapSaved.set(cut, await this.#savedStates(cut, this.#gapSaved.get(cut)));
     const stored = await this.store.range<PendingRow>(T.pending, { prefix: [cut] });
     const live = q.pending(cut);
     const liveIds = new Set(live.map((p) => p.id));
-    for (const r of stored) if (!liveIds.has(r.value.id)) writes.push({ table: T.pending, key: r.key, value: undefined });
-    live.forEach((p, order) => writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
+    const queued = this.#queuedIn(cut);
+    const confirmedNow = new Set(fresh.map((r) => r.id));
+    for (const r of stored) {
+      const id = r.value.id;
+      // a change of this handle's that left its queue goes with its outcome's own batch (its author's notice), never
+      // before: a settle that runs between the two must not drop the row the outcome's batch may yet fail to replace
+      const settled = !this.#authors.has(id) || outcomes.some((o) => o.id === id);
+      if (!liveIds.has(id) && !heldIds.has(id) && ((queued.has(id) && settled) || confirmedNow.has(id) || this.#h.confirmedById(id))) writes.push({ table: T.pending, key: r.key, value: undefined });
+    }
+    const rowsNow = live.map((p, order) => pendingRow(p, order, q));
+    for (const v of rowsNow) writes.push({ table: T.pending, key: [cut, v.id], value: v });
+    // the confirmed states past the store's rows that pending rows are made on: this queue's rows, and the rows it keeps
+    // as stored (another process's, or waiting for their base)
+    const kept = stored.map((r) => r.value).filter((v) => !liveIds.has(v.id) && !writes.some((w) => w.table === T.pending && w.key[1] === v.id && w.value === undefined));
+    const gap = this.#gapWrites(cut, q, this.#h.headSeq(cut) + fresh.length, [...rowsNow, ...kept].map((v) => v.head ?? 0), true);
+    writes.push(...gap.writes);
     // a pending change that came back with cards after its write had returned (a late conflict, §6.2), or that the
     // server refused: a notice for its author, in the same batch, returned at the start of that actor's next cb/MCP
     // result and by the Stop hook
     const notices: Notice[] = [];
     const authorOf = (id: string) => this.#authors.get(id) ?? stored.find((r) => r.value.id === id)?.value.author ?? this.#h.findChange(id)?.author ?? this.#actor();
-    const late = e.type === "confirmed" ? e.lateCards : e.type === "absorbed" ? e.cards : [];
-    if (late.length && (e.type === "confirmed" || e.type === "absorbed")) notices.push({ to: actorKey(authorOf(e.id)), kind: "late-conflict", text: `Your change ${e.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: e.id, cards: late });
-    // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
-    if (e.type === "rejected") notices.push({ to: actorKey(authorOf(e.id)), kind: "rejected", text: `Your change ${e.id} wasn't saved: ${e.reason === "too large" ? "it is larger than the server accepts; the edits after it still went through" : e.reason}`, change: e.id });
+    // a change absorbed here (never sent, or withdrawn) spends its id: a retry after a restart answers it, never applies
+    // it again (review SF3-4)
+    const spent = outcomes.filter((o) => o.type === "absorbed" && !this.#h.confirmedById(o.id) && !confirmedNow.has(o.id));
+    const spentAt = this.#h.headSeq(cut) + fresh.length;
+    for (const o of spent) writes.push({ table: T.meta, key: ["noop", o.id], value: [cut, spentAt] });
+    for (const o of outcomes) {
+      const late = o.type === "confirmed" ? o.lateCards : o.type === "absorbed" ? o.cards : [];
+      if (late.length && (o.type === "confirmed" || o.type === "absorbed")) notices.push({ to: actorKey(authorOf(o.id)), cut, kind: "late-conflict", text: `Your change ${o.id} conflicted after it was made: ${late.map((c) => c.path).join(", ")} kept the other side's value`, change: o.id, cards: late });
+      // refused for good (validation, or "too large" before it was sent): its author is told, not this handle's actor
+      if (o.type === "rejected") notices.push({ to: actorKey(authorOf(o.id)), cut, kind: "rejected", text: `Your change ${o.id} wasn't saved: ${o.reason === "too large" ? "it is larger than the server accepts; the edits after it still went through" : o.reason}`, change: o.id });
+    }
     const at = this.#opts.clock?.() ?? Date.now();
     notices.forEach((n, i) => writes.push({ table: T.notices, key: [n.to, at, i, randomHex(4)], value: { ...n, at } }));
     // the hand-off finished (handingOff → server{since}): the cut's record says so from now on
@@ -1517,7 +1965,9 @@ class CartonImpl implements Carton {
     if (handed) writes.push({ table: T.cuts, key: [cut], value: handed });
     // the store first: History only moves to what is saved. Under the holder's fence: a holder the lease has moved on
     // from records nothing more, reloads what the store holds and stops; its replacement settles the same answers once
-    if (writes.length && !(await this.store.write(writes, this.#settleConds))) {
+    // (a write that throws stored nothing: the outcomes stay in #unsettled for the next settle, SF1-6)
+    const saved = !writes.length || (await this.store.write(writes, this.#settleConds));
+    if (!saved) {
       // Its queues already dropped outcomes it couldn't record: they go too, and a later connect (this handle under a
       // new nonce) builds them again from the store, whose pending rows are pushed again and answered once more
       this.#fenced = true;
@@ -1528,19 +1978,37 @@ class CartonImpl implements Carton {
         s.close();
       }
       this.#shared.clear();
+      this.#queued.clear();
+      this.#gapSaved.clear();
+      this.#heldRows.clear();
+      // its outcomes too: the store's pending rows are pushed again on a later connect and answered once more
+      this.#unsettled.clear();
       this.#rq = null;
       this.#emit({ type: "sync", status: "stopped", waiting: 0 });
       return;
     }
+    // the outcomes are stored: never retried again, whatever follows (review SF2-6)
+    this.#unsettled.delete(cut);
+    for (const o of outcomes) this.#authors.delete(o.id);
+    this.#gapSaved.set(cut, gap.saved);
+    for (const o of spent) this.#h.noteNoop(o.id, cut, spentAt);
+    // an id is this handle's until its row is gone: one whose own write lands after its outcome was settled is still
+    // removed by a later settle
+    const storedIds = new Set(stored.map((r) => r.value.id));
+    const removed = new Set(writes.filter((w) => w.table === T.pending && w.value === undefined).map((w) => w.key[1] as string));
+    for (const id of queued) if (!liveIds.has(id) && !this.#inflight.has(id) && (!storedIds.has(id) || removed.has(id))) queued.delete(id);
     if (fresh.length) {
       this.#h.load(cut, fresh);
       // keyframes for rows the server confirmed: a write of their own (a lost one only means a longer replay at open)
       const k = this.#keyframeWrites(cut, fresh);
-      if (k.writes.length && (await this.store.write(k.writes, this.#settleConds))) this.#kf.set(cut, k.next);
+      try {
+        if (k.writes.length && (await this.store.write(k.writes, this.#settleConds))) this.#kf.set(cut, k.next);
+      } catch {
+        // a later keyframe write covers it
+      }
     }
     if (filled) for (const r of fresh) filled.delete(r.seq);
     if (handed) this.#h.updateCut(cut, { sequencer: qs });
-    if (e.type === "confirmed" || e.type === "absorbed" || e.type === "rejected") this.#authors.delete(e.id);
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     for (const n of notices) this.#emit({ type: "notice", notice: n });
   }
@@ -1642,7 +2110,9 @@ class CartonImpl implements Carton {
     this.#feedQueue(cut);
     const done = this.#h.confirmedById(id);
     if (done) return { sc, done };
-    if (sc.queue.pending(cut).some((p) => p.id === id)) return { sc, done: { status: "pending", id, ref: this.#sharedRef(cut), notices: [] } };
+    // queued already: in this queue, held until its base can be rebuilt, or another process's stored row. A retry
+    // waits for it, and never queues it again on another base over its row (review SF4-3)
+    if (sc.queue.pending(cut).some((p) => p.id === id) || this.#heldRows.get(cut)?.some((p) => p.id === id) || (await this.store.get(T.pending, [cut, id]))) return { sc, done: { status: "pending", id, ref: this.#sharedRef(cut), notices: [] } };
     // a lease fence (or any caller condition) must hold before the edit enters the queue (§6.2 fencing)
     if (conditions.length && !(await this.store.write([], conditions))) throw new Error("Carton: the store changed under this write (a condition failed)");
     return { sc, done: null };
@@ -1652,6 +2122,7 @@ class CartonImpl implements Carton {
     const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
     const at = this.#opts.clock?.() ?? Date.now();
     this.#authors.set(id, author);
+    this.#queuedIn(cut).add(id);
     const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}) });
     if (r.status === "confirmed") {
       // nothing to record: the id is spent anyway (`#persistEnqueued` records it), named at the version History holds
@@ -1686,7 +2157,12 @@ class CartonImpl implements Carton {
     }
     // every id given goes into the store in one write (a fold-some's fold and inverse are kept together, or neither)
     const writes: StoreWrite[] = [];
-    sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && writes.push({ table: T.pending, key: [cut, p.id], value: pendingRow(p, order) }));
+    const rows: PendingRow[] = [];
+    sc.queue.pending(cut).forEach((p, order) => (p.id === id || also.includes(p.id)) && rows.push(pendingRow(p, order, sc.queue)));
+    for (const v of rows) writes.push({ table: T.pending, key: [cut, v.id], value: v });
+    // made on the queue's state: if that is past the store's rows, it is saved with them (SF1-4); nothing is removed
+    // here (a settle does that)
+    writes.push(...this.#gapWrites(cut, sc.queue, this.#h.headSeq(cut), rows.map((v) => v.head ?? 0), false).writes);
     // started before anything can settle it: a settle waits for #inflight
     if (writes.length || extra.length) {
       const w = this.store.write([...writes, ...extra]);
@@ -1701,7 +2177,9 @@ class CartonImpl implements Carton {
     if (!wait) return r;
     const o = await sc.waitFor(id, wait);
     // a confirmation is answered once History holds the row (the result carries the change)
-    if (o.status === "confirmed") await this.#settle(cut, { type: "remote", rows: [] });
+    // a settled outcome is answered once it is stored (the row in History, its author's notice written): one that
+    // couldn't be stored yet is still pending to the caller (SF1-6)
+    if (o.status !== "pending" && !(await this.#settle(cut, { type: "remote", rows: [] }))) return { status: "pending", id, ref: this.#sharedRef(cut), notices: [] };
     return this.#outcome(cut, o);
   }
   async #commitShared(cut: string, input: CommitInput, author: Actor, id: ChangeId): Promise<CommitResult> {
@@ -1716,11 +2194,14 @@ class CartonImpl implements Carton {
     else {
       // a stale base (an agent's header): merge it onto the optimistic state here, as a local cut's commit would
       const b = input.base;
-      const baseDoc = typeof b === "object" && "baseDoc" in b ? b.baseDoc : this.#h.resolve(b as StateRef | string).doc;
+      const at = typeof b === "object" && "baseDoc" in b ? { doc: b.baseDoc, seq: b.baseSeq, causal: b.causal ?? [], cutId: cut } : this.#h.resolve(b as StateRef | string);
+      const baseDoc = at.doc;
       const mine = input.doc ?? E.apply(E.fork(baseDoc, this.schema), input.ops ?? [], this.schema);
       if (E.hashDoc(baseDoc, this.schema) === E.hashDoc(opt, this.schema)) ops = E.diff(opt, mine, this.schema);
       else {
-        const m = E.merge3(baseDoc, opt, mine, this.schema, { ...(input.intent?.maps ? { remaps: { theirs: { maps: input.intent.maps } } } : {}), kinds: { theirs: input.kinds ?? {} }, rekeys: "ours" });
+        const own = E.intentRemap(input.intent);
+        const since = this.#sinceBase(sc, cut, at);
+        const m = E.merge3(baseDoc, opt, mine, this.schema, { remaps: { ...(since.remap ? { ours: since.remap } : {}), ...(own ? { theirs: own } : {}) }, kinds: { ours: since.kinds, theirs: input.kinds ?? {} }, rekeys: "ours" });
         const unseen = input.unchosen === "prefer" ? [] : unseenCards(m.conflicts, input.choices);
         if (m.conflicts.length && (!input.choices || unseen.length)) return { status: "conflicts", cards: m.conflicts, ref: this.#sharedRef(cut), merge: m, ...(input.choices ? { unseen: unseen.map((c) => c.path) } : {}) };
         ops = E.diff(opt, m.conflicts.length ? E.resolve(m, input.choices!) : m.doc, this.schema);
@@ -1732,6 +2213,18 @@ class CartonImpl implements Carton {
     const cardWrites = resolved.length && input.cardsWrite ? input.cardsWrite(resolved, null) : [];
     const out = await this.#persistEnqueued(sc, cut, id, r, input.wait, [], cardWrites);
     return resolved.length && (out.status === "pending" || out.status === "confirmed") ? { ...out, resolved } : out;
+  }
+  /**
+   * The head side of a stale base's merge on a shared cut, as a local cut's commit has it: the recorded remaps, split
+   * lineage and edit kinds of what the optimistic state holds that the base doesn't (the cut's confirmed rows after it,
+   * then the pending edits outside its causal set), composed in order (review SF4-4: an edit of a clip split since
+   * reached one piece). A base on another cut, or one before a stretch known only through a keyframe: none recorded,
+   * merge3 infers as before.
+   */
+  #sinceBase(sc: SharedCut, cut: string, at: { seq: number; causal: readonly ChangeId[]; cutId: string }): { remap?: ReturnType<typeof E.intentRemap>; kinds: EditKinds } {
+    const rows = sc.queue.rows(cut).slice(at.seq);
+    if (at.cutId !== cut || rows.some((r) => r.placeholder)) return { kinds: {} };
+    return E.sideOf([...rows, ...sc.queue.pending(cut).filter((p) => !at.causal.includes(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };

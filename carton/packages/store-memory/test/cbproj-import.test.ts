@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { Carton, LOCAL_TABLES, type Actor } from "@carton/core";
 import type { Store } from "@carton/core/plugins";
 import { createMemoryStore } from "../src/index.ts";
-import { adapter, doc0, set } from "./fixture.ts";
+import { adapter, doc0, item, set } from "./fixture.ts";
 import { copyStore } from "./world.ts";
 
 test("S3-3: a same-id project with no shared lineage is offered a new project id", async () => {
@@ -115,4 +115,34 @@ test("S3-2: a cut forked from one held only as lineage on both sides waits until
   assert.deepEqual((await carol.log({ cut: b.cut })).map((v) => [v.ref.seq, v.author?.id ?? null]).slice(0, 1), [[1, "bob"]]);
   assert.equal(((await carol.checkout(`${b.cut}@1`)).items as { id: string; name: string }[]).find((i) => i.id === "b")!.name, "Bob's b");
   for (const c of [a, b, carol]) await c.close();
+});
+
+test("S3-4: a file from a teammate whose project is a copy of yours (the same cut ids) folds their edit in, never a crash", async () => {
+  const sa = createMemoryStore();
+  const a = await Carton.open({ adapter, store: sa, init: { doc: doc0(), projectId: "proj-7" }, actor: { kind: "human", id: "alice" } });
+  const main = a.cut;
+  // bob's project is a copy of alice's folder, carton.db included: his Main cut has her Main cut's id
+  const b = await Carton.open({ adapter, store: await copyStore(sa), actor: { kind: "human", id: "bob" } });
+  assert.equal(b.cut, main);
+  await b.commit({ ops: [set("b", "name", "Bob's b")] });
+  const r = await a.importShallow(await b.exportShallow({ to: "alice" }));
+  assert.equal(r.status, "imported");
+  const head = r.status === "imported" ? r.head : "";
+  assert.notEqual(head.split("@")[0], main, "bob's version is on a cut of its own, not on alice's Main cut");
+  assert.equal((await a.fold(head, { into: main })).status, "confirmed");
+  assert.equal(item((await a.head()).doc, "b")!.name, "Bob's b");
+  assert.deepEqual((await a.log({ cut: main })).map((v) => v.ref.seq), [1, 0], "alice's log: her version 0 and the fold");
+  // both edited at the same seq: the same, with both edits kept
+  await b.commit({ ops: [set("c", "name", "Bob's c")] });
+  await a.commit({ ops: [set("d", "name", "Alice's d")] });
+  const r2 = await a.importShallow(await b.exportShallow({ to: "alice" }));
+  assert.equal(r2.status, "imported");
+  assert.equal((await a.fold(r2.status === "imported" ? r2.head : "", { into: main })).status, "confirmed");
+  const d = (await a.head()).doc;
+  assert.deepEqual([item(d, "b")!.name, item(d, "c")!.name, item(d, "d")!.name], ["Bob's b", "Bob's c", "Alice's d"]);
+  // reopened, the same
+  await a.close();
+  const again = await Carton.open({ adapter, store: sa });
+  assert.equal(item((await again.head()).doc, "c")!.name, "Bob's c");
+  for (const c of [again, b]) await c.close();
 });

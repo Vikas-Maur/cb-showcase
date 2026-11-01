@@ -2,9 +2,11 @@
 // built on, Cardboard's app code from its macOS installer with every patch applied, and Windows builds of the
 // tools it bundles (ffmpeg, ffprobe, uv, Claude Code). Runs on Windows (7-Zip, tar, PowerShell); the GitHub
 // workflow .github/workflows/build-windows.yml runs it.
-//   node scripts/build-windows.js [--out <dir>] [--baseline]          (default out)
+//   node scripts/build-windows.js [--out <dir>] [--baseline] [--no-carton]   (default out)
 // --baseline builds the baseline the benchmarks compare against (scripts/bench): the media patches leave out their
 // speed changes (CB_BASELINE=1, see patch-worker.js), so the app runs Cardboard's own pipeline as a Mac does.
+// Carton (version history, cuts, fold in, credits; carton/docs/INTEGRATION-1.4.0.md) is built in and stays off until
+// CARDBOARD_CARTON=1. --no-carton leaves it out of the build entirely, and so does --baseline.
 // Everything it starts from is downloaded into dl\ when missing, from where its makers publish it.
 const fs = require("fs"), path = require("path"), { execFileSync } = require("child_process");
 
@@ -13,6 +15,8 @@ const argOut = process.argv.indexOf("--out");
 const OUT = path.resolve(ROOT, argOut > 0 ? process.argv[argOut + 1] : "out");
 const APP = path.join(OUT, "Cardboard-win"), WORK = path.join(OUT, "work"), RES = path.join(APP, "resources");
 const BASELINE = process.argv.includes("--baseline");
+const CARTON = !BASELINE && !process.argv.includes("--no-carton");
+const SYNC = CARTON && fs.existsSync(path.join(ROOT, "scripts", "patch-carton-sync.js"));
 // The patch scripts read it from the environment they inherit.
 if (BASELINE) process.env.CB_BASELINE = "1";
 const INPUTS = {
@@ -83,9 +87,24 @@ const icnsPng = (icns) => {
   node("scripts/patch-worker.js", path.join(dist, "library-worker.js"));
   node("scripts/patch-strip.js", path.join(assets, "tabs-DV5oCzuF.js"));
   node("scripts/patch-renderer.js", path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js"));
+  if (CARTON) {
+    // Carton's bundles (resources\carton, and carton-ui.js beside the editor's chunks) and its hooks, which go on top
+    // of the Windows patches. The carton workspace brings esbuild.
+    step("Carton");
+    const workspace = path.join(ROOT, "carton");
+    if (!fs.existsSync(path.join(workspace, "node_modules"))) run(process.platform === "win32" ? "npm.cmd" : "npm", ["ci", "--no-audit", "--no-fund"], { cwd: workspace, shell: process.platform === "win32" });
+    node("scripts/carton/build.js", RES, assets);
+    const app = [path.join(dist, "main.js"), path.join(dist, "library-worker.js"), path.join(assets, "index-DufLJgUU.js"), path.join(assets, "EditorRoute-CuIqwZKP.js"), path.join(assets, "installErrorTelemetry-DxKId8tA.js")];
+    node("scripts/patch-carton.js", "--app", ...app);
+    // The live-sync and sharing half (windows-sync) patches on top of Carton's; build.js put its files in
+    // resources\carton\sync.
+    if (SYNC) node("scripts/patch-carton-sync.js", "--app", ...app);
+  }
   node(ASAR, "pack", src, path.join(RES, "app.asar"));
   node("scripts/patch-cli.js", path.join(RES, "cli", "cardboard.mjs"), path.join(WORK, "cardboard.orig.mjs"));
   node("scripts/patch-cli-media.js", path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"), path.join(WORK, "cli-media.orig.mjs"));
+  if (CARTON) node("scripts/patch-carton.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"));
+  if (CARTON && SYNC) node("scripts/patch-carton-sync.js", "--cli", path.join(RES, "cli", "cardboard.mjs"), path.join(RES, "cli", "chunks", "chunk-LL26E55H.mjs"));
 
   step("ffmpeg, ffprobe, uv, Claude Code");
   const bin = path.join(RES, "bin"), director = path.join(RES, "director");
@@ -111,7 +130,7 @@ const icnsPng = (icns) => {
   // Which build this is, for the benchmarks to report beside their numbers.
   let commit = null;
   try { commit = run("git", ["rev-parse", "HEAD"], { cwd: ROOT }).trim(); } catch {}
-  fs.writeFileSync(path.join(APP, "build-info.json"), JSON.stringify({ variant: BASELINE ? "baseline" : "full", commit, built: new Date().toISOString() }, null, 2) + "\n");
+  fs.writeFileSync(path.join(APP, "build-info.json"), JSON.stringify({ variant: BASELINE ? "baseline" : "full", carton: CARTON, commit, built: new Date().toISOString() }, null, 2) + "\n");
 
   step("Check");
   const env = { ...process.env, ELECTRON_RUN_AS_NODE: "1" };
@@ -121,10 +140,12 @@ const icnsPng = (icns) => {
     ["uv", run(path.join(bin, "uv.exe"), ["--version"]).trim(), /^uv 0\.13\.6/],
     ["Claude Code", run(path.join(director, "claude.exe"), ["--version"]).trim(), /^2\.1\.309/],
   ];
+  // Carton's Node bundle loads in Electron's own Node (node:sqlite and all).
+  if (CARTON) checks.push(["Carton", run(path.join(APP, "Cardboard.exe"), ["-e", `require(${JSON.stringify(path.join(RES, "carton", "carton-node.cjs"))});require("node:sqlite");console.log("loads")`], { env }).trim(), /^loads$/]);
   for (const [name, got, want] of checks) {
     console.log(`${want.test(got) ? "ok  " : "FAIL"} ${name}: ${got}`);
     if (!want.test(got)) process.exitCode = 1;
   }
   fs.rmSync(WORK, { recursive: true, force: true });
-  console.log(`\nbuilt ${APP}${BASELINE ? " (baseline)" : ""}`);
+  console.log(`\nbuilt ${APP}${BASELINE ? " (baseline)" : CARTON ? "" : " (no Carton)"}`);
 })().catch((e) => { console.error(e); process.exit(1); });

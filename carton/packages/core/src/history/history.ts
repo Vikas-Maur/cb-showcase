@@ -39,6 +39,7 @@ import type {
 } from "../types.ts";
 import * as E from "../engine/index.ts";
 import { isEmptyMap } from "../engine/remap.ts";
+import { forkSealed } from "../engine/doc.ts";
 import { createLocalSequencer, type LocalSequencer } from "../sequencer/index.ts";
 import type { ClosureEntry } from "../sync/messages.ts";
 import { StateUnknown, type FoldOptions, type FoldResult, type HeldBase, type HistoryCommit, type HistoryOptions, type Planned, type ShallowImport, type Tail } from "./common.ts";
@@ -69,6 +70,15 @@ const SYSTEM: Actor = { kind: "system", id: "carton" };
 /** Changes inverted at a cut's head: the state and the remap the inversion applies there, or the cards that stop it. */
 export type Inverted = { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult };
 const REF_RE = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
+/**
+ * A cut's `b:` token in a printed header: 8 lowercase hex characters, the only form the header's parser reads. The id's
+ * first 8 characters when they are lowercase hex (every id core makes: a UUID, `cb cut new`'s 24 hex + `.n`, a renamed
+ * copy's `<id>.<hash8>`), so those headers are as they always were; otherwise the first 8 of the SHA-256 of the id (an
+ * id from a `.cbproj` or another host: `b6b.alt`, `ab-cdef0…`, non-ASCII), so its header still reads back. Tokens can
+ * collide (a renamed copy shares its original's): `parseRef` tells the cuts apart. The one definition: the adapter's
+ * header prints this.
+ */
+export const branchToken = (id: string): string => (/^[0-9a-f]{8}/.test(id) ? id : E.sha256Hex(id)).slice(0, 8);
 
 interface Cut {
   rec: CutRecord;
@@ -250,7 +260,25 @@ export class History {
   }
   /** The state at a node; null when it isn't held (a shallow node whose state wasn't carried). Never the live head. */
   stateOf(id: NodeId): Doc | null {
-    id = this.canon(id);
+    return this.#stateOf(id, false);
+  }
+  /**
+   * The same state as History holds it, the live head itself rather than a fork: read-only, for a caller that forks
+   * it anyway (Carton's head and checkout) or only reads it. Changing it changes History.
+   */
+  viewOf(id: NodeId): Doc | null {
+    return this.#stateOf(id, true);
+  }
+  #stateOf(id: NodeId, live: boolean): Doc | null {
+    const c = this.canon(id);
+    const d = this.#stateAt(c, live);
+    if (d) return d;
+    // a version whose state is gone (compacted after a fork was made from it, in another process or behind a handle
+    // that hadn't seen the compaction: review SF1-1) is still the state its fork keeps a copy of
+    for (const cut of this.#cuts.values()) if (cut.root && cut.rec.forkOf && this.canon(cut.rec.forkOf) === c) return cut.root;
+    return null;
+  }
+  #stateAt(id: NodeId, live = false): Doc | null {
     const { branchId: b, seq: s } = parseNode(id);
     const br = this.#cuts.get(b);
     if (!br || br.rec.shallow) {
@@ -259,26 +287,27 @@ export class History {
     }
     if (s > br.log.length || s < 0) return null;
     if (s > 0 && br.log[s - 1]!.squashedInto) return null; // compacted away (§5.4)
-    if (br.sq && s === br.log.length) return E.fork(br.sq.head, this.schema); // never hand out the live head
+    if (br.sq && s === br.log.length) return live ? br.sq.head : E.fork(br.sq.head, this.schema); // stateOf never hands out the live head
     let k = s;
     while (!br.kf.has(k)) k--;
     let doc = br.kf.get(k)!;
     if (k < s) {
-      doc = E.fork(doc, this.schema);
+      doc = forkSealed(doc, this.schema); // a sealed keyframe's rebuild stays sealed (engine/doc.ts)
       for (let i = k; i < s; i++) E.apply(doc, br.log[i]!.ops, this.schema);
       if (s % this.K === 0) br.kf.set(s, doc);
     }
     return doc;
   }
   hashOf(id: NodeId): string | null {
-    id = this.canon(id);
-    const ln = this.#lineage.get(id);
+    const c = this.canon(id);
+    const ln = this.#lineage.get(c);
     if (ln) return ln.hash;
-    let h = this.#hash.get(id);
+    let h = this.#hash.get(c);
     if (!h) {
-      const d = this.stateOf(id);
-      if (!d) return null;
-      this.#hash.set(id, (h = E.hashDoc(d, this.schema)));
+      const d = this.stateOf(c);
+      // a squashed version's state is gone, but not its identity (SF3-5)
+      if (!d) return this.changeAt(c)?.squashedHash ?? null;
+      this.#hash.set(c, (h = E.hashDoc(d, this.schema)));
     }
     return h;
   }
@@ -320,19 +349,19 @@ export class History {
   knowledge(): { lineage: DagNode[]; states: [string, Doc][]; authors: [NodeId, Record<PathKey, Actor>][]; exports: [NodeId, { to: string; at: number }[]][] } {
     return { lineage: [...this.#lineage.values()], states: [...this.#states], authors: [...this.#importedAuthors], exports: [...this.#exportsMade] };
   }
-  /** Restore persisted knowledge (before the cuts that fork from lineage nodes). */
+  /** Restore persisted knowledge (before the cuts that fork from lineage nodes); exports add to those held. */
   loadKnowledge(k: Partial<ReturnType<History["knowledge"]>>): void {
     for (const n of k.lineage ?? []) this.#lineage.set(n.id, n);
     for (const [h, d] of k.states ?? []) this.#states.set(h, d);
     for (const [n, a] of k.authors ?? []) this.#importedAuthors.set(n, a);
-    for (const [n, e] of k.exports ?? []) this.#exportsMade.set(n, e);
+    for (const [n, e] of k.exports ?? []) this.#exportsMade.set(n, [...(this.#exportsMade.get(n) ?? []), ...e]);
     this.#anc.clear();
   }
 
   // ------------------------------------------------------------ refs and pins (§5.2)
   refString(cutId: string, seq: number, hash: string, extra: { printNonce?: string; by?: string } = {}): string {
     const br = this.#mustCut(cutId);
-    let s = `${br.rec.name}@${seq}~${hash.slice(0, 8)} b:${cutId.slice(0, 8)}`;
+    let s = `${br.rec.name}@${seq}~${hash.slice(0, 8)} b:${branchToken(cutId)}`;
     if (extra.printNonce) s += ` p:${extra.printNonce}`;
     if (extra.by) s += ` by ${extra.by}`;
     return s;
@@ -402,10 +431,18 @@ export class History {
   parseRef(ref: string | StateRef): (StateRef & { printNonce?: string; by?: string }) | { legacy: number } {
     if (typeof ref !== "string") return ref;
     if (/^\d{13}$/.test(ref)) return { legacy: Number(ref) }; // a 1.4.0 timestamp rev
+    // a node id, `<cutId>@<seq>`, as checkout, diff and restore take it (kit-docs: commit's base refused it)
+    const node = /^([^~\s]+)@(\d+)$/.exec(ref.trim());
+    if (node && this.#cuts.has(node[1]!)) return { branchId: node[1]!, seq: Number(node[2]) };
     const m = REF_RE.exec(ref.trim());
     if (!m) throw new StateUnknown(ref, "unparseable ref");
-    const br = [...this.#cuts.values()].find((b) => b.rec.id.startsWith(m[4]!));
-    const out: StateRef & { printNonce?: string; by?: string } = { branchId: br?.rec.id ?? m[4]!, seq: Number(m[2]), hash8: m[3]! };
+    // the cut whose token `b:` is (branchToken). Two with one token (a renamed copy and its original; foreign ids whose
+    // hashes meet) are told apart by which has the header's state at its seq (confirmed or pinned), then by the
+    // header's cut name: a cut renamed since the print keeps its headers when another takes its old name (0760ef2)
+    const seq = Number(m[2]);
+    const rank = (b: Cut) => (seq <= b.log.length && (this.hashOf(nodeId(b.rec.id, seq))!.startsWith(m[3]!) || this.#pins.has(`${b.rec.id}|${seq}|${m[3]}`)) ? 2 : 0) + (b.rec.name === m[1] ? 1 : 0);
+    const br = [...this.#cuts.values()].filter((b) => branchToken(b.rec.id) === m[4]).sort((x, y) => rank(y) - rank(x))[0];
+    const out: StateRef & { printNonce?: string; by?: string } = { branchId: br?.rec.id ?? m[4]!, seq, hash8: m[3]! };
     if (m[5]) out.printNonce = m[5];
     if (m[6]) out.by = m[6];
     return out;
@@ -515,14 +552,11 @@ export class History {
       }
       // rebase: merge3(base, head, mine) with the concurrent changes' recorded remaps and kinds
       const head = br.sq.head;
-      const conc = res.missing.filter((c) => !causal.includes(c.id));
-      const rec = conc.filter((c) => !isEmptyMap(c.intent?.maps));
-      const concMaps = rec.length ? { maps: E.composeMaps(...rec.map((c) => c.intent!.maps)) } : undefined;
-      const concKinds: Record<string, NonNullable<Change["kinds"]>[string]> = {};
-      for (const c of conc) for (const [id, k] of Object.entries(c.kinds ?? {})) concKinds[id] = k;
+      // the concurrent changes' maps, lineage (a split records lineage only: kit-docs) and kinds
+      const conc = E.sideOf(res.missing.filter((c) => !causal.includes(c.id)));
       const m = E.merge3(baseDoc, head, mine, this.schema, {
-        remaps: { ours: concMaps, theirs: isEmptyMap(change.intent?.maps) ? undefined : (change.intent as { maps: RemapMaps }) },
-        kinds: { ours: concKinds, theirs: change.kinds ?? {} },
+        remaps: { ours: conc.remap, theirs: E.intentRemap(change.intent) },
+        kinds: { ours: conc.kinds, theirs: change.kinds ?? {} },
         rekeys: "ours",
       });
       let merged = m.doc;
@@ -574,7 +608,7 @@ export class History {
   #confirmed(br: Cut, c: ConfirmedChange, keyframe = true): void {
     const a = actorKey(c.author);
     for (const op of c.ops) if (op.op === "insert" && op.nb) this.#creators.set(E.pathKey(op.path), a);
-    if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? E.fork(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
+    if (keyframe && c.seq % this.K === 0) br.kf.set(c.seq, br.sq ? forkSealed(br.sq.head, this.schema) : this.stateOf(nodeId(br.rec.id, c.seq))!);
     if (c.name) this.#names.set(nodeId(br.rec.id, c.seq), { name: c.name, at: c.at, by: c.author });
     if (c.mergeOf) this.#anc.clear();
   }
@@ -1056,9 +1090,9 @@ export class History {
 
   // ------------------------------------------------------------ shallow .cbproj export / import (§13)
   /**
-   * The lineage graph: the head, roots, fork, merge and export nodes, and imported lineage nodes. Each lineage edge
-   * carries the composition of the recorded remaps along it (merge edges use the merge's per-parent edge map). States
-   * of fork, merge and export nodes are carried (R5-02), delta-encoded against the head.
+   * The lineage graph: the head, roots, fork, merge, export and import nodes, and imported lineage nodes. Each lineage
+   * edge carries the composition of the recorded remaps along it (merge edges use the merge's per-parent edge map).
+   * States of fork, merge, export and import nodes are carried (R5-02), delta-encoded against the head.
    */
   exportShallow(cutId: string, { to = "someone", carry = "fork-merge-export", encoding = "delta" }: { to?: string; carry?: "fork-merge-export" | "export-only" | "head-only"; encoding?: "delta" | "full" } = {}): ShallowExport {
     const head = this.head(cutId);
@@ -1068,7 +1102,7 @@ export class History {
     const nodes = this.#walkLineage([head], head);
     // carry: "fork-merge-export" (v6+), "export-only" (v5, for the R5-02 ablation), "head-only" (v4)
     const carried = (n: DagNode) =>
-      n.kinds.includes("head") || (carry !== "head-only" && (n.kinds.includes("export") || (carry !== "export-only" && (n.kinds.includes("fork") || n.kinds.includes("merge")))));
+      n.kinds.includes("head") || (carry !== "head-only" && (n.kinds.includes("export") || n.kinds.includes("import") || (carry !== "export-only" && (n.kinds.includes("fork") || n.kinds.includes("merge")))));
     const headDoc = this.stateOf(head)!;
     const states: ShallowExport["states"] = {};
     for (const n of nodes.values()) {
@@ -1096,26 +1130,30 @@ export class History {
     };
   }
   /**
-   * The lineage nodes reachable from `starts`, each edge compressed to the nearest fork, merge, export, root or known
-   * lineage node (a shallow export's graph, §13, and a hand-off's closure, §5.3). Nodes of `skip` (the cut a closure
+   * The lineage nodes reachable from `starts`, each edge compressed to the nearest fork, merge, export, import, root or
+   * known lineage node (a shallow export's graph, §13, and a hand-off's closure, §5.3). Nodes of `skip` (the cut a closure
    * is for: its rows go up in full) end the walk and are left out.
    */
   #walkLineage(starts: readonly NodeId[], head?: NodeId, skip?: string): Map<NodeId, DagNode> {
     const forkNodes = new Set<NodeId>();
     for (const b of this.#cuts.values()) if (b.rec.forkOf) forkNodes.add(this.canon(b.rec.forkOf));
     const nodes = new Map<NodeId, DagNode>();
+    // the §16 import (`init.asChange`: the project as it was, over the empty root) is a lineage point like an export,
+    // so a shallow export carries it and two copies of the project fold from it, not from nothing (S3-4, request 8)
+    const imported = (id: NodeId) => this.changeAt(id)?.kind === "import";
     const kindsOf = (id: NodeId): LineageKind[] => {
       const k: LineageKind[] = [];
       if (id === head) k.push("head");
       const ln = this.#lineage.get(id);
       if (ln) k.push(...ln.kinds.filter((x) => x !== "head"));
       if (this.#exportsMade.has(id)) k.push("export");
+      if (imported(id)) k.push("import");
       if (this.changeAt(id)?.mergeOf) k.push("merge");
       if (forkNodes.has(id)) k.push("fork");
       if (!this.parents(id).length) k.push("root");
       return [...new Set(k)];
     };
-    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || this.parents(id).length !== 1 || forkNodes.has(id);
+    const isStop = (id: NodeId) => this.#lineage.has(id) || this.#exportsMade.has(id) || imported(id) || this.parents(id).length !== 1 || forkNodes.has(id);
     const queue = [...starts];
     while (queue.length) {
       const id = queue.pop()!;
@@ -1140,6 +1178,44 @@ export class History {
     return nodes;
   }
   /**
+   * A sender whose cut has the id of one of ours but another history (the project's folder copied with its carton.db
+   * before either edited: the same local cut ids). Its nodes on that cut that aren't ours (past our log, or another
+   * state at the same seq) belong to the sender's own copy of the cut: they are taken as a separate cut,
+   * `<cut>.<sender hash>` (a node id can't hold `~`), whose lineage still reaches the versions we share, so a fold
+   * finds the real common ancestor (e2e-qa S3-4: they were dropped as "ours", and folding the sender's head read past
+   * our log).
+   */
+  #unclash(pkg: ShallowExport): ShallowExport {
+    const renamed = new Map<string, string>();
+    const moved = new Set<NodeId>();
+    // the sender's first version on the cut that isn't ours names its copy: the same content, the same id, across later
+    // files from that sender; never the display name, which two copies share (review SF3-2)
+    const first = new Map<string, DagNode>();
+    for (const n of pkg.nodes) {
+      const br = this.#cuts.get(n.branchId);
+      if (!br || br.rec.shallow) continue;
+      if (n.seq <= br.log.length) {
+        const ours = this.hashOf(nodeId(n.branchId, n.seq));
+        // ours, or one we can't compare (compacted before squashed versions kept their hash): taken as ours
+        if (ours === n.hash || ours === null) continue;
+      }
+      moved.add(n.id);
+      const f = first.get(n.branchId);
+      if (!f || n.seq < f.seq) first.set(n.branchId, n);
+    }
+    for (const [b, n] of first) renamed.set(b, `${b}.${n.hash.slice(0, 8)}`);
+    if (!moved.size) return pkg;
+    const map = (id: NodeId): NodeId => {
+      if (!moved.has(id)) return id;
+      const { branchId, seq } = parseNode(id);
+      return nodeId(renamed.get(branchId)!, seq);
+    };
+    const nodes = pkg.nodes.map((n) => ({ ...n, id: map(n.id), branchId: moved.has(n.id) ? renamed.get(n.branchId)! : n.branchId, parents: n.parents.map((p) => ({ ...p, id: map(p.id) })) }));
+    const branches = { ...pkg.branches };
+    for (const [ours, theirs] of renamed) branches[theirs] = { ...(pkg.branches[ours] ?? { name: "?" }), name: `${pkg.branches[ours]?.name ?? "?"} (${pkg.sender})` };
+    return { ...pkg, nodes, branches, head: map(pkg.head) };
+  }
+  /**
    * Lineage from elsewhere (a `.cbproj`, a shared cut's closure) as read-only tracking knowledge: a node already known
    * keeps its parents (lineage is immutable; an import only adds kinds), nodes of cuts held in full are ours, the graph
    * must stay a DAG, and every carried state must match its hash. All of it is checked before anything is kept.
@@ -1154,6 +1230,8 @@ export class History {
       const br = this.#cuts.get(n.branchId);
       if (br && !br.rec.shallow) continue;
       const prev = this.#lineage.get(n.id);
+      // a node's identity never changes: one we hold under this id with another state is a different version (SF3-2)
+      if (prev && prev.hash !== n.hash) throw new Error(`shallow export: node ${n.id} is another version than the one held here`);
       const bn = branches[n.branchId]?.name;
       incoming.set(n.id, { ...n, ...(prev ? { parents: prev.parents } : {}), kinds: [...new Set([...(prev?.kinds ?? []), ...n.kinds])], ...(bn ? { branchName: bn } : {}) });
     }
@@ -1213,6 +1291,7 @@ export class History {
         out.set(n.branchId, (e = { branchId: n.branchId, rec, nodes: [], states: [] }));
       }
       e.nodes.push(n);
+      // an import's state isn't carried here: a closure starts at fork points and merges, which are past it
       const d = n.kinds.some((k) => k === "fork" || k === "merge" || k === "export") ? this.stateOf(n.id) : null;
       if (d) e.states!.push({ seq: n.seq, hash: n.hash, doc: JSON.parse(E.snapshot(d, this.schema)) });
     }
@@ -1248,6 +1327,7 @@ export class History {
       if (!known) return { status: "no-shared-lineage", newProjectId: randomHex(8) };
     }
     if (!pkg.nodes.some((n) => n.id === pkg.head)) throw new Error("shallow export: its head is not one of its nodes");
+    pkg = this.#unclash(pkg);
     const headState = (pkg.states[pkg.headHash] as { doc?: Doc } | undefined)?.doc;
     this.#takeLineage(pkg.nodes, pkg.branches, Object.entries(pkg.states).map(([hash, st]) => [hash, "doc" in st ? st.doc : headState && E.apply(E.fork(headState, this.schema), st.delta, this.schema)]));
     this.#importedAuthors.set(pkg.head, pkg.lastAuthor ?? {});
@@ -1321,7 +1401,7 @@ function softAfter(schema: Schema, head: Doc, prior: Doc, ops: readonly Op[]): S
   return schema.soft!(head, touched, [prior], placed, placed);
 }
 /** A path key back to its segments (`~1` is `/`, `~0` is `~`). */
-const unkey = (k: PathKey): string[] => k.split("/").map((x) => x.replaceAll("~1", "/").replaceAll("~0", "~"));
+const unkey = (k: PathKey): string[] => k.split("/").map(E.unescapeSegment);
 
 /** Ops that put each rejected record (or field) of `post` back to its value in `pre`. */
 function inverseOps(schema: Schema, pre: Doc, post: Doc, reject: readonly (PathKey | readonly string[])[]): Op[] {

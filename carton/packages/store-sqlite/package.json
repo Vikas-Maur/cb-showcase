@@ -26,5 +26,8 @@
   },
   "dependencies": {
     "@carton/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/conformance": "0.1.0"
   }
 }

@@ -47,8 +47,13 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 ## Formats to keep exactly
 
 - **Change ids** are `<rid>.<n>` with a 96-bit random `rid` per process (hex). Dedup is by id; ids survive rebases.
-- **Refs** print as `main@57~3f9a1c0e b:<branchId8> p:<printNonce> by <actor>`; a bare 13-digit number is a 1.4.0
-  timestamp rev. Node ids are `<branchId>@<seq>`.
+- **Refs** print as `main@57~3f9a1c0e b:<token> p:<printNonce> by <actor>`; a bare 13-digit number is a 1.4.0
+  timestamp rev. Node ids are `<branchId>@<seq>`. `<token>` is `branchToken(cutId)` (exported from `@carton/core`, the
+  one definition; the adapter's header prints it): the id's first 8 characters when they are lowercase hex (every id
+  core makes, so those headers never changed), else the first 8 hex characters of the id's SHA-256, so any cut id (one
+  from a `.cbproj` or another host: `b6b.alt`, non-ASCII) reads back. A header names the cut whose token it carries;
+  two cuts with one token are told apart by which has the header's state at its seq (confirmed or pinned), then by the
+  header's cut name, so a cut renamed since the print keeps its headers when another cut takes its old name.
 - **Path keys** join segments with `/`, escaping `~` → `~0` and `/` → `~1`. Field-group paths end in `#<group>`
   (`timelineItems/X/#time`). Sequences order by the `#pos` field.
 - **Spans** are half-open `[lo, hi)`; `hi: null` is open-ended (a remap's `[t0, ∞)`).
@@ -58,9 +63,31 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
 ## Carton handle notes
 
 - **Refs** passed to `checkout`, `diff`, `fold`, `restore`, `preview` may be a printed header, a `StateRef`, a node id
-  `"<cutId>@<seq>"`, or a cut id (its head). A ref that can't be rebuilt exactly throws `StateUnknown`.
+  `"<cutId>@<seq>"`, or a cut id (its head); a commit's `base` takes a header, a `StateRef` or a node id. A ref that
+  can't be rebuilt exactly throws `StateUnknown`.
+- **Documents are values.** `head()`, `checkout()` and `resolve()` hand out the collection arrays as the caller's own
+  (add, remove, reorder freely) and the records and root values frozen: they are History's, shared with every state
+  that didn't change them, so an edit in place throws. Replace the record you change (`{ ...rec, name }`). What you
+  commit becomes History's the same way: a record or value you passed in (an op's value, or `commit({ doc })`'s
+  changed records, which the diff takes as they are) is frozen once a state holding it has been handed out, so keep
+  building on copies, not on the objects you committed. The cost is the array copy a head always had: each of
+  History's arrays is frozen once, and a change freezes only what it writes.
+- **A split** records its lineage in the intent (`{ kind: "split", lineage: { c: ["c", "c-b"] } }`): a concurrent
+  edit to the split clip meets the split (the source record is part of its declaration) and reaches every piece,
+  whichever lands first, on local and shared cuts.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
-  this machine doesn't have.
+  this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
+  (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the
+  import on the next open with `asChange`.
+- **A `.cbproj` from a copy of your project folder** (the same cut ids): the sender's versions on a cut you hold that
+  aren't yours come in as a separate cut `<cut>.<hash8 of their first such version>`, named "<name> (<sender>)", linked
+  to the versions you share; the fold brings them in. A version compaction squashed keeps its state hash, so your own
+  versions are still recognized in their copy. The import change (`asChange`) is a lineage point like an export
+  (lineage kind `"import"`, its state carried, delta-encoded), so two copies of an imported project fold from it,
+  not from the empty root. A hand-off closure lists it without its state.
+- **Every exported version is a lineage point**, whichever process exported it: an export writes a row (meta
+  `["export", node, at, nonce]`), and a handle reads the rows it hasn't seen at load and before each export it makes
+  (not on `head()` or a commit), so the app's next `.cbproj` carries a version `cb` sent meanwhile (local-cli request 9).
 - **A `.cbproj` with history** ("Include history", §13): after the shallow import, `importHistory(store)` takes the
   file's full-history store (same project, same schema, else it throws). The sender's cuts this replica doesn't hold
   in full become read-only tracking cuts with every version, author and name; a newer file grows a tracking cut it
@@ -69,7 +96,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   (a lease fence); a lost cross-process append race rebuilds from the store and retries.
 - **Creating a project** also takes `init: { join: { projectId, cut, doc0, rootHash? } }`: a cut a server already
   sequences, from an invite, on a machine that holds nothing of it (forks too). Once connected, the joiner fetches the
-  cut's ancestry closure (`history` request) and loads it as read-only lineage.
+  cut's ancestry closure (`history` request) and loads it as read-only lineage. The client asks for it in pages
+  (`lineageFrom`, from `{entry: 0, state: 0}`) and follows each reply's `lineageNext` to the end; a server that doesn't
+  page sends it whole in one reply.
 - **Shared cuts** (`sequencer.kind !== "local"`) go through `SharedCut` (sync-sequencer's queue and client): `commit`,
   `fold`, `foldSome`, `undo`, `revert` and `restore` all queue an ordinary change with its intent, kind and `reverts`
   under a stable id, and come back `pending`, then confirmed (or rebased, absorbed, rejected) with a notice for the
@@ -78,8 +107,48 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   the cut's rows (with the names given to its versions) and its closure, shallow (PLAN §5.3). A change over the
   client's message limit is refused before it is sent (`rejected` / "too large", its author told; the edits after it
   go on): pass the host's blob store as `sync.blobs` (envelopes over 1 MiB, and the server's declared limit becomes
-  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. `carton.media` is null:
-  `@carton/media` calls Carton, not the reverse.
+  the client's), or `sync.maxMessageBytes` to match a host set below the 32 MiB default. An envelope's `sha256` is
+  the SHA-256 of its bytes (WebCrypto where there is one, else the portable hash: the same digest). `presence()`
+  goes out at most 10 times a second (`PRESENCE_PER_SEC`), coalesced: the latest state always arrives, and one
+  still waiting when the handle closes (a leave, `null`) is sent before the close; the relay keeps none. When this
+  replica's own connection closes (or it stops), every peer it showed gets a `presence` event with `state: null`: a
+  host that restarts keeps no one to send leaves for; a peer still there shows again with its next update. This
+  replica's own latest presence (unless it was a leave) goes out again after each reconnect's welcome, an update a
+  disconnect caught waiting included. A pending edit survives a
+  restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
+  when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. Each stored edit keeps its
+  causal base (the confirmed seq and the pending edits it was made on, and what those did as it read them) and is
+  rebuilt on it and rebased onto what was confirmed since, with cards for what clashed. While a keyframe catch-up's skipped rows aren't saved yet, the
+  confirmed states edits are made on are (meta `["queue-head", cut, seq]`, each while an edit needs it), and a restart
+  resumes at the newest, offline too; an edit whose base nobody can rebuild waits, never applied on a guessed one, and
+  so do the edits made on it. A retry of an edit already queued (here, waiting, or another process's row) answers
+  `pending`. An
+  edit absorbed before it was sent spends its id (a retry answers it, never applies it again). A settle that fails keeps its outcome for the next one; a wait answers
+  `pending` until it is stored. A host that refuses or fails a cut's sync (a hello refused: an older host, "update
+  the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is
+  `sync.error(cut?)` and a `sync-error` event (`SyncError`: `code`, `message`), until a later welcome, ack or
+  acknowledged withdraw clears it (`error: null`). Classified by machine code first (a refusal's `ErrorMsg.code`:
+  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`; a failed connect's transport code: `unreachable`,
+  `unauthorized`, `protocol`, `closed`), by the words only when there is none.
+  `carton.media` is null: `@carton/media` calls Carton, not the reverse.
+- **People (windows-sync R3).** Cardboard's GUI saves are the generic person `{kind: "human", id: PERSON}` ("person")
+  on every computer.
+  - `log()` and `credits()` tell such a change as the person behind its replica (the `<rid>` of its id), keeping the
+    actor's `group`. The actor as recorded stays in `authoredAs` (`Version`, `Credit`). Agents, subagents and named
+    humans are never resolved. Hashes and rows don't change: the people live beside them.
+  - `carton.setIdentity({ id, name })` sets this replica's person: `id` is the sync session's account, `name` what
+    teammates see. It is kept in the store (meta `["identity"]`) and sent in every hello, and as `identity` on a live
+    connection to a host that keeps people.
+  - This store's replicas (meta `["rid", …]`, every process that saved here) resolve to it at once, offline too.
+  - A teammate's replicas resolve as the host says (`WelcomeMsg.people`, then `people` messages, kept in meta
+    `["person", rid]`). The host keeps one person per device credential, takes it only under the session's own account
+    (`forbidden` otherwise), and names every replica id that credential used, the edits uploaded by a share included.
+    So each replica writes only its own entry; the name is the person's own choice.
+  - A fold credits a record to its author on the cut folded in: told by that cut's change, and as recorded where that
+    cut isn't held here.
+  - Presence goes out as the resolved person.
+  - A `people` event says authors may read differently.
+  - An app shows its own edits as "You" by passing its resolved person as `me` (`identity()`, with its `group`).
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
   Published cut's welcome carries `source: { branchId, at, head }` (`sync.WelcomeMsg`): the cut it came from, the
@@ -93,8 +162,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   helper it starts that takes the lease; only a write to a local cut with no holder commits in its own process
   (`local/src/client.ts` `submit`, `local/src/open.ts`; tests R3-03, R4-04, R5-06). A process that commits to a shared
   cut itself, without the lease, gets `pending`: the edit is kept in `carton.db` and pushed by the next holder to
-  start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"). The holder passes
+  start, not by one already running (by design; `store-memory/test/shared-settle.test.ts`, "F5"); a running holder's
+  settles leave that row alone until its id is confirmed. The holder passes
   its fence as `sync.connect({ nonce, fence, conditions })`: once replaced, it records nothing more and stops.
+  `carton.pendingCount(cut?)` counts the edits waiting for a shared cut's server from the store, so any process on
+  the project (one without sync too, like `cb` deciding whether a Save As may carry history) sees the holder's.
 - **One schema per project:** the project's meta keeps `schemaFingerprint(schema)`; `Carton.open` refuses a process
   whose adapter has another document schema at the same schema version (its state hashes would differ, so refs and
   pins the processes make couldn't be checked by each other). Give every process on a carton.db the same adapter.
@@ -106,10 +178,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   replays only the rows after it. A replica that caught up through a server keyframe fetches the rows it jumped and
   checks that they rebuild it before History takes them.
 - **Retention (§5.4):** changes are kept forever. `compact({ cut?, olderThanDays = 90 })` is optional: on local cuts it
-  squashes each old auto-version's micro-changes (a run of one actor group and turn) into its last change. Named,
+  squashes each old auto-version's micro-changes (a run of one actor, in one group and turn) into its last change. Named,
   fold, export, Published, undo, revert and restore versions, what they undid, fork points, folded-in and pinned
   versions, and the last K changes are never squashed. Seqs and ids stay; a squashed version leaves the log and its
-  state is no longer held (`StateUnknown`).
+  state is no longer held (`StateUnknown`). A fork keeps its own copy of its fork state, so a fork made from a
+  version another process (or a handle that hadn't seen the compaction) squashes still opens.
 
 ## Using it
 
@@ -135,21 +208,30 @@ that works on docs directly.
 `node scripts/size.mjs` checks the **history bundle** (esbuild minify, ESM, platform-neutral, gzip 9, bundling
 `core/src/history/index.ts` so engine parts History doesn't use are tree-shaken, exactly as P4 measured the
 prototype's 19.3 KB) against a **30 KB min+gz budget**. `node scripts/size-attr.mjs packages/core/src <scratch>`
-prints what each feature costs by stubbing it out. At `7e2f3f7` (UNVERIFIED, bytes min+gz; deterministic, not
-load-dependent):
+prints what each feature costs by stubbing it out (marginal bytes: a helper shared by two features counts only when both
+are stubbed). At `46f4b34` (UNVERIFIED, bytes; deterministic, not load-dependent; each stubbed copy keeps the package's
+`package.json`, so `sideEffects: false` applies as in the real package): the bundle is 82,084 min, 29,963 min+gz.
 
-| Feature in the history bundle | min+gz | In the prototype's 19.3 KB? |
-|---|---|---|
-| Local sequencer, v11 rule (sync-sequencer's `evaluatePush`, shared with the server) | 4,069 | the v5 rule was 947 |
-| `.cbproj` shallow/full export and import, last authors | 1,814 | yes |
-| Fold-some (atomic pre-check, inverse) | 587 | yes, without the pre-check |
-| Undo by actor group, remaps inverted | 550 | no |
-| Portable SHA-256 (browsers and Workers have no sync digest) | 469 | no (node:crypto) |
-| Pins with owner sets | 390 | simpler pins |
-| Views (R4-02) | 236 | yes |
-| Log, names, restore | 216 | no |
-| Remap stored as one op (P5) | 191 | no |
-| Soft warnings on confirm (§4.1) | 128 | no |
+| Feature in the history bundle | min | min+gz | In the prototype's 19.3 KB? |
+|---|---|---|---|
+| Local sequencer, v11 rule (sync-sequencer's `evaluatePush`, shared with the server) | 11,890 | 3,977 | the v5 rule was 947 |
+| `.cbproj` export/import and the hand-off closure, with the lineage walk they share | 5,473 | 1,691 | export/import yes |
+| of which `.cbproj` alone (last authors, knowledge, copied-folder ids) | 4,292 | 1,317 | yes, without the last two |
+| of which the hand-off closure alone (Stage F2/F3) | 1,046 | 308 | no |
+| Undo by actor group, remaps inverted | 1,927 | 620 | no |
+| Fold-some (atomic pre-check, inverse) | 1,913 | 610 | yes, without the pre-check |
+| Portable SHA-256 (browsers and Workers have no sync digest) | 819 | 468 | no (node:crypto) |
+| Pins with owner sets | 1,354 | 411 | simpler pins |
+| Revert, restore, log, names | 1,185 | 329 | no |
+| Refs: print, parse, any cut id | 771 | 333 | no |
+| Views (R4-02) | 741 | 254 | yes |
+| Credits (last author per record) | 846 | 236 | no |
+| Remap stored as one op (P5) | 479 | 187 | no |
+| Soft warnings on confirm (§4.1) | 413 | 128 | no |
+| Frozen records handed out | 118 | 29 | no |
+| Keyframe milestones | 120 | 29 | no |
 
-The whole bundle is 28.6 KB: 3.1 KB over the prototype is the v11 rule, the rest is the behaviour the plan and the
-five review rounds require (stable ids and no-op ids, Published-cut guard, lineage checks, atomic fold-some).
+The rest, about 20.7 KB (the bundle less these rows; gzip savings don't add exactly), is cuts, commit and rebase,
+fold and the merge DAG, states, and the merge engine (merge3, remaps, diff, apply, hashing). Since the budget was set
+(`c1d5488`, 28,571) the bundle grew by the shared-cut stages (F1–F4), the review rounds and the e2e-qa and kit-docs
+fixes; one path-escaping helper replaces three copies (−58).

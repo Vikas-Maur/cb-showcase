@@ -51,6 +51,11 @@ export interface Version {
   readonly provisional?: boolean;
   /** This version is the published cut. */
   readonly published?: boolean;
+  /**
+   * A partial fold's inverse (§5.3 R2-14: "fold in some of it"): the changes left out can still be folded in, with
+   * CartonUi.foldRest().
+   */
+  readonly foldRest?: boolean;
 }
 
 /** Which rows History shows. */
@@ -67,6 +72,20 @@ export interface HistorySource {
   at(filter: HistoryFilter, index: number): Version | undefined;
   /** Index of a version under a filter, or -1. Used to keep the list's place when rows arrive above it. */
   indexOf(filter: HistoryFilter, id: string): number;
+  /**
+   * Every version, oldest first, without side effects (at() may start work, like describing the row). The bridge
+   * (remote.ts) diffs it by identity to send only what changed. Optional: without it the bridge reads at().
+   */
+  all?(): readonly Version[];
+  /** Ask for the summaries of these versions now (the rows a remote list shows). */
+  want?(ids: readonly string[]): void;
+  /**
+   * The lowest index (oldest first) that may differ from what all() returned at `revision`; all().length when nothing
+   * did. Lets the bridge re-read only the tail after an append instead of the whole History.
+   */
+  firstChangedSince?(revision: number): number;
+  /** The versions from index `from` on (oldest first), without side effects: the bridge reads the changed tail only. */
+  slice?(from: number): readonly Version[];
 }
 
 export interface Cut {
@@ -123,11 +142,16 @@ export interface ConflictSide {
   /** Plain words: "Trimmed the end to 0:05.0". */
   readonly summary: string;
   readonly at?: number;
+  /** The cut this side's edit is on, when the two sides are on different cuts (a fold): "30s Instagram cut". */
+  readonly where?: string;
 }
 
 /** A conflict card (§7): both edits are kept, and the person picks. */
 export interface Conflict {
+  /** Opaque and unique. A host maps a card back with fromCarton's `cardFor(id)`, never by parsing it. */
   readonly id: string;
+  /** Which field or record the card is about (core's card path, `items/a/name`); several cards can share one. */
+  readonly path?: string;
   /** What the card is about: "'Intro' timing", "Title text". */
   readonly title: string;
   readonly mine: ConflictSide;
@@ -138,6 +162,8 @@ export interface Conflict {
   readonly reason?: string;
   /** The choice already shown in the edit while undecided (§7: provisional = your side). */
   readonly provisional?: ConflictChoice;
+  /** A fingerprint of both sides' values: a pick made on the card holds only while it still matches. */
+  readonly sig?: string;
 }
 
 /** One side of a Compare card (§9, generalizing the recovery picker). */
@@ -217,6 +243,8 @@ export interface FoldChange {
   readonly summary: string;
   readonly author: Actor;
   readonly at: number;
+  /** Can't be left out on its own (a project-level field): it is folded in with the rest. */
+  readonly locked?: boolean;
 }
 
 export interface FoldPlan {
@@ -299,14 +327,19 @@ export interface CartonUi {
 
   switchCut(cutId: string): Promise<void>;
   newCut(name: string, fromRef: string): Promise<Cut>;
-  renameCut(cutId: string, name: string): Promise<void>;
+  /** Absent when the engine can't rename cuts yet: the Cuts menu then doesn't offer it. */
+  renameCut?(cutId: string, name: string): Promise<void>;
   /** Fold `from` into `into`, leaving out the changes in `leaveOut` (partial accept). */
   fold(fromCutId: string, intoCutId: string, opts: { leaveOut: readonly string[]; choices: Readonly<Record<string, ConflictChoice>>; allCards?: boolean }): Promise<FoldResult>;
   resolve(conflictId: string, choice: ConflictChoice): Promise<void>;
+  /** "Fold in the rest" of a partial fold: the changes its inverse version left out. */
+  foldRest(versionId: string): Promise<FoldResult>;
   restore(ref: string): Promise<void>;
   nameVersion(versionId: string, name: string): Promise<void>;
   undo(turnId: string): Promise<FoldResult>;
   publish(cutId: string): Promise<void>;
   /** Open a read-only preview of a ref, or close it with null. */
   openPreview(ref: string | null, label?: string): void;
+  /** The host saw an edit attempt during a preview: the banner then explains and offers "Return to current to edit". */
+  blockEdit(): void;
 }

@@ -3,9 +3,9 @@
 // chip. Play changes plays only the changes, with a second of context; the A/B toggle swaps Before and After at the
 // same moment. What is shown is a read-only preview (R2-16), with "Return to current to edit".
 
-import { createElement as h, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
+import { createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type ReactNode } from "react";
 import { duration } from "../format.ts";
-import { useAsync, useCartonUi, useCurrentCut, useWords } from "../hooks.ts";
+import { useAsync, useCartonUi, useTopicSelector, useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
 import type { Shot, ShotDiff } from "../model.ts";
 import { ChangesPlayer, type PlayerState, type Side } from "../player.ts";
@@ -119,7 +119,8 @@ function ShotCells({ shots, i0, i1, from, span, w }: { shots: readonly Shot[]; i
   return out;
 }
 
-function Strip({ d, boxes, side, onSeek, onExpand, label }: { d: ShotDiff; boxes: readonly Box[]; side: Side; onSeek: (side: Side, t: number) => void; onExpand: (a0: number) => void; label: string }) {
+// memo: a strip re-renders only when its layout changes (a fold opened), not with the player's other state.
+const Strip = memo(function Strip({ d, boxes, side, onSeek, onExpand, label }: { d: ShotDiff; boxes: readonly Box[]; side: Side; onSeek: (side: Side, t: number) => void; onExpand: (a0: number) => void; label: string }) {
   const words = useWords();
   const shots = side === "a" ? d.a : d.b;
   return h(
@@ -161,12 +162,13 @@ function Strip({ d, boxes, side, onSeek, onExpand, label }: { d: ShotDiff; boxes
       );
     }),
   );
-}
+});
 
 function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }) {
   const ui = useCartonUi();
   const words = useWords();
-  const current = useCurrentCut();
+  // Only the current head: whether the side shown is the current state (no preview then).
+  const currentHead = useTopicSelector("cuts", (u) => u.cuts().find((c) => c.current)?.head);
   const scale = props.scale ?? 24;
   const [expanded, setExpanded] = useState<ReadonlySet<number>>(new Set());
   const player = useMemo(() => new ChangesPlayer(diff, { context: props.context }), [diff, props.context]);
@@ -209,12 +211,26 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
   // The side on screen is a read-only preview, unless it is the current head (§9, R2-16).
   const shownRef = st.side === "a" ? props.a : props.b;
   const shownLabel = st.side === "a" ? diff.aLabel : diff.bLabel;
+  // Switching to the current side closes the preview this player opened; closing the player closes it too.
+  const opened = useRef<string | null>(null);
   useEffect(() => {
-    if (current && shownRef === current.head) return;
+    if (currentHead && shownRef === currentHead) {
+      if (opened.current && ui.preview()?.ref === opened.current) ui.openPreview(null);
+      opened.current = null;
+      return;
+    }
+    opened.current = shownRef;
     ui.openPreview(shownRef, shownLabel);
-  }, [ui, shownRef, shownLabel, current?.head]);
-  useEffect(() => () => ui.openPreview(null), [ui]);
+  }, [ui, shownRef, shownLabel, currentHead]);
+  useEffect(
+    () => () => {
+      if (opened.current && ui.preview()?.ref === opened.current) ui.openPreview(null);
+    },
+    [ui],
+  );
 
+  const onSeek = useCallback((side: Side, t: number) => player.seek(t, side), [player]);
+  const onExpand = useCallback((row: number) => setExpanded((e) => new Set(e).add(row)), []);
   const n = player.changeRows.length;
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
     if ((e.target as HTMLElement).tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
@@ -279,8 +295,8 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
         h(
           "div",
           { className: "carton-strip-track", style: { width: layout.width } },
-          h(Strip, { d: diff, boxes: layout.boxes, side: "a", label: words.before, onSeek: (s, t) => player.seek(t, s), onExpand: (row) => setExpanded((e) => new Set(e).add(row)) }),
-          h(Strip, { d: diff, boxes: layout.boxes, side: "b", label: words.after, onSeek: (s, t) => player.seek(t, s), onExpand: (row) => setExpanded((e) => new Set(e).add(row)) }),
+          h(Strip, { d: diff, boxes: layout.boxes, side: "a", label: words.before, onSeek, onExpand }),
+          h(Strip, { d: diff, boxes: layout.boxes, side: "b", label: words.after, onSeek, onExpand }),
           h("div", { ref: head, className: "carton-playhead", "data-side": st.side, "aria-hidden": true }),
         ),
       ),

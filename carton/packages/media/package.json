@@ -36,5 +36,11 @@
   },
   "dependencies": {
     "@carton/core": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/blob-fs": "0.1.0",
+    "@carton/host-http": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/server-node": "0.1.0"
   }
 }

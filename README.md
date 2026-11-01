@@ -332,6 +332,31 @@ to about 1.3 s (10, 20, 40 … 320 ms), as graceful-fs does. It goes into the li
 which only follows the change once `syncBuiltinESMExports()` runs. Main is left as it is, since the retry
 would multiply its own.
 
+Open Project (a folder or a `.cbproj`) can fail the same way. Cardboard copies the project into a staging folder
+(`.opening-…` in the library), moves it into place, then removes the staging folder. On Windows a file that
+anything holds open can't be moved or removed, and a removal that fails fails the whole Open Project. In CI's
+Windows run with Carton on, Carton itself held the staged project's history open (`EBUSY` on its `carton.db`); it
+now closes everything it opened there before Cardboard moves it (see "Carton: live sync and sharing"). Defender or
+the search indexer scanning a file the import has just written can hold one briefly too. The move is a rename, so
+it was already retried; the removal now retries the same way (adding `ENOTEMPTY`), in the worker
+(`patch-worker.js` 6) and the CLI (`patch-cli-media.js` 6).
+
+**With Carton off** (see "Carton" below), every Carton hook runs Cardboard's own code, except for three changes that
+apply whether Carton is on or off:
+- The staging folder's removal retries on Windows, as above.
+- Open Project of a `.cbproj` removes only what Carton itself wrote from the staged copy, before Cardboard reads it:
+  the `.carton\` folder, where Carton keeps a project's history, and Carton's view files in `.scratch\views\`. A view
+  file is Carton's when its name is a view's and its content is Carton's: a `.tsx` whose `// cardboard:rev` line has
+  the form only Carton writes (`main@3~5e1f0c2a b:…`; Cardboard's own is a bare number), or a `.status` file in
+  Carton's format. Anything else under `.scratch\views\`, a person's or an agent's own files, stays. It only acts on
+  archives that contain Carton's data, so a stock `.cbproj` opens exactly as before. It stops someone else's
+  `carton.db` and views from landing silently in a Carton-off library and surfacing as foreign history if Carton is
+  switched on later. The `.cbproj` itself is untouched, so nothing is lost. Opening a project folder is never
+  scrubbed: it is your own project, and keeps its history and every file. (`scripts\carton\sync\patches\cbproj.js`)
+- Save As of a `.cbproj` leaves the same files out, so a file never carries this computer's history database (local
+  paths, this device's pins) or Carton's view files. Everything else in `.scratch\views\` goes in, as in Cardboard
+  1.4.0. (`scripts\carton\store-bridge.js`)
+
 `scripts\patch-cli-media.js` (applied to `resources\cli\chunks\chunk-LL26E55H.mjs`) makes the same
 media changes in the CLI's own copy of Cardboard's media code. `cb media add`, `cb media proxy` and
 the Director's imports run that copy in the CLI process, not in the app. Unpatched, it encoded
@@ -397,6 +422,252 @@ which brings the window to the front and stops if another window takes it. On th
 keyboard changes, 20 of the 25 page tests passed. The five failures were Ctrl+Y, the Mac keyboard, the
 missed Ctrl+D conflict, and the activity log, which didn't exist yet. With them, all 25 pass, and all 9
 accelerator tests.
+
+### Carton: version history for a project (off unless `CARDBOARD_CARTON=1`)
+
+Carton gives a Cardboard project permanent history with authors, cuts (variants) you can fold into each other, undo
+by actor, and, later, live collaboration. Its code is in `carton\`; how it hooks into Cardboard is in
+`carton\docs\INTEGRATION-1.4.0.md`. The build includes
+it, and it stays **off** unless Cardboard starts with `CARDBOARD_CARTON=1`. With it off, every hook below runs
+Cardboard's own code. Gates G1 and G2 below decide when the default flips.
+
+What changes with it on:
+- **No lost edits.** The app and every `cb` agent used to read `project.json`, change it, and rename a new one over it.
+  Two of them at once could lose one's edit, even on different clips (seen with 1.4.0's own `cb` here). A GUI save
+  wrote the whole timeline and could revert an agent's clip. Now each change is committed to `.carton\carton.db`
+  against the exact version it was made on. A stale one is merged in, and a clash becomes a conflict card. Nothing is
+  overwritten.
+- **History** keeps every version, not the last 20, with who made it, down to the Director's turn and subagent.
+  `cb history` shows who made each version, and each Director turn is named from your prompt ("Make the intro
+  tighter"). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
+  agent turn.
+- **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
+  an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit.
+- **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
+  against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
+  printed from, whether its header is Cardboard's number or Carton's version.
+- **History tab** in the editor's left rail: versions, compare, restore, cuts, fold in. Opening an old version shows
+  it read-only until "Return to current". Conflict cards wait there: your own edits that clashed, and an agent's view
+  edit that clashed with yours (see "An agent's edit and yours at once" below). On an agent's card your value is the
+  one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back).
+- **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
+  `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
+
+The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases):
+
+| Carton | git |
+| --- | --- |
+| Version | commit |
+| Cut | branch |
+| Fold in | merge |
+| History | log |
+| Credits | blame |
+| Restore | revert |
+| Compare | diff |
+| Publish | tag |
+| Undo turn | revert by author |
+
+**Where it's still incomplete (2026-10-31).** History, cuts, fold, credits and `undo --turn` work in `cb` on real
+Carton. Live sync and sharing, media for shared projects, `cb`'s cloud mode and `.cbproj` with "Bring in their
+changes" work in the app's real library worker, and so do per-agent views, the `timeline.tsx` freeze during an
+agent's turn and the agent prompt that describes them (a Director turn end to end: `director-turn.test.js`). All of it
+is tested on Linux with Cardboard's own bundles. Not wired yet:
+- Carton's merge in an apply's preview (the preview is Cardboard's own; the commit that follows merges with Carton);
+- the engine thread (the worker commits on its own thread).
+
+The editor's side, the History tab and main's agent hooks have only been tested on stand-ins: they need the Windows
+run below.
+
+`scripts\patch-carton.js` (after the Windows patches; `scripts\carton\` holds what it injects):
+1. The project store, both copies (the app's library worker and the CLI's own): one Carton change per edit, against
+   the version it was made on; the save into `project.json` and `timeline.tsx` displaces whatever is there and links
+   the new file in, so a write by anything else is kept and imported, never overwritten (`.carton\displaced\`).
+2. History and undo read Carton's versions first, then the old `.revs`; an apply's base is the exact version its
+   header names; Carton's merge replaces Cardboard's. The header can be Cardboard's (`// cardboard:rev <number>`) or
+   Carton's (`// cardboard:rev Main cut@12~3f9a1c0e b:… p:… by …`, as Carton's own prints of the timeline write it);
+   only the first such line counts. For Carton's, the edit merges against that exact version and is saved as made on
+   it; a version Carton can't rebuild exactly is refused with "print it again". (Cardboard alone reads only a number
+   there, so it took Carton's header for none and merged against the current timeline, reverting newer edits.)
+3. A `.cbproj` never carries `.carton\` or Carton's view files in `.scratch\views\` (on or off: the database holds
+   local paths); anything else in `.scratch\views\` goes in.
+4. `cb`: the commands, WHO in `cb history`, `undo --turn`, the MCP tools, `cb source print --view <name>` (an agent's
+   own view, below), and a `cb carton-hook` command host Claude Code runs for its hooks (which also tell the app what
+   the agent reads and writes, below). Its hooks on Read, Write and Edit run only for `timeline.tsx` and `project.json`
+   (Claude Code's `if` conditions, checked inside Claude Code): a call on any other file starts no process, so an
+   agent's ordinary reads cost nothing extra. A Claude Code too old for `if` runs them on every call, with the same
+   answers.
+5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent; `Stop` and
+   `SubagentStop` hand a late conflict back to the agent once (then the cards it left are the person's); the
+   Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below); the GUI save's base
+   reaches the worker; `carton:call` for the pages. With Carton on, every agent's instructions (its system prompt and
+   the `AGENTS.md` Cardboard writes into each bundle) describe the per-agent view; with Carton off they are
+   Cardboard's, word for word.
+6. The editor: the save names the version it was made on; a change from elsewhere is adopted without an undo step
+   (a pending save goes first); Ctrl+Z goes to Carton; ripple and split deletes record what they moved; the History tab.
+7. Cardboard's own `timeline.tsx` printer and parser, in both copies, for Carton's prints of the timeline (per-agent
+   views, the shared file during an agent's turn): the print is exactly what `cb source print` shows, with Carton's
+   header on its rev line; the parse is exactly what `cb source apply` would save for the file, without saving or
+   importing anything. What only the apply can do (a path to a new clip, a LUT file outside `luts\`, a color match) is
+   refused there, as is a half-written file. Each of Cardboard's functions it calls is checked at build time where
+   Cardboard's own apply calls it.
+8. Agents and the person editing at once (H8): the library worker runs Carton's materializer for each project it
+   opens. It writes `timeline.tsx` from Carton's history (with that printer, under Carton's header) in place of
+   Cardboard's own regeneration, and Cardboard's watcher hands it what others save there. While an agent works,
+   `timeline.tsx` stays as it was when the agent started: a Director turn from its first `cb` call or read of the file
+   until its turn ends; an agent without hooks until a minute after its last `cb` call. The person's edits go on in
+   the editor and `project.json` meanwhile. An agent can also print its own copy, `cb source print <project> --view
+   <name>` (`.scratch\views\<name>.tsx`): each save of it is applied as that agent's change, and
+   `.scratch\views\<name>.status` says how it landed. A clash keeps what is there and is a card on both sides: the
+   agent's (`cb conflicts`, the Stop hook) and the person's (History). That worker is also the project's one lease
+   holder, so `cb`'s writes and hook events reach it. A `timeline.tsx` printed by Cardboard 1.4.0 (a numbered header)
+   still applies as an edit of the version it shows. An agent's own `cb` edit shows in `timeline.tsx` at once, freeze
+   or not (the person's edits made meanwhile come with it). An agent that writes or edits `project.json` directly is
+   refused and pointed to its own view. The views are checked for saves by reading their size and time a few times a
+   second, not by a file watcher: on Windows an open watch inside the bundle could stop Cardboard renaming the
+   project or moving it to the trash.
+
+`scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
+thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
+out entirely, and `--baseline` does too.
+
+#### Testing Carton
+
+On any machine (Linux here), against Cardboard's own unpacked bundles: `CARDBOARD_PRISTINE` is a folder with
+`app-asar\` (`npx asar extract …\app.asar`) and `cli\` from the macOS installer.
+
+```sh
+cd carton && npm ci && cd ..
+set CARDBOARD_PRISTINE=C:\cb-pristine
+node --test --test-concurrency=1 "scripts/carton/test/*.test.js"
+```
+
+They check that with Carton off `cb`'s output and files equal this build's without Carton, that `.cbproj` leaves out
+`.carton\` and Carton's view files and keeps the rest of `.scratch\views\`, that with Carton on every hook reaches
+Carton with the right arguments (a recording stand-in), that the real library worker runs patched (on Node, standing
+in for Electron's port), and the editor's and main's bridges on stand-ins, with the methods each answers itself, and
+that a read catching `project.json` in the middle of an install waits for it instead of reporting the project removed,
+and that the staging folder's removal is retried. `codec.test.js`: Cardboard's own printer and parser as Carton uses
+them, in `cb` and the worker (the print equals `cb source print` but for the rev line, the parse equals what
+`cb source apply` saves, a half-written file is refused), and an apply under Carton's header merging against that
+exact version, or refused when it's gone; with Carton off, the same file applies as in this build without Carton.
+38 tests.
+
+On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
+
+```sh
+cd tools && npm ci && cd ..\carton && npm ci && cd ..
+node scripts/build-windows.js
+set CARDBOARD_USER_DATA=%TEMP%\cb-carton\userdata
+set CARDBOARD_HOME=%TEMP%\cb-carton\home
+set CB=out\Cardboard-win\resources\cli\cardboard.mjs
+```
+
+The build's last step checks that `carton-node.cjs` loads in Cardboard's own Node.
+
+1. **No regression, Carton off.** Start `out\Cardboard-win\Cardboard.exe --remote-debugging-port=9334` without
+   `CARDBOARD_CARTON` and run `scripts\test-shortcuts.js` (both forms, see "Testing the keyboard"). Expect 25 and 9
+   passes, as before Carton. Repeat with `CARDBOARD_CARTON=1`: the same.
+2. **The lost update (B1), Carton off then on.** With the app closed:
+   `node scripts/carton/writers.js setup "%CB%" %CARDBOARD_HOME% bench-media\<a clip>.mp4`, then
+   `node scripts/carton/writers.js run "%CB%" %CARDBOARD_HOME% --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
+   this Node; `cb` through `Cardboard.exe` works too.) Off, some writers can lose their last edit. On, none may, once
+   history is in.
+3. **Gate G2: GUI saves under 4 agents** (§6.2). Start the app with `CARDBOARD_CARTON_TIMING=%TEMP%\g2-off.jsonl`, open
+   "Carton gates", start the 4 writers (`run … --seconds 300`), and edit for 3 minutes in the editor: move, trim,
+   split, a change every second or two. Every save's round trip to the library worker lands in the file. Then the same
+   with `CARDBOARD_CARTON=1` and `g2-on.jsonl`. Alternate three runs of each. Pass: the p99 of `ms` with Carton on is
+   no worse than off. Report medians and every run.
+4. **Gate G1: 3 writers at 1/s for 10 minutes** (§16; `run … --writers 3 --rate 1 --seconds 600`), Carton on, while
+   you edit the clip on track "Mine" (split it, move the pieces). Then:
+   - none of your edits is missing: the pieces you made are all there;
+   - none of the writers' changes is saved under your name: in `cb history "Carton gates"`, every version with WHO
+     `person` changes only "Mine"'s clips (`cb compare "Carton gates" <the rev before> <its rev>`);
+   - Ctrl+Z, as many times as you made edits, undoes only yours: the W1–W3 sizes keep the writers' last values;
+   - playback frame times within noise of Carton off (DevTools Performance, the same 30 s of playback in each).
+5. **The NTFS race** (§6.4, P10): `powershell -File carton\bench\race\run-windows.ps1` on the laptop's NTFS volume.
+   Atomic writers must lose 0 writes. Then Claude Code's own fallback: Claude Code writes a file by temp and rename,
+   and in place when the rename fails (Cardboard or Defender holding it). Run a Claude Code session that edits
+   `timeline.tsx` in a loop while `writers.js` runs, and count the edits it reports against those in `cb history`;
+   in-place writers may very rarely lose one (L19), never silently in a per-agent view.
+
+#### Carton: live sync and sharing
+
+With Carton on, a project can be shared through a Carton host (`carton\apps\server-node`, or the Cloudflare Worker),
+so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
+with Carton off none of it runs at all.
+
+- **Share** (the editor's left rail, "Share"): enter the host and the invite you were given (the host's owner gets
+  one with its admin token). The project goes up with its whole history and authors. Its clips go up too: each clip's
+  content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
+  segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
+  proxy) go up as they are, up to 200 MB and 50 MB.
+- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch") that expires. **Join** in another
+  library from the link: the project arrives with its history, and its clips play from the host.
+- **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
+  step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
+  The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
+  what they are doing. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
+  panel says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
+  message), access refused, the host out of reach.
+- **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
+  chose when sharing or joining on your teammates', in History, credits and presence, including the edits you made
+  before you shared. (Cardboard records every editor save as "the person"; Carton tells each one by the computer that
+  made it, which the host knows, so nothing in the history is rewritten.)
+- **A teammate's clips** play from the host by range (each 1 MiB verified against its content id, cached in app data)
+  through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
+  (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
+  into the project itself, as a version by whoever shared it.
+- **Agents**: `cb` on a shared project hands its edit to the app's library worker, which holds the project's sync
+  connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
+  cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper
+  catches up and the newest state goes into `project.json`) and is never PUT as a whole file afterwards.
+- **An agent's edit and yours at once**: an agent edits its own view of the timeline (`.scratch\views\`). When its
+  save clashes with an edit you made meanwhile, your value is kept, the rest of its edit goes in, and you both get a
+  conflict card. The agent's is in `cb conflicts` (and its view's `.status`). Yours is in History, open now or opened
+  later, naming the agent: "Keep yours" changes nothing; "Keep Director's" makes the agent's value a version of yours.
+  Choosing on either side closes the card on both: your choice removes the agent's, and the agent's `cb resolve`
+  removes yours (a pick you make before it goes still holds). Whatever the agent leaves unresolved when its turn ends
+  stays in History for you.
+- **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their versions
+  in instead of 1.4.0's "This project ID already exists". Where you both changed the same thing, theirs goes in and
+  yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History panel).
+  Clips they added come with their files. Opening one of a project you don't have starts its history from theirs;
+  whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
+  move or remove an open file). A `.carton\` folder or Carton's view files inside a `.cbproj` are never kept: Open
+  Project removes them, even with Carton off, and keeps anything else in `.scratch\views\` (see "Saves on Windows",
+  With Carton off). **Include history**:
+  Cardboard's Save As dialog has no switch for it, so set `CARTON_CBPROJ_HISTORY=1` in the environment of the app or
+  of `cb` before saving. The file then also carries every version, with its author and name, and whoever opens it sees
+  them on a read-only cut. History never includes your local data (pins, notices, sync settings). Saved while edits to
+  a shared project are still waiting to sync (offline; Carton counts them for whichever process saves, the app or
+  `cb`), the file has no Carton history at all, only what you see (as in 1.4.0), and the log says so. Save again once
+  synced.
+
+Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
+engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
+`scripts\carton\sync\patches\*.js`: the Share tab and presence in the editor (`ui.js`), `cardboard-media://` for clips
+that live on the host (`media.js`), the agent's media tools (`tools.js`), `cb`'s cloud mode (`cloud.js`) and `.cbproj`
+(`cbproj.js`). Sessions and tokens are in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
+
+Tests (Linux, Cardboard's own bundles; two libraries, each with its own app data and its own real library worker,
+syncing through a real host on 127.0.0.1): share with history, invite and join, concurrent edits, who made each edit
+(each side's GUI edits under their name at the other's, before and after the share, "You" for your own), presence, media by
+range, by URL and through the agent's `grab_frame`, media while it uploads, offline and rejoin, `cb` with the app open
+(from a print one version behind), and with it closed in cloud mode, another program's save and an offline restore
+with the app closed, a host too old for the app; `.cbproj` Save As, Open and "Bring in their changes" in both copies,
+with history, and saved offline (`cbproj-offline.test.js`); which files in `.scratch\views\` are Carton's, against
+the files Carton's own materializer writes (`views.test.js`); the save path's merges (`facade.test.js`); an agent's
+view-save cards on both sides, through the worker's History panel (`view-cards.test.js`, needs no Cardboard bundles);
+and the panel's words when sync fails (`ui.test.js`).
+
+```sh
+set CARDBOARD_PRISTINE=C:\cb-pristine
+node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js
+```
+
+Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview
+(Electron's protocol handler and the media element), NVENC/QSV/AMF proxies, the helper under named pipes, and renames
+under Defender.
 
 ### Benchmarks
 

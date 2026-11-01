@@ -20,6 +20,7 @@
 import { equalBytes } from "./bytes.ts";
 import type { LeafCache } from "./cache.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
+import { reportDamage, reportToHost } from "./damage.ts";
 import { manifestKey, mediaKey } from "./keys.ts";
 import { decodeManifest, LEAF_SIZE, leafDigest, leafSpan, type Manifest } from "./manifest.ts";
 import { LeafMismatchError, type MediaStat, type RangeSource } from "./range-source.ts";
@@ -61,6 +62,13 @@ export interface MediaReaderOptions {
   retryDelayMs?: number;
   contentType?: (hash: string) => string | undefined;
   onEvent?: (e: ReaderEvent) => void;
+  /**
+   * When a leaf still fails after its repair attempts, the store's copy is damaged (disk rot, a bad copy): write
+   * bad/<hash> so the next upload of this media replaces the object instead of deduping on it (e2e S5-5). Default on;
+   * a reader without write access just fails to report. A store with a host check (`reportDamaged`, team mode) is
+   * also asked to verify and remove the object.
+   */
+  reportDamage?: boolean;
 }
 
 interface Run {
@@ -78,6 +86,11 @@ export class MediaReader implements RangeSource {
   readonly #manifests = new Map<string, Promise<Manifest>>();
   readonly #present = new Set<string>();
   readonly #inflight = new Map<string, Promise<Uint8Array>>();
+
+  /** The range cache it reads through, if any (a stream reader keeps its entries there too). */
+  get cache(): LeafCache | undefined {
+    return this.#o.cache;
+  }
 
   constructor(opts: MediaReaderOptions) {
     this.#o = opts;
@@ -126,6 +139,7 @@ export class MediaReader implements RangeSource {
     if (!this.#present.has(hash)) {
       try {
         // The store may never answer (a stalled link): the caller's abort ends the wait.
+        signal?.throwIfAborted();
         const h = await (signal ? untilAborted(this.#o.store.head(mediaKey(hash)), signal) : this.#o.store.head(mediaKey(hash)));
         if (!h) return null; // only the manifest is up so far
         if (h.size !== m.size) throw new Error(`store object for ${hash} is ${h.size} bytes, manifest says ${m.size}`);
@@ -248,6 +262,13 @@ export class MediaReader implements RangeSource {
       this.#o.onEvent?.({ type: "mismatch", hash, leaf: i, handedOut: false });
     }
     this.#o.onEvent?.({ type: "repair-failed", hash, leaf: i });
+    if (this.#o.reportDamage !== false) {
+      // The host's own check first, where the store has one (it removes a damaged object), then our record
+      // (bad/<hash>). In that order an upload can't answer the report, its no-op PUT kept by a team host, before the
+      // host removes the object it was about: once the report is up, the removal is done.
+      await reportToHost(this.#o.store, hash, i);
+      await reportDamage(this.#o.store, hash, { leaf: i });
+    }
     throw new LeafMismatchError(hash, i);
   }
 
@@ -496,6 +517,8 @@ export class MediaReader implements RangeSource {
 
 /** `p`, or the signal's reason as soon as it aborts. */
 function untilAborted<T>(p: Promise<T>, signal: AbortSignal): Promise<T> {
+  // Whoever stops waiting leaves `p` running: observe it, so its later rejection isn't an unhandled one.
+  p.catch(() => {});
   if (signal.aborted) return Promise.reject(signal.reason);
   return new Promise((resolve, reject) => {
     const onAbort = () => reject(signal.reason);

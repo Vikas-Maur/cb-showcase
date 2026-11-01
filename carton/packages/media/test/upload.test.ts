@@ -1,12 +1,16 @@
 import assert from "node:assert/strict";
+import { isDamaged, reportDamage } from "../src/damage.ts";
+import { createHash } from "node:crypto";
 import { test } from "node:test";
 import { equalBytes } from "../src/bytes.ts";
-import type { BlobStore } from "../src/contracts.ts";
+import type { BlobStore, MultipartUpload } from "../src/contracts.ts";
 import { bytesSource, hashSource } from "../src/hash.ts";
-import { manifestKey, mediaKey } from "../src/keys.ts";
-import { decodeManifest, LEAF_SIZE } from "../src/manifest.ts";
+import { damagedKey, manifestKey, mediaKey } from "../src/keys.ts";
+import { decodeManifest, LEAF_SIZE, leafDigest, leafSpan } from "../src/manifest.ts";
 import { nodeHasher } from "../src/node/node-hasher.ts";
 import { CountingMemoryStore, FaultyStore, LinkDroppedError } from "../src/testing.ts";
+import { MediaReader } from "../src/read.ts";
+import { LeafMismatchError } from "../src/range-source.ts";
 import { cancelUpload, choosePartSize, MAX_PARTS, MemoryUploadStateStore, SourceChangedError, uploadMedia } from "../src/upload.ts";
 import { xorshiftBytes } from "./helpers.ts";
 
@@ -134,13 +138,13 @@ test("an upload the store forgot (expired) is started again instead of failing f
   const mem = new CountingMemoryStore();
   const state = new MemoryUploadStateStore();
   const store = new FaultyStore(mem, { dropUploadAfterBytes: 3 * MiB, noListParts: true });
-  const opts = { store, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0 };
+  const opts = { store, hasher: nodeHasher, source, manifest, state, partSize: 2 * MiB, concurrency: 1, retries: 0, retryDelayMs: 5 };
   await assert.rejects(uploadMedia(opts));
   mem.uploads.clear(); // the store expired it
-  await assert.rejects(uploadMedia(opts), /NoSuchUpload/);
-  assert.equal(await state.load(mediaKey(manifest.hash)), null, "the dead upload is forgotten");
+  // The resumed upload finds it gone (NoSuchUpload), finds no object either, and starts a fresh one (CI #27).
   const r = await uploadMedia(opts);
   assert.equal(r.resumedParts, 0);
+  assert.equal(await state.load(mediaKey(manifest.hash)), null, "the dead upload is forgotten");
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
 });
 
@@ -246,4 +250,477 @@ test("a completion with ETags another process replaced is recovered by listing t
   const r = await uploadMedia({ store, hasher: nodeHasher, source, manifest, partSize: 2 * MiB, retryDelayMs: 1 });
   assert.equal(r.deduped, false);
   assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+});
+
+test("an upload the store dropped mid-way costs at most the parts in flight: NoSuchUpload is never retried (S5-4)", async () => {
+  const { manifest, source } = await setup(24 * MiB, 16);
+  const mem = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  let partsSeen = 0;
+  let sent = 0; // every attempt's bytes: over a network they go out before the store answers NoSuchUpload
+  const store = new FaultyStore(mem, {});
+  const create = store.createMultipart.bind(store);
+  // The store drops the upload once its second part has landed (expired, or completed by another process).
+  store.createMultipart = async (k, o) => {
+    const u = await create(k, o);
+    return {
+      ...u,
+      key: u.key,
+      uploadId: u.uploadId,
+      uploadPart: async (n: number, d: Uint8Array) => {
+        sent += d.length;
+        const r = await u.uploadPart(n, d);
+        if (++partsSeen === 2) mem.uploads.clear();
+        return r;
+      },
+    };
+  };
+  const r = await uploadMedia({ store, hasher: nodeHasher, source, manifest, state, partSize: 4 * MiB, concurrency: 2, retries: 5, retryDelayMs: 1 });
+  // The dead upload took 2 parts and at most 2 more in flight; then a fresh upload (CI #27: no object appeared) sends the
+  // whole file once. Anything above that is retries into the dead upload.
+  assert.ok(sent <= 4 * 4 * MiB + 24 * MiB + 64 * 1024, `${sent} bytes went up: the dead upload was retried into`);
+  assert.equal(r.resumedParts, 0, "the fresh upload");
+  assert.equal(await state.load(mediaKey(manifest.hash)), null, "the dead upload is forgotten");
+});
+
+for (const size of [3 * MiB + 9, 10 * MiB + 9]) {
+  test(`a damaged stored object is reported by a reader and replaced by the next upload (S5-5, ${size > 4 * MiB ? "multipart" : "one put"})`, async () => {
+    const { manifest, source, data } = await setup(size, 17);
+    const mem = new CountingMemoryStore();
+    const o = { store: mem, hasher: nodeHasher, source, manifest, partSize: 4 * MiB };
+    await uploadMedia(o);
+    // Disk rot on the host: one byte of leaf 2 changes for good.
+    mem.objects.get(mediaKey(manifest.hash))![2 * MiB + 5] ^= 0xff;
+    const reader = new MediaReader({ store: mem, hasher: nodeHasher, repairAttempts: 2 });
+    await assert.rejects(reader.readVerified(manifest.hash, 0, size), LeafMismatchError);
+    assert.ok(mem.objects.has(damagedKey(manifest.hash)), "the reader reported it");
+    const again = await uploadMedia(o);
+    assert.equal(again.deduped, false, "not deduped on a damaged object");
+    assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data), "replaced byte for byte");
+    assert.equal(await isDamaged(mem, manifest.hash), false, "the report is cleared once replaced");
+    const fresh = new MediaReader({ store: mem, hasher: nodeHasher });
+    assert.ok(equalBytes(await fresh.readVerified(manifest.hash, 0, size), data), "a teammate reads it again");
+    assert.equal((await uploadMedia(o)).deduped, true, "and the next upload dedups as usual");
+  });
+}
+
+test("a part waiting to retry doesn't go up again once a sibling found the upload gone (S5-4, review round 2 suggestion)", async () => {
+  const { manifest, source } = await setup(8 * MiB, 18);
+  const mem = new CountingMemoryStore();
+  const attempts = new Map<number, number>(); // the first upload's
+  let first: string | undefined;
+  const store = new FaultyStore(mem, {});
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k, o) => {
+    const u = await create(k, o);
+    first ??= u.uploadId;
+    return {
+      ...u,
+      key: u.key,
+      uploadId: u.uploadId,
+      uploadPart: async (n: number, d: Uint8Array) => {
+        if (u.uploadId === first) attempts.set(n, (attempts.get(n) ?? 0) + 1);
+        if (n === 1 && attempts.get(1) === 1) throw new Error("ECONNRESET"); // part 1 backs off and will retry
+        if (n === 2) mem.uploads.clear(); // meanwhile the store drops the upload: part 2 sees NoSuchUpload
+        return u.uploadPart(n, d);
+      },
+    };
+  };
+  // Every upload loses part 2 this way, so after starting fresh twice (CI #27) it fails.
+  await assert.rejects(uploadMedia({ store, hasher: nodeHasher, source, manifest, partSize: 4 * MiB, concurrency: 2, retries: 3, retryDelayMs: 80 }), /NoSuchUpload/);
+  await new Promise((r) => setTimeout(r, 300)); // past part 1's backoff
+  assert.equal(attempts.get(1), 1, "part 1 was not sent again into the dead upload");
+});
+
+test("a repair whose completion answer was lost still clears the damage report (S5 review round, finding 9)", async () => {
+  const store = new CountingMemoryStore();
+  const good = xorshiftBytes(2 * LEAF_SIZE + 1, 41);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const key = mediaKey(manifest.hash);
+  await store.put(key, new Uint8Array(good.length).fill(4));
+  await store.put(damagedKey(manifest.hash), new Uint8Array([1]));
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k: string) => {
+    const u = await create(k);
+    return {
+      ...u,
+      complete: async (parts: { partNumber: number; etag: string }[]) => {
+        await u.complete(parts);
+        throw Object.assign(new Error("NoSuchUpload: the answer to a completion that went through"), { code: "NoSuchUpload" });
+      },
+    };
+  };
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good), partSize: LEAF_SIZE, retries: 0 };
+  await uploadMedia(o);
+  assert.ok(equalBytes((await store.get(key))!, good));
+  assert.equal(await isDamaged(store, manifest.hash), false);
+  const again = await uploadMedia(o);
+  assert.equal(again.bytesSent, 0, "deduped now");
+});
+
+test("a repair that keeps the object's ETag (same bytes) and lost its completion answer still clears the report (round 2, finding 5)", async () => {
+  const store = new CountingMemoryStore();
+  // ETags from the bytes, as S3's multipart ETag is for the same bytes in the same parts.
+  const head = store.head.bind(store);
+  store.head = async (k) => {
+    const h = await head(k);
+    return h && { ...h, etag: createHash("md5").update(store.objects.get(k)!).digest("hex") };
+  };
+  const good = xorshiftBytes(2 * LEAF_SIZE + 1, 43);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good), partSize: LEAF_SIZE, retries: 0 };
+  await uploadMedia(o);
+  await store.put(damagedKey(manifest.hash), new Uint8Array([1])); // a false report: the bytes were fine
+  const create = store.createMultipart.bind(store);
+  store.createMultipart = async (k: string) => {
+    const u = await create(k);
+    return {
+      ...u,
+      complete: async (parts: { partNumber: number; etag: string }[]) => {
+        await u.complete(parts);
+        throw Object.assign(new Error("NoSuchUpload: the answer to a completion that went through"), { code: "NoSuchUpload" });
+      },
+    };
+  };
+  await uploadMedia(o);
+  assert.equal(await isDamaged(store, manifest.hash), false);
+});
+
+/** A store with only put, get and HEAD (and multipart), as through a Carton host's HTTP API: no delete, no list. */
+function noDeleteStore(): CountingMemoryStore {
+  const store = new CountingMemoryStore();
+  store.delete = async () => assert.fail("delete: the host API has none");
+  store.list = async () => assert.fail("list: the host API has none");
+  return store;
+}
+
+test("repairs are recorded append-only: through a store without delete, a repaired object dedups again, and a new report counts again", async () => {
+  const store = noDeleteStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 51);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good) };
+  await uploadMedia(o);
+  const reader = new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 });
+  // Damage, found by a reader: reported.
+  store.objects.get(mediaKey(manifest.hash))![3] ^= 255;
+  await assert.rejects(reader.readVerified(manifest.hash, 0, 10), LeafMismatchError);
+  assert.equal(await isDamaged(store, manifest.hash), true);
+  // The next upload replaces it and answers the report; the report itself stays.
+  assert.ok((await uploadMedia(o)).bytesSent > 0);
+  assert.equal(await isDamaged(store, manifest.hash), false);
+  assert.ok(store.objects.has(damagedKey(manifest.hash)), "nothing deleted");
+  assert.ok(equalBytes(await new MediaReader({ store, hasher: nodeHasher }).readVerified(manifest.hash, 0, good.length), good));
+  // Answered: the next upload dedups.
+  assert.equal((await uploadMedia(o)).bytesSent, 0);
+  // Damaged again later: a new report, which the old answer doesn't cover.
+  store.objects.get(mediaKey(manifest.hash))![7] ^= 255;
+  await assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).readVerified(manifest.hash, 0, 10), LeafMismatchError);
+  assert.equal(await isDamaged(store, manifest.hash), true);
+  assert.ok((await uploadMedia(o)).bytesSent > 0, "replaced again");
+  assert.equal(await isDamaged(store, manifest.hash), false);
+});
+
+test("a report written while a repair is running still counts after it (the repair answers only the report it saw)", async () => {
+  const store = noDeleteStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 52);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good) };
+  await uploadMedia(o);
+  await reportDamage(store, manifest.hash, { leaf: 0 });
+  const put = store.put.bind(store);
+  let reported = false;
+  store.put = async (k, d, opts) => {
+    // Another reader reports again while the replacement goes up.
+    if (k === mediaKey(manifest.hash) && !reported) {
+      reported = true;
+      await reportDamage(store, manifest.hash, { leaf: 1 });
+    }
+    return put(k, d, opts);
+  };
+  await uploadMedia(o);
+  assert.equal(reported, true);
+  assert.equal(await isDamaged(store, manifest.hash), true, "the later report isn't answered by this repair");
+});
+
+/**
+ * A Carton host in team mode (hosts-plugins S5-3), as media sees it: an object of the right size can't be overwritten,
+ * and `reportDamaged(key, leaf)` has the host verify that leaf against the manifest and remove the object only if it is
+ * damaged.
+ */
+class TeamHostStore extends CountingMemoryStore {
+  readonly hostReports: { key: string; leaf: number; damaged: boolean }[] = [];
+  override async put(key: string, data: Uint8Array, opts?: { ifAbsent?: boolean }) {
+    const old = this.objects.get(key);
+    if (key.startsWith("m/") && old && old.length === data.length) return { key, size: old.length }; // sound-looking: kept
+    return super.put(key, data, opts);
+  }
+  override async delete(): Promise<void> {
+    assert.fail("no delete through the host");
+  }
+  async reportDamaged(key: string, leaf: number): Promise<unknown> {
+    const hash = key.slice(2);
+    const m = await decodeManifest(this.objects.get(manifestKey(hash))!, nodeHasher, hash);
+    const { offset, length } = leafSpan(m.size, leaf);
+    const bytes = this.objects.get(key)!.subarray(offset, offset + length);
+    const damaged = !equalBytes(await nodeHasher.sha256(bytes), leafDigest(m, leaf));
+    this.hostReports.push({ key, leaf, damaged });
+    if (damaged) this.objects.delete(key);
+    return { damaged, removed: damaged };
+  }
+}
+
+test("in team mode the reader also reports damage to the host, which removes the object; the next upload puts it back", async () => {
+  const store = new TeamHostStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 53);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good) };
+  await uploadMedia(o);
+  store.objects.get(mediaKey(manifest.hash))![LEAF_SIZE + 2] ^= 255; // leaf 1
+  await assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).readVerified(manifest.hash, LEAF_SIZE, 9), LeafMismatchError);
+  assert.deepEqual(store.hostReports, [{ key: mediaKey(manifest.hash), leaf: 1, damaged: true }]);
+  assert.equal(store.objects.has(mediaKey(manifest.hash)), false, "the host removed it");
+  assert.equal(await isDamaged(store, manifest.hash), true, "our own record too");
+  // The owner's next share uploads it again and answers the report.
+  assert.ok((await uploadMedia(o)).bytesSent > 0);
+  assert.ok(equalBytes(await new MediaReader({ store, hasher: nodeHasher }).readVerified(manifest.hash, 0, good.length), good));
+  assert.equal(await isDamaged(store, manifest.hash), false);
+  assert.equal((await uploadMedia(o)).bytesSent, 0, "and dedups after that");
+});
+
+test("a reader told not to report damage doesn't ask the host either", async () => {
+  const store = new TeamHostStore();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 54);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  await uploadMedia({ store, hasher: nodeHasher, manifest, source: bytesSource(good) });
+  store.objects.get(mediaKey(manifest.hash))![2] ^= 255;
+  await assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1, reportDamage: false }).readVerified(manifest.hash, 0, 9), LeafMismatchError);
+  assert.deepEqual(store.hostReports, []);
+});
+
+/**
+ * One store as two processes see it (two store objects, so no in-process turn-taking between them), where a completed
+ * object shows up `lagMs` after its upload id is gone, as on some S3 gateways. `gate` holds a process's part uploads.
+ */
+function twoProcesses(lagMs: number) {
+  const mem = new CountingMemoryStore();
+  const hiddenUntil = new Map<string, number>();
+  const hidden = (k: string) => (hiddenUntil.get(k) ?? 0) > Date.now();
+  const view = (gate?: () => Promise<void>): BlobStore => {
+    const wrap = (u: MultipartUpload): MultipartUpload => ({
+      ...u,
+      uploadPart: async (n, d) => {
+        await gate?.();
+        return u.uploadPart(n, d);
+      },
+      complete: async (parts) => {
+        const r = await u.complete(parts);
+        hiddenUntil.set(u.key, Date.now() + lagMs);
+        return r;
+      },
+    });
+    return {
+      kind: "process-view",
+      head: async (k) => (hidden(k) ? null : mem.head(k)),
+      get: async (k, r) => (hidden(k) ? null : mem.get(k, r)),
+      put: (k, d, o) => mem.put(k, d, o),
+      delete: (k) => mem.delete(k),
+      list: (p) => mem.list(p),
+      createMultipart: async (k) => wrap(await mem.createMultipart(k)),
+      resumeMultipart: async (k, id) => wrap(await mem.resumeMultipart(k, id)),
+    };
+  };
+  return { mem, view };
+}
+
+test("two processes resuming the same saved upload at once both succeed when one completes it under the other (CI #27)", async () => {
+  const { manifest, source, data } = await setup(4 * LEAF_SIZE, 61);
+  const { mem, view } = twoProcesses(150); // the completed object shows 150 ms after its upload id is gone
+  const state = new MemoryUploadStateStore(); // one machine: both processes find the same saved upload
+  const opts = { hasher: nodeHasher, source, manifest, state, partSize: LEAF_SIZE, concurrency: 1, retries: 2, retryDelayMs: 50 };
+  // A first process sent part 1 and died.
+  let parts = 0;
+  await assert.rejects(
+    uploadMedia({ ...opts, store: view(async () => {
+      if (++parts === 2) throw new Error("killed");
+    }), retries: 0 }),
+  );
+  assert.ok(await state.load(mediaKey(manifest.hash)), "a saved upload to resume");
+  // Now two resume it together. B's parts wait until A has completed the upload: they then meet NoSuchUpload.
+  let aDone!: () => void;
+  const completed = new Promise<void>((r) => (aDone = r));
+  const a = uploadMedia({ ...opts, store: view() }).then((r) => (aDone(), r));
+  const b = uploadMedia({ ...opts, store: view(() => completed) });
+  const [ra, rb] = await Promise.all([a, b]);
+  assert.equal(ra.hash, manifest.hash);
+  assert.equal(rb.hash, manifest.hash);
+  assert.equal(rb.deduped, true, "B found the object A completed");
+  assert.equal(await state.load(mediaKey(manifest.hash)), null, "the saved upload is gone");
+  assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+});
+
+test("a resumed upload that went away with no object to show for it starts a fresh one (CI #27)", async () => {
+  const { manifest, source, data } = await setup(3 * LEAF_SIZE, 62);
+  const { mem, view } = twoProcesses(0);
+  const state = new MemoryUploadStateStore();
+  const opts = { hasher: nodeHasher, source, manifest, state, partSize: LEAF_SIZE, concurrency: 1, retries: 0, retryDelayMs: 5 };
+  let parts = 0;
+  await assert.rejects(uploadMedia({ ...opts, store: view(async () => {
+    if (++parts === 2) throw new Error("killed");
+  }) }));
+  mem.uploads.clear(); // the other process aborted it (or it expired)
+  const r = await uploadMedia({ ...opts, store: view() });
+  assert.equal(r.deduped, false);
+  assert.equal(r.resumedParts, 0, "a fresh upload");
+  assert.ok(equalBytes(mem.objects.get(mediaKey(manifest.hash))!, data));
+});
+
+test("a host check still on its way when an upload runs never leaves the object gone with its report answered (host review)", async () => {
+  let reached!: () => void;
+  const atHost = new Promise<void>((r) => (reached = r));
+  let release!: () => void;
+  const hostMayGo = new Promise<void>((r) => (release = r));
+  class SlowHost extends TeamHostStore {
+    override async reportDamaged(key: string, leaf: number): Promise<unknown> {
+      reached();
+      await hostMayGo; // the request hasn't reached the host's lock yet: other requests finish first
+      return super.reportDamaged(key, leaf);
+    }
+  }
+  const store = new SlowHost();
+  const good = xorshiftBytes(LEAF_SIZE + 9, 63);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const o = { store, hasher: nodeHasher, manifest, source: bytesSource(good), retries: 0 };
+  await uploadMedia(o);
+  store.objects.get(mediaKey(manifest.hash))![1] ^= 255;
+  const reading = assert.rejects(new MediaReader({ store, hasher: nodeHasher, repairAttempts: 1 }).readVerified(manifest.hash, 0, 9), LeafMismatchError);
+  await atHost;
+  await uploadMedia(o); // meanwhile: no report up yet, so nothing is answered
+  release();
+  await reading;
+  const gone = (await store.head(mediaKey(manifest.hash))) === null;
+  assert.ok(gone, "the host removed the damaged object");
+  assert.equal(await isDamaged(store, manifest.hash), true, "gone, so its report must be open: the next share puts it back");
+  assert.ok((await uploadMedia(o)).bytesSent > 0);
+  assert.ok(equalBytes(await new MediaReader({ store, hasher: nodeHasher }).readVerified(manifest.hash, 0, good.length), good));
+  assert.equal(await isDamaged(store, manifest.hash), false);
+});
+
+test("an upload with no object to dedup on doesn't fail because the damage report can't be read (host review)", async () => {
+  const store = new CountingMemoryStore();
+  const good = xorshiftBytes(1000, 64);
+  const manifest = await hashSource(bytesSource(good), nodeHasher);
+  const get = store.get.bind(store);
+  store.get = async (key, range) => {
+    if (key === damagedKey(manifest.hash)) throw new Error("damage report GET unavailable");
+    return get(key, range);
+  };
+  await uploadMedia({ store, hasher: nodeHasher, manifest, source: bytesSource(good), retries: 1, retryDelayMs: 0 });
+  assert.ok(equalBytes((await get(mediaKey(manifest.hash)))!, good));
+});
+
+// Review of 14222eb (the reviewer's reproductions, typed).
+async function recoverySetup() {
+  const data = new Uint8Array(3 * LEAF_SIZE).fill(71);
+  const source = bytesSource(data);
+  return { data, source, manifest: await hashSource(source, nodeHasher) };
+}
+
+test("a restarted upload keeps the session's sent totals, and progress `sent` never goes back (CI #27 review)", async () => {
+  const { source, manifest } = await recoverySetup();
+  const store = new CountingMemoryStore();
+  const create = store.createMultipart.bind(store);
+  let firstId: string | undefined;
+  let actualSent = 0;
+  const progress: number[] = [];
+  store.createMultipart = async (key: string) => {
+    const u = await create(key);
+    firstId ??= u.uploadId;
+    return {
+      ...u,
+      uploadPart: async (n: number, bytes: Uint8Array) => {
+        actualSent += bytes.length;
+        const r = await u.uploadPart(n, bytes);
+        if (u.uploadId === firstId && n === 1) store.uploads.delete(u.uploadId); // expires after its first part
+        return r;
+      },
+    };
+  };
+  const r = await uploadMedia({ store, source, manifest, hasher: nodeHasher, partSize: LEAF_SIZE, concurrency: 1, retries: 0, retryDelayMs: 0, onProgress: (p) => void progress.push(p.sent) });
+  assert.ok(store.objects.has(mediaKey(manifest.hash)));
+  assert.equal(r.bytesSent, actualSent);
+  assert.ok(progress.every((sent, i) => i === 0 || sent >= progress[i - 1]), `sent went back: ${progress}`);
+});
+
+test("cancelling during the recovery's HEAD ends the call and frees its turn (CI #27 review)", async () => {
+  const { source, manifest } = await recoverySetup();
+  const store = new CountingMemoryStore();
+  const state = new MemoryUploadStateStore();
+  const key = mediaKey(manifest.hash);
+  await state.save({ v: 1, key, hash: manifest.hash, size: manifest.size, partSize: LEAF_SIZE, uploadId: "expired", parts: [] });
+  const head = store.head.bind(store);
+  let reached!: () => void;
+  const atPoll = new Promise<void>((r) => (reached = r));
+  let release!: () => void;
+  const gate = new Promise<void>((r) => (release = r));
+  let mediaHeads = 0;
+  store.head = async (k: string) => {
+    if (k === key && ++mediaHeads === 2) {
+      reached();
+      await gate; // the recovery's HEAD stalls
+    }
+    return head(k);
+  };
+  const ac = new AbortController();
+  let outcome = "pending";
+  const uploading = uploadMedia({ store, source, manifest, hasher: nodeHasher, state, partSize: LEAF_SIZE, retryDelayMs: 0, signal: ac.signal }).then(
+    () => void (outcome = "success"),
+    (e: Error) => void (outcome = e.name),
+  );
+  await atPoll;
+  ac.abort();
+  await new Promise((r) => setImmediate(r));
+  const afterAbort = outcome;
+  let followerDone = false;
+  const follower = uploadMedia({ store, source, manifest, hasher: nodeHasher, state, partSize: LEAF_SIZE, retryDelayMs: 0 }).then(() => void (followerDone = true));
+  await new Promise((r) => setTimeout(r, 50));
+  const followerBlocked = !followerDone;
+  release();
+  await Promise.all([uploading, follower]);
+  assert.deepEqual({ afterAbort, followerBlocked }, { afterAbort: "AbortError", followerBlocked: false });
+});
+
+test("a repair whose completed object only shows during recovery is verified and its report answered (CI #27 review)", async () => {
+  const { data, source, manifest } = await recoverySetup();
+  const store = new CountingMemoryStore();
+  const key = mediaKey(manifest.hash);
+  await store.put(key, data);
+  store.objects.get(key)![0] ^= 255;
+  await reportDamage(store, manifest.hash, { leaf: 0 });
+  const create = store.createMultipart.bind(store);
+  const head = store.head.bind(store);
+  let hideNextHead = false;
+  store.head = async (k: string) => {
+    if (k === key && hideNextHead) {
+      hideNextHead = false;
+      return null;
+    }
+    return head(k);
+  };
+  store.createMultipart = async (k: string) => {
+    const u = await create(k);
+    return {
+      ...u,
+      complete: async (parts: { partNumber: number; etag: string }[]) => {
+        await u.complete(parts);
+        hideNextHead = true; // gone, and not yet visible to the HEAD right after the error
+        throw Object.assign(new Error("NoSuchUpload: completion response was lost"), { code: "NoSuchUpload" });
+      },
+    };
+  };
+  const outcome = await uploadMedia({ store, source, manifest, hasher: nodeHasher, partSize: LEAF_SIZE, concurrency: 1, retries: 0, retryDelayMs: 0 }).then(
+    () => "success",
+    (e: { code?: string }) => e.code,
+  );
+  assert.ok(equalBytes(store.objects.get(key)!, data), "the completed object is sound");
+  assert.deepEqual({ outcome, reportOpen: await isDamaged(store, manifest.hash) }, { outcome: "success", reportOpen: false });
 });

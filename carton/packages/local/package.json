@@ -5,13 +5,23 @@
   "type": "module",
   "license": "UNLICENSED",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./hooks": "./src/hooks.ts",
+    "./hook-send": "./src/hook-send.ts"
   },
   "publishConfig": {
     "exports": {
       ".": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
+      },
+      "./hooks": {
+        "types": "./dist/hooks.d.ts",
+        "default": "./dist/hooks.js"
+      },
+      "./hook-send": {
+        "types": "./dist/hook-send.d.ts",
+        "default": "./dist/hook-send.js"
       }
     }
   },
@@ -28,5 +38,10 @@
     "@carton/core": "0.1.0",
     "@carton/store-sqlite": "0.1.0",
     "@carton/cardboard": "0.1.0"
+  },
+  "devDependencies": {
+    "@carton/store-memory": "0.1.0",
+    "@carton/server": "0.1.0",
+    "@carton/server-node": "0.1.0"
   }
 }

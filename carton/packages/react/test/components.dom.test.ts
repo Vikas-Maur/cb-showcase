@@ -1,5 +1,5 @@
 // Component tests in a DOM. `npm test` runs this file twice: on React 19, then on preact/compat (test/preact-alias.ts).
-import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, runtime, type } from "./dom.ts";
+import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, mutationsDuring, render, renders, runtime, type, waitFor } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import {
@@ -66,6 +66,8 @@ test(name("History: keyboard moves the active row and Enter opens a read-only pr
   const ui = createMockUi({ versions: 50 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 }), h(PreviewBanner)));
   const list = $(m.container, "[role=listbox]")!;
+  // The two newest versions are still waiting to sync: the third is the Director's checkpoint.
+  await key(list, "ArrowDown");
   await key(list, "ArrowDown");
   await key(list, "ArrowDown");
   const active = $$(m.container, "[role=option][aria-selected=true]");
@@ -82,7 +84,7 @@ test(name("History: keyboard moves the active row and Enter opens a read-only pr
 test(name("History: name a version in place"), async () => {
   const ui = createMockUi({ versions: 30 });
   const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
-  const row = $$(m.container, "[role=option]").find((r) => r.dataset.named === undefined && r.dataset.kind === "edit")!;
+  const row = $$(m.container, "[role=option]").find((r) => r.dataset.named === undefined && r.dataset.kind === "edit" && r.dataset.provisional === undefined)!;
   await click(row.querySelector(".carton-version-more"));
   await click(byText(m.container, "[role=menuitem]", "Name this version"));
   const input = $(m.container, "input.carton-input");
@@ -135,7 +137,9 @@ test(name("conflict cards: both edits shown, Keep theirs resolves and the card g
   assert.match(card.textContent ?? "", /Summer sale/);
   assert.match(card.textContent ?? "", /Summer launch/);
   assert.ok(byText(card, "button", "Keep both"), "Keep both offered when both can be kept");
-  await click(byText(card, "button", "Keep theirs"));
+  // Each choice says whose edit it keeps; on one cut there is no "where".
+  assert.ok(byText(card, "button", "Keep yours"));
+  await click(byText(card, "button", "Keep Bob Okafor's"));
   assert.equal($$(m.container, ".carton-conflict").length, 1);
   assert.match(m.container.textContent ?? "", /1 conflict card waiting/);
   assert.equal(byText(m.container, "button", "Keep both"), null, "the timing card can't keep both");
@@ -181,7 +185,10 @@ test(name("fold in: leave a change out, pick on the card, then fold in N of M"),
   await click(boxes[1]);
   assert.equal(go().textContent, "Fold in 5 of 6");
   assert.match(dialog.textContent ?? "", /You can fold in the rest later/);
-  await click(byText(dialog, "button", "Keep mine"));
+  // In a fold each choice names whose edit and which cut, so "mine" is never ambiguous.
+  assert.ok(byText(dialog, "button", "Keep Director's (30s Instagram cut)"));
+  assert.ok($$(dialog, ".carton-conflict-where").some((e) => e.textContent === "30s Instagram cut"));
+  await click(byText(dialog, "button", "Keep yours (Main cut)"));
   assert.equal((go() as HTMLButtonElement).disabled, false);
   await click(go());
   assert.deepEqual(call, { leaveOut: ["items/interview-a"], choices: { "items/intro/#time": "mine" } });
@@ -232,14 +239,14 @@ test(name("presence groups each person with their agents and subagents"), async 
 test(name("ghost layer draws remote drags without rendering through React"), async () => {
   const ui = createMockUi({ versions: 10 });
   const m = await render(wrap(ui, h("div", { style: { position: "relative" } }, h(GhostLayer, { timeToX: (t: number) => t * 10, trackBand: (id: string) => (id === "V1" ? { top: 40, height: 24 } : null) }))));
-  await act(() => new Promise((r) => setTimeout(r, 40)));
+  await waitFor(() => !!$(m.container, ".carton-ghost"), "the ghost to be drawn");
   const g = $(m.container, ".carton-ghost")!;
   assert.ok(g, "a ghost element");
   assert.equal(g.style.transform, "translate(125px, 40px)");
   assert.equal(g.style.width, "40px");
   assert.match(g.textContent ?? "", /Bob Okafor · B-roll city/);
   await act(() => ui.setGhosts([]));
-  await act(() => new Promise((r) => setTimeout(r, 40)));
+  await waitFor(() => !$(m.container, ".carton-ghost"), "the ghost to go");
   assert.equal($(m.container, ".carton-ghost"), null);
   await m.unmount();
 });
@@ -263,4 +270,216 @@ test(name("watch the changes: aligned strips, change count, next, A/B toggle and
   assert.ok(frames.length > 0 && frames.at(-1)![0] === "a");
   await m.unmount();
   assert.equal(ui.preview(), null, "closing Watch the changes closes the preview");
+});
+
+// ---------------------------------------------------------------- review round 1 (reviews/ui.md)
+
+test(name("R1-13: switching Watch the changes to the current side closes its preview"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const head = ui.cuts().find((c) => c.current)!.head;
+  const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: head })));
+  await flush();
+  const root = $(m.container, ".carton-watch")!;
+  assert.equal(ui.preview(), null, "After is the current head: no preview");
+  await click(byText(root, "[role=radio]", "Before"));
+  assert.equal(ui.preview()?.ref, "main@3");
+  await click(byText(root, "[role=radio]", "After"));
+  assert.equal(ui.preview(), null, "back on the current side: the preview is closed");
+  await m.unmount();
+});
+
+test(name("R1-14: Enter and arrows typed in the naming field belong to the field, not the list"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const row = $$(m.container, "[role=option]").find((r) => r.dataset.provisional === undefined && r.dataset.named === undefined)!;
+  await click(row.querySelector(".carton-version-more"));
+  await click(byText(m.container, "[role=menuitem]", "Name this version"));
+  const input = $(m.container, "input.carton-input")!;
+  const ev = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+  await act(() => void input.dispatchEvent(ev));
+  assert.equal(ev.defaultPrevented, false, "the list doesn't swallow Enter, so the form submits");
+  assert.equal(ui.preview(), null, "and no preview opened");
+  const arrow = new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true });
+  await act(() => void input.dispatchEvent(arrow));
+  assert.equal(arrow.defaultPrevented, false);
+  await m.unmount();
+});
+
+test(name("R1-15: the context-menu key opens the active version's actions; still-syncing rows can't be opened"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const list = $(m.container, "[role=listbox]")!;
+  await key(list, "ArrowDown"); // the newest: still waiting to sync
+  await key(list, "Enter");
+  assert.equal(ui.preview(), null, "nothing to preview yet");
+  await key(list, "ContextMenu");
+  const menu = $(m.container, "[role=menu]");
+  assert.ok(menu, "actions menu open");
+  assert.equal(byText(menu!, "[role=menuitem]", "Restore")?.getAttribute("aria-disabled"), "true");
+  assert.equal(document.activeElement?.closest("[role=menu]"), menu, "focus moved into the menu");
+  await m.unmount();
+});
+
+test(name("R1-18: the Cuts menu offers Rename only when the engine can rename"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  delete (ui as { renameCut?: unknown }).renameCut;
+  const m = await render(wrap(ui, h(CutsMenu, {})));
+  await click($(m.container, ".carton-menu-trigger"));
+  assert.equal(byText(m.container, "[role=menuitem]", "Rename cut"), null);
+  assert.ok(byText(m.container, "[role=menuitem]", "New cut from here"));
+  await m.unmount();
+});
+
+test(name("R1-18: a failed switch says so next to the menu"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  ui.switchCut = async () => {
+    throw new Error("That cut isn't available offline");
+  };
+  const m = await render(wrap(ui, h(CutsMenu, {})));
+  await click($(m.container, ".carton-menu-trigger"));
+  await click(byText(m.container, "[role=menuitemradio]", "30s Instagram cut"));
+  assert.match($(m.container, "[role=alert]")?.textContent ?? "", /isn't available offline/);
+  await m.unmount();
+});
+
+// ---------------------------------------------------------------- review round 2
+
+test(name("R2-5: when a fold comes back with new cards, the dialog shows the plan as it is now, with the new card"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const planFold = ui.planFold.bind(ui);
+  let raced = false;
+  const late = { id: "items/logo/name", title: "'Logo' name", mine: { author: people.alice, summary: "“Logo”" }, theirs: { author: people.bob, summary: "“New logo”" }, canKeepBoth: false };
+  ui.planFold = async (f, i, o) => {
+    const p = await planFold(f, i, o);
+    return raced ? { ...p, conflicts: [...p.conflicts, late] } : p;
+  };
+  ui.fold = async () => {
+    raced = true;
+    return { ok: false, conflicts: [late] };
+  };
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
+  await flush();
+  const dialog = $(m.container, "[role=dialog]")!;
+  await click(byText(dialog, "button", "Keep yours (Main cut)"));
+  await click($$(dialog, ".carton-dialog-foot button").at(-1));
+  await flush();
+  assert.match(dialog.textContent ?? "", /Something changed since you looked/);
+  assert.ok(byText(dialog, ".carton-card-title", "'Logo' name"), "the new card is there to pick on");
+  assert.equal(($$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement).disabled, true, "can't fold until it's picked");
+  await m.unmount();
+});
+
+test(name("R3-1: a card that comes back after a fold has no pick: it must be picked again"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const planFold = ui.planFold.bind(ui);
+  let raced = false;
+  ui.planFold = async (f, i, o) => {
+    const p = await planFold(f, i, o);
+    // The same card (same id), its source edited again since it was picked.
+    return raced ? { ...p, conflicts: p.conflicts.map((c) => ({ ...c, theirs: { ...c.theirs, summary: "Moved it to start at 0:03.0" } })) } : p;
+  };
+  ui.fold = async () => {
+    raced = true;
+    const p = await ui.planFold("cut-ig", "cut-main");
+    return { ok: false, conflicts: p.conflicts };
+  };
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
+  await flush();
+  const dialog = $(m.container, "[role=dialog]")!;
+  await click(byText(dialog, "button", "Keep Director's (30s Instagram cut)"));
+  const go = () => $$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement;
+  assert.equal(go().disabled, false);
+  await click(go());
+  await flush();
+  assert.match(dialog.textContent ?? "", /Moved it to start at 0:03\.0/, "the card as it is now");
+  assert.equal(go().disabled, true, "its old pick is gone: Fold in waits for a new one");
+  assert.equal($$(dialog, ".carton-conflict [aria-pressed=true]").length, 0);
+  await m.unmount();
+});
+
+// ---------------------------------------------------------------- review round 4
+
+test(name("R4-1: a card that changed while the plan reloaded loses its pick too, not only the cards the fold returned"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const card = (id: string, title: string, theirs: string) => ({ id, title, mine: { author: people.alice, summary: "“Mine”", where: "Main cut" }, theirs: { author: people.bob, summary: theirs, where: "30s Instagram cut" }, canKeepBoth: false, provisional: "mine" as const });
+  const planFold = ui.planFold.bind(ui);
+  let round = 0;
+  ui.planFold = async (f, i, o) => {
+    const p = await planFold(f, i, o);
+    // First plan: A and B. After the fold raced: both changed (A returned by the fold, B changed during the reload).
+    return round === 0 ? { ...p, conflicts: [card("A", "Card A", "“A1”"), card("B", "Card B", "“B1”")] } : { ...p, conflicts: [card("A", "Card A", "“A2”"), card("B", "Card B", "“B2”")] };
+  };
+  ui.fold = async () => {
+    round = 1;
+    return { ok: false, conflicts: [card("A", "Card A", "“A2”")] };
+  };
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose: () => {} })));
+  await flush();
+  const dialog = $(m.container, "[role=dialog]")!;
+  const cardEl = (title: string) => $$(dialog, ".carton-conflict").find((e) => e.textContent?.includes(title))!;
+  await click(byText(cardEl("Card A"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  const go = () => $$(dialog, ".carton-dialog-foot button").at(-1) as HTMLButtonElement;
+  assert.equal(go().disabled, false);
+  await click(go());
+  await flush();
+  assert.match(cardEl("Card B").textContent ?? "", /B2/);
+  await click(byText(cardEl("Card A"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  assert.equal(go().disabled, true, "B changed during the reload: its old pick doesn't count");
+  await click(byText(cardEl("Card B"), "button", "Keep Bob Okafor's (30s Instagram cut)"));
+  assert.equal(go().disabled, false);
+  await m.unmount();
+});
+
+// ---------------------------------------------------------------- Stage F: render counts under live sync (U6/U7)
+
+test(name("U6/U7: versions arriving and ghosts moving re-render only History; avatars, ghosts, cuts, published and sync stay put"), async () => {
+  const ui = createMockUi({ versions: 2000 });
+  const m = await render(
+    wrap(
+      ui,
+      h("div", { id: "bar" }, h(CutsMenu, {}), h(SyncStatusWords), h(PresenceAvatars), h(PublishedStatus)),
+      h("div", { style: { height: "600px" } }, h(HistoryPanel, { initialHeight: 600 })),
+      h("div", { style: { position: "relative", width: "800px", height: "200px" } }, h(GhostLayer, { timeToX: (t: number) => t * 20, trackBand: () => ({ top: 10, height: 30 }) })),
+    ),
+  );
+  await flush();
+  renders.clear();
+  const published = $(m.container, ".carton-published")!;
+  const pubMutations = await mutationsDuring(published, async () => {
+    // Each version moves the current cut's head and bumps the published cut's newer-edit count, as a commit does.
+    for (let i = 0; i < 10; i++) {
+      await act(() => void ui.addVersion({ author: people.bob }));
+      await act(() => ui.setGhosts([{ actorKey: people.bob.key, itemId: "x", trackId: "V1", start: i, end: i + 2 }]));
+      await flush(1);
+    }
+  });
+  const n = (name: string) => renders.get(name) ?? 0;
+  assert.equal(n("PresenceAvatars"), 0, "avatars don't re-render for versions or ghosts");
+  assert.equal(n("GhostLayer"), 0, "ghosts move without React");
+  assert.equal(n("CutsMenu"), 0, "a head moving doesn't re-render the Cuts menu");
+  assert.equal(n("PublishedStatus"), 0, "still 'newer edits exist': nothing it shows changed");
+  assert.equal(n("SyncStatusWords"), 0);
+  assert.equal(pubMutations, 0, "the published status's DOM is untouched");
+  assert.ok(n("HistoryPanel") >= 1 && n("HistoryPanel") <= 10, `History re-renders at most once per version (${n("HistoryPanel")})`);
+  assert.ok(n("VersionRow") <= 10 + 4, `only new rows render (${n("VersionRow")} for 10 versions)`);
+  // And when something it shows does change, it re-renders: publishing clears "newer edits exist".
+  await act(() => ui.publish("cut-main"));
+  await flush();
+  assert.equal(n("PublishedStatus"), 1);
+  assert.match(published.textContent ?? "", /The share link shows the newest version/);
+  await m.unmount();
+});
+
+test(name("F-5: Fold into Main hands the host the cuts as they are now, not the heads the menu last showed"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  await act(() => ui.switchCut("cut-ig"));
+  let got: { from: string; into: string } | null = null;
+  const m = await render(wrap(ui, h(CutsMenu, { onFoldIn: (from: { head: string }, into: { head: string }) => (got = { from: from.head, into: into.head }) })));
+  await act(() => void ui.addVersion({ author: people.bob })); // moves the current cut's head; the menu doesn't re-render
+  await flush();
+  await click($(m.container, ".carton-menu-trigger"));
+  await click(byText(m.container, "[role=menuitem]", "Fold into Main cut"));
+  assert.equal(got!.from, ui.cuts().find((c) => c.id === "cut-ig")!.head, "the source's head as it is now");
+  await m.unmount();
 });

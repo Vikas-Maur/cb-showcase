@@ -2,18 +2,22 @@
 // out ("fold in some of it", partial accept, §5.3 / R2-14), and asks you to pick on any conflict card before folding.
 // Leaving changes out is recorded, so "you can fold in the rest later".
 
-import { createElement as h, useMemo, useState } from "react";
+import { createElement as h, useMemo, useRef, useState } from "react";
 import { when } from "../format.ts";
 import { useAction, useAsync, useCartonUi, useLocale, useNow, useWords } from "../hooks.ts";
 import { Icon } from "../icons.ts";
-import type { ConflictChoice, FoldPlan, FoldResult } from "../model.ts";
+import type { Conflict, ConflictChoice, FoldPlan, FoldResult } from "../model.ts";
 import { ConflictCard } from "./ConflictCard.ts";
 import { ActorName, Avatar, Button, Dialog } from "./ui.ts";
+
+/** A card's fingerprint: the view model's, else what the card says (who, what, which cut). */
+const sigOf = (c: Conflict) => c.sig ?? `${c.title}|${c.mine.summary}|${c.mine.where ?? ""}|${c.theirs.summary}|${c.theirs.where ?? ""}`;
 
 export interface FoldInDialogProps {
   fromCutId: string;
   intoCutId: string;
   onClose: () => void;
+  /** Called after a successful fold (default: onClose). */
   onDone?: (r: FoldResult) => void;
   /** Use this plan instead of asking the view model (gallery). */
   plan?: FoldPlan;
@@ -31,18 +35,40 @@ export function FoldInDialog(p: FoldInDialogProps) {
     [ui, p.fromCutId, p.intoCutId, p.plan, allCards],
   );
   const [left, setLeft] = useState<ReadonlySet<string>>(new Set());
-  const [choices, setChoices] = useState<Readonly<Record<string, ConflictChoice>>>({});
+  // Each pick remembers the card it was made on (its fingerprint). A card whose values changed since (a racing edit,
+  // seen when the plan reloads) is a different card: its old pick no longer counts (R3-1, R4-1).
+  const [picks, setPicks] = useState<Readonly<Record<string, { choice: ConflictChoice; sig: string }>>>({});
   const [result, setResult] = useState<FoldResult | null>(null);
   const [fold, busy] = useAction(async () => {
-    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices, allCards });
+    const r = await ui.fold(p.fromCutId, p.intoCutId, { leaveOut: [...left], choices: choicesFor(planRef.current), ...(allCards ? { allCards } : {}) });
     setResult(r);
-    if (r.ok) p.onDone?.(r);
+    // Done: hand the result to the host, or just close.
+    if (r.ok) (p.onDone ?? p.onClose)(r);
+    // New cards (someone edited since the plan was shown): show the plan as it is now, with its cards (R2-5). A card
+    // that came back was not the one picked on (new, or its values changed), so its old pick goes too (R3-1).
+    else if (r.conflicts?.length) {
+      const back = new Set(r.conflicts.map((c) => c.id));
+      setPicks((prev) => Object.fromEntries(Object.entries(prev).filter(([id]) => !back.has(id))));
+      loaded.reload();
+    }
     return r;
   });
 
   const plan = loaded.status === "ready" ? loaded.value : null;
   const total = plan?.changes.length ?? 0;
   const taking = total - left.size;
+  const planRef = useRef(plan);
+  planRef.current = plan;
+  // The picks that still match the cards on screen; only these are sent.
+  const choicesFor = (pl: FoldPlan | null): Record<string, ConflictChoice> => {
+    const out: Record<string, ConflictChoice> = {};
+    for (const c of pl?.conflicts ?? []) {
+      const pk = picks[c.id];
+      if (pk && pk.sig === sigOf(c)) out[c.id] = pk.choice;
+    }
+    return out;
+  };
+  const choices = choicesFor(plan);
   const unpicked = plan ? plan.conflicts.filter((c) => !choices[c.id]).length : 0;
   const title = plan ? words.foldTitle(plan.from.label, plan.into.label) : words.foldSomeOfIt;
 
@@ -82,7 +108,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
                       "span",
                       { className: "carton-fold-bulk" },
                       h(Button, { variant: "ghost", onClick: () => setLeft(new Set()), disabled: left.size === 0 }, words.selectAll),
-                      h(Button, { variant: "ghost", onClick: () => setLeft(new Set(plan.changes.map((c) => c.id))), disabled: left.size === total }, words.selectNone),
+                      h(Button, { variant: "ghost", onClick: () => setLeft(new Set(plan.changes.filter((c) => !c.locked).map((c) => c.id))), disabled: left.size === plan.changes.filter((c) => !c.locked).length }, words.selectNone),
                     )
                   : null,
               ),
@@ -96,7 +122,12 @@ export function FoldInDialog(p: FoldInDialogProps) {
                     h(
                       "label",
                       null,
-                      canSplit ? h("input", { type: "checkbox", className: "carton-check", checked: !left.has(c.id), onChange: () => toggle(c.id) }) : h("span", { "aria-hidden": true }),
+                      !canSplit
+                        ? h("span", { "aria-hidden": true })
+                        : c.locked
+                          ? // A project-level change comes with the rest (core's partial accept inverts records only).
+                            h("input", { type: "checkbox", className: "carton-check", checked: true, disabled: true, title: words.foldLocked, "aria-label": words.foldLocked })
+                          : h("input", { type: "checkbox", className: "carton-check", checked: !left.has(c.id), onChange: () => toggle(c.id) }),
                       h("span", { className: "carton-fold-text" }, c.summary),
                       h(
                         "span",
@@ -116,7 +147,7 @@ export function FoldInDialog(p: FoldInDialogProps) {
               { key: "cards", className: "carton-fold-cards" },
               h("p", { className: "carton-fold-cards-head" }, words.foldConflicts(plan.conflicts.length)),
               ...plan.conflicts.map((c) =>
-                h(ConflictCard, { key: c.id, conflict: c, picked: choices[c.id], onPick: (ch: ConflictChoice) => setChoices((s) => ({ ...s, [c.id]: ch })) }),
+                h(ConflictCard, { key: c.id, conflict: c, picked: choices[c.id], onPick: (ch: ConflictChoice) => setPicks((s) => ({ ...s, [c.id]: { choice: ch, sig: sigOf(c) } })) }),
               ),
             )
           : null,
@@ -128,7 +159,9 @@ export function FoldInDialog(p: FoldInDialogProps) {
               h("ul", null, ...plan.warnings.map((w, i) => h("li", { key: i }, w))),
             )
           : null,
-        result && !result.ok ? h("p", { key: "err", className: "carton-error", role: "alert" }, result.error ?? words.failed) : null,
+        result && !result.ok
+          ? h("p", { key: "err", className: "carton-error", role: "alert" }, result.conflicts?.length ? words.foldChangedSince : (result.error ?? words.failed))
+          : null,
       ]
     : body;
 
