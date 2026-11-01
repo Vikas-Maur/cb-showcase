@@ -14,7 +14,7 @@ import {
   type MouseEvent,
   type ReactNode,
 } from "react";
-import { actorColor, actorLabel, initials } from "../actors.ts";
+import { actorColor, actorDetail, actorLabel, initials } from "../actors.ts";
 import { useCartonUi, useWords } from "../hooks.ts";
 import { Icon, type IconName } from "../icons.ts";
 import type { Actor } from "../model.ts";
@@ -57,9 +57,15 @@ export function Button(p: ButtonProps) {
   );
 }
 
-export function Avatar({ actor, size = 22, title }: { actor: Actor; size?: number; title?: string }) {
+/**
+ * An actor's avatar. `named`: its name is shown beside it (History rows, cards, Credits), so the avatar is decoration:
+ * no tooltip of its own (it would repeat the name over the row below) and hidden from screen readers. A system actor
+ * has none.
+ */
+export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?: number; title?: string; named?: boolean }) {
   const ui = useCartonUi();
   const words = useWords();
+  if (actor.kind === "system") return null;
   const color = actorColor(actor, ui.actor.bind(ui));
   const label = title ?? actorLabel(actor, ui.actor.bind(ui), words.you);
   // Two letters need about 20 px; smaller avatars (history rows, card headers) show one.
@@ -71,16 +77,34 @@ export function Avatar({ actor, size = 22, title }: { actor: Actor; size?: numbe
       : actor.kind === "subagent"
         ? h("span", { className: "carton-avatar-initials" }, initials(actor.subagentType ?? actor.name).slice(0, 1))
         : h(Icon, { name: "sparkle", size: Math.round(size * 0.62) });
-  return h("span", { className: "carton-avatar", "data-kind": actor.kind, style, role: "img", "aria-label": label, "data-carton-tip": label }, glyph);
+  return named
+    ? h("span", { className: "carton-avatar", "data-kind": actor.kind, style, "aria-hidden": true }, glyph)
+    : h("span", { className: "carton-avatar", "data-kind": actor.kind, style, role: "img", "aria-label": label, "data-carton-tip": label }, glyph);
 }
 
-/** An actor's name with its chain: "Director › Explore". */
-export function ActorName({ actor }: { actor: Actor }) {
+/**
+ * An actor's name in an author slot ("You", "Director", "Leo's Director"); nothing for a system actor. A native title
+ * only when it says more than the name (a subagent's type, a model: actorDetail), or when the name is cut off with an
+ * ellipsis (measured on hover): never one that repeats the name over the row below. `detail`: show the detail itself
+ * (a details view: Credits).
+ */
+export function ActorName({ actor, detail }: { actor: Actor; detail?: boolean }) {
   const ui = useCartonUi();
   const words = useWords();
-  const label = actorLabel(actor, ui.actor.bind(ui), words.you);
-  // A native title: long chains ("Director › caption-fixer") are cut with an ellipsis in narrow places.
-  return h("span", { className: "carton-actor-name", "data-kind": actor.kind, title: label }, label);
+  if (actor.kind === "system") return null;
+  const byKey = ui.actor.bind(ui);
+  const label = actorLabel(actor, byKey, words.you);
+  const more = actorDetail(actor, byKey, words.you);
+  const text = detail && more ? more : label;
+  const title = detail ? undefined : more;
+  const onMouseEnter = title
+    ? undefined
+    : (e: MouseEvent) => {
+        const el = e.currentTarget as HTMLElement;
+        if (el.scrollWidth > el.clientWidth + 1) el.title = text;
+        else el.removeAttribute("title");
+      };
+  return h("span", { className: "carton-actor-name", "data-kind": actor.kind, title, onMouseEnter }, text);
 }
 
 // ---------------------------------------------------------------- menus

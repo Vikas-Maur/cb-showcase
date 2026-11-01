@@ -126,7 +126,7 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
                   "li",
                   { key: i, className: "carton-credit" },
                   h("span", { className: "carton-credit-what" }, l.what),
-                  h("span", { className: "carton-credit-who" }, h(Avatar, { actor: l.author, size: 16 }), h(ActorName, { actor: l.author })),
+                  h("span", { className: "carton-credit-who" }, h(Avatar, { actor: l.author, size: 16, named: true }), h(ActorName, { actor: l.author, detail: true })),
                   l.at != null
                     ? h("time", { className: "carton-credit-when", dateTime: new Date(l.at).toISOString(), "data-carton-tip": exactTime(l.at, locale) }, when(l.at, now, locale, words.justNow))
                     : h("span", { className: "carton-credit-when" }),

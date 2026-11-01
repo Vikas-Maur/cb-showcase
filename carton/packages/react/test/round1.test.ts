@@ -152,8 +152,8 @@ test("R1-6: an undo card offers the value the undo would restore; picking it app
   const r = await ui.undo(turn.id);
   assert.equal(r.ok, false);
   const card = ui.conflicts()[0]!;
-  assert.equal(card.mine.summary, "“red”", "your side: what the undo restores");
-  assert.equal(card.theirs.summary, "“green”", "shown now: the teammate's value");
+  assert.equal(card.mine.summary, '"red"', "your side: what the undo restores");
+  assert.equal(card.theirs.summary, '"green"', "shown now: the teammate's value");
   await ui.resolve(card.id, "mine");
   assert.equal((await item(carton, "a")).color, "red");
   ui.dispose();

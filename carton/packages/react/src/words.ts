@@ -82,6 +82,11 @@ export const words = {
   keepYours: (where?: string) => (where ? `Keep yours (${where})` : "Keep yours"),
   keepOf: (name: string, where?: string) => `Keep ${name}'s${where ? ` (${where})` : ""}`,
   keepBoth: "Keep both",
+  // Two sides by the same person (two of your own edits): told apart by order, never two identical buttons.
+  earlierEdit: (who: string | null, at?: string) => `${who ? `${who}'s` : "Your"} earlier edit${at ? ` (${at})` : ""}`,
+  laterEdit: (who: string | null, at?: string) => `${who ? `${who}'s` : "Your"} later edit${at ? ` (${at})` : ""}`,
+  keepEarlier: "Keep earlier",
+  keepLater: "Keep later",
   showingNow: "Showing now",
   conflictsWaiting: (n: number) => `${plural(n, "conflict card", "conflict cards")} waiting`,
 

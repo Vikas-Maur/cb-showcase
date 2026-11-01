@@ -87,6 +87,11 @@ export function exactTime(at: number, locale?: string): string {
   return format("exact", at, locale);
 }
 
+/** A clock time, "10:04": tells apart two edits of one day (a conflict card between two of your own edits). */
+export function clockTime(at: number, locale?: string): string {
+  return format("time", at, locale);
+}
+
 /** A short date for names like "Offline edits (31 Oct)". */
 export function shortDate(at: number, locale?: string): string {
   return format("dayMonth", at, locale);

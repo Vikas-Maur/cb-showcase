@@ -31,7 +31,7 @@ function Side({ side, now }: { side: CompareSide; now: number }) {
       h("dt", null, words.factWhen),
       h("dd", null, h("time", { dateTime: new Date(side.at).toISOString(), "data-carton-tip": exactTime(side.at, locale) }, when(side.at, now, locale, words.justNow))),
       h("dt", null, words.factWho),
-      h("dd", { className: "carton-compare-who" }, h(Avatar, { actor: side.author, size: 14 }), h(ActorName, { actor: side.author })),
+      h("dd", { className: "carton-compare-who" }, h(Avatar, { actor: side.author, size: 14, named: true }), h(ActorName, { actor: side.author })),
       h("dt", null, words.factClips),
       h("dd", null, words.clips(side.clipCount)),
       h("dt", null, words.factLength),

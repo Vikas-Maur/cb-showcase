@@ -32,10 +32,13 @@ export function initials(name: string): string {
 }
 
 /**
- * "Director › Explore" for a subagent, the name otherwise. `you` replaces the local person's name. Someone else's
- * agent is named by its owner ("Bob Okafor's Director"), so two Directors in one project are told apart.
+ * The name in an author slot: short, in words an editor knows. The person is `you` ("You"), a teammate their name, an
+ * agent its product name ("Director", "Claude Code"), and someone else's agent is named by its owner ("Leo's
+ * Director"), so two Directors in one project are told apart. A subagent is the agent that started it ("Director"): its
+ * type goes in actorDetail(), never in the slot. A system actor has no name ("").
  */
 export function actorLabel(a: Actor, byKey?: (key: string) => Actor | undefined, you?: string): string {
+  if (a.kind === "system") return "";
   if (a.kind === "human") return a.isYou && you ? you : a.name;
   const owned = (agent: Actor): string => {
     const owner = !agent.isYou && agent.parent && byKey ? byKey(agent.parent) : undefined;
@@ -43,10 +46,21 @@ export function actorLabel(a: Actor, byKey?: (key: string) => Actor | undefined,
   };
   if (a.kind === "subagent") {
     const parent = a.parent && byKey ? byKey(a.parent) : undefined;
-    const sub = a.subagentType ? `${a.subagentType}` : a.name;
-    return parent ? `${owned(parent)} › ${sub}` : sub;
+    return parent && parent.kind !== "human" ? owned(parent) : a.name;
   }
   return owned(a);
+}
+
+/**
+ * More than the slot says, for a tooltip or a details view: a subagent's type and an agent's model ("Director ›
+ * general-purpose · Opus 5.5"). Undefined when it would only repeat the slot.
+ */
+export function actorDetail(a: Actor, byKey?: (key: string) => Actor | undefined, you?: string): string | undefined {
+  const label = actorLabel(a, byKey, you);
+  if (!label) return undefined;
+  let d = a.kind === "subagent" && a.subagentType ? `${label} › ${a.subagentType}` : label;
+  if (a.model) d += ` · ${a.model}`;
+  return d === label ? undefined : d;
 }
 
 /** The chain from the person down to this actor: [Alice, Director, Explore]. */

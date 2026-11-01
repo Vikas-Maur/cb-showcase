@@ -9,7 +9,7 @@ export type * from "./model.ts";
 export { TopicHub } from "./hub.ts";
 export { words, type Words } from "./words.ts";
 export { duration, seconds, when, exactTime, shortDate } from "./format.ts";
-export { actorColor, actorLabel, actorChain, initials } from "./actors.ts";
+export { actorColor, actorLabel, actorDetail, actorChain, initials } from "./actors.ts";
 export { alignRows, diffSummary, mapTime, playlist, segmentAt, rowRange, columns, type Row, type Segment, type Column } from "./shots.ts";
 export { VirtualList, windowRange, type VirtualListProps } from "./virtual.ts";
 export { Icon, type IconName } from "./icons.ts";

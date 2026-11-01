@@ -192,6 +192,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version-meta .carton-actor-name){overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-version-meta > time, .carton-version-edits){flex:none}
 :where(${S}) :where(.carton-version-meta > time)::before, :where(${S}) :where(.carton-version-edits)::before{content:"·";margin-right:6px;color:#5c5c5c}
+:where(${S}) :where(.carton-version-meta > time:first-child)::before{content:none}
 :where(${S}) :where(.carton-version[data-provisional] .carton-version-title){color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-version[data-provisional] .carton-version-mark .carton-icon){animation:carton-pulse 1.6s ease-in-out infinite}
 @keyframes carton-pulse{50%{opacity:.35}}
