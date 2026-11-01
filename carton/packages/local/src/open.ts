@@ -24,7 +24,7 @@ import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
 import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
-import { followStore } from "./follow.ts";
+import { followStore, noteGuiWrite } from "./follow.ts";
 import { forwardSettles } from "./sidecars.ts";
 import type { Follower } from "./follow.ts";
 import { nudgeHolder } from "./client.ts";
@@ -143,6 +143,8 @@ export async function openLocal(opts: LocalOptions): Promise<LocalCarton> {
     actor,
     async write(op, o = {}) {
       const req: WriteRequest = { id: o.id ?? nextChangeId(), actor: o.actor ?? actor, op, waitMs: o.waitMs ?? WAIT_MS, ...(o.gui === true ? { gui: true } : {}) };
+      // whichever holder serves it, this process's follower knows its change as the person's own (no freeze)
+      if (o.gui === true) noteGuiWrite(req.id);
       // a caller with no factory of its own starts what the app recorded (its materializer, its sync server: B3, B7);
       // its own helperConfig (`carton --server`) goes over the recipe's config
       const recipe = opts.helperFactory ? null : await readHelperRecipe(store).catch(() => null);
@@ -219,7 +221,9 @@ export class CartonHolderEngine implements HolderEngine {
         intervalMs: opts.follow ? opts.follow.intervalMs : undefined,
         exclusive: (f) => this.cutLock(f),
         onHead: async (cut, authors) => {
-          await tellBusy(mz, authors ?? []);
+          // no authors: only the person's own actions in the app, served by another holder (nobody at work); unknown
+          // authors (undefined) count as someone at work
+          if (!authors || authors.length) await tellBusy(mz, authors ?? []);
           if (mz?.onExternalHeadChange) await mz.onExternalHeadChange();
           else mz?.onHeadChange?.("local");
           opts.onExternal?.({ type: "head", cut });

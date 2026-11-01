@@ -72,8 +72,10 @@ export interface WriteRequest {
    * work on the shared timeline.tsx because of it, so it doesn't start or extend a freeze of the file (`tellBusy`). A
    * freeze an agent already holds still applies (the file shows the write once it ends). `cb` never sets it. Only
    * `true` counts. Written by the holder (or in-process); a helper that took the lease from a stalled app answers it
-   * too, but the app's follower then sees the change as another process's and freezes the file as for a `cb` call
-   * (the flag isn't stored with the change).
+   * too, and the app's follower, which then finds the change as another process's, knows it by its id as the person's
+   * own (`LocalCarton.write` notes it: `noteGuiWrite`) and freezes nothing for it (windows-sync review round 4 #1). The
+   * flag isn't stored with the change: a follower in another process than the write's would count it as a `cb` call
+   * (the app makes its GUI writes in the process that follows).
    */
   gui?: boolean;
 }
