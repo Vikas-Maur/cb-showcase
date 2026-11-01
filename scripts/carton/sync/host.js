@@ -38,6 +38,8 @@ function hostError(status, said) {
   if (status === 401) return "The host didn't accept the invite or session" + (said ? ` (${said})` : "");
   if (status === 403) return "This invite doesn't allow that" + (said ? ` (${said})` : "");
   if (status === 501) return "This host doesn't issue invite links";
+  if (status === 409) return "This project is already shared on that host: ask its owner for an invite";
+  if (status === 429) return said ?? "This host takes no more new projects from your network today";
   return `The host answered ${status}` + (said ? `: ${said}` : "");
 }
 
@@ -51,6 +53,23 @@ export const refresh = ({ host, projectId, token, installKey, fetchFn }) =>
 /** An invite link's token (owners only). */
 export const createInvite = async ({ host, projectId, token, role, ttlMs, fetchFn }) =>
   (await call(api(host, projectId, "/invites"), { token, body: { role, ...(ttlMs ? { ttlMs } : {}) }, fetchFn })).invite;
+/**
+ * What a host allows: `openCreate` (anyone may share a project there, no token needed) and the largest upload. A host
+ * from before open creation has no such route: it takes a token, as before.
+ */
+export async function hostInfo({ host, fetchFn = fetch }) {
+  try {
+    const r = await fetchFn(`${origin(host)}/api/host`, { method: "GET" });
+    if (!r.ok) return { openCreate: false, maxUploadBytes: null };
+    const d = await r.json();
+    return { openCreate: d?.openCreate === true, maxUploadBytes: typeof d?.maxUploadBytes === "number" ? d.maxUploadBytes : null };
+  } catch (e) {
+    throw Object.assign(new Error(`Couldn't reach ${origin(host)}: check the address`), { cause: e });
+  }
+}
+/** A new project on an open host, with this install as its first owner (no invite, no token). */
+export const createProject = ({ host, projectId, account, installKey, fetchFn }) =>
+  call(api(host, projectId, "/create"), { body: { account, installKey }, fetchFn });
 /** The first owner's invite, made with the host's admin token (the host operator has it; never stored by the app). */
 export const adminInvite = async ({ host, projectId, adminToken, role = "owner", fetchFn }) =>
   (await call(`${origin(host)}/api/admin/projects/${encodeURIComponent(projectId)}/invites`, { token: adminToken, body: { role }, fetchFn })).invite;

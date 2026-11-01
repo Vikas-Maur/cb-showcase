@@ -23,7 +23,7 @@ import type { Duplex } from "node:stream";
 import type { AuthContext, BlobStore, SequencerHost } from "@carton/core/plugins";
 import { sync } from "@carton/core";
 import { createSequencer, type ConnectionState, type HostConnection, type Sequencer, tokenFromRequest, WS_PROTOCOL } from "@carton/server";
-import { handleHttp, checkSession, projectMediaStore, type HttpAuth, type HttpDeps } from "@carton/host-http";
+import { handleHttp, checkSession, projectMediaStore, dayOf, OPEN_CREATE_MAX_UPLOAD, OPEN_CREATE_PER_DAY, type HttpAuth, type HttpDeps } from "@carton/host-http";
 import { scopedBlobStore } from "@carton/blob-memory/scoped";
 import { encodeSegment, decodeSegment } from "@carton/blob-fs/keys";
 import { CARDBOARD_SCHEMA_VERSION } from "@carton/cardboard";
@@ -49,6 +49,11 @@ export interface NodeHostOptions {
   /** Serve this directory's files for anything that isn't an API route (the web client). */
   staticDir?: string;
   adminToken?: string;
+  /** Open creation: anyone may make a project and be its first owner, with no admin token (host-http's `/create`).
+   * Off by default. `perDay`: new projects per client IP address per UTC day (default 10). */
+  openCreate?: boolean | { perDay?: number };
+  /** The largest file one upload stores, in bytes. Default: none; 200 MiB with open creation. */
+  maxUploadBytes?: number;
   /** Close a room's database this long after its last connection (default 5 minutes). */
   idleCloseMs?: number;
   /** Archive rows older than the newest `archiveKeep` per branch, `archiveSegment` per segment. Default: the
@@ -442,13 +447,53 @@ export async function startNodeHost(opts: NodeHostOptions): Promise<NodeHost> {
     upgrade: async () => new Response("expected a WebSocket upgrade", { status: 426 }),
   };
   if (opts.adminToken) deps.adminToken = opts.adminToken;
+  // open creation: an id is claimed with a `.claimed` file beside the room files (made exclusively, so two claims of
+  // one id can't both win); an id whose room exists is in use. The daily count per client is kept in memory.
+  const clients = new WeakMap<Request, string>();
+  if (opts.openCreate) {
+    const perDay = (typeof opts.openCreate === "object" && opts.openCreate.perDay) || OPEN_CREATE_PER_DAY;
+    const counts = new Map<string, number>();
+    let today = dayOf(Date.now());
+    const claimFile = (projectId: string) => join(roomsDir, roomFileName(projectId) + ".claimed");
+    const take = (projectId: string): boolean => {
+      if (existsSync(join(roomsDir, roomFileName(projectId) + ".db"))) return false;
+      try {
+        writeFileSync(claimFile(projectId), projectId, { flag: "wx" });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    deps.openCreate = {
+      perDay,
+      async claim(projectId, client) {
+        if (dayOf(Date.now()) !== today) (today = dayOf(Date.now())), counts.clear();
+        const n = counts.get(client) ?? 0;
+        if (n >= perDay) return "limit";
+        counts.set(client, n + 1);
+        return take(projectId) ? "ok" : "taken";
+      },
+      async mark(projectId) {
+        take(projectId);
+      },
+    };
+    deps.clientOf = (req) => clients.get(req) ?? "unknown";
+  }
+  const maxUpload = opts.maxUploadBytes ?? (opts.openCreate ? OPEN_CREATE_MAX_UPLOAD : undefined);
+  if (maxUpload !== undefined) deps.maxUploadBytes = maxUpload;
+  const clientIp = (req: IncomingMessage): string => {
+    const fwd = opts.trustProxy ? (Array.isArray(req.headers["x-forwarded-for"]) ? req.headers["x-forwarded-for"][0] : req.headers["x-forwarded-for"])?.split(",")[0]?.trim() : undefined;
+    return fwd || req.socket.remoteAddress || "unknown";
+  };
 
   // requests still being answered: close waits for them, so none touches a room or the blob store after it resolves
   const httpPending = new Set<Promise<void>>();
   server.on("request", (req, res) => {
     const work = (async () => {
       try {
-        const r = await handleHttp(toRequest(req, originOf(req)), deps);
+        const request = toRequest(req, originOf(req));
+        clients.set(request, clientIp(req));
+        const r = await handleHttp(request, deps);
         if (r) return await send(res, r, req);
         if (staticRoot && (req.method === "GET" || req.method === "HEAD")) return serveStatic(staticRoot, req, res);
         res.writeHead(404, { "content-type": "text/plain" }).end("not found");

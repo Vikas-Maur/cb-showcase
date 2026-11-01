@@ -429,19 +429,28 @@ extend({
         const { live } = await liveOf(projectId);
         return { host: cfg.host, account: cfg.account, name: cfg.name ?? cfg.account, role: cfg.role, ...(live?.view() ?? { shared: true, status: "offline", pending: 0, label: "Offline", peers: [] }) };
       },
+      /** What the Share form asks for: a host with open creation needs no invite or token. */
+      async liveHostInfo({ host: hostUrl }) {
+        return host.hostInfo({ host: host.origin(hostUrl) });
+      },
       /**
        * Invite to edit, step 1: share this project through a Carton host. `invite` is an owner invite from the host,
-       * or `adminToken` makes one (the host operator's token; used once, never stored). The cut goes up with its history.
+       * or `adminToken` makes one (the host operator's token; used once, never stored). A host with open creation needs
+       * neither: it makes the project with this install as its owner. The cut goes up with its history.
        */
       async liveShare({ projectId, host: hostUrl, invite, adminToken, name, withMedia = true }) {
         const bundlePath = api.bundleOf(projectId), lc = await api.carton(projectId);
         if (!bundlePath || !lc) throw new Error("History isn't available for this project");
         if (!lc.carton.sync) throw new Error("This build can't share a project yet (its Carton opened without sync)");
         const h = host.origin(hostUrl);
-        const inv = invite || (adminToken ? await host.adminInvite({ host: h, projectId, adminToken, role: "owner" }) : null);
-        if (!inv) throw new Error("An owner invite or the host's admin token is needed to share a project");
         const account = host.accountId(name);
-        const s = await host.join({ host: h, projectId, invite: inv, account, installKey: store.installKey() });
+        let s;
+        if (invite || adminToken) {
+          const inv = invite || (await host.adminInvite({ host: h, projectId, adminToken, role: "owner" }));
+          s = await host.join({ host: h, projectId, invite: inv, account, installKey: store.installKey() });
+        } else if ((await host.hostInfo({ host: h })).openCreate) {
+          s = await host.createProject({ host: h, projectId, account, installKey: store.installKey() });
+        } else throw new Error("This host needs an owner invite or its admin token to share a project");
         store.writeConfig(bundlePath, { host: h, projectId, account, name: name || account, role: s.context.role, cut: lc.carton.cut, descriptor: "pending", withMedia });
         store.saveSession(bundlePath, projectId, s);
         const live = await startLive(api, bundlePath, lc);

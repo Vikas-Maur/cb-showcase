@@ -5,7 +5,7 @@
 // `hold-ends` makes it hold every segmented proxy's end entry (ps/<stream>/end) until `release-ends`, so a test can
 // read a proxy that is still uploading (answers {held} / {released}). `{"heads": <tag>}` answers {tag, heads}: the
 // keys of the blobs asked about (HEAD) since the last one, so a test can see what a share checked.
-//   node host.mjs <dir> [port]
+//   node host.mjs <dir> [port]          (CARTON_TEST_OPEN_CREATE=1: with open creation)
 // Test-only secrets: the host's signing secret and admin token are fixed strings, for a host on loopback.
 import path from "node:path";
 import { createInterface } from "node:readline";
@@ -49,6 +49,8 @@ const node = await startNodeHost({
   port: Number(port ?? 0),
   host: "127.0.0.1",
   durability: "normal",
+  // CARTON_TEST_OPEN_CREATE=1: a host with open creation (anyone may share a project there, no token)
+  ...(process.env.CARTON_TEST_OPEN_CREATE === "1" ? { openCreate: true } : {}),
   // The newest document schema the app's adapter writes (CARTON_TEST_SCHEMA_VERSION plays a host older than the app,
   // which refuses its hello).
   schemaVersion: Number(process.env.CARTON_TEST_SCHEMA_VERSION) || CARDBOARD_SCHEMA_VERSION,

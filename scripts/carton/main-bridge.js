@@ -50,9 +50,23 @@ module.exports = String.raw`var __cartonMain = (() => {
   // Gate G2 (§6.2): with CARDBOARD_CARTON_TIMING=<file>, every GUI save's round trip to the library worker (the
   // commit and the write) is appended to <file> as a JSON line, Carton on or off, for comparing the two.
   const timing = process.env.CARDBOARD_CARTON_TIMING;
-  // The Director's running turn per chat session, so its last version can be named when it ends (History shows
-  // turns as the chat's checkpoints). The prompt goes only to the worker, into the project's own history: never logged.
+  // Each in-app agent's running turn per chat session (the Director's, the person's own Claude Code's, Codex's, the
+  // others'), so its last version can be named when it ends (History shows turns as the chat's checkpoints) and its
+  // hold on the shared timeline.tsx ends with it. The prompt goes only to the worker, into the project's own history:
+  // never logged.
   const running = new WeakMap();
+  // Laptop #8: who a turn's edits and holds are by. The Director's are its turn's (director/<chat>/<turn>). Another
+  // provider's process outlives its turns, so its ids name no turn: agentEnv's <provider>/<chat> (its cb calls), and
+  // for host Claude Code its hooks' claude-code/<session> (its file reads and Bash cb calls, @carton/local's
+  // actorIdForHook), the session being the one main keeps for the chat. Its turn is told by time instead (nameTurn's
+  // since: the turn's start).
+  const actorsOf = (chat, t) => {
+    if (t.provider === "director") return ["director/" + safe(chat.chatId) + "/" + safe(t.turn)];
+    const out = [t.provider + "/" + chat.chatId];
+    const session = chat.sessionIds?.[t.provider];
+    if (t.provider === "claude" && session) out.push("claude-code/" + safe(String(session).slice(0, 8)));
+    return out;
+  };
   const handlers = new Map();
   const forward = (method, args) => {
     if (!library) throw new Error("The library is not open yet");
@@ -61,15 +75,16 @@ module.exports = String.raw`var __cartonMain = (() => {
   return {
     on,
     turnStarted(chat, projectId, bundlePath, turn, provider) {
-      if (on && provider === "director") running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text });
+      if (on && provider) running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since: Date.now() });
     },
     turnEnded(chat) {
       const t = on ? running.get(chat) : null;
       if (!t) return;
       running.delete(chat);
+      const actors = actorsOf(chat, t), director = t.provider === "director";
       // H8: the turn and its subagents stop holding the shared file, however the turn ended (a stop, an interrupt).
-      void agentHook({ project: { bundlePath: t.bundlePath } }, "director/" + safe(chat.chatId) + "/" + safe(t.turn), "endTurn");
-      if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt }).catch(() => {});
+      for (const actor of actors) void agentHook({ project: { bundlePath: t.bundlePath } }, actor, "endTurn");
+      if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt, ...(director ? {} : { actors, since: t.since }) }).catch(() => {});
     },
     time(p) {
       if (!timing) return p;

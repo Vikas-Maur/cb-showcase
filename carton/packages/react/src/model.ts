@@ -166,6 +166,8 @@ export interface Conflict {
   readonly provisional?: ConflictChoice;
   /** A fingerprint of both sides' values: a pick made on the card holds only while it still matches. */
   readonly sig?: string;
+  /** The clip the card is about, when it is one: a host can select it on its timeline ("Show on timeline"). */
+  readonly item?: string;
 }
 
 /** One side of a Compare card (§9, generalizing the recovery picker). */
@@ -342,6 +344,12 @@ export interface CartonUi {
   publish(cutId: string): Promise<void>;
   /** Open a read-only preview of a ref, or close it with null. */
   openPreview(ref: string | null, label?: string): void;
+  /**
+   * "See it": a ref of the cut with one side of a card kept, for openPreview (the side shown now is head itself; the
+   * other a held state with that side applied). Null when the card is gone. Optional: a host without it shows no
+   * Preview.
+   */
+  conflictRef?(conflictId: string, side: ConflictChoice): Promise<string | null>;
   /** The host saw an edit attempt during a preview: the banner then explains and offers "Return to current to edit". */
   blockEdit(): void;
 }

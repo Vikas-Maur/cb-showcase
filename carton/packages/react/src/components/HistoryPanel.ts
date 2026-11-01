@@ -8,7 +8,7 @@ import { useCartonUi, useHistoryCount, useLocale, useNow, useTopic, useWords } f
 import { Icon, type IconName } from "../icons.ts";
 import type { HistoryFilter, Version } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
-import { ActorName, Avatar, InlineName, MenuItem, MenuList, MenuSeparator, cx } from "./ui.ts";
+import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuList, MenuSeparator, cx } from "./ui.ts";
 import { CompareCard } from "./CompareCard.ts";
 
 export const VERSION_ROW_HEIGHT = 52;
@@ -54,7 +54,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
     v.author.kind === "system" ? null : h(Avatar, { key: "a", actor: v.author, size: 14, named: true }),
     v.author.kind === "system" ? null : h(ActorName, { key: "n", actor: v.author }),
     v.turn ? h("span", { key: "e", className: "carton-version-edits" }, words.turnEdits(v.turn.edits)) : null,
-    h("time", { key: "t", dateTime: new Date(v.at).toISOString(), "data-carton-tip": exactTime(v.at, locale) }, when(v.at, p.now, locale, words.justNow)),
+    h(HoverMore, { key: "t", as: "time", dateTime: new Date(v.at).toISOString(), short: when(v.at, p.now, locale, words.justNow), more: exactTime(v.at, locale) }),
   ];
   return h(
     "div",
@@ -98,7 +98,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
         { className: "carton-version-meta" },
         ...meta,
         v.published ? h("span", { className: "carton-badge", "data-tone": "info" }, words.published) : null,
-        v.provisional ? h("span", { className: "carton-badge", "data-tone": "muted", "data-carton-tip": words.provisionalHint }, words.provisional) : null,
+        v.provisional ? h("span", { className: "carton-badge", "data-tone": "muted", "aria-description": words.provisionalHint }, words.provisional) : null,
       ),
     ),
     p.naming

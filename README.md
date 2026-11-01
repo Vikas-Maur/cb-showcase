@@ -440,17 +440,25 @@ What changes with it on:
   back builds on that save, and a save that landed past an agent's change on another clip brings that change into the
   editor (it used to stay out of the editor, and your next save undid it).
 - **History** keeps every version, not the last 20, with who made it, down to the Director's turn and subagent.
-  `cb history` shows who made each version, and each Director turn is named from your prompt ("Make the intro
-  tighter"). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
+  `cb history` shows who made each version, and each turn of an agent in the app (the Director, your own Claude Code,
+  Codex, the others) is named from your prompt ("Make the intro tighter"); its hold on `timeline.tsx` ends with the
+  turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
   agent turn.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit.
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
-- **History tab** in the editor's left rail: versions, compare, restore, cuts, fold in. Opening an old version shows
-  it read-only until "Return to current". Conflict cards wait there: your own edits that clashed, and an agent's view
-  edit that clashed with yours (see "An agent's edit and yours at once" below). On an agent's card your value is the
+- **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
+  panel beside the agent's chat, in the chat's look (drag its edge to resize); the same icon closes it, and the icon
+  of the open panel shows as pressed. The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
+  History: versions, compare with current and "Watch the changes", restore, cuts, fold in. Opening an old version
+  shows it read-only until "Return to current".
+- **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
+  your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
+  once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
+  it. **See it:** "Preview" shows the timeline with that side kept, read-only, with the clip in view; "Show on
+  timeline" selects the clip and moves the playhead to it. On an agent's card your value is the
   one showing; "Keep Director's" puts the agent's in as your own version (Ctrl+Z takes it back). A card says what each
   side did, in the editor's words ("Moved 1.5 s → 3.0 s", "Opacity 50%", "Removed"), with the clip named by its file;
   two edits of your own read "Your earlier edit" and "Your later edit", with "Keep earlier" and "Keep later".
@@ -496,7 +504,10 @@ run below.
    header names; Carton's merge replaces Cardboard's. The header can be Cardboard's (`// cardboard:rev <number>`) or
    Carton's (`// cardboard:rev Main cut@12~3f9a1c0e b:… p:… by …`, as Carton's own prints of the timeline write it);
    only the first such line counts. For Carton's, the edit merges against that exact version and is saved as made on
-   it; a version Carton can't rebuild exactly is refused with "print it again". (Cardboard alone reads only a number
+   it; a version Carton can't rebuild exactly is refused with "print it again". With Carton on, `cb source print` and
+   the timeline file always carry Carton's header, so agents editing at once never merge against the wrong version (a
+   number names one exactly too; before, the newest version "at or before" it was taken, and with several writers that
+   could be a newer one, so an agent's edit put back another's older values). (Cardboard alone reads only a number
    there, so it took Carton's header for none and merged against the current timeline, reverting newer edits.)
 3. A `.cbproj` never carries `.carton\` or Carton's view files in `.scratch\views\` (on or off: the database holds
    local paths); anything else in `.scratch\views\` goes in.
@@ -582,10 +593,13 @@ The build's last step checks that `carton-node.cjs` loads in Cardboard's own Nod
 1. **No regression, Carton off.** Start `out\Cardboard-win\Cardboard.exe --remote-debugging-port=9334` without
    `CARDBOARD_CARTON` and run `scripts\test-shortcuts.js` (both forms, see "Testing the keyboard"). Expect 25 and 9
    passes, as before Carton. Repeat with `CARDBOARD_CARTON=1`: the same.
-2. **The lost update (B1), Carton off then on.** With the app closed:
-   `node scripts/carton/writers.js setup "%CB%" %CARDBOARD_HOME% bench-media\<a clip>.mp4`, then
-   `node scripts/carton/writers.js run "%CB%" %CARDBOARD_HOME% --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
-   this Node; `cb` through `Cardboard.exe` works too.) Off, some writers can lose their last edit. On, none may, once
+2. **The lost update (B1), Carton off then on.** A signed-in app keeps its projects in its account's library,
+   `%CARDBOARD_HOME%\accounts\<64 hex>` (made at the first sign-in), not in `%CARDBOARD_HOME%` itself, so the writers
+   use that folder, or the app never shows their project: sign in once, then
+   `for /d %A in ("%CARDBOARD_HOME%\accounts\*") do set LIB=%A` (`%%A` in a .cmd file). With the app closed:
+   `node scripts/carton/writers.js setup "%CB%" "%LIB%" bench-media\<a clip>.mp4`, then
+   `node scripts/carton/writers.js run "%CB%" "%LIB%" --writers 4 --rate 1 --seconds 120`. (`%CB%` runs with
+   this Node; `cb` through `Cardboard.exe` works too. Steps 3 and 4 use the same `%LIB%`.) Off, some writers can lose their last edit. On, none may, once
    history is in.
 3. **Gate G2: GUI saves under 4 agents** (§6.2). Start the app with `CARDBOARD_CARTON_TIMING=%TEMP%\g2-off.jsonl`, open
    "Carton gates", start the 4 writers (`run … --seconds 300`), and edit for 3 minutes in the editor: move, trim,
@@ -611,8 +625,10 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the editor's left rail, "Share"): enter the host and the invite you were given (the host's owner gets
-  one with its admin token). The project goes up with its whole history and authors. Its clips go up too: each clip's
+- **Share** (the "Share" icon in the title bar): enter the host's address and your name. A host with open creation
+  (the free web demo's) needs nothing else: you become the project's owner. Any other host asks for the invite you were
+  given (the host's owner gets one with its admin token); the form shows that field only when the host asks for it.
+  The project goes up with its whole history and authors. Its clips go up too: each clip's
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
   proxy) go up as they are, up to 200 MB and 50 MB.
@@ -646,8 +662,9 @@ with Carton off none of it runs at all.
 - **"Bring in their changes"**: opening a `.cbproj` of a project you already have, with history, merges their versions
   in instead of 1.4.0's "This project ID already exists". Where you both changed the same thing, theirs goes in and
   yours is kept on a conflict card (`cb conflicts`; `cb resolve <n> --keep mine` puts yours back; the History panel).
-  Clips they added come with their files. Opening one of a project you don't have starts its history from theirs;
-  whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
+  Clips they added come with their files. Opening one of a project you don't have starts its history from theirs
+  (its `timeline.tsx`, printed under their version, opens as that version: the same state starts your history); their
+  cuts show as read-only, and as "<name> (their copy)" where one would share a name with yours; whatever Carton opens in Cardboard's staged copy is closed before Cardboard moves it into the library (Windows can't
   move or remove an open file). A `.carton\` folder or Carton's view files inside a `.cbproj` are never kept: Open
   Project removes them, even with Carton off, and keeps anything else in `.scratch\views\` (see "Saves on Windows",
   With Carton off). **Include history**:
@@ -662,7 +679,7 @@ with Carton off none of it runs at all.
 
 Where it lives: `scripts\carton\sync\` (bundled into `carton-node.cjs` and `carton-ui.js`; `factory.js`, the helper's
 engine, is copied beside them) and `scripts\patch-carton-sync.js`, which runs after `patch-carton.js` and applies
-`scripts\carton\sync\patches\*.js`: the Share tab and presence in the editor (`ui.js`), `cardboard-media://` for clips
+`scripts\carton\sync\patches\*.js`: presence in the editor (`ui.js`; Share opens from the title bar), `cardboard-media://` for clips
 that live on the host (`media.js`), the agent's media tools (`tools.js`), `cb`'s cloud mode (`cloud.js`) and `.cbproj`
 (`cbproj.js`). Sessions and tokens are in app data (`%LOCALAPPDATA%\Carton\sync\`, owner-only), never in the project.
 
@@ -689,7 +706,7 @@ set CARDBOARD_PRISTINE=C:\cb-pristine
 node --test --test-concurrency=1 scripts/carton/test/sync/live.test.js scripts/carton/test/sync/cbproj.test.js scripts/carton/test/sync/cbproj-offline.test.js scripts/carton/test/sync/views.test.js scripts/carton/test/sync/facade.test.js scripts/carton/test/sync/view-cards.test.js scripts/carton/test/sync/ui.test.js scripts/carton/test/sync/save-cost.test.js
 ```
 
-Still to check on the Windows laptop: the Share tab in the real editor, a teammate's clip playing in the preview
+Still to check on the Windows laptop: the Share panel in the real editor, a teammate's clip playing in the preview
 (Electron's protocol handler and the media element), NVENC/QSV/AMF proxies, the helper under named pipes, and renames
 under Defender.
 

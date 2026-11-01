@@ -17,7 +17,8 @@ html,body{margin:0;height:100%;background:var(--desktop-content,#171717);color:v
 .cb-flex{flex:1 1 auto}
 .cb-topbar .carton-undo-wrap,.cb-topbar .carton-undo{min-width:0;max-width:300px}
 .cb-topbar .carton-undo .carton-btn-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.cb-topbar>*{flex-shrink:0}.cb-topbar>.cb-flex,.cb-topbar>.carton-undo-wrap,.cb-topbar>.cb-sync-problem{flex-shrink:1}
+.cb-topbar>*{flex-shrink:0}.cb-topbar>.cb-flex,.cb-topbar>.carton-undo-wrap,.cb-topbar>.cb-sync-problem,.cb-topbar>.cb-uploads{flex-shrink:1;min-width:0}
+.cb-topbar>.carton-undo-wrap{overflow:hidden}.cb-topbar>.carton-undo-wrap>.carton-undo,.cb-topbar>.carton-undo{max-width:min(300px,100%)}
 .cb-sync-problem{min-width:0;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding:3px 8px;border-radius:6px;background:#3a1d1d;color:var(--status-error,#f87171);font-size:12px}
 .cb-me{color:var(--text-tertiary,#999);font-size:12px;white-space:nowrap}
 .cb-dim{color:var(--text-tertiary,#999)}
@@ -91,11 +92,28 @@ label.cb-field:has(.cb-input){grid-template-columns:90px 1fr}
 .cb-gate{display:flex;align-items:center;justify-content:center;height:100%;padding:24px}
 .cb-gate-card{width:min(420px,100%);padding:24px;border-radius:12px;background:var(--surface-dialog,#1f1f1f);box-shadow:var(--shadow-surface-raised,0 16px 40px -12px #000000b3,0 0 0 1px #ffffff0a)}
 .cb-gate-card h1{margin:0 0 8px;font-size:18px;font-weight:600}
+.cb-gate-more{margin:12px 0 0}.cb-gate-more a{color:var(--text-secondary,#c2c2c2);text-underline-offset:3px}.cb-gate-more a:hover{color:var(--text-primary,#f5f5f5)}
 .cb-gate-form{display:flex;flex-direction:column;gap:12px;margin-top:16px}
 .cb-gate-form .cb-field{grid-template-columns:90px 1fr}
 .cb-watch-page{display:grid;grid-template-rows:50px minmax(0,1fr);height:100%}
 .cb-watch-main{display:flex;flex-direction:column;gap:12px;padding:16px;max-width:1100px;width:100%;margin:0 auto;min-height:0}
 .cb-watch-comments{flex:1 1 auto;min-height:140px;overflow:auto;border:1px solid var(--border-subtle,#ffffff0f);border-radius:8px}
 .cb-newer{display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:8px;background:#1d2a3d;color:var(--status-info,#61a6fa);font-size:12px}
+.cb-gate-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:16px}
+.cb-projects{margin-top:20px;border-top:1px solid var(--border-subtle,#ffffff0f);padding-top:12px}
+.cb-projects h2{margin:0 0 8px;font-size:13px;font-weight:600;color:var(--text-secondary,#c2c2c2)}
+.cb-projects ul{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;gap:2px;max-height:280px;overflow:auto}
+.cb-projects a{display:flex;justify-content:space-between;gap:12px;padding:8px 10px;border-radius:8px;color:inherit;text-decoration:none;font-size:13px}
+.cb-projects a:hover{background:var(--surface-hover,#ffffff0d)}
+.cb-project-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cb-uploads{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-secondary,#c2c2c2)}
+.cb-upload{display:inline-flex;align-items:center;gap:6px;padding:3px 8px;border-radius:999px;background:var(--surface-raised,#ffffff0d);min-width:0;max-width:240px}
+.cb-upload-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cb-upload-bar{width:48px;height:4px;border-radius:2px;background:#ffffff1a;overflow:hidden}.cb-upload-bar>span{display:block;height:100%;background:var(--status-info,#61a6fa)}
+.cb-upload[data-phase=failed]{color:var(--status-error,#f87171)}
+.cb-drop{position:fixed;inset:0;z-index:50;display:flex;align-items:center;justify-content:center;background:#000000a6;border:2px dashed var(--status-info,#61a6fa);font-size:16px;pointer-events:none}
+.cb-empty-timeline{padding:18px;text-align:center;font-size:13px;color:var(--text-secondary,#c2c2c2)}
+.cb-select{height:30px;border-radius:6px;border:1px solid var(--border,#ffffff1a);background:var(--surface,#141414);color:inherit;padding:0 8px;font-size:13px}
+.cb-invite-row{display:flex;align-items:center;gap:8px;margin:8px 0}
 @media (max-width:1100px){.cb-stage{grid-template-columns:1fr}.cb-main{grid-template-columns:minmax(0,1fr) 320px}}
 `;

@@ -6,7 +6,7 @@
 // exclusions (H11: .carton/ and Carton's own view files) apply either way. build-windows.js --no-carton leaves this
 // script out.
 // Usage: node patch-carton.js --cli <cli/cardboard.mjs> <cli/chunks/chunk-LL26E55H.mjs>
-//        node patch-carton.js --app <dist/main.js> <dist/library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>
+//        node patch-carton.js --app <dist/main.js> <dist/library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js> [tabs-*.js]
 const fs = require("fs");
 const path = require("path");
 
@@ -44,6 +44,8 @@ const STORE = {
       ["let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);", "let[m]=await this.__cartonListRevisions(r),p=m===void 0?null:await this.__cartonReadRevision(r,m);"],
       ["let d=await this.listRevisions(r);for(let m of d.slice(20))", "let d=await this.__cartonListRevisions(r);for(let m of d.slice(20))"],
     ],
+    // the mirror's print (cb source print, MCP's print_timeline, timeline.tsx): Carton's exact header with Carton on
+    print: ["async print(t,r=[]){return this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Cr(__p.project),__p.rev,r):this.printTimeline(t,Cr(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(o,c.doc,c.added),a.rev}", "return await this.writeTimeline(o,c.doc,c.added,{source:\"undo\",rev:a.rev}),a.rev}"],
     headerRev: ["g=Nh(r)?rt(r):r", "g=Nh(r)?(__carton.on?__carton.headerRev(rt(r),r):rt(r)):r"],
     base: ["B=await this.revisionAtOrBefore(o,g.rev)??j,", "B=(__carton.on&&typeof g.rev==\"string\"?await __carton.cartonBase(g.rev,o):await this.revisionAtOrBefore(o,g.rev))??(__carton.on?await __carton.missingRev(g.rev,j,o):j),"],
@@ -93,6 +95,7 @@ const STORE = {
       ["let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);", "let[u]=await this.__cartonListRevisions(r),p=u===void 0?null:await this.__cartonReadRevision(r,u);"],
       ["let l=await this.listRevisions(r);for(let u of l.slice(20))", "let l=await this.__cartonListRevisions(r);for(let u of l.slice(20))"],
     ],
+    print: ["async print(t,r=[]){return this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}", "async print(t,r=[]){let __p=__carton.on?await __carton.printed(this,t):null;return __p?this.printTimeline(__p.project,Zs(__p.project),__p.rev,r):this.printTimeline(t,Zs(t),t.stateUpdatedAt??0,r)}"],
     undoWrite: ["return await this.writeTimeline(i,s.doc,s.added),o.rev}", "return await this.writeTimeline(i,s.doc,s.added,{source:\"undo\",rev:o.rev}),o.rev}"],
     headerRev: ["h=OC(r)?li(r):r", "h=OC(r)?(__carton.on?__carton.headerRev(li(r),r):li(r)):r"],
     base: ["be=await this.revisionAtOrBefore(i,h.rev)??de,", "be=(__carton.on&&typeof h.rev==\"string\"?await __carton.cartonBase(h.rev,i):await this.revisionAtOrBefore(i,h.rev))??(__carton.on?await __carton.missingRev(h.rev,de,i):de),"],
@@ -171,6 +174,13 @@ const patchStore = (replace, k) => {
   for (const [from, to] of s.revFiles) replace(from, to);
   around(replace, "listRevisions", "t", () => "__carton.listRevisions(this,t)");
   around(replace, "readRevision", "t,r", () => "__carton.readRevision(this,t,r)");
+  // Laptop #2 (agents' cb edits overwrote each other): a numeric rev's base is the exact version the rev names, not the
+  // first at or before it in history order (several writers' revs aren't in save order: a newer version was taken, and
+  // the print's older values read as the agent's edits); .revs only for a rev older than Carton's history. And a print
+  // carries Carton's exact header, its records that version's as Carton has them, so the apply merges against exactly
+  // what was printed and `cb source check` of an unchanged print finds nothing.
+  around(replace, "revisionAtOrBefore", "t,r", () => "__carton.revisionAtOrBefore(this,t,r)");
+  replace(...s.print);
   replace("async history(t){", "history(t){return __carton.on?this.__cartonHistory(t).then(r=>__carton.history(this,t,r)):this.__cartonHistory(t)}async __cartonHistory(t){");
   // undo <rev> restores through writeTimeline, whose scope says so.
   replace(...s.undoWrite);
@@ -224,7 +234,7 @@ if (mode === "--cli") {
     replace('p("list_media",', '__cartonCli.mcp(p,{z:f,project:fe,resolve:x=>I(s,x),lib:s,result:Y}),p("list_media",');
   });
 } else if (mode === "--app") {
-  const [mainFile, workerFile, indexFile, editorFile, storeFile] = files;
+  const [mainFile, workerFile, indexFile, editorFile, storeFile, tabsFile] = files;
   if (!storeFile) throw new Error("usage: node patch-carton.js --app <main.js> <library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>");
   patch(workerFile, (replace, prepend) => {
     patchStore(replace, "worker");
@@ -256,6 +266,13 @@ if (mode === "--cli") {
     // H8: the worker's Carton events go to every tab.
     replace('onChange:async i=>{if(i.kind==="removed"){n(i.id);return}', 'onChange:async i=>{if(i.kind==="carton"){e.tabs.broadcast("carton:event",i);return}if(i.kind==="removed"){n(i.id);return}');
     // H9: who is acting, for every agent main starts.
+    // The title bar's History and Share icons (the tab strip, tabsFile below): their commands go to the active tab's
+    // page as carton:command (not menu:action, which Cardboard logs and maps to native commands), and the page's report
+    // of the panel open (carton:panel) joins the tab's editor state, which the strip draws from. Carton off: neither.
+    replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){_e.emit(r,\"carton:command\",{action:t.action});return}");
+    replace("setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}", "__cartonPanel(t,r){let n=this.tabIdOf(t);n&&this.model.__cartonPanel(n,r)}setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}");
+    replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
+    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.panel??null)}),');
     replace("this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})", "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:__cartonMain.agentEnv(b,a.provider,s)})");
     replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
     // H9: the Director's Bash hook names the turn and the subagent; Stop and SubagentStop return late conflicts.
@@ -278,7 +295,8 @@ if (mode === "--cli") {
     replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De});");
     // H4: the save names the version the editor shows; initializeEditor starts from the project's.
     replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)}))');
-    replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,projectId:n,projectName:r,activeLeftTab:"media",');
+    // H6: the editor's session starts here (Ctrl+Z never goes back past it), with nothing to undo or redo yet.
+    replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,cartonSince:Date.now(),cartonCanUndo:!1,cartonCanRedo:!1,projectId:n,projectName:r,activeLeftTab:"media",');
     // H4: a preview of an earlier version is read-only, says so, and is never saved.
     replace('Tm=t=>ah()||t.timelineLockState!=="unlocked"', 'Tm=t=>!!t.cartonPreview||ah()||t.timelineLockState!=="unlocked"');
     replace("ure=t=>ah()?aN:", "ure=t=>t.cartonPreview?window.__carton.previewMessage:ah()?aN:");
@@ -298,12 +316,22 @@ if (mode === "--cli") {
   patch(indexFile, (replace) => {
     replace("sV=async(e,t)=>{const{id:a,timeline:n,artefacts:s}=t;", "sV=async(e,t)=>{if(t.carton&&window.__carton?.on){const __r=await window.__carton.receive(e,t);if(__r)return __r}const{id:a,timeline:n,artefacts:s}=t;");
   });
-  // The History panel: a rail tab in the editor (EditorRoute-*.js), loaded from carton-ui.js when first shown.
+  // Carton in the editor (EditorRoute-*.js, editor-panel.js, scripts/carton/ui.js): the History or Share panel, a
+  // full-height column beside the agent's chat sidebar; and a layer over the stage (the preview's column) with the
+  // conflict cards' floating stack and the preview banner. With Carton off the editor's row and stage are Cardboard's.
   patch(editorFile, (replace, prepend) => {
-    replace('{id:"effects",icon:gw,label:"Effects",event:"filters_panel_opened"}]],U_=V_.map(', '{id:"effects",icon:gw,label:"Effects",event:"filters_panel_opened"}],...window.__carton?.on?[[{id:"carton",icon:__cbCartonIcon,label:"History",event:"carton_panel_opened"}]]:[]],U_=V_.map(');
-    replace('uf=["media","layouts","music","captions","voiceover","text","transitions","effects"].filter(', 'uf=["media","layouts","music","captions","voiceover","text","transitions","effects",...window.__carton?.on?["carton"]:[]].filter(');
-    replace('case"effects":return c.jsx(tP,{});default:return null}', 'case"effects":return c.jsx(tP,{});case"carton":return c.jsx(__cbCartonPanel,{projectId:t});default:return null}');
+    replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,');
+    // H6: the undo and redo buttons say what Carton has left to undo and redo (the bridge's cartonCanUndo/Redo), not
+    // the editor's own snapshot stacks, which Carton's undo never pops.
+    replace("y=U(_=>_.historyPast.length>0),g=U(_=>_.historyFuture.length>0)", "y=U(_=>window.__carton?.on?!!_.cartonCanUndo:_.historyPast.length>0),g=U(_=>window.__carton?.on?!!_.cartonCanRedo:_.historyFuture.length>0)");
+    replace('b&&c.jsx(X_,{variant:"project"})]}),c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",', 'b&&c.jsx(X_,{variant:"project"})]}),...window.__carton?.on?[c.jsx(__cbCartonSide,{},"carton-side")]:[],c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",');
     prepend(require("./carton/editor-panel"));
+  });
+  // The title bar's History and Share icons (tabs-*.js, the tab strip), before "Report an issue": only on a tab whose
+  // editor reports Carton's panel state (strip-buttons.js). A build without the strip's file leaves it as it is.
+  if (tabsFile) patch(tabsFile, (replace, prepend) => {
+    replace("t.credits&&n.jsx(Ot,{credits:t.credits}),n.jsx(Ut,{}),", "t.credits&&n.jsx(Ot,{credits:t.credits}),t.cartonPanel!==void 0&&n.jsx(__cbCartonStrip,{panel:t.cartonPanel}),n.jsx(Ut,{}),");
+    prepend(require("./carton/strip-buttons"));
   });
 } else {
   throw new Error("usage: node patch-carton.js --cli <cardboard.mjs> <chunk-LL26E55H.mjs> | --app <main.js> <library-worker.js> <index-*.js> <EditorRoute-*.js> <installErrorTelemetry-*.js>");

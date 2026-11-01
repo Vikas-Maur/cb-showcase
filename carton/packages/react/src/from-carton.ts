@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, deepEqual, describe, describeCard as coreDescribeCard, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
+import { actorKey, apply, deepEqual, describe, describeCard as coreDescribeCard, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -715,6 +715,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
    * on screen and `theirs` is the person's own edit. Identical cards (same cut, path and values) are shown once;
    * a second conflict on the same field with other values is its own card.
    */
+  // The clip a card is about (a timeline record or a field of one), for "Show on timeline".
+  const itemOf = (card: ConflictCard): { item?: string } => {
+    const tl = schema.timeline;
+    const segs = splitPathKey(card.path);
+    return tl && segs[0] === tl.collection && segs[1] ? { item: segs[1] } : {};
+  };
   const addCards = (list: readonly ConflictCard[], by: CoreActor | undefined, cut = cutId) => {
     const key = (onCut: string, c: ConflictCard) => `${onCut}|${c.path}|${canonicalish(c.ours)}|${canonicalish(c.theirs)}`;
     const seen = new Set([...cardEntries.values()].map((e) => key(e.cut, e.card)));
@@ -739,6 +745,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           ...(w.reason ? { reason: w.reason } : {}),
           provisional: "theirs",
           sig: cardSig(card),
+          ...itemOf(card),
         },
       });
       added.push(id);
@@ -1008,6 +1015,15 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     for (let i = rows.length - 1; i >= 0; i--) if (rows[i]!.v.ref === ref) return rows[i]!.v;
     return undefined;
   };
+  // A version in words: its name, else what it did; the current cut's head is "Current", another cut's head that
+  // cut's name ("Main cut"); never its ref (an id).
+  const refLabel = (ref: string): string => {
+    const v = versionAt(ref);
+    if (v?.name) return v.name;
+    const head = cuts.find((c) => c.head === ref);
+    if (head) return head.current ? "Current" : head.label;
+    return v?.summary || "Earlier version";
+  };
   const diffCache = new Map<string, Promise<ShotDiff>>();
   const shotDiff = (a: string, b: string): Promise<ShotDiff> => {
     const key = `${a}|${b}`;
@@ -1024,8 +1040,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           a: A.map(shot(la)),
           b: B.map(shot(lb)),
           matches,
-          aLabel: versionAt(a)?.name ?? a,
-          bLabel: versionAt(b)?.name ?? (cuts.find((c) => c.head === b) ? "Current" : b),
+          // a version by its name or what it did, never its ref (an id)
+          aLabel: refLabel(a),
+          bLabel: refLabel(b),
         };
       })();
       diffCache.set(key, p);
@@ -1057,6 +1074,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       ...(w.reason ? { reason: w.reason } : {}),
       provisional: "mine",
       sig: cardSig(card),
+      ...itemOf(card),
     };
   };
 
@@ -1082,7 +1100,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const side = (ref: string, doc: Doc, label: string) => {
         const v = versionAt(ref);
         const m = measure(doc, schema);
-        return { label: v?.name ?? label, ref, at: v?.at ?? clock(), author: v?.author ?? me, clipCount: m.clips, length: m.length };
+        return { label, ref, at: v?.at ?? clock(), author: v?.author ?? me, clipCount: m.clips, length: m.length };
       };
       const c: Comparison = { a: side(a, da, d.aLabel), b: side(b, db, d.bLabel), diff: diffSummary(d) };
       return c;
@@ -1319,6 +1337,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
             opts.onPreview!(null);
           },
         );
+    },
+    async conflictRef(conflictId, side) {
+      const e = cardEntries.get(conflictId);
+      if (!e) return null;
+      const head = await carton.head(e.cut);
+      // The side shown now is head; the other is head with that side applied, held as a pin for the preview's while.
+      if (side === (e.conflict.provisional ?? "theirs")) return `${head.ref.branchId}@${head.ref.seq}`;
+      const value = side === "mine" ? e.card[e.mineSide] : e.card[e.mineSide === "ours" ? "theirs" : "ours"];
+      const doc = apply(fork(head.doc, schema), cardOps(e.card, value), schema);
+      const pin = await carton.pin({ owner: `see:${conflictId}:${side}`, cut: e.cut, doc, ttlMs: 30 * 60_000 });
+      return pin.header;
     },
     blockEdit() {
       if (!preview || preview.blockedEdit) return;

@@ -187,6 +187,18 @@ export class ProjectRoom {
   }
 
   async fetch(req: Request): Promise<Response> {
+    const url0 = new URL(req.url);
+    // open creation's daily count (one room per UTC day, named `open-create/<day>`: never a project's, whose ids have
+    // no slash). Only the Worker reaches a room, so only it counts.
+    if (url0.pathname === "/open-create/count" && req.method === "POST") {
+      const { client, max } = (await req.json()) as { client: string; max: number };
+      const sql = this.#ctx.storage.sql;
+      sql.exec("CREATE TABLE IF NOT EXISTS carton_open_create (client TEXT PRIMARY KEY, n INTEGER NOT NULL) WITHOUT ROWID");
+      const n = Number(sql.exec<{ n: number }>("SELECT n FROM carton_open_create WHERE client = ?", client).toArray()[0]?.n ?? 0);
+      if (n >= max) return Response.json({ ok: false });
+      sql.exec("INSERT OR REPLACE INTO carton_open_create (client, n) VALUES (?, ?)", client, n + 1);
+      return Response.json({ ok: true });
+    }
     const projectId = req.headers.get(PROJECT_HEADER);
     const authJson = req.headers.get(AUTH_HEADER);
     if (!projectId || !authJson) return new Response("the room is reached through the Worker", { status: 400 });
@@ -210,6 +222,15 @@ export class ProjectRoom {
       this.#sequencer(projectId);
       if (!this.#alarmArmed) await this.#armAlarm();
       return new Response(null, { status: 204 });
+    }
+    // open creation's claim: this project id is new (never claimed, no cut on the host) and is claimed now. `mark`
+    // records it without asking (an admin invite made the project).
+    if (url.pathname.endsWith("/claim") && req.method === "POST") {
+      const seq = this.#sequencer(projectId);
+      const sql = this.#ctx.storage.sql;
+      const used = sql.exec("SELECT v FROM carton_room WHERE k = 'claimed'").toArray().length > 0 || seq.tables.branchIds().length > 0;
+      if (!used) sql.exec("INSERT OR IGNORE INTO carton_room (k, v) VALUES ('claimed', ?)", String(Date.now()));
+      return Response.json({ taken: used });
     }
     if (url.pathname.endsWith("/alarm") && req.method === "GET") return Response.json({ alarm: await this.#ctx.storage.getAlarm() });
     if (url.pathname.endsWith("/stats") && req.method === "GET") {

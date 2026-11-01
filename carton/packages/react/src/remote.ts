@@ -31,12 +31,12 @@ const SMALL: readonly SmallTopic[] = ["sync", "cuts", "peers", "ghosts", "confli
 /** Async methods the client may call on the served view model. */
 const METHODS = [
   "compare", "credits", "shotDiff", "planFold", "switchCut", "newCut", "renameCut", "fold",
-  "resolve", "foldRest", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit",
+  "resolve", "foldRest", "restore", "nameVersion", "undo", "publish", "openPreview", "blockEdit", "conflictRef",
 ] as const;
 type Method = (typeof METHODS)[number];
 
 export type ServerMessage =
-  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[]; can: { renameCut: boolean } }
+  | { t: "init"; me: Actor; actors: Actor[]; topics: Record<SmallTopic, unknown>; history: Version[]; can: { renameCut: boolean; conflictRef?: boolean } }
   | { t: "topic"; topic: SmallTopic; value: unknown; actors?: Actor[] }
   | { t: "history"; length: number; rows: [number, Version][]; actors?: Actor[] }
   | { t: "ret"; id: number; ok: true; value: unknown }
@@ -124,7 +124,7 @@ export function serveUi(ui: CartonUi, send: (m: ServerMessage) => void): { recei
     sentRev = ui.history().revision();
     const actors: Actor[] = [];
     actorsIn([ui.me(), topics, sent], sentActors, actors, ui);
-    send({ t: "init", me: ui.me(), actors, topics, history: sent, can: { renameCut: typeof ui.renameCut === "function" } });
+    send({ t: "init", me: ui.me(), actors, topics, history: sent, can: { renameCut: typeof ui.renameCut === "function", conflictRef: typeof ui.conflictRef === "function" } });
     for (const t of SMALL)
       offs.push(
         ui.subscribe(t, () => {
@@ -296,6 +296,8 @@ export function remoteUi(send: (m: ClientMessage) => void): { ui: CartonUi; rece
         reindexFrom(0);
         if (m.can.renameCut) ui.renameCut = (id, n) => call("renameCut", id, n);
         else delete ui.renameCut;
+        if (m.can.conflictRef) ui.conflictRef = (id, side) => call("conflictRef", id, side);
+        else delete ui.conflictRef;
         for (const t of [...SMALL, "history" as const]) hub.notify(t);
         markReady();
         break;

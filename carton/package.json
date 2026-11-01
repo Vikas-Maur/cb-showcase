@@ -31,7 +31,9 @@
     "test": "npm run test --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "build": "node scripts/build.mjs",
-    "size": "node scripts/size.mjs"
+    "size": "node scripts/size.mjs",
+    "deploy:cloudflare": "node packages/server-cloudflare/build-site.mjs && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml",
+    "deploy:cloudflare:web": "node apps/web/build.mjs --out packages/server-cloudflare/dist/site && wrangler deploy -c packages/server-cloudflare/wrangler.production.toml"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
