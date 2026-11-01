@@ -741,11 +741,10 @@ export const cardboard14 = {
           return r;
         };
       }
-      // R3: "You" is told by this replica's identity once the project is shared (meOf). Core addresses a GUI save's
-      // late-conflict notice to its actor as recorded, the generic person, and fromCarton takes notices for its me:
-      // those are passed on here, as the kept ones above are.
+      // R3: "You" is told by this replica's identity once the project is shared (meOf, with the GUI saves' group, so
+      // Undo finds them). A GUI save's late-conflict or rejected notice is addressed to the generic person, as core
+      // recorded the save; fromCarton takes those itself with a resolved me (ui 879da20), on the notice's own cut.
       const offs = [];
-      if (keyOf(me) !== person) offs.push(lc.carton.on((e) => { if (e.type === "notice" && e.notice?.to === person && e.notice.cards?.length) handle.reportConflicts(e.notice.cards, e.notice.by); }));
       // The identity set or changed while the panel is open (a share, a join): it starts again with it (the page's
       // remoteUi takes the fresh init in place of what it showed).
       offs.push(lc.carton.on((e) => {
