@@ -1,0 +1,31 @@
+# cf-lab: the real Carton Worker (R2 blobs), deployed for the lab under its own name. Never
+# the live showcase Worker. Locked: no open creation, so every session comes from an invite only ADMIN_TOKEN can make
+# (both secrets are set with `wrangler secret put`, never here), and the daily write cap below.
+name = "carton-lab-r2"
+main = "../../packages/server-cloudflare/src/worker.ts"
+compatibility_date = "2026-10-23"
+workers_dev = true
+preview_urls = false
+
+[[durable_objects.bindings]]
+name = "PROJECT_ROOM"
+class_name = "ProjectRoom"
+
+[[durable_objects.bindings]]
+name = "BLOB_VAULT"
+class_name = "BlobVault"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["ProjectRoom", "BlobVault"]
+
+[[r2_buckets]]
+binding = "BLOBS"
+bucket_name = "carton-lab"
+
+[vars]
+ARCHIVE_EVERY_MS = "3600000"
+PRESENCE_TIMEOUT_MS = "120000"
+# the daily write cap (src/write-cap.ts): bytes stored and blob write calls per UTC day, across every project
+WRITE_CAP_BYTES_PER_DAY = "8589934592"
+WRITE_CAP_OPS_PER_DAY = "20000"
