@@ -345,7 +345,7 @@ export interface Carton {
 }
 
 // The meta table: ["project"] is written once; everything that grows is under its own key, so two processes adding
-// to it never overwrite each other: ["rid", rid], ["export", node, at, nonce], ["authors", node]; ["current"] is this
+// to it never overwrite each other: ["rid", rid], ["export", node, at, nonce], ["exported", n], ["authors", node]; ["current"] is this
 // machine's current cut (last writer wins).
 /** A shared cut's edit the server hasn't answered yet, as the store keeps it (table `pending`, key [cut, id]). */
 interface PendingRow {
@@ -601,8 +601,8 @@ class CartonImpl implements Carton {
   #kf = new Map<string, { periodic: number; bytes: number }>();
   /** Rows a backfill fetched and checked, by cut and seq, for the next settlement to store in place of placeholders. */
   #filled = new Map<string, Map<number, ConfirmedChange>>();
-  /** Export rows (meta ["export", node, at, nonce]) this handle has taken in: read at load, written by its own exports. */
-  #exportRows = new Set<string>();
+  /** The newest export index row (meta ["exported", n]) this handle has taken in; every export writes the next one. */
+  #exportsSeen = 0;
 
   constructor(opts: OpenOptions) {
     this.#opts = opts;
@@ -768,8 +768,11 @@ class CartonImpl implements Carton {
     const states = (await s.range<Doc>(T.states)).map((e): [string, Doc] => [e.key[0] as string, e.value]);
     const authors = (await s.range<Record<PathKey, Actor>>(T.meta, { prefix: ["authors"] })).map((e): [NodeId, Record<PathKey, Actor>] => [e.key[1] as string, e.value]);
     h.loadKnowledge({ lineage, states, authors });
-    this.#exportRows = new Set();
-    await this.#takeExports(h);
+    // the index first: an export landing between the two reads is taken again later, which adds nothing (same to, at)
+    this.#exportsSeen = ((await s.range(T.meta, { prefix: ["exported"], reverse: true, limit: 1 }))[0]?.key[1] as number | undefined) ?? 0;
+    const exp = new Map<NodeId, { to: string; at: number }[]>();
+    for (const e of await s.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) exp.set(e.key[1] as string, [...(exp.get(e.key[1] as string) ?? []), e.value]);
+    h.loadKnowledge({ exports: [...exp] });
     const cuts = (await s.range<CutRecord>(T.cuts)).map((e) => e.value);
     const done = new Set<string>();
     const byId = new Map(cuts.map((c) => [c.id, c]));
@@ -816,7 +819,9 @@ class CartonImpl implements Carton {
     this.#pinSnap = new Map(rows.map((e) => [e.key.join("|"), e.value]));
   }
   // Re-read the tail of a cut (another process may have appended), any new cuts, and the pins.
-  async #refresh(cut?: string): Promise<void> {
+  // `exports` (before every write): also the exports other processes made since (#newExports); head() and reads skip
+  // that read, as nothing they return depends on it.
+  async #refresh(cut?: string, exports = false): Promise<void> {
     const s = this.store;
     for (const e of await s.range<CutRecord>(T.cuts)) {
       const known = this.#h.cut(e.key[0] as string);
@@ -835,21 +840,16 @@ class CartonImpl implements Carton {
     // another process's rows: its replica id and what it learnt of people may be new too
     if (loaded) await this.#loadPeople();
     await this.#loadPins(this.#h);
+    if (exports) await this.#newExports();
   }
   /**
-   * The export rows this handle hasn't taken in yet, another process's too: each exported version is a lineage point
-   * (R4-01), so a `.cbproj` this handle writes after `cb` sent one carries that version (local-cli request 9). Read at
-   * load and before each export, not on every refresh: nothing else here depends on them.
+   * Exports other processes made since this handle last looked: each exported version is a lineage point (R4-01), so a
+   * `.cbproj` this handle writes after `cb` sent one carries that version, compaction keeps it and a periodic keyframe
+   * never replaces its keyframe (local-cli request 9). Only the index rows after the newest one seen: usually none.
    */
-  async #takeExports(h: History): Promise<void> {
-    const by = new Map<NodeId, { to: string; at: number }[]>();
-    for (const e of await this.store.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) {
-      const k = e.key.join("|");
-      if (this.#exportRows.has(k)) continue;
-      this.#exportRows.add(k);
-      by.set(e.key[1] as string, [...(by.get(e.key[1] as string) ?? []), e.value]);
-    }
-    if (by.size) h.loadKnowledge({ exports: [...by] });
+  async #newExports(): Promise<void> {
+    const rows = await this.store.range<{ node: NodeId; to: string; at: number }>(T.meta, { prefix: ["exported"], gt: ["exported", this.#exportsSeen] });
+    for (const { key, value: v } of rows) this.#h.loadKnowledge({ exports: [[v.node, [{ to: v.to, at: v.at }]]] }), (this.#exportsSeen = key[1] as number);
   }
   /** People as the store holds them (any process may add to them): the server's, this replica's, this store's rids. */
   async #loadPeople(): Promise<void> {
@@ -947,7 +947,7 @@ class CartonImpl implements Carton {
     if (n) this.#h.noteNoop(id, n[0], n[1]);
   }
   /** Run a History mutation under the handle's queue, persist what it confirmed, and retry after losing a race. */
-  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId; exports?: boolean } = {}): Promise<R> {
+  async #mutate<R>(cut: string | undefined, fn: () => R, opts: { extra?: () => { writes?: StoreWrite[]; conds?: StoreCondition[] }; conditions?: StoreCondition[]; idempotent?: boolean; id?: ChangeId } = {}): Promise<R> {
     const run = async (): Promise<R> => {
       if (this.#closed) throw new Error("Carton: closed");
       // Starvation-free appends (VERIFIED S8): a writer that lost the race twice takes the append turn, and while it
@@ -958,8 +958,7 @@ class CartonImpl implements Carton {
       let turn: { owner: string; until: number } | null = null;
       try {
         for (let lost = 0; ; ) {
-          await this.#refresh(cut);
-          if (opts.exports) await this.#takeExports(this.#h);
+          await this.#refresh(cut, true);
           await this.#noopOf(opts.id);
           this.#confirmed.length = 0;
           this.#noops.length = 0;
@@ -1568,20 +1567,24 @@ class CartonImpl implements Carton {
   async exportShallow(opts: { cut?: string; to?: string } = {}): Promise<ShallowExport> {
     const cut = opts.cut ?? this.#h.current;
     let pkg!: ShallowExport;
+    let n = 0;
     await this.#mutate(cut, () => (pkg = this.#h.exportShallow(cut, { ...(opts.to ? { to: opts.to } : {}) })), {
-      // the export node is part of the lineage graph from now on (R4-01): persist it, one key per export
+      // the export node is part of the lineage graph from now on (R4-01): persist it, one key per export, and the
+      // next index row, which another process taking first makes this write retry (it takes that export in first)
       extra: () => {
-        const made = this.#h.knowledge().exports.find(([n]) => n === pkg.head)?.[1].at(-1);
+        const made = this.#h.knowledge().exports.find(([x]) => x === pkg.head)?.[1].at(-1);
         // an exported version keeps a keyframe (§5.4): a later fold of the copy comes back to it
         const { branchId, seq } = parseNode(pkg.head);
         const doc = seq > 0 && branchId === cut ? this.#h.stateOf(pkg.head) : null;
-        const key = ["export", pkg.head, made?.at ?? 0, randomHex(4)];
-        if (made) this.#exportRows.add(key.join("|"));
-        return { writes: [...(made ? [{ table: T.meta, key, value: made }] : []), ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        n = this.#exportsSeen + 1;
+        const writes: StoreWrite[] = doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [];
+        if (!made) return { writes };
+        writes.push({ table: T.meta, key: ["export", pkg.head, made.at, randomHex(4)], value: made }, { table: T.meta, key: ["exported", n], value: { node: pkg.head, ...made } });
+        return { writes, conds: [{ table: T.meta, key: ["exported", n], expect: "absent" }] };
       },
       idempotent: true,
-      exports: true,
     });
+    this.#exportsSeen = Math.max(this.#exportsSeen, n);
     return pkg;
   }
   async importShallow(pkg: ShallowExport): Promise<ShallowImport> {
