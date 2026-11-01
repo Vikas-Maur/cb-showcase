@@ -60,8 +60,6 @@ export type WriteOutcome =
 interface OutcomeLog {
   get(b: string, id: string): WriteOutcome | undefined;
   record(b: string, id: string, o: WriteOutcome): void;
-  /** Forget an outcome recorded too early (an empty write whose store write then failed: review R6-3). */
-  drop(b: string, id: string): void;
   on(l: (b: string, id: string, o: WriteOutcome) => void): () => void;
 }
 const LOGS = new WeakMap<ReplicaQueue, OutcomeLog>();
@@ -79,7 +77,6 @@ function outcomeLog(queue: ReplicaQueue): OutcomeLog {
       if (map.size > 4096) map.delete(map.keys().next().value!);
       for (const l of listeners) l(b, id, o);
     },
-    drop: (b, id) => void map.delete(`${b}\u0000${id}`),
     on(l) {
       listeners.add(l);
       return () => listeners.delete(l);
@@ -160,11 +157,15 @@ export class SharedCut {
   }
 
   // ---------------------------------------------------------------- writing
-  /** Queue a change on this cut. Returns at once: `pending` (or `confirmed` when the cut is still local). */
-  commit(input: CommitInput): ReturnType<ReplicaQueue["commit"]> {
+  /**
+   * Queue a change on this cut. Returns at once: `pending` (or `confirmed` when the cut is still local). `deferEmpty`:
+   * an empty change's confirmation isn't recorded here; its owner records it with `settleEmpty` once its store kept the
+   * spent id, so no wait is told before then (Carton: review R6-9).
+   */
+  commit(input: CommitInput, o: { deferEmpty?: boolean } = {}): ReturnType<ReplicaQueue["commit"]> {
     const r = this.queue.commit(this.branchId, input);
     // an empty change is confirmed at once with no event: its wait must say so too (round 2 finding 11)
-    if (r.empty) this.log.record(this.branchId, r.id, { status: "confirmed", id: r.id, seq: this.queue.headSeq(this.branchId) });
+    if (r.empty && !o.deferEmpty) this.log.record(this.branchId, r.id, { status: "confirmed", id: r.id, seq: this.queue.headSeq(this.branchId) });
     this.refreshState();
     return r;
   }
@@ -193,9 +194,12 @@ export class SharedCut {
   kept(id: string): void {
     if (this.queue.unhold(this.branchId, id)) this.client?.pump();
   }
-  /** An empty write's immediate confirmation, taken back: its store write failed, so its id is unspent (R6-3). */
-  forgetOutcome(id: string): void {
-    this.log.drop(this.branchId, id);
+  /**
+   * The outcome of an empty change committed with `deferEmpty`, once its owner's store kept it: its spent id, or what
+   * won that id there (another process's change). Its waits answer from then on (R6-9).
+   */
+  settleEmpty(id: string, o: WriteOutcome): void {
+    this.log.record(this.branchId, id, o);
   }
   /**
    * The outcome of change `id` within `ms` (a `cb` write waits up to 5 s, §6.2): confirmed@seq, conflicts (late cards,

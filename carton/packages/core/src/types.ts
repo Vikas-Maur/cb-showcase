@@ -540,7 +540,9 @@ export type CartonEvent =
   /**
    * A pending change a rebase emptied (its effect was already at the head, or a card took its place): withdrawn (H1).
    * Emitted once the rows that came with it are settled into History (after their `change` events), so state read in
-   * the handler (credits for a card's other side, head, log) is current (web-demo REQ-U1).
+   * the handler (credits for a card's other side, head, log) is current (web-demo REQ-U1). A settle that couldn't store
+   * it tells it with the one that does; after a keyframe catch-up, once the skipped rows are fetched. A settle's `notice`
+   * events (a late conflict's cards) wait the same way (review R6-8).
    */
   | { type: "absorbed"; branchId: string; id: ChangeId; cards: ConflictCard[] }
   | { type: "presence"; branchId: string; actor: Actor; state: unknown }
