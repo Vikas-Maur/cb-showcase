@@ -15,7 +15,7 @@ import { DatabaseSync } from "node:sqlite";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { canonical } from "@carton/core";
 import type { Store, StoreCondition, StoreInfo, StoreKey, StoreRange, StoreWrite } from "@carton/core/plugins";
-import { Db, type DbOptions } from "./db.ts";
+import { Db, OPEN_RETRY_MS, openRetrying, type DbOptions } from "./db.ts";
 import { encodeKey, decodeKey, prefixEnd } from "./key.ts";
 import { encodeValue, decodeValue } from "./value.ts";
 import { MovedError } from "./move.ts";
@@ -43,18 +43,22 @@ export class SqliteStore implements Store {
 
   /** Open (creating if needed) the store at a carton.db path. */
   static async open(file: string, opts: SqliteStoreOptions = {}): Promise<SqliteStore> {
-    if (!opts.readOnly) fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
-    const db = await Db.open(file, opts, (raw) => identify(raw, file));
-    try {
-      await init(db, !!opts.readOnly);
-      // History that moved to another placement (§6.4) is read there; this file only says where.
-      const moved = opts.readOnly ? undefined : await db.read(() => readMeta<{ path: string }>(db.raw, MOVED_TO));
-      if (moved) throw new MovedError(file, moved.path);
-      return new SqliteStore(db);
-    } catch (e) {
-      db.close();
-      throw e;
-    }
+    // The whole open is one attempt (Windows retries a held file: openRetrying): every step is safe to repeat. The
+    // folder is made inside it, so a refused option leaves nothing behind.
+    return openRetrying(file, async () => {
+      if (!opts.readOnly) fs.mkdirSync(path.dirname(path.resolve(file)), { recursive: true });
+      const db = await Db.open(file, opts, (raw) => identify(raw, file));
+      try {
+        await init(db, !!opts.readOnly);
+        // History that moved to another placement (§6.4) is read there; this file only says where.
+        const moved = opts.readOnly ? undefined : await db.read(() => readMeta<{ path: string }>(db.raw, MOVED_TO));
+        if (moved) throw new MovedError(file, moved.path);
+        return new SqliteStore(db);
+      } catch (e) {
+        db.close();
+        throw e;
+      }
+    }, undefined, opts.openRetryMs ?? OPEN_RETRY_MS);
   }
 
   get<T = unknown>(table: string, key: StoreKey): Promise<T | undefined> {
@@ -72,21 +76,22 @@ export class SqliteStore implements Store {
     // A limit counts whole rows: 2.7 reads 2, and anything below 1 reads none (as in every store).
     const limit = r.limit === undefined ? undefined : Math.floor(r.limit);
     if (limit !== undefined && !(limit >= 1)) return Promise.resolve([]);
-    // The SQL text says which bounds are present, so each shape of query is prepared once and cached.
+    const b = rangeBounds(r);
+    if (!b) return Promise.resolve([]);
+    // SQLite seeks on one lower and one upper bound per column and checks any other bound on k row by row, so a
+    // prefix plus `gt` walked the whole cut up to `gt` (verified: open time grew with history). The tightest bound on
+    // each side is chosen here, and the SQL carries at most one of each: every range is a seek and a walk over just
+    // the rows it returns. Each shape of query is prepared once and cached.
     const args: (string | number)[] = [];
     let where = "";
-    const bound = (op: string, v: string) => {
-      where += (where ? " AND " : " WHERE ") + `k ${op} ?`;
-      args.push(v);
-    };
-    if (r.prefix) {
-      bound(">=", encodeKey(r.prefix));
-      bound("<", prefixEnd(r.prefix));
+    if (b.lo) {
+      where += ` WHERE k ${b.lo.open ? ">" : ">="} ?`;
+      args.push(b.lo.k);
     }
-    if (r.gt) bound(">", encodeKey(r.gt));
-    if (r.gte) bound(">=", encodeKey(r.gte));
-    if (r.lt) bound("<", encodeKey(r.lt));
-    if (r.lte) bound("<=", encodeKey(r.lte));
+    if (b.hi) {
+      where += `${where ? " AND" : " WHERE"} k ${b.hi.open ? "<" : "<="} ?`;
+      args.push(b.hi.k);
+    }
     let sql = `SELECT k, v FROM "${t}"${where} ORDER BY k${r.reverse ? " DESC" : ""}`;
     if (limit !== undefined) {
       sql += " LIMIT ?";
@@ -298,6 +303,39 @@ function sameFile(a: string, b: string): boolean {
   } catch {
     return false;
   }
+}
+
+interface Bound {
+  k: string;
+  open: boolean;
+}
+
+/**
+ * The range's tightest lower and upper bound as encoded keys, or null when it is empty. Encoded keys hold no
+ * surrogates (key.ts), so JS string order is SQLite's UTF-8 byte order and the bounds can be compared here.
+ */
+export function rangeBounds(r: StoreRange): { lo: Bound | null; hi: Bound | null } | null {
+  let lo: Bound | null = null;
+  let hi: Bound | null = null;
+  const raise = (k: string, open: boolean) => {
+    if (!lo || k > lo.k) lo = { k, open };
+    else if (k === lo.k) lo = { k, open: lo.open || open };
+  };
+  const lower = (k: string, open: boolean) => {
+    if (!hi || k < hi.k) hi = { k, open };
+    else if (k === hi.k) hi = { k, open: hi.open || open };
+  };
+  if (r.prefix) {
+    raise(encodeKey(r.prefix), false);
+    lower(prefixEnd(r.prefix), true);
+  }
+  if (r.gt) raise(encodeKey(r.gt), true);
+  if (r.gte) raise(encodeKey(r.gte), false);
+  if (r.lt) lower(encodeKey(r.lt), true);
+  if (r.lte) lower(encodeKey(r.lte), false);
+  const l = lo as Bound | null, h = hi as Bound | null;
+  if (l && h && (l.k > h.k || (l.k === h.k && (l.open || h.open)))) return null;
+  return { lo: l, hi: h };
 }
 
 /** Open (creating if needed) the store at a carton.db path. */

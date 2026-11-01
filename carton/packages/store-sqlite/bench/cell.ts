@@ -2,7 +2,12 @@
 //   open <file>                     open carton.db and read what opening a project needs: meta, cuts, the cut's head,
 //                                   its newest keyframe at or below head, and the changes after that keyframe
 //   commit <file> <n> <durability>  n local-sequencer commits: read head, then the conditional append of
-//                                   [changes, ids]; per-commit latency and write-lock hold (then the rows are removed)
+//                                   [changes, ids]; per-commit latency, and lock* = BEGIN IMMEDIATE to COMMIT's
+//                                   return (the write lock is held for all of it, except SQLite's automatic checkpoint,
+//                                   on with "full", which runs inside COMMIT after the lock is released). Then the rows
+//                                   are removed.
+//                                   Between commits the loop yields (untimed), as an engine thread serves other work,
+//                                   so the WAL checkpoint gets its own turn; its count and longest run are reported.
 //   readlog <file>                  the whole log of the cut in one range, and the newest 1000 changes
 import { openSqliteStore } from "../src/index.ts";
 import { change } from "./fixture.ts";
@@ -46,12 +51,13 @@ if (mode === "open") {
       lat.push(t);
       lock.push(s.db.lastLockMs);
     }
+    await new Promise((r) => setImmediate(r));
   }
   // Put the file back as it was, untimed, so every run starts from the same size.
   const added = (await s.range("changes", { prefix: [cut], gt: [cut, start] })) as { key: (string | number)[]; value: { id: string } }[];
   await s.write(added.flatMap((r) => [{ table: "changes", key: r.key, value: undefined }, { table: "ids", key: [r.value.id + ".b"], value: undefined }]));
   await s.close();
-  console.log(JSON.stringify({ mode, durability: rest[1], startHead: start, n, p50: r3(pct(lat, 0.5)), p90: r3(pct(lat, 0.9)), p99: r3(pct(lat, 0.99)), max: r3(Math.max(...lat)), lockP50: r3(pct(lock, 0.5)), lockP99: r3(pct(lock, 0.99)), lockMax: r3(Math.max(...lock)), mean: r3(lat.reduce((a, b) => a + b, 0) / lat.length) }));
+  console.log(JSON.stringify({ mode, durability: rest[1], startHead: start, n, p50: r3(pct(lat, 0.5)), p90: r3(pct(lat, 0.9)), p99: r3(pct(lat, 0.99)), max: r3(Math.max(...lat)), lockP50: r3(pct(lock, 0.5)), lockP99: r3(pct(lock, 0.99)), lockMax: r3(Math.max(...lock)), mean: r3(lat.reduce((a, b) => a + b, 0) / lat.length), checkpoints: s.db.checkpoints, checkpointMaxMs: r3(s.db.checkpointMaxMs) }));
 } else if (mode === "readlog") {
   const s = await openSqliteStore(file);
   const t0 = performance.now();
