@@ -11,6 +11,13 @@ const WORKSPACE = path.join(__dirname, "..", "..", "..", "..", "carton");
 const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");
 // Never /tmp (a small shared tmpfs on the build box).
 const TMP = process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync", "test");
+// Fail fast instead of hanging (CI kills a whole step after 20 minutes, with nothing said about which test hung): a
+// test fails after TEST_MS, a file's setup (staging Cardboard's bundles, starting the libraries' workers) after
+// SETUP_MS, its teardown after STOP_MS. Generous next to the slowest runs (a test ~15 s on Linux, a few times that on
+// a Windows runner); CARTON_TEST_MS / CARTON_SETUP_MS raise them for a slow machine.
+const TEST_MS = Number(process.env.CARTON_TEST_MS) || 150_000;
+const SETUP_MS = Number(process.env.CARTON_SETUP_MS) || 600_000;
+const STOP_MS = 60_000;
 const ADMIN = "carton-sync-test-admin";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -135,7 +142,18 @@ async function computer(name, b, { same } = {}) {
   };
   return {
     name, home, root, env, cb, mcp, call, events, startWorker,
-    stopWorker: async () => { if (!w) return; w.send({ method: "exit" }); await new Promise((ok) => (w.p.exitCode !== null ? ok() : w.p.once("exit", ok))); w = null; },
+    // the worker asked to exit; killed if it hasn't after 5 s (a handle left open must not hang the run)
+    stopWorker: async () => {
+      if (!w) return;
+      const p = w.p;
+      w.send({ method: "exit" });
+      await new Promise((ok) => {
+        if (p.exitCode !== null || p.signalCode !== null) return ok();
+        const k = setTimeout(() => { try { p.kill("SIGKILL"); } catch {} }, 5000);
+        p.once("exit", () => (clearTimeout(k), ok()));
+      });
+      w = null;
+    },
     kill: () => { try { w?.p.kill("SIGKILL"); } catch {} },
     worker: () => w,
   };
@@ -226,4 +244,4 @@ const ownViewFiles = () => ({
   "todo.status": JSON.stringify({ status: "done", next: "trim the intro" }),
 });
 
-module.exports = { skip, noBuild, TMP, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf, cartonViewFiles, ownViewFiles };
+module.exports = { skip, noBuild, TMP, TEST_MS, SETUP_MS, STOP_MS, ADMIN, sleep, until, proc, build, startHost, computer, projectOf, textOf, videoOf, guiSave, seed, facade, asComputer, probeDuration, killHelpers, fileOf, zipOf, cartonViewFiles, ownViewFiles };

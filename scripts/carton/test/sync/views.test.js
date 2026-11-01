@@ -9,6 +9,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs"), os = require("os"), path = require("path");
 const S = require("./support.js");
+// An ES module by path (on Windows an absolute path must be a file:// URL for import())
+const load = (file) => import(require("url").pathToFileURL(file).href);
 
 const CARDBOARD = path.join(__dirname, "..", "..", "..", "..", "carton", "packages", "cardboard");
 const skip = !fs.existsSync(path.join(CARDBOARD, "..", "..", "node_modules", "@carton", "core")) && "run `npm ci` in carton/ for Carton's materializer";
@@ -25,10 +27,10 @@ const bridge = (on) => {
 
 /** A bundle in which Carton's materializer printed an agent's view and applied a save of it (so it wrote its status). */
 async function printed() {
-  const { Materializer, PROJECT_FILE, viewPath, statusPath } = await import(path.join(CARDBOARD, "src", "node", "materializer.ts"));
-  const { jsonTimelineCodec } = await import(path.join(CARDBOARD, "src", "codec.ts"));
-  const { findRev } = await import(path.join(CARDBOARD, "src", "header.ts"));
-  const { FakeClock, FakeEngine, plainHost } = await import(path.join(CARDBOARD, "test", "helpers", "fake-engine.ts"));
+  const { Materializer, PROJECT_FILE, viewPath, statusPath } = await load(path.join(CARDBOARD, "src", "node", "materializer.ts"));
+  const { jsonTimelineCodec } = await load(path.join(CARDBOARD, "src", "codec.ts"));
+  const { findRev } = await load(path.join(CARDBOARD, "src", "header.ts"));
+  const { FakeClock, FakeEngine, plainHost } = await load(path.join(CARDBOARD, "test", "helpers", "fake-engine.ts"));
   fs.mkdirSync(ROOT, { recursive: true });
   const bundle = fs.mkdtempSync(path.join(ROOT, "b-"));
   const items = [{ id: "a", trackId: "V1", type: "video", name: "a", startTime: 0, endTime: 5, trimStart: 0, trimEnd: 5 }];
@@ -129,7 +131,7 @@ test("the end-to-end tests' Carton view files read as Carton's", { skip }, async
 // isn't loaded): it must tell every file as cardboard-adapter's cartonViewFile does, which its .cbproj export and
 // reader use.
 test("the store bridge's rule is cardboard-adapter's cartonViewFile, file for file", { skip }, async () => {
-  const { cartonViewFile } = await import(path.join(CARDBOARD, "src", "node", "cbproj", "walk.ts"));
+  const { cartonViewFile } = await load(path.join(CARDBOARD, "src", "node", "cbproj", "walk.ts"));
   const p = await printed();
   const view = fs.readFileSync(p.view, "utf8"), status = JSON.parse(fs.readFileSync(p.status, "utf8"));
   const files = {

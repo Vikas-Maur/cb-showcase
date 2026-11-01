@@ -11,7 +11,7 @@ const assert = require("node:assert/strict");
 const fs = require("fs"), path = require("path");
 const S = require("./support.js");
 
-const t = { skip: S.noBuild };
+const t = { skip: S.noBuild, timeout: S.TEST_MS };
 let b, host, alice, id;
 const SHALLOW = ".carton-export/shallow.json", FULL = ".carton-export/history.db";
 
@@ -26,13 +26,13 @@ test.before(async () => {
   const r = await alice.call("carton.liveShare", { projectId: id, host: host.origin, adminToken: S.ADMIN, name: "Alice" });
   assert.equal(r.status, "shared", JSON.stringify(r));
   await S.until(async () => (await alice.call("carton.liveStatus", { projectId: id })).status === "up-to-date", 20_000, "alice up to date");
-});
+}, { timeout: S.SETUP_MS });
 test.after(async () => {
   if (alice?.worker()) fs.writeFileSync(path.join(S.TMP, alice.name + "-worker.log"), alice.worker().stderr());
   alice?.kill();
   S.killHelpers();
   await host?.stop().catch(() => {});
-});
+}, { timeout: S.STOP_MS });
 
 test("Save As offline with an edit waiting to sync: the file has the edit and no Carton history, and the log says why; online again, the history is back", t, async () => {
   const port = host.port;

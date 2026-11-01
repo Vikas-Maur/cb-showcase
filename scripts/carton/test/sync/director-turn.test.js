@@ -20,7 +20,7 @@ const fs = require("fs"), path = require("path");
 const { spawnSync } = require("child_process");
 const S = require("./support.js");
 
-const t = { skip: S.skip || S.noBuild };
+const t = { skip: S.skip || S.noBuild, timeout: S.TEST_MS };
 const CHAT = "chatT", TURN = "turnT1", ACTOR = `director/${CHAT}/${TURN}`, VIEW = "director_chatT_turnT1";
 const PROMPT = "Tighten the title. Then add more.", LABEL = "Tighten the title";
 // What the person does in the GUI during the turn; none of it may reach the agent's timeline.tsx before the turn ends.
@@ -34,12 +34,12 @@ test.before(async () => {
   if (t.skip) return;
   b = await S.build();
   pc = await S.computer("turn-alice", b);
-});
+}, { timeout: S.SETUP_MS });
 test.after(async () => {
   if (sampler) clearInterval(sampler);
   await pc?.stopWorker();
   S.killHelpers();
-});
+}, { timeout: S.STOP_MS });
 
 /** Main's Carton bridge as dist/main.js runs it (the same text patch-carton.js injects), Carton on. */
 function mainBridge() {
