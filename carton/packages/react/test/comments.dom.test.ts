@@ -93,6 +93,9 @@ test(name("a viewer reads only; refusals, waiting comments and an old server are
   assert.equal($(m.container, ".carton-comments-compose"), null);
   assert.equal($(m.container, ".carton-comments-readonly")?.textContent, "You can read comments here but not write them.");
   assert.equal($$(m.container, ".carton-thread-actions").length, 0);
+  // a viewer's own comments (written before the role changed) are read only too
+  assert.ok(ui.threads().some((t) => t.root.mine || t.replies.some((r) => r.mine)), "the mock has some of mine");
+  assert.equal($$(m.container, ".carton-comment-mine").length, 0, "no edit or delete");
   await act(() => ui.setNotice("viewers can read comments but not write them"));
   await flush();
   assert.equal($(m.container, "[role=alert]")?.textContent, "viewers can read comments but not write them");

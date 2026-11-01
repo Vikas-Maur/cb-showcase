@@ -130,9 +130,11 @@ interface RowProps {
   locale: string | undefined;
   ui: CommentsUi;
   onSeek: ((t: number) => void) | undefined;
+  /** This session may write (edit and delete its own too); a viewer's own old comments are read only. */
+  can: boolean;
 }
 
-function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek }: RowProps) {
+function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek, can }: RowProps) {
   const [editing, setEditing] = useState(false);
   const who = c.mine ? w.you : c.author.name;
   const name = c.author.agent ? w.forAgent(who, c.author.agent) : who;
@@ -159,7 +161,7 @@ function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek }: RowProps)
     if (status) head.push(h("span", { key: "s", className: "carton-badge", "data-tone": statusKey === "moved" ? "info" : "warning", "data-carton-tip": hint }, status));
   }
   if (c.pending) head.push(h("span", { key: "p", className: "carton-badge", "data-tone": "muted", "data-carton-tip": w.pendingHint }, w.pending));
-  if (c.mine && !c.deleted && !editing)
+  if (can && c.mine && !c.deleted && !editing)
     head.push(
       h(
         "span",
@@ -172,7 +174,7 @@ function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek }: RowProps)
     "div",
     { className: "carton-comment", "data-pending": c.pending ? "" : undefined, "data-deleted": c.deleted ? "" : undefined },
     h("div", { className: "carton-comment-head" }, ...head),
-    editing
+    editing && can
       ? h(TextBox, {
           initial: c.body,
           placeholder: w.placeholder,
@@ -202,19 +204,19 @@ interface ThreadProps {
   ui: CommentsUi;
   onSeek: ((t: number) => void) | undefined;
   onSelect: ((id: string | null) => void) | undefined;
+  can: boolean;
 }
 
-const Thread = memo(function Thread({ t, selected, w, ui, onSeek, onSelect }: ThreadProps) {
+const Thread = memo(function Thread({ t, selected, w, ui, onSeek, onSelect, can }: ThreadProps) {
   const now = useNow();
   const locale = useLocale();
   const [replying, setReplying] = useState(false);
-  const can = ui.canComment();
   const at = t.placement?.range && t.placement.status !== "general" ? w.at(t.placement.range) : w.wholeVersion;
   const ref = useRef<HTMLElement>(null);
   useEffect(() => {
     if (selected) ref.current?.scrollIntoView?.({ block: "nearest" });
   }, [selected]);
-  const row = (c: CommentView, isRoot: boolean) => h(CommentRow, { key: c.id, c, thread: t, isRoot, w, now, locale, ui, onSeek });
+  const row = (c: CommentView, isRoot: boolean) => h(CommentRow, { key: c.id, c, thread: t, isRoot, w, now, locale, ui, onSeek, can });
   return h(
     "article",
     {
@@ -325,7 +327,7 @@ export function CommentsPanel(p: CommentsPanelProps) {
       ? h(
           "div",
           { role: "list", className: "carton-comments-list" },
-          shown.map((t) => h(Thread, { key: t.id, t, selected: p.selected === t.id, w, ui, onSeek: p.onSeek, onSelect: p.onSelect })),
+          shown.map((t) => h(Thread, { key: t.id, t, selected: p.selected === t.id, w, ui, onSeek: p.onSeek, onSelect: p.onSelect, can })),
         )
       : h("p", { className: "carton-empty" }, filter === "resolved" ? w.emptyResolved : w.empty),
   );
