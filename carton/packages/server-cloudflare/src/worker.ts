@@ -100,7 +100,9 @@ export default {
   async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     let res: Response | null;
     const work = handleHttp(req, depsFor(env));
-    ctx?.waitUntil(work.catch(() => {}));
+    // Only writes are held. A read holds no lock, and one held at a stream's live edge (host-http streams.ts, up to
+    // 25 s of storage checks) must stop when its client goes, as the runtime stops a request's work then.
+    if (req.method !== "GET" && req.method !== "HEAD") ctx?.waitUntil(work.catch(() => {}));
     try {
       res = await work;
     } catch (e) {
