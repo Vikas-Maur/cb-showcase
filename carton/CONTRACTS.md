@@ -197,6 +197,14 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   restore and the import say what they were ("Folded 'Client review' into 'Main cut': 3 changes", "Restored an earlier
   version"). Descriptions never print an id or a hash: an id field (`…Id`, `…Ids`, `…Hash`) or a hash-like value is
   told by its field's name, and a collection's `phrases` tell a field in a sentence ("Linked %s for sharing").
+  - **A split reads as a split** (laptop re-check P3 #2). One clip removed and, in its place, two or more of the same
+    footage (same kind, references and name) on its track, back to back over its range, is one line: "Split
+    'clip.mp4' at 4.0 s" (several points: "at 3.0 s and 7.0 s"). A part changed after it in the same version is told
+    against what the split made of it: "Split 'clip.mp4' at 4.0 s, moved its right part 4.0 s → 20.0 s" (one part
+    where the split left it, the other keeping the cut's source point: moved, or trimmed at its far end). A field the
+    split itself drops or rescales (a transition, a fade, keyframes) is no change of its own. `splits(ops, base, schema)`
+    names them (removed clip, parts left to right), so a list by record (the Fold dialog) shows a split as one row,
+    left out whole.
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
     only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3
