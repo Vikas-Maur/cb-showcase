@@ -1165,6 +1165,25 @@ async function review(file, s) {
 }
 
 // ---------------------------------------------------------------- what the bridges call
+// A project.json Cardboard can't read, said once per process. cb reads every project of the library before each command,
+// so it came with every cb command while any project was damaged (laptop, merge/prod-2 P3): cb says it only when its
+// command line names that project (its id, its name, its folder or its path). The library worker says it once, in the
+// app's log.
+function warnDamaged(key, { bundlePath, id, name }, msg) {
+  if (!inWorker && !namedOnCommandLine({ bundlePath, id, name })) return;
+  warnOnce(key, msg);
+}
+function namedOnCommandLine({ bundlePath, id, name }) {
+  const folder = path.basename(bundlePath ?? "");
+  const lower = (x) => (typeof x === "string" ? x.trim().toLowerCase() : null);
+  const names = new Set([lower(name), lower(folder), lower(folder.replace(/\.cardboard$/i, ""))].filter(Boolean));
+  return process.argv.slice(2).some((a) => {
+    const t = a.trim();
+    if (!t) return false;
+    if (t === id || names.has(t.toLowerCase())) return true;
+    try { return !!bundlePath && landingKey(t) === landingKey(bundlePath); } catch { return false; }
+  });
+}
 // The stores and mirrors of this process (one per library), for applying a foreign timeline.tsx Carton displaced.
 const hosts = [];
 const hostOf = (bundlePath) => hosts.find((h) => path.resolve(bundlePath).toLowerCase().startsWith(path.resolve(h.root).toLowerCase()));
@@ -1214,15 +1233,15 @@ export const cardboard14 = {
     for (const db of dbs) {
       const owner = await historyOwner(db);
       if (owner?.projectId === p.id && owner.mine) continue;
-      return warnOnce("recover-owner:" + bundlePath, `project ${p.id}'s project.json can't be read by Cardboard, and its history there is ${owner ? (owner.mine ? "another project's" : "another computer's") : "unreadable"}: not used`), null;
+      return warnDamaged("recover-owner:" + bundlePath, { bundlePath, id: p.id, name: p.name }, `project ${p.id}'s project.json can't be read by Cardboard, and its history there is ${owner ? (owner.mine ? "another project's" : "another computer's") : "unreadable"}: not used`), null;
     }
     const lc = await open(bundlePath, { projectId: p.id });
     if (!lc || lc.carton.projectId !== p.id) return null;
     const name = (typeof p.name === "string" && p.name.trim()) ? p.name : (await lastName(lc)) ?? (path.basename(bundlePath, ".cardboard").trim() || "Untitled Project");
     const out = { ...env, format: "cardboard-project", project: { ...p, name, ...(typeof p.updatedAt === "string" ? {} : { updatedAt: new Date(typeof p.stateUpdatedAt === "number" ? p.stateUpdatedAt : Date.now()).toISOString() }) }, media: Array.isArray(env.media) ? env.media : [] };
     const left = projectProblems(out);
-    if (left.length) return warnOnce("recover:" + bundlePath, `project ${p.id}'s project.json can't be read, even through its history (${left.join("; ")})`), null;
-    warnOnce("recovered:" + bundlePath, `project ${p.id}'s project.json can't be read by Cardboard (${projectProblems(env).join("; ")}); it is listed through its history: restore a version in History to bring it back`);
+    if (left.length) return warnDamaged("recover:" + bundlePath, { bundlePath, id: p.id, name }, `project ${p.id}'s project.json can't be read, even through its history (${left.join("; ")})`), null;
+    warnDamaged("recovered:" + bundlePath, { bundlePath, id: p.id, name }, `project ${p.id}'s project.json can't be read by Cardboard (${projectProblems(env).join("; ")}); it is listed through its history: restore a version in History to bring it back`);
     const json = JSON.stringify(out);
     recovered.set(bundlePath, { text, out: json });
     return json;

@@ -335,6 +335,24 @@ test("3f. a recovered project's clip plays without a restart: Restore of a good 
   }
 });
 
+test("3g. the \"can't be read\" warning is for the project a cb command names, not every command on the library", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover-quiet", b);
+  S.seed(pc, b);
+  must(pc.cb(["project", "create", "Other"]), "create Other");
+  try {
+    await breakLikeTheBug(pc, b);
+    const warns = (x) => (x.out + x.err).split("\n").filter((l) => /can't be read/.test(l));
+    assert.deepEqual(warns(must(pc.cb(["history", "Other"]), "history Other")), [], "a command on another project");
+    assert.deepEqual(warns(must(pc.cb(["project", "list"]), "project list")), [], "the library's list");
+    const own = warns(must(pc.cb(["history", "Demo"]), "history Demo"));
+    assert.equal(own.length, 1, "a command on the broken project says so, once: " + JSON.stringify(own));
+    assert.doesNotMatch(own[0], /Demo/, "in words with no project text");
+  } finally {
+    S.killHelpers();
+  }
+});
+
 test("4. Restore of main@1, then of the newest version: each media entry comes back as Cardboard had it (duration, size, thumbnails, where it plays from); the library's Updated time moves", t, async () => {
   const b = await S.build();
   const { pc, id } = await seeded(b, "restore-details");

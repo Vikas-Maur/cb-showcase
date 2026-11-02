@@ -514,6 +514,8 @@ What changes with it on:
   say the project file wasn't changed.
   A project the earlier build broke that way is listed again under its name, found by `cb history` and `cb cut list`,
   and opens with its History: Restore of a version from before brings back its name, timeline and media library.
+  `cb` mentions a project it can't read only in a command that names that project, not in every command on the
+  library.
 - **Restore keeps each clip's details.** What Cardboard knows about a media file and history doesn't version (its size,
   duration and dimensions, where it plays from, its thumbnails and waveform, when it was added) is kept in the
   bundle's `.carton\media.json` whenever a write removes the clip from `project.json` (a restore to a version

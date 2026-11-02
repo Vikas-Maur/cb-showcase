@@ -211,7 +211,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    project's history would put its versions into this one; another computer's would be set aside on open): the file
    with the name the project last had in its history (else its folder's), parsed again by Cardboard's reader. The library lists it, `cb` finds it, the editor opens it with its
    History, and Restore of a good version writes it whole again. Nothing is written to find it; a project Cardboard
-   reads costs nothing more (the hook runs only after its parse failed).
+   reads costs nothing more (the hook runs only after its parse failed). `cb` reads every project of the library
+   before each command, so it says a project can't be read only when its command line names that project (id, name,
+   folder or path); the library worker says it once, in the app's log.
 9. **Media details across a restore or fold** (laptop, merge/prod-2 P2-1, P2-2). A media entry's details (what
    Cardboard's import and derive give it and Carton doesn't version: `src`, `format`, `size`, the probe's `duration`,
    `width`, `height`, `frameRate`, `hasAudio`, `codec`, the thumbnail, waveform and album-art ids and statuses,
