@@ -130,6 +130,16 @@ function withCode(e: unknown): unknown {
 export const CHECKPOINT_EVERY_WRITES = 1000;
 /** And every this many ms on an idle timer, for the frames other processes add. */
 export const CHECKPOINT_EVERY_MS = 30_000;
+/**
+ * At open, a WAL file larger than this is checkpointed at once (SQLite's own trigger, 1,000 frames of 4 KiB). A smaller
+ * one is checkpointed OPEN_CHECKPOINT_DELAY_MS after open (perf/apply-latency): a checkpoint copies the frames into the
+ * database file and syncs it, and a short `cb` call, which exits before then, left that to the processes that stay
+ * open (the app's library worker, a sync helper, an MCP server), which still run it. It is also the WAL's
+ * journal_size_limit, so a WAL a burst grew past it shrinks back to it when SQLite next starts it over, and the file's
+ * size keeps bounding the frames a short process leaves unchecked.
+ */
+export const OPEN_CHECKPOINT_BYTES = 1000 * 4096;
+export const OPEN_CHECKPOINT_DELAY_MS = 2000;
 
 export class BusyError extends Error {
   readonly code = "CARTON_DB_BUSY";
@@ -162,6 +172,7 @@ export class Db {
   #checkpointQueued = false;
   #deferCheckpoints = false;
   #walTimer: ReturnType<typeof setInterval> | null = null;
+  #openTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * Open a connection and set it up. Waits asynchronously if another process is creating the same file. `verify`
@@ -184,7 +195,7 @@ export class Db {
       const full = opts.durability === "full";
       db.raw.exec(`PRAGMA synchronous=${full ? "FULL" : "NORMAL"};
         PRAGMA temp_store=MEMORY;
-        PRAGMA journal_size_limit=${16 * 1024 * 1024};`);
+        PRAGMA journal_size_limit=${OPEN_CHECKPOINT_BYTES};`);
       // Checkpoints out of the write lock for the default only (see #watchWal). With "full" every commit already
       // fsyncs under the lock, which dominates its worst case, so moving the checkpoint out bought nothing there and
       // cost every commit (verify-ci S3c: +23% p50, +33% mean per commit, worst hold unchanged): SQLite's automatic
@@ -261,13 +272,21 @@ export class Db {
   // VERIFIED.md S3; S3c: p99 -14%, worst -80% with this change). It is off (wal_autocheckpoint=0), and a PASSIVE
   // checkpoint (what the automatic one is too) runs on its own turn of the event loop: after CHECKPOINT_EVERY_WRITES
   // of this connection's writes, every CHECKPOINT_EVERY_MS on an idle timer (for frames that short `cb` processes
-  // add), and once at open (for a WAL a crash left behind); a caller that never yields gets it inline before its next
-  // write past twice the budget (writeNow). A PASSIVE checkpoint with nothing new to copy does no I/O, so the timer is
-  // cheap. While any store has the file open the WAL is bounded by those, except that a reader keeping an old
-  // snapshot open stops the WAL from being reused until it lets go (true of SQLite's own checkpoint too). (The WAL
-  // file's size is no guide: after a checkpoint SQLite reuses it from the start without shrinking it.)
+  // add), and once after open (for a WAL a crash or short processes left behind: at once when its file is past
+  // OPEN_CHECKPOINT_BYTES, else OPEN_CHECKPOINT_DELAY_MS later, which a short process doesn't live to); a caller that
+  // never yields gets it inline before its next write past twice the budget (writeNow). A PASSIVE checkpoint with
+  // nothing new to copy does no I/O, so the timer is cheap. While any store has the file open the WAL is bounded by
+  // those, except that a reader keeping an old snapshot open stops the WAL from being reused until it lets go (true of
+  // SQLite's own checkpoint too). (After a checkpoint SQLite reuses the WAL from the start, shrinking the file only to
+  // journal_size_limit: so its size bounds the frames in it, and is no guide below that.)
   #watchWal(): void {
-    this.#queueCheckpoint();
+    let walBytes = 0;
+    try { walBytes = fs.statSync(`${this.path}-wal`).size; } catch { /* no WAL yet: nothing left behind */ }
+    if (walBytes > OPEN_CHECKPOINT_BYTES) this.#queueCheckpoint();
+    else {
+      this.#openTimer = setTimeout(() => { this.#openTimer = null; this.#queueCheckpoint(); }, OPEN_CHECKPOINT_DELAY_MS);
+      this.#openTimer.unref?.();
+    }
     this.#walTimer = setInterval(() => this.#queueCheckpoint(), CHECKPOINT_EVERY_MS);
     this.#walTimer.unref?.();
   }
@@ -332,6 +351,7 @@ export class Db {
     if (this.#closed) return;
     this.#closed = true;
     if (this.#walTimer) clearInterval(this.#walTimer);
+    if (this.#openTimer) clearTimeout(this.#openTimer);
     this.#stmts.clear();
     this.raw.close();
   }
