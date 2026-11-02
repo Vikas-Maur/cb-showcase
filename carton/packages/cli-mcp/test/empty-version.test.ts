@@ -76,3 +76,26 @@ test("cb restore of a later empty version says what it is; cb undo never leaves 
     await local.close();
   }
 });
+
+test("cb undo --turn never leaves the project empty either (local's undoTurn builds its own undo)", async () => {
+  const { defineSchema } = await import("@carton/core");
+  const { openLocal } = await import("@carton/local");
+  const { bundle, schema, doc0 } = await import("./support/real.ts");
+  const none = (v: unknown) => !Array.isArray(v) || !v.length;
+  const empty = defineSchema({ collections: { tracks: { seq: true }, timelineItems: { parent: { field: "trackId", collection: "tracks" } } }, timeline: schema.timeline, empty: (d) => !d.aspectRatio && none(d.tracks) && none(d.timelineItems) });
+  const adapter = { name: "test", schema: empty, schemaVersion: 1, fromHost: (h: any) => h, toHost: (d: any) => d };
+  const { dir, projectId } = bundle("cli-empty-turn");
+  const local = await openLocal({ projectDir: dir, projectId, adapter, actor: human, init: { doc: { name: "Demo", tracks: [], timelineItems: [] } as any } });
+  const agent: Actor = { kind: "agent", id: "director/c1/t1", name: "Director", chat: "c1", turn: "t1", group: "local:me@box" };
+  try {
+    // the agent's turn brings the project back (as a Restore would): undoing that turn would empty it again
+    await local.write({ kind: "commit", doc: { ...doc0(), aspectRatio: "16:9" } as any }, { actor: agent });
+    const head = await local.carton.head();
+    const u = await cb(local, ["undo", "--turn", "t1"]);
+    assert.equal(u.code, 1, u.out + u.err);
+    assert.equal(u.err, "Error: Can't undo that: the project would be left empty");
+    assert.equal((await local.carton.head()).ref.seq, head.ref.seq, "no version made");
+  } finally {
+    await local.close();
+  }
+});
