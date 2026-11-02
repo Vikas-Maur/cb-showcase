@@ -743,6 +743,9 @@ function takeOverIfAbandoned(dir) {
 async function withInstallLock(bundle, fn) {
   const dir = path.join(bundle, ".carton", "install.lock"), owner = path.join(dir, "owner"), t0 = Date.now();
   const me = process.pid + "." + Math.random().toString(16).slice(2);
+  // A bundle whose history is kept in app data (a synced, network or FAT folder: L15) may have no .carton/ yet: without
+  // it no project could be made there with Carton on (cb project create failed: ENOENT on the lock).
+  fs.mkdirSync(path.dirname(dir), { recursive: true });
   for (;;) {
     try { fs.mkdirSync(dir); fs.writeFileSync(owner, JSON.stringify({ pid: process.pid, me })); break; } catch (e) {
       if (e.code !== "EEXIST") throw e;
