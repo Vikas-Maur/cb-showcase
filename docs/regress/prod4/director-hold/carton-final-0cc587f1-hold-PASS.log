@@ -1,0 +1,25 @@
+picker shows: Opus 5.5
+0.3s timeline.tsx: Main cut@1~e2f4e4db b:d5e9e960 p:d3990fc7 by carton | W2 font 100 | muted false
+4.3s prompt sent
+20.8s person muted the Mine clip (M) during the turn
+27.5s turn over (agent idle 5 s)
+27.5s watching timeline.tsx for 100 s more
+58.2s timeline.tsx: Main cut@1~9befcce5 b:d5e9e960 p:dbc35170 by carton | W2 font 321 | muted false
+65.0s timeline.tsx: Main cut@5~71077fd9 b:d5e9e960 p:833dfbeb by carton | W2 font 321 | muted true
+chat tail:    | clip.mp4 0.0s–3.0s   | Opus 5.5
+history:
+VERSION  SAVED         BY           WHAT
+main@5   just now      Claude Code  edit
+main@4   just now      person       edit
+main@3   1 minute ago  Terminal     edit
+main@2   1 minute ago  Terminal     edit
+main@1   1 minute ago  person       import
+main@0   1 minute ago  unknown      root (empty)
+credits W2: 664b65b4-7881-49cd-a0e0-f8003fb83ada: last changed by Claude Code
+activity:
+WHO          CHANGES  LAST          VERSIONS
+Claude Code  1        just now      @5
+person       2        just now      @1…@4
+Terminal     2        1 minute ago  @2…@3
+views: 
+timeline.tsx now: W2 font 321 | muted true

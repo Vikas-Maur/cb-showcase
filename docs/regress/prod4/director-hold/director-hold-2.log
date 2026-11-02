@@ -1,0 +1,26 @@
+picker shows: Opus 5.5
+0.3s timeline.tsx: Main cut@3~8a7de7bf b:0336fbcf p:67af7edd by carton | W2 font 100 | muted false
+4.5s prompt sent
+20.6s person muted the Mine clip (M) during the turn
+20.9s timeline.tsx: Main cut@4~413d508f b:0336fbcf p:9f1d09fd by carton | W2 font 100 | muted true
+53.7s timeline.tsx: Main cut@4~9544d7ed b:0336fbcf p:c8fa4142 by carton | W2 font 321 | muted true
+58.0s timeline.tsx: Main cut@5~9544d7ed b:0336fbcf p:8490352c by carton | W2 font 321 | muted true
+63.3s turn over (agent idle 5 s)
+63.3s watching timeline.tsx for 100 s more
+chat tail:    | clip.mp4 0.0s–3.0s   | Opus 5.5
+history:
+VERSION  SAVED          BY           WHAT
+main@5   just now       Claude Code  First run `cb source print` for…
+main@4   1 minute ago   person       edit
+main@3   2 minutes ago  Terminal     edit
+main@2   2 minutes ago  Terminal     edit
+main@1   2 minutes ago  person       import
+main@0   2 minutes ago  unknown      root (empty)
+credits W2: 2a3e8f29-3e0b-43de-b7a6-b238217c908e: last changed by Claude Code
+activity:
+WHO          CHANGES  LAST           VERSIONS
+Claude Code  1        just now       @5
+person       2        1 minute ago   @1…@4
+Terminal     2        2 minutes ago  @2…@3
+views: 
+timeline.tsx now: W2 font 321 | muted true
