@@ -182,3 +182,59 @@ for (const [name, env] of [["no agent environment (the Start menu)", {}], ["CLAU
     }
   });
 }
+
+// Review P1 of the fold-author fix: "Fold in the rest" (any panel write the worker materializes) made project.json from
+// head, then handed it to the store; a GUI save that went into the store's chain in between moved head, and the older
+// timeline went over it (the scoped merge keeps the newer timestamp, so nothing saw the file as stale): the file lost
+// the save Carton kept. Head is checked again in the chain now, and the project made again from the new head.
+test("Fold in the rest never puts an older timeline over a save made while it ran", t, async () => {
+  const pc = await S.computer("panel-author-race", b);
+  try {
+    S.seed(pc, b);
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0]?.id;
+    const panel = await openPanel(pc, id, "page-1");
+    const cuts = () => panel.state().topics.cuts ?? [];
+    const main = cuts().find((c) => c.current);
+    const alt = await panel.call("newCut", "Alt cut", panel.state().history.at(-1).ref);
+    await S.until(() => cuts().find((c) => c.current)?.id === alt.id, 20_000, "the panel on the new cut");
+    // two records changed on the new cut; a partial fold leaves the clip's out
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, textContent: "Alt words" } : it.type === "video" ? { ...it, opacity: 0.5 } : undefined));
+    await S.until(() => count(pc, alt.id) >= 2, 20_000, "the edit on the new cut");
+    const plan = await panel.call("planFold", alt.id, main.id);
+    const left = plan.changes.find((c) => /opacity|0\.5/i.test(c.summary)) ?? plan.changes[1];
+    assert.ok(plan.changes.length >= 2 && left, "two records to fold: " + JSON.stringify(plan.changes));
+    assert.deepEqual(await panel.call("fold", alt.id, main.id, { choices: {}, leaveOut: [left.id] }), { ok: true });
+    await panel.call("switchCut", main.id);
+    const rest = await S.until(() => panel.state().history.find((v) => v.foldRest), 20_000, "Fold in the rest offered");
+    const fontSize = S.textOf(await S.projectOf(pc, id)).fontSize;
+
+    // "Fold in the rest", held once it has made project.json's document from head; meanwhile the editor saves (on the
+    // version it shows, before the rest)
+    await pc.call("test.holdMaterialize");
+    const resting = panel.call("foldRest", rest.id);
+    await S.until(() => pc.call("test.materializeHeld"), 20_000, "the rest's materialization held");
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: fontSize + 26 } : undefined));
+    const saved = await S.projectOf(pc, id);
+    assert.equal(S.textOf(saved).fontSize, fontSize + 26, "the save is in project.json");
+    await pc.call("test.releaseMaterialize");
+    assert.deepEqual(await resting, { ok: true });
+
+    // project.json has both: the rest, and the save made while it ran (never the older timeline over it)
+    const after = await S.projectOf(pc, id);
+    assert.equal(S.videoOf(after).opacity, 0.5, "the rest is in project.json");
+    assert.equal(S.textOf(after).fontSize, fontSize + 26, "the save made meanwhile is still in project.json");
+    assert.ok(after.stateUpdatedAt >= saved.stateUpdatedAt, "project.json is never older than the save");
+    // which is Carton's head: the rest, then the save made on the version before it, merged with it
+    const head = await pc.call("test.headProject", require("path").join(pc.root, "Demo.cardboard"));
+    assert.deepEqual([S.textOf(head).fontSize, S.videoOf(head).opacity], [fontSize + 26, 0.5], "Carton's head");
+    const [newest, before] = history(pc, main.id);
+    assert.deepEqual([before.kind, isPerson(before), isPerson(newest)], ["merge", true, true], "the rest, then the save: " + [newest, before].map(who).join("; "));
+    // an edit from the editor made now is made on what project.json shows, and keeps both
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, textContent: "Last words" } : undefined));
+    const last = await S.projectOf(pc, id);
+    assert.deepEqual([S.textOf(last).textContent, S.textOf(last).fontSize, S.videoOf(last).opacity], ["Last words", fontSize + 26, 0.5]);
+  } finally {
+    await pc.stopWorker();
+  }
+});

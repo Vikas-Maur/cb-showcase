@@ -452,7 +452,19 @@ async function afterSave(lc, bundlePath, after) {
 }
 
 async function commit({ bundlePath, base, doc, actor, meta }) {
-  if (meta?.materialize) return { doc, status: "materialized" };
+  if (meta?.materialize) {
+    // materializeIn's: head checked again here, in the store's chain, where GUI saves are serialized. One that went
+    // first moved head, and this document (made from the head before it) would put the older timeline over that save:
+    // "stale", so nothing is written and the store keeps the document it had; materializeIn makes it again.
+    if (meta.head && bundlePath) {
+      const lc = await open(bundlePath, { projectId: doc.id });
+      if (lc && !sameRef((await lc.carton.head()).ref, meta.head)) {
+        staleMaterializations.add(meta.token);
+        return { doc: base, status: "stale" };
+      }
+    }
+    return { doc, status: "materialized" };
+  }
   const lc = await open(bundlePath, { projectId: doc.id, doc: base ?? doc });
   if (!lc) return { doc, status: "off" };
   const c = lc.carton;
@@ -586,6 +598,10 @@ const forCardboard = (project) => structuredClone(project);
 // `given`: the state a write just made when this handle can't read it (a write still pending on a shared cut, which the
 // holder answered with its head: WriteOp `head`); the file never shows it yet.
 async function headProject(bundlePath, current, given) {
+  return (await headAt(bundlePath, current, given))?.project ?? null;
+}
+// headProject, with the version it was made from (`ref`).
+async function headAt(bundlePath, current, given) {
   const lc = await open(bundlePath, { projectId: current?.id });
   if (!lc) return null;
   const head = given?.doc ? given : await lc.carton.head();
@@ -593,8 +609,10 @@ async function headProject(bundlePath, current, given) {
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
   const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
   await setRev(lc, out.stateUpdatedAt, head.ref);
-  return out;
+  return { project: out, ref: head.ref };
 }
+// The same version: a cut, a seq and the pending changes on it.
+const sameRef = (a, b) => !!a && !!b && a.branchId === b.branchId && a.seq === b.seq && (a.pending ?? []).join() === (b.pending ?? []).join();
 
 // ---------------------------------------------------------------- a GUI save's project.json, for the Materializer
 // The worker's Materializer prints timeline.tsx from head and project.json's unversioned fields. After a GUI save the
@@ -670,8 +688,9 @@ const markSeen = async (file, hash, held) => {
 // install (its commit is in history; the next install brings the file to head).
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const LOCK_BUSY = Symbol("busy");
-// Test seams (scripts/carton/test): `between` runs between the displace and the link, as displaceThenInstall's does.
-const testHooks = { between: null, installed: null, lockWaitMs: null };
+// Test seams (scripts/carton/test): `between` runs between the displace and the link, as displaceThenInstall's does;
+// `materialize` runs in materializeIn once it has made the project from head, before the store has it.
+const testHooks = { between: null, installed: null, lockWaitMs: null, materialize: null };
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 function takeOverIfAbandoned(dir) {
   const owner = path.join(dir, "owner");
@@ -1095,8 +1114,9 @@ export const cardboard14 = {
       const cutShown = (m) => (m?.t === "topic" && m.topic === "cuts" ? m.value : m?.t === "init" ? m.topics?.cuts : null)?.find?.((x) => x.current)?.id ?? null;
       // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them. "Fold in the
       // rest" too: it writes the cut the panel shows (only that cut's partial folds offer it), so without this the editor
-      // kept the version before it (laptop #2). Each is the person's: fromCarton records its writes as `me`, never as
-      // this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
+      // kept the version before it (laptop #2). materializeIn never puts one over an editor save made while it ran (it
+      // is made again from the version that save made). Each is the person's: fromCarton records its writes as `me`,
+      // never as this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
       for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "publish"]) {
         const f = ui[m];
         if (typeof f === "function") ui[m] = async (...a) => {
@@ -1396,17 +1416,35 @@ export function headScope(current, next) {
 // Head into project.json through Cardboard's store: the project it wrote, or null when the file already showed head.
 // The project as the store has it: `latest` hands back the store's own document when project.json is as the worker
 // last saw it (no second parse of a large project), and reads the file when anything else wrote it.
+// Head is read here, outside the store's chain of mutations. A GUI save that goes into the chain first moves head, and
+// the document made from the head before it would put the older timeline over that save, unseen: the scoped merge keeps
+// the newer timestamp, so the install doesn't take it for stale (review P1 of the fold-author fix: "Fold in the rest",
+// held after it read head while the editor saved). So the version it was made from goes with it (`carton.head`), commit
+// checks it in the chain, and a document whose head moved is not written ("stale"): it is made again from the new head.
+// Usually once: a save that moved head wrote head itself, and then there is nothing left to write.
+const MATERIALIZE_TRIES = 5;
+const staleMaterializations = new Set();
+let materializations = 0;
 async function materializeIn(library, projectId) {
   const projects = library.projects;
-  const current = typeof projects.latest === "function" ? await projects.latest(projectId) : await projects.read(projectId);
   const bundlePath = projects.bundlePathFor(projectId);
-  let next = await headProject(bundlePath, current);
-  if (!next) return null;
-  // R6: extensions fill in what only they know first (a teammate's new clip: where it plays from, its size, duration).
-  for (const e of extensions) {
-    if (typeof e.materializeDoc !== "function") continue;
-    try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
+  for (let tries = 1; ; tries++) {
+    const current = typeof projects.latest === "function" ? await projects.latest(projectId) : await projects.read(projectId);
+    const made = await headAt(bundlePath, current);
+    if (!made) return null;
+    let next = made.project;
+    // R6: extensions fill in what only they know first (a teammate's new clip: where it plays from, its size, duration).
+    for (const e of extensions) {
+      if (typeof e.materializeDoc !== "function") continue;
+      try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
+    }
+    if (testHooks.materialize) await testHooks.materialize(projectId);
+    const scope = headScope(current, next), token = ++materializations;
+    await projects.updateScoped(next, { ...scope, carton: { ...scope.carton, head: made.ref, token } });
+    if (!staleMaterializations.delete(token)) return next;
+    if (tries >= MATERIALIZE_TRIES) {
+      warnOnce("materialize:" + bundlePath, "project.json didn't catch up with history: it kept changing while it was written (the next change brings it up to date)");
+      return null;
+    }
   }
-  await projects.updateScoped(next, headScope(current, next));
-  return next;
 }
