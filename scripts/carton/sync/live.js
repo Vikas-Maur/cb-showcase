@@ -172,13 +172,14 @@ export class Live {
 }
 
 // Why sync is failing, in the words the Share panel shows (null when it isn't).
+// In editors' words: the "sharing server", never "host" (UI audit P2-8).
 const PROBLEM = {
-  "update-server": "The host is older than this app: it needs an update before this project can sync.",
-  unauthorized: "The host refused this computer's access: ask for a new invite.",
-  unreachable: "The host can't be reached. Edits wait here and go out when it can.",
-  "unknown-cut": "The host doesn't have this project's cut.",
-  "too-large": "A change is too big for this host.",
-  server: "The host had a problem.",
+  "update-server": "The sharing server is older than this app. It needs an update before this project can sync.",
+  unauthorized: "The sharing server no longer accepts this computer. Ask for a new invite.",
+  unreachable: "The sharing server can't be reached. Your edits wait here and go out when it's back.",
+  "unknown-cut": "The sharing server doesn't have this cut.",
+  "too-large": "A change is too big for this sharing server.",
+  server: "The sharing server had a problem.",
 };
 export const problemOf = (err) => (err ? { code: err.code, words: PROBLEM[err.code] ?? PROBLEM.server, detail: err.message ?? null } : null);
 

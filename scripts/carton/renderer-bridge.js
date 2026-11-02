@@ -154,6 +154,11 @@ module.exports = String.raw`window.__carton = (() => {
       } else store.adopt({ ...t, duration: duration(t.timelineItems), cartonPreview: { ref } });
     },
     get stale() { return stale; },
+    // Join's "Open": the joined project in a tab of its own, as the Dashboard opens one (main's tabs:open).
+    openProject(projectId) {
+      if (!on || !store || !projectId) return Promise.reject(new Error("Sharing isn't available for this project right now"));
+      return Promise.resolve(store.invoke("tabs:open", { projectId, focus: true, source: "home" }));
+    },
     // The project the editor shows (the stage's Carton layer follows it).
     get projectId() { return store?.state().projectId ?? null; },
     // Comments: a new comment is pinned at the playhead; a timecode clicked moves the playhead there.

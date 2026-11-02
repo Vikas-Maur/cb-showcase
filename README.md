@@ -656,15 +656,20 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the "Share" icon in the title bar): enter the host's address and your name. A host with open creation
-  (the free web demo's) needs nothing else: you become the project's owner. Any other host asks for the invite you were
-  given (the host's owner gets one with its admin token); the form shows that field only when the host asks for it.
+- **Share** (the "Share" icon in the title bar): enter the sharing server's address and your name (asked once, then
+  shown as "Teammates see you as …" with Change). A host with open creation (the free web demo's) needs nothing else:
+  you become the project's owner. Any other host asks for the invite you were given (the host's owner gets one with its
+  admin token); the form shows that "Invite code" field only when the host asks for it. An address that can't be
+  reached is said so at the address field, and every failure is a sentence that says what to do (can't reach the
+  server, invalid or expired invite, server busy, its daily limit reached), never a raw "fetch failed".
   The project goes up with its whole history and authors. Its clips go up too: each clip's
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
   proxy) go up as they are, up to 200 MB and 50 MB.
-- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch") that expires. **Join** in another
-  library from the link: the project arrives with its history, and its clips play from the host.
+- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch", picked from a menu) that expires; not
+  offered while offline. **Join** (the Share panel of a project that isn't shared, "Join a shared project") in another
+  library from the link: the project arrives with its history, and its clips play from the host. "Open" opens it in a
+  tab of its own.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with

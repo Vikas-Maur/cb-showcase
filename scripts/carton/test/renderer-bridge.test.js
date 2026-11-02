@@ -220,3 +220,15 @@ test("the title bar's icons: the page hears carton:command and reports the panel
   off.c.reportPanel("history");
   assert.deepEqual(offSent, []);
 });
+
+test("Join's Open (UI audit P2-9): the joined project opens in its own tab through main's tabs:open; refused with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const sent = [];
+  t.store.invoke = async (channel, payload) => { sent.push([channel, payload]); return { ok: true }; };
+  await t.c.openProject("joined-1");
+  assert.deepEqual(sent, [["tabs:open", { projectId: "joined-1", focus: true, source: "home" }]]);
+  const off = load({ enabled: false });
+  await off.c.ready;
+  await assert.rejects(off.c.openProject("joined-1"));
+});
