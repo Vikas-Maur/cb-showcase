@@ -487,7 +487,7 @@ What changes with it on:
   sharing footage reads "Linked 'clip.mp4' for sharing" (it read `Set 'clip.mp4' content to "8291f1d9…"`), and a clip
   dragged onto a new track names that track. **Fold in some of it** is one version, "Folded 'Client review' into 'Main
   cut': 2 of 3 changes", by whoever folded, holding exactly the changes taken (it showed the fold, then a change nobody
-  made: the undoing of what was left out). **You can fold in the rest later** is true now: the next Fold in lists what
+  made: the undoing of what was left out); `cb history` lists it as a `merge` with what it left out. **You can fold in the rest later** is true now: the next Fold in lists what
   was left out ("Left out earlier") beside anything new, instead of "Nothing to fold in"; what one fold left out comes
   in, or stays out, together. The filter "Agent turns" (it was "Director turns", and empty for agents with no turn
   recorded) lists every agent's turns: a Director turn, and a run of your Claude Code's or Codex's versions up to the
