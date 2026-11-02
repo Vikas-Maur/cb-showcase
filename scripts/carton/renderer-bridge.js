@@ -164,6 +164,9 @@ module.exports = String.raw`window.__carton = (() => {
     // Comments: a new comment is pinned at the playhead; a timecode clicked moves the playhead there.
     playhead() { return on && store ? store.state().currentTime ?? 0 : 0; },
     seek(t) { if (on && store && Number.isFinite(t)) store.state().setPlaybackPosition?.(t); },
+    // The editor's clip selection, as its store holds it (a new array when it changes): Esc clears it in the editor
+    // without saying so, and the preview banner's Esc leaves that Esc to it (regress 2026-11-02 #4).
+    selection: () => (on && store ? store.state().selectedTimelineItemIds ?? null : null),
     // "Show on timeline" (a conflict card's See it): the clip selected and the playhead at its start. False when the
     // editor doesn't show it (another project, or the clip isn't in this version).
     reveal(itemId) {

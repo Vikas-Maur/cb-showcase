@@ -170,19 +170,19 @@ test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors'
 });
 
 // The Dashboard patch (sync/patches/ui.js), on its own text: its two anchors, and its tile.
-function dashboard(ready) {
+function dashboard(ready, on = false) {
   const part = require(path.join(ROOT, "scripts", "carton", "sync", "patches", "ui.js"));
   const edits = [], pre = [];
   const file = (k) => ({ replace: (from, to, n = 1) => k === "index" && edits.push([from, to, n]), prepend: (t) => k === "index" && pre.push(t) });
   part.app({ editor: file("editor"), index: file("index") });
-  const win = { __carton: ready === undefined ? undefined : { on: false, ready } };
-  const api = new Function("r", "i", "Au", "window", "document", pre.join("\n") + "\nreturn { Tile: __cbCartonJoinTile, useOn: __cbCartonUseOn };")(React, require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), { createPortal: (x) => x }, win, {});
+  const win = { __carton: ready === undefined ? undefined : { on, ready } };
+  const api = new Function("r", "i", "Au", "window", "document", pre.join("\n") + "\nreturn { Tile: __cbCartonJoinTile, Button: __cbCartonJoinButton, useOn: __cbCartonUseOn };")(React, require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), { createPortal: (x) => x }, win, {});
   return { edits, ...api };
 }
 
 test("P2-9: the Dashboard gets a Join tile beside New project, only once Carton says it is on", opt, async () => {
   const d = dashboard(Promise.resolve(true));
-  assert.equal(d.edits.length, 2);
+  assert.equal(d.edits.length, 3);
   assert.ok(d.edits.every(([, , n]) => n === 1), "each anchor once");
   assert.match(d.edits[0][1], /\[null,\.\.\.\(__cbJ\?\[__cbCartonJoinCell\]:\[\]\),\.\.\.e\]/);
   assert.match(d.edits[0][1], /\[e,y,__cbJ\]\)$/, "the grid asks again when Carton's answer comes");
@@ -212,4 +212,75 @@ test("P2-9: the Dashboard gets a Join tile beside New project, only once Carton 
   assert.equal(seenOff.at(-1), false);
   await React.act(async () => root2.unmount());
   await w2.happyDOM.close();
+});
+
+// Regress 2026-11-02 #3: a new user's first screen (an empty library: "Make your first video") has no grid, so no tile.
+// Join is a button there, beside "Start a blank project", in that row's own secondary look (the class Cardboard gives
+// "Browse recipes", passed in at the patch site); only with Carton on.
+test("regress #3: an empty library offers Join beside Start a blank project, only with Carton on", opt, async () => {
+  const d = dashboard(Promise.resolve(true), true);
+  const row = d.edits.find(([from]) => from.includes('"data-analytics":"projects-empty-browse-recipes"'));
+  assert.ok(row, "the empty library's button row is patched: " + d.edits.map(([f]) => f.slice(0, 60)).join(" | "));
+  assert.equal(row[2], 1, "its anchor once");
+  assert.match(row[1], /children:\[i\.jsx\(__cbCartonJoinButton,\{className:v\(q4,"bg-white\/\[0\.06\] text-white\/85 hover:bg-white\/\[0\.10\] hover:text-white"\)\}\),a&&i\.jsxs\("button"/, "first in the row, in Browse recipes' look");
+  // the anchor is the empty state's, in Cardboard 1.4.0 as shipped (when its bundles are here)
+  const pristine = process.env.CARDBOARD_PRISTINE && path.join(process.env.CARDBOARD_PRISTINE, "app-asar", "dist", "renderer", "assets");
+  if (pristine && fs.existsSync(pristine)) {
+    const hits = fs.readdirSync(pristine).filter((f) => /^index-.*\.js$/.test(f)).map((f) => fs.readFileSync(path.join(pristine, f), "utf8").split(row[0]).length - 1);
+    assert.deepEqual(hits.filter(Boolean), [1], "one match, in the Dashboard's chunk");
+  }
+  const html = render(React.createElement(d.Button, { className: "cb-secondary" }));
+  assert.match(html, /^<button type="button" data-carton-join="" class="cb-secondary"><svg[^>]*>.*<\/svg>Join a shared project<\/button>$/, html);
+  // Carton off: nothing
+  assert.equal(render(React.createElement(dashboard(Promise.resolve(false)).Button, { className: "x" })), "");
+  assert.equal(render(React.createElement(dashboard(undefined).Button, { className: "x" })), "");
+});
+
+// Regress 2026-11-02 #4 (UI audit P2-1: Esc closes the innermost layer only, "… → preview → panel"): with focus in the
+// side panel during a preview, Esc closed the whole panel and left the preview open. It returns from the preview first,
+// as the banner's button does; the next Esc closes the panel. (Esc with focus on the page: @carton/react's
+// PreviewBanner, test/regress.dom.test.ts.)
+test("regress #4: in the side panel, Esc returns from a preview first; the next Esc closes the panel", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+    const ui = createMockUi({ versions: 20 });
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const el = w.document.createElement("div");
+    w.document.body.appendChild(el);
+    root = client.createRoot(el);
+    const closed = [];
+    const bridge = { call: async () => ({}), onEvent: () => () => {} };
+    const { CartonProvider, Sidebar } = T;
+    await React.act(async () => { root.render(React.createElement(CartonProvider, { ui }, React.createElement(Sidebar, { panel: "history", setPanel: (p) => closed.push(p), projectId: "p1", bridge }))); });
+    const list = el.querySelector(".carton-history-list");
+    assert.ok(list, "the History panel is open");
+    const esc = () => React.act(async () => { list.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    await React.act(async () => { ui.openPreview("main@3", "the version from 12:41"); });
+    // a layer that took the key in the capture phase (Radix) keeps it: nothing here (review of fix/ui-regress #1)
+    const capture = (e) => e.preventDefault();
+    w.document.addEventListener("keydown", capture, true);
+    await esc();
+    w.document.removeEventListener("keydown", capture, true);
+    assert.ok(ui.preview(), "a key a layer took leaves the preview");
+    assert.deepEqual(closed, [], "and the panel");
+    await esc();
+    assert.equal(ui.preview(), null, "the first Esc returns from the preview");
+    assert.deepEqual(closed, [], "and leaves the panel open");
+    await esc();
+    assert.deepEqual(closed, [null], "the next Esc closes the panel");
+  } finally {
+    // unmounted whatever happened: the panel's timers would hold the test process open
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+    await w.happyDOM.close();
+  }
 });

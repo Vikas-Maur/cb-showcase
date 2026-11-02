@@ -462,8 +462,10 @@ What changes with it on:
   of the open panel shows as pressed. Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
   keymap). The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
   History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
-  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" (Undo and Redo look
-  unavailable meanwhile); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
+  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" or Esc (Undo and Redo
+  look unavailable meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question,
+  stays the editor's, and with focus in the History panel the first Esc returns from the version and the next closes
+  the panel); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
   Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
   switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
   each with its count; a day folds to its named versions with a click or Enter, and with more than 150 versions every
@@ -471,6 +473,8 @@ What changes with it on:
   300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer.
   Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
+  Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
+  with its text up to about eight lines, then scrolls, and has no resize grip.
 - **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
   your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
   once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
@@ -709,7 +713,8 @@ with Carton off none of it runs at all.
   offered while offline. **Join** (the Share panel of a project that isn't shared, "Join a shared project") in another
   library from the link: the project arrives with its history, and its clips play from the host. "Open" opens it in a
   tab of its own. Joining starts from the Dashboard too: a "Join a shared project" tile beside "New project" (Carton on
-  only) opens the same form in a dialog.
+  only) opens the same form in a dialog. An empty library (a new user's first screen, "Make your first video") has a
+  "Join a shared project" button beside "Start a blank project" instead.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
@@ -744,6 +749,8 @@ with Carton off none of it runs at all.
   save clashes with an edit you made meanwhile, your value is kept, the rest of its edit goes in, and you both get a
   conflict card. The agent's is in `cb conflicts` (and its view's `.status`). Yours is in History, open now or opened
   later, naming the agent: "Keep yours" changes nothing; "Keep Director's" makes the agent's value a version of yours.
+  An agent Carton knows only by its environment (Claude Code run from a terminal with no Carton hook, Codex, Gemini)
+  is still named in History and on the card ("Claude Code"), never "You".
   Choosing on either side closes the card on both: your choice removes the agent's, and the agent's `cb resolve`
   removes yours (a pick you make before it goes still holds). Whatever the agent leaves unresolved when its turn ends
   stays in History for you.

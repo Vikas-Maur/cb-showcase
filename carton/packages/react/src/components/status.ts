@@ -136,19 +136,54 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
   );
 }
 
-/** Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click. */
-export function PreviewBanner({ className }: { className?: string }) {
+/**
+ * Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click, or Esc (regress
+ * 2026-11-02 #4, UI audit P2-1: in a preview focus is on the page itself, so Esc reached nothing). Esc returns only when
+ * it was nobody else's: focus on the page (<body>) or in the banner, and decided once the key has reached every handler
+ * (not by which listened first: a chat approval that appears during the preview registers after this one). It stays
+ * when a handler took it (`preventDefault`: a menu, a dialog, the chat's approval card) or when it changed what the
+ * host's own Esc changes (`escapeState`; Cardboard's clip selection, which its Esc clears without saying so): that Esc
+ * was theirs, and the next one returns. Listened for only while a preview is open.
+ */
+export function PreviewBanner({ className, escapeState }: { className?: string; escapeState?: () => unknown }) {
   const preview = usePreview();
   const ui = useCartonUi();
   const words = useWords();
+  const banner = useRef<HTMLDivElement>(null);
+  const state = useRef(escapeState);
+  state.current = escapeState;
+  const open = !!preview;
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const onKey = (e: KeyboardEvent) => {
+      // a preview closed a moment ago (this listener goes after the render): the key isn't ours
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || !ui.preview()) return;
+      const t = e.target as Node | null, doc = t?.ownerDocument ?? document;
+      if (t && t !== doc.body && t !== doc.documentElement && t !== doc && !banner.current?.contains(t)) return;
+      const before = state.current?.();
+      // a task, not a microtask: one runs between two listeners of the same key
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (e.defaultPrevented || !ui.preview() || (state.current && !Object.is(state.current(), before))) return;
+        ui.openPreview(null);
+      }, 0);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (timer) clearTimeout(timer);
+    };
+  }, [open, ui]);
   if (!preview) return null;
   return h(
     "div",
-    { className: cx("carton-preview-banner", className), role: "status", "data-blocked": preview.blockedEdit ? "" : undefined },
+    { ref: banner, className: cx("carton-preview-banner", className), role: "status", "data-blocked": preview.blockedEdit ? "" : undefined },
     h(Icon, { name: "eye", size: 14 }),
     h("span", { className: "carton-preview-label", title: words.previewing(preview.label) }, words.previewing(preview.label)),
     h("span", { className: "carton-badge", "data-tone": "muted" }, words.readOnly),
     preview.blockedEdit ? h("span", { className: "carton-preview-blocked" }, words.previewBlocked) : null,
-    h(Button, { variant: "primary", icon: "arrowLeft", onClick: () => ui.openPreview(null) }, words.returnToCurrent),
+    h(Button, { variant: "primary", icon: "arrowLeft", keys: "Escape", title: words.returnToCurrentKey, onClick: () => ui.openPreview(null) }, words.returnToCurrent),
   );
 }

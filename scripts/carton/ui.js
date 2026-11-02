@@ -12,7 +12,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCartonUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -264,10 +264,15 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
   // A drawer over the chat when the window is too narrow for the preview, the panel and the chat side by side.
   const overlay = fit.mode === "overlay" ? { position: "fixed", right: 0, top: fit.top ?? 0, height: fit.height ?? "100%", zIndex: 40, boxShadow: "-16px 0 40px -12px #000000b3" } : null;
   const share = window.__cartonSyncUi?.SharePanel ?? null;
-  // Esc closes it, and only while focus is in it: the editor's own keys are never taken.
+  // Esc closes it, and only while focus is in it: the editor's own keys are never taken. A preview is the layer inside
+  // it (UI audit P2-1: "… → preview → panel"): Esc returns from the preview first, as its banner's button does, and
+  // the next Esc closes the panel (regress 2026-11-02 #4: it closed the panel and left the preview open).
+  const ui = useCartonUi();
   const onKeyDown = (e) => {
-    if (e.key !== "Escape") return;
+    // an Esc a handler nearer the page took (a Radix layer's, in the capture phase) is theirs: nothing here
+    if (e.key !== "Escape" || e.defaultPrevented || e.nativeEvent?.defaultPrevented) return;
     e.stopPropagation();
+    if (ui.preview?.()) { void ui.openPreview(null); return; }
     setPanel(null);
   };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
@@ -456,9 +461,9 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   if (!ready) return null;
   return h(CartonProvider, { ui: conn.ui },
     h("div", { className: "carton-stage", "data-carton-skin": "cardboard" }, h(CartonBoundary, { panel: "stage" },
-      h("div", { className: "carton-stage-banner" }, h(PreviewBanner, null), h(MediaNotice, { projectId, bridge })),
+      h("div", { className: "carton-stage-banner" }, h(PreviewBanner, { escapeState: bridge.selection }), h(MediaNotice, { projectId, bridge })),
       h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen })),
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, LiveChipView, MediaNotice, Sidebar };
+export const __forTests = { confirmations, toasts, LiveChipView, MediaNotice, Sidebar, CartonProvider };

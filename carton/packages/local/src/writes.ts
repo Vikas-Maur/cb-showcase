@@ -437,8 +437,12 @@ export async function runWrite(carton: Carton, req: WriteRequest, opts: { online
       if (!opts.materializer) return { status: "error", error: "views need the app open (or a helper that materializes)", notices };
       const name = opts.viewName ? await opts.viewName(author, op.name) : op.name ?? author.id.replace(/[^A-Za-z0-9._-]/g, "_");
       // saves of the view are credited to its owner: a hooked or self-declared agent is itself; an unnamed terminal
-      // caller is the view file (two terminal agents on one machine look alike; their views don't, §6.4)
-      const owner: Actor = isFallbackActor(author) ? { kind: "external", id: `external:.scratch/views/${name}.tsx`, name: `${author.name ?? "Terminal"} (view ${name})`, group: author.group } : author;
+      // caller is the view file (two terminal agents on one machine look alike; their views don't, §6.4). An agent CLI
+      // known by its environment (CLAUDECODE=1…) keeps its product (`provider`): History tells its saves as that agent's,
+      // never the person's (regress 2026-11-02 #1)
+      const owner: Actor = isFallbackActor(author)
+        ? { kind: "external", id: `external:.scratch/views/${name}.tsx`, name: `${author.name ?? "Terminal"} (view ${name})`, group: author.group, ...(author.provider ? { provider: author.provider } : {}) }
+        : author;
       const v = await opts.materializer.printView(name, owner, { hooked: hookDelivered(author) });
       return { status: "confirmed", seq: 0, ref: v.ref, notices, view: { ...v, status: v.status ?? statusPath(v.name) } };
     }

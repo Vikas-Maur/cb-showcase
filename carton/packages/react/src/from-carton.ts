@@ -154,11 +154,24 @@ export function modelWords(model: string | undefined): string | undefined {
   return m ? `${m[1]![0]!.toUpperCase()}${m[1]!.slice(1)} ${m[2]}${m[3] ? `.${m[3]}` : ""}` : model;
 }
 /**
+ * The agent behind a view's saves, by its product name: an agent CLI known only by its environment (Claude Code with
+ * CLAUDECODE=1 and no hook, Codex, Gemini, Cursor) prints its own view, and `@carton/local` credits that view's saves to
+ * the view (`external:.scratch/views/<name>.tsx`: two of them on one machine stay apart) with the agent's `provider`.
+ * Saves recorded before the provider was kept say it in their name ("Claude Code (view cc)"). Undefined for anything
+ * else, a terminal user's view ("Terminal (view x)") included (regress 2026-11-02 #1: they read as "You").
+ */
+function viewAgent(a: CoreActor): string | undefined {
+  if (a.kind !== "external" || !a.id.startsWith("external:.scratch/views/")) return undefined;
+  if (a.provider) return PRODUCTS[a.provider];
+  const n = (a.name ?? "").replace(/ \(view [^)]*\)$/, "");
+  return Object.values(PRODUCTS).find((p) => p === n);
+}
+/**
  * Writers with no name of their own, on a person's machine: a terminal user (`terminal:<user>@<host>`), an outside
  * program's save (`external:project.json`), and the bridge's defaults before ui-words ("cli" for a `cb` with no actor,
- * "app" for the app's own writes). They are the person at that machine.
+ * "app" for the app's own writes). They are the person at that machine. An agent's view (viewAgent) is not.
  */
-const isPersonsWriter = (a: CoreActor): boolean => a.kind === "external" || (a.kind === "agent" && (a.id === "cli" || a.id === "app" || a.id.startsWith("external:")));
+const isPersonsWriter = (a: CoreActor): boolean => (a.kind === "external" && !viewAgent(a)) || (a.kind === "agent" && (a.id === "cli" || a.id === "app" || a.id.startsWith("external:")));
 
 /**
  * A UI actor from a core actor, named in words an editor knows: the person is "You" (a `cb` they typed included), a
@@ -180,7 +193,7 @@ export function toUiActor(a: CoreActor | null | undefined, me: CoreActor, myGrou
     if (a.kind === "human") return { key, kind: "human", name: a.name ?? (a.id === PERSON ? "Teammate" : a.id) };
     return owner ? { key: ownerKey!, kind: "human", name: owner.name } : { key, kind: "human", name: "Teammate" };
   }
-  const name = productName(a);
+  const name = viewAgent(a) ?? productName(a);
   const model = modelWords(a.model);
   const parent = a.kind === "subagent" ? actorKey({ kind: "agent", id: agentIdOf(a) }) : mine ? meKey : ownerKey;
   return { key, kind: a.kind === "subagent" ? "subagent" : "agent", name, ...(parent ? { parent } : {}), ...(a.agentType ? { subagentType: a.agentType } : {}), ...(model ? { model } : {}), ...(mine ? { isYou: true } : {}) };

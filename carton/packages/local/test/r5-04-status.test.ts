@@ -20,8 +20,12 @@ const live = new Set<ReturnType<typeof spawn>>();
 // a failed assertion must not leave a child holding the test process open through its pipes
 const killAll = () => { for (const p of live) if (p.exitCode === null) p.kill("SIGKILL"); live.clear(); };
 
+// A child is only who its test says: none of the identity markers of the shell running the tests (a Claude Code, Codex,
+// Gemini or Cursor terminal, a declared agent), so the terminal user stays one (review of fix/ui-regress #3).
+const IDENTITY = /^(CARDBOARD_ACTOR|CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|GEMINI_CLI|CURSOR_TRACE_ID|CARTON_AGENT|CODEX_.*)$/;
+const plainEnv = Object.fromEntries(Object.entries(process.env).filter(([k]) => !IDENTITY.test(k)));
 function proc(script: string, args: string[], env: Record<string, string> = {}) {
-  const p = spawn(process.execPath, [here(script), ...args], { stdio: ["pipe", "pipe", "inherit"], env: { ...process.env, CARDBOARD_ACTOR: "", CLAUDECODE: "", ...env } });
+  const p = spawn(process.execPath, [here(script), ...args], { stdio: ["pipe", "pipe", "inherit"], env: { ...plainEnv, ...env } });
   live.add(p);
   p.on("exit", () => live.delete(p));
   const lines: any[] = [];
@@ -86,7 +90,8 @@ test("R5-04 the agent reads its status after each save: confirmed, conflicts, di
 test("R5-04 unhooked agents never share a view file", async (t) => {
   const { dir, projectId, stop } = await app();
   try {
-    const a1 = proc("./support/view-agent.ts", [dir, projectId]);
+    // one is Claude Code from its terminal (CLAUDECODE=1, no hook), one a terminal user's
+    const a1 = proc("./support/view-agent.ts", [dir, projectId], { CLAUDECODE: "1" });
     const a2 = proc("./support/view-agent.ts", [dir, projectId]);
     const [p1, p2] = [(await a1.next()).printed, (await a2.next()).printed];
     assert.notEqual(p1.name, p2.name);
@@ -99,8 +104,13 @@ test("R5-04 unhooked agents never share a view file", async (t) => {
     const check = await openLocal({ projectDir: dir, projectId, adapter, actor: { kind: "human", id: "human:me" } });
     const head = (await check.carton.head()).doc.timelineItems as Rec[];
     assert.deepEqual([head.find((i) => i.id === "c0")!.name, head.find((i) => i.id === "c1")!.name], ["from-1", "from-2"], "each save applied from its own file");
-    const authors = (await check.carton.log({ limit: 3 })).filter((v) => v.change).map((v) => v.author?.id).sort();
-    assert.deepEqual(authors, [`external:.scratch/views/${p1.name}.tsx`, `external:.scratch/views/${p2.name}.tsx`].sort());
+    const versions = (await check.carton.log({ limit: 3 })).filter((v) => v.change);
+    assert.deepEqual(versions.map((v) => v.author?.id).sort(), [`external:.scratch/views/${p1.name}.tsx`, `external:.scratch/views/${p2.name}.tsx`].sort());
+    // each view keeps whose it is: Claude Code's its product (History tells its saves as Claude Code's, never the
+    // person's: regress 2026-11-02 #1), the terminal user's none
+    const by = (name: string) => versions.find((v) => v.author?.id === `external:.scratch/views/${name}.tsx`)!.author!;
+    assert.deepEqual([by(p1.name).provider, by(p1.name).name], ["claude-code", `Claude Code (view ${p1.name})`]);
+    assert.deepEqual([by(p2.name).provider, by(p2.name).name], [undefined, `Terminal (view ${p2.name})`]);
     await check.close();
     for (const a of [a1, a2]) { a.send({ exit: true }); await new Promise((r) => a.p.on("exit", r)); }
     t.diagnostic(JSON.stringify({ views: [p1.name, p2.name] }));

@@ -36,6 +36,8 @@ export interface ButtonProps {
   type?: "button" | "submit";
   /** More about it for screen readers, with no tooltip (inside rows and cards, where one would cover the next). */
   description?: string;
+  /** The key that does the same (`aria-keyshortcuts`, "Escape"). */
+  keys?: string;
 }
 
 export function Button(p: ButtonProps) {
@@ -50,6 +52,7 @@ export function Button(p: ButtonProps) {
       "aria-label": p.label,
       "aria-pressed": p.pressed,
       "aria-description": p.description,
+      "aria-keyshortcuts": p.keys,
       "aria-busy": p.busy || undefined,
       "data-carton-tip": p.title,
       disabled: p.disabled || p.busy,
