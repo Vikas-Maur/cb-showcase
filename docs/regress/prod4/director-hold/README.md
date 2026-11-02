@@ -1,4 +1,7 @@
-# A real in-app agent turn no longer holds the person's edits back from timeline.tsx (3b2407c3; held on 0cc587f1)
+# A real in-app agent turn doesn't hold the person's edits back from timeline.tsx during a long foreground tool call
+
+> **Update:** the same-recipe A/B at the end shows 0cc587f1 does the same, so this is a gap in both builds, not a
+> regression. The "held on 0cc587f1" pass below came from a different recipe (a backgrounded `sleep 30`).
 
 Build: `out/carton-prod4` = merge/prod-2 @ `3b2407c3`, Windows, Carton on. Reproduced 2/2 by the laptop manager on fresh
 projects (clip + W1–W6); the same steps passed on `0cc587f1` (Update 3, `carton-final-0cc587f1-hold-PASS.log`).
