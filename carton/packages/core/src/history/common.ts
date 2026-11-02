@@ -53,13 +53,19 @@ export class StateUnknown extends Error {
 
 /**
  * A restore of an empty version (`isBlank`), or a cut made from one: the root an imported project's history starts from
- * holds nothing of the project, not even its name, so either would leave a project with nothing in it.
+ * holds nothing of the project, not even its name, so either would leave a project with nothing in it. So does a later
+ * version an earlier build's bug emptied (laptop, final candidate P3-2: its refusal said "the history starts there",
+ * which only a cut's start is): `at` says which (`"start"`, the default, or `"later"`). An undo, redo or revert whose
+ * result would be one (`"result"`, P2-1: Ctrl+Z right after recovering such a project) is refused the same way.
  */
 export class EmptyVersion extends Error {
   readonly code = "EMPTY_VERSION";
   readonly ref: unknown;
-  constructor(ref: unknown, what: string) {
-    super(`Nothing to ${what}: that version is empty (the history starts there, before the project was in it)`);
+  constructor(ref: unknown, what: string, at: "start" | "later" | "result" = "start") {
+    super(
+      at === "result" ? `Can't ${what} that: the project would be left empty`
+      : `Nothing to ${what}: that version is empty (${at === "later" ? "nothing of the project is in it" : "the history starts there, before the project was in it"})`,
+    );
     this.ref = ref;
   }
 }

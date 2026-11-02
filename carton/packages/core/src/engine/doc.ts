@@ -138,9 +138,11 @@ export function getIn(doc: Doc, path: Path, schema: Schema): unknown {
 
 /**
  * A state with nothing in it: no root field and every collection empty. The root an imported project's history starts
- * from (`init.asChange`, §16: the project itself is the next version) is one, and so is a cut made from it.
+ * from (`init.asChange`, §16: the project itself is the next version) is one, and so is a cut made from it. The schema's
+ * own rule (`Schema.empty`) adds the states its host can't open as a project though they have a field or a record.
  */
 export function isBlank(doc: Doc, schema: Schema): boolean {
+  if (schema.empty?.(doc)) return true;
   for (const k in doc) {
     const v = doc[k];
     if (v !== undefined && !(schema.collections[k] && Array.isArray(v) && !v.length)) return false;

@@ -89,6 +89,15 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   no replay). `restore` of one, and `fork` from one given as `from`, throw `EmptyVersion` (`code: "EMPTY_VERSION"`)
   before anything changes, on local and shared cuts; a UI doesn't offer either on such a row. A `fork` from head takes
   the head as it is.
+  - **The schema's own rule** (laptop, final candidate P2-1, P3-2). `SchemaDef.empty(doc)` adds the states a host can't
+    open as a project though they have a field or a record (Cardboard: a name with no aspect ratio, tracks, clips or
+    media, what the root-restore bug left once the project was named again); `isBlank` takes it beside core's own rule.
+    Restore and `fork` from such a version throw `EmptyVersion`, its words saying which it is: a cut's start "(the
+    history starts there, before the project was in it)", any later version "(nothing of the project is in it)".
+    `undo`, `redo` and `revert` whose result the schema's rule takes for empty, made from a head it doesn't, throw
+    `EmptyVersion` ("Can't undo that: the project would be left empty") before anything is written or queued (History's
+    `planUndo` and `planRevert`, so a shared cut's queue never holds one; local's `undoTurn` too). Core's own rule never
+    refuses an undo: a generic schema reaches no field and no record by undoing its first record.
 - **Creating a project:** `init: { doc }`, or `init: { import: shallowExport }` for a teammate's `.cbproj` of a project
   this machine doesn't have. `init: { doc, asChange: true }` (§16) makes the empty root and the import change
   (`main@1`, id `import.<projectId>`) in one store write; a project left at its empty root with no change gets the

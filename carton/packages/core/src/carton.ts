@@ -1846,7 +1846,7 @@ class CartonImpl implements Carton {
         // who made it is recorded with it (MAKER): its fork version's author (History's "Made this cut", cb history).
         // A cut made from an empty version ("New cut from here" on an imported project's empty root) would hold nothing
         // of the project, not even its name. (A cut from head is the head as it is.)
-        if (opts.from !== undefined && E.isBlank(from.doc ?? this.#h.viewOf(from.node) ?? { _: 1 }, this.schema)) throw new EmptyVersion(opts.from, "make a cut from");
+        if (opts.from !== undefined && E.isBlank(from.doc ?? this.#h.viewOf(from.node) ?? { _: 1 }, this.schema)) throw new EmptyVersion(opts.from, "make a cut from", parseNode(from.node).seq === 0 ? "start" : "later");
         rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, by: author, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
         made = true;
         // forking from a held state: the cut forks at its version and the held edits are its first change
