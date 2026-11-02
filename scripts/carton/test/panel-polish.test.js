@@ -89,6 +89,25 @@ test("P2-4: a conflict card's pick says whose edit was kept", opt, async () => {
 const leo = (idle = false) => ({ actor: { key: "human/leo", kind: "human", id: "leo", name: "Leo" }, cut: "main", activity: idle ? null : "Editing", idle });
 const chip = (st) => render(React.createElement(T.LiveChipView, { st, onOpen() {} }));
 
+test("N-3 (laptop, merge/prod-2): a save that failed (or an undo refused) has the warning look, not a confirmation's ✓", opt, () => {
+  const html = () => render(React.createElement(T.Toast));
+  T.tellFailure("Your last change couldn't be saved. It's on screen, but it isn't in the project yet.");
+  const failed = html();
+  assert.match(failed, /class="carton-toast" data-tone="warning" role="alert" aria-live="assertive"/);
+  assert.match(failed, /Your last change couldn&#x27;t be saved/);
+  // the warning icon (its triangle's path), not the check
+  assert.match(failed, /M10\.6 4\.5L3 18/);
+  // a confirmation keeps its look: a polite status with the ✓
+  T.toasts.show("Restored. It's saved as a new version.");
+  const ok = html();
+  assert.match(ok, /class="carton-toast" role="status" aria-live="polite"/);
+  assert.doesNotMatch(ok, /data-tone|M10\.6 4\.5L3 18/);
+  T.toasts.set(null);
+  // the skin colours it as Carton's other warnings
+  const skin = require("fs").readFileSync(path.join(CARTON, "packages", "react", "src", "skin", "cardboard.ts"), "utf8");
+  assert.match(skin, /\.carton-toast\[data-tone=warning\] > \.carton-icon\)\{color:var\(--cb-warn\)\}/);
+});
+
 test("P2-11: a shared project's status shows over the preview, not only in the Share tab", opt, () => {
   assert.equal(chip({ shared: false }), "", "not shared: nothing");
   assert.equal(chip({ shared: true, status: "up-to-date", pending: 0, peers: [] }), "", "up to date, nobody else: nothing");

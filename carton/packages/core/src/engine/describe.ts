@@ -290,9 +290,52 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
     keys = ks;
   }
   let n = keys.size;
+  for (const [k, holder] of heldParts(groups, base, schema)) if (keys.has(k) && keys.has(holder)) n--;
   if (n < 3) return n; // a split is three records at least
   for (const sp of findSplits(groups, base, schema, labeller(plain, base, schema).label)) if (keys.has(sp.key) && sp.parts.every((p) => keys.has(p.key))) n -= sp.parts.length;
   return n;
+}
+
+/**
+ * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) added or deleted in the
+ * same change as their holder: no change of their own, as a split's parts are the split's (laptop, merge/prod-2 N-1:
+ * "Deleted title 'W6'" came with "Deleted media 'Text: W6'"). The holder is the one record of the part's `partOf`
+ * collection whose field names it, in base or among the records the change inserts, and the change adds (or deletes)
+ * it whole as it does the part. A part two records name (a duplicated title's shared entry), or none, or one changed,
+ * added or deleted on its own, is still told. Part's group key → its holder's.
+ */
+function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
+  const out = new Map<string, string>();
+  const whole = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
+  for (const [k, g] of groups) {
+    const cs = g.coll ? schema.collections[g.coll] : undefined, of = cs?.partOf, w = of && cs.nounOf && whole(g);
+    const r = w && ((w.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined);
+    if (!r || cs!.nounOf!(r) !== null) continue;
+    const hk = schema.collections[of!.collection]?.key, id = r[cs!.key];
+    if (!hk) continue;
+    // every record naming it: in base, and inserted by this change
+    const names = new Set<unknown>();
+    for (const h of (base[of!.collection] as Rec[] | undefined) ?? EMPTY) if (h[of!.field] === id) names.add(h[hk]);
+    for (const [, g2] of groups) {
+      const w2 = g2.coll === of!.collection && whole(g2);
+      if (w2 && w2.op === "insert" && (w2.value as Rec)?.[of!.field] === id) names.add(g2.id);
+    }
+    if (names.size !== 1) continue;
+    const hkey = of!.collection + "/" + [...names][0];
+    if (whole(groups.get(hkey))?.op === w.op) out.set(k, hkey);
+  }
+  return out;
+}
+/**
+ * The records `ops` add or delete with the record that holds them (heldParts): one change with it, so a list by record
+ * (the Fold dialog) joins each to its holder's row, as it joins a split's parts.
+ */
+export function heldBy(ops: readonly Op[], base: Doc, schema: Schema): { part: [string, string]; holder: [string, string] }[] {
+  const groups = groupOps(ops.filter((op): op is PlainOp => op.op !== "remap"), schema);
+  return [...heldParts(groups, base, schema)].map(([p, h]) => {
+    const a = groups.get(p)!, b = groups.get(h)!;
+    return { part: [a.coll!, String(a.id)], holder: [b.coll!, String(b.id)] };
+  });
 }
 
 const PART = ["first", "second", "third", "fourth", "fifth"];
@@ -417,6 +460,8 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     split.set(sp.key, sp);
     for (const p of sp.parts) split.set(p.key, null);
   }
+  // a part added or deleted with the record holding it: told with it (heldParts)
+  for (const k of heldParts(groups, base, schema).keys()) split.set(k, null);
   for (const [key, g] of groups) {
     const sp = split.get(key);
     if (sp === null) continue; // a split's part: told with it

@@ -405,3 +405,172 @@ test("laptop, final candidate P1-1: a save that fails in the page is told (at mo
   off.c.saveFailed(err);
   assert.deepEqual(none, []);
 });
+
+// H4, one action one save (laptop, merge/prod-2 N-1): the editor's delete of a title saves its timeline (debounced) and, on its own, the
+// removal of the title's media entry; adding a title saves its new entry on its own. One action, one save: the entry
+// rides with the action's timeline save, in either order. The stand-in runs the patched store's path: Kx/iu ride(),
+// the debounce's and flush's board(), updateScoped's send().
+const saving = async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const sent = [];
+  let timer = null, n = 0;
+  const go = (doc, scope) => () => { sent.push(scope); return Promise.resolve(++n); };
+  const send = (doc, scope) => t.c.send(doc, scope, go(doc, scope));
+  const timeline = () => send({ id: "p1", stateUpdatedAt: 300 + n }, t.c.board("p1", { ownedFields: ["tracks", "timelineItems"] }));
+  // de(): armed until it fires; flush (cN): sends it now
+  const de = () => { timer = true; t.setArmed(true); };
+  t.store.flush = () => { if (!timer) return Promise.resolve(); timer = null; t.setArmed(false); return timeline(); };
+  const fire = () => { timer = null; t.setArmed(false); return timeline(); };
+  return { t, sent, send, de, fire };
+};
+
+test("H4, one action one save: a title's media entry saved after its timeline save rides with it: one save, the entry's own answered by it", async () => {
+  const { t, sent, send, de, fire } = await saving();
+  de();
+  t.c.ride("p1", { removedMediaIds: ["tm6"] });
+  const p = fire();
+  assert.deepEqual(sent, [{ ownedFields: ["tracks", "timelineItems"], removedMediaIds: ["tm6"] }], "the timeline save carries the entry");
+  const own = send({ id: "p1" }, { removedMediaIds: ["tm6"] });
+  assert.equal(own, p, "the entry's own save is answered by the one that carried it");
+  assert.equal(sent.length, 1, "and isn't sent");
+  // taken out: a later save of the same entry goes on its own
+  send({ id: "p1" }, { removedMediaIds: ["tm6"] });
+  assert.equal(sent.length, 2);
+});
+
+test("H4, one action one save: a title's media entry saved first sends the waiting timeline save now, carrying it", async () => {
+  const { t, sent, send, de } = await saving();
+  de();
+  t.c.ride("p1", { removedMediaIds: ["tm6"] });
+  const own = send({ id: "p1" }, { removedMediaIds: ["tm6"] });
+  assert.deepEqual(sent, [{ ownedFields: ["tracks", "timelineItems"], removedMediaIds: ["tm6"] }], "one save: the timeline, with the entry");
+  assert.equal(await own, 1, "answered by it");
+  assert.equal(t.store.armed(), false, "nothing left waiting");
+  // a title added: its entry owned by the timeline save
+  de();
+  t.c.ride("p1", { ownedMediaIds: ["tm7"] });
+  send({ id: "p1" }, { ownedMediaIds: ["tm7"] });
+  assert.deepEqual(sent[1], { ownedFields: ["tracks", "timelineItems"], ownedMediaIds: ["tm7"] });
+  assert.equal(sent.length, 2);
+});
+
+test("H4, one action one save: anything else is sent as before: no timeline save waiting, another project, a library file's media, Carton off", async () => {
+  const { t, sent, send, de, fire } = await saving();
+  // nothing armed: the entry's save goes alone (its action never armed a timeline save)
+  t.c.ride("p1", { removedMediaIds: ["a"] });
+  send({ id: "p1" }, { removedMediaIds: ["a"] });
+  assert.deepEqual(sent, [{ removedMediaIds: ["a"] }]);
+  // another project's action is never this editor's
+  de();
+  t.c.ride("p2", { removedMediaIds: ["b"] });
+  fire();
+  assert.deepEqual(sent[1], { ownedFields: ["tracks", "timelineItems"] });
+  // a save that isn't only noted entries (a media file's details, a field) goes as it is
+  de();
+  t.c.ride("p1", { removedMediaIds: ["c"] });
+  send({ id: "p1" }, { removedMediaIds: ["c"], ownedMediaIds: ["video"] });
+  send({ id: "p1" }, { ownedMediaDataFields: { c: ["duration"] } });
+  assert.deepEqual(sent.slice(2), [{ removedMediaIds: ["c"], ownedMediaIds: ["video"] }, { ownedMediaDataFields: { c: ["duration"] } }]);
+  // with Carton off, none of it applies
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.setArmed(true);
+  off.c.ride("p1", { removedMediaIds: ["d"] });
+  const scope = { ownedFields: ["tracks", "timelineItems"] };
+  assert.equal(off.c.board("p1", scope), scope);
+  let went = 0;
+  off.c.send({ id: "p1" }, { removedMediaIds: ["d"] }, () => ++went);
+  assert.equal(went, 1);
+});
+
+test("H4, one action one save: a timeline save that never reached main (its document failed to serialize) leaves the entry to board the next one, or to go alone", async () => {
+  const { t, sent, send, de, fire } = await saving();
+  de();
+  t.c.ride("p1", { removedMediaIds: ["tm6"] });
+  t.c.board("p1", { ownedFields: ["tracks", "timelineItems"] }); // Jt threw after board, before Ss.updateScoped
+  fire();
+  assert.deepEqual(sent, [{ ownedFields: ["tracks", "timelineItems"], removedMediaIds: ["tm6"] }], "the next timeline save takes it");
+  de();
+  t.c.ride("p1", { removedMediaIds: ["tm5"] });
+  t.c.board("p1", { ownedFields: ["tracks", "timelineItems"] }); // boarded, never sent; and nothing armed now
+  t.setArmed(false);
+  send({ id: "p1" }, { removedMediaIds: ["tm5"] });
+  assert.deepEqual(sent[1], { removedMediaIds: ["tm5"] }, "not carried: its own save goes, as before");
+});
+
+test("H4, one action one save (review #1): the same entry noted by two actions is two: each own save takes its own, oldest first", async () => {
+  const { t, sent, send, de, fire } = await saving();
+  de();
+  t.c.ride("p1", { removedMediaIds: ["tm6"] });
+  const t1 = fire();
+  // undone, then deleted again before the first delete's entry save came
+  de();
+  t.c.ride("p1", { removedMediaIds: ["tm6"] });
+  const first = send({ id: "p1" }, { removedMediaIds: ["tm6"] });
+  assert.equal(first, t1, "the first delete's own save: answered by the first timeline save");
+  assert.equal(t.store.armed(), true, "the second delete's timeline save isn't sent early for it");
+  const t2 = fire();
+  assert.deepEqual(sent.map((x) => x.removedMediaIds), [["tm6"], ["tm6"]], "each timeline save carries its own delete's entry");
+  assert.equal(send({ id: "p1" }, { removedMediaIds: ["tm6"] }), t2, "the second's own save: answered by the second");
+  assert.equal(sent.length, 2, "neither entry save is sent on its own");
+  send({ id: "p1" }, { removedMediaIds: ["tm6"] });
+  assert.equal(sent.length, 3, "a third, noted by no action, goes alone");
+});
+
+test("H4, one action one save (review #3): a Delete of 65 titles is one save; only carried entries are ever dropped", async () => {
+  const { t, sent, send, de, fire } = await saving();
+  const ids = Array.from({ length: 65 }, (_, i) => "tm" + i);
+  de();
+  for (const id of ids) t.c.ride("p1", { removedMediaIds: [id] }); // Kx: one per title, in one action
+  fire();
+  assert.deepEqual(sent[0].removedMediaIds, ids, "the timeline save carries all 65");
+  for (const id of ids) send({ id: "p1" }, { removedMediaIds: [id] });
+  assert.equal(sent.length, 1, "one save for the action");
+  // entries whose own save never comes (a write that failed first): kept up to 1024 once carried, oldest dropped, but
+  // never those of the save just sent, however many
+  de();
+  for (let i = 0; i < 1100; i++) t.c.ride("p1", { removedMediaIds: ["lost" + i] });
+  fire();
+  de();
+  t.c.ride("p1", { removedMediaIds: ["next"] });
+  fire();
+  send({ id: "p1" }, { removedMediaIds: ["lost0"] });
+  assert.equal(sent.length, 4, "the oldest carried one was dropped once a later save went: its late save goes alone (a no-op at the worker)");
+  send({ id: "p1" }, { removedMediaIds: ["lost1099"] });
+  send({ id: "p1" }, { removedMediaIds: ["next"] });
+  assert.equal(sent.length, 4, "newer ones are still answered by their carriers");
+});
+
+test("laptop, merge/prod-2: Carton's views share one IPC listener per channel (no MaxListenersExceededWarning)", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const added = new Map(), offs = [];
+  t.store.on = (channel, f) => { added.set(channel, (added.get(channel) ?? 0) + 1); const set = (t.listeners ??= new Map()).get(channel) ?? new Set(); set.add(f); t.listeners.set(channel, set); return () => { set.delete(f); added.set(channel, added.get(channel) - 1); }; };
+  const got = [];
+  for (let i = 0; i < 12; i++) offs.push(t.c.onEvent((ev) => got.push([i, ev])));
+  offs.push(t.c.onCommand(() => got.push(["cmd"])));
+  assert.deepEqual([...added], [["carton:event", 1], ["carton:command", 1]], "one listener per channel");
+  // one handler that throws doesn't keep the others from the event
+  offs.push(t.c.onEvent(() => { throw new Error("boom"); }));
+  for (const f of t.listeners.get("carton:event")) f({ id: "p1" });
+  assert.equal(got.filter((g) => g[0] !== "cmd").length, 12);
+  for (const off of offs) off();
+  assert.deepEqual([...added], [["carton:event", 0], ["carton:command", 0]], "gone once the last view goes");
+  // subscribing again attaches again
+  const again = t.c.onEvent(() => {});
+  assert.equal(added.get("carton:event"), 1);
+  again();
+  // review #5: one handler subscribed twice is two subscriptions, each with its own unsubscribe
+  let calls = 0;
+  const f = () => calls++;
+  const a = t.c.onEvent(f), b = t.c.onEvent(f);
+  for (const g of t.listeners.get("carton:event")) g({});
+  assert.equal(calls, 2);
+  a();
+  a(); // twice: still only its own
+  for (const g of t.listeners.get("carton:event")) g({});
+  assert.equal(calls, 3, "the other subscription still hears it");
+  b();
+  assert.equal(added.get("carton:event"), 0);
+});

@@ -106,6 +106,12 @@ export interface CollectionDef {
    */
   nounOf?: (record: Rec) => string | null | undefined;
   /**
+   * Whose part a record is (`nounOf` null), for descriptions and counts only (laptop, merge/prod-2 N-1): the record of
+   * `collection` whose `field` holds its key (Cardboard: a title's "Text: W1" entry, `timelineItems.mediaItemId`).
+   * Added or deleted with its one holder in the same change, it is that holder's change ("Deleted title 'W1'").
+   */
+  partOf?: { collection: string; field: string };
+  /**
    * Editors' words for fields in descriptions, by their dotted path in the record with keyed-array element keys left
    * out: `{"colorGrade.saturation": "saturation", "effects": "effect"}`. Unlabelled fields print their path.
    */
@@ -131,6 +137,7 @@ export interface CollectionSpec extends Required<Pick<CollectionDef, "key">> {
   readonly fields?: Record<string, FieldSpec>;
   readonly noun?: string;
   readonly nounOf?: (record: Rec) => string | null | undefined;
+  readonly partOf?: { readonly collection: string; readonly field: string };
   readonly labels?: Readonly<Record<string, string>>;
   readonly phrases?: Readonly<Record<string, FieldPhrase>>;
   readonly parent?: { field: string; collection: string };

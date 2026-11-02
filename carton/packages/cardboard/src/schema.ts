@@ -358,6 +358,8 @@ export const cardboardSchema: Schema = defineSchema({
       noun: "media",
       // a title's or a code graphic's own entry (1.4.0 adds one per title, "Text: W1") is no media file: part of it
       nounOf: (r) => (OWN_MEDIA.has((r.data as Rec | undefined)?.type) ? null : undefined),
+      // whose: the item that names it (deleted or added with it, it is that title's change: laptop, merge/prod-2 N-1)
+      partOf: { collection: ITEMS, field: "mediaItemId" },
       labels: MEDIA_LABELS,
       phrases: MEDIA_PHRASES,
       fields: {

@@ -347,6 +347,33 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   them from seqs (`passedOthers`) and writes head under a new `rev` then, which the editor adopts. Before, the echo
   moved the base past a change the editor never showed, and the person's next save undid it.
 
+**One editor action, one save (H4; laptop, merge/prod-2 N-1).**
+- One undo step of the editor (`pushTimelineHistory`) can save twice. Deleting a title or code graphic
+  (`removeTimelineItem(s)`) arms the timeline save (`de()`, 300 ms) and drops the item's own media entry ("Text: W6")
+  through `Kx` → `removeMediaFromProject`, which saves `{removedMediaIds}` once the entry's cached files are gone
+  (`cr.remove`): before the debounce or after it. Adding a title (EditorRoute's `iu`) adds its entry and saves
+  `{ownedMediaIds}` on its own, next to the debounced timeline save. Stock has no versions; its undo takes back both
+  (`Xx` puts the entry back). Carton made a version of each save, and one Ctrl+Z took back only the newer one: the
+  title stayed gone (media saved last), or came back with no entry (media saved first).
+- Now the action notes the entry (`ride`, at `Kx` and `iu`, only while that action's timeline save is armed), the
+  timeline save's scope takes it at its two call sites (`board`: the debounce and its flush `cN`, before `Jt`'s `Kj`
+  cuts the document down to the scope, so an owned entry is in it), and the entry's own save, through the patched
+  `updateScoped` (`send`), is answered by the save that carried it instead of being sent. If the entry's save comes
+  while the timeline save still waits, that save goes now, carrying it. One save is one mutation, one version and one
+  undo step (redo, `cb undo` and a shared cut alike). No timer: the boundary is the editor's own save. Anything not
+  carried (no timeline save armed, a save that failed before it was sent) goes on its own, as before. Each noting is
+  its own entry, and an entry's save takes the oldest: the same title deleted again after an undo, while the first
+  delete's entry save still waited, is answered by its own delete's save, never by the first's. Carried entries whose
+  own save never came are dropped past 1024, oldest first; never a waiting one, nor the save just sent's.
+- A library file's media (an import, a sound from the panel) stays a save of its own: stock's undo never takes it back
+  either. Two actions inside one 300 ms debounce were one save before this and still are (stock: two undo steps).
+- History reads it as one change: describe, `countChanges` and the Fold dialog's rows take a record that is part of
+  another (`nounOf` null, `partOf` its holder: an item's `mediaItemId`) added or deleted with its one holder as that
+  holder's (`heldBy`), as a split's parts are the split's: "Deleted title 'W6'". An entry two titles share (a
+  duplicate) is told, and folded, on its own.
+- Histories saved before this keep their two versions, and Ctrl+Z never reaches them (it stays in the editor's
+  session). `cb undo` and History's Undo take them a version at a time, as History lists them.
+
 **Read-only preview (H4).**
 - Compare and the A/B toggle load an earlier version into the editor with the raw setter and set `cartonPreview`.
 - `Tm` (the editor's "editing blocked" predicate) then refuses every edit, whether it comes from a store action or the
@@ -396,7 +423,8 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 **Telling the person (final candidate P1-1).**
 - `Jt`, the editor store's scoped save, logs a failure and rethrows; its catch also calls the bridge's `saveFailed`,
   which shows "Your last change couldn't be saved. It's on screen, but it isn't in the project yet." over the stage
-  (at most every 20 s, again once a save has landed). Such a failure happens in the page, before anything reaches the
+  (at most every 20 s, again once a save has landed), with the warning look of Carton's other failures (N-3: it showed
+  a confirmation's ✓), as does an undo refused. Such a failure happens in the page, before anything reaches the
   worker, so only the page can tell: a recovered project's date-less media made every save throw there, unseen.
 
 **Remaps (H7).**
@@ -475,7 +503,7 @@ onto the packages' APIs, so a package API change touches only the facade.
 | `worker(library, emit)` | H8 | `worker({library, emit})`: the `carton` RPC namespace | `local`, `react` (`fromCarton`) |
 | `__cartonCli.commands`, `mcp`, `carton-hook` | CLI, H9 | `run(argv, io)`, `mcpTools()`, `hook({event, input, env})` | `cli-mcp` (`runCb`, `mcpTools`), `local` (hooks) |
 | `__cartonMain.*` | H9 | (main only) actor env, Director hook wrap, Stop/SubagentStop, `carton:call` | `local` (notices) |
-| `window.__carton.*` | H4–H7, UI | (pages) `saveMeta`, `receive`, `undo`/`redo`, `intent`, `preview`, `call`, `onEvent` over `carton:call` | `react` |
+| `window.__carton.*` | H4–H7, UI | (pages) `saveMeta`, `ride`/`board`/`send` (one action, one save), `receive`, `undo`/`redo`, `intent`, `preview`, `call`, `onEvent` over `carton:call` (one IPC listener per channel, however many views subscribe) | `react` |
 
 ## 6. State on 2026-10-31
 

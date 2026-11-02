@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -1224,6 +1224,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       for (const k of parts) groups.get(key)!.push(...groups.get(k)!), groups.delete(k);
       joined?.set(key, parts);
       creditOf.set(key, parts[0]!);
+    }
+    // a title's own media entry added or deleted with it (core's heldBy): one row with the title, left out with it
+    // (laptop, merge/prod-2 N-1: one change, as Compare and History count it)
+    for (const { part, holder } of heldBy(ops, doc, schema)) {
+      const key = pathKey(holder), k = pathKey(part);
+      if (!groups.has(key) || !groups.has(k)) continue;
+      groups.get(key)!.push(...groups.get(k)!), groups.delete(k);
+      joined?.set(key, [...(joined.get(key) ?? []), k]);
     }
     return creditOf;
   };

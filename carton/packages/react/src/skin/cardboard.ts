@@ -316,6 +316,9 @@ export const cardboardSkin = `
   background:#1b1b1bf2;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:var(--cb-shadow);color:var(--cb-fg-1);font-size:12px;line-height:16px;pointer-events:auto;
   animation:carton-pop var(--cb-base) var(--cb-decel)}
 :where(${S}) :where(.carton-toast > .carton-icon){color:var(--cb-ok)}
+/* a failure or a refusal (a save that failed, an undo refused): the warning look of the Offline chip */
+:where(${S}) :where(.carton-toast[data-tone=warning]){border-color:color-mix(in srgb, var(--cb-warn) 35%, transparent)}
+:where(${S}) :where(.carton-toast[data-tone=warning] > .carton-icon){color:var(--cb-warn)}
 /* a shared project's status over the preview (scripts/carton/ui.js LiveChip): who is here, Offline / Syncing */
 :where(.carton-stage${S}) > :where(.carton-stage-live){position:absolute;left:12px;bottom:12px;pointer-events:none}
 :where(${S}) :where(.carton-live-chip){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 8px;border:1px solid #ffffff14;border-radius:999px;background:#1b1b1be6;
