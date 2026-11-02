@@ -8,5 +8,6 @@ export { doSqlStorage } from "./storage.ts";
 export { r2BlobStore, R2BlobStore, R2_MIN_PART_SIZE, type R2BlobStoreOptions } from "./blob-r2.ts";
 export { doBlobStore, DoBlobStore, type DoBlobStoreOptions } from "./blob-do.ts";
 export { sequencerBlobs, mediaBlobs, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
+export { cappedBlobStore, writeCapOf, WriteCapError, WRITE_CAP_CODE, type WriteCap } from "./write-cap.ts";
 export type { Env } from "./env.ts";
 export type * from "./cf.ts";
