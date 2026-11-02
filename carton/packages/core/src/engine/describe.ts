@@ -43,9 +43,69 @@ const short = (v: unknown): string => {
   return s === undefined ? "none" : s.length > 48 ? s.slice(0, 45) + "…" : s;
 };
 
+/**
+ * One line of describe(), with what a version's summary needs (UI audit P1-5): its verb as a template (`%s` is the
+ * record), the record's collection, and the record as named alone ("video 'clip.mp4'" for an add, "'Intro'" else).
+ * A line that isn't about one record (a ripple, a project field) has no verb: a summary keeps it whole.
+ */
+interface Line {
+  text: string;
+  verb?: string;
+  coll?: string;
+  one?: string;
+}
+
+// A value no person reads (UI audit P1-2): a hash, a UUID, or a structure holding one. Shown by its field's name only.
+const HASHY = /^(?:[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const HASH_IN = /[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
+const opaque = (key: unknown, v: unknown): boolean =>
+  isIdKey(String(key)) || /(?:^h|H)ash(?:es)?$/.test(String(key)) || (typeof v === "string" ? HASHY.test(v) : !!v && typeof v === "object" && HASH_IN.test(JSON.stringify(v) ?? ""));
+
 export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null): string[] {
+  return lines(ops, base, schema, intent).map((l) => l.text);
+}
+
+/**
+ * A version in words: every line describe() gives (`lines`), and one line that sums them up (`summary`): the line
+ * itself when there is one, else the changes grouped by what was done ("Moved 'clip.mp4', changed 'W1' and 'W2'"),
+ * a record by its name and several of a kind by their count ("Added 2 tracks, 4 clips and media 'intro.mp4'"), at
+ * most three such groups ("…, and 2 more changes"). Empty when nothing is worded.
+ */
+export function describeVersion(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null): { summary: string; lines: string[] } {
+  const ls = lines(ops, base, schema, intent);
+  return { summary: summaryOf(ls, schema), lines: ls.map((l) => l.text) };
+}
+
+const lower = (x: string) => (/^[A-Z][a-z]/.test(x) ? x[0]!.toLowerCase() + x.slice(1) : x);
+const plural = (noun: string) => (noun.endsWith("s") ? noun : noun === "media" ? "media files" : `${noun}s`);
+const and = (xs: readonly string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
+
+function summaryOf(ls: readonly Line[], schema: Schema): string {
+  if (ls.length <= 1) return ls[0]?.text ?? "";
+  const groups: { verb?: string; text?: string; n: number; byColl: Map<string, string[]> }[] = [];
+  for (const l of ls) {
+    let g = l.verb ? groups.find((x) => x.verb === l.verb) : undefined;
+    if (!g) groups.push((g = { ...(l.verb ? { verb: l.verb } : { text: l.text }), n: 0, byColl: new Map() }));
+    g.n++;
+    if (l.verb) (g.byColl.get(l.coll!) ?? g.byColl.set(l.coll!, []).get(l.coll!)!).push(l.one!);
+  }
+  const noun = (coll: string) => schema.collections[coll]?.noun ?? (coll === schema.timeline?.lanes ? "track" : "item");
+  const words = groups.map((g) => {
+    if (!g.verb) return g.text!;
+    const one = g.byColl.size === 1;
+    const what = [...g.byColl].map(([coll, xs]) => (xs.length === 1 ? xs[0]! : one && xs.length === 2 ? `${xs[0]} and ${xs[1]}` : `${xs.length} ${plural(noun(coll))}`));
+    return g.verb.replace("%s", and(what));
+  });
+  if (words.length > 3) {
+    const rest = groups.slice(2).reduce((n, g) => n + g.n, 0);
+    words.splice(2, words.length - 2, `and ${rest} more change${rest === 1 ? "" : "s"}`);
+  }
+  return words.map((w, i) => (i ? lower(w) : w)).join(", ");
+}
+
+function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null): Line[] {
   const tl = schema.timeline,
-    out: string[] = [];
+    out: Line[] = [];
   const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
   // The doc a label looks names up in (a clip is named after its media's file name): base, plus the records this
   // change inserts, so a clip added with its media is named after it. Built once, only when a label asks.
@@ -68,9 +128,10 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
     return named;
   };
   const label = (coll: string, rec: Rec | undefined) => schema.label?.(coll, rec, nameDoc()) ?? String(rec?.name ?? rec?.id ?? "?");
+  // a track made in the same change is named too (UI audit P1-6's drag onto a new track read "to track track 3f9a1c")
   const laneName = (id: unknown) => {
-    const t = tl && (getIn(base, [tl.lanes, id as string], schema) as Rec | undefined);
-    return t ? `'${label(tl!.lanes, t)}'` : `track ${String(id).slice(0, 6)}`;
+    const t = tl && (getIn(nameDoc(), [tl.lanes, id as string], schema) as Rec | undefined);
+    return t ? `'${label(tl!.lanes, t)}'` : "another track";
   };
   const remapOps = ops.filter((op): op is RemapOp => op.op === "remap");
   let maps: RemapMaps = intent?.maps ?? (tl && !remapOps.length ? inferRemaps(schema, base, plain.map((op) => ({ path: op.path, op }))) : {});
@@ -84,8 +145,8 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
       if (sp && !near(sp[0], it[tl.start] as number)) explained.add(it[schema.collections[tl.collection]!.key]);
     }
     for (const st of chain) {
-      for (const [a, b] of st.d) out.push(`Removed ${fmtS(b - a)} from ${laneName(lane)} at ${fmtT(a)} (later items pulled left)`);
-      for (const [p, len] of st.i) out.push(`Inserted ${fmtS(len)} into ${laneName(lane)} at ${fmtT(p)} (later items pushed right)`);
+      for (const [a, b] of st.d) out.push({ text: `Removed ${fmtS(b - a)} from ${laneName(lane)} at ${fmtT(a)} (later items pulled left)` });
+      for (const [p, len] of st.i) out.push({ text: `Inserted ${fmtS(len)} into ${laneName(lane)} at ${fmtT(p)} (later items pushed right)` });
     }
   }
   const groups = new Map<string, { coll: string | null; id: unknown; ops: PlainOp[] }>();
@@ -104,10 +165,12 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
         const f = fieldWords(schema, op.path);
         const what = f.labelled ? `the ${f.words}` : f.words;
         const v = (op as { value?: unknown }).value;
-        // never "none" as a value: a field set for the first time is named or set ("Named the project 'Dragon short'")
-        if (op.op === "unset") out.push(`Cleared ${what}`);
-        else if (old === undefined) out.push(namedAs(f, v) ?? `Set ${what} to ${short(v)}`);
-        else out.push(`Changed ${what} ${short(old)} → ${short(v)}`);
+        // never "none" as a value: a field set for the first time is named or set ("Named the project 'Dragon short'");
+        // never an id or a hash: the field is named alone
+        if (op.op === "unset") out.push({ text: `Cleared ${what}` });
+        else if (opaque(op.path.at(-1), v) || opaque(op.path.at(-1), old)) out.push({ text: `${old === undefined ? "Set" : "Changed"} ${what}` });
+        else if (old === undefined) out.push({ text: namedAs(f, v) ?? `Set ${what} to ${short(v)}` });
+        else out.push({ text: `Changed ${what} ${short(old)} → ${short(v)}` });
       }
       continue;
     }
@@ -118,19 +181,37 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
     if (whole?.op === "insert") {
       const r = whole.value as Rec;
       const where = tl && g.coll === tl.collection ? ` on ${laneName(r[tl.lane])} at ${fmtT(r[tl.start] as number)}` : "";
-      out.push(`Added ${noun} '${label(g.coll, r)}'${where}`);
+      out.push({ text: `Added ${noun} '${label(g.coll, r)}'${where}`, verb: "Added %s", coll: g.coll, one: `${noun} '${label(g.coll, r)}'` });
       continue;
     }
     if (whole) {
-      out.push(`Deleted ${noun} '${label(g.coll, before)}'`);
+      out.push({ text: `Deleted ${noun} '${label(g.coll, before)}'`, verb: "Deleted %s", coll: g.coll, one: `${noun} '${label(g.coll, before)}'` });
       continue;
     }
     const name = `'${label(g.coll, before)}'`;
     const f = new Map<string, PlainOp>();
     for (const op of g.ops) if (op.path.length === 3) f.set(op.path[2] as string, op);
     const parts: string[] = [];
+    let verb = "Changed %s";
     let rest = g.ops;
+    // a field the host words as a phrase ("Linked %s for sharing"): one phrase for all its ops, never its values
+    const phrases = cs.phrases;
+    if (phrases) {
+      const said = new Set<string>();
+      for (const op of g.ops) {
+        const p = phrases[op.path[2] as string];
+        if (!p) continue;
+        const gone = op.path.length === 3 && (op.op === "unset" || op.op === "remove");
+        const fresh = op.path.length === 3 && op.op !== "unset" && op.op !== "remove" && getIn(base, op.path, schema) === undefined;
+        const t = gone ? p.cleared : fresh ? p.set : (p.changed ?? p.set);
+        if (!parts.length) verb = t;
+        if (!said.has(t)) parts.push(t.replace("%s", name));
+        said.add(t);
+      }
+      rest = rest.filter((op) => !phrases[op.path[2] as string]);
+    }
     if (g.coll === tl?.lanes && f.get(POS)) {
+      if (!parts.length) verb = "Reordered %s";
       parts.push(`Reordered ${noun} ${name}`);
       rest = rest.filter((op) => op !== f.get(POS));
     }
@@ -141,6 +222,7 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
       const used = new Set([s, e, ln, f.get(tl.source), f.get(tl.sourceEnd)].filter(Boolean));
       const os = before[tl.start] as number,
         oe = before[tl.end] as number;
+      const n0 = parts.length;
       if (explained.has(g.id)) used.add(s).add(e);
       else if (s && e && Math.abs(val(s) - os - (val(e) - oe)) < 1e-4) parts.push(`Moved ${name} ${fmtT(os)} → ${fmtT(val(s))}`);
       else if (s && e) parts.push(`Retimed ${name} ${fmtT(os)}–${fmtT(oe)} → ${fmtT(val(s))}–${fmtT(val(e))}`);
@@ -148,7 +230,8 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
       else if (s) parts.push(`Trimmed ${name} start ${fmtS(os)} → ${fmtS(val(s))}`);
       else if (f.get(tl.source)) parts.push(`Slipped ${name} source in ${fmtS(before[tl.source] as number)} → ${fmtS(val(f.get(tl.source)))}`);
       if (ln) parts.push(parts.length ? `to track ${laneName(val(ln))}` : `Moved ${name} to track ${laneName(val(ln))}`);
-      rest = g.ops.filter((op) => !used.has(op));
+      if (!n0 && parts.length) verb = `${parts[0]!.split(" ")[0]} %s`;
+      rest = rest.filter((op) => !used.has(op));
     }
     for (const op of rest) {
       const field = fieldWords(schema, op.path).words;
@@ -159,15 +242,17 @@ export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: 
       else if (op.op === "unset") parts.push(`cleared ${field}`);
       else {
         const old = getIn(base, op.path, schema);
-        parts.push(old === undefined ? `set ${field} to ${short(op.value)}` : `${field} ${short(old)} → ${short(op.value)}`);
+        // never an id or a hash (UI audit P1-2): the field is named alone
+        if (opaque(op.path[2], op.value) || opaque(op.path[2], old) || opaque(op.path.at(-1), op.value)) parts.push(`changed ${field}`);
+        else parts.push(old === undefined ? `set ${field} to ${short(op.value)}` : `${field} ${short(old)} → ${short(op.value)}`);
       }
     }
     if (!parts.length) continue;
     if (parts.length > 4) parts.splice(3, parts.length - 3, `and ${parts.length - 3} more changes`);
     const p0 = parts[0]!;
     if (!/^[A-Z]/.test(p0))
-      parts[0] = p0.startsWith("set ") ? `Set ${name} ${p0.slice(4)}` : /^(added|removed|reordered|cleared) /.test(p0) ? `${p0[0]!.toUpperCase()}${p0.slice(1)} on ${name}` : `Changed ${name} ${p0}`;
-    out.push(parts.join(", "));
+      parts[0] = p0.startsWith("set ") ? `Set ${name} ${p0.slice(4)}` : p0.startsWith("changed ") ? `Changed ${name} ${p0.slice(8)}` : /^(added|removed|reordered|cleared) /.test(p0) ? `${p0[0]!.toUpperCase()}${p0.slice(1)} on ${name}` : `Changed ${name} ${p0}`;
+    out.push({ text: parts.map((p, i) => (i ? lower(p) : p)).join(", "), verb, coll: g.coll, one: name });
   }
   return out;
 }
