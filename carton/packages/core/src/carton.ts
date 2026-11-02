@@ -18,7 +18,7 @@ import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/mes
 import type { SyncStatus } from "./sync/index.ts";
 import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
-import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
+import { STORE_TABLES as T, EmptyVersion, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
 import * as E from "./engine/index.ts";
 import { freezeDeep, seal } from "./engine/doc.ts";
@@ -1297,7 +1297,8 @@ class CartonImpl implements Carton {
             // the model may hold changes the store never got (a write that threw): drop them before anything else runs
             this.#confirmed.length = 0;
             this.#noops.length = 0;
-            await this.#rebuild();
+            // (an empty version is refused before anything changes: the model is as it was)
+            if (!(e instanceof EmptyVersion)) await this.#rebuild();
             throw e;
           }
           if (ok) {
@@ -1735,6 +1736,9 @@ class CartonImpl implements Carton {
         const known = opts.id ? this.#h.cut(opts.id) : undefined;
         if (known) return void (rec = known); // a retried fork: the cut it already made
         const from = opts.from === undefined ? { node: this.#h.head(cur), doc: null } : this.#held(opts.from);
+        // a cut made from an empty version ("New cut from here" on an imported project's empty root) would hold nothing
+        // of the project, not even its name. (A cut from head is the head as it is.)
+        if (opts.from !== undefined && E.isBlank(from.doc ?? this.#h.viewOf(from.node) ?? { _: 1 }, this.schema)) throw new EmptyVersion(opts.from, "make a cut from");
         rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
         made = true;
         // forking from a held state: the cut forks at its version and the held edits are its first change
