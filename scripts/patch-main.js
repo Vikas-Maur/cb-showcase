@@ -499,7 +499,8 @@ if (process.type === "browser") {
 }
 `;
 const firstNl = src.indexOf("\n");
-src = src.slice(0, firstNl + 1) + preamble + src.slice(firstNl + 1);
+// The app's files read from app.asar without a copy in %TEMP%, and the old copies swept (asar-assets.js, patch 15).
+src = src.slice(0, firstNl + 1) + preamble + require("./asar-assets") + src.slice(firstNl + 1);
 
 // 1. Bundled ffmpeg/ffprobe/uv/claude are .exe on Windows.
 replace(`sd((0,li.join)(n,"ffmpeg"))`, `sd((0,li.join)(n,__cbExe("ffmpeg")))`);
@@ -656,6 +657,20 @@ replace(
   "deliver(t,r=!0){this.send(t).catch(()=>{r?this.defect({process:\"main\",kind:\"telemetry_delivery\",workflow_stage:t.kind}):this.deps.warn(`[telemetry] ${t.kind} delivery failed`)})}",
   "deliver(t,r=!0){this.send(t).catch(__cbE=>{r?this.defect({process:\"main\",kind:\"telemetry_delivery\",workflow_stage:t.kind}):this.deps.warn(`[telemetry] ${t.kind} delivery failed`+(__cbE?.message?`: ${String(__cbE.message).slice(0,120)}`:\"\"))})}",
 );
+
+// 15. No copy of the app's files left in %TEMP% (see asar-assets.js). Cardboard's app:// handler streamed each
+// file with fs.createReadStream, and for a file packed in app.asar Electron copies it out to %TEMP%\<uuid>.tmp.<ext>
+// to stream it, and never deletes the copy: ~57 files (~9 MB) per launch, kept after a clean quit, ~1.7 GB after 200
+// launches. On Windows a file in app.asar is read with fs.promises.readFile, which reads it from the archive; the
+// response (200, its headers, the bytes, and a body that fails if the file can't be read) is the same. A file outside
+// an archive (a dev run) still streams; macOS is unchanged. The copies earlier builds left are deleted after the window
+// shows (__cbAsarSweepSoon): only <uuid>.tmp[.<ext>] files that are byte for byte a file in this app.asar and older
+// than Windows' last start, until none are left.
+replace(
+  `let s=Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
+  `let s=__cbWin&&__cbInAsar(e)?await __cbAsarBody(e):Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
+);
+replace(`he.createWindow({quiet:r});let a=`, `he.createWindow({quiet:r});__cbWin&&__cbAsarSweepSoon(he.window);let a=`);
 
 fs.writeFileSync(file, src);
 console.log(`patched ${path.basename(file)} (${src.length} bytes${speed ? "" : ", baseline"})`);
