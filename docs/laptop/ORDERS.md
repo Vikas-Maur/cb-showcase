@@ -159,3 +159,14 @@ app sync files in the real 1.4.0 worker, the size budgets, and a re-test after t
 3. **Timing:** finish C. Then **B** (apply latency, 1 and 4 writers, Carton on vs off) on `out/carton-final`. A separate
    subagent re-checks every number.
 4. **Report** with step 5's format, then wait for the merge to `main` and the reinstall order.
+
+### Update 4 (2026-11-02 ~16:05 UTC): the network test on the phone hotspot
+The user confirmed "V-Phone" is a phone hotspot and the laptop's only network (there's no Wi-Fi), so step 4 uses their
+mobile data. Run it with half the upload:
+1. **When:** after Update 3's re-checks and report, with nothing else running. Don't stop the re-checks for it.
+2. **Run:** `cd D:\cbwork\cflab` then `node .\cf-lab-laptop.mjs .\config.json --upload-mb 100` (about 120 MB of data,
+   5–10 minutes). If the folder is gone, ask the orchestrator for the pack.
+3. **Once only.** If it fails part way, send the partial results file; don't re-run it.
+4. **Send** the summary: edit latency, the 45 s cut and recovery, upload MB/s, the slowed link. Push the results file to
+   `audit/regress-2026-11-02` under `docs/regress/network/`, unless it contains the config's tokens.
+5. If the reinstall order has already arrived, run this test first, then the build.
