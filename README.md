@@ -736,7 +736,8 @@ with Carton off none of it runs at all.
   library from the link: the project arrives with its history, and its clips play from the host. "Open" opens it in a
   tab of its own. Joining starts from the Dashboard too: a "Join a shared project" tile beside "New project" (Carton on
   only) opens the same form in a dialog. An empty library (a new user's first screen, "Make your first video") has a
-  "Join a shared project" button beside "Start a blank project" instead.
+  "Join a shared project" button beside "Start a blank project" instead. The dialog stays until you press Open or
+  Done, also when the project you joined is the library's first (it used to close by itself there).
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with

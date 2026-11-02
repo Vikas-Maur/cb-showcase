@@ -41,6 +41,10 @@ const PREAMBLE = String.raw`function __cbCartonPresence(projectId) {
 // get one more entry after the New project cell. An empty library (a new user's first screen, "Make your first video")
 // has no grid: there Join is a button in the row of "Browse recipes" and "Start a blank project", in that row's
 // secondary look (regress 2026-11-02 #3). Nothing else in the Dashboard changes.
+// The dialog is one for the whole Home (Dashboard and Projects), shown by a host in Home's own root, beside Cardboard's
+// own dialogs; the tile and the button only open it. Joining from an empty library puts the project in it, and Home
+// then swaps the empty view for the grid: a dialog inside the empty view went with it, before its Open could be pressed
+// (final re-check N1). The host stays mounted through that swap, and through the grid scrolling the tile away.
 const DASHBOARD = String.raw`const __cbCartonJoinCell = { carton: "join" };
 // Carton on or off: the bridge learns it from main a moment after the page starts, so the grid asks again then.
 function __cbCartonUseOn() {
@@ -52,34 +56,42 @@ function __cbCartonUseOn() {
   }, []);
   return on;
 }
-// The Join dialog, loaded on first use: [open it, its element (null while closed)].
-function __cbCartonUseJoin() {
-  const [m, setM] = r.useState(null), [open, setOpen] = r.useState(false);
-  const go = () => {
-    window.__cartonReact = r;
-    import("./carton-ui.js").then((x) => { setM(x); setOpen(true); }, (e) => console.warn("[carton] Join didn't load:", e?.message ?? e));
-  };
-  return [go, open && m?.JoinDialog ? Au.createPortal(i.jsx(m.JoinDialog, { bridge: window.__carton, onClose: () => setOpen(false) }), document.body) : null];
+// The Join dialog, loaded on first use: its state (the loaded chunk, open or not) is the page's, not a tile's.
+const __cbCartonJoin = { m: null, open: false, subs: new Set() };
+const __cbCartonJoinSet = (open, m = __cbCartonJoin.m) => {
+  Object.assign(__cbCartonJoin, { open, m });
+  for (const f of __cbCartonJoin.subs) f();
+};
+function __cbCartonJoinOpen() {
+  window.__cartonReact = r;
+  import("./carton-ui.js").then((x) => __cbCartonJoinSet(true, x), (e) => console.warn("[carton] Join didn't load:", e?.message ?? e));
+}
+// In Home's root: the dialog while it is open. Home going away closes it.
+function __cbCartonJoinHost() {
+  const [, render] = r.useReducer((n) => n + 1, 0);
+  r.useEffect(() => {
+    __cbCartonJoin.subs.add(render);
+    render();
+    return () => { __cbCartonJoin.subs.delete(render); if (!__cbCartonJoin.subs.size) __cbCartonJoin.open = false; };
+  }, []);
+  const { open, m } = __cbCartonJoin;
+  return open && m?.JoinDialog ? Au.createPortal(i.jsx(m.JoinDialog, { bridge: window.__carton, onClose: () => __cbCartonJoinSet(false) }), document.body) : null;
 }
 const __cbCartonJoinIcon = (className, strokeWidth) => i.jsxs("svg", { viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", strokeWidth, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": !0, className, children: [
   i.jsx("path", { d: "M10.2 13.8a3.6 3.6 0 0 0 5.1 0l3-3a3.6 3.6 0 0 0-5.1-5.1l-1 1" }), i.jsx("path", { d: "M13.8 10.2a3.6 3.6 0 0 0-5.1 0l-3 3a3.6 3.6 0 0 0 5.1 5.1l1-1" })] });
 function __cbCartonJoinTile() {
-  const [go, dialog] = __cbCartonUseJoin();
   return i.jsxs("div", { className: "contents", children: [
-    i.jsxs("button", { type: "button", onClick: go, "data-carton-join": "", className: "group flex w-full min-w-0 cursor-pointer flex-col text-left", children: [
+    i.jsxs("button", { type: "button", onClick: __cbCartonJoinOpen, "data-carton-join": "", className: "group flex w-full min-w-0 cursor-pointer flex-col text-left", children: [
       i.jsx("span", { className: "flex aspect-video w-full items-center justify-center rounded-ui-md bg-white/[0.04] text-white/60 ring-1 ring-white/[0.06] ring-inset transition-colors duration-150 group-hover:bg-white/[0.07] group-hover:text-white/90", children: __cbCartonJoinIcon("size-5", 1.6) }),
       i.jsxs("span", { className: "flex min-w-0 flex-col gap-0.5 pt-2.5", children: [
         i.jsx("span", { className: "truncate text-ui-md font-medium tracking-tight text-white/90", children: "Join a shared project" }),
-        i.jsx("span", { className: "truncate text-ui-xs text-white/50", children: "From an invite link" })] })] }),
-    dialog] });
+        i.jsx("span", { className: "truncate text-ui-xs text-white/50", children: "From an invite link" })] })] })] });
 }
 // The empty library's Join, in the look (its className) Cardboard gives the row's "Browse recipes".
 function __cbCartonJoinButton({ className }) {
-  const on = __cbCartonUseOn(), [go, dialog] = __cbCartonUseJoin();
+  const on = __cbCartonUseOn();
   if (!on) return null;
-  return i.jsxs(r.Fragment, { children: [
-    i.jsxs("button", { type: "button", onClick: go, "data-carton-join": "", className, children: [__cbCartonJoinIcon("size-[14px]", 2), "Join a shared project"] }),
-    dialog] });
+  return i.jsxs("button", { type: "button", onClick: __cbCartonJoinOpen, "data-carton-join": "", className, children: [__cbCartonJoinIcon("size-[14px]", 2), "Join a shared project"] });
 }
 `;
 
@@ -94,6 +106,9 @@ module.exports = {
       'i.jsxs("div",{className:"flex flex-wrap gap-[8px]",children:[a&&i.jsxs("button",{type:"button",onClick:a.onBrowse,"data-analytics":"projects-empty-browse-recipes"',
       'i.jsxs("div",{className:"flex flex-wrap gap-[8px]",children:[i.jsx(__cbCartonJoinButton,{className:v(q4,"bg-white/[0.06] text-white/85 hover:bg-white/[0.10] hover:text-white")}),a&&i.jsxs("button",{type:"button",onClick:a.onBrowse,"data-analytics":"projects-empty-browse-recipes"',
     );
+    // The Join dialog's host, in Home's root beside Cardboard's own dialogs (recipe, reference): it outlives the empty
+    // view and the grid both, which Home swaps once the library holds a project (final re-check N1).
+    index.replace("i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog})", "i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog}),i.jsx(__cbCartonJoinHost,{})");
     index.prepend(DASHBOARD);
   },
 };
