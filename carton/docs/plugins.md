@@ -428,6 +428,12 @@ answered by the runtime without waking the room, so idle sockets cost nothing. W
 alarm wakes the room every `PRESENCE_TIMEOUT_MS / 2` (60 s) to check for silent sockets. Each check reads one row,
 the maintenance due time, and sets the alarm; it writes no table rows.
 
+On the DO-blob fallback, a multipart upload that is neither completed nor aborted (the uploader quit) is swept from
+the vault's alarm once it has gone untouched for 24 h (`VAULT_UPLOAD_TTL_MS`), as R2's lifecycle rule would do. Its
+rows are deleted at one row written each, so about 1 per MiB, and at most 500 per alarm (`VAULT_SWEEP_ROWS`). The sweep
+adds no row to a create or a part. A listing writes at most one an hour. The alarm is set only when none is pending,
+and a vault with no upload has none. The sweep's tests check these counts.
+
 Each `POST …/blobs/heads` key is one R2 call (a team project's editor: up to four, for the claim and the grant
 check). The Worker checks at most 200 keys a request, under Cloudflare's per-request subrequest limit; raise
 `BLOB_HEADS_PER_REQUEST` (to 1,000 at most) if your plan's limit allows more.
