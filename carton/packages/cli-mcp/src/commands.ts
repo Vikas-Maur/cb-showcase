@@ -4,7 +4,7 @@
 // cb result contract: confirmed@seq, pending, or conflicts, with the actor's late-conflict notices first.
 import { join } from "node:path";
 import { pathKey } from "@carton/core";
-import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, Version } from "@carton/core";
+import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, StateRef, Version } from "@carton/core";
 import type { CbResult, WriteOp } from "@carton/local";
 import { ago, cardLine, exitCodeOf, noticeLines, resultText, shellWord, table, who } from "./format.ts";
 import { resolveCut, resolveVersion, UsageError, versionName } from "./refs.ts";
@@ -73,6 +73,20 @@ async function cutNames(carton: Carton): Promise<Map<string, CutRecord>> {
 
 const versionOf = (v: Version, cuts: Map<string, CutRecord>) => versionName(cuts.get(v.ref.branchId) ?? v.ref.branchId.slice(0, 8), v.ref.seq);
 
+/**
+ * Laptop, build 915eb36: `cb restore main@0` emptied the project. A cut's start that holds nothing (core's
+ * `Version.blank`: the root an imported project's history starts from) is refused before anything is written, saying
+ * which version holds the project. (Core refuses it too; this says it in the words of `cb history`.)
+ */
+async function refuseEmpty(carton: Carton, v: StateRef | string, what: string): Promise<void> {
+  if (typeof v === "string" || v.seq !== 0) return;
+  const [start, next] = [(await carton.log({ cut: v.branchId, before: 1, limit: 1 }))[0], (await carton.log({ cut: v.branchId, before: 2, limit: 1 }))[0]];
+  if (!start?.blank) return;
+  const cut = (await carton.cuts()).find((c) => c.id === v.branchId) ?? v.branchId.slice(0, 8);
+  const first = next && next.ref.seq === 1 && next.kind === "import" ? ` The project as it was first saved is ${versionName(cut, 1)}.` : " Pick a later version (see `cb history`).";
+  throw Object.assign(new Error(`${versionName(cut, 0)} is where the history starts, before the project was added: there is nothing in it to ${what}.${first}`), { code: "EMPTY_VERSION" });
+}
+
 /** A clip by id or by its label (name), on the timeline collection. */
 function findRecord(carton: Carton, doc: Doc, text: string): { coll: string; id: string } {
   const tl = carton.schema.timeline;
@@ -129,13 +143,13 @@ const history: CommandSpec = {
     const now = ctx.now?.() ?? Date.now();
     const rows = [];
     for (const v of versions) {
-      const row: Record<string, unknown> = { version: versionOf(v, names), ref: v.ref, at: v.at, by: v.author, kind: v.kind, name: v.name ?? null, change: v.change };
+      const row: Record<string, unknown> = { version: versionOf(v, names), ref: v.ref, at: v.at, by: v.author, kind: v.kind, name: v.name ?? null, change: v.change, ...(v.blank ? { empty: true } : {}) };
       if (a.stats) Object.assign(row, stats(carton, await carton.checkout(v.ref)));
       rows.push(row);
     }
     const head = ["VERSION", "SAVED", "BY", "WHAT", ...(a.stats ? ["TRACKS", "ITEMS", "DURATION"] : [])];
     const text = rows.length
-      ? table([head, ...rows.map((r: any) => [r.version, ago(r.at, now), who(r.by), r.name ?? r.kind, ...(a.stats ? [String(r.tracks), String(r.items), `${r.duration.toFixed(1)}s`] : [])])])
+      ? table([head, ...rows.map((r: any) => [r.version, ago(r.at, now), who(r.by), r.name ?? (r.empty ? `${r.kind} (empty)` : r.kind), ...(a.stats ? [String(r.tracks), String(r.items), `${r.duration.toFixed(1)}s`] : [])])])
       : "No versions yet";
     return out({ cut: { id: cut.id, name: cut.name }, versions: rows }, text);
   },
@@ -169,6 +183,7 @@ const cutNew: CommandSpec = {
   write: true,
   async run(ctx, a) {
     const from = a.from ? await resolveVersion(ctx.project.carton, a.from) : undefined;
+    if (from !== undefined) await refuseEmpty(ctx.project.carton, from, "make a cut from");
     const r = await ctx.project.write({ kind: "fork", name: String(a.name), from: typeof from === "string" ? from : from ? `${from.branchId}@${from.seq}` : undefined }, { actor: ctx.actor });
     const cut = (r as any).cut as CutRecord | undefined;
     return { json: r, text: r.status === "error" ? resultText(r) : `New cut "${cut?.name ?? a.name}" (${cut?.id.slice(0, 8) ?? "?"})`, exitCode: exitCodeOf(r) };
@@ -303,6 +318,7 @@ const restore: CommandSpec = {
   write: true,
   async run(ctx, a) {
     const v = await resolveVersion(ctx.project.carton, String(a.version));
+    await refuseEmpty(ctx.project.carton, v, "restore");
     const r = await ctx.project.write({ kind: "restore", ref: typeof v === "string" ? v : `${v.branchId}@${v.seq}` }, { actor: ctx.actor });
     return writeOut(r, `Restored ${a.version}`);
   },
@@ -368,6 +384,7 @@ const publish: CommandSpec = {
   async run(ctx, a) {
     const { carton } = ctx.project;
     const v = a.version ? await resolveVersion(carton, String(a.version)) : (await carton.head()).ref;
+    await refuseEmpty(carton, v, "publish");
     const from = typeof v === "string" ? v : `${v.branchId}@${v.seq}`;
     const label = a.name ? String(a.name) : `Published ${new Date(ctx.now?.() ?? Date.now()).toISOString().slice(0, 10)}`;
     const r = await ctx.project.write({ kind: "fork", name: label, from, cutKind: "published" }, { actor: ctx.actor });
