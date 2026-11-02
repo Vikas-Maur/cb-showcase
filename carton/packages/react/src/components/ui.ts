@@ -112,6 +112,41 @@ export function ActorName({ actor, detail }: { actor: Actor; detail?: boolean })
   return h(HoverMore, { className: "carton-actor-name", "data-kind": actor.kind, short: label, more });
 }
 
+/**
+ * Arrow keys in a role=radiogroup of buttons (WAI-ARIA radio group): Left/Up and Right/Down move the choice and the
+ * focus, Home and End go to the ends. Only one radio is a tab stop (the checked one: `tabIndex: checked ? 0 : -1`).
+ * The keys stop here, so a player's own arrow keys around the group don't also fire.
+ */
+export function radioKeys(e: KeyboardEvent<HTMLElement>) {
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]:not(:disabled)')];
+  const i = items.indexOf(document.activeElement as HTMLElement);
+  if (i < 0) return;
+  const n =
+    e.key === "ArrowRight" || e.key === "ArrowDown" ? (i + 1) % items.length
+    : e.key === "ArrowLeft" || e.key === "ArrowUp" ? (i - 1 + items.length) % items.length
+    : e.key === "Home" ? 0
+    : e.key === "End" ? items.length - 1
+    : -1;
+  if (n < 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  items[n]!.focus();
+  items[n]!.click();
+}
+
+/**
+ * A native tooltip only when the text doesn't fit: set on hover from the element's own size, so a name that shows
+ * whole never gets one (and a truncated name always does: History rows, the cut switcher, Compare's labels).
+ */
+export function tipIfCut(e: { currentTarget: EventTarget | null }) {
+  const el = e.currentTarget as HTMLElement | null;
+  if (!el) return;
+  const text = el.textContent ?? "";
+  if (el.scrollWidth > el.clientWidth + 1) {
+    if (el.title !== text) el.title = text;
+  } else if (el.title) el.removeAttribute("title");
+}
+
 // ---------------------------------------------------------------- menus
 
 function focusables(root: HTMLElement): HTMLElement[] {

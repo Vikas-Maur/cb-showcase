@@ -59,17 +59,40 @@ const WIDTH = { key: "carton.sidePanelWidth", min: 300, max: 640, initial: 384 }
  * History in the side panel: the cut it shows, with its switcher (switch, New cut, rename, Fold into…, which opens
  * Fold in: all, some or none of it), then the versions, Compare with current, and "Watch the changes" in their place.
  */
-function HistorySide() {
+function HistorySide({ bridge }) {
   const cuts = useCuts();
   const [watch, setWatch] = useState(null);
   const [fold, setFold] = useState(null);
   const current = cuts.find((c) => c.current)?.head;
+  const box = useRef(null);
+  // Back from Watch the changes: focus goes to the version list, not to <body>.
+  const back = useCallback(() => {
+    setWatch(null);
+    requestAnimationFrame(() => box.current?.querySelector(".carton-history-list")?.focus({ preventScroll: true }));
+  }, []);
+  // The editor's own player shows the side being watched (the read-only preview Watch opens), so its playhead follows
+  // Watch's: real frames there, at most 10 seeks a second while it plays, and always the last one.
+  const seeker = useMemo(() => {
+    let last = 0, timer = null, at = 0;
+    const go = () => { timer = null; last = performance.now(); bridge.seek?.(at); };
+    return {
+      onFrame: (_side, t) => {
+        at = t;
+        if (performance.now() - last >= 100) go();
+        else timer ??= setTimeout(go, 100);
+      },
+      stop: () => { clearTimeout(timer); timer = null; },
+    };
+  }, [bridge]);
+  const onFrame = seeker.onFrame;
+  useEffect(() => (watch ? seeker.stop : undefined), [watch, seeker]);
   if (watch) {
-    return h("div", { className: "carton-sidebar-watch" },
-      h(Button, { variant: "ghost", icon: "arrowLeft", onClick: () => setWatch(null) }, words.history),
-      h(WatchTheChanges, { a: watch.a, b: watch.b }));
+    // Esc leaves Watch (the innermost layer) and goes no further: the panel stays open.
+    return h("div", { className: "carton-sidebar-watch", onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); back(); } } },
+      h(Button, { variant: "ghost", icon: "arrowLeft", onClick: back, title: "Back to History (Esc)" }, words.history),
+      h(WatchTheChanges, { a: watch.a, b: watch.b, inPlayer: true, onFrame }));
   }
-  return h("div", { className: "carton-sidebar-history" },
+  return h("div", { ref: box, className: "carton-sidebar-history" },
     h("div", { className: "carton-sidebar-cuts" }, h(CutsMenu, { onFoldIn: (from, into) => setFold({ from: from.id, into: into.id }) })),
     h(HistoryPanel, { currentRef: current, onWatch: (a, b) => setWatch({ a, b }) }),
     fold ? h(FoldInDialog, { fromCutId: fold.from, intoCutId: fold.into, onClose: () => setFold(null) }) : null);
@@ -147,7 +170,7 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
           className: "flex size-control-sm shrink-0 cursor-pointer items-center justify-center rounded-ui-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-white/30" },
           h(Icon, { name: "x", size: 16 }))),
       h("div", { className: "carton-sidebar-body relative flex min-h-0 flex-1 flex-col overflow-x-hidden overflow-y-auto" },
-        panel === "share" && share ? h(share, { projectId, active: true, bridge }) : panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, null))));
+        panel === "share" && share ? h(share, { projectId, active: true, bridge }) : panel === "comments" ? h(CommentsSide, { projectId, bridge }) : h(HistorySide, { bridge }))));
 }
 
 /** The side panel, beside the chat: opened and closed from the title bar's icons, which show the one open. */

@@ -10,7 +10,7 @@ import { Icon } from "../icons.ts";
 import type { Shot, ShotDiff } from "../model.ts";
 import { ChangesPlayer, type PlayerState, type Side } from "../player.ts";
 import { columns, diffSummary, type Column } from "../shots.ts";
-import { Button, cx } from "./ui.ts";
+import { Button, cx, radioKeys } from "./ui.ts";
 import { PreviewBanner } from "./status.ts";
 
 export interface WatchTheChangesProps {
@@ -24,8 +24,13 @@ export interface WatchTheChangesProps {
    * frame while playing, and on every seek, so keep it cheap.
    */
   onFrame?: (side: Side, time: number) => void;
-  /** The host's preview element. Without one, a plain card names the shot on screen. */
+  /** The host's preview element. Without one, a short note says where the picture is (see `inPlayer`). */
   preview?: ReactNode;
+  /**
+   * The host shows the side being watched in its own player (Cardboard: the editor's read-only preview, its playhead
+   * following `onFrame`). Without a `preview`, the note then says the picture is there, not that there is none.
+   */
+  inPlayer?: boolean;
   /** Seconds of context played before and after each change. */
   context?: number;
   /** Pixels per second in the strips. */
@@ -183,13 +188,20 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
   const summary = useMemo(() => diffSummary(diff, player.rows), [diff, player]);
   const boxesRef = useRef(layout.boxes);
   boxesRef.current = layout.boxes;
+  const totalA = diff.a.length ? diff.a[diff.a.length - 1]!.end : 0;
+  const totalB = diff.b.length ? diff.b[diff.b.length - 1]!.end : 0;
+  // Focus comes in when it opens (Cardboard's own panels do so), so Space, the arrows and Esc work at once.
+  const root = useRef<HTMLElement>(null);
+  useEffect(() => {
+    root.current?.focus({ preventScroll: true });
+  }, []);
 
   // Per frame: move the playhead and the timecode by hand, call the host. No React state is touched here.
   useEffect(() => {
     const draw = (side: Side, t: number) => {
       const x = xAt(boxesRef.current, side, t);
       if (head.current) head.current.style.transform = `translateX(${x}px)`;
-      if (clock.current) clock.current.textContent = duration(t);
+      if (clock.current) clock.current.textContent = timecode(t, side === "a" ? totalA : totalB);
       onFrame.current?.(side, t);
     };
     const offFrame = player.onFrame(draw);
@@ -233,6 +245,13 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
   const onExpand = useCallback((row: number) => setExpanded((e) => new Set(e).add(row)), []);
   const n = player.changeRows.length;
   const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    // Esc leaves Watch the changes (the innermost layer), never the whole panel around it.
+    if (e.key === "Escape" && props.onClose) {
+      e.preventDefault();
+      e.stopPropagation();
+      props.onClose();
+      return;
+    }
     if ((e.target as HTMLElement).tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
     if (e.key === " ") {
       e.preventDefault();
@@ -246,21 +265,34 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
     }
   };
 
+  const ab = h(
+    "div",
+    { className: "carton-segmented carton-ab", role: "radiogroup", "aria-label": `${words.before} / ${words.after}`, onKeyDown: radioKeys },
+    ...(["a", "b"] as const).map((s) =>
+      h("button", { key: s, type: "button", role: "radio", "aria-checked": st.side === s, tabIndex: st.side === s ? 0 : -1, className: "carton-segment", onClick: () => player.setSide(s) }, s === "a" ? words.before : words.after),
+    ),
+  );
   return h(
     "section",
-    { className: cx("carton-watch", props.className), "aria-label": words.watchTheChanges, onKeyDown, tabIndex: -1 },
+    { ref: root, className: cx("carton-watch", props.className), "aria-label": words.watchTheChanges, onKeyDown, tabIndex: -1 },
     h(PreviewBanner, null),
     h(
       "header",
       { className: "carton-watch-head" },
-      h("h3", { className: "carton-card-title" }, words.watchTheChanges),
-      h("span", { className: "carton-watch-summary" }, words.differ(summary.shots, summary.seconds, summary.total)),
-      props.onClose ? h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: props.onClose }) : null,
+      h(
+        "div",
+        { className: "carton-watch-titles" },
+        h("h3", { className: "carton-card-title" }, words.watchTheChanges),
+        h("span", { className: "carton-watch-summary" }, words.watchSummary(n, summary.seconds, summary.total)),
+      ),
+      props.onClose ? h(Button, { variant: "ghost", icon: "x", label: words.close, title: `${words.close} (Esc)`, onClick: props.onClose }) : null,
     ),
+    // Before / After sits above the picture, on its own row: it never runs out of a narrow panel (300 px).
+    n === 0 ? null : h("div", { className: "carton-watch-abrow" }, ab),
     h(
       "div",
-      { className: "carton-watch-stage" },
-      props.preview ?? h(StagePlaceholder, { diff, side: st.side, player }),
+      { className: "carton-watch-stage", "data-note": props.preview ? undefined : "" },
+      props.preview ?? h(StagePlaceholder, { side: st.side, inPlayer: !!props.inPlayer }),
     ),
     n === 0
       ? h("p", { className: "carton-empty" }, words.noChanges)
@@ -270,14 +302,11 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
           h(Button, { variant: "ghost", icon: "previous", label: words.previousChange, title: words.previousChange, disabled: st.change <= 0, onClick: () => player.previous() }),
           h(Button, { variant: "primary", icon: st.playing ? "pause" : "play", onClick: () => player.toggle(), className: "carton-watch-play" }, st.playing ? words.pause : words.playChanges),
           h(Button, { variant: "ghost", icon: "next", label: words.nextChange, title: words.nextChange, disabled: st.change >= n - 1, onClick: () => player.next() }),
-          h("span", { className: "carton-watch-count", "aria-live": "polite" }, words.changeOf(Math.max(1, st.change + 1), n)),
-          h("span", { ref: clock, className: "carton-watch-clock" }, duration(player.time)),
           h(
-            "div",
-            { className: "carton-segmented carton-ab", role: "radiogroup", "aria-label": `${words.before} / ${words.after}` },
-            ...(["a", "b"] as const).map((s) =>
-              h("button", { key: s, type: "button", role: "radio", "aria-checked": st.side === s, className: "carton-segment", onClick: () => player.setSide(s) }, s === "a" ? words.before : words.after),
-            ),
+            "span",
+            { className: "carton-watch-where" },
+            h("span", { className: "carton-watch-count", "aria-live": "polite" }, words.changeOf(Math.max(1, st.change + 1), n)),
+            h("span", { ref: clock, className: "carton-watch-clock" }, timecode(player.time, st.side === "a" ? totalA : totalB)),
           ),
         ),
     h(
@@ -304,36 +333,28 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
   );
 }
 
-/** Without a host preview: the shot on screen by name, its side, and its colour. Re-renders per shot, not per frame. */
-function StagePlaceholder({ diff, side, player }: { diff: ShotDiff; side: Side; player: ChangesPlayer }) {
+/**
+ * Without a host preview: where the picture is. A host whose own player shows the side (Cardboard: the editor's
+ * preview, read-only) says so; any other says there is no picture here. Never a made-up frame (a coloured card with an
+ * old clip name read as the real thing: UI audit P2-6).
+ */
+function StagePlaceholder({ side, inPlayer }: { side: Side; inPlayer: boolean }) {
   const words = useWords();
-  const [shot, setShot] = useState<Shot | null>(null);
-  useEffect(() => {
-    let last: Shot | null = null;
-    const find = (s: Side, t: number) => {
-      const list = s === "a" ? diff.a : diff.b;
-      let lo = 0, hi = list.length - 1, hit: Shot | null = null;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        const x = list[mid]!;
-        if (t < x.start) hi = mid - 1;
-        else if (t >= x.end) lo = mid + 1;
-        else {
-          hit = x;
-          break;
-        }
-      }
-      if (hit !== last) setShot((last = hit));
-    };
-    find(player.state.side, player.time);
-    return player.onFrame(find);
-  }, [diff, player]);
   return h(
     "div",
-    { className: "carton-stage", "data-side": side, style: { ["--carton-shot-hue" as string]: shot ? (shot.sig * 47) % 360 : 0 } },
+    { className: "carton-stage-note", "data-side": side },
     h("span", { className: "carton-stage-side" }, side === "a" ? words.before : words.after),
-    h("span", { className: "carton-stage-shot" }, shot?.label ?? "—"),
+    h("span", { className: "carton-stage-text" }, inPlayer ? words.shownInPlayer : words.noPicture),
   );
+}
+
+/** Cardboard's timecode: "0:04 / 0:06" (whole seconds, in the text face, as its player shows it). */
+export function timecode(t: number, total: number): string {
+  const f = (s: number) => {
+    const x = Math.max(0, Math.floor(Number.isFinite(s) ? s : 0));
+    return x >= 3600 ? `${Math.floor(x / 3600)}:${String(Math.floor((x % 3600) / 60)).padStart(2, "0")}:${String(x % 60).padStart(2, "0")}` : `${Math.floor(x / 60)}:${String(x % 60).padStart(2, "0")}`;
+  };
+  return `${f(t)} / ${f(total)}`;
 }
 
 export function WatchTheChanges(props: WatchTheChangesProps) {

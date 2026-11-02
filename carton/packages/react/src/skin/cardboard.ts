@@ -379,21 +379,23 @@ export const cardboardSkin = `
 
 /* ---------------------------------------------------------------- Watch the changes */
 :where(${S}) :where(.carton-watch){display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--cb-panel);outline:none}
-:where(${S}) :where(.carton-watch-head){display:flex;align-items:center;gap:10px}
-:where(${S}) :where(.carton-watch-summary){font-size:12px;color:var(--cb-fg-3)}
-:where(${S}) :where(.carton-watch-head > .carton-btn){margin-left:auto}
+:where(${S}) :where(.carton-watch-head){display:flex;align-items:flex-start;gap:10px}
+:where(${S}) :where(.carton-watch-titles){flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+:where(${S}) :where(.carton-watch-summary){font-size:12px;line-height:16px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-watch-head > .carton-btn){margin:-4px -4px 0 auto}
+:where(${S}) :where(.carton-watch-abrow){display:flex}
 :where(${S}) :where(.carton-watch-stage){aspect-ratio:16/9;max-height:320px;border-radius:8px;overflow:hidden;background:#0f0f0f}
-:where(${S}) :where(.carton-stage){--carton-shot-hue:0;position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;
-  background:radial-gradient(120% 90% at 50% 40%, hsl(var(--carton-shot-hue) 32% 26%), hsl(var(--carton-shot-hue) 30% 10%));transition:background .2s}
-:where(${S}) :where(.carton-stage-side){position:absolute;top:10px;left:10px;padding:2px 7px;border-radius:4px;background:#000000a0;color:var(--cb-fg-1);font-size:11px;font-weight:600}
-:where(${S}) :where(.carton-stage[data-side=a] .carton-stage-side){color:#f4a3a3}
-:where(${S}) :where(.carton-stage[data-side=b] .carton-stage-side){color:#86efac}
-:where(${S}) :where(.carton-stage-shot){font-size:22px;font-weight:600;letter-spacing:-.01em;color:#ffffffe0;text-shadow:0 2px 12px #00000080}
-:where(${S}) :where(.carton-watch-controls){display:flex;align-items:center;gap:6px}
-:where(${S}) :where(.carton-watch-play){min-width:132px}
-:where(${S}) :where(.carton-watch-count){margin-left:6px;font-size:12px;font-weight:500;color:var(--cb-fg-2)}
-:where(${S}) :where(.carton-watch-clock){font-size:12px;color:var(--cb-fg-3);font-family:var(--cb-mono)}
-:where(${S}) :where(.carton-ab){margin-left:auto;align-self:center}
+/* no picture of its own: one line saying where the picture is, not a 16:9 stand-in */
+:where(${S}) :where(.carton-watch-stage[data-note]){aspect-ratio:auto;max-height:none;background:none;overflow:visible}
+:where(${S}) :where(.carton-stage-note){display:flex;align-items:center;gap:8px;min-height:32px;padding:6px 10px;border-radius:8px;background:var(--cb-sunken);font-size:12px;line-height:16px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-stage-side){flex:none;padding:1px 6px;border-radius:4px;background:#ffffff0f;font-size:11px;font-weight:600;line-height:16px}
+:where(${S}) :where(.carton-stage-note[data-side=a] .carton-stage-side){color:#f4a3a3}
+:where(${S}) :where(.carton-stage-note[data-side=b] .carton-stage-side){color:#86efac}
+/* the controls wrap at a narrow width (300 px panel) instead of running out of it */
+:where(${S}) :where(.carton-watch-controls){display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+:where(${S}) :where(.carton-watch-where){display:inline-flex;align-items:baseline;gap:8px;margin-left:auto;white-space:nowrap}
+:where(${S}) :where(.carton-watch-count){font-size:12px;font-weight:500;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-watch-clock){font-size:12px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-strips){display:grid;grid-template-columns:52px 1fr;gap:0 6px;padding:8px 0 2px;border-top:1px solid #ffffff0a}
 :where(${S}) :where(.carton-strip-labels){display:grid;grid-template-rows:40px 40px;row-gap:4px;font-size:11px;font-weight:500;color:var(--cb-fg-4)}
 :where(${S}) :where(.carton-strip-labels span){display:flex;align-items:center}

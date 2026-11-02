@@ -165,6 +165,12 @@ export const words = {
   nextChange: "Next change",
   previousChange: "Previous change",
   noChanges: "No changes to watch. The two versions look the same.",
+  // What differs, in the same unit as the "Change 1 of N" counter beside it: changes and seconds, never shots.
+  watchSummary: (changes: number, s: number, total: number) =>
+    changes === 0 ? "No differences" : `${plural(changes, "change", "changes")} · ${seconds(s)} of ${seconds(total)}`,
+  // The host shows the side in its own player (Cardboard: the editor's preview, read-only), so the panel says so.
+  shownInPlayer: "Shown in the player, read-only",
+  noPicture: "Preview not available here",
 
   // Read-only preview (§9, R2-16)
   // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
