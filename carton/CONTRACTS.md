@@ -141,9 +141,18 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   goes out at most 10 times a second (`PRESENCE_PER_SEC`), coalesced: the latest state always arrives, and one
   still waiting when the handle closes (a leave, `null`) is sent before the close; the relay keeps none. When this
   replica's own connection closes (or it stops), every peer it showed gets a `presence` event with `state: null`: a
-  host that restarts keeps no one to send leaves for; a peer still there shows again with its next update. This
-  replica's own latest presence (unless it was a leave) goes out again after each reconnect's welcome, an update a
-  disconnect caught waiting included. A pending edit survives a
+  host that restarts keeps no one to send leaves for. This replica's own latest presence (unless it was a leave) goes
+  out again after each reconnect's welcome, an update a disconnect caught waiting included, and again (once, coalesced
+  by the throttle) when a peer shows for the first time on a connection or relays its connection's first presence
+  (`arrived`: a second tab of someone shown already), unless the host sent that peer as `kept`. A connection's first
+  presence that isn't a leave says `arrived`; an answer never does, so no round goes on. Peers are told apart by
+  kind, id and agentId. The handle's `sync.presence()` shows on its current cut: when that changes (`switchTo`, or
+  another process's switch it follows), the cut it showed on gets a leave.
+  The sequencer keeps each connection's latest presence per branch and actor in memory (the actors `shown` holds, up
+  to 16 KiB each) and sends a connection that subscribes the presence every other connection there shows, right
+  after its welcome, marked `kept`. So after a host restart or a join, in either order, each side lists the other
+  even when nobody moves (presence P2); a host that lost what it kept (a Durable Object's wake) still converges by
+  the clients' answer. A pending edit survives a
   restart as the queue had it (its rebase count, the cards its rebases raised, the bases it was sent on): reported
   when it settles, withdrawn rather than dropped if a rebase emptied it after it was sent. Each stored edit keeps its
   causal base (the confirmed seq and the pending edits it was made on, and what those did as it read them) and is
@@ -186,6 +195,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     cut isn't held here.
   - Presence goes out as the resolved person.
   - A `people` event says authors may read differently.
+- **A `cuts` event (laptop re-check P3 #1)** says the cuts changed: one made (with no edit yet, which moves no head and
+  so tells no `change`), renamed, gone, or its kind, protection or sync changed. This handle's own writes, a sync, and
+  another process's writes on the same store alike; another process's are told once this handle reads the store again
+  (any read: `log()`, `cuts()`, `head()`…). A cut menu reads `cuts()` again on it.
   - An app shows its own edits as "You" by passing its resolved person as `me` (`identity()`, with its `group`).
 - **Versions in words (UI audit 2026-11-02).** `log({summary: true})` gives each version one line (`summary`) and,
   when that line doesn't say it all, every change it made (`details`, describe()'s lines). A version of several changes
@@ -193,6 +206,14 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   restore and the import say what they were ("Folded 'Client review' into 'Main cut': 3 changes", "Restored an earlier
   version"). Descriptions never print an id or a hash: an id field (`…Id`, `…Ids`, `…Hash`) or a hash-like value is
   told by its field's name, and a collection's `phrases` tell a field in a sentence ("Linked %s for sharing").
+  - **A split reads as a split** (laptop re-check P3 #2). One clip removed and, in its place, two or more of the same
+    footage (same kind, references and name) on its track, back to back over its range, is one line: "Split
+    'clip.mp4' at 4.0 s" (several points: "at 3.0 s and 7.0 s"). A part changed after it in the same version is told
+    against what the split made of it: "Split 'clip.mp4' at 4.0 s, moved its right part 4.0 s → 20.0 s" (one part
+    where the split left it, the other keeping the cut's source point: moved, or trimmed at its far end). A field the
+    split itself drops or rescales (a transition, a fade, keyframes) is no change of its own. `splits(ops, base, schema)`
+    names them (removed clip, parts left to right), so a list by record (the Fold dialog) shows a split as one row,
+    left out whole.
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
     only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3

@@ -214,6 +214,8 @@ export interface PresenceMsg {
   branchId: string;
   actor: Actor;
   state: PresenceState | null;
+  /** The first presence (not a leave) this connection sends: peers answer with theirs, as for a newcomer. */
+  arrived?: true;
 }
 /** The person at a replica (windows-sync R3): the session's account (`AuthContext.account`) and the name it shows. */
 export interface Person {
@@ -356,6 +358,16 @@ export interface PresenceFanoutMsg {
   branchId: string;
   actor: Actor;
   state: PresenceState | null;
+  /**
+   * Sent from what the server keeps, to a connection that just subscribed: a peer already there when it came (that
+   * peer was subscribed, so it got the newcomer's own presence). Absent on a relayed update.
+   */
+  kept?: true;
+  /**
+   * Relayed from a connection's first presence (`PresenceMsg.arrived`): a newcomer, even one whose actor is already
+   * shown through another connection (a second tab), that may not know who is here. Never with `kept`.
+   */
+  arrived?: true;
 }
 export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request" | "write-limit";
 export interface ErrorMsg {

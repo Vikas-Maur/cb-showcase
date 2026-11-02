@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
+import { actorKey, apply, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -921,6 +921,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         if ((on === cutId && g.length) || (prev?.on === cutId && prev.ghosts.length)) publishGhosts();
         break;
       }
+      // A cut made (with no edit yet too), renamed or gone, by any process: the cut menu reads them again. A new cut
+      // with no edit moves no head, so no `change` tells it (laptop re-check P3 #1: `cb cut new` never showed).
+      case "cuts":
+        scheduleRefresh();
+        break;
       case "notice": {
         const n = e.notice;
         if (n.cards?.length && (n.to === meKey || n.to === myGroup || n.to === personKey)) addCards(n.cards, n.by, n.cut ?? cutId);
@@ -1139,6 +1144,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const planRest = new Map<string, { ids: string[]; ops: Op[]; whole: boolean }>();
   // Whether the plan had anything new to fold in (changes or cards), beyond what was left out earlier.
   let planNew = false;
+  // A row of the plan that stands for more than its own record (a split clip: the removed clip and its parts) → the
+  // other records' keys, left out with it.
+  const planJoined = new Map<string, string[]>();
   const planKey = (from: string, into: string) => `${from}>${into}`;
   let planFor = "";
 
@@ -1160,6 +1168,40 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       sig: cardSig(card),
       ...itemOf(card),
     };
+  };
+
+  /**
+   * A split clip in a list of changes by record (the Fold dialog) is one change: its parts' ops join the removed clip's
+   * row (which keeps that record's key; `joined` gets the parts' keys, left out with it), so it is worded as the split
+   * ("Split 'clip.mp4' at 4.0 s"). Returns, per joined row, the record to credit it to: the first part, which whoever
+   * split it made.
+   */
+  /** A fold's ops by record (`items/c1`), root fields by name: one row of the Fold dialog each. */
+  const byRecord = (ops: readonly Op[]) => {
+    const groups = new Map<string, Op[]>();
+    for (const op of ops) {
+      if (op.op === "remap") continue;
+      const p = op.path;
+      const key = schema.collections[String(p[0])] ? pathKey(p.slice(0, 2)) : pathKey(p.slice(0, 1));
+      let g = groups.get(key);
+      if (!g) groups.set(key, (g = []));
+      g.push(op);
+    }
+    return groups;
+  };
+  // Both cuts' heads as a plan saw them: a split row left out is checked against the cuts as they are at the fold.
+  const headsOf = async (fromId: string, intoId: string) => (await Promise.all([fromId, intoId].map(async (cut) => (await carton.log({ cut, limit: 1 }))[0]?.ref.seq ?? 0))).join("|");
+  let planHeads = "";
+  const joinSplits = (groups: Map<string, Op[]>, ops: readonly Op[], doc: Doc, joined?: Map<string, string[]>) => {
+    const creditOf = new Map<string, string>();
+    for (const sp of splits(ops, doc, schema)) {
+      const key = pathKey([sp.collection, sp.removed]), parts = sp.parts.map((id) => pathKey([sp.collection, id]));
+      if (!groups.has(key) || parts.some((k) => !groups.has(k))) continue;
+      for (const k of parts) groups.get(key)!.push(...groups.get(k)!), groups.delete(k);
+      joined?.set(key, parts);
+      creditOf.set(key, parts[0]!);
+    }
+    return creditOf;
   };
 
   /**
@@ -1187,10 +1229,12 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const key = recordOf(pathKey(op.path));
         (groups.get(key) ?? groups.set(key, []).get(key)!).push(op);
       }
+      // a split left out is one row, as it was in the plan (all of a partial fold's rows fold in together anyway)
+      const creditOf = joinSplits(groups, d.ops, doc);
       const ids: string[] = [];
       for (const [key, ops] of groups) {
         const record = !!schema.collections[splitPathKey(key)[0]!];
-        const who = record ? await carton.credits(splitPathKey(key), { cut: fromId, detail: true }).catch(() => null) : null;
+        const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }).catch(() => null) : null;
         const id = `left:${p.change}:${key}`;
         ids.push(id);
         out.push({ id, summary: engine.describe(ops, doc, schema).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
@@ -1255,6 +1299,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const r = await carton.fold(fromId, { into: intoId, check: true, ...(o?.allCards ? { missingBase: "all-cards" as const } : {}) });
       planCards.clear();
       planRest.clear();
+      planJoined.clear();
       planNew = false;
       planFor = planKey(fromId, intoId);
       const base = { from, into, changes: [] as FoldChange[], conflicts: [] as Conflict[], warnings: [] as string[] };
@@ -1268,6 +1313,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       for (const c of cardList) planCards.set(c.path, c);
       planNew = r.status === "confirmed" || r.status === "conflicts" || r.status === "compare";
       const fromHead = (await carton.log({ cut: fromId, limit: 1 }))[0];
+      planHeads = await headsOf(fromId, intoId);
       // the cut folded into names the cards' clips (and every change below): read once
       const intoDoc = cardList.length || r.preview ? (await carton.head(intoId)).doc : undefined;
       const cardsOut = cardList.map((card) => toFoldConflict(card, ui(fromHead?.author), intoId, fromId, intoDoc));
@@ -1276,20 +1322,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const preview = r.preview;
       if (!preview) return { ...base, conflicts: cardsOut, partial: false };
       // One row per record the fold touches, so leaving one out (partial accept) is keyed by its record path.
-      const groups = new Map<string, Op[]>();
-      for (const op of preview.ops) {
-        if (op.op === "remap") continue;
-        const p = op.path;
-        const key = schema.collections[String(p[0])] ? pathKey(p.slice(0, 2)) : pathKey(p.slice(0, 1));
-        let g = groups.get(key);
-        if (!g) groups.set(key, (g = []));
-        g.push(op);
-      }
+      const groups = byRecord(preview.ops);
+      // a split clip is one row, left out whole (fold() adds its parts' keys)
+      const creditOf = joinSplits(groups, preview.ops, intoDoc!, planJoined);
       const changes: FoldChange[] = [];
       for (const [key, ops] of groups) {
         const words = engine.describe(ops, intoDoc!, schema);
         const record = !!schema.collections[splitPathKey(key)[0]!];
-        const who = record ? await carton.credits(splitPathKey(key), { cut: fromId, detail: true }) : null;
+        const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }) : null;
         changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock() });
       }
       // A remap (ripple) can't be left out on its own: it moves many records at once.
@@ -1354,7 +1394,16 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       // What earlier partial folds left out (UI audit P1-4): each one's rows fold in together, as "fold in the rest"
       // (a revert of its inverse), after the new changes; leaving any of its rows out keeps all of them for later.
       const restRows = new Set([...planRest.values()].flatMap((x) => x.ids));
-      const leaveOut = o.leaveOut.filter((id) => !restRows.has(id));
+      // A split row left out stands for the clip and its parts. If either cut moved since the plan (its parts split
+      // again, say), they are found again in what the fold would bring now, so no part of it comes in (review P2).
+      let joined: ReadonlyMap<string, string[]> = planJoined;
+      if (o.leaveOut.some((id) => planJoined.has(id)) && (await headsOf(fromId, intoId)) !== planHeads) {
+        const now = (await carton.fold(fromId, { into: intoId, check: true, ...(o.allCards ? { missingBase: "all-cards" as const } : {}) })) as { preview?: { ops: Op[] } };
+        const fresh = new Map<string, string[]>();
+        if (now.preview) joinSplits(byRecord(now.preview.ops), now.preview.ops, (await carton.head(intoId)).doc, fresh);
+        joined = new Map([...planJoined].map(([k, parts]) => [k, fresh.get(k) ?? parts]));
+      }
+      const leaveOut = o.leaveOut.filter((id) => !restRows.has(id)).flatMap((id) => [id, ...(joined.get(id) ?? [])]);
       const rests = [...planRest].filter(([, x]) => !x.ids.some((id) => o.leaveOut.includes(id)));
       let r;
       try {
