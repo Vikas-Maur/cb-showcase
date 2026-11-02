@@ -116,6 +116,11 @@ export interface Fetcher {
 }
 
 // Runtime globals that exist in workerd but not in the WebWorker lib.
+/** The third argument of a Worker's fetch: work the runtime keeps alive after the response or a client's disconnect. */
+export interface ExecutionContext {
+  waitUntil(promise: Promise<unknown>): void;
+}
+
 export interface WebSocketPairCtor {
   new (): { 0: CfWebSocket & WebSocket; 1: CfWebSocket };
 }

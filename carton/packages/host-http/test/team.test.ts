@@ -164,3 +164,29 @@ test("a create-only put says whether it created the object, through the team cop
   assert.equal(putCreated(await a.put("px/p", new Uint8Array([1]), { ifAbsent: true })), true);
   assert.equal(putCreated(await a.put("px/p", new Uint8Array([2]), { ifAbsent: true })), false);
 });
+
+test("a claim of a hash already granted reads the grant and writes nothing (cf review finding 4)", async () => {
+  const { root, a, b, bytes, m, key, mf } = await setup();
+  await a.put(mf, m.bytes);
+  await a.put(key, bytes);
+  assert.ok(isTeamMediaStore(a) && isTeamMediaStore(b));
+  const puts: string[] = [];
+  const put = root.put.bind(root);
+  root.put = (k, d, o) => (puts.push(k), put(k, d, o));
+  for (let i = 0; i < 5; i++) assert.equal(await a.claim(key), true); // the writer holds a grant
+  assert.equal(await b.claim(key), true); // b's first claim grants
+  for (let i = 0; i < 5; i++) assert.equal(await b.claim(key), true);
+  assert.deepEqual(puts, [`projects/b/grants/${m.hash}`], "one write: b's grant, once");
+});
+
+test("grants can go to a bucket of their own (a host's uncapped one)", async () => {
+  const root = createMemoryBlobStore(), grants = createMemoryBlobStore();
+  const a = projectMediaStore(root, "a", "t1", { grants });
+  const bytes = fill(LEAF_SIZE + 5, 9);
+  const m = await mediaHash(bytes, webCryptoHasher());
+  await a.put(manifestKey(m.hash), m.bytes);
+  await a.put(mediaKey(m.hash), bytes);
+  assert.ok(await grants.head(`projects/a/grants/${m.hash}`));
+  assert.equal(await root.head(`projects/a/grants/${m.hash}`), null);
+  assert.equal((await a.head(mediaKey(m.hash)))?.size, bytes.length);
+});

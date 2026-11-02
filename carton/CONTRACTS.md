@@ -150,8 +150,13 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   the server"; a token it doesn't accept or that expired; a write refused for its token or cut; no host) is
   `sync.error(cut?)` and a `sync-error` event (`SyncError`: `code`, `message`), until a later welcome, ack or
   acknowledged withdraw clears it (`error: null`). Classified by machine code first (a refusal's `ErrorMsg.code`:
-  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`; a failed connect's transport code: `unreachable`,
-  `unauthorized`, `protocol`, `closed`), by the words only when there is none.
+  `schema-too-new`, `unauthorized`, `forbidden`, `bad-request`, `write-limit`; a failed connect's transport code:
+  `unreachable`, `unauthorized`, `protocol`, `closed`), by the words only when there is none. `write-limit` is a host's
+  daily write cap: a blob write refused for a while throws an error with `retryAt` (BlobStore's contract), the
+  sequencer drops the rest of that push's epoch for a client whose hello said `writeLimit` and tells it the wait
+  (`retryAfterMs`); the client keeps its edits, pushes nothing (nor a hand-off upload) until then, and pushes again
+  on its own, with no reconnect. `SyncError.until` says when. An older client gets the limit in plain words, its epoch
+  left as it was.
   `carton.media` is null: `@carton/media` calls Carton, not the reverse.
 - **People (windows-sync R3).** Cardboard's GUI saves are the generic person `{kind: "human", id: PERSON}` ("person")
   on every computer.

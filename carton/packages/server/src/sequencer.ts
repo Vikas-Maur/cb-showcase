@@ -71,6 +71,11 @@ export interface ConnectionState {
    * from then on. Kept here, so a socket restored after hibernation still gets them.
    */
   comments?: true;
+  /**
+   * The client waits out a host's write limit (its hello said `writeLimit`): a push the blob store refused for a while
+   * drops the rest of its epoch, and the client sends it again after the limit's time.
+   */
+  writeLimit?: true;
 }
 
 /** An actor a connection shows on a branch: only what names it (`actorKey`: kind, id, agentId). */
@@ -113,6 +118,8 @@ export interface SequencerStats {
   /** Envelopes opened (from clients) and sealed (to clients: one per message, however many connections). */
   envelopesIn: number;
   envelopesOut: number;
+  /** Pushes and hand-offs the blob store refused for a while (a host's daily write cap), told as `write-limit`. */
+  writeLimited: number;
 }
 
 /** Controls for the conformance suite's negative tests and the P9 comparisons only. Never set them in a host. */
@@ -252,6 +259,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     },
     envelopesIn: 0,
     envelopesOut: 0,
+    writeLimited: 0,
   };
   const emit = (e: SequencerEvent) => opts.onEvent?.(e);
 
@@ -626,6 +634,24 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   }
 
   // ---------------------------------------------------------------- handlers
+  /**
+   * A write the blob store refused for a while (a host's daily write cap; `sync.writeLimitOf`), told in plain words with
+   * its time. On a push, to a client that waits out the limit (`ConnectionState.writeLimit`), the rest of the push's
+   * epoch is dropped, as a reject drops it, and the client sends those changes again after `retryAfterMs`. Any other
+   * client gets the reason and nothing else changes for it: an older client would resend a dropped epoch at once, and
+   * again on every answer, until the limit ended.
+   */
+  function writeLimited(c: HostConnection, retryAt: number, push?: sync.PushMsg): void {
+    stats.writeLimited++;
+    const msg: sync.ErrorMsg = { type: "error", code: "write-limit", reason: writeLimitWords(retryAt), retryAt, retryAfterMs: Math.max(0, retryAt - clock()) };
+    if (push && stateOf(c).writeLimit) {
+      stateOf(c).deadEpoch = Math.max(stateOf(c).deadEpoch, push.epoch);
+      msg.branchId = push.branchId;
+      msg.epoch = push.epoch;
+    }
+    send(c, msg);
+  }
+
   function reject(c: HostConnection, branchId: string, id: string | undefined, reason: RejectReason, epoch: number, extra: Partial<sync.RejectMsg> = {}) {
     stats.rejects++;
     stats.rejectReasons[reason] = (stats.rejectReasons[reason] ?? 0) + 1;
@@ -733,6 +759,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (opts.schemaVersion !== undefined && m.schemaVersion > opts.schemaVersion) return send(c, { type: "error", code: "schema-too-new", reason: `this client's documents are schema version ${m.schemaVersion}, newer than this server accepts (up to ${opts.schemaVersion}): update the server` });
     const st = stateOf(c);
     if (m.envelopes === true && opts.blobs) st.envelopes = true;
+    if (m.writeLimit === true) st.writeLimit = true;
     // R10-02: the replica claims every rid it has used; each unbound one is bound to this device credential
     if (controls.helloRidClaim !== false && controls.bindRid !== false && WRITE_ROLES.has(c.auth.role)) {
       const who = credentialOf(c);
@@ -840,7 +867,14 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
         if (!opts.blobs) return reject(c, m.branchId, ch.id, "too large", m.epoch);
         // keyed by the digest of the exact body the server stores, never by a hash the client supplied (finding 2)
         blobKey = `changes/${m.branchId}/${sha256Hex(verdict.text)}`;
-        await opts.blobs.put(blobKey, enc.encode(verdict.text), { contentType: "application/json", ifAbsent: true });
+        try {
+          await opts.blobs.put(blobKey, enc.encode(verdict.text), { contentType: "application/json", ifAbsent: true });
+        } catch (e) {
+          // refused for a while (a host's daily write cap): nothing of this change was stored
+          const at = sync.writeLimitOf(e);
+          if (at === null) throw e;
+          return writeLimited(c, at, m);
+        }
         verdict = judge();
         if (verdict.kind === "large") throw new Error("unreachable: a blob body is never inline");
       }
@@ -946,6 +980,12 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       const rootHash = rootSeq === m.n ? m.stateHash : m.rootHash;
       await createBranch(m.rec, { doc0: m.doc0, rootSeq, stateHash: typeof rootHash === "string" && SHA256.test(rootHash) ? rootHash : "", closure }, rows, key, credentialOf(c));
     } catch (e) {
+      // the root keyframe refused for a while (a host's daily write cap): the client asks again after the limit's time
+      const at = sync.writeLimitOf(e);
+      if (at !== null) {
+        stats.writeLimited++;
+        return send(c, { type: "adoptError", branchId: m.branchId, reason: writeLimitWords(at), code: "write-limit", retryAt: at, retryAfterMs: Math.max(0, at - clock()) });
+      }
       return fail(e instanceof Error ? e.message : String(e));
     }
     stats.adopts++;
@@ -1058,7 +1098,13 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       if (have.hash !== k.stateHash) emit({ type: "keyframe", branchId: m.branchId, seq: k.seq, mismatch: true });
       return;
     }
-    await storeKeyframe(m.branchId, k.seq, k.stateHash, k.doc);
+    try {
+      await storeKeyframe(m.branchId, k.seq, k.stateHash, k.doc);
+    } catch (e) {
+      // refused for a while (a host's daily write cap): keyframes are optional, and a later one is asked for
+      if (sync.writeLimitOf(e) !== null) return;
+      throw e;
+    }
     stats.keyframes++;
     emit({ type: "keyframe", branchId: m.branchId, seq: k.seq, mismatch: false });
   }
@@ -1391,6 +1437,15 @@ async function* segmentRows(blobs: BlobStore, key: string): AsyncGenerator<Recor
   }
 }
 /** UTF-8 byte length over `limit`, without encoding short strings (each UTF-16 unit is at most 3 bytes). */
+/**
+ * A write limit in people's words (the error's `reason`): what an older client shows as it is. A client that waits the
+ * limit out says it in its own words, with the time in its own zone; this one can only give the host's time, in UTC.
+ */
+function writeLimitWords(retryAt: number): string {
+  const t = new Date(retryAt).toISOString().slice(11, 16);
+  return `The server's daily limit is reached. Your edits are kept and will sync after ${t} UTC; reopen the project then if they don't.`;
+}
+
 function utf8Over(text: string, limit: number): boolean {
   if (text.length * 3 <= limit) return false;
   return new TextEncoder().encode(text).length > limit;

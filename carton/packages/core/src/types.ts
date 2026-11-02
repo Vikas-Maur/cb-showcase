@@ -571,9 +571,12 @@ export type CartonEvent =
 /**
  * Why a cut's sync is failing, for a sync status line. `code`: `update-server` (the host is older than this app's
  * document schema), `unauthorized` (its token or scope), `unreachable` (no connection), `unknown-cut`, `too-large`,
- * or `server` (anything else the host said). `message`: the host's or connection's own words.
+ * `write-limit` (the host's daily limit is reached: edits are kept, and sync on their own at `until`), or `server`
+ * (anything else the host said). `message`: the host's or connection's own words.
  */
 export interface SyncError {
-  code: "update-server" | "unauthorized" | "unreachable" | "unknown-cut" | "too-large" | "server";
+  code: "update-server" | "unauthorized" | "unreachable" | "unknown-cut" | "too-large" | "write-limit" | "server";
   message: string;
+  /** `write-limit`: when the edits held back sync (ms since the epoch). */
+  until?: number;
 }

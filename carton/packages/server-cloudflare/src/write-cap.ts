@@ -9,10 +9,13 @@
 //   single-threaded, so check-and-add is atomic across every isolate.
 // - Over the cap the write is refused before any byte is stored: WriteCapError, which the Worker answers 429 with code
 //   `DailyWriteCap` and Retry-After until 00:00 UTC. Clients already treat a refused part as a failed attempt (backoff,
-//   then a resumable stop), never as stored.
+//   then a resumable stop), never as stored. The error carries `retryAt` (BlobStore's contract for a refusal for a
+//   while), so a sync write the sequencer couldn't store reaches the client as `write-limit` with that time: the client
+//   keeps its edits and sends them again after it, with no reconnect.
 // - Reads and deletes are never capped: deleting is how a full bucket is emptied.
 // - It sits under the scope and team wrappers, on the physical store, so team records and the sequencer's own blobs
-//   (keyframes, segments, envelopes) count too. A store's own extra records (R2's per-part upload records) ride on the
+//   (keyframes, segments, envelopes) count too. Not a team's grants (room.ts mediaBlobs): an editor's media HEAD writes
+//   one, and reads must go on once the cap is reached. A store's own extra records (R2's per-part upload records) ride on the
 //   call that makes them: an operation here is one public call, which is one to four R2 Class A operations.
 // - Each reserve is one Durable Object request and one row written. For a part of 8 to 64 MiB that is noise; for a
 //   stream of tiny writes it doubles the DO requests, which is why the cap is opt-in.
@@ -29,9 +32,12 @@ export class WriteCapError extends Error {
   readonly code = WRITE_CAP_CODE;
   /** Seconds until the counter resets (00:00 UTC). */
   readonly retryAfterSec: number;
-  constructor(message: string, retryAfterSec: number) {
+  /** When the counter resets, in ms since the epoch (BlobStore's refusal for a while: `sync.writeLimitOf`). */
+  readonly retryAt: number;
+  constructor(message: string, retryAfterSec: number, retryAt = Date.now() + retryAfterSec * 1000) {
     super(message);
     this.retryAfterSec = retryAfterSec;
+    this.retryAt = retryAt;
   }
 }
 
@@ -58,15 +64,16 @@ const positive = (v: string | undefined): number => {
   return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
 };
 const dayOf = (ms: number) => new Date(ms).toISOString().slice(0, 10);
-const secondsToMidnight = (ms: number) => Math.max(1, Math.ceil((Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate() + 1) - ms) / 1000));
+const nextMidnight = (ms: number) => Date.UTC(new Date(ms).getUTCFullYear(), new Date(ms).getUTCMonth(), new Date(ms).getUTCDate() + 1);
+const secondsToMidnight = (ms: number) => Math.max(1, Math.ceil((nextMidnight(ms) - ms) / 1000));
 
-/** The deployment's cap, or undefined when neither limit is set. */
-export function writeCapOf(env: WriteCapEnv): WriteCap | undefined {
+/** The deployment's cap, or undefined when neither limit is set. `opts.now`: the clock (tests cross midnight with it). */
+export function writeCapOf(env: WriteCapEnv, opts: { now?: () => number } = {}): WriteCap | undefined {
   const maxBytes = positive(env.WRITE_CAP_BYTES_PER_DAY), maxOps = positive(env.WRITE_CAP_OPS_PER_DAY);
   if (!maxBytes && !maxOps) return undefined;
   return {
     async reserve(bytes, ops = 1) {
-      const now = Date.now();
+      const now = (opts.now ?? Date.now)();
       const room = env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(`write-cap/${dayOf(now)}`));
       const r = await room.fetch(new Request(`https://room${WRITE_CAP_PATH}`, { method: "POST", body: JSON.stringify({ bytes, ops, maxBytes, maxOps }) }));
       if (!r.ok) throw new Error(`write cap: the counter answered ${r.status}`);
@@ -75,6 +82,7 @@ export function writeCapOf(env: WriteCapEnv): WriteCap | undefined {
         throw new WriteCapError(
           `This host's daily write limit is reached (${a.bytes} bytes, ${a.ops} writes stored today). It resets at 00:00 UTC.`,
           secondsToMidnight(now),
+          nextMidnight(now),
         );
     },
   };

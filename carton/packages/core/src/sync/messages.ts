@@ -111,6 +111,11 @@ export interface HelloMsg {
   claimsAfter?: number;
   /** The person at this replica (`IdentityMsg`); a server that keeps no people ignores it. */
   identity?: Person;
+  /**
+   * The client waits out a host's write limit (`ErrorMsg` code `write-limit`): the server may drop the rest of a push's
+   * epoch it couldn't store, as a reject does, and the client sends those changes again after the limit's time.
+   */
+  writeLimit?: boolean;
 }
 /** Pipelined push of pending changes in queue order. A reject kills the rest of that `epoch`. */
 export interface PushMsg {
@@ -322,6 +327,10 @@ export interface AdoptErrorMsg {
   type: "adoptError";
   branchId: string;
   reason: string;
+  /** `write-limit`: the host refused to store the upload for a while (as `ErrorMsg`'s); ask again after `retryAfterMs`. */
+  code?: "write-limit";
+  retryAt?: number;
+  retryAfterMs?: number;
 }
 export interface ForkedMsg {
   type: "forked";
@@ -347,18 +356,40 @@ export interface PresenceFanoutMsg {
   actor: Actor;
   state: PresenceState | null;
 }
-export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request";
+export type ErrorCode = "schema-too-new" | "unauthorized" | "forbidden" | "bad-request" | "write-limit";
 export interface ErrorMsg {
   type: "error";
   reason: string;
   /**
    * What kind of refusal, for a client to act on (`reason` is for people): `schema-too-new` (the client's documents are
    * newer than the server accepts: update the server), `unauthorized` (the token expired, or is for another project),
-   * `forbidden` (outside this token's cuts or role), `bad-request` (a malformed message). Absent: anything else.
+   * `forbidden` (outside this token's cuts or role), `bad-request` (a malformed message), `write-limit` (the host
+   * refused to store a write for a while: its daily write cap). Absent: anything else.
    */
   code?: ErrorCode;
   /** A message of this connection was lost (an envelope the server couldn't read): reconnect and catch up. */
   reconnect?: boolean;
+  /**
+   * `write-limit`: when the host takes writes again (ms since the epoch, by the host's clock, for showing), and how long
+   * that is from when it was sent (what a client waits, whatever its own clock says).
+   */
+  retryAt?: number;
+  retryAfterMs?: number;
+  /**
+   * `write-limit` on a push, to a client whose hello said `writeLimit`: its cut and epoch. The server dropped the rest
+   * of that epoch, as a reject does; the client sends those changes again, in a new epoch, after `retryAfterMs`.
+   */
+  branchId?: string;
+  epoch?: number;
+}
+
+/**
+ * When a refused write may be tried again (ms since the epoch), if `e` is a refusal for a while (BlobStore's contract:
+ * an error carrying `retryAt`, as server-cloudflare's daily write cap throws); null for any other error.
+ */
+export function writeLimitOf(e: unknown): number | null {
+  const at = (e as { retryAt?: unknown } | null | undefined)?.retryAt;
+  return typeof at === "number" && Number.isFinite(at) ? at : null;
 }
 /** Answer to `history`: a page of rows (`more`: ask again after the last), the closure when asked, or why not. */
 export interface HistoryReplyMsg {

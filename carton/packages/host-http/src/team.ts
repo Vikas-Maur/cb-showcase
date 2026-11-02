@@ -25,7 +25,10 @@
 // per project: a pointer isn't self-verifying, so one project could otherwise steer another's proxy reuse.
 //
 // Grants live outside the media scope (`grants` is a host-only store), so no client can write one. They are never
-// revoked: a project that drops a media record keeps the right to the bytes it once had.
+// revoked: a project that drops a media record keeps the right to the bytes it once had. A claim of a hash already
+// granted reads the grant and writes nothing: an editor's every HEAD claims, and a write there would make reads cost
+// writes (and, under a host's daily write cap, refuse them once the cap is reached). A host may keep grants on a store
+// of their own (`projectMediaStore`'s `grants` option): server-cloudflare keeps them outside its write cap.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
 import { BlobError, checkKey, checksKeys, markCreated, type ChecksKeys } from "@carton/blob-memory/rules";
@@ -37,7 +40,10 @@ const hasher = webCryptoHasher();
 const EMPTY = new Uint8Array(0);
 
 export interface TeamMediaStore extends BlobStore {
-  /** For an editor: grants this project `key` (`m/<hash>` or `mf/<hash>`) when the team already holds it. */
+  /**
+   * For an editor: grants this project `key` (`m/<hash>` or `mf/<hash>`) when the team already holds it. True when
+   * the project holds a grant for it; a hash already granted costs one read and no write.
+   */
   claim(key: string): Promise<boolean>;
 }
 
@@ -64,16 +70,17 @@ export const mediaLockScope = (store: BlobStore, projectId: string): string => l
 
 /**
  * The media store a host gives one project's HTTP API, from its bucket: `projects/<p>/media/` alone, or with a team
- * its media bytes and manifests under `teams/<team>/media/` and its grants under `projects/<p>/grants/`.
+ * its media bytes and manifests under `teams/<team>/media/` and its grants under `projects/<p>/grants/`. `opts.grants`
+ * is the bucket the grants go to, when not `root` (the same bucket without the host's write cap, say).
  */
-export function projectMediaStore(root: BlobStore, projectId: string, team?: string | null): BlobStore {
+export function projectMediaStore(root: BlobStore, projectId: string, team?: string | null, opts: { grants?: BlobStore } = {}): BlobStore {
   const project = scopedBlobStore(root, `projects/${projectId}/media/`);
   if (!team) {
     lockScopes.set(project, `projects/${projectId}/media/`);
     return project;
   }
   if (!TEAM_ID.test(team)) throw new Error(`bad team id for project ${projectId}: ${JSON.stringify(team)}`);
-  const store = teamMediaStore({ project, team: scopedBlobStore(root, `teams/${team}/media/`), grants: scopedBlobStore(root, `projects/${projectId}/grants/`) });
+  const store = teamMediaStore({ project, team: scopedBlobStore(root, `teams/${team}/media/`), grants: scopedBlobStore(opts.grants ?? root, `projects/${projectId}/grants/`) });
   lockScopes.set(store, `teams/${team}/media/`);
   return store;
 }
@@ -141,7 +148,9 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
     },
     async claim(key) {
       const hash = shared(key);
-      if (!hash || !(await team.head(key))) return false;
+      if (!hash) return false;
+      if (await granted(hash)) return true; // a read, no write
+      if (!(await team.head(key))) return false;
       await grant(hash);
       return true;
     },
