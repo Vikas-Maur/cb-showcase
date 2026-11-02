@@ -125,8 +125,8 @@ for (const [k, v] of Object.entries(measured.networkProfiles ?? {})) if (typeof 
 
 // ---- prices.json: every number the model reads must be there
 const need = {
-  paid: ["base", "wsMessagesPerRequest"],
-  free: ["workersReqDay", "workersCpuMsPerRequest", "doReqDay", "doGBsDay", "doRowsReadDay", "doRowsWrittenDay", "doStorageGB"],
+  paid: ["base", "wsMessagesPerRequest", "doObjectGB"],
+  free: ["workersReqDay", "workersCpuMsPerRequest", "doReqDay", "doGBsDay", "doRowsReadDay", "doRowsWrittenDay", "doStorageGB", "doObjectGB"],
 };
 const tiers = { paid: ["workersReq", "workersCpuMs", "doReq", "doGBs", "doRowsRead", "doRowsWritten", "doStorageGBMonth"], r2: ["storageGBMonth", "classA", "classB"] };
 for (const [group, keys] of Object.entries(need)) for (const k of keys) if (!isNum(prices?.[group]?.[k])) fail(`prices.json: ${group}.${k} must be a number`);

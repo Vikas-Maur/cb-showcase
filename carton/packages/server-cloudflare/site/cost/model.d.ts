@@ -29,11 +29,11 @@ export type Inputs = Record<InputKey, number>;
 /** data.json's inputs (`{ value, status, … }`), bare numbers, or anything else: unknown or bad entries are ignored. */
 export type GivenInputs = Partial<Record<string, number | { value?: unknown } | unknown>>;
 
-export interface PriceTier { included: number; per: number; perUnit: number }
+export interface PriceTier { included: number; per: number; perUnit: number; /** rounded up to the next whole unit */ round?: boolean }
 export interface Prices {
   fetched?: string;
-  paid: { base: number; workersReq: PriceTier; workersCpuMs: PriceTier; doReq: PriceTier; doGBs: PriceTier; doRowsRead: PriceTier; doRowsWritten: PriceTier; doStorageGBMonth: PriceTier; wsMessagesPerRequest: number };
-  free: { workersReqDay: number; workersCpuMsPerRequest: number; doReqDay: number; doGBsDay: number; doRowsReadDay: number; doRowsWrittenDay: number; doStorageGB: number };
+  paid: { base: number; workersReq: PriceTier; workersCpuMs: PriceTier; doReq: PriceTier; doGBs: PriceTier; doRowsRead: PriceTier; doRowsWritten: PriceTier; doStorageGBMonth: PriceTier; wsMessagesPerRequest: number; doObjectGB: number };
+  free: { workersReqDay: number; workersCpuMsPerRequest: number; doReqDay: number; doGBsDay: number; doRowsReadDay: number; doRowsWrittenDay: number; doStorageGB: number; doObjectGB: number };
   r2: { storageGBMonth: PriceTier; classA: PriceTier; classB: PriceTier; egress: number };
 }
 
@@ -46,7 +46,7 @@ export interface Usage {
   inputs: Inputs;
   activities: Record<Exclude<ActivityKey, "fee">, Meters>;
   totals: Meters;
-  derived: Record<"edits" | "presenceMsgs" | "presenceAlarms" | "connects" | "idleHours" | "upkeepAlarms" | "footageHours" | "proxyGB" | "segments" | "segMiB" | "originalsGB" | "storedGB" | "viewedMiB" | "editHours", number>;
+  derived: Record<"edits" | "presenceMsgs" | "presenceAlarms" | "connects" | "idleHours" | "upkeepAlarms" | "footageHours" | "proxyGB" | "segments" | "segMiB" | "originalsGB" | "storedGB" | "viewedMiB" | "editHours" | "roomGB" | "vaultGB", number> & { roomCapped: boolean; vaultCapped: boolean };
 }
 
 export interface MeterRow {
@@ -62,20 +62,21 @@ export interface MeterRow {
   cost: number;
 }
 export interface Line { key: ActivityKey; name: string; cost: number; byMeter: Partial<Record<MeterKey, number>> }
-export interface Bill { plan: Plan; settings: Settings; usage: Usage; meters: MeterRow[]; lines: Line[]; total: number; perUser: number; people: number }
+export interface Capacity { ok: boolean; what: "vault" | "room"; objectGB: number; limitGB: number }
+export interface Bill { plan: Plan; settings: Settings; usage: Usage; meters: MeterRow[]; lines: Line[]; total: number; perUser: number; people: number; capacity: Capacity }
 
-export interface FreeLimitCheck { key: MeterKey; name: string; total: boolean; perTeam: number; used: number; limit: number; maxTeams: number; breaksAt: number; over: boolean }
+export interface FreeLimitCheck { key: MeterKey | "doObjectGB"; name: string; total: boolean; perObject?: boolean; perTeam: number; used: number; limit: number; maxTeams: number; breaksAt: number; over: boolean }
 export interface FreeCheck {
   fits: boolean;
   first: FreeLimitCheck | null;
   checks: FreeLimitCheck[];
   sorted: FreeLimitCheck[];
-  cpu: { limit: number; worst: { what: string; ms: number; used: boolean } | null; over: boolean };
+  cpu: { limit: number; worst: { what: string; ms: number; used: boolean } | null; over: boolean; basis: "average" };
   maxTeams: number;
 }
-export interface Suggestion { driver: ActivityKey | "limit" | null; lever?: ActivityKey; text: string; saving: number; newTotal?: number; paidTotal?: number }
+export interface Suggestion { driver: ActivityKey | "limit" | "capacity" | null; lever?: ActivityKey; text: string; saving: number; newTotal?: number; paidTotal?: number | null; alternative?: { storage: Storage; plan: Plan; total: number } }
 export interface Result extends Bill { free: FreeCheck; driver: Line | null; suggestion: Suggestion }
-export interface Series { key: string; storage: Storage; plan: Plan; maxTeams: number; points: { teams: number; total: number | null }[] }
+export interface Series { key: string; storage: Storage; plan: Plan; maxTeams: number; capacity: Capacity; points: { teams: number; total: number | null }[] }
 
 export const REF_SEGMENT: { seconds: number; mbps: number };
 export const ARCHIVE_KEEP: number;
@@ -95,11 +96,12 @@ export const PRESETS: Readonly<Record<"solo" | "team5" | "studio20" | "teams1k" 
 export const METERS: readonly { key: MeterKey; product: "workers" | "do" | "r2"; name: string; unit: string }[];
 export const ACTIVITIES: readonly { key: ActivityKey; name: string }[];
 
-export function normalizeSettings(s?: Partial<Settings> | Record<string, unknown>): Settings;
+export function normalizeSettings(s?: Partial<Settings> | Record<string, unknown> | null): Settings;
+export function capacity(u: Usage, prices: Prices, plan: Plan): Capacity;
 export function resolveInputs(given?: GivenInputs): Inputs;
 export function usage(settings: Partial<Settings>, inputs?: GivenInputs): Usage;
-export function bill(settings: Partial<Settings>, inputs: GivenInputs | undefined, prices: Prices): Bill;
-export function freeCheck(settings: Partial<Settings>, inputs: GivenInputs | undefined, prices: Prices): FreeCheck;
-export function compute(settings: Partial<Settings>, inputs: GivenInputs | undefined, prices: Prices): Result;
+export function bill(settings: Partial<Settings> | null, inputs: GivenInputs | undefined, prices: Prices): Bill;
+export function freeCheck(settings: Partial<Settings> | null, inputs: GivenInputs | undefined, prices: Prices): FreeCheck;
+export function compute(settings: Partial<Settings> | null, inputs: GivenInputs | undefined, prices: Prices): Result;
 export function teamSteps(max?: number): number[];
 export function curve(settings: Partial<Settings>, inputs: GivenInputs | undefined, prices: Prices, steps?: number[]): Series[];

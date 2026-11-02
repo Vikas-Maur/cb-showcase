@@ -46,12 +46,12 @@ export const LINES = {
 export const METERS = {
   workersReq: "Each time a Worker runs: a connect, an upload request, a playback read. The page you're reading doesn't count (static files are free). Free: 100,000 a day. Paid: 10 million a month included, then $0.30 a million.",
   workersCpuMs: "Processor time the Worker uses, not counting time spent waiting on the network or storage. Paid: 30 million ms a month included, then $0.02 a million. Free: never billed, but at most 10 ms per request.",
-  doReq: "Each request to a Durable Object: a connect, an alarm, a live message, a vault read or write. On Paid, 20 incoming WebSocket messages bill as 1 request (the shown amount is after that). 1 million a month included, then $0.15 a million. Free: 100,000 a day.",
-  doGBs: "How long Durable Objects are awake, times the 128 MB each one is given. A room that sleeps between messages (hibernation) isn't billed while it sleeps. Paid: 400,000 GB-s a month included, then $12.50 a million. Free: 13,000 a day.",
+  doReq: "Each request to a Durable Object: a connect, an alarm, a live message, a vault read or write. On Paid, 20 incoming WebSocket messages bill as 1 request (the shown amount is after that). 1 million a month included, then $0.15 a million, rounded up to a whole million. Free: 100,000 a day.",
+  doGBs: "How long Durable Objects are awake, times the 128 MB each one is given. A room that sleeps between messages (hibernation) isn't billed while it sleeps, and work it does at the same moment shares the time, so one object is never billed for more than the hours in the month. Paid: 400,000 GB-s a month included, then $12.50 a million. Free: 13,000 a day.",
   doRowsRead: "Rows read from Durable Objects' databases. Paid: 25 billion a month included, then $0.001 a million. Free: 5 million a day.",
   doRowsWritten: "Rows written to Durable Objects' databases. Deletes count, and so does every alarm that's set. Paid: 50 million a month included, then $1 a million. Free: 100,000 a day.",
   doStorageGB: "Data kept in Durable Objects: each room's recent changes, and all media when there's no R2. Paid: 5 GB-month included, then $0.20 a GB-month. Free: 5 GB in total.",
-  r2StorageGB: "Files kept in R2, averaged over the month. 10 GB-month free, then $0.015 a GB-month, on either plan.",
+  r2StorageGB: "Files kept in R2, averaged over the month. 10 GB-month free, then $0.015 a GB-month, rounded up to a whole GB-month, on either plan.",
   r2ClassA: "R2 operations that change something: uploading a file or a part, finishing an upload, listing. 1 million a month free, then $4.50 a million.",
   r2ClassB: "R2 operations that read: fetching a file or checking it's there. 10 million a month free, then $0.36 a million.",
 };
@@ -62,8 +62,9 @@ export const FREE_CHECKS = {
   doGBs: "Workers Free allows 13,000 GB-s of Durable Object time a day: about 28 hours of one object awake.",
   doRowsRead: "Workers Free allows 5 million rows read a day.",
   doRowsWritten: "Workers Free allows 100,000 rows written a day. Each edit writes about 2 rows, plus one when it's archived; each alarm writes one.",
-  doStorageGB: "Workers Free allows 5 GB in all Durable Objects together, kept, not per day. Past it, writes fail. Media in the vault counts against it.",
-  cpu: "Workers Free stops any request that uses more than 10 ms of processor time (error 1102). This checks the model's per-request CPU for each kind of request you'd make.",
+  doStorageGB: "Workers Free allows 5 GB in all Durable Objects together: what's kept, not a daily amount, so midnight doesn't reset it. Past it, writes fail until data is deleted. Media in the vault counts against it.",
+  doObjectGB: "One Durable Object can hold at most 1 GB on Free and 10 GB on Paid. Without R2, a project's media all sits in one object (its vault), so the media you keep must fit, on either plan. Past it, writes fail until data is deleted.",
+  cpu: "Workers Free stops any single request that uses more than 10 ms of processor time (error 1102), every time, at any hour. This shows each kind of request's average CPU from the model's inputs; a request above its average could still pass 10 ms, so under the limit here means likely, not certain.",
 };
 
 export const LIMITS = {
@@ -81,6 +82,7 @@ export const LIMITS = {
   "daily-do-requests": { name: "100,000 Durable Object requests a day (Free)", tip: FREE_CHECKS.doReq, check: "doReq" },
   "daily-do-duration": { name: "13,000 GB-s a day (Free)", tip: FREE_CHECKS.doGBs, check: "doGBs" },
   "daily-rows-written": { name: "100,000 rows written a day (Free)", tip: FREE_CHECKS.doRowsWritten, check: "doRowsWritten" },
+  "do-object-storage": { name: "1 GB per Durable Object (10 GB on Paid)", tip: FREE_CHECKS.doObjectGB, check: "doObjectGB" },
   "do-storage-5gb": { name: "5 GB of Durable Object storage (Free)", tip: FREE_CHECKS.doStorageGB, check: "doStorageGB" },
   "r2-free-monthly": { name: "R2's monthly free allowance", tip: "R2 is free up to 10 GB-month of storage, 1 million writes (Class A) and 10 million reads (Class B) a month, on either Workers plan. Past that it bills; it never stops working." },
   "dead-link": { name: "A link that dies silently", tip: "A connection that dies without closing (Wi-Fi gone, a router hiccup) can look open for minutes. Not a Cloudflare limit, but it decides how soon edits arrive after an outage." },

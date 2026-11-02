@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "generated": "2026-11-02T01:42:29.466Z",
+ "generated": "2026-11-02T01:53:15.176Z",
  "source": {
   "branch": "lab/cloudflare",
   "commit": "716af880",
@@ -9,12 +9,12 @@
  },
  "inputs": {
   "editDoReq": {
-   "value": 1.30833,
-   "unit": "DO requests per edit",
+   "value": 1.225,
+   "unit": "WebSocket messages per edit",
    "status": "measured",
    "n": 18,
-   "min": 1.15,
-   "max": 1.76667,
+   "min": 1.11667,
+   "max": 1.68333,
    "runs": [
     "sync-nor2-good-20p-r1-mvy5ptzn",
     "sync-nor2-good-20p-r2-mvy6dxfi",
@@ -35,7 +35,7 @@
     "sync-r2-good-5p-r2-mvy5tf7n",
     "sync-r2-good-5p-r3-mvy6iscj"
    ],
-   "how": "Cloudflare's analytics for the room, divided by the edits in the run; includes each party's connect and the room's alarms, so it slightly over-counts."
+   "how": "The room's requests in the run (Cloudflare's analytics) less one connect per party, divided by the edits: the push, plus any withdraw or re-push. Connects are counted on their own, at full price."
   },
   "editRowsWritten": {
    "value": 2.16667,
@@ -64,7 +64,7 @@
     "sync-r2-good-5p-r2-mvy5tf7n",
     "sync-r2-good-5p-r3-mvy6iscj"
    ],
-   "how": "Rows the room wrote (Cloudflare's analytics), divided by the edits in the run."
+   "how": "Rows the room wrote (Cloudflare's analytics), divided by the edits in the run. Includes the run's one upkeep-alarm setup, a few rows per run: a small over-count."
   },
   "editRowsRead": {
    "value": 0.96667,
@@ -122,7 +122,7 @@
     "sync-r2-good-5p-r2-mvy5tf7n",
     "sync-r2-good-5p-r3-mvy6iscj"
    ],
-   "how": "The room's active time in the run (Cloudflare's analytics) × 128 MB, divided by the edits; the room hibernates between messages."
+   "how": "The room's active time in the run (Cloudflare's analytics) × 128 MB, divided by the edits; the room hibernates between messages. Includes waking for each party's connect: a small over-count."
   },
   "editWorkerCpuMs": {
    "value": 0,
@@ -233,25 +233,25 @@
    "how": "Nothing is stored while nobody edits."
   },
   "gbWorkerReq": {
-   "value": 140,
+   "value": 125,
    "unit": "Worker requests per GB",
    "status": "estimated",
-   "how": "8 MiB parts: 128 part uploads plus the checks, manifest, start and finish of the upload."
+   "how": "A GB (10⁹ bytes) is 119 parts of 8 MiB: a request each, plus the checks, manifest, start and finish of the upload."
   },
   "gbWorkerCpuMs": {
-   "value": 840,
+   "value": 750,
    "unit": "Worker CPU ms per GB",
    "status": "estimated",
-   "how": "After fix/cf-stream-parts the lab measured 3–9 ms of CPU per part (32 parts, one 256 MB run): about 6 ms × 140 requests. Before the fix: 61–359 ms per part."
+   "how": "After fix/cf-stream-parts the lab measured 3–9 ms of CPU per part (32 parts, one 256 MB run): about 6 ms × 125 requests. Before the fix: 61–359 ms per part."
   },
   "gbR2ClassA": {
-   "value": 520,
+   "value": 480,
    "unit": "Class A per GB",
    "status": "estimated",
-   "how": "Per 8 MiB part: the upload itself and three small records (lock, marker, release); plus starting and finishing the upload."
+   "how": "Per 8 MiB part (119 a GB): the upload itself and three small records (lock, marker, release); plus starting and finishing the upload."
   },
   "gbR2ClassB": {
-   "value": 130,
+   "value": 125,
    "unit": "Class B per GB",
    "status": "estimated",
    "how": "About one read per part (the upload's lock), plus the checks before it starts."
@@ -263,16 +263,16 @@
    "how": "None with R2. With the optional daily write cap switched on, one per part (its counter)."
   },
   "gbVaultDoReq": {
-   "value": 260,
+   "value": 240,
    "unit": "DO requests per GB",
    "status": "estimated",
-   "how": "Without R2, each part goes to the vault Durable Object, plus the copy when the upload finishes."
+   "how": "Without R2, each part (119 a GB) is a request to the vault Durable Object, and so is its record; plus the copy when the upload finishes."
   },
   "gbVaultRowsWritten": {
-   "value": 3072,
+   "value": 2861,
    "unit": "rows written per GB",
    "status": "estimated",
-   "how": "The vault stores 1 MiB per row: each MiB written as a part, copied once when the upload completes, and the part rows deleted."
+   "how": "The vault stores 1 MiB per row (954 a GB): each MiB written as a part, copied once when the upload completes, and the part rows deleted, 3 rows each (blob-do.ts)."
   },
   "gbVaultGBs": {
    "value": 30,
@@ -311,10 +311,10 @@
    "how": "Without R2, each of the segment's six calls is a request to the vault."
   },
   "segVaultRowsWritten": {
-   "value": 4,
+   "value": 6,
    "unit": "rows written per segment",
    "status": "estimated",
-   "how": "The bytes (one 1 MiB row), the manifest, the list entry and the object's record."
+   "how": "Three objects (the bytes, the manifest, the list entry), each a record row and a 1 MiB chunk row (blob-do.ts); a segment over 1 MiB takes a chunk row per MiB. Deleting it later costs the same."
   },
   "viewWorkerReqPerMiB": {
    "value": 4.2,
@@ -1017,6 +1017,16 @@
    "runs": [
     "limits-r2-heads-200-mvy6l2ig",
     "limits-r2-heads-1000-mvy6lh4l"
+   ]
+  },
+  {
+   "id": "do-object-storage",
+   "status": "documented",
+   "value": "1 GB in one Durable Object on Free, 10 GB on Paid",
+   "observed": "Not hit as documented: the lab's no-R2 1 GiB upload (1.07 GB) completed in one vault on Workers Free, so the 1 GB wasn't enforced at that size. Not pushed further.",
+   "carton": "Without R2, each project's media lives in one vault object, so a project's media must stay under this. Past it, writes fail (SQLITE_FULL); reads and deletes still work. Keep media in R2.",
+   "runs": [
+    "media-nor2-1G-none-mvy6qui8"
    ]
   },
   {

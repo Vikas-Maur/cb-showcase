@@ -30,7 +30,18 @@ dropped with a warning. An input the file lacks shows as "Not measured" on the p
 estimate (`INPUT_DEFAULTS` in `model.js`). An input the model doesn't use is listed as an extra measurement. Limits and
 speeds with ids the page doesn't know still show: their own `value` text becomes the tooltip.
 
-New prices: fetch the five pages listed in `prices.json` `sources`, update the numbers and `fetched`, and rebuild.
+What the model expects of a few inputs, so they aren't counted twice:
+
+- `editDoReq` is WebSocket messages per edit (push, withdraw, re-push), billed 20:1 on Paid: the room's requests in a
+  run less one connect per party. Connects (`connDoReq`) and alarms are added on their own, at full price.
+- Per-GB inputs (`gb*`) are per 10⁹ bytes; per-MiB inputs (`view*PerMiB`) are measured with 2 s segments at 2 Mbit/s
+  and scale with the segment's size (reads go per segment).
+- `segVaultRowsWritten` counts a segment's three vault objects with one chunk row each; the model adds a row per MiB
+  past the first, and charges the same rows again when the media expires (a delete is a row written).
+
+New prices: fetch the five pages listed in `prices.json` `sources`, update the numbers and `fetched`, and rebuild. The
+model rounds a meter's billable amount up to the next unit only where the tier says `"round": true` (Durable Objects
+and R2, per their pricing pages).
 
 `node build-site.mjs` (from `carton/packages/server-cloudflare`) copies `site/` into `dist/site`, the calculator
 included and its build script and type declarations left out.

@@ -20,9 +20,17 @@
 //   alarms and media requests bill in full (no fixed 80% share);
 // - connects, idle open sessions and the room's alarms are their own line; so is playback; the preview segment length
 //   is a setting (fewer, larger segments mean fewer storage writes and reads).
+// And, from the review of this model (Cloudflare's pricing and limits pages, 2026-11-02):
+// - Durable Objects and R2 round each meter's billable amount (past the included amount) up to the next unit: a
+//   million requests, rows, GB-s or operations, a GB-month. Workers requests and CPU aren't documented as rounded.
+// - one Durable Object holds at most 1 GB on Free and 10 GB on Paid: the vault is one object per project, so its
+//   media must fit that on either plan;
+// - a room's duration is wall-clock time shared by everything it does at once: never more than the month's hours.
 
 /** One MiB, in bytes. */
 const MIB = 1024 * 1024;
+/** Memory a Durable Object is billed for, GB (Cloudflare bills the 128 MB allocation). */
+const DO_MEMORY_GB = 0.128;
 /** The segment the lab's per-MiB playback inputs were measured with: 2 s of the 720p proxy at 2 Mbit/s. */
 export const REF_SEGMENT = { seconds: 2, mbps: 2 };
 /** Rows the room keeps before archiving older changes (server §18 default, ARCHIVE_KEEP). */
@@ -36,7 +44,7 @@ export const FREE_WS_RATIO = 1;
 
 /** Every per-operation input with its fallback value: used when data.json lacks a key ("not measured"). */
 export const INPUT_DEFAULTS = Object.freeze({
-  editDoReq: 1.31,
+  editDoReq: 1.225,
   editRowsWritten: 2.17,
   editRowsRead: 0.97,
   editGBs: 0.00156,
@@ -59,20 +67,20 @@ export const INPUT_DEFAULTS = Object.freeze({
   idleDoReqPerHour: 0,
   idleGBsPerHour: 0,
   idleRowsWrittenPerHour: 0,
-  gbWorkerReq: 140,
-  gbWorkerCpuMs: 840,
-  gbR2ClassA: 520,
-  gbR2ClassB: 130,
+  gbWorkerReq: 125,
+  gbWorkerCpuMs: 750,
+  gbR2ClassA: 480,
+  gbR2ClassB: 125,
   gbDoReq: 0,
-  gbVaultDoReq: 260,
-  gbVaultRowsWritten: 3072,
+  gbVaultDoReq: 240,
+  gbVaultRowsWritten: 2861,
   gbVaultGBs: 30,
   segWorkerReq: 6,
   segWorkerCpuMs: 2,
   segR2ClassA: 3,
   segR2ClassB: 3,
   segVaultDoReq: 6,
-  segVaultRowsWritten: 4,
+  segVaultRowsWritten: 6,
   viewWorkerReqPerMiB: 4.2,
   viewClassBPerMiB: 4.2,
   viewWorkerCpuMsPerMiB: 6,
@@ -140,41 +148,45 @@ export const ACTIVITIES = Object.freeze([
 ]);
 
 const n = (x, d = 0) => (typeof x === "number" && Number.isFinite(x) ? x : d);
-const nonneg = (x, d = 0) => Math.max(0, n(x, d));
+/** A finite number in [lo, hi], or the default. Bounds keep every product finite (no Infinity or NaN bills). */
+const within = (x, d, lo, hi) => Math.min(hi, Math.max(lo, n(x, d)));
+/** Room for every product of settings and inputs to stay finite. */
+const INPUT_MAX = 1e9;
 
 /** Settings with every key present, numbers clamped to sane ranges, unknown keys dropped. */
-export function normalizeSettings(s = {}) {
+export function normalizeSettings(sIn) {
+  const s = sIn && typeof sIn === "object" ? sIn : {};
   const d = DEFAULT_SETTINGS;
-  const share = (x, def) => Math.min(1, nonneg(x, def));
   return {
-    people: Math.max(1, Math.round(nonneg(s.people, d.people))),
-    teams: Math.max(1, Math.round(nonneg(s.teams, d.teams))),
-    days: Math.min(31, nonneg(s.days, d.days)),
-    hoursPerDay: Math.min(24, nonneg(s.hoursPerDay, d.hoursPerDay)),
-    idleHoursPerDay: Math.min(24, nonneg(s.idleHoursPerDay, d.idleHoursPerDay)),
-    savesPerMinute: nonneg(s.savesPerMinute, d.savesPerMinute),
-    agentEditsPerDay: nonneg(s.agentEditsPerDay, d.agentEditsPerDay),
-    dragShare: share(s.dragShare, d.dragShare),
-    connectsPerDay: nonneg(s.connectsPerDay, d.connectsPerDay),
-    footageHoursPerMonth: nonneg(s.footageHoursPerMonth, d.footageHoursPerMonth),
-    previewMbps: Math.max(0.01, nonneg(s.previewMbps, d.previewMbps)),
+    people: Math.round(within(s.people, d.people, 1, 100_000)),
+    teams: Math.round(within(s.teams, d.teams, 1, 100_000_000)),
+    days: within(s.days, d.days, 0, 31),
+    hoursPerDay: within(s.hoursPerDay, d.hoursPerDay, 0, 24),
+    idleHoursPerDay: within(s.idleHoursPerDay, d.idleHoursPerDay, 0, 24),
+    savesPerMinute: within(s.savesPerMinute, d.savesPerMinute, 0, 600),
+    agentEditsPerDay: within(s.agentEditsPerDay, d.agentEditsPerDay, 0, 1e6),
+    dragShare: within(s.dragShare, d.dragShare, 0, 1),
+    connectsPerDay: within(s.connectsPerDay, d.connectsPerDay, 0, 1e6),
+    footageHoursPerMonth: within(s.footageHoursPerMonth, d.footageHoursPerMonth, 0, 10_000),
+    previewMbps: within(s.previewMbps, d.previewMbps, 0.01, 1000),
     shareOriginals: typeof s.shareOriginals === "boolean" ? s.shareOriginals : d.shareOriginals,
-    originalMbps: nonneg(s.originalMbps, d.originalMbps),
-    retentionMonths: nonneg(s.retentionMonths, d.retentionMonths),
-    viewShare: share(s.viewShare, d.viewShare),
+    originalMbps: within(s.originalMbps, d.originalMbps, 0, 10_000),
+    retentionMonths: within(s.retentionMonths, d.retentionMonths, 0, 1200),
+    viewShare: within(s.viewShare, d.viewShare, 0, 1),
     storage: s.storage === "vault" ? "vault" : s.storage === "r2" ? "r2" : d.storage,
     plan: s.plan === "paid" ? "paid" : s.plan === "free" ? "free" : d.plan,
-    segmentSeconds: Math.max(0.5, nonneg(s.segmentSeconds, d.segmentSeconds)),
+    segmentSeconds: within(s.segmentSeconds, d.segmentSeconds, 0.5, 3600),
   };
 }
 
 /** Input values: data.json's where it has a finite number, the defaults otherwise. */
-export function resolveInputs(given = {}) {
+export function resolveInputs(given) {
   const out = { ...INPUT_DEFAULTS };
+  if (!given || typeof given !== "object") return out;
   for (const k of Object.keys(INPUT_DEFAULTS)) {
-    const v = given?.[k];
+    const v = given[k];
     const x = typeof v === "number" ? v : v && typeof v === "object" ? v.value : undefined;
-    if (typeof x === "number" && Number.isFinite(x) && x >= 0) out[k] = x;
+    if (typeof x === "number" && Number.isFinite(x) && x >= 0) out[k] = Math.min(x, INPUT_MAX);
   }
   return out;
 }
@@ -236,13 +248,16 @@ export function usage(settingsIn, inputsIn) {
   const proxyGB = (footageHours * proxyBytesPerHour) / 1e9;
   const segments = (footageHours * 3600) / s.segmentSeconds;
   const segMiB = (s.previewMbps * 1e6 * s.segmentSeconds) / 8 / MIB;
+  // rows a segment takes in the vault: its three objects (bytes, manifest, list entry), each a record row and its 1 MiB
+  // chunk rows; the input counts one chunk for the bytes
+  const vaultSegRows = m.segVaultRowsWritten - 1 + Math.ceil(segMiB);
   const g = act.segments;
   g.workersReq = segments * m.segWorkerReq;
   g.workersCpuMs = segments * m.segWorkerCpuMs;
   if (vault) {
     g.doReq = segments * m.segVaultDoReq;
     // the vault keeps 1 MiB per row: a segment's bytes take ceil(size) rows; the input counts one
-    g.doRowsWritten = segments * (m.segVaultRowsWritten - 1 + Math.ceil(segMiB));
+    g.doRowsWritten = segments * vaultSegRows;
     g.doGBs = proxyGB * m.gbVaultGBs;
   } else {
     g.r2ClassA = segments * m.segR2ClassA;
@@ -264,14 +279,15 @@ export function usage(settingsIn, inputsIn) {
     o.doReq = originalsGB * m.gbDoReq;
   }
 
-  // media storage: each month's media, kept `retentionMonths` (steady state); deleting a month's media from the vault
-  // costs a row written per MiB (R2's deletes are free)
+  // media storage: each month's media, kept `retentionMonths` (steady state). Deleting a month's media from the vault
+  // deletes every row it took (a delete is a row written): each segment's objects with their chunk rows, and each MiB
+  // of the originals. R2's deletes are free.
   const monthlyGB = proxyGB + originalsGB;
   const storedGB = monthlyGB * s.retentionMonths;
   const st = act.storage;
   if (vault) {
     st.doStorageGB = storedGB;
-    st.doRowsWritten = s.retentionMonths > 0 ? (monthlyGB * 1e9) / MIB : 0;
+    st.doRowsWritten = s.retentionMonths > 0 ? segments * vaultSegRows + Math.ceil((originalsGB * 1e9) / MIB) : 0;
   } else st.r2StorageGB = storedGB;
 
   // playback: each person plays `viewShare` of every teammate's proxies once (played media is cached on disk); reads
@@ -289,6 +305,18 @@ export function usage(settingsIn, inputsIn) {
     v.doGBs = viewedMiB * m.viewVaultGBsPerMiB;
   } else v.r2ClassB = viewedMiB * m.viewClassBPerMiB * perSeg;
 
+  // duration is wall-clock time, shared by everything an object does at once: the room (edits, presence, connections)
+  // and the vault (media) are each awake at most the whole month, 128 MB
+  const wallGBs = s.days * 86_400 * DO_MEMORY_GB;
+  const capGBs = (keys) => {
+    const sum = keys.reduce((t, k) => t + act[k].doGBs, 0);
+    if (sum <= wallGBs) return false;
+    for (const k of keys) act[k].doGBs *= wallGBs / sum;
+    return true;
+  };
+  const roomCapped = capGBs(["edits", "presence", "connections"]);
+  const vaultCapped = vault && capGBs(["segments", "originals", "playback"]);
+
   const totals = emptyMeters();
   for (const a of Object.values(act)) for (const k of Object.keys(totals)) totals[k] += a[k];
   return {
@@ -296,11 +324,28 @@ export function usage(settingsIn, inputsIn) {
     inputs: m,
     activities: act,
     totals,
-    derived: { edits, presenceMsgs, presenceAlarms, connects, idleHours, upkeepAlarms, footageHours, proxyGB, segments, segMiB, originalsGB, storedGB, viewedMiB, editHours },
+    derived: {
+      edits, presenceMsgs, presenceAlarms, connects, idleHours, upkeepAlarms, footageHours, proxyGB, segments, segMiB, originalsGB, storedGB, viewedMiB, editHours,
+      // the largest single Durable Object: a project's vault (its media) or its room (recent changes)
+      roomGB: e.doStorageGB, vaultGB: vault ? storedGB : 0, roomCapped, vaultCapped,
+    },
   };
 }
 
-const over = (used, p) => (Math.max(0, used - p.included) * p.per) / p.perUnit;
+/** Billable units past the included amount; rounded up to the next unit where Cloudflare says so (`round`). */
+const units = (used, p) => {
+  const x = Math.max(0, used - p.included) / p.perUnit;
+  return p.round ? Math.max(0, Math.ceil(x - 1e-9)) : x;
+};
+const over = (used, p) => units(used, p) * p.per;
+
+/** Does the largest Durable Object fit what one object may hold on this plan (1 GB Free, 10 GB Paid)? */
+export function capacity(u, prices, plan) {
+  const limitGB = plan === "paid" ? prices.paid.doObjectGB ?? 10 : prices.free.doObjectGB ?? 1;
+  const what = u.derived.vaultGB >= u.derived.roomGB ? "vault" : "room";
+  const objectGB = Math.max(u.derived.vaultGB, u.derived.roomGB);
+  return { ok: objectGB <= limitGB + 1e-12, what, objectGB, limitGB };
+}
 
 /** The month's bill for `settings.teams` teams: by Cloudflare meter and by what it's for. */
 export function bill(settingsIn, inputsIn, prices) {
@@ -335,7 +380,7 @@ export function bill(settingsIn, inputsIn, prices) {
       used: amount,
       wsMessages: mt.key === "doReq" ? u.totals.doReqWs * T : undefined,
       included: billed ? p.included : null,
-      billable: billed ? Math.max(0, amount - p.included) : 0,
+      billable: billed ? units(amount, p) * p.perUnit : 0,
       price: p,
       cost: c,
     });
@@ -365,7 +410,7 @@ export function bill(settingsIn, inputsIn, prices) {
   }
   const total = lines.reduce((t, l) => t + l.cost, 0);
   const people = s.people * T;
-  return { plan: s.plan, settings: s, usage: u, meters: meterRows, lines, total, perUser: total / people, people };
+  return { plan: s.plan, settings: s, usage: u, meters: meterRows, lines, total, perUser: total / people, people, capacity: capacity(u, prices, s.plan) };
 }
 
 const FREE_CHECKS = [
@@ -374,7 +419,7 @@ const FREE_CHECKS = [
   { key: "doGBs", name: "Durable Object duration a day", limit: (f) => f.doGBsDay, perDay: (t, days) => t.doGBs / days },
   { key: "doRowsRead", name: "Rows read a day", limit: (f) => f.doRowsReadDay, perDay: (t, days) => t.doRowsRead / days },
   { key: "doRowsWritten", name: "Rows written a day", limit: (f) => f.doRowsWrittenDay, perDay: (t, days) => t.doRowsWritten / days },
-  { key: "doStorageGB", name: "Durable Object storage (5 GB in total)", limit: (f) => f.doStorageGB, perDay: (t) => t.doStorageGB, total: true },
+  { key: "doStorageGB", name: "Durable Object storage (5 GB in all)", limit: (f) => f.doStorageGB, perDay: (t) => t.doStorageGB, total: true },
 ];
 
 /**
@@ -387,13 +432,18 @@ export function freeCheck(settingsIn, inputsIn, prices) {
   const s = u.settings;
   const F = prices.free;
   const days = Math.max(1e-9, s.days);
+  // one boundary for every answer: a team count fits when it is at most maxTeams (floating-point noise forgiven)
   const checks = FREE_CHECKS.map((c) => {
     const perTeam = c.perDay(u.totals, days);
     const limit = c.limit(F);
     const maxTeams = perTeam > 0 ? Math.floor(limit / perTeam + 1e-9) : Infinity;
-    return { key: c.key, name: c.name, total: !!c.total, perTeam, used: perTeam * s.teams, limit, maxTeams, breaksAt: maxTeams === Infinity ? Infinity : maxTeams + 1, over: perTeam * s.teams > limit };
+    return { key: c.key, name: c.name, total: !!c.total, perTeam, used: perTeam * s.teams, limit, maxTeams, breaksAt: maxTeams === Infinity ? Infinity : maxTeams + 1, over: s.teams > maxTeams };
   });
+  // one Durable Object holds at most 1 GB on Free: the vault (a project's media) or the room, whatever the team count
+  const cap = capacity(u, prices, "free");
+  checks.push({ key: "doObjectGB", name: `Storage in one Durable Object (${cap.limitGB} GB)`, total: true, perObject: true, perTeam: cap.objectGB, used: cap.objectGB, limit: cap.limitGB, maxTeams: cap.ok ? Infinity : 0, breaksAt: cap.ok ? Infinity : 1, over: !cap.ok });
   const m = u.inputs;
+  // CPU per request: each kind's total CPU over its requests, an average (the limit applies to every single request)
   const cpu = [
     { what: "a connect", ms: m.connWorkerReq ? m.connWorkerCpuMs / m.connWorkerReq : 0, used: u.totals.workersReq > 0 && u.derived.connects > 0 },
     { what: "a preview-segment request", ms: m.segWorkerReq ? m.segWorkerCpuMs / m.segWorkerReq : 0, used: u.derived.segments > 0 },
@@ -406,17 +456,32 @@ export function freeCheck(settingsIn, inputsIn, prices) {
   const sorted = [...checks].sort((a, b) => a.breaksAt - b.breaksAt);
   const first = sorted[0].breaksAt === Infinity ? null : sorted[0];
   const fits = !cpuOver && checks.every((c) => !c.over);
-  return { fits, first, checks, sorted, cpu: { limit: cpuLimit, worst: cpuWorst, over: cpuOver }, maxTeams: cpuOver ? 0 : first ? first.maxTeams : Infinity };
+  return { fits, first, checks, sorted, cpu: { limit: cpuLimit, worst: cpuWorst, over: cpuOver, basis: "average" }, maxTeams: cpuOver ? 0 : first ? first.maxTeams : Infinity };
 }
 
 /** The biggest line (the plan fee included), and one way to lower it, priced by running the model again. */
 function suggest(b, inputsIn, prices, fc) {
   const s = b.settings;
   const tryWith = (patch, inputsPatch) => bill({ ...s, ...patch }, { ...resolveInputs(inputsIn), ...(inputsPatch ?? {}) }, prices).total;
+  const paidCap = capacity(b.usage, prices, "paid");
+  // the vault can't hold a project's media even on Paid: R2 is the way, on the cheapest plan that fits
+  const inR2 = () => {
+    const free = freeCheck({ ...s, storage: "r2", plan: "free" }, inputsIn, prices);
+    const plan = free.fits ? "free" : "paid";
+    return { plan, total: tryWith({ storage: "r2", plan }) };
+  };
   if (s.plan === "free" && !fc.fits) {
     const why = limitWhy(fc);
+    if (!paidCap.ok) {
+      const r2 = inR2();
+      return { driver: "limit", text: `Workers Free can't run this: ${why}. Workers Paid can't either: ${capWhy(paidCap)}. With media in R2 it would cost $${r2.total.toFixed(2)} a month on Workers ${r2.plan === "free" ? "Free" : "Paid"}.`, saving: 0, paidTotal: null, alternative: { storage: "r2", ...r2 } };
+    }
     const paidTotal = tryWith({ plan: "paid" });
-    return { driver: "limit", text: `Workers Free can't run this: ${why}. On Workers Paid it would cost $${paidTotal.toFixed(2)} a month.`, saving: 0, paidTotal };
+    return { driver: "limit", text: `Workers Free can't run this: ${why}. On Workers Paid it would cost $${paidTotal.toFixed(2)} a month.`, saving: 0, paidTotal, alternative: { storage: s.storage, plan: "paid", total: paidTotal } };
+  }
+  if (s.plan === "paid" && !paidCap.ok) {
+    const r2 = inR2();
+    return { driver: "capacity", text: `The vault can't hold this: ${capWhy(paidCap)}. With media in R2 it would cost $${r2.total.toFixed(2)} a month on Workers ${r2.plan === "free" ? "Free" : "Paid"}.`, saving: 0, alternative: { storage: "r2", ...r2 } };
   }
   const ranked = b.lines.filter((l) => l.cost > 0).sort((x, y) => y.cost - x.cost);
   if (!ranked.length) return { driver: null, text: "Nothing bills at this scale.", saving: 0 };
@@ -476,8 +541,16 @@ function suggest(b, inputsIn, prices, fc) {
 
 function limitWhy(fc) {
   if (fc.cpu.over) return `${fc.cpu.worst.what} needs more than the ${fc.cpu.limit} ms of CPU a request may use`;
+  if (fc.first.perObject) return `one Durable Object may hold ${fc.first.limit} GB on Free, and a project's ${fc.first.perTeam > 0.5 ? "vault" : "room"} would hold ${fmtGB(fc.first.perTeam)}`;
   return `the limit on ${fc.first.name} is passed at ${fmtTeams(fc.first.breaksAt)}`;
 }
+
+/** Why one Durable Object can't hold it (the vault is one object per project). */
+function capWhy(cap) {
+  return `a project's ${cap.what} is one Durable Object, which holds at most ${cap.limitGB} GB, and this would keep ${fmtGB(cap.objectGB)} in it`;
+}
+
+const fmtGB = (x) => `${x < 10 ? x.toFixed(1) : Math.round(x).toLocaleString("en-US")} GB`;
 
 function fmtTeams(x) {
   if (x === Infinity) return "any number of teams";
@@ -509,11 +582,14 @@ export function curve(settingsIn, inputsIn, prices, steps = teamSteps()) {
   for (const storage of ["r2", "vault"])
     for (const plan of ["paid", "free"]) {
       const fc = freeCheck({ ...s, storage, plan, teams: 1 }, inputsIn, prices);
+      // on Paid, a project's media must still fit one Durable Object when it's in the vault
+      const cap = capacity(usage({ ...s, storage, plan, teams: 1 }, inputsIn), prices, plan);
       const points = steps.map((teams) => {
         if (plan === "free" && (fc.cpu.over || teams > fc.maxTeams)) return { teams, total: null };
+        if (plan === "paid" && !cap.ok) return { teams, total: null };
         return { teams, total: bill({ ...s, storage, plan, teams }, inputsIn, prices).total };
       });
-      series.push({ key: `${storage}-${plan}`, storage, plan, maxTeams: plan === "free" ? fc.maxTeams : Infinity, points });
+      series.push({ key: `${storage}-${plan}`, storage, plan, maxTeams: plan === "free" ? fc.maxTeams : cap.ok ? Infinity : 0, capacity: cap, points });
     }
   return series;
 }

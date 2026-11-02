@@ -301,7 +301,7 @@ function render() {
   if (!DATA) return;
   const r = M.compute(settings, INPUTS, DATA.prices);
   results.replaceChildren(totalCard(r), h("div", { class: "two" }, freeCard(r), driverCard(r)), billCard(r), metersCard(r));
-  live.textContent = `${money(r.total)} a month, ${moneyPer(r.perUser)} per user. ${r.free.fits ? "Fits Workers Free." : "Doesn't fit Workers Free."}`;
+  live.textContent = r.plan === "paid" && !r.capacity.ok ? "The vault can't hold this." : `${money(r.total)} a month, ${moneyPer(r.perUser)} per user. ${r.free.fits ? "Fits Workers Free." : "Doesn't fit Workers Free."}`;
   renderChart();
   renderLimitsAtSettings(r);
 }
@@ -311,17 +311,23 @@ function totalCard(r) {
   const blocked = r.plan === "free" && !r.free.fits;
   const head = h("h3", {}, "Your monthly bill", q("Everything Cloudflare would charge for a month at these settings: the plan fee, then each kind of use past what's included. Media storage is the steady state, once media has been kept for the months you chose.", "the monthly bill"));
   const planline = h("p", { class: "planline" }, `${plan}, media in ${r.settings.storage === "r2" ? "R2" : "the vault"}`, q(T.SETTINGS.plan, "the plan"));
-  if (blocked) {
-    // past a Free limit requests fail, so there's no Free price to show: say so, and what Paid would cost
-    const paid = M.bill({ ...r.settings, plan: "paid" }, INPUTS, DATA.prices);
+  const capOut = r.plan === "paid" && !r.capacity.ok;
+  if (blocked || capOut) {
+    // past a limit requests fail, so there's no price to show: say so, and what would work instead
+    const alt = r.suggestion.alternative;
+    const altBill = alt ? M.bill({ ...r.settings, storage: alt.storage, plan: alt.plan }, INPUTS, DATA.prices) : null;
+    const altName = alt ? `${alt.storage === "r2" ? "R2" : "the vault"} on Workers ${alt.plan === "paid" ? "Paid" : "Free"}` : "";
     return h("div", { class: "card" }, head,
       h("div", { class: "total" },
-        h("div", { class: "big", text: "Doesn't fit Free" }),
-        h("div", { class: "per" }, "On Workers Paid: ", h("b", { class: "num", text: `${money(paid.total)} a month` }), " · ", h("span", { class: "num", text: `${moneyPer(paid.perUser)} per user` }))),
+        h("div", { class: "big", text: blocked ? "Doesn't fit Free" : "Doesn't fit the vault" }),
+        altBill ? h("div", { class: "per" }, `With ${altName}: `, h("b", { class: "num", text: `${money(altBill.total)} a month` }), " · ", h("span", { class: "num", text: `${moneyPer(altBill.perUser)} per user` })) : null),
       planline,
-      h("p", { class: "alert" }, h("b", { text: "Workers Free can't run this. " }), r.suggestion.text.replace(/^Workers Free can't run this: /, "").replace(/ On Workers Paid it would cost .*$/, ""), " ",
-        h("button", { type: "button", class: "chip", style: "margin-top:8px", onclick: () => set("plan", "paid") }, "Show it on Workers Paid")),
-      h("p", { class: "note", text: `On Free, nothing bills past a limit: requests fail until midnight UTC. The lines below are what Free would charge (R2 only) on the days it holds.` }));
+      h("p", { class: "alert" }, h("b", { text: blocked ? "Workers Free can't run this. " : "The vault can't hold this. " }),
+        r.suggestion.text.replace(/^Workers Free can't run this: |^The vault can't hold this: /, "").replace(/ (On Workers Paid it|With media in R2 it) would cost .*$/, ""), " ",
+        alt ? h("button", { type: "button", class: "chip", style: "margin-top:8px", onclick: () => { settings = M.normalizeSettings({ ...settings, storage: alt.storage, plan: alt.plan }); preset = null; syncForm(); render(); } }, `Show it with ${altName}`) : null),
+      h("p", { class: "note", text: blocked
+        ? "On Free nothing bills: past a daily limit requests fail until midnight UTC, past a storage limit writes fail until data is deleted. The lines below are what Free would charge (R2 only) while it holds."
+        : "Past what one Durable Object can hold, writes to it fail; Paid's bigger allowance doesn't change that. The lines below are what this would bill while it holds." }));
   }
   return h("div", { class: "card" }, head,
     h("div", { class: "total" },
@@ -334,19 +340,19 @@ function freeCard(r) {
   const fc = r.free;
   const verdict = fc.fits ? "yes" : "no";
   const card = h("div", { class: "card" },
-    h("h3", {}, "Fits Workers Free?", q("Workers Free's limits are per day for the whole account (storage: 5 GB in total). Each is checked against an average editing day at these settings. Past a limit, requests fail until midnight UTC; nothing is ever billed.", "fitting Workers Free")),
+    h("h3", {}, "Fits Workers Free?", q("Workers Free's request, time and row limits are per day for the whole account, checked against an average editing day at these settings: past one, requests fail until midnight UTC. Storage limits (5 GB in all, 1 GB in one Durable Object) don't reset: past one, writes fail until data is deleted. The CPU limit applies to every single request. Nothing on Free is ever billed.", "fitting Workers Free")),
     h("div", { class: `verdict ${verdict}` }, h("span", { class: "ico", "aria-hidden": "true", text: fc.fits ? "✓" : "✕" }), fc.fits ? "Yes" : "No"));
   let line;
-  if (fc.cpu.over) line = `A request here needs more than ${fc.cpu.limit} ms of CPU (${fc.cpu.worst.what}), so Workers Free stops it at any scale.`;
+  if (fc.cpu.over) line = `${fc.cpu.worst.what[0].toUpperCase()}${fc.cpu.worst.what.slice(1)} averages more than ${fc.cpu.limit} ms of CPU, so Workers Free stops requests like it at any scale.`;
   else if (!fc.first) line = "No Free limit is reached at any number of teams.";
   else if (fc.fits) line = `Up to ${teamsWord(fc.maxTeams)} like this. The first limit to go is ${fc.first.name}, at ${teamsWord(fc.first.breaksAt)}: from there you'd need Workers Paid.`;
   else if (fc.maxTeams > 0) line = `The first limit to go is ${fc.first.name}, at ${teamsWord(fc.first.breaksAt)}; you have ${teamsWord(r.settings.teams)}. You'd need Workers Paid.`;
-  else line = `The first limit to go is ${fc.first.name}, already at 1 team. You'd need Workers Paid.`;
+  else line = `The first limit to go is ${fc.first.name}, already at 1 team. ${M.capacity(r.usage, DATA.prices, "paid").ok ? "You'd need Workers Paid." : "Workers Paid wouldn't fix it: keep media in R2."}`;
   card.append(h("p", { class: "small", style: "margin:0;color:var(--text)", text: line }));
   const list = h("ul", { class: "checks" });
   for (const c of fc.sorted) {
     const ratio = c.limit > 0 ? c.used / c.limit : 0;
-    const unit = c.key === "doStorageGB" ? " GB" : c.key === "doGBs" ? " GB-s" : "";
+    const unit = c.key === "doStorageGB" || c.key === "doObjectGB" ? " GB" : c.key === "doGBs" ? " GB-s" : "";
     list.append(h("li", {},
       h("div", { class: "row" },
         h("span", { class: "name" }, c.name, q(T.FREE_CHECKS[c.key] ?? "", c.name.toLowerCase())),
@@ -356,14 +362,14 @@ function freeCard(r) {
   }
   if (fc.cpu.worst) list.append(h("li", {}, h("div", { class: "row" },
     h("span", { class: "name" }, "CPU per request (10 ms)", q(T.FREE_CHECKS.cpu, "the CPU limit")),
-    h("span", { class: "num muted", text: `${sigNum(fc.cpu.worst.ms)} ms at most (${fc.cpu.worst.what})` }))));
+    h("span", { class: "num muted", text: `about ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})` }))));
   card.append(list);
   return card;
 }
 
 function driverCard(r) {
   const card = h("div", { class: "card driver" }, h("h3", {}, "Biggest cost, and how to lower it", q("The line costing the most this month, and one concrete change, priced by running the same model again with it.", "the biggest cost")));
-  if (r.plan === "free" && !r.free.fits) {
+  if ((r.plan === "free" && !r.free.fits) || (r.plan === "paid" && !r.capacity.ok)) {
     card.append(h("p", { text: r.suggestion.text }));
     return card;
   }
@@ -436,7 +442,7 @@ function metersCard(r) {
   }
   return h("details", { class: "card" },
     h("summary", { style: "cursor:pointer;font-weight:600;font-size:15px;color:#fff" }, "Cloudflare's meters (the bill as Cloudflare counts it)"),
-    h("p", { class: "note", text: `Totals for ${r.settings.teams.toLocaleString("en-US")} team${r.settings.teams === 1 ? "" : "s"} for a month. ${paid ? "Workers Paid: Workers and Durable Objects bill past the included amounts." : "Workers Free: Workers and Durable Objects never bill; past a daily limit, requests fail."} R2 bills past its own free amounts on either plan.` }),
+    h("p", { class: "note", text: `Totals for ${r.settings.teams.toLocaleString("en-US")} team${r.settings.teams === 1 ? "" : "s"} for a month. ${paid ? "Workers Paid: Workers and Durable Objects bill past the included amounts." : "Workers Free: Workers and Durable Objects never bill; past a daily limit, requests fail."} R2 bills past its own free amounts on either plan. Durable Objects and R2 round each billable amount up to the next unit (a million requests, rows, GB-s or operations; a GB-month), as Cloudflare's pricing pages say.` }),
     h("div", {}, h("table", { class: "tbl rt" },
       h("thead", {}, h("tr", {}, h("th", { text: "Meter" }), h("th", { class: "r", text: "Used a month" }), h("th", { class: "r", text: "Included" }), h("th", { class: "r", text: "Cost" }))),
       tbody)));
@@ -461,8 +467,9 @@ function renderChart() {
     h("td", { class: "first num", "data-label": "Teams", text: t.toLocaleString("en-US") }),
     series.map((sr) => h("td", { class: "r num", "data-label": SERIES_STYLE[sr.key].name, text: sr.points[i].total === null ? "doesn't fit" : money(sr.points[i].total) })))));
   const notes = chartCard.querySelector(".chartnotes");
-  notes.replaceChildren(...series.filter((x) => x.plan === "free").map((x) => h("li", {}, h("span", { class: `lk dash`, style: `border-color:${SERIES_STYLE[x.key].color}` }),
-    x.maxTeams === Infinity ? `${SERIES_STYLE[x.key].name}: fits at every count shown.` : x.maxTeams === 0 ? `${SERIES_STYLE[x.key].name}: doesn't fit even 1 team.` : `${SERIES_STYLE[x.key].name}: fits up to ${teamsWord(x.maxTeams)}.`)));
+  notes.replaceChildren(...series.filter((x) => x.plan === "free" || x.maxTeams === 0).map((x) => h("li", {}, h("span", { class: `lk${SERIES_STYLE[x.key].dash ? " dash" : ""}`, style: `border-color:${SERIES_STYLE[x.key].color}` }),
+    x.plan === "paid" ? `${SERIES_STYLE[x.key].name}: a project's media (${sigNum(x.capacity.objectGB)} GB) is more than the ${x.capacity.limitGB} GB one Durable Object holds.`
+      : x.maxTeams === Infinity ? `${SERIES_STYLE[x.key].name}: fits at every count shown.` : x.maxTeams === 0 ? `${SERIES_STYLE[x.key].name}: doesn't fit even 1 team.` : `${SERIES_STYLE[x.key].name}: fits up to ${teamsWord(x.maxTeams)}.`)));
 }
 
 function chartCardInit() {
@@ -553,7 +560,7 @@ function drawChart(box, st) {
       }
     });
     tipEl.replaceChildren(h("div", { class: "h num", text: `${t.toLocaleString("en-US")} team${t === 1 ? "" : "s"} of ${settings.people}` }),
-      ...st.series.map((sr) => h("div", { class: "r" }, h("span", { class: `lk${SERIES_STYLE[sr.key].dash ? " dash" : ""}`, style: `border-color:${SERIES_STYLE[sr.key].color}` }), h("b", { class: "num", text: sr.points[i].total === null ? "–" : money(sr.points[i].total) }), h("span", { text: SERIES_STYLE[sr.key].name + (sr.points[i].total === null ? " (past a Free limit)" : "") }))));
+      ...st.series.map((sr) => h("div", { class: "r" }, h("span", { class: `lk${SERIES_STYLE[sr.key].dash ? " dash" : ""}`, style: `border-color:${SERIES_STYLE[sr.key].color}` }), h("b", { class: "num", text: sr.points[i].total === null ? "–" : money(sr.points[i].total) }), h("span", { text: SERIES_STYLE[sr.key].name + (sr.points[i].total === null ? (sr.plan === "free" ? " (past a Free limit)" : " (too big for one object)") : "") }))));
     tipEl.hidden = false;
     const tw = tipEl.offsetWidth;
     let left = xx + 12;
@@ -620,7 +627,7 @@ function renderLimitsAtSettings(r) {
   const fc = r.free;
   for (const [key, td] of limitRows) {
     if (key === "cpu") {
-      td.textContent = fc.cpu.worst ? `About ${sigNum(fc.cpu.worst.ms)} ms at most (${fc.cpu.worst.what})${fc.cpu.over ? ": over the limit" : ""}.` : "–";
+      td.textContent = fc.cpu.worst ? `About ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})${fc.cpu.over ? ": over the limit" : "; the per-request maximum isn't measured"}.` : "–";
       continue;
     }
     const c = fc.checks.find((x) => x.key === key);
@@ -628,7 +635,13 @@ function renderLimitsAtSettings(r) {
       td.textContent = "–";
       continue;
     }
-    const unit = key === "doStorageGB" ? " GB" : key === "doGBs" ? " GB-s" : "";
+    const unit = key === "doStorageGB" || key === "doObjectGB" ? " GB" : key === "doGBs" ? " GB-s" : "";
+    if (c.perObject) {
+      // the same object on Paid: 10 GB
+      const paid = r.plan === "paid" ? r.capacity : null;
+      td.textContent = `${sigNum(c.used)}${unit} in the largest object: ${c.over ? "over Free's 1 GB" : "fits Free's 1 GB"}${paid ? `; ${paid.ok ? "fits" : "over"} Paid's ${paid.limitGB} GB` : ""}.`;
+      continue;
+    }
     td.textContent = `${count(c.used)}${unit}${c.total ? "" : " a day"}: ${c.over ? "over" : pct(c.used / c.limit)}${c.over ? "" : " of it"}. ${c.maxTeams === Infinity ? "Never reached." : `Fits up to ${teamsWord(c.maxTeams)}.`}`;
   }
 }

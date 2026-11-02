@@ -2,22 +2,76 @@
  "fetched": "2026-11-02",
  "currency": "USD",
  "sources": [
-  { "name": "Workers pricing", "url": "https://developers.cloudflare.com/workers/platform/pricing/", "fetched": "2026-11-02" },
-  { "name": "Durable Objects pricing", "url": "https://developers.cloudflare.com/durable-objects/platform/pricing/", "fetched": "2026-11-02" },
-  { "name": "R2 pricing", "url": "https://developers.cloudflare.com/r2/pricing/", "fetched": "2026-11-02" },
-  { "name": "Workers limits", "url": "https://developers.cloudflare.com/workers/platform/limits/", "fetched": "2026-11-02" },
-  { "name": "Durable Objects limits", "url": "https://developers.cloudflare.com/durable-objects/platform/limits/", "fetched": "2026-11-02" }
+  {
+   "name": "Workers pricing",
+   "url": "https://developers.cloudflare.com/workers/platform/pricing/",
+   "fetched": "2026-11-02"
+  },
+  {
+   "name": "Durable Objects pricing",
+   "url": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+   "fetched": "2026-11-02"
+  },
+  {
+   "name": "R2 pricing",
+   "url": "https://developers.cloudflare.com/r2/pricing/",
+   "fetched": "2026-11-02"
+  },
+  {
+   "name": "Workers limits",
+   "url": "https://developers.cloudflare.com/workers/platform/limits/",
+   "fetched": "2026-11-02"
+  },
+  {
+   "name": "Durable Objects limits",
+   "url": "https://developers.cloudflare.com/durable-objects/platform/limits/",
+   "fetched": "2026-11-02"
+  }
  ],
  "paid": {
   "base": 5,
-  "workersReq": { "included": 10000000, "per": 0.30, "perUnit": 1000000 },
-  "workersCpuMs": { "included": 30000000, "per": 0.02, "perUnit": 1000000 },
-  "doReq": { "included": 1000000, "per": 0.15, "perUnit": 1000000 },
-  "doGBs": { "included": 400000, "per": 12.50, "perUnit": 1000000 },
-  "doRowsRead": { "included": 25000000000, "per": 0.001, "perUnit": 1000000 },
-  "doRowsWritten": { "included": 50000000, "per": 1.00, "perUnit": 1000000 },
-  "doStorageGBMonth": { "included": 5, "per": 0.20, "perUnit": 1 },
-  "wsMessagesPerRequest": 20
+  "workersReq": {
+   "included": 10000000,
+   "per": 0.3,
+   "perUnit": 1000000
+  },
+  "workersCpuMs": {
+   "included": 30000000,
+   "per": 0.02,
+   "perUnit": 1000000
+  },
+  "doReq": {
+   "included": 1000000,
+   "per": 0.15,
+   "perUnit": 1000000,
+   "round": true
+  },
+  "doGBs": {
+   "included": 400000,
+   "per": 12.5,
+   "perUnit": 1000000,
+   "round": true
+  },
+  "doRowsRead": {
+   "included": 25000000000,
+   "per": 0.001,
+   "perUnit": 1000000,
+   "round": true
+  },
+  "doRowsWritten": {
+   "included": 50000000,
+   "per": 1.0,
+   "perUnit": 1000000,
+   "round": true
+  },
+  "doStorageGBMonth": {
+   "included": 5,
+   "per": 0.2,
+   "perUnit": 1,
+   "round": true
+  },
+  "wsMessagesPerRequest": 20,
+  "doObjectGB": 10
  },
  "free": {
   "workersReqDay": 100000,
@@ -26,12 +80,28 @@
   "doGBsDay": 13000,
   "doRowsReadDay": 5000000,
   "doRowsWrittenDay": 100000,
-  "doStorageGB": 5
+  "doStorageGB": 5,
+  "doObjectGB": 1
  },
  "r2": {
-  "storageGBMonth": { "included": 10, "per": 0.015, "perUnit": 1 },
-  "classA": { "included": 1000000, "per": 4.50, "perUnit": 1000000 },
-  "classB": { "included": 10000000, "per": 0.36, "perUnit": 1000000 },
+  "storageGBMonth": {
+   "included": 10,
+   "per": 0.015,
+   "perUnit": 1,
+   "round": true
+  },
+  "classA": {
+   "included": 1000000,
+   "per": 4.5,
+   "perUnit": 1000000,
+   "round": true
+  },
+  "classB": {
+   "included": 10000000,
+   "per": 0.36,
+   "perUnit": 1000000,
+   "round": true
+  },
   "egress": 0
  },
  "notes": {
@@ -41,6 +111,9 @@
   "alarm": "Each setAlarm() is billed as a single row written; deletes are counted as rows written.",
   "duration": "Duration bills the 128 MB a Durable Object is allocated, whatever it uses; an object that is idle and eligible for hibernation isn't billed for duration.",
   "r2": "R2 bills on either Workers plan; its free amounts are monthly and apply to Standard storage only. Storage is the average of each day's peak over the month. Egress is free. DeleteObject and AbortMultipartUpload are free.",
-  "dailyReset": "Workers Free daily limits reset at 00:00 UTC."
+  "dailyReset": "Workers Free daily limits reset at 00:00 UTC.",
+  "rounding": "Durable Objects: \"billable usage is the amount consumed in excess of the included monthly allocation. This billable usage is rounded up to the next billable unit\" (a million requests, GB-s or rows; a GB-month). R2: \"Cloudflare rounds up your usage to the next billing unit\" (a million operations, a GB-month). Workers requests and CPU: no rounding documented.",
+  "perObject": "A SQLite-backed Durable Object holds at most 10 GB on Workers Paid, 1 GB on the Free plan; past it, writes fail (SQLITE_FULL) while reads and deletes still work.",
+  "durationShared": "Duration is billed in wall-clock time while the object is active, shared across all requests active on it at once."
  }
 }

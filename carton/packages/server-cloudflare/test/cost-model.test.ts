@@ -40,8 +40,8 @@ test("Workers Paid adds the $5 fee and nothing else while use stays inside the i
 test("the vault keeps media in Durable Object storage: $0.20 a GB-month past 5, and it breaks Workers Free's 5 GB at once", () => {
   const b = M.bill({ ...solo, storage: "vault", plan: "paid" }, {}, prices);
   close(b.usage.totals.doStorageGB - b.usage.activities.edits.doStorageGB, 27);
-  // (27 GB of media + the change rows - 5 included) × $0.20
-  close(b.meters.find((m) => m.key === "doStorageGB")!.cost, (b.usage.totals.doStorageGB - 5) * 0.2);
+  // 27 GB of media + 0.006 GB of change rows - 5 included = 22.006, rounded up to 23 GB-month × $0.20
+  close(b.meters.find((m) => m.key === "doStorageGB")!.cost, 23 * 0.2);
   assert.equal(b.meters.find((m) => m.key === "r2StorageGB")!.used, 0);
   const fc = M.freeCheck({ ...solo, storage: "vault" }, {}, prices);
   assert.equal(fc.fits, false);
@@ -58,12 +58,13 @@ test("incoming WebSocket messages bill 20:1 on Paid; connects and alarms bill in
   const doReq = b.meters.find((m) => m.key === "doReq")!;
   close(doReq.wsMessages!, 72e6);
   close(doReq.used, 3.6e6); // 72M / 20
-  close(doReq.cost, ((3.6e6 - 1e6) * 0.15) / 1e6); // $0.39
+  close(doReq.billable, 3e6); // 2.6M past the included million, rounded up to the next million
+  close(doReq.cost, 0.45);
   // add 1M connects (5,000 a day): a request to create a WebSocket connection is billed in full
   const b2 = M.bill({ ...s, connectsPerDay: 5000 }, { ...ws, connDoReq: 1 }, prices);
   const d2 = b2.meters.find((m) => m.key === "doReq")!;
   close(d2.used, 4.6e6);
-  close(d2.cost, ((4.6e6 - 1e6) * 0.15) / 1e6); // $0.54
+  close(d2.cost, 0.6); // 3.6M past the included million → 4M × $0.15
   // the same 72M messages as plain requests would cost (72M - 1M) × $0.15/M
   const b3 = M.bill({ ...s, connectsPerDay: 72e6 / 200 }, only({ connDoReq: 1 }), prices);
   close(b3.meters.find((m) => m.key === "doReq")!.cost, ((72e6 - 1e6) * 0.15) / 1e6);
@@ -177,8 +178,12 @@ test("missing, extra and malformed inputs and settings never throw; missing inpu
 test("presets give different bills, and the biggest driver comes with a priced way to lower it", () => {
   const totals = Object.values(M.PRESETS).map((p) => M.compute(p.settings, {}, prices).total);
   assert.equal(new Set(totals.map((t) => t.toFixed(4))).size, totals.length);
-  const r = M.compute({ ...M.PRESETS.team5.settings, storage: "vault", plan: "paid" }, {}, prices);
-  assert.equal(r.driver!.key, "storage");
+  // a vault that fits one object on Paid (5 people × 2 h × 0.9 GB = 9 GB) but not Free: the fee is the floor, so the
+  // lever is the next line, media storage
+  const r = M.compute({ ...M.PRESETS.team5.settings, footageHoursPerMonth: 2, retentionMonths: 1, storage: "vault", plan: "paid" }, {}, prices);
+  assert.equal(r.capacity.ok, true);
+  assert.equal(r.driver!.key, "fee");
+  assert.equal(r.suggestion.lever, "storage");
   assert.match(r.suggestion.text, /R2/);
   assert.ok(r.suggestion.saving > 0 && r.suggestion.newTotal! < r.total);
   const blocked = M.compute({ ...M.PRESETS.studio20.settings, plan: "free" }, {}, prices);
@@ -205,4 +210,93 @@ test("data.json (when built) carries every model input or the page shows it as n
   assert.ok(data.prices);
   const r = M.compute(M.PRESETS.team5.settings, data.inputs as never, data.prices as Prices);
   assert.ok(Number.isFinite(r.total));
+});
+
+test("Durable Objects and R2 round billable usage up to the next unit; Workers requests don't", () => {
+  // R2: 27.27 GB-month - 10 free = 17.27, billed as 18 × $0.015 = $0.27 (Cloudflare's example: 1.1 GB-month bills as 2)
+  const s: Partial<Settings> = { people: 1, footageHoursPerMonth: 10.1, retentionMonths: 3, plan: "free", storage: "r2" };
+  const b = M.bill(s, {}, prices);
+  close(b.usage.totals.r2StorageGB, 27.27);
+  close(b.meters.find((m) => m.key === "r2StorageGB")!.cost, 0.27);
+  // rows written: 50,000,001 on Paid → 1 row past the included 50M → a whole million, $1
+  const one: Partial<Settings> = { people: 1, days: 1, hoursPerDay: 0, idleHoursPerDay: 0, agentEditsPerDay: 0, connectsPerDay: 1e6, footageHoursPerMonth: 0, plan: "paid" };
+  const rows = M.bill(one, only({ connRowsWritten: 50.000001 }), prices);
+  close(rows.meters.find((m) => m.key === "doRowsWritten")!.used, 50_000_001);
+  close(rows.meters.find((m) => m.key === "doRowsWritten")!.cost, 1);
+  // Worker requests: 10,500,000 → 0.5M past the included 10M → $0.15, not rounded to $0.30
+  const wr = M.bill(one, only({ connWorkerReq: 10.5 }), prices);
+  close(wr.meters.find((m) => m.key === "workersReq")!.cost, 0.15);
+  // exactly the included amount bills nothing
+  const exact = M.bill(one, only({ connDoReq: 1 }), prices);
+  assert.equal(exact.meters.find((m) => m.key === "doReq")!.cost, 0);
+});
+
+test("the vault is one Durable Object per project: 1 GB on Free, 10 GB on Paid, whatever the team count", () => {
+  // 1 person × 1 h × 0.9 GB × 2 months = 1.8 GB in one vault: under Free's 5 GB in all, over its 1 GB per object
+  const small: Partial<Settings> = { people: 1, footageHoursPerMonth: 1, retentionMonths: 2, storage: "vault", plan: "free" };
+  const fc = M.freeCheck(small, {}, prices);
+  const obj = fc.checks.find((c) => c.key === "doObjectGB")!;
+  close(obj.used, 1.8);
+  assert.equal(obj.over, true);
+  assert.equal(fc.fits, false);
+  assert.equal(fc.maxTeams, 0);
+  assert.equal(M.compute(small, {}, prices).suggestion.driver, "limit");
+  assert.ok(M.freeCheck({ ...small, retentionMonths: 1 }, {}, prices).fits); // 0.9 GB fits
+  // Paid: 1.8 GB fits its 10 GB; the solo default's 27 GB doesn't, and Paid isn't offered as the fix
+  assert.equal(M.bill({ ...small, plan: "paid" }, {}, prices).capacity.ok, true);
+  const big = M.compute({ ...solo, storage: "vault", plan: "paid" }, {}, prices);
+  assert.equal(big.capacity.ok, false);
+  close(big.capacity.objectGB, 27);
+  assert.equal(big.suggestion.driver, "capacity");
+  assert.equal(big.suggestion.alternative!.storage, "r2");
+  const bigFree = M.compute({ ...solo, storage: "vault", plan: "free" }, {}, prices);
+  assert.match(bigFree.suggestion.text, /Workers Paid can't either/);
+  assert.equal(bigFree.suggestion.alternative!.storage, "r2");
+  // and the curve has no vault-on-Paid line for it
+  assert.ok(M.curve({ ...solo }, {}, prices).find((x) => x.key === "vault-paid")!.points.every((p) => p.total === null));
+});
+
+test("one object's duration never passes the month's wall-clock time", () => {
+  // 500 people dragging 24 h a day: presence alone would be 86,400 GB-s a day; one room can be awake 86,400 s × 0.128 GB
+  const u = M.usage({ people: 500, days: 30, hoursPerDay: 24, dragShare: 1, footageHoursPerMonth: 0 }, {});
+  const room = u.activities.edits.doGBs + u.activities.presence.doGBs + u.activities.connections.doGBs;
+  close(room, 30 * 86_400 * 0.128);
+  assert.equal(u.derived.roomCapped, true);
+  assert.equal(M.usage(solo, {}).derived.roomCapped, false);
+});
+
+test("vault deletes count every row an expiring object took", () => {
+  // solo, vault: 18,000 two-second segments a month; each is 3 objects × (record + one chunk) = 6 rows to delete
+  const u = M.usage({ ...solo, storage: "vault" }, {});
+  close(u.activities.storage.doRowsWritten, 18_000 * 6);
+  close(u.activities.segments.doRowsWritten, 18_000 * 6);
+  // a 6 s segment at 5 Mbit/s is 3.6 MiB: 4 chunk rows for its bytes, 5 more for its records and small objects
+  const big = M.usage({ ...solo, storage: "vault", segmentSeconds: 6, previewMbps: 5 }, {});
+  close(big.activities.segments.doRowsWritten / big.derived.segments, 9);
+});
+
+test("one boundary for 'fits': maxTeams, over and the curve agree, floating-point noise forgiven", () => {
+  // 1 person × 1 connect a day × 0.1 requests over 3 days: 0.1 a team a day; 1M teams make 100,000.00000000001
+  const s: Partial<Settings> = { people: 1, days: 3, connectsPerDay: 1, hoursPerDay: 0, agentEditsPerDay: 0, footageHoursPerMonth: 0, teams: 1_000_000 };
+  const inputs = only({ connWorkerReq: 0.1 });
+  const fc = M.freeCheck(s, inputs, prices);
+  const w = fc.checks.find((c) => c.key === "workersReq")!;
+  assert.equal(w.maxTeams, 1_000_000);
+  assert.equal(w.over, false);
+  assert.equal(fc.fits, true);
+  assert.equal(M.freeCheck({ ...s, teams: 1_000_001 }, inputs, prices).fits, false);
+});
+
+test("CPU per request is an average of each kind of request", () => {
+  const fc = M.freeCheck({ ...solo, shareOriginals: true }, {}, prices);
+  assert.equal(fc.cpu.basis, "average");
+  close(fc.cpu.worst!.ms, 6); // 750 ms over 125 requests per GB
+});
+
+test("odd settings never throw or give a non-finite bill", () => {
+  for (const s of [null, undefined, {}, { people: Number.MAX_VALUE }, { teams: Number.MAX_VALUE }, { footageHoursPerMonth: 1e300, shareOriginals: true, originalMbps: 1e300 }, { days: -5, hoursPerDay: Infinity, segmentSeconds: 0 }]) {
+    const r = M.compute(s as never, { editDoReq: 1e300 }, prices);
+    assert.ok(Number.isFinite(r.total) && Number.isFinite(r.perUser), JSON.stringify(s));
+    assert.doesNotThrow(() => M.curve(s as never, undefined, prices));
+  }
 });
