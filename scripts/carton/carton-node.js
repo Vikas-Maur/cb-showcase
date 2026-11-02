@@ -15,7 +15,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
-import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile } from "@carton/cardboard/node";
+import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile, MediaDetails, droppedMedia } from "@carton/cardboard/node";
 import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
@@ -178,6 +178,7 @@ const under = (dir, p) => {
 async function release(dir) {
   const inside = (p) => under(dir, p) || (process.platform === "win32" && under(dir.toLowerCase(), p.toLowerCase()));
   for (const [file, s] of installs) if (inside(file)) { clearTimeout(s.timer); installs.delete(file); }
+  for (const [key, d] of mediaMemory) if (inside(d.bundle)) mediaMemory.delete(key);
   for (let i = hosts.length - 1; i >= 0; i--) if (inside(hosts[i].root)) hosts.splice(i, 1);
   // The extensions let go first: what they run on a handle (a View's Materializer and holder) stops while it is open.
   for (const e of extensions) {
@@ -241,6 +242,8 @@ export function extend(ext) { extensions.push(ext); }
 // so; in any other process (cb), the worker holding the project's lease means one runs there (it prints the file from
 // head once cb's change lands, and keeps it frozen while an agent works).
 let inWorker = false;
+// The library worker's channel to main and the pages (worker()): a change made after the call that caused it returned.
+let workerEmit = null;
 function timelineOwned(bundlePath) {
   for (const e of extensions) {
     if (typeof e.ownsTimeline !== "function") continue;
@@ -516,6 +519,8 @@ async function afterSave(lc, bundlePath, after) {
 }
 
 async function commit({ bundlePath, base, doc, actor, meta }) {
+  // P2-1: a media entry this mutation removes keeps its details for a later restore or fold that brings it back
+  await keepDropped(bundlePath, base, doc);
   if (meta?.materialize) {
     // materializeIn's: head checked again here, in the store's chain, where GUI saves are serialized. One that went
     // first moved head, and this document (made from the head before it) would put the older timeline over that save:
@@ -602,7 +607,7 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
       await setRev(lc, doc.stateUpdatedAt, r.ref);
       return { ...r, doc, merged: false };
     }
-    const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: doc.stateUpdatedAt };
+    const out = { ...(await projectFor(bundlePath, head.doc, doc)), stateUpdatedAt: doc.stateUpdatedAt };
     await setRev(lc, out.stateUpdatedAt, head.ref);
     return { ...r, doc: out, merged: false };
   }
@@ -615,7 +620,7 @@ async function committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, inte
     if (author.id === "person") for (const panel of panels.get(bundlePath) ?? []) panel.reportConflicts(r.cards);
   }
   // Merged (or carded): the file gets head, with a newer rev the next reader can name.
-  const out = { ...materializeProject(head.doc, doc), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
+  const out = { ...(await projectFor(bundlePath, head.doc, doc)), stateUpdatedAt: Math.max(Date.now(), (doc.stateUpdatedAt ?? 0) + 1) };
   await setRev(lc, out.stateUpdatedAt, head.ref);
   // The person's document isn't head: held, so the editor's next save made before this one's answer builds on it. Its
   // change: a local cut's (`change`), or a shared cut's queued edit (`id`, pending or confirmed: the lease holder's
@@ -687,7 +692,7 @@ async function headAt(bundlePath, current, given) {
   const head = given?.doc ? given : await lc.carton.head();
   const known = given?.doc ? undefined : await revOf(lc, head.ref);
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
-  const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
+  const out = forCardboard({ ...(await projectFor(bundlePath, head.doc, current)), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
   // a head Cardboard couldn't read is never handed on (the pages adopt an undo's project at once): nothing to write
   const problems = projectProblems({ format: "cardboard-project", project: out }, () => current);
   if (problems.length) return headRefusals.set(bundlePath, problems), refuseProject(bundlePath, current?.id, problems, "head"), null;
@@ -736,6 +741,138 @@ function hostWrite(bundlePath) {
   if (!told) return clearTimeout(timer), null;
   landings.set(key, [...(landings.get(key) ?? []), l]);
   return l;
+}
+
+// ---------------------------------------------------------------- media details (laptop, merge/prod-2 P2-1, P2-2)
+// What Cardboard knows about a media file and Carton doesn't version (its size, duration and dimensions, where it plays
+// from, thumbnail and waveform ids, when it was added) lived only in project.json. A restore to a version without a clip
+// (main@1) dropped its entry, and restoring the clip's version brought back only what history holds (its id, kind and
+// file name): no duration, size or thumbnail (`cb media list` showed "-"), and with no `src` the editor played it black
+// until a restart, whose load fills `src` in. Now:
+// 1. A write that drops a media entry from project.json keeps the entry's details first, in the bundle's
+//    .carton/media.json (@carton/cardboard/node's MediaDetails): a store mutation (commit: the document it was applied
+//    to against the one it made) and a materialization (the file it replaces against what it writes). A write that
+//    drops nothing does no I/O for this.
+// 2. A materialization carries each entry's details over: from the file it replaces, else as last kept for its id.
+// 3. What neither has (a project an earlier build's restore, or the root-restore bug, left without them) Cardboard finds
+//    again as its import does (reprobeMedia: its own probe of the file), and its derive fills in thumbnails and
+//    waveforms (deriveMedia). Nothing is guessed: a detail none of these gives stays unset.
+const mediaMemory = new Map(); // landingKey(bundle) → MediaDetails (with its bundle)
+function detailsOf(bundle) {
+  const key = landingKey(bundle);
+  let d = mediaMemory.get(key);
+  if (!d) mediaMemory.set(key, (d = Object.assign(new MediaDetails(bundle, BUSY), { bundle })));
+  return d;
+}
+// The details of the media entries `before` has and `after` doesn't, kept before a write of `after` replaces `before`:
+// under the bundle's install lock (every writer of media.json holds it). A failure never stops the write.
+async function keepDropped(bundle, before, after) {
+  if (!bundle) return;
+  const gone = droppedMedia(before, after);
+  if (!gone.length) return;
+  try {
+    const d = detailsOf(bundle), ch = d.changes(gone);
+    if (ch && (await withInstallLock(bundle, () => d.save(ch))) === LOCK_BUSY) warnOnce("media-details-busy:" + bundle, "a media entry's details weren't kept: another process held " + path.basename(bundle) + "'s install lock");
+  } catch (e) {
+    warnOnce("media-details:" + bundle, "a media entry's details couldn't be kept: " + errText(e));
+  }
+}
+// materializeProject for a bundle: each media entry's details from `current`, else as last kept for its id (media.json
+// read only when `current` lacks an entry). `keep` (a project that is written): what it drops from `current` is kept
+// first.
+async function projectFor(bundle, doc, current, { keep = true } = {}) {
+  if (!bundle) return materializeProject(doc, current);
+  let look;
+  const known = (id) => {
+    try { return (look ??= detailsOf(bundle).known())(id); } catch (e) {
+      look = () => undefined;
+      warnOnce("media-details:" + bundle, "the media details kept for " + path.basename(bundle) + " couldn't be read: " + errText(e));
+    }
+  };
+  const out = materializeProject(doc, current, known);
+  if (keep) await keepDropped(bundle, current, out);
+  return out;
+}
+
+// Cardboard 1.4.0's import gives a file's media entry (library-worker.js `j4`; the CLI's copy is the same): where it
+// plays from, its format (the file name's extension), its size on disk, the probe's facts, and "metadata complete".
+// Its thumbnails, waveform and album art come from the derive steps, which ensureDerived runs (deriveMedia).
+const FILE_MEDIA = new Set(["video", "audio", "image"]);
+const mediaUrl = (id) => "cardboard-media://media/" + encodeURIComponent(id);
+const extOf = (name) => {
+  const t = name.lastIndexOf("."), r = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
+  return t <= r + 1 ? "" : name.slice(t + 1).toLowerCase();
+};
+function importFacts(id, fileName, size, p) {
+  const o = { src: mediaUrl(id), format: extOf(fileName), size, metadataStatus: "complete" };
+  if (p.kind !== "image" || p.isAnimated) o.duration = p.duration;
+  if (p.width !== undefined) o.width = p.width;
+  if (p.height !== undefined) o.height = p.height;
+  if (p.kind === "video") {
+    o.hasAudio = p.hasAudio;
+    if (p.codec) o.codec = p.codec;
+    if (p.frameRate !== undefined) o.frameRate = p.frameRate;
+  }
+  if (p.kind === "audio" && p.codecName) o.codec = p.codecName;
+  if (p.kind === "image" && p.isAnimated) o.isAnimated = true;
+  return o;
+}
+const unprobed = new Set();
+// The file media entries of `project` with only what history versions: no `src`, which Cardboard's import always gives.
+const lackingDetails = (project) => (Array.isArray(project?.media) ? project.media : []).filter((m) => m && typeof m.id === "string" && FILE_MEDIA.has(m.data?.type) && m.data.src === undefined);
+/**
+ * Cardboard's own probe (`lib.inspect.probe`, its cached ffprobe by media id) of each file whose entry in `project` has
+ * no details: {project, ids}, the project with those entries filled in as the import fills them (only the fields they
+ * don't have), or null when none lacks them or none could be found. The file is the one Cardboard's library has for the
+ * id, else the one its loader's recovery of unlisted media finds (the bundle's media/<id>.<ext>), registered with the
+ * library as that recovery does, so the app serves it at once. A file whose probe isn't of the entry's kind says
+ * nothing about it. An entry whose file wasn't found, or whose probe failed, isn't looked for again by this process
+ * (every Ctrl+Z materializes): `unprobed`, `${bundle}|${id}`.
+ */
+async function reprobeMedia(lib, bundlePath, project) {
+  const key = (id) => landingKey(bundlePath ?? "") + "|" + id;
+  const want = lackingDetails(project).filter((m) => !unprobed.has(key(m.id)));
+  if (!want.length || typeof lib?.inspect?.probe !== "function" || !lib.media) return null;
+  let names = null;
+  const filled = new Map();
+  for (const m of want) {
+    unprobed.add(key(m.id));
+    try {
+      let file = lib.media.resolvePath?.(m.id) ?? null;
+      if (!file && bundlePath) {
+        names ??= await fs.promises.readdir(path.join(bundlePath, "media")).catch(() => []);
+        const name = names.find((n) => path.basename(n, path.extname(n)) === m.id);
+        if (!name || typeof lib.media.register !== "function") continue;
+        file = path.join(bundlePath, "media", name);
+        lib.media.register([{ mediaId: m.id, nativePath: file, ownedByBundle: true }]);
+      }
+      if (!file) continue;
+      const probe = await lib.inspect.probe(m.id);
+      if (!probe || probe.kind !== m.data.type) continue;
+      filled.set(m.id, importFacts(m.id, m.data.fileName ?? path.basename(file), (await fs.promises.stat(file)).size, probe));
+      unprobed.delete(key(m.id));
+    } catch (e) {
+      warnOnce("reprobe:" + bundlePath, "a media file's details couldn't be read again: " + errText(e));
+    }
+  }
+  if (!filled.size) return null;
+  const media = project.media.map((m) => {
+    const f = filled.get(m?.id);
+    if (!f) return m;
+    const data = { ...m.data };
+    for (const [k, v] of Object.entries(f)) if (data[k] === undefined) data[k] = v;
+    return { ...m, data };
+  });
+  return { project: { ...project, media }, ids: [...filled.keys()] };
+}
+// Cardboard's derive for a project (ensureDerived: thumbnails, waveforms, album art, from its cache or made again), after
+// reprobeMedia's entries are in project.json. True when it changed the project.
+async function deriveMedia(lib, projectId) {
+  if (typeof lib?.ensureDerived !== "function") return false;
+  try { return !!(await lib.ensureDerived(projectId))?.documentUpdated; } catch (e) {
+    warnOnce("derive:" + projectId, "a media file's thumbnails couldn't be made again: " + errText(e));
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------- files: displace, then install
@@ -1044,6 +1181,10 @@ export const cardboard14 = {
   cartonViewFile,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
+  // cb's `after` (cli-bridge.js): Cardboard's own probe of a media file whose entry head brought back without details,
+  // before head goes into project.json, and its derive after (P2-1)
+  reprobeMedia,
+  deriveMedia,
   // What was wrong with the head last refused for this bundle's project.json, else null (cb's `after`).
   headRefused: (bundlePath) => headRefusals.get(bundlePath) ?? null,
   // Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, which Cardboard's reader
@@ -1205,6 +1346,7 @@ export const cardboard14 = {
   },
   worker({ library, emit }) {
     inWorker = true;
+    workerEmit = emit;
     const bundleOf = (projectId) => library.projects.bundlePathFor?.(projectId) ?? null;
     const lcOf = async (projectId) => open(bundleOf(projectId), { projectId });
     const servers = new Map(); // client → serveUi
@@ -1380,7 +1522,7 @@ export const cardboard14 = {
         const current = await library.projects.read(projectId);
         if (!lc) return current;
         const r = /^\d{13}$/.test(String(ref)) ? await refOf(lc, Number(ref)) : ref;
-        return materializeProject(await lc.carton.checkout(r), current);
+        return projectFor(bundleOf(projectId), await lc.carton.checkout(r), current, { keep: false });
       },
       // ⌘Z and ⇧⌘Z for the person's group (H6), then head goes into project.json through the store; the answer carries
       // that project, which the page adopts at once (the pages' change event follows as usual). The page waits for it,
@@ -1485,7 +1627,7 @@ export const internals = {
     await lc.store.write([{ table: "notices", key: [to, Date.now(), 0, "old"], value: { to, kind: "late-conflict", text: "kept", cards, at: Date.now() } }]);
   },
   withInstallLock, sweep, readJournal, writeJournal, install, busy, sameCard, markSeen, sha,
-  headProject: async (bundlePath) => { const lc = await open(bundlePath); return lc ? materializeProject((await lc.carton.head()).doc, readProject(bundlePath)) : null; },
+  headProject: async (bundlePath) => { const lc = await open(bundlePath); return lc ? projectFor(bundlePath, (await lc.carton.head()).doc, readProject(bundlePath), { keep: false }) : null; },
   // The helper @carton/local starts as a project's lease holder: the files it runs and its spawn. And what this process
   // opened carton.db with, for comparing a helper's open to it.
   helper: { entry: helperEntry(), factory: defaultFactory(), spawn: spawnHelper },
@@ -1582,10 +1724,19 @@ async function materializeIn(library, projectId) {
       if (typeof e.materializeDoc !== "function") continue;
       try { next = (await e.materializeDoc(next, { bundlePath, projectId, current })) ?? next; } catch (err) { warnOnce("materializeDoc:" + (e.name ?? "?"), "an extension's materializeDoc failed: " + errText(err)); }
     }
+    // P2-1, P2-2: an entry with nothing but what history holds (no details kept anywhere): Cardboard's own probe of its
+    // file, as its import, and its file registered so the app serves it at once; its thumbnails come after (below)
+    const reprobed = await reprobeMedia(library, bundlePath, next);
+    if (reprobed) next = reprobed.project;
     if (testHooks.materialize) await testHooks.materialize(projectId);
     const scope = headScope(current, next), token = ++materializations;
     await projects.updateScoped(next, { ...scope, carton: { ...scope.carton, head: made.ref, token } });
-    if (!staleMaterializations.delete(token)) return next;
+    if (!staleMaterializations.delete(token)) {
+      // the derive writes project.json itself, after this write (the worker's own writes aren't announced: the pages are
+      // told here, as main tells them after its own ensureDerived)
+      if (reprobed) void deriveMedia(library, projectId).then((changed) => changed && workerEmit?.({ kind: "changed", id: projectId, bundlePath }));
+      return next;
+    }
     if (tries >= MATERIALIZE_TRIES) {
       warnOnce("materialize:" + bundlePath, "project.json didn't catch up with history: it kept changing while it was written (the next change brings it up to date)");
       return null;

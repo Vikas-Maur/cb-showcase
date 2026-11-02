@@ -5,7 +5,9 @@
 //   1. the root is offered nothing, and asking anyway (the panel, cb, MCP) changes nothing;
 //   2. no writer puts a project.json Cardboard can't read on disk: the old file stays, the refusal is logged;
 //   3. a project already broken this way is found through its history (the library, cb history, cb cut list, the
-//      panel), and Restore of a good version brings it back.
+//      panel), and Restore of a good version brings it back, its clip playable at once (3f);
+//   4. Restore of main@1, then of the newest version, brings every media entry back with the details Cardboard gave it
+//      (laptop, merge/prod-2 P2-1: clip.mp4 came back without its duration, size and thumbnail).
 // Run alone or through slot.sh:
 //   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> CARTON_TEST_DIR=<scratch> node --test --test-concurrency=1 scripts/carton/test/sync/restore-root.test.js
 const test = require("node:test");
@@ -271,7 +273,96 @@ test("3b. through cb alone: a broken project is found, and cb restore brings it 
     must(pc.cb(["restore", "Demo", "main@4"]), "cb restore");
     assert.deepEqual(shape(envOf(pc).project), good);
     assert.ok(must(pc.cb(["project", "list"]), "cb project list").out.includes("Demo"));
+    // the clip's details, which the broken file had lost, come from Cardboard's own probe of its file (3f)
+    const clip = envOf(pc).project.media.find((m) => m.data?.type === "video");
+    assert.equal(clip.data.src, "cardboard-media://media/" + encodeURIComponent(clip.id));
+    assert.equal(clip.data.duration, 3);
+    const listed = must(pc.cb(["media", "list", "Demo"]), "cb media list").json().find((m) => m.id === clip.id);
+    assert.equal(listed.duration, 3, "cb media list shows its duration: " + JSON.stringify(listed));
   } finally {
+    S.killHelpers();
+  }
+});
+
+/** The media entries of a project by id. */
+const mediaById = (p) => Object.fromEntries((p.media ?? []).map((m) => [m.id, m]));
+const videoIn = (p) => (p.media ?? []).find((m) => m.data?.type === "video");
+
+test("3f. a recovered project's clip plays without a restart: Restore of a good version gives it what Cardboard's import gives it, from Cardboard's own probe", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover-play", b);
+  S.seed(pc, b);
+  try {
+    const was = videoIn(envOf(pc).project);
+    assert.ok(was.data.src && was.data.duration > 0 && was.data.size > 0 && was.data.thumbnailIds?.length, "Cardboard's import gave the clip its details: " + JSON.stringify(was));
+    await breakLikeTheBug(pc, b);
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0].id;
+    const p = await panel(pc, id, "play-panel");
+    const changes = () => pc.events().filter((e) => e.kind === "change" && e.change?.id === id && e.change.kind === "changed").length;
+    const n0 = changes();
+    const r = await p.call("restore", p.rows().find((v) => v.seq === 4).ref);
+    assert.equal(r.ok, true, r.error);
+    await S.until(() => envOf(pc).project.name === "Demo", 20_000, "project.json with its name");
+    // Where it plays from and the probe's facts, as the import gave them: Cardboard's probe of the file, which the
+    // broken file no longer named (its recovery of unlisted media finds it by id). Nothing is guessed: when it was
+    // added, which nothing recorded, stays unset.
+    const clip = videoIn(envOf(pc).project);
+    assert.equal(clip.id, was.id);
+    for (const k of ["src", "format", "size", "duration", "width", "height", "frameRate", "hasAudio", "codec", "metadataStatus"]) assert.deepEqual(clip.data[k], was.data[k], k);
+    assert.equal(clip.createdAt, undefined);
+    // Thumbnails and the waveform: Cardboard's own derive (ensureDerived), from what its cache holds for the clip
+    await S.until(() => videoIn(envOf(pc).project).data.thumbnailIds?.length, 30_000, "the clip's thumbnails");
+    const derived = videoIn(envOf(pc).project);
+    assert.deepEqual(derived.data.thumbnailIds, was.data.thumbnailIds);
+    assert.equal(derived.data.waveformId, was.data.waveformId);
+    // the app serves its file now: main's media map (the worker's mirror, refreshed as main reads the project on the
+    // change) has it, in this bundle
+    // (worker-proc.js passes the worker's posts on every 10 ms, its answers at once)
+    await pc.call("projects.read", id);
+    const mirror = () => pc.events().filter((e) => e.kind === "mirror").at(-1)?.entries ?? [];
+    const served = await S.until(() => mirror().find((e) => e.mediaId === clip.id && e.bundlePath), 5_000, "the clip in main's media map").catch(() => null);
+    assert.ok(served && fs.existsSync(served.nativePath) && path.resolve(served.bundlePath) === path.resolve(bundleOf(pc)), "main's media map: " + JSON.stringify(mirror()));
+    assert.deepEqual(await pc.call("media.locate", [clip.id]).then((x) => !!x[clip.id]), true);
+    // and the editor heard of both: the restore, then the derived details (the worker's own write isn't announced)
+    await S.until(() => changes() >= n0 + 2, 20_000, "a change for the thumbnails");
+    // bringing them back made no version
+    const h = must(pc.cb(["history", "Demo"]), "cb history").json();
+    assert.deepEqual(h.versions.slice(0, 2).map((v) => v.kind), ["restore", "edit"], "the restore, then the break");
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("4. Restore of main@1, then of the newest version: each media entry comes back as Cardboard had it (duration, size, thumbnails, where it plays from)", t, async () => {
+  const b = await S.build();
+  const { pc, id } = await seeded(b, "restore-details");
+  try {
+    const before = mediaById(envOf(pc).project);
+    const clip = videoIn(envOf(pc).project);
+    assert.ok(clip.data.src && clip.data.duration > 0 && clip.data.size > 0 && clip.data.thumbnailIds?.length, "Cardboard's import gave the clip its details");
+    const p = await panel(pc, id, "details-panel");
+    const newest = p.rows().at(-1);
+    let r = await p.call("restore", p.rows().find((v) => v.seq === 1).ref);
+    assert.equal(r.ok, true, r.error);
+    await S.until(() => (envOf(pc).project.media ?? []).length === 0, 20_000, "main@1 in project.json");
+    r = await p.call("restore", newest.ref);
+    assert.equal(r.ok, true, r.error);
+    await S.until(() => (envOf(pc).project.media ?? []).length === Object.keys(before).length, 20_000, "the newest version in project.json");
+    assert.deepEqual(mediaById(envOf(pc).project), before, "every entry as it was, details and all");
+    const listed = must(pc.cb(["media", "list", "Demo"]), "cb media list").json().find((m) => m.id === clip.id);
+    assert.deepEqual([listed.duration, listed.size], [clip.data.duration, clip.data.size]);
+    const h = must(pc.cb(["history", "Demo"]), "cb history").json();
+    assert.deepEqual(h.versions.slice(0, 3).map((v) => v.kind), ["restore", "restore", "edit"], "the two restores, nothing else");
+    // and through cb alone, the app closed
+    await pc.stopWorker();
+    must(pc.cb(["restore", "Demo", "main@1"]), "cb restore main@1");
+    assert.deepEqual(envOf(pc).project.media ?? [], []);
+    must(pc.cb(["restore", "Demo", h.versions[0].version]), "cb restore the newest");
+    assert.deepEqual(mediaById(envOf(pc).project), before, "every entry as it was, through cb");
+  } finally {
+    await pc.stopWorker();
     S.killHelpers();
   }
 });

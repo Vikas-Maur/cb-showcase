@@ -514,9 +514,17 @@ What changes with it on:
   say the project file wasn't changed.
   A project the earlier build broke that way is listed again under its name, found by `cb history` and `cb cut list`,
   and opens with its History: Restore of a version from before brings back its name, timeline and media library.
-  What only the old file held about a clip's media (its size, duration and thumbnails, and where a file linked from
-  outside the bundle is) isn't in the history: Cardboard finds a file copied into the bundle again by itself, and a
-  code graphic takes its size from the clip that shows it.
+- **Restore keeps each clip's details.** What Cardboard knows about a media file and history doesn't version (its size,
+  duration and dimensions, where it plays from, its thumbnails and waveform, when it was added) is kept in the
+  bundle's `.carton\media.json` whenever a write removes the clip from `project.json` (a restore to a version
+  without it, a fold, an undo, a deletion). A restore or fold that brings the clip back writes those details with it.
+  Before, Restore of `main@1` and then of the newest version brought `clip.mp4` back without its duration, size or
+  thumbnail, `cb media list` showed "-" for them, and the clip played black until Cardboard restarted. When nothing
+  kept them (a project an earlier build left like that, or one the root restore broke), Cardboard's own probe reads
+  the file again, as its import does, and its thumbnails and waveform are made again from its cache. Nothing is
+  guessed: when the clip was first added, which nothing recorded, stays unset. So a recovered project's clip plays at
+  once.
+  (`carton\packages\cardboard\src\node\media-details.ts`, `scripts\carton\carton-node.js`)
 
 The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases):
 
