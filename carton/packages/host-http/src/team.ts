@@ -113,6 +113,7 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
     key: u.key,
     uploadId: u.uploadId,
     uploadPart: (n, d) => u.uploadPart(n, d),
+    ...(u.uploadPartStream ? { uploadPartStream: (n: number, body: ReadableStream<Uint8Array>, size: number) => u.uploadPartStream!(n, body, size) } : {}),
     listParts: () => u.listParts(),
     async complete(parts) {
       const seen = await inspect(u.key, hash);

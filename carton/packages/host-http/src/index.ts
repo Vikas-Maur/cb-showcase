@@ -443,6 +443,18 @@ async function blobRoutes(req: Request, url: URL, rest: string, ctx: AuthContext
   const handle = await store.resumeMultipart(key, decodeURIComponent(id));
   if (req.method === "PUT" && sub && sub !== "complete") {
     const max = deps.maxBodyBytes ?? 100 * 1024 * 1024;
+    // A store that takes a stream gets the request body as it arrives, never read into a buffer here: on a Worker,
+    // reading an 8 to 64 MiB part in JavaScript cost 60 to 360 ms of CPU (the Free plan allows 10, and Cloudflare
+    // killed such requests, error 1102) and held the part in a 128 MB isolate (cf-lab). It needs the declared length.
+    const declared = Number(req.headers.get("content-length") ?? NaN);
+    if (handle.uploadPartStream && req.body && Number.isSafeInteger(declared) && declared >= 0) {
+      if (declared > max) return err(413, "part too large");
+      if (deps.maxUploadBytes !== undefined && Number(sub) * declared > deps.maxUploadBytes) {
+        await handle.abort().catch(() => {});
+        return err(413, `This file is bigger than this host takes (${mb(deps.maxUploadBytes)}).`);
+      }
+      return json(await handle.uploadPartStream(Number(sub), req.body as ReadableStream<Uint8Array>, declared));
+    }
     let data: Uint8Array;
     try {
       data = await readBody(req, max);
