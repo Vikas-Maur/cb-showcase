@@ -21,6 +21,11 @@ export function syncProblemWords(e: SyncError): string {
       return "Can't sync: the server doesn't have this cut";
     case "too-large":
       return "Can't sync: this cut is over the server's limit";
+    case "write-limit":
+      // edits are kept and sync on their own once the server's day is over: say when, in the editor's own time
+      return e.until !== undefined
+        ? `The server's daily limit is reached: your edits are kept and will sync after ${new Date(e.until).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}`
+        : "The server's daily limit is reached: your edits are kept and will sync later";
     default:
       return `Can't sync: ${e.message}`;
   }

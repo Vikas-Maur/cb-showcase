@@ -19,6 +19,11 @@ let seenCode: string | undefined; // what core called the real refusal (REQ-9 be
 test("the words say what is wrong and what to do; an unreachable host is left to the sync words", () => {
   assert.equal(syncProblemWords({ code: "update-server", message: "…: update the server" }), "Can't sync: this project needs a newer server");
   assert.equal(syncProblemWords({ code: "server", message: "internal: boom" }), "Can't sync: internal: boom");
+  // the server's daily limit (cf review finding 2): when the kept edits sync, in the editor's own time
+  const until = Date.UTC(2026, 10, 3, 0, 0, 30);
+  const at = new Date(until).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  assert.equal(syncProblemWords({ code: "write-limit", message: "…", until }), `The server's daily limit is reached: your edits are kept and will sync after ${at}`);
+  assert.doesNotMatch(syncProblemWords({ code: "write-limit", message: "…" }), /Can't sync|undefined/);
   const refused = { code: "unauthorized" as const, message: "…" };
   assert.equal(shownProblem(refused), refused, "a refused link is shown");
   assert.equal(shownProblem({ code: "unreachable", message: "…" }), null, "unreachable: the sync words say Offline: n edits waiting");

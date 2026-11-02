@@ -14,6 +14,9 @@
 // - Hand-off (§5.3): while the branch is `handingOff`, ask `branchStatus` first; upload only if the server doesn't have
 //   the branch; become `server{since: n}` only on the server's answer. Never resume local sequencing alone.
 // - With a blob store (`blobs`), any message over 1 MiB either way travels as an envelope (`envelope.ts`), in order.
+// - A host's write limit (its daily write cap; `error` code `write-limit`): the server dropped the rest of the push's
+//   epoch, so the queue is kept, nothing more is pushed (nor a hand-off uploaded) until the limit's time, the owner is
+//   told in plain words when the edits will sync, and then they go again, with no reconnect.
 
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
@@ -39,8 +42,11 @@ export type SyncEvent =
   | { type: "reject"; id: string | undefined; reason: string; epoch: number }
   | { type: "rebase"; n: number }
   | { type: "stopped"; why: string }
-  /** `code`: a refusal's machine code (`ErrorMsg.code`), or a transport's for a failed connect (`connect: …`). */
-  | { type: "error"; error: string; code?: string };
+  /**
+   * `code`: a refusal's machine code (`ErrorMsg.code`), or a transport's for a failed connect (`connect: …`). `until`,
+   * with `write-limit`: when the edits held back sync (ms, this client's clock).
+   */
+  | { type: "error"; error: string; code?: string; until?: number };
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -186,6 +192,10 @@ export class SyncClient {
   private failures = 0;
   /** The last failed connect's transport code (`unauthorized` backs off longer). */
   private lastFailure: string | undefined;
+  /** A host's write limit holds pushes and the hand-off's upload until this timer fires (null: not held). */
+  private limitTimer: unknown = null;
+  /** The owner's notice of that limit, told again after a reconnect's welcome (which clears an owner's sync error). */
+  private limitNotice: Extract<SyncEvent, { type: "error" }> | null = null;
   readonly stats = { pushMsgs: 0, changesSent: 0, rejects: 0, acks: 0, duplicates: 0, rebases: 0, reconnects: 0, withdraws: 0, envelopesSent: 0, envelopesReceived: 0 };
 
   private unsubscribe: (() => void) | null = null;
@@ -240,6 +250,8 @@ export class SyncClient {
     this.unsubscribe?.();
     this.unsubscribe = null;
     if (this.retry !== null) this.timers.clearTimeout(this.retry);
+    if (this.limitTimer !== null) this.timers.clearTimeout(this.limitTimer);
+    this.limitTimer = null;
     if (this.presenceTimer !== null) this.timers.clearTimeout(this.presenceTimer);
     this.presenceTimer = null;
     // a coalesced update still waiting goes out before the close: it is often the leave (`null`) a closing editor
@@ -428,6 +440,7 @@ export class SyncClient {
     if (this.noKeyframe) m.noKeyframe = true;
     if (after !== undefined) m.claimsAfter = after;
     if (this.o.blobs) m.envelopes = true;
+    m.writeLimit = true;
     const who = this.o.identity?.();
     if (who) m.identity = who;
     return m;
@@ -444,6 +457,7 @@ export class SyncClient {
   private upload(): void {
     const s = this.queue.branch(this.branchId).sequencer;
     if (s.kind !== "handingOff" || !this.o.adoptPayload) return;
+    if (this.limitTimer !== null) return; // held by a host's write limit: asked again when it ends
     const payload = this.o.adoptPayload();
     const msg: AdoptMsg = { type: "adopt", branchId: this.branchId, n: s.n, stateHash: s.stateHash, ...payload };
     if (payload.doc0) msg.rootHash = hashDoc(payload.doc0, this.queue.schema);
@@ -537,6 +551,7 @@ export class SyncClient {
             this.setStatus(this.queue.pending(b).length ? "syncing" : "up-to-date");
             for (const w of this.waiters.splice(0)) w(true);
             this.emit({ type: "online" });
+            if (this.limitNotice) this.emit(this.limitNotice); // still held: the welcome mustn't hide why
             // shown again on a new connection: peers got a leave for the old one, and an update the disconnect caught
             // waiting is the latest (review SF4-8); a leave isn't repeated
             const p = this.presenceLast;
@@ -646,11 +661,45 @@ export class SyncClient {
       case "unknownBranch":
         return this.emit({ type: "error", error: "unknown branch" });
       case "adoptError":
+        if (m.code === "write-limit") return this.onWriteLimit(m, true);
         return this.emit({ type: "error", error: m.reason });
       case "error":
+        // a push's limit (its epoch given) holds pushes; one without was about nothing this client must send again
+        if (m.code === "write-limit") return this.onWriteLimit(m, m.epoch !== undefined && m.branchId === b);
         if (m.reconnect) this.drop(id, m.reason);
         return this.emit({ type: "error", error: m.reason, ...(m.code ? { code: m.code } : {}) });
     }
+  }
+
+  /**
+   * The host refused to store a write for a while (its daily write cap). `hold`: a push's (the server dropped the rest
+   * of its epoch) or the hand-off's upload: nothing more is pushed or uploaded until the limit's time, and then the
+   * queue goes again in a new epoch (or the hand-off asks again), with no reconnect. The wait is the host's
+   * `retryAfterMs` (not its clock's `retryAt`: the two clocks may differ), plus up to a minute's jitter so the clients a
+   * cap held back don't all come back in the same second. The owner is told when the edits will sync.
+   */
+  private onWriteLimit(m: { retryAt?: number; retryAfterMs?: number; epoch?: number }, hold: boolean): void {
+    const now = (this.o.clock ?? Date.now)();
+    const after = typeof m.retryAfterMs === "number" && m.retryAfterMs >= 0 ? m.retryAfterMs : typeof m.retryAt === "number" ? Math.max(0, m.retryAt - now) : 60_000;
+    const wait = after + (this.o.random ?? Math.random)() * Math.min(60_000, after / 10);
+    const until = now + wait;
+    if (hold) {
+      if (m.epoch === this.epoch) this.epoch++; // what was in flight in it goes again, in a new epoch, after the limit
+      if (this.limitTimer !== null) this.timers.clearTimeout(this.limitTimer);
+      this.limitTimer = this.timers.setTimeout(() => this.afterLimit(), wait);
+    }
+    const at = new Date(until).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+    const notice = { type: "error" as const, error: `The server's daily limit is reached. Your edits are kept and will sync after ${at}.`, code: "write-limit", until };
+    if (hold) this.limitNotice = notice;
+    this.emit(notice);
+  }
+  /** The write limit's time has come: push the queue again (or ask about the hand-off again), on this connection. */
+  private afterLimit(): void {
+    this.limitTimer = null;
+    this.limitNotice = null;
+    if (this.stopped || !this.conn?.open) return; // the next connection's hello (or branchStatus) takes it from there
+    if (this.queue.branch(this.branchId).sequencer.kind === "handingOff") return this.send({ type: "branchStatus", branchId: this.branchId });
+    this.pump();
   }
 
   /** Catch up again from what we hold (a gap, a bad keyframe): hello, and no pushes until it is answered. */
@@ -707,7 +756,7 @@ export class SyncClient {
   }
   /** Fenced dequeue: withdraw what was absorbed, then send every pending change not yet sent in this epoch, in order. */
   pump(): void {
-    if (!this.conn?.open || !this.caughtUp || this.stopped || this.quiesced) return;
+    if (!this.conn?.open || !this.caughtUp || this.stopped || this.quiesced || this.limitTimer !== null) return;
     const b = this.branchId;
     if (this.queue.branch(b).sequencer.kind !== "server") return;
     this.fenced(() => this.pushPending(b));

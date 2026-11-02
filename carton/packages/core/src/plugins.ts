@@ -232,6 +232,9 @@ export interface MultipartUpload {
  * - Multipart: parts are numbered 1..10,000; all parts but the last have the same size (R2 requires it; S3 needs
  *   ≥ 5 MiB); `complete` concatenates in part-number order; an upload can be resumed by id after a restart.
  * - `delete` of an absent key is a no-op.
+ * - A write the store refuses for a while (a host's daily write cap) throws an error with `retryAt`: when it takes
+ *   writes again, in ms since the epoch (`sync.writeLimitOf` reads it). The sequencer tells the client, which keeps its
+ *   edits and sends them again after that time.
  */
 export interface BlobStore {
   readonly kind: string;

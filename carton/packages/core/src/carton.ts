@@ -481,6 +481,7 @@ const CODED: Record<string, SyncError["code"]> = {
   unreachable: "unreachable",
   closed: "unreachable",
   protocol: "server",
+  "write-limit": "write-limit",
 };
 /**
  * A state handed to a caller (`head`, `checkout`, `resolve`): its own collection arrays (add, remove or reorder freely),
@@ -500,10 +501,10 @@ function owned(doc: Doc, schema: Schema): Doc {
   return E.fork(doc, schema);
 }
 /** A sync client's error, classified for a status line (the words are kept as they came). */
-function syncError(message: string, code?: string): SyncError {
+function syncError(message: string, code?: string, until?: number): SyncError {
   const words = message.replace(/^connect: /, "");
   const coded = code ? CODED[code] : undefined;
-  if (coded) return { code: coded, message: words };
+  if (coded) return { code: coded, message: words, ...(coded === "write-limit" && until !== undefined ? { until } : {}) };
   // no code (an older host, another transport): by the words. A failed connect is unreachable unless the host said it
   // refused (a message that only mentions a token is not a refusal: REQ-9b); otherwise the token or its scope
   // ("token expired", "this token is for another project", "can't read …", a write refused as forbidden, read-only or
@@ -2164,7 +2165,7 @@ class CartonImpl implements Carton {
     switch (e.type) {
       // a sync failure, until a welcome or an ack says the host accepts this replica again (web-demo REQ-8)
       case "error": {
-        const err = syncError(e.error, e.code);
+        const err = syncError(e.error, e.code, e.until);
         const was = this.#syncErrors.get(cut);
         if (!was || was.code !== err.code || was.message !== err.message) {
           this.#syncErrors.set(cut, err);
