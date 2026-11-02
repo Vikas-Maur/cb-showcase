@@ -214,6 +214,14 @@ export function VirtualList(p: VirtualListProps) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.active, p.rowHeight, tops]);
 
+  // A key the list acts on is the list's alone: not only its default (a scroll) but the page's own listeners too. A host
+  // editor's window listener may act on it without asking whether it was taken (Cardboard's Enter opens the selected
+  // title's text editor on the stage, final re-check N3, so Enter on a row also opened it, inside the read-only preview
+  // the row opened). Keys the list doesn't act on (Space to play, Ctrl+Z, Esc) go on to the editor as before.
+  const take = (e: KeyboardEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+  };
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // Keys typed in a field inside a row (naming a version) belong to the field, not to the list.
     const t = e.target as HTMLElement;
@@ -229,15 +237,15 @@ export function VirtualList(p: VirtualListProps) {
     else if (e.key === "PageDown") next = Math.min(p.count - 1, cur + page);
     else if (e.key === "PageUp") next = Math.max(0, cur - page);
     else if (e.key === "Enter" && cur >= 0) {
-      e.preventDefault();
+      take(e);
       p.onActivate?.(cur);
       return;
     } else if ((e.key === "ContextMenu" || (e.key === "F10" && e.shiftKey)) && cur >= 0 && p.onMenu) {
-      e.preventDefault();
+      take(e);
       p.onMenu(cur);
       return;
     } else return;
-    e.preventDefault();
+    take(e);
     p.onActiveChange(next);
   };
 
