@@ -127,6 +127,23 @@ function open(bundlePath, { projectId, doc } = {}) {
   return p;
 }
 const readProject = (bundlePath) => { try { return JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")).project ?? null; } catch { return null; } };
+// recover(): bundlePath → {text, out} for the damaged file last read through its history
+const recovered = new Map();
+// The name a project last had in its history: the newest version that has one, on the current cut, then the others
+// (at most 256 versions looked at). null: none.
+async function lastName(lc) {
+  const c = lc.carton;
+  const cuts = [c.cut, ...(await c.cuts()).filter((x) => x.id !== c.cut && !x.shallow).map((x) => x.id)];
+  let looked = 0;
+  for (const cut of cuts) {
+    for (const v of await c.log({ cut, limit: 64 }).catch(() => [])) {
+      if (++looked > 256) return null;
+      const doc = await c.checkout(v.ref).catch(() => null);
+      if (typeof doc?.name === "string" && doc.name.trim()) return doc.name;
+    }
+  }
+  return null;
+}
 
 // A folder Cardboard is done with: Open Project's staging folder (`.opening-<id>`), which it removes once the staged
 // project is copied into the library. Everything Carton holds under it is let go first: each Carton opened there is
@@ -977,6 +994,32 @@ export const cardboard14 = {
   cartonViewFile,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
+  // Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, which Cardboard's reader
+  // refuses, so the project left the library and cb found nothing. When the reader refuses a bundle's project.json and
+  // the bundle's history is in .carton/carton.db, the reader gets the file with the name the project last had in that
+  // history (else its folder's): the library lists it again, cb finds it (history, cut list, restore), and the editor
+  // opens it with its History, where Restore of a good version brings the rest back. Nothing is written here, and
+  // history never starts from such a file (an existing carton.db only). Only a JSON file with the project's id; any other
+  // damage stays as it was. The answer is kept per bundle while the file is the same.
+  async recover({ bundlePath, text }) {
+    if (!bundlePath || typeof text !== "string" || !fs.existsSync(path.join(bundlePath, ".carton", "carton.db"))) return null;
+    const hit = recovered.get(bundlePath);
+    if (hit?.text === text) return hit.out;
+    let env;
+    try { env = JSON.parse(text); } catch { return null; }
+    const p = env?.project;
+    if (!p || typeof p !== "object" || typeof p.id !== "string" || !p.id) return null;
+    const lc = await open(bundlePath, { projectId: p.id });
+    if (!lc) return null;
+    const name = (typeof p.name === "string" && p.name.trim()) ? p.name : (await lastName(lc)) ?? (path.basename(bundlePath, ".cardboard").trim() || "Untitled Project");
+    const out = { ...env, format: "cardboard-project", project: { ...p, name, ...(typeof p.updatedAt === "string" ? {} : { updatedAt: new Date(typeof p.stateUpdatedAt === "number" ? p.stateUpdatedAt : Date.now()).toISOString() }) }, media: Array.isArray(env.media) ? env.media : [] };
+    const left = projectProblems(out);
+    if (left.length) return warnOnce("recover:" + bundlePath, `project ${p.id}'s project.json can't be read, even through its history (${left.join("; ")})`), null;
+    warnOnce("recovered:" + bundlePath, `project ${p.id}'s project.json can't be read by Cardboard (${projectProblems(env).join("; ")}); it is listed through its history: restore a version in History to bring it back`);
+    const json = JSON.stringify(out);
+    recovered.set(bundlePath, { text, out: json });
+    return json;
+  },
   async sawDisk({ bundlePath, doc }) {
     const lc = await open(bundlePath, { projectId: doc.id, doc });
     if (!lc || (await refOf(lc, doc.stateUpdatedAt))) return;
@@ -1381,7 +1424,9 @@ export const internals = {
     return { dbPath: lc.dbPath, schema: sha(canon(lc.carton.schema)), ref: canon(head.ref), doc: sha(canon(head.doc)) };
   }, setRevFor: async (bundlePath, rev, ref) => setRev(await open(bundlePath), rev, ref), refOfRev: async (bundlePath, rev) => refOf(await open(bundlePath), rev),
   // The bundles this process has a Carton open for (a staging folder's must be gone once Open Project returns).
-  openBundles: () => [...opened.keys()] };
+  openBundles: () => [...opened.keys()],
+  // A bundle's LocalCarton, as this process opens it (tests that make a project's history as an older build left it).
+  open: (bundlePath) => open(bundlePath) };
 
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {

@@ -200,6 +200,12 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    `.carton/refused.log` (when, which writer, what was wrong; never the project's text). A head that has no name (a
    teammate on an older build restored the root of a shared cut) is never written: the file keeps its last good state
    until a good version is restored.
+8. **Found through its history.** The bundle loader (both copies) reads a `project.json` its own parse refused through
+   Carton when the bundle has `.carton/carton.db`: the file with the name the project last had in its history (else its
+   folder's), parsed again by Cardboard's reader. The library lists it, `cb` finds it, the editor opens it with its
+   History, and Restore of a good version writes it whole again. Nothing is written to find it; a project Cardboard
+   reads costs nothing more (the hook runs only after its parse failed).
+
 **Tests:**
 - 4 concurrent `cb source apply` on different clips keep all 4 edits (B1; `research/pretty-extra/race-cb-apply.sh`
   loses some in stock 1.4.0).
@@ -482,7 +488,7 @@ Counted with `src.split(anchor).length - 1` in the pristine 1.4.0 bundles, and a
 patches, where `patch-carton.js` applies them (2026-10-31). `@` is the byte offset of the first match in the pristine
 file, and the size is the anchor's length in bytes. `CARTON_LIST_ANCHORS=1 node scripts/patch-carton.js …` prints A.1.
 
-### A.1 The anchors patch-carton.js replaces (113)
+### A.1 The anchors patch-carton.js replaces (115)
 
 Each copy's first ten are the timeline codec's proofs, replaced by themselves: each shows a name the codec calls
 where Cardboard's own apply, `writeTimeline` or store calls it (§4.2).
@@ -503,6 +509,7 @@ ok  Worker 1 @1262940   18B  "n=>YZ(n,dw(n,t,r))"
 ok  Worker 1 @1265976   36B  "d=JSON.stringify(o);this.lastWritten"
 ok  Worker 1 @1266073   38B  "l=await G1(c),await(0,Bt.rename)(c,s)}"
 ok  Worker 1 @1255225   71B  "try{t=await(0,Bt.readFile)((0,rt.join)(e,Mt),\"utf8\")}catch{return null}"
+ok  Worker 1 @1255296   66B  "let r=ti(t);if(!r)return null;let n=await Promise.all(r.media.map("
 ok  Worker 1 @1262348   59B  "return this.seenOnDisk.set(t,{stamp:o,document:s.project}),"
 ok  Worker 1 @1471612   38B  "n.onWritten((y,x)=>m.afterWrite(y,x));"
 ok  Worker 1 @1424720   82B  "let[u]=await this.listRevisions(r),p=u===void 0?null:await this.readRevision(r,u);"
@@ -575,6 +582,7 @@ ok  CLI    1 @157840    18B  "n=>qx(n,pd(n,t,r))"
 ok  CLI    1 @160751    36B  "u=JSON.stringify(a);this.lastWritten"
 ok  CLI    1 @160835    28B  "d=await Qo(l),await Bx(l,c)}"
 ok  CLI    1 @150270    50B  "try{t=await jm(Pe(e,re),\"utf8\")}catch{return null}"
+ok  CLI    1 @150320    66B  "let r=qe(t);if(!r)return null;let n=await Promise.all(r.media.map("
 ok  CLI    1 @157257    59B  "return this.seenOnDisk.set(t,{stamp:a,document:c.project}),"
 ok  CLI    1 @344422    38B  "n.onWritten((h,y)=>f.afterWrite(h,y));"
 ok  CLI    1 @305827    82B  "let[m]=await this.listRevisions(r),p=m===void 0?null:await this.readRevision(r,m);"

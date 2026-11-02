@@ -3,7 +3,9 @@
 // with no name and empty tracks and media; Cardboard's library dropped the project, and `cb history` and `cb cut list`
 // found nothing. Here, through Cardboard's real library worker, cb and bundles (support.js):
 //   1. the root is offered nothing, and asking anyway (the panel, cb, MCP) changes nothing;
-//   2. no writer puts a project.json Cardboard can't read on disk: the old file stays, the refusal is logged.
+//   2. no writer puts a project.json Cardboard can't read on disk: the old file stays, the refusal is logged;
+//   3. a project already broken this way is found through its history (the library, cb history, cb cut list, the
+//      panel), and Restore of a good version brings it back.
 // Run alone or through slot.sh:
 //   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> CARTON_TEST_DIR=<scratch> node --test --test-concurrency=1 scripts/carton/test/sync/restore-root.test.js
 const test = require("node:test");
@@ -171,6 +173,102 @@ test("2. no writer puts a project.json Cardboard can't read on disk: the old fil
     assert.equal(envOf(pc).project.name, "Demo");
   } finally {
     await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+/**
+ * A project broken as build 915eb36 broke it: its history gains a version with nothing in it (what restoring main@0
+ * made), and project.json is written from that version over the old file (no name; empty tracks, clips and media;
+ * the media manifest empty too), under a rev Carton knows. Made with the worker stopped, through the facade.
+ */
+async function breakLikeTheBug(pc, b) {
+  const bundle = bundleOf(pc);
+  const env = envOf(pc);
+  const { name: _n, description: _d, aspectRatio: _a, ...rest } = env.project;
+  const broken = { ...rest, tracks: [], timelineItems: [], media: [], stateUpdatedAt: Date.now() + 1000 };
+  // the empty root's state, committed as the person's restore was (core refuses that restore now), and the file
+  const r = asProcess(pc, b, `
+    const lc = await f.internals.open(args.bundle);
+    const r = await lc.carton.commit({ doc: { tracks: [], timelineItems: [], media: [] }, author: { kind: "human", id: "person" } });
+    if (r.status !== "confirmed") throw new Error("not committed: " + r.status);
+    require("fs").writeFileSync(require("path").join(args.bundle, "project.json"), JSON.stringify(args.file, null, 2));
+    await f.internals.setRevFor(args.bundle, args.rev, r.ref);
+    return r.ref;`, { bundle, file: { ...env, project: broken, media: [] }, rev: broken.stateUpdatedAt });
+  assert.equal(typeof r.seq, "number");
+  return { env, broken };
+}
+
+test("3. a project broken this way is found through its history, and Restore of a good version brings it back", t, async (tc) => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover", b);
+  S.seed(pc, b);
+  try {
+    const good = shape(envOf(pc).project);
+    const goodMedia = envOf(pc).project.media;
+    const files = envOf(pc).media.map((x) => x.mediaId);
+    assert.ok(files.length, "the seeded clip has a file in the bundle");
+    const { broken } = await breakLikeTheBug(pc, b);
+    assert.equal(envOf(pc).project.name, undefined, "broken as the bug left it");
+    // cb, the app closed: the project is found, its history and cuts listed
+    const h = must(pc.cb(["history", "Demo"]), "cb history").json();
+    assert.equal(h.versions[0].version, "main@5", "the broken version is head");
+    assert.equal(h.versions.at(-1).version, "main@0");
+    const cuts = must(pc.cb(["cut", "list", "Demo"]), "cb cut list").json();
+    assert.deepEqual(cuts.cuts.map((c) => c.name), ["Main cut"]);
+    assert.ok(must(pc.cb(["project", "list"]), "cb project list").out.includes("Demo"), "cb's library lists it");
+    // nothing was written to find it
+    assert.equal(envOf(pc).project.name, undefined);
+    assert.equal(envOf(pc).project.stateUpdatedAt, broken.stateUpdatedAt);
+    // the app: the library lists it under its name, the editor's History shows its versions
+    await pc.startWorker();
+    const list = await pc.call("projects.list");
+    assert.deepEqual(names(list), ["Demo"]);
+    const id = list[0].id;
+    const p = await panel(pc, id, "recover-panel");
+    const rows = p.rows();
+    assert.deepEqual(rows.map((v) => v.seq), [0, 1, 2, 3, 4, 5], "every version, oldest first");
+    // Restore the version before the break
+    const r = await p.call("restore", rows.find((v) => v.seq === 4).ref);
+    assert.equal(r.ok, true, r.error);
+    await S.until(() => envOf(pc).project.name === "Demo", 20_000, "project.json with its name");
+    const back = envOf(pc).project;
+    assert.deepEqual(shape(back), good, "its name, tracks, clips and media library are back");
+    // What Carton doesn't version about a media entry (the manifest of where its file is, the probe: size, duration,
+    // thumbnails) went with the old file when the bug wrote over it. Cardboard's own reader finds a file in the bundle
+    // again by its media id (its recovery of unlisted media), and the next save lists it.
+    assert.deepEqual(back.media.map((m) => m.id), goodMedia.map((m) => m.id));
+    const fields = (m) => Object.keys(m.data ?? {}).sort().join(",");
+    tc.diagnostic(`media fields before the break: ${goodMedia.map(fields).join(" | ")}; after the restore: ${back.media.map(fields).join(" | ")}`);
+    await S.projectOf(pc, id); // the editor reads it
+    await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: 161 } : undefined));
+    await S.until(() => envOf(pc).project.timelineItems.some((i) => i.fontSize === 161), 20_000, "the save in project.json");
+    const manifest = envOf(pc).media;
+    tc.diagnostic(`the manifest after a save: ${JSON.stringify(manifest.map((x) => ({ id: x.mediaId, own: x.ownedByBundle, file: path.basename(x.nativePath) })))}`);
+    assert.ok(files.every((m) => manifest.some((x) => x.mediaId === m && x.ownedByBundle)), "every clip's file is listed again: " + JSON.stringify(manifest));
+    // and the library, cb and the panel go on as for any project
+    assert.equal((await S.projectOf(pc, id)).name, "Demo");
+    const after = must(pc.cb(["history", "Demo"]), "cb history after").json();
+    assert.deepEqual(after.versions.slice(0, 2).map((v) => v.kind), ["edit", "restore"], "the restore, then the save");
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("3b. through cb alone: a broken project is found, and cb restore brings it back", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover-cb", b);
+  S.seed(pc, b);
+  try {
+    const good = shape(envOf(pc).project);
+    await breakLikeTheBug(pc, b);
+    const h = must(pc.cb(["history", "Demo"]), "cb history").json();
+    assert.deepEqual(h.versions.map((v) => v.version), ["main@5", "main@4", "main@3", "main@2", "main@1", "main@0"]);
+    must(pc.cb(["restore", "Demo", "main@4"]), "cb restore");
+    assert.deepEqual(shape(envOf(pc).project), good);
+    assert.ok(must(pc.cb(["project", "list"]), "cb project list").out.includes("Demo"));
+  } finally {
     S.killHelpers();
   }
 });
