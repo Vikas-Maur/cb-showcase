@@ -41,4 +41,11 @@ export interface Env {
   OPEN_CREATE_PER_DAY?: string;
   // the largest file one upload stores, in bytes (default: none; 200 MiB when OPEN_CREATE is on)
   MAX_UPLOAD_BYTES?: string;
+  // The DO-blob fallback's sweep of abandoned uploads (blob-do.ts): a multipart upload neither completed nor aborted,
+  // untouched (made, a part written, its parts listed) for VAULT_UPLOAD_TTL_MS, is deleted with its parts (default
+  // 86400000, 24 h, as an R2 lifecycle rule would). VAULT_SWEEP_ROWS is the most rows one sweep alarm deletes (default
+  // 500; the next alarm comes a second later while more remain). Set them for tests and the lab; a deployment needs
+  // neither.
+  VAULT_UPLOAD_TTL_MS?: string;
+  VAULT_SWEEP_ROWS?: string;
 }

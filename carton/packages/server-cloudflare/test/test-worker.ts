@@ -5,14 +5,100 @@
 //   /__test/wake/<project>       a new room instance over the same state, as after hibernation
 //   /__test/legacy/<project>?at= the room as code from before `maintain_at` left it: its alarm at `at`, no due time
 //   /__test/due/<project>        the room's recorded maintenance due time and its alarm
-import worker, { ProjectRoom as Room, BlobVault } from "../src/worker.ts";
+//   /__test/vault/<name>/__sweep  the vault's uploads, parts, chunks and alarm, and since the last report: the SQL rows
+//                                written, the alarms set, and the rows each alarm wrote (the sweep's tests)
+//   /__test/vault/<name>/__legacy the vault as code from before the sweep left it: uploads and parts with no time
+//                                columns, one upload with a part, no alarm; then a new instance over that state
+import worker, { ProjectRoom as Room, BlobVault as Vault } from "../src/worker.ts";
 import { doSqlStorage } from "../src/storage.ts";
 import { storageChecks } from "../../conformance/src/hosts/storage-checks.ts";
 import { AUTH_HEADER, PROJECT_HEADER } from "../src/room.ts";
-import type { DurableObjectNamespace, DurableObjectState } from "../src/cf.ts";
+import type { DurableObjectNamespace, DurableObjectState, DurableObjectStorage } from "../src/cf.ts";
 import type { Env } from "../src/env.ts";
 
-export { BlobVault };
+// BlobVault as deployed, over a storage that counts what it writes: each statement's rowsWritten (Cloudflare bills
+// rows written) and each setAlarm (billed as a row written too). Everything but the two routes above goes to it.
+export class BlobVault {
+  readonly #ctx: DurableObjectState;
+  readonly #env: Env;
+  #vault: Vault;
+  #cursors: { readonly rowsWritten: number }[] = [];
+  #rows = 0;
+  #alarmsSet = 0;
+  #passes: number[] = [];
+  constructor(ctx: DurableObjectState, env: Env) {
+    this.#ctx = ctx;
+    this.#env = env;
+    this.#vault = this.#make();
+  }
+  #make(): Vault {
+    const st = this.#ctx.storage;
+    const storage: DurableObjectStorage = {
+      sql: {
+        exec: <T,>(q: string, ...b: unknown[]) => {
+          const c = st.sql.exec<T>(q, ...b);
+          this.#cursors.push(c);
+          return c;
+        },
+        get databaseSize() {
+          return st.sql.databaseSize;
+        },
+      },
+      transactionSync: (fn) => st.transactionSync(fn),
+      getAlarm: () => st.getAlarm(),
+      setAlarm: (t) => (this.#alarmsSet++, st.setAlarm(t)),
+      deleteAlarm: () => st.deleteAlarm(),
+    };
+    return new Vault({ storage } as DurableObjectState, this.#env);
+  }
+  // a statement's rowsWritten is final once it has run; the vault runs each one within the event that made it
+  #fold(): void {
+    for (const c of this.#cursors) this.#rows += c.rowsWritten;
+    this.#cursors = [];
+  }
+  async fetch(req: Request): Promise<Response> {
+    this.#fold();
+    const url = new URL(req.url);
+    const sql = this.#ctx.storage.sql;
+    const all = (q: string) => sql.exec<Record<string, unknown>>(q).toArray();
+    if (url.pathname === "/__sweep") {
+      const byId = (q: string) => Object.fromEntries(all(q).map((r) => [r.id, Number(r.n)]));
+      const has = all("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'uploads'").length > 0;
+      const out = {
+        alarm: await this.#ctx.storage.getAlarm(),
+        uploads: has ? all("SELECT * FROM uploads").map((r) => ({ id: r.id as string, touched: r.touched === undefined ? null : Number(r.touched) })) : [],
+        parts: has ? byId("SELECT id, count(*) AS n FROM parts GROUP BY id") : {},
+        chunks: has ? byId("SELECT id, count(*) AS n FROM part_chunks GROUP BY id") : {},
+        rows: this.#rows,
+        alarmsSet: this.#alarmsSet,
+        passes: this.#passes,
+      };
+      this.#rows = this.#alarmsSet = 0;
+      this.#passes = [];
+      return Response.json(out);
+    }
+    if (url.pathname === "/__legacy") {
+      for (const t of ["part_chunks", "parts", "uploads"]) sql.exec(`DROP TABLE IF EXISTS ${t}`);
+      sql.exec("CREATE TABLE uploads (id TEXT PRIMARY KEY, key TEXT, ctype TEXT) WITHOUT ROWID");
+      sql.exec("CREATE TABLE parts (id TEXT, n INTEGER, etag TEXT, size INTEGER, PRIMARY KEY (id, n)) WITHOUT ROWID");
+      sql.exec("CREATE TABLE part_chunks (id TEXT, n INTEGER, c INTEGER, data BLOB, PRIMARY KEY (id, n, c)) WITHOUT ROWID");
+      sql.exec("INSERT INTO uploads (id, key, ctype) VALUES ('legacy', ?, NULL)", url.searchParams.get("k"));
+      sql.exec(`INSERT INTO parts (id, n, etag, size) VALUES ('legacy', 1, '"plegacy"', 3)`);
+      sql.exec("INSERT INTO part_chunks (id, n, c, data) VALUES ('legacy', 1, 0, x'010203')");
+      await this.#ctx.storage.deleteAlarm();
+      this.#vault = this.#make(); // deployed anew: nothing of the old instance remains
+      return new Response(null, { status: 204 });
+    }
+    return this.#vault.fetch(req);
+  }
+  async alarm(): Promise<void> {
+    this.#fold();
+    const before = this.#rows;
+    await this.#vault.alarm();
+    this.#fold();
+    this.#passes.push(this.#rows - before);
+  }
+}
 
 // ProjectRoom as deployed, plus `…/__wake`: a new instance over the same state, as after hibernation (its memory
 // gone, its sockets back with their attachments). Everything else goes to the current instance.

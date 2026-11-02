@@ -10,23 +10,43 @@
 // The Worker talks to the vault over fetch (no RPC), which streams bodies of any size and keeps this module loadable
 // outside workerd. Reads are served in windows of at most 16 MiB; a read across windows checks the etag, so an object
 // replaced mid-read fails loudly instead of mixing versions.
+//
+// Abandoned uploads are swept. A multipart upload never completed or aborted (the uploader quit, the app was
+// uninstalled) kept its parts in DO storage forever, against Free's 5 GB and billed by the GB-month on Paid: R2 has a
+// lifecycle rule for this, the vault had nothing. Now an unfinished upload untouched for VAULT_UPLOAD_TTL_MS (24 h) is
+// deleted from the vault's alarm. "Touched" is made, a part written, or its parts listed, and it costs no row per part:
+// an upload's last touch is the latest of its own `touched` (set when it is made, and by a listing at most once an
+// hour) and its parts' `at`, a column of the row each part writes anyway. The alarm is set only when none is pending
+// (setAlarm is a row written too), for the oldest upload's expiry, and a vault with no upload has none: an idle vault
+// never wakes.
 
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
 import { checkKey, checkRange, checkPartNumber, checkCompleteParts, randomId, BlobError, markCreated, type BlobErrorCode } from "@carton/blob-memory/rules";
 import type { BlobUrlSigner } from "@carton/blob-memory/signed";
 import type { DurableObjectNamespace, DurableObjectState, SqlStorage } from "./cf.ts";
+import type { Env } from "./env.ts";
 
 const CHUNK = 1 << 20;
 const WINDOW = 16 << 20;
+// The sweep: how long an unfinished upload lives untouched, the most rows one alarm deletes (a DO request's CPU time is
+// limited; 500 rows is 500 MiB of chunks), and how soon the next alarm runs while more remain.
+const UPLOAD_TTL_MS = 24 * 3600_000;
+const SWEEP_ROWS = 500;
+const SWEEP_AGAIN_MS = 1000;
 const DDL = [
   `CREATE TABLE IF NOT EXISTS blobs (key TEXT PRIMARY KEY, size INTEGER, etag TEXT, ctype TEXT, sha256 TEXT) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS chunks (key TEXT, n INTEGER, off INTEGER, data BLOB, PRIMARY KEY (key, n)) WITHOUT ROWID`,
-  `CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, key TEXT, ctype TEXT) WITHOUT ROWID`,
-  `CREATE TABLE IF NOT EXISTS parts (id TEXT, n INTEGER, etag TEXT, size INTEGER, PRIMARY KEY (id, n)) WITHOUT ROWID`,
+  `CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, key TEXT, ctype TEXT, touched INTEGER NOT NULL DEFAULT 0) WITHOUT ROWID`,
+  `CREATE TABLE IF NOT EXISTS parts (id TEXT, n INTEGER, etag TEXT, size INTEGER, at INTEGER, PRIMARY KEY (id, n)) WITHOUT ROWID`,
   `CREATE TABLE IF NOT EXISTS part_chunks (id TEXT, n INTEGER, c INTEGER, data BLOB, PRIMARY KEY (id, n, c)) WITHOUT ROWID`,
 ];
 
+// When upload `u` was last touched: made or listed (its `touched`), or a part written (the newest part's `at`).
+const LAST_TOUCH = "max(u.touched, coalesce((SELECT max(p.at) FROM parts p WHERE p.id = u.id), 0))";
+
 type Row = Record<string, unknown>;
+type VaultEnv = Pick<Env, "VAULT_UPLOAD_TTL_MS" | "VAULT_SWEEP_ROWS">;
+const positive = (v: string | undefined, fallback: number) => (Number(v) > 0 && Number.isFinite(Number(v)) ? Number(v) : fallback);
 /** The vault's answer to a create-only put: "1" when it created the object, "0" when it kept the one there. */
 const CREATED_HEADER = "x-carton-created";
 const json = (v: unknown, status = 200) => new Response(JSON.stringify(v), { status, headers: { "content-type": "application/json" } });
@@ -38,11 +58,18 @@ const bytesOf = (v: unknown): Uint8Array => (v instanceof ArrayBuffer ? new Uint
 export class BlobVault {
   readonly #sql: SqlStorage;
   readonly #state: DurableObjectState;
+  readonly #ttl: number;
+  readonly #sweepRows: number;
   #ready = false;
+  // What this instance knows of the sweep's alarm: undefined = not checked yet, null = none (no upload), or the time
+  // it is due. Once it is known, a request costs no storage call for it.
+  #alarmAt: number | null | undefined;
 
-  constructor(state: DurableObjectState, _env: unknown) {
+  constructor(state: DurableObjectState, env?: VaultEnv) {
     this.#state = state;
     this.#sql = state.storage.sql;
+    this.#ttl = positive(env?.VAULT_UPLOAD_TTL_MS, UPLOAD_TTL_MS);
+    this.#sweepRows = Math.floor(positive(env?.VAULT_SWEEP_ROWS, SWEEP_ROWS));
   }
 
   #all(q: string, ...p: unknown[]): Row[] {
@@ -52,7 +79,21 @@ export class BlobVault {
   #init(): void {
     if (this.#ready) return;
     for (const q of DDL) this.#sql.exec(q);
+    // A vault made before the sweep has neither time column. Its uploads' age is unknown, so they count as touched now
+    // (the new column's default for the rows already there, which rewrites no row): swept a full TTL after this code
+    // first runs, unless their uploader comes back. Their parts get no time; the upload's covers them.
+    if (!this.#hasColumn("uploads", "touched")) this.#sql.exec(`ALTER TABLE uploads ADD COLUMN touched INTEGER NOT NULL DEFAULT ${Date.now()}`);
+    if (!this.#hasColumn("parts", "at")) this.#sql.exec("ALTER TABLE parts ADD COLUMN at INTEGER");
     this.#ready = true;
+  }
+
+  #hasColumn(table: string, column: string): boolean {
+    try {
+      this.#sql.exec(`SELECT ${column} FROM ${table} LIMIT 0`);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   #info(r: Row): BlobInfo {
@@ -78,6 +119,7 @@ export class BlobVault {
 
   async fetch(req: Request): Promise<Response> {
     this.#init();
+    await this.#keepSwept();
     const url = new URL(req.url);
     const q = url.searchParams;
     const key = q.get("k") ?? "";
@@ -145,7 +187,8 @@ export class BlobVault {
         }
         case "POST /mp": {
           const id = randomId();
-          this.#sql.exec("INSERT INTO uploads (id, key, ctype) VALUES (?, ?, ?)", id, key, q.get("ct") || null);
+          this.#sql.exec("INSERT INTO uploads (id, key, ctype, touched) VALUES (?, ?, ?, ?)", id, key, q.get("ct") || null, Date.now());
+          await this.#keepSwept(true);
           return json({ uploadId: id });
         }
         case "PUT /mp/part": {
@@ -157,7 +200,8 @@ export class BlobVault {
             this.#sql.exec("DELETE FROM part_chunks WHERE id = ? AND n = ?", id, n);
             this.#sql.exec("DELETE FROM parts WHERE id = ? AND n = ?", id, n);
             const etag = `"p${randomId().slice(0, 16)}"`;
-            this.#sql.exec("INSERT INTO parts (id, n, etag, size) VALUES (?, ?, ?, ?)", id, n, etag, data.byteLength);
+            // `at` is the upload's touch: a column of a row written anyway, so a part costs no extra row
+            this.#sql.exec("INSERT INTO parts (id, n, etag, size, at) VALUES (?, ?, ?, ?, ?)", id, n, etag, data.byteLength, Date.now());
             for (let off = 0, c = 0; off < data.byteLength; off += CHUNK, c++)
               this.#sql.exec("INSERT INTO part_chunks (id, n, c, data) VALUES (?, ?, ?, ?)", id, n, c, data.subarray(off, Math.min(off + CHUNK, data.byteLength)));
             return etag;
@@ -166,8 +210,14 @@ export class BlobVault {
         }
         case "GET /mp/parts": {
           const id = q.get("id") ?? "";
-          if (!this.#upload(id, key)) return fail("NoSuchUpload", `no multipart upload ${id} for ${key}`, 404);
-          return json(this.#all("SELECT n, etag, size FROM parts WHERE id = ? ORDER BY n", id).map((r) => ({ partNumber: Number(r.n), etag: r.etag, size: Number(r.size) })));
+          const up = this.#upload(id, key);
+          if (!up) return fail("NoSuchUpload", `no multipart upload ${id} for ${key}`, 404);
+          const rows = this.#all("SELECT n, etag, size, at FROM parts WHERE id = ? ORDER BY n", id);
+          // a listing (a resume) touches the upload, at most once an hour (an eighth of a shorter TTL): a client that
+          // lists in a loop costs no row each time
+          const now = Date.now(), last = Math.max(Number(up.touched), ...rows.map((r) => Number(r.at ?? 0)));
+          if (now - last >= Math.min(3600_000, this.#ttl / 8)) this.#sql.exec("UPDATE uploads SET touched = ? WHERE id = ?", now, id);
+          return json(rows.map((r) => ({ partNumber: Number(r.n), etag: r.etag, size: Number(r.size) })));
         }
         case "POST /mp/complete": {
           const id = q.get("id") ?? "";
@@ -209,7 +259,7 @@ export class BlobVault {
   }
 
   #upload(id: string, key: string): Row | undefined {
-    const r = this.#all("SELECT key, ctype FROM uploads WHERE id = ?", id)[0];
+    const r = this.#all("SELECT key, ctype, touched FROM uploads WHERE id = ?", id)[0];
     return r && r.key === key ? r : undefined;
   }
 
@@ -217,6 +267,70 @@ export class BlobVault {
     this.#sql.exec("DELETE FROM part_chunks WHERE id = ?", id);
     this.#sql.exec("DELETE FROM parts WHERE id = ?", id);
     this.#sql.exec("DELETE FROM uploads WHERE id = ?", id);
+  }
+
+  // ---------------------------------------------------------------- the sweep of abandoned uploads
+
+  // Makes sure the sweep's alarm is pending while any upload is. Checked once per instance (one getAlarm, then a read
+  // of the uploads if none is pending) and known after that. The check runs on any request, not only on uploads: that
+  // is what reaches a vault from before the sweep, whose uploads have no alarm. `created`: an upload was just made, so
+  // a vault known to need no alarm needs one now. A pending alarm is never moved: it is due by the oldest upload's
+  // expiry, since a newer upload or a touch only expires later.
+  async #keepSwept(created = false): Promise<void> {
+    if (typeof this.#alarmAt === "number") return; // pending, or running: the alarm re-arms for what remains
+    if (this.#alarmAt === null && !created) return;
+    if (this.#alarmAt === undefined) {
+      const cur = await this.#state.storage.getAlarm();
+      if (cur !== null) return void (this.#alarmAt = cur);
+    }
+    const next = this.#nextSweep();
+    if (next !== null) await this.#state.storage.setAlarm(next);
+    this.#alarmAt = next;
+  }
+
+  // When the sweep must next run: now if a swept upload's data is left, else the oldest upload's expiry, or null when
+  // there is no upload at all.
+  #nextSweep(): number | null {
+    if (this.#all("SELECT 1 FROM parts WHERE id NOT IN (SELECT id FROM uploads) LIMIT 1").length) return Date.now();
+    const t = this.#all(`SELECT min(${LAST_TOUCH}) AS t FROM uploads u`)[0]?.t;
+    return t === null || t === undefined ? null : Number(t) + this.#ttl;
+  }
+
+  // The sweep: deletes unfinished uploads untouched for the TTL, at most #sweepRows rows per alarm (one 5 GB upload is
+  // about 5000 rows), and comes back a second later while more remain. Then the alarm is set for the oldest remaining
+  // upload's expiry, or not at all when none is left.
+  async alarm(): Promise<void> {
+    this.#alarmAt = undefined; // until it is re-armed below: if this throws, the next request checks again
+    this.#init();
+    const now = Date.now();
+    const more = this.#state.storage.transactionSync(() => this.#sweep(now - this.#ttl, this.#sweepRows));
+    const next = more ? now + SWEEP_AGAIN_MS : this.#nextSweep();
+    const at = next === null ? null : Math.max(next, now + SWEEP_AGAIN_MS);
+    // set outright: the alarm now running may still read as pending
+    if (at !== null) await this.#state.storage.setAlarm(at);
+    this.#alarmAt = at;
+  }
+
+  /** One pass of the sweep, deleting at most `budget` rows; true if rows may be left for another. */
+  #sweep(before: number, budget: number): boolean {
+    // The expired uploads' own rows go first, so a late part, listing or completion finds no upload, never one with
+    // half its data gone (a completion would make a truncated object).
+    const expired = this.#all(`SELECT id FROM uploads u WHERE ${LAST_TOUCH} <= ? LIMIT ?`, before, budget);
+    for (const r of expired) this.#sql.exec("DELETE FROM uploads WHERE id = ?", r.id);
+    if ((budget -= expired.length) <= 0) return true;
+    // Then the data of uploads that are gone, chunks before parts, both in key order: an upload's parts rows stay
+    // while any of its chunks do, which is how the next pass finds what this one left.
+    for (const { id } of this.#all("SELECT DISTINCT id FROM parts WHERE id NOT IN (SELECT id FROM uploads)")) {
+      const chunks = this.#all("SELECT n, c FROM part_chunks WHERE id = ? ORDER BY n, c LIMIT ?", id, budget);
+      const lc = chunks[chunks.length - 1];
+      if (lc) this.#sql.exec("DELETE FROM part_chunks WHERE id = ? AND (n, c) <= (?, ?)", id, lc.n, lc.c);
+      if ((budget -= chunks.length) <= 0) return true;
+      const parts = this.#all("SELECT n FROM parts WHERE id = ? ORDER BY n LIMIT ?", id, budget);
+      const lp = parts[parts.length - 1];
+      if (lp) this.#sql.exec("DELETE FROM parts WHERE id = ? AND n <= ?", id, lp.n);
+      if ((budget -= parts.length) <= 0) return true;
+    }
+    return false;
   }
 }
 
