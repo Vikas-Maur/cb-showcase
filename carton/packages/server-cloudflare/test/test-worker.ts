@@ -9,7 +9,7 @@ import worker, { ProjectRoom as Room, BlobVault } from "../src/worker.ts";
 import { doSqlStorage } from "../src/storage.ts";
 import { storageChecks } from "../../conformance/src/hosts/storage-checks.ts";
 import { AUTH_HEADER, PROJECT_HEADER } from "../src/room.ts";
-import type { DurableObjectNamespace, DurableObjectState } from "../src/cf.ts";
+import type { DurableObjectNamespace, DurableObjectState, ExecutionContext } from "../src/cf.ts";
 import type { Env } from "../src/env.ts";
 
 export { BlobVault };
@@ -88,7 +88,7 @@ export class StorageProbe {
 type TestEnv = Env & { STORAGE_PROBE: DurableObjectNamespace };
 
 export default {
-  async fetch(req: Request, env: TestEnv): Promise<Response> {
+  async fetch(req: Request, env: TestEnv, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     if (url.pathname === "/__test/storage-checks") {
       const ns = env.STORAGE_PROBE;
@@ -119,6 +119,6 @@ export default {
       const auth = { account: "test", credential: "test/stats", role: "owner", projectId: p, expires: Date.now() + 60_000 };
       return env.PROJECT_ROOM.get(env.PROJECT_ROOM.idFromName(p)).fetch(new Request(`https://room/${p}/stats`, { headers: { [PROJECT_HEADER]: p, [AUTH_HEADER]: JSON.stringify(auth) } }));
     }
-    return worker.fetch(req, env);
+    return worker.fetch(req, env, ctx);
   },
 };

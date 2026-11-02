@@ -7,6 +7,7 @@ import type { AuthContext } from "@carton/core/plugins";
 import { createHmacAuth, type HmacAuth, offersCartonProtocol } from "@carton/server";
 import { handleHttp, dayOf, OPEN_CREATE_MAX_UPLOAD, OPEN_CREATE_PER_DAY, type HttpDeps, type OpenCreate } from "@carton/host-http";
 import type { Env } from "./env.ts";
+import type { ExecutionContext } from "./cf.ts";
 import { ProjectRoom, mediaBlobs, sequencerBlobs, maxEnvelopeOf, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
 import { BlobVault } from "./blob-do.ts";
 
@@ -87,8 +88,16 @@ function openCreateOf(env: Env): OpenCreate {
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
-    const res = await handleHttp(req, depsFor(env));
+  // The request's work is handed to waitUntil, so a client that goes away mid-request (a killed app, a dead link)
+  // doesn't cancel it halfway: the runtime cancels a request's work when its client disconnects unless it is held
+  // this way (up to 30 s more). A part upload holds that part's lock in R2 (blob-r2.ts) while its body arrives; cut
+  // off before its `finally`, it left the lock held for LOCK_TTL_MS (30 minutes), and every resume of that upload was
+  // refused "part N is being uploaded by another request" until then (cf-lab, 2026-11-02). Ordinary requests settle
+  // with their response, so this keeps nothing alive longer.
+  async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
+    const work = handleHttp(req, depsFor(env));
+    ctx?.waitUntil(work.catch(() => {}));
+    const res = await work;
     if (res) return res;
     if (env.ASSETS) return env.ASSETS.fetch(req);
     return new Response("not found", { status: 404 });
