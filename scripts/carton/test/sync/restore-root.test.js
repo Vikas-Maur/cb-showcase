@@ -400,3 +400,52 @@ test("3e. code graphics: restored with their size (from the clip that shows them
     S.killHelpers();
   }
 });
+
+test("2b. the write check and Cardboard's own reader agree on a real project and its broken variants (only the intended extra rules differ)", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-guard-reader", b);
+  S.seed(pc, b);
+  const read = cardboardReader();
+  const { projectProblems } = await import(require("url").pathToFileURL(path.join(__dirname, "../../../../carton/packages/cardboard/src/valid.ts")).href);
+  const env = envOf(pc);
+  const p = env.project;
+  const it0 = p.timelineItems[0], m0 = p.media[0];
+  const v = (project, rest = {}) => ({ ...env, ...rest, project: { ...p, ...project } });
+  const cases = {
+    "as Cardboard wrote it": env,
+    "new project (no tracks or clips yet)": v({ tracks: undefined, timelineItems: undefined, media: [] }),
+    "no manifest": { format: env.format, version: env.version, project: p },
+    "no name": v({ name: undefined }),
+    "name not text": v({ name: 7 }),
+    "no id": v({ id: undefined }),
+    "no updatedAt": v({ updatedAt: undefined }),
+    "aspectRatio null": v({ aspectRatio: null }),
+    "stateUpdatedAt text": v({ stateUpdatedAt: "1" }),
+    "temp not boolean": v({ temp: "yes" }),
+    "media not a list": v({ media: {} }),
+    "a media entry without id": v({ media: [{ ...m0, id: undefined }] }),
+    "a media entry's data without type": v({ media: [{ ...m0, data: { ...m0.data, type: undefined } }] }),
+    "a code graphic without its size": v({ media: [...p.media, { id: "g", data: { type: "code", code: { source: "x" } } }] }),
+    "a clip's endTime null": v({ timelineItems: [{ ...it0, endTime: null }, ...p.timelineItems.slice(1)] }),
+    "a clip's codeComposition without size": v({ timelineItems: [{ ...it0, codeComposition: { source: "x" } }, ...p.timelineItems.slice(1)] }),
+    "items not a list": v({ timelineItems: {} }),
+    "cast not a list": v({ cast: {} }),
+    "manifest not a list": v({}, { media: {} }),
+    "another format": v({}, { format: "x" }),
+  };
+  // what the check refuses on purpose though the reader takes it: a project losing its name (with the file it replaces),
+  // and records without ids (Carton keys tracks and clips by id)
+  const extra = {
+    "a blank name over a named project": [v({ name: " " }), () => p],
+    "a clip without id": [v({ timelineItems: [{ ...it0, id: undefined }] })],
+    "a track without id": [v({ tracks: [{ ...p.tracks[0], id: undefined }] })],
+  };
+  for (const [what, doc] of Object.entries(cases)) {
+    const reader = !!read(JSON.stringify(doc)), check = projectProblems(JSON.parse(JSON.stringify(doc)));
+    assert.equal(check.length === 0, reader, `${what}: Cardboard ${reader ? "reads" : "refuses"} it, the check says ${JSON.stringify(check)}`);
+  }
+  for (const [what, [doc, before]] of Object.entries(extra)) {
+    assert.ok(read(JSON.stringify(doc)), `${what}: Cardboard reads it`);
+    assert.ok(projectProblems(JSON.parse(JSON.stringify(doc)), before).length > 0, `${what}: refused on purpose`);
+  }
+});
