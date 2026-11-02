@@ -64,6 +64,30 @@ function drained(req: ClientRequest): Promise<void> {
 // and resumes the socket for nearly every chunk of a large download)
 const BODY_STRATEGY = { strategy: new ByteLengthQueuingStrategy({ highWaterMark: 1 << 20 }) };
 
+/** The connect attempt time `allowSlowLinks` makes sure of, in ms. */
+export const SLOW_LINK_ATTEMPT_MS = 2000;
+
+/**
+ * Lets Node connect over links with a long round trip. Node tries a host's addresses in turn ("happy eyeballs",
+ * `autoSelectFamily`, on by default since Node 20) and abandons each attempt after `autoSelectFamilyAttemptTimeout`,
+ * 250 ms by default: over a link whose round trip is longer than that (geostationary satellite, a congested mobile
+ * cell) every attempt is abandoned before its SYN-ACK can arrive and the connection fails (ETIMEDOUT, or undici's
+ * UND_ERR_CONNECT_TIMEOUT), though curl and browsers connect fine. The Cloudflare lab measured it on a 400 ms link
+ * (2026-11-02): every upload and request failed until the attempt time was raised. This raises Node's process-wide
+ * default to at least `ms` (never lowers a longer one the app chose); fetch (undici), node:https and WebSocket all read
+ * it. A host whose first address is unreachable costs up to `ms` before the next is tried, once per new connection.
+ * Returns the value now in effect, or null where it doesn't apply (not Node, or a Node without the setting).
+ */
+export function allowSlowLinks(ms = SLOW_LINK_ATTEMPT_MS): number | null {
+  const proc = (globalThis as { process?: NodeProcess }).process;
+  if (!proc?.versions?.node || typeof proc.getBuiltinModule !== "function") return null;
+  const net = proc.getBuiltinModule("node:net") as { getDefaultAutoSelectFamilyAttemptTimeout?(): number; setDefaultAutoSelectFamilyAttemptTimeout?(ms: number): void } | undefined;
+  if (!net?.getDefaultAutoSelectFamilyAttemptTimeout || !net.setDefaultAutoSelectFamilyAttemptTimeout) return null;
+  const now = net.getDefaultAutoSelectFamilyAttemptTimeout();
+  if (now < ms) net.setDefaultAutoSelectFamilyAttemptTimeout(ms);
+  return Math.max(now, ms);
+}
+
 let cached: BlobFetch | null | undefined;
 
 /** A fetch over node:http(s) when running on Node; null elsewhere (Workers, browsers), where fetch is right. */
@@ -72,6 +96,7 @@ export function nodeFetch(): BlobFetch | null {
   const proc = (globalThis as { process?: NodeProcess }).process;
   const ua = (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent;
   if (!proc?.versions?.node || typeof proc.getBuiltinModule !== "function" || ua === "Cloudflare-Workers") return (cached = null);
+  allowSlowLinks();
   const http = proc.getBuiltinModule("node:http") as HttpModule | undefined;
   const https = proc.getBuiltinModule("node:https") as HttpModule | undefined;
   const stream = proc.getBuiltinModule("node:stream") as StreamModule | undefined;
