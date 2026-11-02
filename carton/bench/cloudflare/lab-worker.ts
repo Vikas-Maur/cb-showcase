@@ -12,7 +12,7 @@
 //                                     several runs share the clock (idFromName only: wakes no object)
 // Deletes are free on R2 and count as rows written on the vault.
 import worker, { ProjectRoom, BlobVault as RealBlobVault } from "../../packages/server-cloudflare/src/worker.ts";
-import type { DurableObjectState } from "../../packages/server-cloudflare/src/cf.ts";
+import type { DurableObjectState, ExecutionContext } from "../../packages/server-cloudflare/src/cf.ts";
 import { mediaBlobs, sequencerBlobs, AUTH_HEADER, PROJECT_HEADER } from "../../packages/server-cloudflare/src/room.ts";
 import type { Env } from "../../packages/server-cloudflare/src/env.ts";
 
@@ -55,7 +55,8 @@ async function admin(req: Request, env: Env): Promise<boolean> {
 }
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  // ctx goes through to the real Worker, which holds each request's work with waitUntil (fix/cf-part-lock)
+  async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     const path = new URL(req.url).pathname;
     if (path === "/api/lab/r2-abort-uploads") {
       if (!(await admin(req, env))) return Response.json({ error: "admin token required" }, { status: 401 });
@@ -85,7 +86,7 @@ export default {
       return Response.json({ deleted: keys.length, left: page.truncated });
     }
     const m = LAB.exec(path);
-    if (!m) return worker.fetch(req, env);
+    if (!m) return worker.fetch(req, env, ctx);
     if (!(await admin(req, env))) return Response.json({ error: "admin token required" }, { status: 401 });
     const [, projectId, what] = m;
     if (what === "ids") {
