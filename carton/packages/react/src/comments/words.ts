@@ -32,6 +32,8 @@ export const commentWords = {
   /** A timecode on the timeline: "0:12.4", or a range "0:12.4–0:15.0". */
   at: (range: readonly [number, number]) => (range[1] - range[0] > 0.05 ? `${duration(range[0])}–${duration(range[1])}` : duration(range[0])),
   seekTo: (at: string) => `Go to ${at}`,
+  // Esc on a reply or comment with text in it keeps it the first time (UI audit P2-1: it was silently discarded)
+  escAgain: "Press Esc again to discard it.",
   wholeVersion: "Whole version",
   // where a thread sits on the version shown (§9: "may be outdated")
   status: {

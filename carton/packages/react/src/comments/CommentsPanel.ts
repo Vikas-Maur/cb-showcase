@@ -6,7 +6,7 @@
 // project with 1,000 threads costs one thread's render per change. Typing in the panel never reaches the editor's
 // shortcuts: key events stop at the panel's text fields.
 
-import { createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
+import { createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { actorColor, initials } from "../actors.ts";
 import { exactTime, when } from "../format.ts";
 import { useLocale, useNow } from "../hooks.ts";
@@ -62,10 +62,19 @@ export function PersonAvatar({ person, size = 20 }: { person: CommentPerson; siz
 /** Stop key events in a text field from reaching the editor's shortcuts (space plays, Delete removes a clip…). */
 const keepKeys = (e: KeyboardEvent) => e.stopPropagation();
 
-function TextBox(p: { initial?: string; placeholder: string; submitLabel: string; cancelLabel?: string; onSubmit: (text: string) => Promise<unknown>; onCancel?: () => void; onFocus?: () => void; autoFocus?: boolean; label: string; className?: string }) {
+function TextBox(p: { initial?: string; placeholder: string; submitLabel: string; cancelLabel?: string; onSubmit: (text: string) => Promise<unknown>; onCancel?: () => void; onFocus?: () => void; autoFocus?: boolean; label: string; className?: string; escAgain?: string }) {
   const [text, setText] = useState(p.initial ?? "");
   const [busy, setBusy] = useState(false);
+  // Esc with new text in the box asks once before it goes: a second Esc discards it (UI audit P2-1).
+  const [armed, setArmed] = useState(false);
   const ref = useRef<HTMLTextAreaElement>(null);
+  // The box grows with its text, up to about eight lines, instead of showing a resize grip (P2-20).
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    if (el.scrollHeight > 0) el.style.height = `${Math.min(160, el.scrollHeight + 2)}px`;
+  }, [text]);
   useEffect(() => {
     if (p.autoFocus) ref.current?.focus();
   }, []);
@@ -100,7 +109,10 @@ function TextBox(p: { initial?: string; placeholder: string; submitLabel: string
       disabled: busy,
       onFocus: p.onFocus,
       // React fires onChange on every keystroke; preact/compat maps it to the input event, so both behave the same.
-      onChange: (e: { currentTarget: HTMLTextAreaElement }) => setText(e.currentTarget.value),
+      onChange: (e: { currentTarget: HTMLTextAreaElement }) => {
+        setText(e.currentTarget.value);
+        setArmed(false);
+      },
       onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => {
         keepKeys(e);
         if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
@@ -108,10 +120,13 @@ function TextBox(p: { initial?: string; placeholder: string; submitLabel: string
           void submit();
         } else if (e.key === "Escape" && p.onCancel) {
           e.preventDefault();
-          p.onCancel();
+          e.stopPropagation();
+          if (text.trim() && text !== (p.initial ?? "") && !armed && p.escAgain) setArmed(true);
+          else p.onCancel();
         }
       },
     }),
+    armed ? h("p", { className: "carton-comment-esc", role: "status" }, p.escAgain) : null,
     h(
       "div",
       { className: "carton-comment-box-actions" },
@@ -183,6 +198,7 @@ function CommentRow({ c, thread, isRoot, w, now, locale, ui, onSeek, can }: RowP
           cancelLabel: w.cancel,
           autoFocus: true,
           onCancel: () => setEditing(false),
+            escAgain: w.escAgain,
           onSubmit: async (text) => {
             await ui.edit(c.id, text);
             setEditing(false);
@@ -240,6 +256,7 @@ const Thread = memo(function Thread({ t, selected, w, ui, onSeek, onSelect, can 
           cancelLabel: w.cancel,
           autoFocus: true,
           onCancel: () => setReplying(false),
+          escAgain: w.escAgain,
           onSubmit: async (text) => {
             await ui.reply(t.id, text);
             setReplying(false);

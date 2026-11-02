@@ -338,8 +338,9 @@ if (mode === "--cli") {
   patch(editorFile, (replace, prepend) => {
     replace('return c.jsx("div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,', 'return c.jsx(window.__carton?.on?__cbCartonStageHost:"div",{className:"flex flex-1 flex-col overflow-hidden bg-muted/60",children:c.jsxs("div",{ref:ge,');
     // H6: the undo and redo buttons say what Carton has left to undo and redo (the bridge's cartonCanUndo/Redo), not
-    // the editor's own snapshot stacks, which Carton's undo never pops.
-    replace("y=U(_=>_.historyPast.length>0),g=U(_=>_.historyFuture.length>0)", "y=U(_=>window.__carton?.on?!!_.cartonCanUndo:_.historyPast.length>0),g=U(_=>window.__carton?.on?!!_.cartonCanRedo:_.historyFuture.length>0)");
+    // the editor's own snapshot stacks, which Carton's undo never pops. During a read-only preview neither applies
+    // (Ctrl+Z already does nothing there), so both look unavailable (UI audit P3-12).
+    replace("y=U(_=>_.historyPast.length>0),g=U(_=>_.historyFuture.length>0)", "y=U(_=>window.__carton?.on?!!_.cartonCanUndo&&!_.cartonPreview:_.historyPast.length>0),g=U(_=>window.__carton?.on?!!_.cartonCanRedo&&!_.cartonPreview:_.historyFuture.length>0)");
     replace('b&&c.jsx(X_,{variant:"project"})]}),c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",', 'b&&c.jsx(X_,{variant:"project"})]}),...window.__carton?.on?[c.jsx(__cbCartonSide,{},"carton-side")]:[],c.jsx("div",{className:"contents","data-analytics-region":"editor-chat",');
     prepend(require("./carton/editor-panel"));
   });

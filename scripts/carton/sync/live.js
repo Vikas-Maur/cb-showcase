@@ -37,7 +37,8 @@ export class Live {
     this.lease = null;
     this.off = null;
     this.timer = null;
-    this.peers = new Map(); // actor key → {actor, cut, activity, at}
+    this.peers = new Map(); // actor key → {actor: peerActor(), cut, activity, at}
+    this.skippedPeer = false;
     this.status = lc.carton.sync?.state() ?? { status: "offline", pending: 0, label: "Offline" };
     this.error = lc.carton.sync?.error?.() ?? null;
     this.stopped = false;
@@ -121,9 +122,18 @@ export class Live {
         // `who` is the person behind it, as the sender knows them (their account on the host): the handle's own actor
         // is fixed when it opens, which for the sharer was before the share.
         // Peers are kept by the sender's handle actor, which a `null` (stopped) also carries.
+        // Both are as the teammate's replica sent them (the host relays presence as it is): one the Share panel can't
+        // show (no id) is skipped, said once, with none of its text (UI audit P1-1).
         const key = actorKey(e.actor);
-        if (e.state) this.peers.set(key, { actor: e.state.who?.id ? { kind: "human", ...e.state.who } : e.actor, cut: e.branchId, activity: e.state.activity ?? null, at: Date.now() });
-        else this.peers.delete(key);
+        if (e.state) {
+          const actor = peerActor(e.actor, e.state.who);
+          // `idle`: here, without input for a while (the page says so instead of leaving: UI audit P2-11)
+          if (actor) this.peers.set(key, { actor, cut: e.branchId, activity: typeof e.state.activity === "string" ? e.state.activity : null, idle: e.state.idle === true, at: Date.now() });
+          else if (!this.skippedPeer) {
+            this.skippedPeer = true;
+            this.log({ type: "presence-skipped", project: this.projectId, why: "no id" });
+          }
+        } else this.peers.delete(key);
         this.#publish();
         break;
       }
@@ -146,10 +156,10 @@ export class Live {
     return !this.stopped && !!h && !h.stopped && !!h.nonce;
   }
 
-  /** The state the Share panel shows. */
+  /** The state the Share panel shows; each of `peers` is `{actor: {key, kind, id, name}, cut, activity, idle}`. */
   view() {
     const now = Date.now();
-    const peers = [...this.peers.values()].map((p) => ({ actor: p.actor, cut: p.cut, activity: p.activity, idle: now - p.at > PEER_IDLE_MS }));
+    const peers = [...this.peers.values()].map((p) => ({ actor: p.actor, cut: p.cut, activity: p.activity, idle: !!p.idle || now - p.at > PEER_IDLE_MS }));
     return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers, problem: problemOf(this.error) };
   }
   #publish() {
@@ -172,17 +182,32 @@ export class Live {
 }
 
 // Why sync is failing, in the words the Share panel shows (null when it isn't).
+// In editors' words: the "sharing server", never "host" (UI audit P2-8).
 const PROBLEM = {
-  "update-server": "The host is older than this app: it needs an update before this project can sync.",
-  unauthorized: "The host refused this computer's access: ask for a new invite.",
-  unreachable: "The host can't be reached. Edits wait here and go out when it can.",
-  "unknown-cut": "The host doesn't have this project's cut.",
-  "too-large": "A change is too big for this host.",
-  server: "The host had a problem.",
+  "update-server": "The sharing server is older than this app. It needs an update before this project can sync.",
+  unauthorized: "The sharing server no longer accepts this computer. Ask for a new invite.",
+  unreachable: "The sharing server can't be reached. Your edits wait here and go out when it's back.",
+  "unknown-cut": "The sharing server doesn't have this cut.",
+  "too-large": "A change is too big for this sharing server.",
+  server: "The sharing server had a problem.",
 };
 export const problemOf = (err) => (err ? { code: err.code, words: PROBLEM[err.code] ?? PROBLEM.server, detail: err.message ?? null } : null);
 
 export const actorKey = (a) => [a?.kind, a?.id, a?.agentId].filter(Boolean).join("/");
+
+const text = (s) => typeof s === "string" && s.trim() !== "";
+/**
+ * A teammate as the Share panel shows them (UI audit P1-1): an actor as @carton/react's helpers take one (`key`, `kind`,
+ * `name`; actorColor hashes the `key`), keyed as History keys the same person (fromCarton's toUiActor: core's
+ * actorKey), so their colour is the same in both, plus the `id`. The person (`who`) when the sender told one, else the
+ * actor the host relayed. Only text is kept, the name falling back to the id; null with no id to show.
+ */
+export function peerActor(actor, who) {
+  const a = text(who?.id) ? { kind: "human", id: who.id, name: who.name } : actor && typeof actor === "object" && text(actor.id) ? actor : null;
+  if (!a) return null;
+  const kind = text(a.kind) ? a.kind : "human", agentId = text(a.agentId) ? a.agentId : undefined;
+  return { key: actorKey({ kind, id: a.id, agentId }), kind, id: a.id, name: text(a.name) ? a.name : a.id };
+}
 
 /**
  * "Before any print, the lease holder pulls" (§6.2): while the connection is (re)connecting or catching up, a holder

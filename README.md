@@ -380,7 +380,7 @@ typed into a field. Every line has `t` (local time) and `ev`; lines from a proje
 | `key` | A key with Ctrl/Alt/Win anywhere, or any key outside a text field, that ran no shortcut or menu item | `combo`, `handled` (`false`: nothing took it; `native`: it pressed a focused button, named in `on`), `field` (see below) |
 | `director.answer` | An agent question was answered | `kind` (`generation`, `question`, `clone`), `outcome` (`approved`, `skipped`, `replied`, `answered`), `waitMs`, `via` (`key:Ctrl+Enter`, `pointer`…), `credits` |
 | `toast` | An error or warning toast | `kind`, `msg`, `detail` |
-| `error` | An uncaught error in a page | `msg`, `src`, `rejection` |
+| `error` | An uncaught error in a page; with Carton, also one its side panel or stage layer caught (the editor stays: the panel says so), and a teammate's presence the Share panel skipped | `msg`, `src`, `rejection`, `panel` |
 | `main.warn`, `main.error` | Main's warnings and errors (`[desktop] …`) | `msg` |
 | `worker` | The library worker's output, with `[media]` notes on NVENC, CUDA and CPU fallbacks | `msg` |
 | `gpu` | Which GPU draws the app, 15 s after start | `vendor` (PCI id: `0x10de` NVIDIA, `0x8086` Intel, `0x1002` AMD), `device`, `gpus` (how many), `asked` (`high-performance` or `default`, see patch 13) |
@@ -460,8 +460,12 @@ What changes with it on:
 - **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
   panel beside the agent's chat, in the chat's look (drag its edge to resize); the same icon closes it, and the icon
   of the open panel shows as pressed. The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
-  History: versions, compare with current and "Watch the changes", restore, cuts, fold in. Opening an old version
-  shows it read-only until "Return to current".
+  History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
+  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" (Undo and Redo look
+  unavailable meanwhile); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
+  Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
+  switch to the cut it went into). Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
+  and back where it came from as it closes, and Esc closes the innermost one only.
 - **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
   your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
   once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding
@@ -674,19 +678,25 @@ With Carton on, a project can be shared through a Carton host (`carton\apps\serv
 so two people, each with their own agents, edit it at once. Nothing here runs for a project that isn't shared, and
 with Carton off none of it runs at all.
 
-- **Share** (the "Share" icon in the title bar): enter the host's address and your name. A host with open creation
-  (the free web demo's) needs nothing else: you become the project's owner. Any other host asks for the invite you were
-  given (the host's owner gets one with its admin token); the form shows that field only when the host asks for it.
+- **Share** (the "Share" icon in the title bar): enter the sharing server's address and your name (asked once, then
+  shown as "Teammates see you as …" with Change). A host with open creation (the free web demo's) needs nothing else:
+  you become the project's owner. Any other host asks for the invite you were given (the host's owner gets one with its
+  admin token); the form shows that "Invite code" field only when the host asks for it. An address that can't be
+  reached is said so at the address field, and every failure is a sentence that says what to do (can't reach the
+  server, invalid or expired invite, server busy, its daily limit reached), never a raw "fetch failed".
   The project goes up with its whole history and authors. Its clips go up too: each clip's
   content id, and a 720p "collab proxy" (Cardboard's own proxy when it suits, else NVENC → QSV → AMF → x264) as ~2 s
   segments that upload as they are made. Video originals stay on your computer; audio and still images (which have no
   proxy) go up as they are, up to 200 MB and 50 MB.
-- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch") that expires. **Join** in another
-  library from the link: the project arrives with its history, and its clips play from the host.
+- **Invite to edit**: a link per role ("Can edit", "Can comment", "Can watch", picked from a menu) that expires; not
+  offered while offline. **Join** (the Share panel of a project that isn't shared, "Join a shared project") in another
+  library from the link: the project arrives with its history, and its clips play from the host. "Open" opens it in a
+  tab of its own.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
-  what they are doing. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
+  what they are doing; a small chip over the preview shows the same while edits wait or someone else is here, with
+  no panel open (a click opens Share). Someone with the project open but idle stays listed, faded. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
   panel says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
   message), access refused, the host out of reach.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you
@@ -697,6 +707,14 @@ with Carton off none of it runs at all.
   through Cardboard's own `cardboard-media://`, even while the proxy is still uploading. The agent's ffmpeg tools
   (`grab_frame`, `filmstrip`, `probe_media`…) read it from a loopback URL. Each clip's content id and shared record go
   into the project itself, as a version by whoever shared it.
+- **Opening a project you joined**: its clips were never on your computer, so 1.4.0's loader would stop at "Missing
+  Media Files", whose only way on is a red "Remove and Open" (which, live, would remove the clips for everyone). With
+  Carton on, the loader asks the library worker about each clip it found no file for: a teammate's clip whose preview
+  is on the host plays from it; one not sent yet shows as Cardboard's own "Offline" placeholder and is never offered for
+  removal; a notice over the preview says which, that nothing was removed, and when it has arrived. The dialog still
+  appears for footage that was on this computer and is gone (moved, a drive unplugged). If the worker can't tell whose
+  a clip is (it fails, or doesn't answer within 6 s), the clips go Offline too, never to the dialog, and the notice says
+  to reopen the project to check again.
 - **Agents**: `cb` on a shared project hands its edit to the app's library worker, which holds the project's sync
   connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
   cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper

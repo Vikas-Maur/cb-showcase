@@ -21,7 +21,7 @@ export const words = {
   // History panel
   historyFilters: { all: "All", named: "Named", turns: "Director turns" } as Record<"all" | "named" | "turns", string>,
   historyEmpty: "No versions yet. A version is saved after every edit and every Director turn.",
-  historyEmptyNamed: "No named versions yet. Name a version to find it again, like “Sent to client, Monday”.",
+  historyEmptyNamed: "No named versions yet. Name one to find it again.",
   historyEmptyTurns: "No Director turns yet.",
   checkpoint: "Checkpoint",
   turnEdits: (n: number) => plural(n, "edit", "edits"),
@@ -50,6 +50,7 @@ export const words = {
   switchTo: (name: string) => `Switch to ${name}`,
   renameCut: "Rename cut",
   foldInto: (into: string) => `Fold into ${into}`,
+  foldInHere: (from: string) => `Fold “${from}” in here`,
   readOnlyCut: "From someone else's copy. You can watch it and fold it in.",
   currentCut: "Current cut",
   qualified: (owner: string, name: string) => `${owner}'s ${name}`,
@@ -77,7 +78,7 @@ export const words = {
 
   // Conflict cards
   conflictCard: "Conflict card",
-  conflictLead: "Both edits kept; you pick.",
+  conflictLead: "Two different edits. Pick one.",
   // Each choice says whose edit and, in a fold, which cut, so "mine" never has to be guessed: the cut I'm in, or the
   // clip's author? (PLAN §2.6 "Keep mine/theirs/both", made explicit.)
   keepYours: (where?: string) => (where ? `Keep yours (${where})` : "Keep yours"),
@@ -166,10 +167,18 @@ export const words = {
   nextChange: "Next change",
   previousChange: "Previous change",
   noChanges: "No changes to watch. The two versions look the same.",
+  // What differs, in the same unit as the "Change 1 of N" counter beside it: changes and seconds, never shots.
+  watchSummary: (changes: number, s: number, total: number) =>
+    changes === 0 ? "No differences" : `${plural(changes, "change", "changes")} · ${seconds(s)} of ${seconds(total)}`,
+  // The host shows the side in its own player (Cardboard: the editor's preview, read-only), so the panel says so.
+  shownInPlayer: "Shown in the player, read-only",
+  noPicture: "Preview not available here",
 
   // Read-only preview (§9, R2-16)
   // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
   previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
+  // A version as the banner names it (UI audit P2-7): "the version from 12:41 (Claude Code)".
+  versionFrom: (time: string, who: string) => (who ? `the version from ${time} (${who})` : `the version from ${time}`),
   readOnly: "Read-only",
   returnToCurrent: "Return to current to edit",
   previewBlocked: "This is a preview, so edits don't apply here.",

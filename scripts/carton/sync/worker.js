@@ -110,7 +110,7 @@ async function startLive(api, bundlePath, lc) {
     // A clip added while the project is shared (by the person, an agent or cb) is shared as it was at share time.
     // The project's View is its holder (views.js); Live keeps a lease of its own only when there is none.
     const view = await viewOf(bundlePath);
-    const live = new Live({ api, bundlePath, projectId, lc, view, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : undefined) });
+    const live = new Live({ api, bundlePath, projectId, lc, view, onChange: () => autoShare(api, bundlePath, projectId), log: (e) => (e.type === "materialize-failed" ? warnOnce("mz:" + bundlePath, "a teammate's change didn't reach project.json: " + e.error) : e.type === "presence-skipped" ? warnOnce("presence:" + bundlePath, "the Share panel skipped a teammate's presence: " + e.why) : undefined) });
     await live.start();
     holding.set(lc, live);
     // A share whose hand-off outlasted liveShare's wait publishes its descriptor once the host has the cut.
@@ -550,6 +550,41 @@ extend({
         if (!bundlePath || !store.readConfig(bundlePath, projectId)) return null;
         const p = media.playable(await recordOf(api, bundlePath, projectId, mediaId).catch(() => null));
         return p ? { bundlePath, projectId, mediaId, ...p } : null;
+      },
+      /**
+       * Opening a shared project (UI audit P1-9): of the clips Cardboard's loader found no file for, which are a
+       * teammate's and which are this computer's. A teammate's clip never had an original here (the bundle's
+       * project.json lists no path for it): "playable" when its shared preview (or original) is on the host, so it
+       * plays from there, else "waiting" (not sent yet). "local": its original was here and is gone (moved, a drive
+       * unplugged), where Cardboard's own "Missing Media Files" stays right. Null for a project that isn't shared.
+       * Never waits long on the network: a record not known within 2 s counts as waiting.
+       */
+      async liveMediaHere({ projectId, mediaIds }) {
+        const bundlePath = api.bundleOf(projectId);
+        const cfg = bundlePath && store.readConfig(bundlePath, projectId);
+        if (!cfg) return null;
+        // Which clips' originals were on this computer: the bundle's project.json (a path for each), and the clips this
+        // computer shared itself (media-shared.json). A project.json that can't be read (Windows: another reader, a
+        // save mid-rename) is read again; still unreadable, this says it can't tell (an error), never "a teammate's"
+        // (review finding 2: the person's own moved original would have lost Cardboard's dialog).
+        let envelope = null;
+        for (let i = 0; ; i++) {
+          try { envelope = JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")); break; } catch (e) {
+            if (i >= 10) throw new Error("This project's files couldn't be read to check its footage: " + (e?.code ?? e?.message ?? e));
+            await sleep(50);
+          }
+        }
+        const here = new Set([...(envelope?.media ?? []).filter((m) => m?.nativePath).map((m) => m.mediaId), ...Object.keys(readShared(bundlePath, projectId))]);
+        const lc = await api.open(bundlePath).catch(() => null);
+        const clips = {};
+        const theirs = (mediaIds ?? []).filter((id) => { if (here.has(id)) clips[id] = "local"; return !here.has(id); });
+        for (const id of theirs) clips[id] = "waiting";
+        const deadline = sleep(2000);
+        await Promise.race([deadline, Promise.all(theirs.map(async (id) => {
+          const rec = await recordIn(lc, bundlePath, projectId, id).catch(() => null);
+          if (media.playable(rec)) clips[id] = "playable";
+        }))]);
+        return { role: cfg.role ?? null, clips: { ...clips } };
       },
       /**
        * A loopback URL an ffmpeg-based tool can read a shared clip from (verified bytes only), or null: a file by range,

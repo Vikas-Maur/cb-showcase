@@ -60,6 +60,10 @@ export function Button(p: ButtonProps) {
   );
 }
 
+/** Each agent its own mark, so a long History tells them apart at a glance (UI audit P2-15). */
+const agentMark = (name: string | undefined): IconName =>
+  /claude/i.test(name ?? "") ? "burst" : /codex/i.test(name ?? "") ? "hexagon" : /director/i.test(name ?? "") ? "clapper" : "sparkle";
+
 /**
  * An actor's avatar. `named`: its name is shown beside it (History rows, cards, Credits), so the avatar is decoration:
  * no tooltip of its own (it would repeat the name over the row below) and hidden from screen readers. A system actor
@@ -69,17 +73,18 @@ export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?
   const ui = useCartonUi();
   const words = useWords();
   if (actor.kind === "system") return null;
-  const color = actorColor(actor, ui.actor.bind(ui));
+  // "You" keeps one look before and after a share (it read "Y" in blue, then "V" in purple: UI audit P3-3).
+  const color = actor.isYou && actor.kind === "human" ? actorColor({ ...actor, key: "human/you" }) : actorColor(actor, ui.actor.bind(ui));
   const label = title ?? actorLabel(actor, ui.actor.bind(ui), words.you);
   // Two letters need about 20 px; smaller avatars (history rows, card headers) show one.
   const letters = (s: string) => (size < 20 ? Array.from(s)[0] ?? "?" : s);
   const style: CSSProperties = { width: size, height: size, fontSize: Math.max(7, Math.round(size * (size < 20 ? 0.5 : 0.4))), ["--carton-actor" as string]: color };
   const glyph =
     actor.kind === "human"
-      ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.name)))
+      ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.isYou ? words.you : actor.name)))
       : actor.kind === "subagent" && !named
         ? h("span", { className: "carton-avatar-initials" }, initials(actor.subagentType ?? actor.name).slice(0, 1))
-        : h(Icon, { name: "sparkle", size: Math.round(size * 0.62) });
+        : h(Icon, { name: agentMark(actor.name), size: Math.round(size * 0.62) });
   // Beside a name, a subagent is its agent ("Director"): the agent's look too.
   return named
     ? h("span", { className: "carton-avatar", "data-kind": actor.kind === "subagent" ? "agent" : actor.kind, style, "aria-hidden": true }, glyph)
@@ -112,6 +117,41 @@ export function ActorName({ actor, detail }: { actor: Actor; detail?: boolean })
   return h(HoverMore, { className: "carton-actor-name", "data-kind": actor.kind, short: label, more });
 }
 
+/**
+ * Arrow keys in a role=radiogroup of buttons (WAI-ARIA radio group): Left/Up and Right/Down move the choice and the
+ * focus, Home and End go to the ends. Only one radio is a tab stop (the checked one: `tabIndex: checked ? 0 : -1`).
+ * The keys stop here, so a player's own arrow keys around the group don't also fire.
+ */
+export function radioKeys(e: KeyboardEvent<HTMLElement>) {
+  const items = [...e.currentTarget.querySelectorAll<HTMLElement>('[role="radio"]:not(:disabled)')];
+  const i = items.indexOf(document.activeElement as HTMLElement);
+  if (i < 0) return;
+  const n =
+    e.key === "ArrowRight" || e.key === "ArrowDown" ? (i + 1) % items.length
+    : e.key === "ArrowLeft" || e.key === "ArrowUp" ? (i - 1 + items.length) % items.length
+    : e.key === "Home" ? 0
+    : e.key === "End" ? items.length - 1
+    : -1;
+  if (n < 0) return;
+  e.preventDefault();
+  e.stopPropagation();
+  items[n]!.focus();
+  items[n]!.click();
+}
+
+/**
+ * A native tooltip only when the text doesn't fit: set on hover from the element's own size, so a name that shows
+ * whole never gets one (and a truncated name always does: History rows, the cut switcher, Compare's labels).
+ */
+export function tipIfCut(e: { currentTarget: EventTarget | null }) {
+  const el = e.currentTarget as HTMLElement | null;
+  if (!el) return;
+  const text = el.textContent ?? "";
+  if (el.scrollWidth > el.clientWidth + 1) {
+    if (el.title !== text) el.title = text;
+  } else if (el.title) el.removeAttribute("title");
+}
+
 // ---------------------------------------------------------------- menus
 
 function focusables(root: HTMLElement): HTMLElement[] {
@@ -121,7 +161,8 @@ function focusables(root: HTMLElement): HTMLElement[] {
 // children are optional in the props types because createElement passes them as extra arguments.
 export interface MenuListProps {
   children?: ReactNode;
-  onClose: () => void;
+  /** `why`: "escape" (the keyboard: focus goes back where the menu came from) or "outside" (a click elsewhere). */
+  onClose: (why?: "escape" | "outside") => void;
   label: string;
   style?: CSSProperties;
   className?: string;
@@ -132,22 +173,28 @@ export interface MenuListProps {
 /** role=menu with arrow-key focus, Escape and click-outside to close. Positioned by the caller. */
 export function MenuList(p: MenuListProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const focused = useRef(false);
   const onCloseRef = useRef(p.onClose);
   onCloseRef.current = p.onClose;
   const ignoreRef = useRef(p.ignore);
   ignoreRef.current = p.ignore;
 
+  // Focus comes in without scrolling anything around the menu (a scroll moved the whole panel: UI audit P2-3). When
+  // the menu's content changes under the focus (a form inside it closes), focus comes back to its first item instead of
+  // falling to <body>, where Esc and the arrows did nothing (P2-1).
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && !el.contains(document.activeElement)) (focusables(el)[0] ?? el).focus();
-  }, []);
+    const lost = !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected;
+    if (el && (lost || !el.contains(document.activeElement)) && (lost || !focused.current)) (focusables(el)[0] ?? el).focus({ preventScroll: true });
+    focused.current = true;
+  });
 
   useEffect(() => {
     const down = (e: Event) => {
       const t = e.target as Node | null;
       if (!t || ref.current?.contains(t)) return;
       if (ignoreRef.current?.().some((x) => x?.contains(t))) return;
-      onCloseRef.current();
+      onCloseRef.current("outside");
     };
     document.addEventListener("pointerdown", down, true);
     return () => document.removeEventListener("pointerdown", down, true);
@@ -159,7 +206,7 @@ export function MenuList(p: MenuListProps) {
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      p.onClose();
+      p.onClose("escape");
       return;
     }
     // Typing in an inline field (new cut name) must not move the menu focus.
@@ -231,6 +278,8 @@ export interface MenuButtonProps {
   children: (close: () => void) => ReactNode;
   align?: "start" | "end";
   title?: string;
+  /** The trigger's accessible name, when its content alone doesn't say what it is ("Cut: Main cut"). */
+  ariaLabel?: string;
   onOpenChange?: (open: boolean) => void;
 }
 
@@ -250,7 +299,7 @@ export function MenuButton(p: MenuButtonProps) {
   }, []);
   const close = useCallback(() => {
     setOpen(false);
-    btn.current?.focus();
+    btn.current?.focus({ preventScroll: true });
   }, [setOpen]);
   return h(
     "div",
@@ -262,6 +311,7 @@ export function MenuButton(p: MenuButtonProps) {
         type: "button",
         className: cx("carton-menu-trigger", p.triggerClassName),
         "aria-haspopup": "menu",
+        "aria-label": p.ariaLabel,
         "aria-expanded": open,
         "aria-controls": open ? id : undefined,
         "data-carton-tip": open ? undefined : p.title,
@@ -300,8 +350,9 @@ export function Dialog(p: DialogProps) {
   useLayoutEffect(() => {
     const before = document.activeElement as HTMLElement | null;
     const el = ref.current;
-    const first = el?.querySelector<HTMLElement>("[data-autofocus]") ?? el?.querySelector<HTMLElement>("button, input, [tabindex='0']");
-    (first ?? el)?.focus();
+    // The dialog itself takes focus, as Cardboard's own do (Export), not its first button (the ✕: UI audit P3-5); Tab
+    // goes on from there. A field marked data-autofocus takes it instead.
+    (el?.querySelector<HTMLElement>("[data-autofocus]") ?? el)?.focus({ preventScroll: true });
     return () => before?.focus?.();
   }, []);
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
@@ -314,7 +365,8 @@ export function Dialog(p: DialogProps) {
     const f = [...ref.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), [tabindex='0']")];
     if (!f.length) return;
     const first = f[0]!, last = f[f.length - 1]!;
-    if (e.shiftKey && document.activeElement === first) {
+    // The dialog itself has focus when it opens: Shift+Tab from there wraps to the last control, never out behind it.
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && document.activeElement === last) {

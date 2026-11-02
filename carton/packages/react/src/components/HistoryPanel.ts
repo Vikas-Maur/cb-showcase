@@ -8,10 +8,13 @@ import { useCartonUi, useHistoryCount, useLocale, useNow, useTopic, useWords } f
 import { Icon, type IconName } from "../icons.ts";
 import type { HistoryFilter, Version } from "../model.ts";
 import { VirtualList } from "../virtual.ts";
-import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuList, MenuSeparator, cx } from "./ui.ts";
+import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuList, MenuSeparator, cx, radioKeys, tipIfCut } from "./ui.ts";
+import { actorLabel } from "../actors.ts";
 import { CompareCard } from "./CompareCard.ts";
 
 export const VERSION_ROW_HEIGHT = 52;
+/** About the height of a row's actions menu: with less room than this below a row, it opens above it. */
+const MENU_ROOM = 260;
 
 export interface HistoryPanelProps {
   /** Open a version (Enter or double-click). Default: a read-only preview of it (§9). */
@@ -33,6 +36,10 @@ interface RowProps {
   v: Version;
   domId: string;
   active: boolean;
+  /** Its actions menu is open: it looks picked while the menu is, and only then (UI audit P2-2). */
+  menuOpen: boolean;
+  /** It is the version the Compare card compares. */
+  compared: boolean;
   naming: "version" | "cut" | null;
   now: number;
   onPick: (id: string, e: MouseEvent) => void;
@@ -67,6 +74,8 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-named": v.name ? "" : undefined,
       "data-provisional": v.provisional ? "" : undefined,
       "data-active": p.active ? "" : undefined,
+      "data-menu": p.menuOpen ? "" : undefined,
+      "data-compared": p.compared ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(v.id, e),
       onDoubleClick: () => p.onOpen(v.id),
       onContextMenu: (e: MouseEvent) => {
@@ -91,7 +100,8 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
             "div",
             { className: "carton-version-title" },
             v.kind === "turn" ? h("span", { className: "carton-version-kind" }, words.checkpoint) : null,
-            h("span", { className: "carton-version-text" }, title),
+            // cut off at the panel's width: the whole name on hover (P2-16)
+            h("span", { className: "carton-version-text", onMouseEnter: tipIfCut }, title),
           ),
       p.naming ? null : h(
         "div",
@@ -132,7 +142,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const [activeId, setActiveId] = useState<string | null>(null);
   // A row being named in place: naming the version itself, or naming a new cut made from it.
   const [naming, setNaming] = useState<{ id: string; mode: "version" | "cut" } | null>(null);
-  const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
+  const [menu, setMenu] = useState<{ id: string; x: number; y: number; bottom?: number } | null>(null);
   const [comparing, setComparing] = useState<string | null>(null);
   // Why the last restore or new cut didn't happen, in the words the app gave.
   const [failed, setFailed] = useState<string | null>(null);
@@ -150,24 +160,41 @@ export function HistoryPanel(props: HistoryPanelProps) {
     return i >= 0 ? hs.at("all", i) : undefined;
   }, [ui]);
 
+  // What the preview banner says it shows (P2-7): "the version from 12:41 (Claude Code)", or a named version's name,
+  // never a change's summary ("Previewing Changed 'W5' font size…").
+  const locale = useLocale();
+  const previewLabel = useCallback((v: Version) => {
+    if (v.name) return `“${v.name}”`;
+    const d = new Date(v.at), today = new Date().toDateString() === d.toDateString();
+    const time = new Intl.DateTimeFormat(locale, today ? { hour: "numeric", minute: "2-digit" } : { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" }).format(d);
+    const who = v.author.kind === "system" ? "" : actorLabel(v.author, ui.actor.bind(ui), words.you);
+    return words.versionFrom(time, who);
+  }, [ui, words, locale]);
   const open = useCallback(
     (id: string) => {
       const v = find(id);
       // A version still waiting to sync has no state to show yet (L5); an empty one has none at all.
       if (!v || v.provisional || v.empty) return;
       if (props.onOpen) props.onOpen(v);
-      else ui.openPreview(v.ref, v.name || v.turn?.label || v.summary);
+      else ui.openPreview(v.ref, previewLabel(v));
     },
-    [find, props.onOpen, ui],
+    [find, props.onOpen, ui, previewLabel],
   );
 
   const onPick = useCallback((id: string) => setActiveId(id), []);
+  // The menu opens below its row, or above it when there isn't room below (the last rows: P2-3). Opening it doesn't
+  // make its row the active one: the row looks picked while its menu is open, and stops when it closes (P2-2).
   const onMenu = useCallback((id: string, el: HTMLElement) => {
     const box = panel.current?.getBoundingClientRect();
     const r = el.getBoundingClientRect();
-    setActiveId(id);
     setFailed(null);
-    setMenu({ id, x: box ? r.right - box.left : 0, y: box ? r.bottom - box.top + 4 : 0 });
+    const below = box ? r.bottom - box.top + 4 : 0;
+    const up = !!box && box.height - below < MENU_ROOM && r.top - box.top > box.height - below;
+    setMenu({ id, x: box ? r.right - box.left : 0, y: below, ...(up && box ? { bottom: box.bottom - r.top + 4 } : {}) });
+  }, []);
+  // Back to the list after a menu closed with Esc, or the Compare card closed: never to <body> (P2-1).
+  const toList = useCallback(() => {
+    requestAnimationFrame(() => panel.current?.querySelector<HTMLElement>(".carton-history-list")?.focus({ preventScroll: true }));
   }, []);
   const namingRef = useRef(naming);
   namingRef.current = naming;
@@ -204,14 +231,14 @@ export function HistoryPanel(props: HistoryPanelProps) {
 
   return h(
     "section",
-    { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history },
+    { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history, "data-menu-open": menu ? "" : undefined },
     h(
       "header",
       { className: "carton-panel-head" },
       h("h2", { className: "carton-panel-title" }, words.history),
       h(
         "div",
-        { className: "carton-segmented", role: "radiogroup", "aria-label": words.history },
+        { className: "carton-segmented", role: "radiogroup", "aria-label": words.history, onKeyDown: radioKeys },
         ...filters.map(({ f, label }) =>
           h(
             "button",
@@ -220,6 +247,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
               type: "button",
               role: "radio",
               "aria-checked": filter === f,
+              tabIndex: filter === f ? 0 : -1,
               className: "carton-segment",
               onClick: () => {
                 setFilter(f);
@@ -258,6 +286,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
               v,
               domId: `${listId}-${v.id}`,
               active: v.id === activeId,
+              menuOpen: v.id === menu?.id,
+              compared: v.id === comparing,
               naming: naming?.id === v.id ? naming.mode : null,
               // Rows only need minute precision; passing the shared minute keeps memo effective.
               now,
@@ -273,9 +303,12 @@ export function HistoryPanel(props: HistoryPanelProps) {
           MenuList,
           {
             label: words.versionActions(menuVersion.name ?? menuVersion.summary),
-            onClose: () => setMenu(null),
+            onClose: (why?: string) => {
+              setMenu(null);
+              if (why === "escape") toList();
+            },
             className: "carton-history-menu",
-            style: { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 220) },
+            style: menu.bottom != null ? { position: "absolute", bottom: menu.bottom, left: Math.max(8, menu.x - 220) } : { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 220) },
           },
           // A version still waiting to sync can't be previewed, compared, named or restored yet (L5). An empty one
           // (the start of an imported project's history) has nothing to preview, restore or make a cut from: it says so.
@@ -296,7 +329,10 @@ export function HistoryPanel(props: HistoryPanelProps) {
           b: props.currentRef,
           onWatch: props.onWatch,
           ...(compareVersion.empty ? {} : { onRestore: () => act(ui.restore(compareVersion.ref)) }),
-          onClose: () => setComparing(null),
+          onClose: () => {
+            setComparing(null);
+            toList();
+          },
           className: "carton-history-compare",
         })
       : null,

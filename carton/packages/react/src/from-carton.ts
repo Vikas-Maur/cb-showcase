@@ -357,7 +357,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       at: c.at,
       author: ui(c.author),
       kind,
-      summary: prev?.summary ?? (c.kind === "root" ? "Started the cut" : c.kind === "fork" ? "Made this cut" : c.kind === "import" ? "Imported the project" : ""),
+      // The import row is where Carton started keeping the project's versions: for a project made in Cardboard as much
+      // as for one brought in, so it never says "Imported" (UI audit P2-18).
+      summary: prev?.summary ?? (c.kind === "root" ? "Started the cut" : c.kind === "fork" ? "Made this cut" : c.kind === "import" ? "Started the project's history" : ""),
       ...(prev?.details ? { details: prev.details } : {}),
       ...(c.name ? { name: c.name } : {}),
       ...(kind === "turn" ? { turn: { label: c.name ?? "", edits: turnEdits ?? 1 } } : {}),
@@ -669,7 +671,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
 
   // ------------------------------------------------------------ sync, presence, conflicts, preview
   let sync: SyncStatus = carton.sync ? mapSync(carton.sync.status, 0) : { kind: "local" };
-  const peerMap = new Map<string, { peer: Peer; seen: number; ghosts: Ghost[]; on: string }>();
+  const peerMap = new Map<string, { peer: Peer; seen: number; ghosts: Ghost[]; on: string; said?: boolean }>();
   let peers: readonly Peer[] = [];
   let ghosts: readonly Ghost[] = [];
   // Cards of every cut; the topic shows the current cut's. Each resolves on its own cut.
@@ -703,7 +705,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const now = clock();
     let any = false;
     for (const x of peerMap.values()) {
-      const idle = now - x.seen > IDLE_MS;
+      const idle = !!x.said || now - x.seen > IDLE_MS;
       if (idle !== x.peer.idle) {
         x.peer = { ...x.peer, idle };
         any = true;
@@ -831,7 +833,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       case "presence": {
         const key = actorKey(e.actor);
         if (key === actorKey(opts.me)) break;
-        const state = e.state as { ghosts?: { item: string; track: string; start: number; end: number; label?: string }[]; activity?: string } | null;
+        const state = e.state as { ghosts?: { item: string; track: string; start: number; end: number; label?: string }[]; activity?: string; idle?: unknown; who?: { id?: unknown; name?: unknown } } | null;
         if (!state) {
           if (peerMap.delete(key)) {
             publishPeers();
@@ -840,13 +842,20 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           break;
         }
         const prev = peerMap.get(key);
-        const actor = ui(e.actor);
+        // The person behind the sender's handle, as the sync layer sends them (`who`: their account and name on the
+        // host; the handle's own actor was fixed before the share), as live.js shows them in the Share panel. A
+        // malformed `who` is no one: the handle's actor stays (UI audit P1-1).
+        const who = state.who && typeof state.who.id === "string" && state.who.id ? { kind: "human" as const, id: state.who.id, ...(typeof state.who.name === "string" && state.who.name ? { name: state.who.name } : {}) } : null;
+        const actor = ui(who ?? e.actor);
         const activity = typeof state.activity === "string" ? state.activity : undefined;
         // Presence says which cut the peer is on; their drags are ghosts only over that cut's timeline.
         const on = e.branchId;
-        const peer = prev && prev.peer.actor === actor && !prev.peer.idle && prev.peer.activity === activity && prev.peer.cutId === on ? prev.peer : { actor, cutId: on, idle: false, ...(activity ? { activity } : {}) };
-        const g = (state.ghosts ?? []).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(x.label ? { label: x.label } : {}) }));
-        peerMap.set(key, { peer, seen: clock(), ghosts: g, on });
+        // a peer who says they're idle (here, no input for a while: UI audit P2-11) shows as idle at once
+        const idle = state.idle === true;
+        const peer = prev && prev.peer.actor === actor && prev.peer.idle === idle && prev.peer.activity === activity && prev.peer.cutId === on ? prev.peer : { actor, cutId: on, idle, ...(activity ? { activity } : {}) };
+        // Ghosts are the teammate's own data, relayed as sent: only well-formed ones are drawn (UI audit P1-1).
+        const g = (Array.isArray(state.ghosts) ? state.ghosts : []).filter((x) => x && typeof x.item === "string" && typeof x.track === "string" && Number.isFinite(x.start) && Number.isFinite(x.end)).map((x) => ({ actorKey: actor.key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(typeof x.label === "string" && x.label ? { label: x.label } : {}) }));
+        peerMap.set(key, { peer, seen: clock(), ghosts: g, on, said: idle });
         if (peer !== prev?.peer) publishPeers();
         if ((on === cutId && g.length) || (prev?.on === cutId && prev.ghosts.length)) publishGhosts();
         break;

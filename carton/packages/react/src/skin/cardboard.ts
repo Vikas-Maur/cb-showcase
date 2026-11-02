@@ -105,7 +105,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-input){height:32px;min-width:0;flex:1;padding:0 10px;border:1px solid #ffffff1a;border-radius:8px;
   background:var(--cb-sunken);color:var(--cb-fg-1);font:inherit;font-size:13px;outline:none;transition:border-color var(--cb-fast),box-shadow var(--cb-fast)}
 :where(${S}) :where(.carton-input::placeholder){color:color-mix(in srgb, var(--cb-fg-3) 72%, transparent)}
-:where(${S}) :where(.carton-input:focus){border-color:var(--cb-line-2);box-shadow:0 0 0 3px color-mix(in srgb, var(--cb-ring) 30%, transparent)}
+:where(${S}) :where(.carton-input:focus){border-color:#ffffff40;box-shadow:none}
 :where(${S}) :where(.carton-inline-name){display:flex;align-items:center;gap:6px;width:100%}
 :where(${S}) :where(.carton-inline-name .carton-input){height:28px}
 :where(${S}) :where(.carton-inline-name .carton-btn){height:28px;padding:0 10px;font-size:12px}
@@ -177,7 +177,10 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version){position:relative;display:flex;align-items:center;gap:8px;height:100%;padding:0 4px 0 6px;border-radius:8px;cursor:default;
   transition:background-color var(--cb-fast)}
 :where(${S}) :where(.carton-version:hover){background:#ffffff08}
-:where(${S}) :where(.carton-version[data-active]){background:#ffffff0f}
+:where(${S}) :where(.carton-version[data-active], .carton-version[data-menu]){background:#ffffff0f}
+/* while one row's menu is open, it is the only row that looks picked (review finding 7) */
+:where(${S}) :where(.carton-history[data-menu-open] .carton-version[data-active]:not([data-menu]):not(:hover)){background:transparent}
+:where(${S}) :where(.carton-version[data-compared]){background:#ffffff0f;box-shadow:inset 2px 0 0 var(--cb-fg-2)}
 :where(${S}) :where(.carton-history-list:focus-visible .carton-version[data-active]){box-shadow:inset 0 0 0 1px var(--cb-line-2)}
 /* The rail: one line through every version's mark, like a timeline of versions. */
 :where(${S}) :where(.carton-version-mark){position:relative;align-self:stretch;width:20px;flex:none;display:flex;align-items:center;justify-content:center;color:#6b6b6b}
@@ -202,7 +205,7 @@ export const cardboardSkin = `
 @keyframes carton-pulse{50%{opacity:.35}}
 :where(${S}) :where(.carton-version-more){display:flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;border:0;border-radius:6px;
   background:transparent;color:var(--cb-fg-3);cursor:pointer;opacity:0;transition:opacity var(--cb-fast),background-color var(--cb-fast)}
-:where(${S}) :where(.carton-version:hover .carton-version-more, .carton-version[data-active] .carton-version-more){opacity:1}
+:where(${S}) :where(.carton-version:hover .carton-version-more, .carton-version[data-menu] .carton-version-more, .carton-history-list:focus-within .carton-version[data-active] .carton-version-more){opacity:1}
 :where(${S}) :where(.carton-version-more:hover){background:var(--cb-accent);color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-history-compare){margin:8px 12px 12px}
 :where(${S}) :where(.carton-history-error){padding:0 12px 8px;text-wrap:pretty}
@@ -284,10 +287,41 @@ export const cardboardSkin = `
    column): the preview banner at its top, the card stack in its bottom-right corner. The layer passes clicks through;
    only its own controls take them. The History/Share sidebar beside the chat uses Cardboard's own classes. */
 :where(.carton-stage${S}){position:absolute;inset:0;z-index:30;pointer-events:none;background:none}
-:where(.carton-stage${S}) > :where(.carton-stage-banner){position:absolute;top:12px;left:12px;right:12px;display:flex;justify-content:center;pointer-events:none}
+:where(.carton-stage${S}) > :where(.carton-stage-banner){position:absolute;top:12px;left:12px;right:12px;display:flex;flex-direction:column;align-items:center;gap:8px;pointer-events:none}
+/* a shared project's footage that isn't on this computer (scripts/carton/ui.js MediaNotice): Cardboard's toast look */
+:where(${S}) :where(.carton-media-notice){display:flex;align-items:center;gap:8px;max-width:560px;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #ffffff1a;border-radius:10px;
+  background:#1b1b1be6;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--cb-fg-1);font-size:12px;line-height:16px}
+:where(${S}) :where(.carton-media-notice > .carton-icon){color:var(--cb-ok)}
+:where(${S}) :where(.carton-media-notice[data-waiting] > .carton-icon){color:var(--cb-warn)}
+:where(${S}) :where(.carton-media-notice-text){flex:1;min-width:0;text-wrap:pretty}
+/* a short confirmation (Restore, Fold in, Keep …: scripts/carton/ui.js Toast), bottom centre of the stage */
+:where(.carton-stage${S}) > :where(.carton-stage-toast){position:absolute;left:12px;right:12px;bottom:52px;display:flex;justify-content:center;pointer-events:none}
+:where(${S}) :where(.carton-toast){display:flex;align-items:center;gap:8px;max-width:520px;min-height:40px;padding:4px 4px 4px 12px;border:1px solid #ffffff1a;border-radius:10px;
+  background:#1b1b1bf2;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:var(--cb-shadow);color:var(--cb-fg-1);font-size:12px;line-height:16px;pointer-events:auto;
+  animation:carton-pop var(--cb-base) var(--cb-decel)}
+:where(${S}) :where(.carton-toast > .carton-icon){color:var(--cb-ok)}
+/* a shared project's status over the preview (scripts/carton/ui.js LiveChip): who is here, Offline / Syncing */
+:where(.carton-stage${S}) > :where(.carton-stage-live){position:absolute;left:12px;bottom:12px;pointer-events:none}
+:where(${S}) :where(.carton-live-chip){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 8px;border:1px solid #ffffff14;border-radius:999px;background:#1b1b1be6;
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--cb-fg-2);font:inherit;font-size:12px;font-weight:500;cursor:pointer;pointer-events:auto;box-shadow:var(--cb-shadow-near)}
+:where(${S}) :where(.carton-live-chip[data-state=ok]){padding:0 4px}
+:where(${S}) :where(.carton-live-chip[data-state=offline]){color:#fcd77f;border-color:color-mix(in srgb, var(--cb-warn) 35%, transparent)}
+:where(${S}) :where(.carton-live-chip[data-state=offline] .carton-icon){color:var(--cb-warn)}
+:where(${S}) :where(.carton-live-chip[data-state=syncing] .carton-icon){animation:carton-spin 1.1s linear infinite}
+:where(${S}) :where(.carton-live-chip:focus-visible){outline:none;box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+:where(${S}) :where(.carton-live-peers){display:inline-flex}
+:where(${S}) :where(.carton-live-peers .carton-avatar){box-shadow:0 0 0 2px #1b1b1b}
+:where(${S}) :where(.carton-live-peers .carton-avatar + .carton-avatar){margin-left:-4px}
+:where(${S}) :where(.carton-live-peers .carton-avatar[data-idle]){opacity:.5}
+:where(${S}) :where(.carton-live-more){margin-left:4px;font-size:11px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-toast-text){flex:1;min-width:0;text-wrap:pretty}
+:where(${S}) :where(.carton-toast .carton-btn:not([data-icon-only])){height:28px;padding:0 10px;font-size:12px}
 :where(${S}) :where(.carton-stage-banner > *){pointer-events:auto;box-shadow:var(--cb-shadow)}
 :where(.carton-stage${S}) > :where(.carton-stage-stack){position:absolute;left:12px;right:12px;bottom:12px;max-height:calc(100% - 60px);display:flex;flex-direction:column;justify-content:flex-end;align-items:flex-end;pointer-events:none}
 :where(${S}) :where(.carton-stage-stack > *){pointer-events:auto}
+/* the layer's own failure (scripts/carton/ui.js CartonBoundary): a small note in its corner, over nothing else */
+:where(.carton-stage${S}) > :where(.carton-stage-snag){position:absolute;right:12px;bottom:12px;display:flex;align-items:center;gap:8px;padding:6px 6px 6px 12px;
+  border:1px solid #ffffff1a;border-radius:10px;background:#1b1b1be6;color:var(--cb-fg-2);font-size:12px;pointer-events:auto}
 :where(.carton-sidebar${S}){font-size:inherit}
 :where(${S}) :where(.carton-sidebar .carton-panel-title){display:none}
 :where(${S}) :where(.carton-sidebar .carton-panel-head){padding-top:6px}
@@ -311,7 +345,7 @@ export const cardboardSkin = `
 /* ---------------------------------------------------------------- dialog (Fold in) */
 :where(${S}) :where(.carton-overlay){background:#000000a3;animation:carton-fade var(--cb-base) var(--cb-decel)}
 @keyframes carton-fade{from{opacity:0}}
-:where(${S}) :where(.carton-dialog){width:min(560px, calc(100vw - 32px));border:1px solid #ffffff14;border-radius:12px;background:var(--cb-dialog);box-shadow:var(--cb-shadow);
+:where(${S}) :where(.carton-dialog){width:min(560px, calc(100vw - 32px));border:0;border-radius:12px;background:var(--cb-dialog);box-shadow:var(--cb-shadow);
   outline:none;animation:carton-pop var(--cb-base) var(--cb-decel)}
 :where(${S}) :where(.carton-dialog-head){display:flex;align-items:center;gap:8px;padding:16px 16px 8px 20px}
 :where(${S}) :where(.carton-dialog-title){flex:1;min-width:0;font-size:15px;line-height:20px;font-weight:600;color:var(--cb-fg-1);text-wrap:balance}
@@ -370,31 +404,35 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-credit-when){color:var(--cb-fg-3)}
 
 /* ---------------------------------------------------------------- read-only preview banner (Cardboard's recovery look) */
-:where(${S}) :where(.carton-preview-banner){display:flex;flex-wrap:wrap;row-gap:6px;align-items:center;gap:8px;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #fcd34d33;border-radius:10px;
+:where(${S}) :where(.carton-preview-banner){display:flex;flex-wrap:wrap;row-gap:6px;align-items:center;gap:8px;max-width:100%;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #fcd34d33;border-radius:10px;
   background:#17140de6;color:#fde68a;font-size:12px;font-weight:500}
 :where(${S}) :where(.carton-preview-banner > .carton-icon){color:#fcd34dcc}
-:where(${S}) :where(.carton-preview-label){flex:1 1 120px;min-width:0;white-space:normal;text-wrap:balance}
+:where(${S}) :where(.carton-preview-label){flex:1 1 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-preview-banner .carton-badge){background:#fcd34d1a;color:#fcd77fcc}
 :where(${S}) :where(.carton-preview-blocked){color:#fde68acc;font-weight:400}
 :where(${S}) :where(.carton-preview-banner .carton-btn){margin-left:auto;height:28px;padding:0 10px 0 8px;font-size:12px}
+:where(${S}) :where(.carton-preview-banner .carton-badge, .carton-preview-banner > .carton-icon){flex:none}
+:where(${S}) :where(.carton-preview-blocked){flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 
 /* ---------------------------------------------------------------- Watch the changes */
 :where(${S}) :where(.carton-watch){display:flex;flex-direction:column;gap:10px;padding:12px;border-radius:12px;background:var(--cb-panel);outline:none}
-:where(${S}) :where(.carton-watch-head){display:flex;align-items:center;gap:10px}
-:where(${S}) :where(.carton-watch-summary){font-size:12px;color:var(--cb-fg-3)}
-:where(${S}) :where(.carton-watch-head > .carton-btn){margin-left:auto}
+:where(${S}) :where(.carton-watch-head){display:flex;align-items:flex-start;gap:10px}
+:where(${S}) :where(.carton-watch-titles){flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+:where(${S}) :where(.carton-watch-summary){font-size:12px;line-height:16px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-watch-head > .carton-btn){margin:-4px -4px 0 auto}
+:where(${S}) :where(.carton-watch-abrow){display:flex}
 :where(${S}) :where(.carton-watch-stage){aspect-ratio:16/9;max-height:320px;border-radius:8px;overflow:hidden;background:#0f0f0f}
-:where(${S}) :where(.carton-stage){--carton-shot-hue:0;position:relative;width:100%;height:100%;display:flex;align-items:center;justify-content:center;
-  background:radial-gradient(120% 90% at 50% 40%, hsl(var(--carton-shot-hue) 32% 26%), hsl(var(--carton-shot-hue) 30% 10%));transition:background .2s}
-:where(${S}) :where(.carton-stage-side){position:absolute;top:10px;left:10px;padding:2px 7px;border-radius:4px;background:#000000a0;color:var(--cb-fg-1);font-size:11px;font-weight:600}
-:where(${S}) :where(.carton-stage[data-side=a] .carton-stage-side){color:#f4a3a3}
-:where(${S}) :where(.carton-stage[data-side=b] .carton-stage-side){color:#86efac}
-:where(${S}) :where(.carton-stage-shot){font-size:22px;font-weight:600;letter-spacing:-.01em;color:#ffffffe0;text-shadow:0 2px 12px #00000080}
-:where(${S}) :where(.carton-watch-controls){display:flex;align-items:center;gap:6px}
-:where(${S}) :where(.carton-watch-play){min-width:132px}
-:where(${S}) :where(.carton-watch-count){margin-left:6px;font-size:12px;font-weight:500;color:var(--cb-fg-2)}
-:where(${S}) :where(.carton-watch-clock){font-size:12px;color:var(--cb-fg-3);font-family:var(--cb-mono)}
-:where(${S}) :where(.carton-ab){margin-left:auto;align-self:center}
+/* no picture of its own: one line saying where the picture is, not a 16:9 stand-in */
+:where(${S}) :where(.carton-watch-stage[data-note]){aspect-ratio:auto;max-height:none;background:none;overflow:visible}
+:where(${S}) :where(.carton-stage-note){display:flex;align-items:center;gap:8px;min-height:32px;padding:6px 10px;border-radius:8px;background:var(--cb-sunken);font-size:12px;line-height:16px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-stage-side){flex:none;padding:1px 6px;border-radius:4px;background:#ffffff0f;font-size:11px;font-weight:600;line-height:16px}
+:where(${S}) :where(.carton-stage-note[data-side=a] .carton-stage-side){color:#f4a3a3}
+:where(${S}) :where(.carton-stage-note[data-side=b] .carton-stage-side){color:#86efac}
+/* the controls wrap at a narrow width (300 px panel) instead of running out of it */
+:where(${S}) :where(.carton-watch-controls){display:flex;flex-wrap:wrap;align-items:center;gap:6px}
+:where(${S}) :where(.carton-watch-where){display:inline-flex;align-items:baseline;gap:8px;margin-left:auto;white-space:nowrap}
+:where(${S}) :where(.carton-watch-count){font-size:12px;font-weight:500;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-watch-clock){font-size:12px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-strips){display:grid;grid-template-columns:52px 1fr;gap:0 6px;padding:8px 0 2px;border-top:1px solid #ffffff0a}
 :where(${S}) :where(.carton-strip-labels){display:grid;grid-template-rows:40px 40px;row-gap:4px;font-size:11px;font-weight:500;color:var(--cb-fg-4)}
 :where(${S}) :where(.carton-strip-labels span){display:flex;align-items:center}
