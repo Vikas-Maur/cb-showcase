@@ -469,7 +469,9 @@ What changes with it on:
   panel is yours too, however the app was started: Fold in (and "Fold in the rest"), New cut from here, Name this
   version, Restore, Undo, a conflict card's "Keep yours" and a comment are you in History and `person` in
   `cb history` (a fold made in the panel was "Terminal", or "Claude Code" when the app was started from its shell). A
-  new cut's first version, "Made this cut", names who made it (it named no one; `cb history` said `unknown`).
+  new cut's first version, "Made this cut", names who made it (it named no one; `cb history` said `unknown`). Who made a
+  cut is kept beside the cut, not in it, so a Cardboard with an earlier Carton still edits and renames that cut; it
+  travels with a `.cbproj` that includes history, and a maker that isn't a well-formed name shows as no one.
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
   `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
 
@@ -530,7 +532,10 @@ run below.
 6. The editor: the save names the version it was made on; a change from elsewhere is adopted without an undo step
    (a pending save goes first); Ctrl+Z goes to Carton; ripple and split deletes record what they moved; the History tab,
    whose writes (fold, a new cut, restore, undo, naming a version, a card's pick) are recorded as the person's, never as
-   the worker's own identity; "Fold in the rest" reaches the editor as a fold does.
+   the worker's own identity; "Fold in the rest" reaches the editor as a fold does. What the worker writes into
+   `project.json` from history (a panel write, a teammate's change) goes in only if history's newest version is still
+   the one it was made from when Cardboard's store gets to it: an editor save made meanwhile goes first, and the write
+   is made again from the version that save made, so it never puts the older timeline back over the save.
 7. Cardboard's own `timeline.tsx` printer and parser, in both copies, for Carton's prints of the timeline (per-agent
    views, the shared file during an agent's turn): the print is exactly what `cb source print` shows, with Carton's
    header on its rev line; the parse is exactly what `cb source apply` would save for the file, without saving or
