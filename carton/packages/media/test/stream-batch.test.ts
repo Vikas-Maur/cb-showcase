@@ -73,8 +73,8 @@ test("while one batch uploads, the next segments queue, and go in the next reque
   const w = new ProxyStreamWriter({ store, hasher: nodeHasher });
   await w.init(INIT); // held for the first segment: a viewer needs both
   assert.equal(store.batches.length, 0, "the init alone waits");
-  for (let i = 0; i < 5; i++) await w.segment(seg(i), 2); // the first request starts with segment 0; the rest queue behind it
-  assert.equal(store.batches.length, 1, "one request in flight");
+  for (let i = 0; i < 5; i++) await w.segment(seg(i), 2); // the first request starts with segment 0, a second with 1; the rest queue
+  assert.equal(store.batches.length, 2, "two requests under way");
   assert.equal(w.segments, 0, "nothing published yet");
   const ending = w.end();
   while (store.batches.length < 2 || g.pending()) {
@@ -82,8 +82,8 @@ test("while one batch uploads, the next segments queue, and go in the next reque
     await new Promise((r) => setTimeout(r, 1));
   }
   await ending;
-  assert.deepEqual(store.batches.map((b) => b.parts.map((p) => p.kind === "init" ? "i" : p.index)), [["i", 0], [1, 2, 3, 4]]);
-  assert.ok(store.batches[1]!.end, "the end rides with the last parts");
+  assert.deepEqual(store.batches.map((b) => b.parts.map((p) => p.kind === "init" ? "i" : p.index)), [["i", 0], [1], [2, 3, 4]]);
+  assert.ok(!store.batches[0]!.end && !store.batches[1]!.end && store.batches[2]!.end, "the end rides with the last parts, once nothing else is under way");
   assert.equal(w.segments, 5);
   assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3, 4]);
 });
@@ -178,7 +178,7 @@ test("dedup: a stored part goes without its bytes, and with them if the host say
   await ending;
   const sent = store.batches.map((b) => b.parts.map((p) => [p.kind === "init" ? "i" : p.index, p.bytes !== null]));
   assert.deepEqual(sent[0], [["i", true], [0, true]], "the first frame's batch isn't probed: it waits for nothing");
-  assert.deepEqual(sent[1], [[1, false], [2, false], [3, true]], `then stored parts go without their bytes: ${JSON.stringify(sent)}`);
+  assert.deepEqual(sent.slice(1).flat(), [[1, false], [2, false], [3, true]], `then stored parts go without their bytes: ${JSON.stringify(sent)}`);
   assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3]);
 });
 
@@ -264,7 +264,7 @@ test("a batch the host drops is sent again in smaller pieces, down to one part, 
     if (n > 2) throw Object.assign(new Error("Worker exceeded CPU"), { status: 503 });
   };
   const g = gated();
-  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, upload: { retryDelayMs: 1 } });
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, upload: { retryDelayMs: 1 }, batch: { inFlight: 1 } });
   const first = g.gate;
   store.gate = async () => {
     await first(); // hold the first batch (the init) so the segments queue behind it
@@ -279,8 +279,41 @@ test("a batch the host drops is sent again in smaller pieces, down to one part, 
   g.release();
   await w.end();
   assert.equal(sizes[0], 7, "the queued segments went together first");
-  // never again as many as failed: 7 failed, 3 failed, then at most 2
-  assert.ok(sizes.slice(2).every((n) => n <= 2), `then smaller: ${sizes}`);
-  assert.ok(sizes.filter((n) => n > 2).length <= 3, `few failures: ${sizes}`);
+  // a failed batch goes again in halves: never again as large as one that failed, and few failures in all
+  const failed = sizes.filter((n) => n > 2);
+  sizes.forEach((n, i) => assert.ok(!sizes.slice(0, i).some((m) => m > 2 && m <= n), `size ${n} after a failure at or below it: ${sizes}`));
+  assert.ok(failed.length <= 4, `few failures: ${sizes}`);
   assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3, 4, 5, 6, 7]);
+});
+
+test("two batches under way: the second uploads while the first is written; one in flight when asked", async () => {
+  const store = new AppendingStore();
+  const opened: number[] = [];
+  let open = 0;
+  store.gate = async () => {
+    opened.push(++open);
+    await new Promise((r) => setTimeout(r, 15));
+    open--;
+  };
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher });
+  await w.init(INIT);
+  for (let i = 0; i < 12; i++) await w.segment(seg(i), 2);
+  await w.end();
+  assert.equal(Math.max(...opened), 2, "two at once, never more");
+  assert.ok(store.batches.at(-1)!.end, "the end last");
+  assert.equal(store.batches.filter((b) => b.end).length, 1);
+  assert.deepEqual(await indexes(reader(store, w.id)), Array.from({ length: 12 }, (_, i) => i));
+  const one = new AppendingStore();
+  const seen: number[] = [];
+  let busy = 0;
+  one.gate = async () => {
+    seen.push(++busy);
+    await new Promise((r) => setTimeout(r, 5));
+    busy--;
+  };
+  const w1 = new ProxyStreamWriter({ store: one, hasher: nodeHasher, batch: { inFlight: 1 } });
+  await w1.init(INIT);
+  for (let i = 0; i < 6; i++) await w1.segment(seg(i), 2);
+  await w1.end();
+  assert.equal(Math.max(...seen), 1);
 });

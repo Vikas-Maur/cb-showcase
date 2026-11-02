@@ -190,7 +190,7 @@ export interface ProxyStreamWriterOptions {
    * `false` publishes part by part as through any store. Limits per request, and how much may wait in memory before
    * `segment()` waits for the uploads (the encoder's back-pressure).
    */
-  batch?: false | { maxParts?: number; maxBytes?: number; maxQueuedBytes?: number };
+  batch?: false | { maxParts?: number; maxBytes?: number; maxQueuedBytes?: number; inFlight?: number };
 }
 
 /**
@@ -238,6 +238,8 @@ const noAppend = new WeakSet<BlobStore>();
 const BATCH_PARTS = 8;
 const BATCH_BYTES = 4 << 20;
 const QUEUED_BYTES = 12 << 20;
+/** Batches under way at once (see ProxyStreamWriter.#kick). */
+const IN_FLIGHT = 2;
 
 /** Errors a retry can't fix: a cancel, the host's refusal (4xx but a timeout or a rate limit), or a route to switch. */
 function final(e: unknown): boolean {
@@ -271,7 +273,9 @@ export class ProxyStreamWriter {
   #appender: StreamAppender | null;
   readonly #queue: Queued[] = [];
   #queuedBytes = 0;
-  #flushing: Promise<void> | null = null;
+  #inflight = 0;
+  #ceiling: number;
+  #maxParts: number;
   #failure: { error: unknown } | null = null;
   #published = 0;
   /**
@@ -286,6 +290,7 @@ export class ProxyStreamWriter {
     this.#o = o;
     this.id = o.id ?? newStreamId();
     this.#appender = o.batch !== false && isStreamAppender(o.store) && !noAppend.has(o.store) ? o.store : null;
+    this.#ceiling = this.#maxParts = Math.max(1, (o.batch && o.batch.maxParts) || BATCH_PARTS);
   }
 
   /** Segments the store holds entries for. */
@@ -365,7 +370,7 @@ export class ProxyStreamWriter {
       sizes: this.#sizes.slice(),
       durations: this.#durations.slice(),
     };
-    if (this.#appender || this.#queue.length || this.#flushing) {
+    if (this.#appender || this.#queue.length || this.#inflight) {
       this.#ended = true;
       this.#queue.push({ end });
       this.#kick();
@@ -381,7 +386,7 @@ export class ProxyStreamWriter {
   async flush(): Promise<void> {
     this.#holdInit = false;
     this.#kick();
-    while ((this.#queue.length || this.#flushing) && !this.#failure) await this.#changed();
+    while ((this.#queue.length || this.#inflight) && !this.#failure) await this.#changed();
     this.#throwIfFailed();
   }
 
@@ -409,29 +414,23 @@ export class ProxyStreamWriter {
     this.#throwIfFailed();
   }
 
+  /**
+   * Starts batches while fewer than `inFlight` are under way: two by default, so the next batch uploads while the host
+   * writes the last one to storage (round trips the link would otherwise sit idle through), and a lossy link carries two
+   * TCP streams (one stream on the 4G profile, 0.5% loss and an 80 ms round trip, tops out near the proxy's own rate).
+   * Entries of two batches may land in either order: a reader waits at the gap a moment, as within one batch. The end
+   * goes last, alone or with the last parts, once nothing else is under way.
+   */
   #kick(): void {
-    if (this.#flushing || this.#failure || !this.#queue.length) return;
-    // The init segment alone is of no use to a viewer (a player needs it and the first segment): it waits for the first
-    // segment, so both go in one request, unless the writer flushes or ends first.
-    if (this.#holdInit && this.#queue.length === 1 && "part" in this.#queue[0]! && this.#queue[0].part.kind === "init") return;
-    this.#flushing = this.#flush().finally(() => {
-      this.#flushing = null;
-      this.#notify();
-      this.#kick(); // queued while the last batch was settling
-    });
-  }
-
-  async #flush(): Promise<void> {
     const limits = this.#o.batch || {};
-    const maxBytes = limits.maxBytes ?? BATCH_BYTES;
-    // Parts per request: halved after a failure, and from then on never as many as failed (a request the host gives up
-    // on, as a Worker over its CPU does, fails again at that size); one more after each success, up to that ceiling.
-    let ceiling = limits.maxParts ?? BATCH_PARTS;
-    let maxParts = ceiling;
-    const retries = this.#o.upload?.retries ?? 4, signal = this.#o.upload?.signal;
-    let attempt = 0;
-    while (this.#queue.length && !this.#failure) {
-      // what is queued now, up to the limits (always at least one part), and the end if it is next
+    const inFlight = Math.max(1, limits.inFlight ?? IN_FLIGHT);
+    while (!this.#failure && this.#inflight < inFlight && this.#queue.length) {
+      // The init segment alone is of no use to a viewer (a player needs it and the first segment): it waits for the
+      // first segment, so both go in one request, unless the writer flushes or ends first.
+      if (this.#holdInit && this.#queue.length === 1 && "part" in this.#queue[0]! && this.#queue[0].part.kind === "init") return;
+      // the last parts wait for what is under way, then go with the end
+      if (this.#inflight > 0 && this.#queue.some((q) => "end" in q)) return;
+      const maxBytes = limits.maxBytes ?? BATCH_BYTES;
       const parts: StreamAppendPart[] = [];
       let bytes = 0, taken = 0, end: StreamEnd | undefined;
       for (const q of this.#queue) {
@@ -440,37 +439,51 @@ export class ProxyStreamWriter {
           taken++;
           break;
         }
-        if (parts.length && (parts.length >= maxParts || bytes + q.part.size > maxBytes)) break;
+        if (parts.length && (parts.length >= this.#maxParts || bytes + q.part.size > maxBytes)) break;
         parts.push(q.part);
         bytes += q.part.size;
         taken++;
       }
-      try {
-        await this.#send(parts, end);
-        attempt = 0;
-        maxParts = Math.min(ceiling, maxParts + 1);
-      } catch (e) {
-        if (!final(e) && !signal?.aborted && attempt < retries) {
-          // a dropped request (or one the host gave up on: too much work for one request): again, smaller
-          const base = (this.#o.upload?.retryDelayMs ?? 250) * 2 ** attempt++;
-          if (parts.length > 1) ceiling = Math.min(ceiling, parts.length - 1);
-          maxParts = Math.max(1, Math.floor(parts.length / 2));
-          try {
-            await sleep(base / 2 + Math.random() * base, signal);
-            continue;
-          } catch (abort) {
-            e = abort;
-          }
-        }
-        this.#failure = { error: e };
-        this.#notify();
-        return;
-      }
       this.#queue.splice(0, taken);
-      this.#queuedBytes -= bytes;
-      this.#published += parts.filter((p) => p.kind === "segment").length;
-      this.#notify();
+      this.#inflight++;
+      void this.#sendBatch(parts, end, 0)
+        .then(
+          () => {
+            this.#queuedBytes -= bytes;
+            this.#published += parts.filter((p) => p.kind === "segment").length;
+          },
+          (e: unknown) => void (this.#failure ??= { error: e }),
+        )
+        .finally(() => {
+          this.#inflight--;
+          this.#notify();
+          this.#kick();
+        });
     }
+  }
+
+  /**
+   * A batch, again on a failure a retry may fix: in two halves, each retried the same way, down to one part. Parts per
+   * request are halved after a failure and never again as many as failed (a request the host gives up on, as a Worker
+   * over its CPU does, fails again at that size); one more after each success, up to that ceiling.
+   */
+  async #sendBatch(parts: StreamAppendPart[], end: StreamEnd | undefined, attempt: number): Promise<void> {
+    const retries = this.#o.upload?.retries ?? 4, signal = this.#o.upload?.signal;
+    try {
+      await this.#send(parts, end);
+      this.#maxParts = Math.min(this.#ceiling, this.#maxParts + 1);
+      return;
+    } catch (e) {
+      if (final(e) || signal?.aborted || attempt >= retries) throw e;
+    }
+    if (parts.length > 1) this.#ceiling = Math.min(this.#ceiling, parts.length - 1);
+    this.#maxParts = Math.max(1, Math.floor(parts.length / 2));
+    const base = (this.#o.upload?.retryDelayMs ?? 250) * 2 ** attempt;
+    await sleep(base / 2 + Math.random() * base, signal);
+    if (parts.length < 2) return this.#sendBatch(parts, end, attempt + 1);
+    const half = Math.ceil(parts.length / 2);
+    await this.#sendBatch(parts.slice(0, half), undefined, attempt + 1);
+    await this.#sendBatch(parts.slice(half), end, attempt + 1);
   }
 
   /** One batch, one attempt (the caller retries); a host without the route: part by part from here on. */
