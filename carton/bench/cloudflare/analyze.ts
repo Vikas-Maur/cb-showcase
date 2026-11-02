@@ -138,6 +138,16 @@ export async function analyze(run: any): Promise<any | null> {
     let w: any = workerUse(run.host, p, s, e + 2000);
     // the tail missed part of it: the script's analytics instead, when the run had that Worker to itself (vault rep 1)
     if (w.gap && process.env.SCRIPT_FALLBACK?.split(",").includes(run.runId)) w = { ...(await workerScriptUse(run.host, s, e + 2000)), gap: false, source: "graphql-script" };
+    // The tail drops events under load (it kept 24-30% of a proxy run's requests at 02:10), so where the client counted
+    // its own requests (each is one Worker request), that count is the requests, and CPU is the tail's mean per request
+    // times it. The upload sessions' counts: each media-client process reports its requests when its upload completes.
+    const upCounts = (run.events ?? []).filter((x: any) => x.ev === "uploaded" && x.requests && x.t >= s - 1000 && x.t <= e + 1000);
+    if (upCounts.length && !w.source) {
+      const client = sum(upCounts.map((x: any) => sum(Object.values(x.requests as Record<string, number>))));
+      const perReq = w.requests ? w.cpuMs / w.requests : null;
+      out.tailCompleteness = w.requests / client;
+      w = { requests: client, cpuMs: perReq === null ? null : perReq * client, gap: false, source: "client", tailRequests: w.requests, tailCpuMs: w.cpuMs };
+    }
     const objs = [ids.vault, ids.writeCap, ids.room].filter(Boolean);
     const d = await doUse(objs, s, e);
     const gb = run.size / 1e9;
@@ -152,7 +162,8 @@ export async function analyze(run: any): Promise<any | null> {
       r2ClassBPerGB: r2 ? r2.classB / gb : null,
       r2ByActionPerGB: r2 ? Object.fromEntries(Object.entries(r2.byAction).map(([k, v]) => [k, (v as number) / gb])) : null,
       workerReqPerGB: w.gap ? null : w.requests / gb,
-      workerCpuMsPerGB: w.gap ? null : w.cpuMs / gb,
+      workerCpuMsPerGB: w.gap || w.cpuMs === null ? null : w.cpuMs / gb,
+      workerSource: w.source ?? "tail",
       doReqPerGB: sum(Object.values(d).map((v) => v.requests)) / gb,
       writeCapDoReqPerGB: (d[ids.writeCap]?.requests ?? 0) / gb,
       vaultDoReqPerGB: ids.vault && run.host === "nor2" ? (d[ids.vault]?.requests ?? 0) / gb : null,
@@ -174,12 +185,17 @@ export async function analyze(run: any): Promise<any | null> {
     // the client counts every request it makes (each is one Worker request): exact when the tail missed some
     const clientReq = run.requests ? sum(Object.values(run.requests as Record<string, number>)) : null;
     out.clientRequests = clientReq;
+    // the client's own count where it has one (exact; the tail drops events under load), CPU as the tail's mean per
+    // request times that count
+    const reqs = clientReq ?? (w.gap ? null : w.requests);
+    const cpu = w.requests && reqs !== null ? (w.cpuMs / w.requests) * reqs : null;
+    out.tailCompleteness = clientReq && w.requests ? w.requests / clientReq : null;
     if (kind === "proxy") {
       const segs = run.segments;
-      out.per = { segments: segs, workerReqPerSeg: w.gap ? (clientReq !== null ? clientReq / segs : null) : w.requests / segs, workerReqSource: w.gap ? "client" : "tail", workerCpuMsPerSeg: w.gap ? null : w.cpuMs / segs, r2ClassAPerSeg: r2 ? r2.classA / segs : null, r2ClassBPerSeg: r2 ? r2.classB / segs : null, doReqPerSeg: sum(Object.values(d).map((v) => v.requests)) / segs, bytesPerSeg: run.bytes / segs };
+      out.per = { segments: segs, workerReqPerSeg: reqs === null ? null : reqs / segs, workerReqSource: clientReq !== null ? "client" : "tail", workerCpuMsPerSeg: cpu === null ? null : cpu / segs, r2ClassAPerSeg: r2 ? r2.classA / segs : null, r2ClassBPerSeg: r2 ? r2.classB / segs : null, doReqPerSeg: sum(Object.values(d).map((v) => v.requests)) / segs, bytesPerSeg: run.bytes / segs };
     } else {
       const mib = run.bytes / (1 << 20);
-      out.per = { mib, workerReqPerMiB: w.gap ? (clientReq !== null ? clientReq / mib : null) : w.requests / mib, workerReqSource: w.gap ? "client" : "tail", workerCpuMsPerMiB: w.gap ? null : w.cpuMs / mib, r2ClassBPerMiB: r2 ? r2.classB / mib : null, r2ClassAPerMiB: r2 ? r2.classA / mib : null, mibPerGet: r2 ? mib / Math.max(1, r2.byAction.GetObject ?? 0) : null };
+      out.per = { mib, workerReqPerMiB: reqs === null ? null : reqs / mib, workerReqSource: clientReq !== null ? "client" : "tail", workerCpuMsPerMiB: cpu === null ? null : cpu / mib, r2ClassBPerMiB: r2 ? r2.classB / mib : null, r2ClassAPerMiB: r2 ? r2.classA / mib : null, mibPerGet: r2 ? mib / Math.max(1, r2.byAction.GetObject ?? 0) : null };
     }
   }
   return out;

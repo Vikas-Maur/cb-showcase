@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { mediaHash, uploadMedia, MediaReader, ProxyStreamReader, COLLAB_PROXY_720P, toMediaRecord, type ByteSource, type UploadStateStore } from "@carton/media";
 import { nodeHasher, FsUploadStateStore, FsLeafCache, shareMedia, defaultEncoderChain } from "@carton/media/node";
 import { hostMediaBlobs } from "@carton/host-http/client";
+import { platformFetch } from "@carton/http-node";
 import { HOSTS, now, type HostName } from "./common.ts";
 
 /** Seeded incompressible bytes, readable at any offset. */
@@ -60,6 +61,7 @@ interface Cfg {
 }
 const cfg = JSON.parse(process.argv[2]!) as Cfg;
 const out = (o: Record<string, unknown>) => process.stdout.write(JSON.stringify({ t: now(), ...o }) + "\n");
+const realFetch = platformFetch();
 // every request this client makes, by kind: the sign call, the signed GET/PUT, and the rest by route
 const requests: Record<string, number> = {};
 const countingFetch: typeof fetch = (input, init) => {
@@ -68,7 +70,9 @@ const countingFetch: typeof fetch = (input, init) => {
   const route = u.pathname.replace(/^\/api\/projects\/[^/]+/, "").replace(/\/uploads\/[^/]+/, "/uploads/:id").replace(/\/uploads\/:id\/\d+$/, "/uploads/:id/:n");
   const kind = route.startsWith("/blobs/sign") ? "sign" : u.searchParams.has("sig") || u.searchParams.has("signature") || u.searchParams.has("exp") ? `signed-${m}` : `${m} ${route}`;
   requests[kind] = (requests[kind] ?? 0) + 1;
-  return fetch(input, init);
+  // the real client's own fetch (hostMediaBlobs' default: node:https on Node), only counted here. Runs before
+  // 2026-11-02 02:15 called the global fetch (undici) instead: the same requests, another HTTP stack.
+  return realFetch(input, init);
 };
 const store = hostMediaBlobs({ origin: HOSTS[cfg.host], projectId: cfg.projectId, token: cfg.token, fetch: countingFetch });
 /** The upload state store, logging each upload id it saves (R2's upload records are named by it). */
@@ -182,6 +186,8 @@ try {
   }
   process.exit(0);
 } catch (e) {
-  out({ ev: "failed", error: String((e as Error)?.message ?? e).slice(0, 400), name: (e as Error)?.name, status: (e as { status?: number }).status, code: (e as { code?: string }).code });
+  // undici's "fetch failed" says nothing; its cause does (a timeout, a reset, DNS)
+  const cause = (e as { cause?: { code?: string; message?: string; name?: string } }).cause;
+  out({ ev: "failed", error: String((e as Error)?.message ?? e).slice(0, 400), name: (e as Error)?.name, status: (e as { status?: number }).status, code: (e as { code?: string }).code, cause: cause ? { code: cause.code, name: cause.name, message: String(cause.message ?? "").slice(0, 200) } : undefined });
   process.exit(1);
 }
