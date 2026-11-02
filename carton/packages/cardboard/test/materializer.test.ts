@@ -1297,3 +1297,68 @@ test("review 9 #2: a cut switched while a failed rewrite waits for its retry is 
   s.engine.headRef = async () => JSON.stringify(["cut-b", "b7e1c2d3-0000-4000-8000-00000000000b", 0, []]);
   assert.equal(await s.mz.onExternalHeadChange(), "cut", "the cut it was on is remembered");
 });
+
+// apply-ryw: read-your-writes. A `cb` write asks (through the lease holder) for the shared file to show it, and is
+// answered by the print that does, at once: the coalescing timer's rewrite is made then and there, with no wait on the
+// clock. On the laptop the file was read before the rewrite and the agent took the old value for its turn's start.
+test("apply-ryw: showChange makes the coalesced rewrite at once and answers 'shown' with the print that holds the change", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5), clip("b", 5, 10)]);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the agent's write"), "agent.1");
+  s.mz.onHeadChange("local"); // the holder's write (or its follower) told it: a rewrite is due in 20 ms
+  const t0 = s.clock.now();
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000), "shown");
+  assert.equal(s.clock.now(), t0, "no wait on the clock: the rewrite was made at once");
+  assert.equal(s.find(s.read().items, "a").name, "the agent's write", "the next read shows the write");
+  // already shown: answered at once
+  assert.equal(await s.mz.showChange({ id: "agent.1", seq: s.engine.headSeq }, 2000), "shown");
+});
+
+test("apply-ryw: a change nobody told the materializer of (another process's commit) is found and shown", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "committed elsewhere"), "cb.7");
+  assert.equal(await s.mz.showChange({ id: "cb.7", seq: s.engine.headSeq }, 2000), "shown");
+  assert.equal(s.find(s.read().items, "a").name, "committed elsewhere");
+});
+
+test("apply-ryw: during a freeze, a change the frozen file holds back (the person's, not an agent's) is 'held', at once", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  await s.mz.hookRead({ kind: "agent", id: "director/c/t1", turn: "t1" });
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the person's"), "person.1");
+  s.mz.onHeadChange("local");
+  const t0 = s.clock.now();
+  assert.equal(await s.mz.showChange({ id: "person.1", seq: s.engine.headSeq, author: { kind: "human", id: "person" } }, 2000), "held");
+  assert.equal(s.clock.now(), t0, "said at once, not after the wait");
+  assert.equal(s.find(s.read().items, "a").name, "a", "the file still holds it back");
+});
+
+test("apply-ryw: a write that can't show within the wait (a host write still landing) is 'later', then shows", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) }); // the app's save is writing project.json
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "under a landing save"), "agent.2");
+  s.mz.onHeadChange("local");
+  const asked = s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later");
+  land();
+  await s.tick(100);
+  assert.equal(s.find(s.read().items, "a").name, "under a landing save", "the rewrite follows once the save has landed");
+  assert.equal(await s.mz.showChange({ id: "agent.2", seq: s.engine.headSeq }, 2000), "shown");
+});
+
+test("apply-ryw: a windowless cb caller named to onCb (a terminal's) is held to the freeze it starts; close settles waiting writes", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  await s.mz.onCb({ kind: "external", id: "terminal:me@box", name: "Terminal" });
+  assert.equal(s.mz.freeze.active, true, "its call holds the file a while");
+  assert.ok(s.mz.freeze.callers.has("terminal:me@box"));
+  await s.tick(61_000);
+  assert.equal(s.mz.freeze.active, false);
+  assert.equal(s.mz.freeze.callers.size, 0, "forgotten once the freeze ends");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "x"), "late.1");
+  let land!: () => void;
+  s.mz.onHeadChange("gui", { after: new Promise<void>((r) => (land = r)) });
+  const asked = s.mz.showChange({ id: "late.1", seq: s.engine.headSeq }, 60_000);
+  await s.mz.close();
+  assert.equal(await asked, "later");
+  land();
+});

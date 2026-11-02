@@ -52,7 +52,7 @@ export interface CartonEngineOptions {
 }
 
 /** This engine: every optional method of `MaterializerEngine` is there (the materializer uses one only when it is). */
-export type CartonEngine = MaterializerEngine & Required<Pick<MaterializerEngine, "changesSince" | "newChangeId" | "own" | "cut" | "headRef" | "pendingChanges" | "putMetas">>;
+export type CartonEngine = MaterializerEngine & Required<Pick<MaterializerEngine, "changesSince" | "newChangeId" | "own" | "cut" | "headRef" | "pendingChanges" | "putMetas" | "changeAt">>;
 
 export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptions = {}): CartonEngine {
   const store = carton.store;
@@ -214,7 +214,9 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       const ref: StateRef = { branchId: p.ref.branchId, seq: p.ref.seq, ...(p.ref.hash8 ? { hash8: p.ref.hash8 } : {}) };
       const record = { key: ["pinned", owner, pinKey(ref)], value: { ref, expires: now() + ttlMs } satisfies PinRecord };
       if (!deferRecord) await store.write([{ table: VIEWS, ...record }]);
-      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on, ...(deferRecord ? { record } : {}) };
+      // `pending`: the changes past `seq` the state holds (head's pending changes on a shared cut, or `causal`), which
+      // tell a write waiting to show in the file that it does (read-your-writes, the materializer's showChange)
+      return { ref: tokenOf(p.header), branchId: p.ref.branchId, seq: p.ref.seq, doc: doc ?? (await carton.checkout(p.ref)), cut: on, ...(deferRecord ? { record } : {}), ...(p.ref.pending?.length ? { pending: [...p.ref.pending] } : {}) };
     },
     async release(owner) {
       const rows = await store.range<PinRecord>(VIEWS, { prefix: ["pinned", owner] });
@@ -276,6 +278,11 @@ export function cartonMaterializerEngine(carton: Carton, opts: CartonEngineOptio
       return JSON.stringify([c, h.ref.branchId, h.ref.seq, h.ref.pending ?? []]);
     },
     newChangeId: () => carton.newChangeId(),
+    // where a confirmed change is: core's `ids` table ([cut, seq]), one row read; null while it isn't confirmed
+    async changeAt(id: string) {
+      const at = await store.get<[string, number]>("ids", [id]);
+      return Array.isArray(at) && typeof at[0] === "string" && typeof at[1] === "number" ? { cut: at[0], seq: at[1] } : null;
+    },
     async *changesSince(seq: number, o: { cut?: string; until?: number; skip?: ReadonlySet<string> } = {}) {
       // the whole log back to `seq`, a page at a time (round 15 #1: no window), newest first; only the changes asked for
       // are checked out, and a change right below the last one reuses its state
