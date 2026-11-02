@@ -336,6 +336,68 @@ test("3f. a recovered project's clip plays without a restart: Restore of a good 
   }
 });
 
+test("3h. a recovered clip whose file is missing at the restore gets its details once the file is back, from the file as it is then (review of fix/media-meta #2, #4)", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover-later", b);
+  S.seed(pc, b);
+  try {
+    const id0 = videoIn(envOf(pc).project).id;
+    const file = fs.readdirSync(path.join(bundleOf(pc), "media")).find((n) => n.startsWith(id0));
+    const at = path.join(bundleOf(pc), "media", file), aside = path.join(pc.home, "aside.mp4");
+    await breakLikeTheBug(pc, b);
+    fs.renameSync(at, aside); // (an unplugged drive, a sync client still downloading)
+    await pc.startWorker();
+    const id = (await pc.call("projects.list"))[0].id;
+    const p = await panel(pc, id, "later-panel");
+    assert.equal((await p.call("restore", p.rows().find((v) => v.seq === 4).ref)).ok, true);
+    await S.until(() => envOf(pc).project.name === "Demo", 20_000, "the restore");
+    assert.equal(videoIn(envOf(pc).project).data.src, undefined, "no file, nothing to say about it");
+    // the file comes back, and it is another one (6 s, not the 3 s clip Cardboard probed and cached for the id)
+    fs.copyFileSync(b.clip2, at);
+    fs.rmSync(aside);
+    assert.equal((await p.call("restore", p.rows().find((v) => v.seq === 3).ref)).ok, true);
+    await S.until(() => videoIn(envOf(pc).project).data.src, 20_000, "the clip's details");
+    const clip = videoIn(envOf(pc).project);
+    assert.equal(clip.data.size, fs.statSync(at).size);
+    assert.equal(Math.round(clip.data.duration), 6, "the file as it is now, not the probe cached for the id: " + clip.data.duration);
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});
+
+test("4b. an entry the file holds with its src but not its details (an older writer's) gets them: what was kept of that media, else Cardboard's probe (review of fix/media-meta #3)", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("restore-partial", b);
+  S.seed(pc, b);
+  try {
+    const full = videoIn(envOf(pc).project);
+    must(pc.cb(["restore", "Demo", "main@1"]), "cb restore main@1"); // keeps the clip's details as it drops it
+    must(pc.cb(["restore", "Demo", "main@4"]), "cb restore main@4");
+    // project.json written by another writer with the clip's src only, under head's rev (Carton takes it as head)
+    const partial = (cut) => {
+      const env = envOf(pc);
+      const media = env.project.media.map((m) => (m.id === full.id ? { id: m.id, data: { type: m.data.type, fileName: m.data.fileName, ...cut(m.data) } } : m));
+      const project = { ...env.project, media, stateUpdatedAt: env.project.stateUpdatedAt + 1 };
+      asProcess(pc, b, `
+        const lc = await f.internals.open(args.bundle);
+        require("fs").writeFileSync(require("path").join(args.bundle, "project.json"), JSON.stringify(args.file, null, 2));
+        await f.internals.setRevFor(args.bundle, args.rev, (await lc.carton.head()).ref);`, { bundle: bundleOf(pc), file: { ...env, project }, rev: project.stateUpdatedAt });
+    };
+    partial((d) => ({ src: d.src }));
+    must(pc.cb(["restore", "Demo", "main@3"]), "cb restore main@3");
+    assert.deepEqual(videoIn(envOf(pc).project), full, "what was kept of it, in full");
+    // nothing kept: Cardboard's probe of its file fills in what the import gives
+    fs.rmSync(path.join(bundleOf(pc), ".carton", "media.json"));
+    partial((d) => ({ src: d.src }));
+    must(pc.cb(["restore", "Demo", "main@4"]), "cb restore main@4");
+    const clip = videoIn(envOf(pc).project);
+    for (const k of ["src", "format", "size", "duration", "width", "height", "frameRate", "hasAudio", "codec", "metadataStatus"]) assert.deepEqual(clip.data[k], full.data[k], k);
+  } finally {
+    S.killHelpers();
+  }
+});
+
 test("3g. the \"can't be read\" warning is for the project a cb command names, not every command on the library", t, async () => {
   const b = await S.build();
   const pc = await S.computer("root-recover-quiet", b);

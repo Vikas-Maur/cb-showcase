@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile, MediaDetails, droppedMedia } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
+import { describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
@@ -800,7 +800,6 @@ async function projectFor(bundle, doc, current, { keep = true } = {}) {
 // Cardboard 1.4.0's import gives a file's media entry (library-worker.js `j4`; the CLI's copy is the same): where it
 // plays from, its format (the file name's extension), its size on disk, the probe's facts, and "metadata complete".
 // Its thumbnails, waveform and album art come from the derive steps, which ensureDerived runs (deriveMedia).
-const FILE_MEDIA = new Set(["video", "audio", "image"]);
 const mediaUrl = (id) => "cardboard-media://media/" + encodeURIComponent(id);
 const extOf = (name) => {
   const t = name.lastIndexOf("."), r = Math.max(name.lastIndexOf("/"), name.lastIndexOf("\\"));
@@ -820,44 +819,61 @@ function importFacts(id, fileName, size, p) {
   if (p.kind === "image" && p.isAnimated) o.isAnimated = true;
   return o;
 }
-const unprobed = new Set();
-// The file media entries of `project` with only what history versions: no `src`, which Cardboard's import always gives.
-const lackingDetails = (project) => (Array.isArray(project?.media) ? project.media : []).filter((m) => m && typeof m.id === "string" && FILE_MEDIA.has(m.data?.type) && m.data.src === undefined);
+// The file media entries of `project` that lack what Cardboard's import gives (`lacksDetails`: where it plays from, its
+// size, its duration), and that play from a file of this library (no `src` yet, or Cardboard's own URL for the id: not a
+// cloud project's signed URL).
+const lackingDetails = (project) => (Array.isArray(project?.media) ? project.media : []).filter((m) => m && typeof m.id === "string" && lacksDetails(m) && (m.data.src === undefined || m.data.src === mediaUrl(m.id)));
+// The bundle's media/ folder as last listed, until it changes (Cardboard's recovery of unlisted media looks there).
+const mediaDirs = new Map(); // landingKey(bundle) → {stamp, names}
+async function mediaNames(bundlePath) {
+  const dir = path.join(bundlePath, "media"), st = await fs.promises.stat(dir).catch(() => null);
+  if (!st) return [];
+  const key = landingKey(bundlePath), stamp = `${st.mtimeMs}:${st.ino}`, hit = mediaDirs.get(key);
+  if (hit?.stamp === stamp) return hit.names;
+  const names = await fs.promises.readdir(dir).catch(() => []);
+  mediaDirs.set(key, { stamp, names });
+  return names;
+}
+// A file whose probe failed, with its stamp then: not probed again until it changes (every Ctrl+Z materializes).
+const failedProbes = new Map(); // `${bundle}|${id}` → "<size>:<mtime>"
+const PROBES_AT_ONCE = 4;
 /**
- * Cardboard's own probe (`lib.inspect.probe`, its cached ffprobe by media id) of each file whose entry in `project` has
- * no details: {project, ids}, the project with those entries filled in as the import fills them (only the fields they
- * don't have), or null when none lacks them or none could be found. The file is the one Cardboard's library has for the
- * id, else the one its loader's recovery of unlisted media finds (the bundle's media/<id>.<ext>), registered with the
- * library as that recovery does, so the app serves it at once. A file whose probe isn't of the entry's kind says
- * nothing about it. An entry whose file wasn't found, or whose probe failed, isn't looked for again by this process
- * (every Ctrl+Z materializes): `unprobed`, `${bundle}|${id}`.
+ * Cardboard's own probe of each file whose entry in `project` lacks what its import gives: {project, ids}, the project
+ * with those entries filled in as the import fills them (only the fields they don't have), or null when none lacks them
+ * or none could be found. The file is the one Cardboard's library has for the id, else the one its loader's recovery of
+ * unlisted media finds (the bundle's media/<id>.<ext>), registered with the library as that recovery does, so the app
+ * serves it at once. The probe is of the file as it is now (`inspect.probePath`, as the import probes; review of
+ * fix/media-meta #2: the probe Cardboard cached for the id may be of a file since replaced). A file not there now is
+ * looked for again next time; one whose probe failed, or isn't of the entry's kind, once it changes (review #4).
  */
 async function reprobeMedia(lib, bundlePath, project) {
+  const want = lackingDetails(project);
+  if (!want.length || typeof lib?.inspect?.probePath !== "function" || !lib.media) return null;
   const key = (id) => landingKey(bundlePath ?? "") + "|" + id;
-  const want = lackingDetails(project).filter((m) => !unprobed.has(key(m.id)));
-  if (!want.length || typeof lib?.inspect?.probe !== "function" || !lib.media) return null;
-  let names = null;
   const filled = new Map();
-  for (const m of want) {
-    unprobed.add(key(m.id));
+  let names = null; // the media/ folder, listed (or its cached list checked) once per call
+  const one = async (m) => {
     try {
-      let file = lib.media.resolvePath?.(m.id) ?? null;
-      if (!file && bundlePath) {
-        names ??= await fs.promises.readdir(path.join(bundlePath, "media")).catch(() => []);
-        const name = names.find((n) => path.basename(n, path.extname(n)) === m.id);
-        if (!name || typeof lib.media.register !== "function") continue;
-        file = path.join(bundlePath, "media", name);
-        lib.media.register([{ mediaId: m.id, nativePath: file, ownedByBundle: true }]);
+      let file = lib.media.resolvePath?.(m.id) ?? null, found = false;
+      if (!file && bundlePath && typeof lib.media.register === "function") {
+        const name = (await (names ??= mediaNames(bundlePath))).find((n) => path.basename(n, path.extname(n)) === m.id);
+        if (name) file = path.join(bundlePath, "media", name), (found = true);
       }
-      if (!file) continue;
-      const probe = await lib.inspect.probe(m.id);
-      if (!probe || probe.kind !== m.data.type) continue;
-      filled.set(m.id, importFacts(m.id, m.data.fileName ?? path.basename(file), (await fs.promises.stat(file)).size, probe));
-      unprobed.delete(key(m.id));
+      const st = file ? await fs.promises.stat(file).catch(() => null) : null;
+      if (!st?.isFile()) return;
+      const stamp = `${st.size}:${st.mtimeMs}`;
+      if (failedProbes.get(key(m.id)) === stamp) return;
+      if (found) lib.media.register([{ mediaId: m.id, nativePath: file, ownedByBundle: true }]);
+      let probe = null;
+      try { probe = await lib.inspect.probePath(file); } catch (e) { warnOnce("reprobe:" + bundlePath, "a media file couldn't be probed again: " + errText(e)); }
+      if (!probe || probe.kind !== m.data.type) return void failedProbes.set(key(m.id), stamp);
+      failedProbes.delete(key(m.id));
+      filled.set(m.id, importFacts(m.id, m.data.fileName ?? path.basename(file), st.size, probe));
     } catch (e) {
       warnOnce("reprobe:" + bundlePath, "a media file's details couldn't be read again: " + errText(e));
     }
-  }
+  };
+  for (let i = 0; i < want.length; i += PROBES_AT_ONCE) await Promise.all(want.slice(i, i + PROBES_AT_ONCE).map(one));
   if (!filled.size) return null;
   const media = project.media.map((m) => {
     const f = filled.get(m?.id);
