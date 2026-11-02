@@ -122,6 +122,15 @@ input("viewClassBPerMiB", "R2 Class B per MiB played", "Same runs: Class B on th
 input("viewWorkerCpuMsPerMiB", "Worker CPU ms per MiB played", "Same runs: those requests' CPU (wrangler tail), per MiB.", isPlay, (c) => c.per.workerCpuMsPerMiB);
 input("viewMiBPerGet", "MiB per R2 GetObject while playing", "Same runs: MiB played over GetObject operations.", isPlay, (c) => c.per.mibPerGet);
 
+// R2 per GB uploaded, by action type (the median of each action over the same runs): which operations make the classes
+for (const key of ["gbR2ClassA", "gbR2ClassB"]) {
+  const inp = inputs[key];
+  if (!inp || inp.status !== "measured") continue;
+  const per: Record<string, number[]> = {};
+  for (const f of inp.runs) for (const [a, v] of Object.entries<number>(c2.get(f)?.per?.r2ByActionPerGB ?? {})) (per[a] ??= []).push(v);
+  (inp as any).byAction = Object.fromEntries(Object.entries(per).map(([a, vs]) => [a, round(median(vs))]));
+}
+
 // pushes go to the room over the socket: the Worker sees only each connect's upgrade
 inputs.editWorkerCpuMs = { value: 0, unit: "Worker CPU ms per edit", status: inputs.connWorkerReq?.status === "measured" ? "measured" : "estimated", n: inputs.connWorkerReq?.n ?? 0, runs: inputs.connWorkerReq?.runs ?? [], how: "Edits go to the room over the open WebSocket, never through the Worker: in wrangler tail the only Worker requests of a sync run are each connect's upgrade (see connWorkerReq)." };
 
@@ -190,12 +199,15 @@ const mediaGroups = new Map<string, any[]>();
 for (const [f, r] of runs) {
   if (!r.runId?.startsWith("media-") || /smoke|tune|tail\d/.test(r.runId)) continue;
   const fixed = Date.parse(r.window?.start) > Date.parse("2026-11-01T18:55:00Z");
-  const key = `${r.host}|${r.size}|${r.profile}|${/-resume-(kill|hole)/.exec(r.runId)?.[1] ?? ""}|${fixed ? "after" : "before"}`;
+  // runs on either side of a fix that changes their outcome are kept apart: the R2 part lock (fix/cf-part-lock, deployed
+  // 02:14:37) for a killed upload's resume, and Node's connect attempt time (fix/cf-slow-link-connect) on the bad profile
+  const variant = /-partlock-/.test(r.runId) ? "after-part-lock-fix" : r.host === "r2" && /-resume-kill-m2-/.test(r.runId) ? "before-part-lock-fix" : /-b5fix-/.test(r.runId) ? "after-connect-fix" : r.profile === "bad" && /-b5-/.test(r.runId) ? "before-connect-fix" : "";
+  const key = `${r.host}|${r.size}|${r.profile}|${/-resume-(kill|hole)/.exec(r.runId)?.[1] ?? ""}|${fixed ? "after" : "before"}|${variant}`;
   (mediaGroups.get(key) ?? mediaGroups.set(key, []).get(key)!).push({ f, r });
 }
 const MBof = (b: number) => Math.round(b / 1e6);
 for (const [key, list] of [...mediaGroups].sort()) {
-  const [host, size, profile, resume, when] = key.split("|");
+  const [host, size, profile, resume, when, variant] = key.split("|");
   const ok = list.filter((x) => x.r.upload?.result);
   const base = { network: profile, storage: host, parties: null, sizeMB: MBof(Number(size)), status: "measured" };
   const note = (xs: number[]) => `per run: ${xs.map((v) => Math.round(v)).join(", ")}`;
@@ -203,7 +215,7 @@ for (const [key, list] of [...mediaGroups].sort()) {
     if (!xs.length) return;
     speeds.push({ id, what, ...base, metric, p50: round(median(xs)), p90: round(pct(xs, 0.9)), p99: round(pct(xs, 0.99)), unit, runs: xs.length, note: `${note(xs)}${extra ? `; ${extra}` : ""}`, runFiles: list.map((x) => x.f) });
   };
-  const tagId = `${MBof(Number(size))}MB-${profile}-${host}${resume ? `-resume-${resume}` : ""}${when === "before" ? "-before-fix" : ""}`;
+  const tagId = `${MBof(Number(size))}MB-${profile}-${host}${resume ? `-resume-${resume}` : ""}${when === "before" ? "-before-fix" : ""}${variant ? `-${variant}` : ""}`;
   const failed = list.length - ok.length;
   sp(`upload-${tagId}`, `upload of the original (uploadMedia, client defaults)${resume ? `, ${resume === "kill" ? "uploader killed" : "link cut"} mid-way and resumed` : ""}`, "time", ok.map((x) => x.r.upload.ms), "ms", `${failed ? `${failed} of ${list.length} did not complete; ` : ""}Mbit/s ${ok.map((x) => (x.r.upload.mbps ?? 0).toFixed(1)).join(", ")}${resume ? `; re-sent bytes ${ok.map((x) => x.r.upload.resentBytes ?? "?").join(", ")}` : ""}`);
   if (!ok.length && list.length) speeds.push({ id: `upload-${tagId}`, what: "upload of the original (uploadMedia, client defaults)", ...base, metric: "time", p50: null, p90: null, p99: null, unit: "ms", runs: list.length, status: "measured", note: `none of ${list.length} completed: ${list.map((x) => x.r.upload?.sessions?.map((s: any) => s.failed?.error?.slice(0, 60)).filter(Boolean)[0] ?? "?").join(" | ")}`, runFiles: list.map((x) => x.f) });

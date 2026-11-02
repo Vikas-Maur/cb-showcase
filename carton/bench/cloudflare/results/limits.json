@@ -1,44 +1,169 @@
 [
- { "id": "worker-cpu-10ms", "status": "measured", "value": "10 ms CPU per request (Workers Free)",
-   "observed": "Before fix/cf-stream-parts, a part upload read its 8-64 MiB body into JS: 61-359 ms CPU per part; after a burst Cloudflare killed them (exceededCpu, error 1102, HTTP 503). A 1 GB upload to R2 never completed (6 sessions). After the fix a part PUT takes 3-9 ms CPU (256 MB run) and 1 GiB uploads complete in one session (2026-11-02 runs).",
-   "carton": "Before: a clear HTTP error, 4 retries with backoff, then a resumable stop that never finished. Fixed by streaming the part body to R2 or the vault (fix/cf-stream-parts).",
-   "runs": ["media-r2-1G-none-mvy6i8d7.json", "media-r2-1G-none-resume-kill-mvy6lzn6.json", "media-r2-256M-none-streamfix-mvy709f7.json", "media-nor2-256M-none-streamfix-mvy71gjy.json"] },
- { "id": "isolate-memory-128mb", "status": "measured", "value": "128 MB of memory per isolate",
-   "observed": "A 96 MiB part failed 503 while another upload shared the isolate; a 99 MiB part alone passed.",
-   "carton": "Same retry path; streaming parts (fix/cf-stream-parts) no longer buffers them.",
-   "runs": ["limits-r2-body-96MiB-mvy6m258.json", "limits-r2-body-99MiB-mvy6mfbr.json"] },
- { "id": "request-body-100mb", "status": "measured", "value": "100 MB request body (Free and Pro plans)",
-   "observed": "A 101 MiB part: 413 at the edge; 64, 96 and 99 MiB passed.",
-   "carton": "Client parts are 8 MiB by default and at most 64 MiB unless a file passes 640 GiB (10,000 parts).",
-   "runs": ["limits-r2-body-101MiB-mvy6mqxe.json", "limits-r2-body-99MiB-mvy6mfbr.json", "limits-r2-body-64MiB-mvy6lrsn.json"] },
- { "id": "websocket-message-32mib", "status": "measured", "value": "32 MiB per WebSocket message",
-   "observed": "A raw 33 MiB frame: Cloudflare closes 1009; the room closes 1009 above its own 24 MiB cap.",
-   "carton": "Changes over 1 MiB go as envelopes through blob storage (5 MiB: 2.0-3.5 s, 20 MiB: 3.9-5.1 s, both hosts); a 30 MiB change is refused locally as too large in 215 ms and the next edit still confirms.",
-   "runs": ["limits-r2-frame-33MiB-mvy6py7c.json", "limits-r2-frame-25MiB-mvy6ps45.json", "limits-r2-change-5MiB-mvy6nd8d.json", "limits-r2-change-20MiB-mvy6njph.json", "limits-r2-change-30MiB-mvy6ns89.json", "limits-nor2-change-5MiB-mvy6nxk0.json", "limits-nor2-change-20MiB-mvy6o5na.json"] },
- { "id": "subrequests-1000", "status": "measured", "value": "1,000 internal subrequests per request (R2 binding calls; Workers Free), 50 external",
-   "observed": "blobs/heads with 200 keys ok (4.1 s); 1,000 keys answered 200 per call (9.4 s).",
-   "carton": "The host answers at most BLOB_HEADS_PER_REQUEST keys per call; the client asks again for the rest.",
-   "runs": ["limits-r2-heads-200-mvy6l2ig.json", "limits-r2-heads-1000-mvy6lh4l.json"] },
- { "id": "do-row-2mb", "status": "measured", "value": "2 MB per DO SQLite row/value",
-   "observed": "Not hit: the vault stores 1 MiB chunks.", "carton": "-", "runs": [] },
- { "id": "dead-link", "status": "measured", "value": "not a Cloudflare limit: a dead link keeps the WebSocket 'open'",
-   "observed": "Old client: through a 5-minute outage the socket stayed open, status 'Syncing' for 5 min, 0 offline events; resumed only on TCP's retransmission timer (everything settled 66.5 s after the edits ended).",
-   "carton": "Fixed (fix/cf-dead-link): the transport closes a link whose keepalive goes unanswered for 15 s, and pings on a send after silence.",
-   "runs": ["sync-r2-good-outage-2p-r1-baseline-old-client-mvy5o78o.json"] },
- { "id": "refused-session-retry-storm", "status": "measured", "value": "not a Cloudflare limit: Workers Free's 100k requests/day across the account",
-   "observed": "A client whose session the host refuses retried 86 times a minute (~0.57 s gaps), ~2 Worker requests per try: ~245k/day per stuck client, 2.5x the Free plan's daily requests.",
-   "carton": "Fixed (fix/cf-reconnect-backoff): exponential backoff with jitter to 15 s, 5 min while the session is refused.",
-   "runs": ["refused-r2-60s-old-client-mvy5pp79.json"] },
- { "id": "daily-limits-free", "status": "estimated", "value": "Workers 100k requests/day; DO 100k requests, 13,000 GB-s, 5M rows read, 100k rows written per day (Free)",
-   "observed": "Not hit on purpose: hitting one would take the live showcase site down until 00:00 UTC (same account).",
-   "carton": "Not measured. The lab's own daily write cap (fix/cf-write-cap) was shown instead: 429 DailyWriteCap with Retry-After and a clear message; the uploader stops resumably.",
-   "runs": [] },
- { "id": "lab-daily-write-cap", "status": "measured", "value": "the lab deployments' own cap (fix/cf-write-cap): R2 8 GiB/day, no-R2 4 GiB/day, 20k write calls/day",
-   "observed": "A 256 MB vault upload after the day's earlier uploads was refused: 429 DailyWriteCap.",
-   "carton": "Refused before any byte is stored; the client backs off and stops resumably with the server's message.",
-   "runs": ["media-nor2-256M-none-streamfix-mvy71gjy.json"] },
- { "id": "vault-orphan-uploads", "status": "measured", "value": "not a Cloudflare limit: DO storage 5 GB (Free), $0.20/GB-month (Paid)",
-   "observed": "The vault had no sweep for abandoned multipart uploads: a killed 1 GB upload left ~600 MB of parts in the DO for good (dropped by the lab).",
-   "carton": "Fixed on fix/cf-vault-sweep: an alarm deletes unfinished uploads untouched for 24 h.",
-   "runs": ["media-nor2-1G-none-resume-kill-mvy6tybg.json"] }
+ {
+  "id": "worker-cpu-10ms",
+  "status": "measured",
+  "value": "10 ms CPU per request (Workers Free)",
+  "observed": "Before fix/cf-stream-parts, a part upload read its 8-64 MiB body into JS: 61-359 ms CPU per part; after a burst Cloudflare killed them (exceededCpu, error 1102, HTTP 503). A 1 GB upload to R2 never completed (6 sessions). After the fix a part PUT takes 3-9 ms CPU (256 MB run) and 1 GiB uploads complete in one session (2026-11-02 runs).",
+  "carton": "Before: a clear HTTP error, 4 retries with backoff, then a resumable stop that never finished. Fixed by streaming the part body to R2 or the vault (fix/cf-stream-parts).",
+  "runs": [
+   "media-r2-1G-none-mvy6i8d7.json",
+   "media-r2-1G-none-resume-kill-mvy6lzn6.json",
+   "media-r2-256M-none-streamfix-mvy709f7.json",
+   "media-nor2-256M-none-streamfix-mvy71gjy.json"
+  ]
+ },
+ {
+  "id": "isolate-memory-128mb",
+  "status": "measured",
+  "value": "128 MB of memory per isolate",
+  "observed": "A 96 MiB part failed 503 while another upload shared the isolate; a 99 MiB part alone passed.",
+  "carton": "Same retry path; streaming parts (fix/cf-stream-parts) no longer buffers them.",
+  "runs": [
+   "limits-r2-body-96MiB-mvy6m258.json",
+   "limits-r2-body-99MiB-mvy6mfbr.json"
+  ]
+ },
+ {
+  "id": "request-body-100mb",
+  "status": "measured",
+  "value": "100 MB request body (Free and Pro plans)",
+  "observed": "A 101 MiB part: 413 at the edge; 64, 96 and 99 MiB passed.",
+  "carton": "Client parts are 8 MiB by default and at most 64 MiB unless a file passes 640 GiB (10,000 parts).",
+  "runs": [
+   "limits-r2-body-101MiB-mvy6mqxe.json",
+   "limits-r2-body-99MiB-mvy6mfbr.json",
+   "limits-r2-body-64MiB-mvy6lrsn.json"
+  ]
+ },
+ {
+  "id": "websocket-message-32mib",
+  "status": "measured",
+  "value": "32 MiB per WebSocket message",
+  "observed": "A raw 33 MiB frame: Cloudflare closes 1009; the room closes 1009 above its own 24 MiB cap.",
+  "carton": "Changes over 1 MiB go as envelopes through blob storage (5 MiB: 2.0-3.5 s, 20 MiB: 3.9-5.1 s, both hosts); a 30 MiB change is refused locally as too large in 215 ms and the next edit still confirms.",
+  "runs": [
+   "limits-r2-frame-33MiB-mvy6py7c.json",
+   "limits-r2-frame-25MiB-mvy6ps45.json",
+   "limits-r2-change-5MiB-mvy6nd8d.json",
+   "limits-r2-change-20MiB-mvy6njph.json",
+   "limits-r2-change-30MiB-mvy6ns89.json",
+   "limits-nor2-change-5MiB-mvy6nxk0.json",
+   "limits-nor2-change-20MiB-mvy6o5na.json"
+  ]
+ },
+ {
+  "id": "subrequests-1000",
+  "status": "measured",
+  "value": "1,000 internal subrequests per request (R2 binding calls; Workers Free), 50 external",
+  "observed": "blobs/heads with 200 keys ok (4.1 s); 1,000 keys answered 200 per call (9.4 s).",
+  "carton": "The host answers at most BLOB_HEADS_PER_REQUEST keys per call; the client asks again for the rest.",
+  "runs": [
+   "limits-r2-heads-200-mvy6l2ig.json",
+   "limits-r2-heads-1000-mvy6lh4l.json"
+  ]
+ },
+ {
+  "id": "do-row-2mb",
+  "status": "measured",
+  "value": "2 MB per DO SQLite row/value",
+  "observed": "Not hit: the vault stores 1 MiB chunks.",
+  "carton": "-",
+  "runs": []
+ },
+ {
+  "id": "dead-link",
+  "status": "measured",
+  "value": "not a Cloudflare limit: a dead link keeps the WebSocket 'open'",
+  "observed": "Old client: through a 5-minute outage the socket stayed open, status 'Syncing' for 5 min, 0 offline events; resumed only on TCP's retransmission timer (everything settled 66.5 s after the edits ended).",
+  "carton": "Fixed (fix/cf-dead-link): the transport closes a link whose keepalive goes unanswered for 15 s, and pings on a send after silence.",
+  "runs": [
+   "sync-r2-good-outage-2p-r1-baseline-old-client-mvy5o78o.json"
+  ]
+ },
+ {
+  "id": "refused-session-retry-storm",
+  "status": "measured",
+  "value": "not a Cloudflare limit: Workers Free's 100k requests/day across the account",
+  "observed": "A client whose session the host refuses retried 86 times a minute (~0.57 s gaps), ~2 Worker requests per try: ~245k/day per stuck client, 2.5x the Free plan's daily requests.",
+  "carton": "Fixed (fix/cf-reconnect-backoff): exponential backoff with jitter to 15 s, 5 min while the session is refused.",
+  "runs": [
+   "refused-r2-60s-old-client-mvy5pp79.json"
+  ]
+ },
+ {
+  "id": "daily-limits-free",
+  "status": "estimated",
+  "value": "Workers 100k requests/day; DO 100k requests, 13,000 GB-s, 5M rows read, 100k rows written per day (Free)",
+  "observed": "Not hit on purpose: hitting one would take the live showcase site down until 00:00 UTC (same account).",
+  "carton": "Not measured. The lab's own daily write cap (fix/cf-write-cap) was shown instead: 429 DailyWriteCap with Retry-After and a clear message; the uploader stops resumably.",
+  "runs": []
+ },
+ {
+  "id": "lab-daily-write-cap",
+  "status": "measured",
+  "value": "the lab deployments' own cap (fix/cf-write-cap): R2 8 GiB/day, no-R2 4 GiB/day, 20k write calls/day",
+  "observed": "A 256 MB vault upload after the day's earlier uploads was refused: 429 DailyWriteCap.",
+  "carton": "Refused before any byte is stored; the client backs off and stops resumably with the server's message.",
+  "runs": [
+   "media-nor2-256M-none-streamfix-mvy71gjy.json"
+  ]
+ },
+ {
+  "id": "vault-orphan-uploads",
+  "status": "measured",
+  "value": "not a Cloudflare limit: DO storage 5 GB (Free), $0.20/GB-month (Paid)",
+  "observed": "The vault had no sweep for abandoned multipart uploads: a killed 1 GB upload left ~600 MB of parts in the DO for good (dropped by the lab).",
+  "carton": "Fixed (fix/cf-vault-sweep, deployed to both lab Workers 02:14 UTC): an alarm deletes unfinished uploads untouched for 24 h, 500 rows a pass; not yet exercised live (24 h).",
+  "runs": [
+   "media-nor2-1G-none-resume-kill-mvy6tybg.json"
+  ]
+ },
+ {
+  "id": "request-canceled-on-disconnect",
+  "status": "measured",
+  "value": "workerd cancels a request's work when its client disconnects, unless it is held with ctx.waitUntil (then up to 30 s more)",
+  "observed": "An uploader killed mid-part: its part request ended 'canceled' in the tail before its finally ran, so the R2 adapter's part lock stayed held for LOCK_TTL_MS (30 min) and 5 resume sessions were refused 'PreconditionFailed: part 33 is being uploaded by another request' (2026-11-02). A 30 s link cut (no disconnect, TCP stalls) was not affected.",
+  "carton": "Fixed (fix/cf-part-lock): the Worker hands each request's work to waitUntil; after the fix the killed part's request ran on 11.9 s, released its lock, and the upload resumed in one more session.",
+  "runs": [
+   "media-r2-512M-none-resume-kill-m2-mvylxv50.json",
+   "media-r2-512M-none-resume-kill-partlock-mvymlxp2.json",
+   "media-r2-256M-none-resume-hole-m2-mvym1eli.json"
+  ]
+ },
+ {
+  "id": "node-connect-attempt-250ms",
+  "status": "measured",
+  "value": "not a Cloudflare limit: Node's happy-eyeballs connect abandons each address after 250 ms (autoSelectFamilyAttemptTimeout, Node 20+)",
+  "observed": "On the bad profile (~400 ms round trip) every Node fetch, node:https request and WebSocket failed to connect (ETIMEDOUT / UND_ERR_CONNECT_TIMEOUT); curl connected in 2.0-2.5 s; with the attempt time at 2 s or the selection off a put went through.",
+  "carton": "Fixed (fix/cf-slow-link-connect): Carton's Node HTTP and WebSocket clients raise the default to at least 2 s; sync and uploads then work on bad.",
+  "runs": [
+   "sync-r2-bad-2p-r1-unfixed-connect-mvympm89.note.json",
+   "media-r2-20M-bad-b5-r1-mvym1s7h.json",
+   "media-r2-20M-bad-b5-r2-mvym3pll.json",
+   "media-r2-20M-bad-b5-r3-mvym5o2r.json"
+  ]
+ },
+ {
+  "id": "do-rows-written-free-vault",
+  "status": "measured",
+  "value": "DO rows written: 100k a day (Free); the vault writes ~4,070 per GB uploaded",
+  "observed": "3 of 3 vault uploads of 1 GiB wrote exactly 4,370 rows each (a row per MiB written as a part, copied on complete, the part rows deleted).",
+  "carton": "Without R2, the Free plan's daily rows cap the account's vault uploads at about 24 GB a day (before any edits); the vault sweep adds a row per row it deletes.",
+  "runs": [
+   "media-nor2-1G-none-cost-r1-mvylcjg6.json",
+   "media-nor2-1G-none-cost-r2-mvylfge7.json",
+   "media-nor2-1G-none-cost-r3-mvyli7ai.json"
+  ]
+ },
+ {
+  "id": "wrangler-tail-drops-events",
+  "status": "measured",
+  "value": "lab tooling: wrangler tail is best effort",
+  "observed": "With several runs at once it kept 24-30% of a proxy run's 3,018 requests (no sampling notice printed); with one run at a time it was complete (1.00 per connect, 136 per GiB uploaded).",
+  "carton": "-  (the lab counts Worker requests with the clients' own counts where they exist)",
+  "runs": [
+   "proxy-r2-share-r2-mvym8iyz.json",
+   "proxy-r2-share-r3-mvym9htp.json"
+  ]
+ }
 ]
