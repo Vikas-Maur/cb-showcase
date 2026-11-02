@@ -143,7 +143,8 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
  * (not by which listened first: a chat approval that appears during the preview registers after this one). It stays
  * when a handler took it (`preventDefault`: a menu, a dialog, the chat's approval card) or when it changed what the
  * host's own Esc changes (`escapeState`; Cardboard's clip selection, which its Esc clears without saying so): that Esc
- * was theirs, and the next one returns. Listened for only while a preview is open.
+ * was theirs, and the next one returns. That state is read as the key arrives (the capture phase), so the host's
+ * listener may come before or after this one (final re-check N2). Listened for only while a preview is open.
  */
 export function PreviewBanner({ className, escapeState }: { className?: string; escapeState?: () => unknown }) {
   const preview = usePreview();
@@ -156,12 +157,21 @@ export function PreviewBanner({ className, escapeState }: { className?: string; 
   useEffect(() => {
     if (!open || typeof window === "undefined") return;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // The host's state as the key found it, read in the capture phase: before every page listener, whichever was
+    // registered first (final re-check N2: Cardboard registers its Esc-deselect again on every selection change, so a
+    // clip selected before the preview put it ahead of this listener, which then read the selection already cleared).
+    let seen: { e: KeyboardEvent; before: unknown } | null = null;
+    const onCapture = (e: KeyboardEvent) => {
+      seen = e.key === "Escape" && state.current ? { e, before: state.current() } : null;
+    };
     const onKey = (e: KeyboardEvent) => {
+      const was = seen?.e === e ? seen : null;
+      seen = null;
       // a preview closed a moment ago (this listener goes after the render): the key isn't ours
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || !ui.preview()) return;
       const t = e.target as Node | null, doc = t?.ownerDocument ?? document;
       if (t && t !== doc.body && t !== doc.documentElement && t !== doc && !banner.current?.contains(t)) return;
-      const before = state.current?.();
+      const before = was ? was.before : state.current?.();
       // a task, not a microtask: one runs between two listeners of the same key
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => {
@@ -170,8 +180,10 @@ export function PreviewBanner({ className, escapeState }: { className?: string; 
         ui.openPreview(null);
       }, 0);
     };
+    window.addEventListener("keydown", onCapture, true);
     window.addEventListener("keydown", onKey);
     return () => {
+      window.removeEventListener("keydown", onCapture, true);
       window.removeEventListener("keydown", onKey);
       if (timer) clearTimeout(timer);
     };
