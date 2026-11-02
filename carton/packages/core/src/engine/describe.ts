@@ -290,9 +290,47 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
     keys = ks;
   }
   let n = keys.size;
+  for (const [k, holder] of heldParts(groups, base, schema)) if (keys.has(k) && keys.has(holder)) n--;
   if (n < 3) return n; // a split is three records at least
   for (const sp of findSplits(groups, base, schema, labeller(plain, base, schema).label)) if (keys.has(sp.key) && sp.parts.every((p) => keys.has(p.key))) n -= sp.parts.length;
   return n;
+}
+
+/**
+ * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) added or deleted in the
+ * same change as a record holding them (one of its fields is the part's key): no change of their own, as a split's
+ * parts are told with the split (laptop, merge/prod-2 N-1: "Deleted title 'W6'" came with "Deleted media 'Text: W6'").
+ * A part changed alone, or added or deleted on its own, is still told. Part's group key → its holder's.
+ */
+function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
+  const out = new Map<string, string>();
+  const whole = (g: Group) => g.ops.find((op) => op.path.length === 2);
+  const recOf = (g: Group, w: PlainOp) => (w.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined;
+  for (const [k, g] of groups) {
+    const cs = g.coll ? schema.collections[g.coll] : undefined, w = cs?.nounOf && whole(g);
+    const r = w && recOf(g, w);
+    if (!r || cs!.nounOf!(r) !== null) continue;
+    const id = r[cs!.key];
+    for (const [k2, g2] of groups) {
+      const w2 = k2 !== k && whole(g2);
+      if (w2 && w2.op === w.op && Object.values(recOf(g2, w2) ?? {}).includes(id)) {
+        out.set(k, k2);
+        break;
+      }
+    }
+  }
+  return out;
+}
+/**
+ * The records `ops` add or delete with the record that holds them (heldParts): one change with it, so a list by record
+ * (the Fold dialog) joins each to its holder's row, as it joins a split's parts.
+ */
+export function heldBy(ops: readonly Op[], base: Doc, schema: Schema): { part: [string, string]; holder: [string, string] }[] {
+  const groups = groupOps(ops.filter((op): op is PlainOp => op.op !== "remap"), schema);
+  return [...heldParts(groups, base, schema)].map(([p, h]) => {
+    const a = groups.get(p)!, b = groups.get(h)!;
+    return { part: [a.coll!, String(a.id)], holder: [b.coll!, String(b.id)] };
+  });
 }
 
 const PART = ["first", "second", "third", "fourth", "fifth"];
@@ -417,6 +455,8 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     split.set(sp.key, sp);
     for (const p of sp.parts) split.set(p.key, null);
   }
+  // a part added or deleted with the record holding it: told with it (heldParts)
+  for (const k of heldParts(groups, base, schema).keys()) split.set(k, null);
   for (const [key, g] of groups) {
     const sp = split.get(key);
     if (sp === null) continue; // a split's part: told with it

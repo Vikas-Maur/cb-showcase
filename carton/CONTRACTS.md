@@ -243,6 +243,12 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
     media files"), an add or delete line names it ("Added title 'W1'"), and Compare's clip count leaves titles apart
     ("1 clip, 6 titles").
+  - **A part goes with what holds it** (laptop, merge/prod-2 N-1). A record that is part of another (`nounOf` null: a
+    title's own media entry, "Text: W6") added or deleted in the same change as a record holding it (one of the
+    holder's fields is the part's key) is no change of its own, as a split's parts are the split's: describe tells the
+    holder alone ("Deleted title 'W6'"), `countChanges` counts one, and `heldBy(ops, base, schema)` names the pairs
+    (`{part: [coll, id], holder: [coll, id]}`) so a list by record (the Fold dialog) joins the part to its holder's row,
+    left out with it. A part changed, added or deleted on its own is still told.
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
     only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3

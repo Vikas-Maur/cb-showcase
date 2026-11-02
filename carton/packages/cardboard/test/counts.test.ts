@@ -5,7 +5,7 @@
 //   left part, cleared auto reframe on its right part": the editor's save writes the new parts without it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { countChanges, describe, describeVersion, diff } from "@carton/core";
+import { countChanges, describe, describeVersion, diff, heldBy } from "@carton/core";
 import type { Rec } from "@carton/core";
 import { cardboardSchema as S, fromHost } from "../src/index.ts";
 
@@ -22,8 +22,8 @@ test("P3-8: a setup version counts titles as titles, and a title's own media ent
   const v = describeVersion(diff(empty, full, S), empty, S);
   assert.equal(v.summary, "Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'");
   assert.doesNotMatch(v.summary, /clips|media files/);
-  // every record is still listed
-  assert.equal(v.lines.length, 2 + 1 + 6 + 7);
+  // every record is still listed, but a title's own media entry, added with it, is the title's (N-1, below)
+  assert.equal(v.lines.length, 2 + 1 + 6 + 1);
   // two clips and a title: clips counted as clips
   const two = fromHost(project([clip(), clip({ id: "c2", startTime: 3, endTime: 6 }), titleItem(1)], [video, textMedia("tm1", "W1")]));
   assert.equal(describeVersion(diff(empty, two, S), empty, S).summary, "Added 2 tracks, 2 clips, title 'W1' and media 'clip.mp4'");
@@ -39,4 +39,36 @@ test("P3: Cardboard's split, saved by the editor without autoReframe on its part
   // auto reframe turned off on a part in the same version: still told
   const off = fromHost(project([{ ...parts[0]!, autoReframe: false }, { ...parts[1]!, autoReframe: true }], [video]));
   assert.deepEqual(describe(diff(before, off, S), before, S), ["Split 'clip.mp4' at 1.5 s, changed its left part auto reframe true → false"]);
+});
+
+// N-1 (laptop, merge/prod-2): the editor's delete of a title drops the title's own "Text: W6" entry with it, which read
+// as a second change ("Deleted title 'W6'", "Deleted media 'Text: W6'"): its own media entry is the title's, as a
+// split's auto reframe drop is the split's. One line, one change, one row of the Fold dialog (heldBy).
+test("N-1: a title deleted (or added) with its own media entry is one change: the title's", () => {
+  const titles = [1, 2, 3, 4, 5, 6].map(titleItem), media = titles.map((t, i) => textMedia(`tm${i + 1}`, String(t.textContent)));
+  const before = fromHost(project([clip(), ...titles], [video, ...media]));
+  const gone = fromHost(project([clip(), ...titles.slice(0, 5)], [video, ...media.slice(0, 5)]));
+  const ops = diff(before, gone, S);
+  assert.deepEqual(describe(ops, before, S), ["Deleted title 'W6'"]);
+  assert.equal(describeVersion(ops, before, S).summary, "Deleted title 'W6'");
+  assert.equal(countChanges(ops, before, S), 1);
+  assert.deepEqual(heldBy(ops, before, S), [{ part: ["media", "tm6"], holder: ["timelineItems", "t6"] }]);
+  // undone: both back, one change
+  const back = diff(gone, before, S);
+  assert.deepEqual(describe(back, gone, S), ["Added title 'W6' on 'Titles' at 6.0 s"]);
+  assert.equal(countChanges(back, gone, S), 1);
+  // a title and its entry added
+  const w7 = { ...titleItem(7), startTime: 7, endTime: 8 };
+  const added = fromHost(project([clip(), ...titles, w7], [video, ...media, textMedia("tm7", "W7")]));
+  assert.deepEqual(describe(diff(before, added, S), before, S), ["Added title 'W7' on 'Titles' at 7.0 s"]);
+  // the entry alone (its title stays): still told, as before
+  const orphan = fromHost(project([clip(), ...titles], [video, ...media.slice(0, 5)]));
+  assert.deepEqual(describe(diff(before, orphan, S), before, S), ["Deleted media 'Text: W6'"]);
+  assert.equal(countChanges(diff(before, orphan, S), before, S), 1);
+  // a title deleted while another title's entry is dropped alone: each told
+  const two = fromHost(project([clip(), ...titles.slice(0, 5)], [video, ...media.slice(1, 6)]));
+  assert.deepEqual(describe(diff(before, two, S), before, S).sort(), ["Deleted media 'Text: W1'", "Deleted title 'W6'"]);
+  // a library file's media (a clip's) is never a part: deleting a clip and its media is two changes, as before
+  const noClip = fromHost(project(titles, media));
+  assert.equal(countChanges(diff(before, noClip, S), before, S), 2);
 });
