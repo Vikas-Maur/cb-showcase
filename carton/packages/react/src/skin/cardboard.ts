@@ -195,6 +195,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version-meta){display:flex;align-items:center;gap:6px;min-width:0;font-size:12px;line-height:16px;color:var(--cb-fg-3);white-space:nowrap}
 :where(${S}) :where(.carton-version-meta .carton-actor-name){overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-version-meta > time, .carton-version-edits){flex:none}
+:where(${S}) :where(.carton-version[data-expanded]){align-items:flex-start;padding-top:8px}
+:where(${S}) :where(.carton-version-expand){flex:none;display:inline-flex;align-items:center;gap:3px;height:16px;padding:0 4px;border:0;border-radius:4px;background:none;font:inherit;color:var(--cb-fg-3);cursor:pointer}
+:where(${S}) :where(.carton-version-expand:hover){background:#ffffff0a;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-version-details){margin:2px 0 0;padding:0;list-style:none;font-size:12px;line-height:18px;color:var(--cb-fg-2)}
+:where(${S}) :where(.carton-version-details li){overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-version-meta > time)::before, :where(${S}) :where(.carton-version-edits)::before{content:"·";margin-right:6px;color:#5c5c5c}
 :where(${S}) :where(.carton-version-meta > time:first-child)::before{content:none}
 :where(${S}) :where(.carton-version[data-provisional] .carton-version-title){color:var(--cb-fg-2)}
@@ -337,6 +342,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-fold-warnings p){display:flex;align-items:center;gap:6px;font-size:12px;font-weight:500;color:#fcd77f}
 :where(${S}) :where(.carton-fold-warnings li){margin-top:4px;padding-left:20px;font-size:12px;line-height:16px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-later){font-size:12px;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-fold-tag){flex:none;height:16px;padding:0 5px;border:1px solid #ffffff1f;border-radius:4px;font-size:11px;line-height:14px;color:var(--cb-fg-2)}
 :where(${S}) :where(.carton-fold-missing){padding:10px 12px;border-radius:8px;background:var(--cb-sunken);font-size:13px;line-height:19px;color:var(--cb-fg-1);text-wrap:pretty}
 
 /* ---------------------------------------------------------------- toolbar status: sync, published, undo, credits */

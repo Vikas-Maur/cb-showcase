@@ -12,6 +12,9 @@ import { ActorName, Avatar, HoverMore, InlineName, MenuItem, MenuList, MenuSepar
 import { CompareCard } from "./CompareCard.ts";
 
 export const VERSION_ROW_HEIGHT = 52;
+/** One line of an expanded version's list of changes (UI audit P1-5), and the space below the list. */
+export const VERSION_DETAIL_HEIGHT = 18;
+const DETAILS_PAD = 8;
 
 export interface HistoryPanelProps {
   /** Open a version (Enter or double-click). Default: a read-only preview of it (§9). */
@@ -39,6 +42,8 @@ interface RowProps {
   onOpen: (id: string) => void;
   onMenu: (id: string, el: HTMLElement) => void;
   onName: (id: string, name: string | null) => void;
+  expanded: boolean;
+  onExpand: (id: string) => void;
 }
 
 // memo: a row re-renders only when its own version object, its active state or the minute changes. A new version
@@ -55,6 +60,27 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
     v.author.kind === "system" ? null : h(ActorName, { key: "n", actor: v.author }),
     v.turn ? h("span", { key: "e", className: "carton-version-edits" }, words.turnEdits(v.turn.edits)) : null,
     h(HoverMore, { key: "t", as: "time", dateTime: new Date(v.at).toISOString(), short: when(v.at, p.now, locale, words.justNow), more: exactTime(v.at, locale) }),
+    // A version of several changes (a fold, a restore, a save of many edits): its list on expand (UI audit P1-5)
+    v.details?.length
+      ? h(
+          "button",
+          {
+            key: "x",
+            type: "button",
+            className: "carton-version-expand",
+            "aria-expanded": p.expanded,
+            "aria-label": p.expanded ? words.hideChanges : words.showChanges(v.details.length),
+            tabIndex: -1,
+            onClick: (e: MouseEvent) => {
+              e.stopPropagation();
+              p.onExpand(v.id);
+            },
+            onDoubleClick: (e: MouseEvent) => e.stopPropagation(),
+          },
+          h(Icon, { name: p.expanded ? "caretDown" : "caretRight", size: 10 }),
+          words.versionChanges(v.details.length),
+        )
+      : null,
   ];
   return h(
     "div",
@@ -67,6 +93,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
       "data-named": v.name ? "" : undefined,
       "data-provisional": v.provisional ? "" : undefined,
       "data-active": p.active ? "" : undefined,
+      "data-expanded": p.expanded && v.details?.length ? "" : undefined,
       onClick: (e: MouseEvent) => p.onPick(v.id, e),
       onDoubleClick: () => p.onOpen(v.id),
       onContextMenu: (e: MouseEvent) => {
@@ -100,6 +127,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
         v.published ? h("span", { className: "carton-badge", "data-tone": "info" }, words.published) : null,
         v.provisional ? h("span", { className: "carton-badge", "data-tone": "muted", "aria-description": words.provisionalHint }, words.provisional) : null,
       ),
+      !p.naming && p.expanded && v.details?.length ? h("ul", { className: "carton-version-details" }, ...v.details.map((d, i) => h("li", { key: i, title: d }, d))) : null,
     ),
     p.naming
       ? null
@@ -134,6 +162,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
   const [naming, setNaming] = useState<{ id: string; mode: "version" | "cut" } | null>(null);
   const [menu, setMenu] = useState<{ id: string; x: number; y: number } | null>(null);
   const [comparing, setComparing] = useState<string | null>(null);
+  // The one version whose list of changes is open (UI audit P1-5)
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const onExpand = useCallback((id: string) => setExpandedId((x) => (x === id ? null : id)), []);
   const panel = useRef<HTMLElement>(null);
   const hist = ui.history();
   const active = activeId ? hist.indexOf(filter, activeId) : -1;
@@ -189,6 +220,9 @@ export function HistoryPanel(props: HistoryPanelProps) {
     [ui, filter, listId, onMenu],
   );
 
+  const expandedV = expandedId ? find(expandedId) : undefined;
+  const expandedAt = expandedV?.details?.length ? hist.indexOf(filter, expandedV.id) : -1;
+  const expanded = expandedAt >= 0 ? { index: expandedAt, extra: expandedV!.details!.length * VERSION_DETAIL_HEIGHT + DETAILS_PAD } : null;
   const menuVersion = menu ? find(menu.id) : undefined;
   const waiting = !!menuVersion?.provisional;
   const compareVersion = comparing ? find(comparing) : undefined;
@@ -234,6 +268,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
           rowHeight: VERSION_ROW_HEIGHT,
           initialHeight: props.initialHeight,
           newestFirst: true,
+          expanded,
           active,
           activeId: (i: number) => `${listId}-${hist.at(filter, i)?.id ?? i}`,
           onActiveChange: (i: number) => setActiveId(hist.at(filter, i)?.id ?? null),
@@ -257,6 +292,8 @@ export function HistoryPanel(props: HistoryPanelProps) {
               onOpen: open,
               onMenu,
               onName,
+              expanded: v.id === expandedId,
+              onExpand,
             });
           },
         }),

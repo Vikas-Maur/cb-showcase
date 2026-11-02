@@ -45,10 +45,18 @@ export interface VirtualListProps {
   /** Viewport height before it can be measured (server render, tests). */
   initialHeight?: number;
   activeId?: (index: number) => string;
+  /** One row opened to `extra` px more than the others (a version's list of changes, UI audit P1-5). */
+  expanded?: { index: number; extra: number } | null;
 }
 
 export function VirtualList(p: VirtualListProps) {
   const overscan = p.overscan ?? 6;
+  // The rows after an expanded one move down by its extra height; everything else is the fixed-height layout.
+  const ex = p.expanded && p.expanded.index >= 0 && p.expanded.index < p.count && p.expanded.extra > 0 ? p.expanded : null;
+  const topOf = (i: number) => i * p.rowHeight + (ex && i > ex.index ? ex.extra : 0);
+  const heightOf = (i: number) => p.rowHeight + (ex && i === ex.index ? ex.extra : 0);
+  // a scroll position in the fixed layout: past the expanded row, its extra height is taken off
+  const fixedTop = (st: number) => (!ex || st < (ex.index + 1) * p.rowHeight ? st : Math.max(ex.index * p.rowHeight, st - ex.extra));
   const ref = useRef<HTMLDivElement>(null);
   const [viewport, setViewport] = useState(p.initialHeight ?? 400);
   const [range, setRange] = useState<[number, number]>(() => windowRange(0, p.initialHeight ?? 400, p.rowHeight, p.count, overscan));
@@ -58,9 +66,9 @@ export function VirtualList(p: VirtualListProps) {
     const el = ref.current;
     const st = el ? el.scrollTop : top.current;
     top.current = st;
-    const next = windowRange(st, el?.clientHeight || viewport, p.rowHeight, p.count, overscan);
+    const next = windowRange(fixedTop(st), el?.clientHeight || viewport, p.rowHeight, p.count, overscan);
     setRange((prev) => (prev[0] === next[0] && prev[1] === next[1] ? prev : next));
-  }, [viewport, p.rowHeight, p.count, overscan]);
+  }, [viewport, p.rowHeight, p.count, overscan, ex?.index, ex?.extra]);
 
   // A scroll's new rows are rendered in a task after the frame (as React's scheduler does for scroll), never inside
   // it: preact/compat renders state set in a scroll handler at once, which put a whole window of row mounts on the
@@ -120,10 +128,10 @@ export function VirtualList(p: VirtualListProps) {
   useEffect(() => {
     const el = ref.current;
     if (!el || p.active == null || p.active < 0) return;
-    const y = p.active * p.rowHeight;
+    const y = topOf(p.active), hh = heightOf(p.active);
     if (y < el.scrollTop) el.scrollTop = y;
-    else if (y + p.rowHeight > el.scrollTop + el.clientHeight) el.scrollTop = y + p.rowHeight - el.clientHeight;
-  }, [p.active, p.rowHeight]);
+    else if (y + hh > el.scrollTop + el.clientHeight) el.scrollTop = Math.min(y, y + hh - el.clientHeight);
+  }, [p.active, p.rowHeight, ex?.index, ex?.extra]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {
     // Keys typed in a field inside a row (naming a version) belong to the field, not to the list.
@@ -161,7 +169,7 @@ export function VirtualList(p: VirtualListProps) {
         {
           key: p.rowKey(i),
           className: "carton-vrow",
-          style: { position: "absolute", top: 0, left: 0, right: 0, height: p.rowHeight, transform: `translateY(${i * p.rowHeight}px)` },
+          style: { position: "absolute", top: 0, left: 0, right: 0, height: heightOf(i), transform: `translateY(${topOf(i)}px)` },
         },
         p.renderRow(i),
       ),
@@ -181,6 +189,6 @@ export function VirtualList(p: VirtualListProps) {
       // Layout and paint containment: row changes never relayout the panel around the list.
       style: { position: "relative", overflowY: "auto", contain: "content" },
     },
-    h("div", { style: { position: "relative", height: p.count * p.rowHeight, width: "100%" } }, rows),
+    h("div", { style: { position: "relative", height: p.count * p.rowHeight + (ex?.extra ?? 0), width: "100%" } }, rows),
   );
 }
