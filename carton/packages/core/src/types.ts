@@ -590,7 +590,13 @@ export type CartonEvent =
    */
   | { type: "sync-error"; branchId: string; error: SyncError | null }
   /** Who is behind a replica changed (`setIdentity`, or the server's people): authors in log() and credits() may read differently. */
-  | { type: "people" };
+  | { type: "people" }
+  /**
+   * The cuts changed: one made (with no edit yet too), renamed, gone, or its kind, protection or sync changed. By this
+   * handle, by a sync, or by another process on the same store (told once this handle reads the store again: any read
+   * such as log() or cuts() does). cuts() says how they are now.
+   */
+  | { type: "cuts" };
 
 /**
  * Why a cut's sync is failing, for a sync status line. `code`: `update-server` (the host is older than this app's

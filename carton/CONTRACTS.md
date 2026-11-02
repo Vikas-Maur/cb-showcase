@@ -186,6 +186,10 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     cut isn't held here.
   - Presence goes out as the resolved person.
   - A `people` event says authors may read differently.
+- **A `cuts` event (laptop re-check P3 #1)** says the cuts changed: one made (with no edit yet, which moves no head and
+  so tells no `change`), renamed, gone, or its kind, protection or sync changed. This handle's own writes, a sync, and
+  another process's writes on the same store alike; another process's are told once this handle reads the store again
+  (any read: `log()`, `cuts()`, `head()`…). A cut menu reads `cuts()` again on it.
   - An app shows its own edits as "You" by passing its resolved person as `me` (`identity()`, with its `group`).
 - **Versions in words (UI audit 2026-11-02).** `log({summary: true})` gives each version one line (`summary`) and,
   when that line doesn't say it all, every change it made (`details`, describe()'s lines). A version of several changes

@@ -908,6 +908,11 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         if ((on === cutId && g.length) || (prev?.on === cutId && prev.ghosts.length)) publishGhosts();
         break;
       }
+      // A cut made (with no edit yet too), renamed or gone, by any process: the cut menu reads them again. A new cut
+      // with no edit moves no head, so no `change` tells it (laptop re-check P3 #1: `cb cut new` never showed).
+      case "cuts":
+        scheduleRefresh();
+        break;
       case "notice": {
         const n = e.notice;
         if (n.cards?.length && (n.to === meKey || n.to === myGroup || n.to === personKey)) addCards(n.cards, n.by, n.cut ?? cutId);
