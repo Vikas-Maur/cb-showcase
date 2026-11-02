@@ -20,6 +20,8 @@ module.exports = String.raw`window.__carton = (() => {
   let stepping = null, deferred = null, canTimer = null;
   // The editor's own last timeline save not yet answered: the document holds it, whatever the base says (ui-words #3).
   let unanswered = null;
+  // A preview shorter than the playhead moved it to its end: where it was, and where the preview put it (preview()).
+  let held = null;
   let settle;
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
@@ -140,18 +142,34 @@ module.exports = String.raw`window.__carton = (() => {
       return true;
     },
     // Compare and the A/B toggle: an earlier version in the editor, read-only (§9). null returns to current.
+    // A version shorter than the playhead takes it to its end, where Cardboard's own "jump to end" puts it (final
+    // re-check N5: a black stage, "0:09 / 0:08"); back to current, it goes back where the editor had it before the
+    // preview, unless the person moved it meanwhile (held: that place, and where the preview put it).
     async preview(projectId, ref) {
       if (!on || !store) return;
       if (ref != null) await store.flush();
       const doc = await call(ref == null ? "head" : "checkout", { projectId, ref });
-      const project = store.deserialize(doc), t = timelineOf(project);
+      const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
+      const seek = (s) => store.state().setPlaybackPosition?.(s);
       if (ref == null) {
         // Back to current: the project record and the editor take head, with its base.
         store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
-        store.adopt({ ...t, duration: duration(t.timelineItems), cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
+        store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
         stale = false;
         unanswered = null;
-      } else store.adopt({ ...t, duration: duration(t.timelineItems), cartonPreview: { ref } });
+        const h = held;
+        held = null;
+        if (h && store.state().currentTime === h.end) seek(Math.min(h.at, end));
+      } else {
+        store.adopt({ ...t, duration: end, cartonPreview: { ref } });
+        const now = store.state().currentTime;
+        // the person moved it since the last preview put it: their place now is the one to go back to
+        if (held && now !== held.end) held = null;
+        if (Number.isFinite(now) && now > end) {
+          held = { at: held?.at ?? now, end };
+          seek(end);
+        }
+      }
     },
     get stale() { return stale; },
     // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a

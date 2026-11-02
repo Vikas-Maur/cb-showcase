@@ -20,7 +20,7 @@ const load = ({ enabled }) => {
     adopt: (p) => { log.push(["adopt", p]); state = { ...state, ...p }; },
     armed: () => armed,
     flush: async () => { log.push(["flush", armed]); armed = false; },
-    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout") return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
+    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout" && !answers.checkout) return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
     on: () => () => {},
     deserialize: (d) => d,
     projects: { getState: () => ({ projects: [disk.doc] }), setState: (s) => log.push(["projects", s.projects.length]) },
@@ -142,6 +142,42 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Return to 
   assert.equal(t.state().cartonBase, 200);
   assert.deepEqual(t.state().timelineItems, [{ id: "a", endTime: 4 }]);
   assert.equal(t.c.stale, false);
+});
+
+// Final re-check N5: previewing a version shorter than the playhead left it past the version's end (a black stage,
+// "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Return to current puts it
+// back where it was, as the editor had it before the preview, unless the person moved it meanwhile.
+test("final N5: a preview shorter than the playhead takes it to its end; Return to current puts it back", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const seeks = [];
+  t.setState({ currentTime: 9.5, setPlaybackPosition: (s) => { seeks.push(s); t.setState({ currentTime: s }); } });
+  t.disk.doc = t.project(200, [{ id: "a", endTime: 10 }]);
+  await t.c.preview("p1", "main@3"); // the version ends at 2 s
+  assert.equal(t.state().currentTime, 2, "at the previewed version's end");
+  // another, shorter or longer, preview after it: the place to go back to is still the editor's
+  t.answers.checkout = () => t.project(150, [{ id: "old", endTime: 1.5 }]);
+  await t.c.preview("p1", "main@2");
+  assert.equal(t.state().currentTime, 1.5);
+  await t.c.preview("p1", null);
+  assert.equal(t.state().currentTime, 9.5, "back where the editor had it");
+  assert.deepEqual(seeks, [2, 1.5, 9.5]);
+  // moved during the preview: the person's place stays
+  await t.c.preview("p1", "main@2");
+  t.state().setPlaybackPosition(0.5);
+  await t.c.preview("p1", null);
+  assert.equal(t.state().currentTime, 0.5, "where the person put it");
+  // a preview long enough for the playhead: it doesn't move, then or after
+  seeks.length = 0;
+  t.answers.checkout = () => t.project(150, [{ id: "old", endTime: 12 }]);
+  await t.c.preview("p1", "main@4");
+  await t.c.preview("p1", null);
+  assert.deepEqual(seeks, [], "no seek at all");
+  // Carton off: nothing (the bridge's preview isn't reached)
+  const off = load({ enabled: false });
+  await off.c.ready;
+  await off.c.preview("p1", "main@3");
+  assert.equal(off.state().cartonPreview, null);
 });
 
 // Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened (Enter on a selected title,
