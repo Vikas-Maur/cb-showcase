@@ -114,10 +114,13 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
         let probe: ReturnType<typeof setTimeout> | undefined;
         const ping = () => {
           if (!open) return;
+          // at most one ping outstanding: a burst of sends after a silence asks once, not once per send, and a
+          // keepalive due while a ping is unanswered waits for that answer
+          if (probe) return;
           try {
             ws.send("ping");
           } catch {}
-          if (deadAfterMs <= 0 || probe) return;
+          if (deadAfterMs <= 0) return;
           const asked = Date.now();
           probe = setTimeout(() => {
             probe = undefined;

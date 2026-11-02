@@ -91,3 +91,41 @@ test("deadAfterMs 0, or no keepalive, never closes a silent link on its own", as
   a.close();
   b.close();
 });
+
+/** A WebSocket that opens at once and keeps what the transport sends; the test plays the host. */
+class FakeSocket {
+  static last: FakeSocket;
+  readonly protocol = "carton.v1";
+  readonly sent: string[] = [];
+  onopen: ((e: unknown) => void) | null = null;
+  onmessage: ((e: { data: unknown }) => void) | null = null;
+  onclose: ((e: { code: number; reason: string }) => void) | null = null;
+  onerror: ((e: unknown) => void) | null = null;
+  constructor() {
+    FakeSocket.last = this;
+    queueMicrotask(() => this.onopen?.({}));
+  }
+  send(d: string) {
+    this.sent.push(d);
+  }
+  close() {}
+  pings() {
+    return this.sent.filter((d) => d === "ping").length;
+  }
+}
+const fakeTransport = (o: { keepaliveMs: number; deadAfterMs: number }) => webSocketTransport({ ...o, WebSocket: FakeSocket as unknown as typeof WebSocket });
+const hello = { type: "hello", branchId: "b", have: 0, pending: [], rids: [], schemaVersion: 1 } as never;
+
+test("a burst of sends after a silence sends one ping, not one per send", async () => {
+  const c = await fakeTransport({ keepaliveMs: 60_000, deadAfterMs: 200 }).connect("ws://h/api/projects/p/ws", { token: "t" });
+  const ws = FakeSocket.last;
+  await new Promise((r) => setTimeout(r, 250)); // silent for longer than deadAfterMs
+  for (let i = 0; i < 20; i++) c.send(hello);
+  assert.equal(ws.pings(), 1, `${ws.pings()} pings for one silence`);
+  // answered: the next silence asks again, once
+  ws.onmessage?.({ data: "pong" });
+  await new Promise((r) => setTimeout(r, 250));
+  for (let i = 0; i < 20; i++) c.send(hello);
+  assert.equal(ws.pings(), 2);
+  c.close();
+});
