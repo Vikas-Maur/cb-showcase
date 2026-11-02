@@ -1,6 +1,6 @@
 # Restore and media fixes: real-app re-check of the final release candidate
 
-> Pushed from the laptop on 2026-11-02 for the fixers (fix/recover-save). Final candidate `out/carton-final` @ `0cc587f1`. `shots/` holds the P1-1 and P2-1 shots (plus 2 PASS shots); the rest named below stay on the laptop in `D:workegressinalestore`. `console-errors.txt`: exact console errors with stacks. `project-json/`: a recovered project.json (no dates on `media[]`), a healthy one, and the rc's recovered one.
+> Pushed from the laptop on 2026-11-02 for the fixers (fix/recover-save). Final candidate `out/carton-final` @ `0cc587f1`. `shots/` holds the P1-1 and P2-1 shots (plus 2 PASS shots); the rest named below stay on the laptop in `D:\cbwork\regress\final\restore\`. `console-errors.txt`: exact console errors with stacks. `project-json/`: a recovered project.json (no dates on `media[]`), a healthy one, and the rc's recovered one.
 
 Build: `out\carton-final` (`merge/prod-2` @ `0cc587f1`), `CARDBOARD_CARTON=1`.
 
