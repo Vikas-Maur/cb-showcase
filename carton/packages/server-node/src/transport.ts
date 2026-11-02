@@ -9,10 +9,12 @@
 // server-node answers it too), so NATs and proxies don't drop an idle link.
 // A dead link: one that stops carrying anything without closing (Wi-Fi gone, a laptop lid, a NAT that forgot the
 // flow) leaves TCP retransmitting for up to ~15 minutes, and the socket looks open all that time: the client shows
-// "Up to date" while its edits go nowhere. So each ping expects an answer: if nothing at all (a pong or any message)
-// arrives within `deadAfterMs` of a ping, the connection is closed as dead and the sync client reconnects. A send
-// after `deadAfterMs` of silence pings at once, so an edit made on a dead link finds out in `deadAfterMs`, not at the
-// next keepalive. (cf-lab: on a 5-minute outage the client stayed "online" throughout; see bench/cloudflare.)
+// "Up to date" while its edits go nowhere. So each ping expects its pong: if the pong doesn't arrive within
+// `deadAfterMs`, the connection is closed as dead and the sync client reconnects. Only the pong counts: other messages
+// arriving prove the host-to-client direction alone, and a link whose client-to-host direction died keeps delivering
+// teammates' changes and presence while this client's edits go nowhere. At most one ping is outstanding. A send more
+// than `deadAfterMs` after the last pong pings at once, so an edit made on a dead link finds out in `deadAfterMs`, not
+// at the next keepalive. (cf-lab: on a 5-minute outage the client stayed "online" throughout; see bench/cloudflare.)
 // A failed `connect` rejects with a TransportError whose `code` says why: `unreachable` (offline, no host there, a
 // timeout, or the connection dropped before it opened), `unauthorized` (the host refused this session), `protocol`
 // (the host answered another subprotocol), `closed` (closed before it opened, with a code of its own). A browser's
@@ -28,7 +30,7 @@ const AUTH_PREFIX = "carton.auth.";
 
 export interface WebSocketTransportOptions {
   keepaliveMs?: number;
-  // how long a ping may go unanswered (nothing at all heard) before the link is taken for dead and closed; default
+  // how long a ping may go without its pong before the link is taken for dead and closed; default
   // 15 s with a keepalive (a pong on a 400 ms, 3%-loss link arrives in a few seconds even after retransmits), never
   // without one; 0 = never
   deadAfterMs?: number;
@@ -109,8 +111,9 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
         const closers: ((why: string) => void)[] = [];
         let open = false, closed = false, settled = false;
         let keepalive: ReturnType<typeof setInterval> | undefined;
-        // when anything last arrived, and the pending check of the last unanswered ping
-        let heard = Date.now();
+        // when the last pong arrived (or the link opened), and the check that closes the link if the outstanding ping's
+        // pong doesn't come
+        let answered = Date.now();
         let probe: ReturnType<typeof setTimeout> | undefined;
         const ping = () => {
           if (!open) return;
@@ -121,10 +124,9 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
             ws.send("ping");
           } catch {}
           if (deadAfterMs <= 0) return;
-          const asked = Date.now();
           probe = setTimeout(() => {
             probe = undefined;
-            if (open && heard < asked) fail(transportError(`the link is dead: no answer from the host in ${deadAfterMs} ms`, "unreachable"));
+            if (open) fail(transportError(`the link is dead: no answer from the host in ${deadAfterMs} ms`, "unreachable"));
           }, deadAfterMs);
           (probe as { unref?: () => void }).unref?.();
         };
@@ -168,8 +170,8 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
             try {
               ws.send(JSON.stringify(msg));
             } catch {} // the close event follows
-            // silent for a while: make sure the link still carries anything before this edit counts as sent
-            if (deadAfterMs > 0 && Date.now() - heard > deadAfterMs) ping();
+            // no round trip for a while: make sure the link still carries this client's messages
+            if (deadAfterMs > 0 && Date.now() - answered > deadAfterMs) ping();
           },
           onMessage(f) {
             listeners.push(f);
@@ -193,7 +195,7 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
           if (ws.protocol !== PROTOCOL) return fail(transportError(`host answered subprotocol ${JSON.stringify(ws.protocol)}, not ${PROTOCOL}`, "protocol"));
           open = true;
           settled = true;
-          heard = Date.now();
+          answered = Date.now();
           if (keepaliveMs > 0) {
             keepalive = setInterval(ping, keepaliveMs);
             (keepalive as { unref?: () => void }).unref?.();
@@ -201,8 +203,13 @@ export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transp
           resolve(conn);
         };
         ws.onmessage = (e) => {
-          heard = Date.now();
-          if (closed || typeof e.data !== "string" || e.data === "pong") return;
+          if (closed || typeof e.data !== "string") return;
+          if (e.data === "pong") {
+            answered = Date.now();
+            if (probe) clearTimeout(probe);
+            probe = undefined;
+            return;
+          }
           let msg: sync.ServerMessage;
           try {
             msg = JSON.parse(e.data);

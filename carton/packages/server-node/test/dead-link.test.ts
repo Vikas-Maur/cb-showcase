@@ -5,8 +5,10 @@ import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { createServer, connect, type Socket } from "node:net";
+import http from "node:http";
 import { createHmacAuth } from "@carton/server";
 import { startNodeHost, webSocketTransport, type NodeHost } from "../src/index.ts";
+import { acceptWebSocket, type ServerWebSocket } from "../src/ws.ts";
 import { scratch } from "./scratch.ts";
 
 const auth = createHmacAuth({ secret: "test-only-secret-test-only-secret-0123" });
@@ -15,14 +17,17 @@ after(async () => {
   for (const c of closers.reverse()) await c();
 });
 
-/** A TCP proxy in front of the host whose link can go dead: while `dead`, bytes either way are dropped, nothing closes. */
+/**
+ * A TCP proxy in front of the host whose link can go dead: while `dead`, bytes either way are dropped, nothing closes.
+ * While `upDead`, only the client's bytes to the host are (a one-way failure).
+ */
 async function deadableLink(port: number) {
-  const link = { dead: false, port: 0 };
+  const link = { dead: false, upDead: false, port: 0 };
   const socks: Socket[] = [];
   const server = createServer((c) => {
     const u = connect(port, "127.0.0.1");
     socks.push(c, u);
-    c.on("data", (d) => void (link.dead || u.write(d)));
+    c.on("data", (d) => void (link.dead || link.upDead || u.write(d)));
     u.on("data", (d) => void (link.dead || c.write(d)));
     c.on("error", () => u.destroy());
     u.on("error", () => c.destroy());
@@ -128,4 +133,61 @@ test("a burst of sends after a silence sends one ping, not one per send", async 
   for (let i = 0; i < 20; i++) c.send(hello);
   assert.equal(ws.pings(), 2);
   c.close();
+});
+
+/**
+ * A host that answers `ping` with `pong` (as server-node and the Worker do) and sends every socket an application
+ * message every 25 ms, as teammates' presence and changes arrive: the client hears from it all the time.
+ */
+async function chattyHost() {
+  const socks = new Set<ServerWebSocket>();
+  const server = http.createServer((_q, r) => void r.writeHead(404).end());
+  server.on("upgrade", (req, socket, head) => {
+    const ws = acceptWebSocket(req, socket, head, { protocols: () => "carton.v1", idleTimeoutMs: 0 });
+    if (!ws) return;
+    socks.add(ws);
+    ws.on("message", (d) => void (d === "ping" && ws.send("pong")));
+    ws.on("close", () => socks.delete(ws));
+  });
+  let seq = 0;
+  const tick = setInterval(() => {
+    for (const ws of socks) ws.send(JSON.stringify({ type: "presence", branchId: "b", actor: { kind: "human", id: "teammate" }, state: { seq: seq++ } }));
+  }, 25);
+  await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
+  closers.push(() => new Promise<void>((ok) => (clearInterval(tick), socks.forEach((s) => s.terminate()), server.closeAllConnections(), server.close(() => ok()))));
+  const link = await deadableLink((server.address() as { port: number }).port);
+  return { link, url: `ws://127.0.0.1:${link.port}/api/projects/p/ws` };
+}
+const counting = (c: { onMessage(f: () => void): void }) => {
+  const n = { messages: 0 };
+  c.onMessage(() => n.messages++);
+  return n;
+};
+
+test("a link whose client-to-host direction died is closed, though the host's messages keep arriving", async () => {
+  const { link, url } = await chattyHost();
+  const c = await webSocketTransport({ keepaliveMs: 150, deadAfterMs: 300 }).connect(url, { token: "t" });
+  const n = counting(c);
+  assert.equal(await closedWithin(c, 700), null, "closed while the link worked both ways");
+  const t0 = Date.now(), before = n.messages;
+  link.upDead = true;
+  const why = await closedWithin(c, 3000);
+  assert.ok(why !== null, `never noticed: ${n.messages - before} messages arrived in the meantime`);
+  assert.match(why, /dead/);
+  assert.ok(n.messages - before >= 5, `only ${n.messages - before} messages arrived after the cut: not a one-way failure`);
+  assert.ok(Date.now() - t0 < 1000, `noticed after ${Date.now() - t0} ms; keepalive 150 + deadAfter 300`);
+});
+
+test("a send on a link whose client-to-host direction died finds out at once, though the host's messages keep arriving", async () => {
+  const { link, url } = await chattyHost();
+  const c = await webSocketTransport({ keepaliveMs: 60_000, deadAfterMs: 300 }).connect(url, { token: "t" });
+  const n = counting(c);
+  link.upDead = true;
+  await new Promise((r) => setTimeout(r, 400)); // no round trip for longer than deadAfterMs, messages arriving all along
+  const t0 = Date.now(), before = n.messages;
+  c.send(hello);
+  const why = await closedWithin(c, 2000);
+  assert.ok(why !== null && /dead/.test(why), `a send on a one-way dead link wasn't noticed: ${why}`);
+  assert.ok(n.messages > before, "no message arrived after the send: not a one-way failure");
+  assert.ok(Date.now() - t0 < 1000);
 });
