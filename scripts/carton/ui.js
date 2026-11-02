@@ -115,12 +115,20 @@ const MIN_STAGE = 320;
  * panel's own width while it is in the row). Its chosen width when that leaves the preview MIN_STAGE; narrower, down
  * to its minimum, when that is enough; else it floats over the chat as a drawer (overlay), and the preview keeps the
  * room Cardboard alone gives it. `room` doesn't change with the choice, so the choice never oscillates.
+ * The drawer covers the chat column (`chat`: its width, 0 when it is collapsed) and no more when that is at least the
+ * minimum; narrower than that, the drawer keeps its minimum and says it reaches past the chat (`over`), so it ends
+ * where the stage ends and leaves the timeline and its toolbar clear (baseline P3-7: at 960 px it covered Fullscreen and
+ * Hide timeline).
  */
-export function fitPanel({ room, preferred, viewport, min = WIDTH.min, minStage = MIN_STAGE }) {
+export function fitPanel({ room, preferred, viewport, chat, min = WIDTH.min, minStage = MIN_STAGE }) {
   if (!(room > 0)) return { mode: "inline", width: preferred };
   if (room - preferred >= minStage) return { mode: "inline", width: preferred };
   if (room - min >= minStage) return { mode: "inline", width: Math.floor(room - minStage) };
-  return { mode: "overlay", width: Math.max(Math.min(preferred, viewport - 64), Math.min(min, viewport)) };
+  const width = Math.max(Math.min(preferred, viewport - 64), Math.min(min, viewport));
+  // not measured: as before; a chat collapsed to nothing is measured (review #2), and all of the drawer is past it
+  if (!(chat >= 0)) return { mode: "overlay", width };
+  const fits = Math.max(min, Math.min(width, Math.floor(chat)));
+  return { mode: "overlay", width: fits, over: fits > chat };
 }
 
 /** The panel's place in the row (fitPanel), kept up to date as the window, the Library or the chat change size. */
@@ -135,9 +143,13 @@ function useFit(ref, preferred) {
       const aside = ref.current;
       if (!aside) return;
       const inflow = fitRef.current.mode === "inline" ? aside.getBoundingClientRect().width : 0;
-      const room = stage.getBoundingClientRect().width + inflow;
+      const box = stage.getBoundingClientRect(), room = box.width + inflow;
       const row = aside.parentElement?.getBoundingClientRect();
-      const next = { ...fitPanel({ room, preferred, viewport: window.innerWidth }), ...(row ? { top: row.top, height: row.height } : {}) };
+      // the chat column: the row's right of the stage, less the panel while it is in the row
+      const chat = row ? Math.max(0, row.right - box.right - inflow) : undefined;
+      const fit = fitPanel({ room, preferred, viewport: window.innerWidth, chat });
+      // reaching past the chat, the drawer ends where the stage does: the timeline below stays clear
+      const next = { ...fit, ...(row ? { top: row.top, height: fit.over ? Math.max(0, box.bottom - row.top) : row.height } : {}) };
       const was = fitRef.current;
       if (was.mode !== next.mode || was.width !== next.width || (next.mode === "overlay" && (was.top !== next.top || was.height !== next.height))) setFit(next);
     };

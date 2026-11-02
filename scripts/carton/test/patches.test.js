@@ -152,6 +152,27 @@ test("the library worker: Windows build, Carton off, Carton on", { skip }, () =>
   assert.equal(commits[1].meta.source, "timeline");
 });
 
+// Baseline P3-9 (final re-check N3): the stage's text editor opened inside a read-only preview and dropped what was
+// typed. Both ways into it ask the bridge first (renderer-bridge.test.js: refused only in a Carton preview, with
+// Cardboard's own note), and the store hands the bridge Cardboard's own guard of its edits, `me`: declared with the
+// `Rde` the hook already passes (`const Ede=me,…,Rde=…;` right before it), so the same binding. Each once, on the
+// bundles as the build patches them (the Windows patches, then Carton's).
+test("Carton on: the stage's text editor asks the bridge before it opens; the store hands over Cardboard's guard", { skip }, () => {
+  const read = (re) => { const f = fs.readdirSync(carton.assets).find((n) => re.test(n)); return fs.readFileSync(path.join(carton.assets, f), "utf8"); };
+  const editor = read(/^EditorRoute-.*\.js$/), store = read(/^installErrorTelemetry-.*\.js$/);
+  const count = (s, t) => s.split(t).length - 1;
+  assert.equal(count(editor, 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(E(!1),S({kind:"edit-text"'), 1, "Enter on a selected title");
+  assert.equal(count(editor, 'if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;const{selectTimelineItem:ze,setEditingTextItemId:It}'), 1, "a double-click on a title or caption");
+  assert.equal(count(editor, "__carton?.refuse"), 2, "and nowhere else");
+  const guard = store.indexOf("function me(){return _v()?(xv(),!0):!1}const Ede=me,"), hook = store.indexOf("ne.setState=tN(");
+  const between = store.slice(guard, hook);
+  assert.ok(guard > 0 && hook > guard && between.includes(",Rde=t=>{") && between.endsWith(";") && between.length < 2000, "me and Rde in one statement list, right before the hook");
+  assert.equal(count(store, "deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});"), 1, "the hook passes it, and the store's subscribe and playback clock (final re-check N5)");
+  // qx: the playback clock, a binding of the module itself (exported), declared before the hook runs
+  assert.ok(/[,;]qx=\{get:\(\)=>mg,set:/.test(store) && store.search(/[,;]qx=\{get:/) < hook && /\bqx as aI\b/.test(store), "qx is the module's own playback clock");
+  assert.ok(store.includes("ne.subscribe((t,e)=>{t.playheadTime!==e.playheadTime&&qx.set(t.playheadTime)"), "Cardboard's own subscriber: (state, prev), the clock following playheadTime");
+});
+
 // The real facade, built from the carton workspace, on real Carton and carton.db: the cb commands end to end.
 const WORKSPACE = path.join(__dirname, "..", "..", "..", "carton");
 const noBuild = skip || (!fs.existsSync(path.join(WORKSPACE, "node_modules", "esbuild")) && "run `npm ci` in carton/ to build the facade");

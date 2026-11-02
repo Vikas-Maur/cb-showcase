@@ -245,6 +245,8 @@ function defaultMeasure(doc: Doc, schema: Schema) {
 }
 
 const KIND: Record<string, VersionKind> = { edit: "edit", merge: "fold", revert: "undo", undo: "undo", "partial-revert": "fold", restore: "restore", rebalance: "edit", import: "import", external: "edit", root: "edit", fork: "edit" };
+// The rest of a partial fold is core's revert, and a fold to the person (final re-check P3-12b: it had the undo mark).
+const kindOf = (c: CoreVersion): VersionKind => (c.restOf ? "fold" : KIND[c.kind] ?? "edit");
 
 interface Row {
   core: CoreVersion | null;
@@ -264,7 +266,7 @@ interface CardEntry {
 }
 
 const sameCore = (a: CoreVersion, b: CoreVersion) =>
-  a.ref.branchId === b.ref.branchId && a.ref.seq === b.ref.seq && a.change === b.change && a.name === b.name && a.kind === b.kind && a.at === b.at && actorKey(a.author) === actorKey(b.author);
+  a.ref.branchId === b.ref.branchId && a.ref.seq === b.ref.seq && a.change === b.change && a.name === b.name && a.kind === b.kind && a.restOf === b.restOf && a.at === b.at && actorKey(a.author) === actorKey(b.author);
 
 export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHandle {
   const hub = new TopicHub<Topic>();
@@ -376,7 +378,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const toVersion = (c: CoreVersion, kindOverride?: VersionKind, turnEdits?: number): Version => {
     const id = c.change ?? `${c.ref.branchId}@${c.ref.seq}`;
     const prev = byId.get(id);
-    const kind = kindOverride ?? KIND[c.kind] ?? "edit";
+    const kind = kindOverride ?? kindOf(c);
     // A partial fold's inverse offers "Fold in the rest" once checkRest() found its left-out changes still left out.
     const rest = offersRest(c);
     return {
@@ -413,7 +415,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     for (let k = j; k <= i; k++) {
       const r = rows[k]!;
       if (!r.core) continue;
-      const want: VersionKind = key && k === i ? "turn" : KIND[r.core.kind] ?? "edit";
+      const want: VersionKind = key && k === i ? "turn" : kindOf(r.core);
       const edits = i - j + 1;
       if (!sameShape(r.v, want, edits)) {
         r.v = toVersion(r.core, want, edits);
@@ -432,7 +434,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       if (key) while (j + 1 < all.length && turnKeyOf(all[j + 1]!.author) === key && !ends(key, all[j]!)) j++;
       for (let k = i; k <= j; k++) {
         const c = all[k]!;
-        const kind: VersionKind = key && k === j ? "turn" : KIND[c.kind] ?? "edit";
+        const kind: VersionKind = key && k === j ? "turn" : kindOf(c);
         const old = reuse.get(c.change ?? `${c.ref.branchId}@${c.ref.seq}`);
         // An unchanged version keeps its object, so a refresh re-renders nothing and the bridge sends nothing.
         if (old?.core && sameCore(old.core, c) && sameShape(old.v, kind, j - i + 1) && !!old.v.foldRest === offersRest(c)) next.push(old);
@@ -879,7 +881,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         }
         // A withdraw row (H1: a sent edit a rebase emptied, its id spent) moves the head but is no version: History
         // leaves it out, as log() does
-        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])] } : {}), ...(c.name ? { name: c.name } : {}) });
+        // "Fold in the rest" (a revert of a partial fold's inverse) is marked as log() marks it (`restOf`)
+        const target = c.kind === "revert" && typeof c.reverts === "string" ? pos.get(c.reverts) : undefined;
+        const restOf = target !== undefined && rows[target]!.core && partial(rows[target]!.core!) ? (c.reverts as string) : undefined;
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])] } : {}), ...(c.name ? { name: c.name } : {}), ...(restOf ? { restOf } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;

@@ -20,7 +20,7 @@ const load = ({ enabled }) => {
     adopt: (p) => { log.push(["adopt", p]); state = { ...state, ...p }; },
     armed: () => armed,
     flush: async () => { log.push(["flush", armed]); armed = false; },
-    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout") return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
+    invoke: async (channel, { method, args }) => { calls.push([channel, method, ...args]); if (method === "enabled") return enabled; if (method === "head") return disk.doc; if (method === "checkout" && !answers.checkout) return project(150, [{ id: "old", endTime: 2 }]); if (answers[method]) return answers[method](...args); return { status: "confirmed" }; },
     on: () => () => {},
     deserialize: (d) => d,
     projects: { getState: () => ({ projects: [disk.doc] }), setState: (s) => log.push(["projects", s.projects.length]) },
@@ -142,6 +142,104 @@ test("a preview is read-only: changes wait, undo doesn't take it, and Return to 
   assert.equal(t.state().cartonBase, 200);
   assert.deepEqual(t.state().timelineItems, [{ id: "a", endTime: 4 }]);
   assert.equal(t.c.stale, false);
+});
+
+// Final re-check N5: previewing a version shorter than the playhead left it past the version's end (a black stage,
+// "0:09 / 0:08"). It goes to the version's end, as Cardboard's own "jump to end" puts it, and Return to current puts it
+// back where it was, as the editor had it before the preview, unless the person moved it meanwhile. The playhead is
+// Cardboard's `playheadTime` while paused (its `currentTime` follows the pointer's hover then: review #1) and its
+// playback clock while playing; any move of it the bridge didn't make (a click on the ruler, Watch the changes, a
+// comment's timecode, play) is the person's, even one that ends where the preview put it (review #3).
+function cardboardPlayhead(t, { at, hover = null }) {
+  const subs = new Set();
+  let clock = at;
+  const set = (p) => {
+    const prev = t.state();
+    t.setState(p);
+    for (const f of subs) f(t.state(), prev);
+  };
+  set({ playheadTime: at, currentTime: hover ?? at, isPlaying: false, setPlaybackPosition: (s) => set({ playheadTime: s, currentTime: s }) });
+  t.store.subscribe = (f) => (subs.add(f), () => subs.delete(f));
+  t.store.clock = () => clock;
+  return { set, subs, play: (s) => { clock = s; set({ isPlaying: true }); }, hover: (h) => set({ currentTime: h }) };
+}
+test("final N5: a preview shorter than the playhead takes it to its end; Return to current puts it back", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  t.disk.doc = t.project(200, [{ id: "a", endTime: 10 }]);
+  // the pointer hovers at 1 s: the playhead, at 9.5 s, is what moves
+  const p = cardboardPlayhead(t, { at: 9.5, hover: 1 });
+  await t.c.preview("p1", "main@3"); // the version ends at 2 s
+  assert.equal(t.state().playheadTime, 2, "at the previewed version's end");
+  // another, shorter or longer, preview after it: the place to go back to is still the editor's
+  t.answers.checkout = () => t.project(150, [{ id: "old", endTime: 1.5 }]);
+  await t.c.preview("p1", "main@2");
+  assert.equal(t.state().playheadTime, 1.5);
+  p.hover(0.3); // hovering is no move
+  await t.c.preview("p1", null);
+  assert.equal(t.state().playheadTime, 9.5, "back where the editor had it");
+  assert.equal(p.subs.size, 0, "and nothing is left listening");
+  // moved during the preview, even back to where the preview put it: the person's place stays
+  await t.c.preview("p1", "main@2");
+  t.c.seek(0.5); // Watch the changes, a comment's timecode
+  t.state().setPlaybackPosition(1.5); // a click on the ruler, at the version's end
+  await t.c.preview("p1", null);
+  assert.equal(t.state().playheadTime, 1.5, "where the person put it");
+  // played during the preview: theirs too
+  t.state().setPlaybackPosition(9.5);
+  await t.c.preview("p1", "main@2");
+  p.play(1.5);
+  await t.c.preview("p1", null);
+  assert.equal(t.state().playheadTime, 1.5);
+  // playing when the preview opens: the playback clock is the playhead
+  p.set({ isPlaying: false, playheadTime: 1, currentTime: 1 });
+  p.play(9);
+  await t.c.preview("p1", "main@2");
+  assert.equal(t.state().playheadTime, 1.5, "the clock was past the version's end");
+  // another project opened meanwhile: its own place, not this one's
+  p.set({ isPlaying: false, playheadTime: 9.5, currentTime: 9.5 });
+  await t.c.preview("p1", "main@2");
+  await t.c.preview("p2", null);
+  assert.equal(t.state().playheadTime, 1.5, "p1's place isn't p2's");
+  // a preview long enough for the playhead: it doesn't move, then or after
+  p.set({ isPlaying: false });
+  t.state().setPlaybackPosition(3);
+  await t.c.preview("p1", null);
+  let seeks = 0;
+  p.subs.add(() => seeks++);
+  t.answers.checkout = () => t.project(150, [{ id: "old", endTime: 12 }]);
+  await t.c.preview("p1", "main@4");
+  await t.c.preview("p1", null);
+  assert.equal(t.state().playheadTime, 3);
+  assert.equal(seeks, 0, "no seek at all");
+  // Carton off: nothing (the bridge's preview isn't reached)
+  const off = load({ enabled: false });
+  await off.c.ready;
+  await off.c.preview("p1", "main@3");
+  assert.equal(off.state().cartonPreview, null);
+});
+
+// Baseline P3-9 (final re-check N3): in a read-only preview the stage's text editor opened (Enter on a selected title,
+// a double-click on one) and dropped what was typed. Cardboard's own edits are refused there by its guard (`me()`:
+// its "Previewing an earlier version. Return to current to edit." over the timeline); the text editor isn't a write, so
+// patch-carton.js asks the bridge first. Refused only in a Carton preview, never with Carton off.
+test("baseline P3-9: an edit that isn't a write is refused in a preview, with Cardboard's own note; not otherwise", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  let noted = 0;
+  t.store.refuse = () => { noted++; return true; };
+  assert.equal(t.c.refuse(), false, "not previewing: the editor's");
+  await t.c.preview("p1", "main@3");
+  assert.equal(t.c.refuse(), true, "previewing: refused");
+  assert.equal(noted, 1, "with Cardboard's own note");
+  await t.c.preview("p1", null);
+  assert.equal(t.c.refuse(), false);
+  const off = load({ enabled: false });
+  await off.c.ready;
+  off.store.refuse = () => { noted++; return true; };
+  off.setState({ cartonPreview: { ref: "main@3" } });
+  assert.equal(off.c.refuse(), false, "Carton off: Cardboard's");
+  assert.equal(noted, 1);
 });
 
 test("the History panel's calls reach main with their arguments as given", async () => {

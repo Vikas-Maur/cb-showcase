@@ -77,7 +77,7 @@ const VersionRow = memo(function VersionRow(p: RowProps) {
             type: "button",
             className: "carton-version-expand",
             "aria-expanded": p.expanded,
-            "aria-label": p.expanded ? words.hideChanges : words.showChanges(v.details.length),
+            "aria-label": p.expanded ? words.hideChanges(v.details.length) : words.showChanges(v.details.length),
             tabIndex: -1,
             onClick: (e: MouseEvent) => {
               e.stopPropagation();

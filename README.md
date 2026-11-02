@@ -465,13 +465,19 @@ What changes with it on:
   History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
   too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" or Esc (Undo and Redo
   look unavailable meanwhile; an Esc the editor uses first, such as deselecting a clip or skipping an agent's question,
-  stays the editor's, and with focus in the History panel the first Esc returns from the version and the next closes
-  the panel); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
+  stays the editor's, whichever was selected first, and with focus in the History panel the first Esc returns from the
+  version and the next closes the panel). An edit tried meanwhile is refused with Cardboard's own "Previewing an earlier
+  version. Return to current to edit.", the stage's text editor included (Enter or a double-click on a title no longer
+  opens it there), and the keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
+  playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. "Watch the
+  changes" moves the preview's playhead with it, so the frames are the real ones.
   Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
   switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
   each with its count; a day folds to its named versions with a click or Enter, and with more than 150 versions every
   day but today starts folded. The reader keeps their place as versions arrive. In a narrow window the panel never takes the preview's room: it narrows (down to
-  300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer.
+  300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer, as
+  wide as the chat column (a chat narrower than 300 px: 300 px, ending above the timeline, so the timeline and its
+  toolbar stay clear).
   Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
   Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
@@ -744,7 +750,8 @@ with Carton off none of it runs at all.
   library from the link: the project arrives with its history, and its clips play from the host. "Open" opens it in a
   tab of its own. Joining starts from the Dashboard too: a "Join a shared project" tile beside "New project" (Carton on
   only) opens the same form in a dialog. An empty library (a new user's first screen, "Make your first video") has a
-  "Join a shared project" button beside "Start a blank project" instead.
+  "Join a shared project" button beside "Start a blank project" instead. The dialog stays until you press Open or
+  Done, also when the project you joined is the library's first (it used to close by itself there).
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with

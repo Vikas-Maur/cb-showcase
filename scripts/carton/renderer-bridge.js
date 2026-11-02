@@ -20,6 +20,20 @@ module.exports = String.raw`window.__carton = (() => {
   let stepping = null, deferred = null, canTimer = null;
   // The editor's own last timeline save not yet answered: the document holds it, whatever the base says (ui-words #3).
   let unanswered = null;
+  // A preview shorter than the playhead moved it to its end: where it was, where the preview put it, and the store
+  // subscription that drops it at the person's first move (preview()). "seeking": the bridge's own seek under way.
+  let held = null, seeking = false;
+  const release = () => { if (typeof held?.off === "function") held.off(); held = null; };
+  // The playhead: Cardboard's playheadTime while paused (its currentTime follows the pointer's hover then), its
+  // playback clock while playing.
+  const playhead = () => {
+    const st = store.state();
+    return st.isPlaying ? (store.clock?.() ?? st.currentTime) : (st.playheadTime ?? st.currentTime);
+  };
+  const seekOwn = (s) => {
+    seeking = true;
+    try { store.state().setPlaybackPosition?.(s); } finally { seeking = false; }
+  };
   let settle;
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
@@ -140,20 +154,53 @@ module.exports = String.raw`window.__carton = (() => {
       return true;
     },
     // Compare and the A/B toggle: an earlier version in the editor, read-only (§9). null returns to current.
+    // A version shorter than the playhead takes it to its end, where Cardboard's own "jump to end" puts it (final
+    // re-check N5: a black stage, "0:09 / 0:08"); back to current, it goes back where the editor had it before the
+    // preview, unless the person moved it meanwhile (held: that place and where the preview put it, until a move).
     async preview(projectId, ref) {
       if (!on || !store) return;
       if (ref != null) await store.flush();
       const doc = await call(ref == null ? "head" : "checkout", { projectId, ref });
-      const project = store.deserialize(doc), t = timelineOf(project);
+      const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
+      // a place held for another project (the editor opened another one meanwhile) isn't this one's
+      if (held && held.project !== projectId) release();
       if (ref == null) {
+        const h = held;
+        release();
         // Back to current: the project record and the editor take head, with its base.
         store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
-        store.adopt({ ...t, duration: duration(t.timelineItems), cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
+        store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
         stale = false;
         unanswered = null;
-      } else store.adopt({ ...t, duration: duration(t.timelineItems), cartonPreview: { ref } });
+        // unmoved: told by the store's own moves when it says them, else by where the playhead is
+        if (h && (h.off || playhead() === h.end)) seekOwn(Math.min(h.at, end));
+      } else {
+        store.adopt({ ...t, duration: end, cartonPreview: { ref } });
+        const now = playhead();
+        if (held && !held.off && now !== held.end) release();
+        if (Number.isFinite(now) && now > end) {
+          held ??= { at: now, end, off: null, project: projectId };
+          held.end = end;
+          seekOwn(end);
+          // any other move of the playhead (a click on the ruler, Watch the changes, a comment's timecode, play) is
+          // the person's: their place is the one to keep (review #3: even one that ends where the preview put it)
+          held.off ??= store.subscribe?.((st, prev) => {
+            if (!seeking && (st.playheadTime !== prev.playheadTime || (st.isPlaying && !prev.isPlaying) || st.projectId !== prev.projectId)) release();
+          }) ?? null;
+        }
+      }
     },
     get stale() { return stale; },
+    // An edit that isn't a write, asked for in a preview (the stage's text editor: Enter on a selected title, a
+    // double-click on one; patch-carton.js asks before opening it): refused as Cardboard refuses its own edits there,
+    // with its "Previewing an earlier version. Return to current to edit." over the timeline (store.refuse is its guard,
+    // me()). Baseline P3-9, final re-check N3: the editor opened inside the read-only preview and dropped what was typed.
+    // True when refused; never with Carton off or outside a preview.
+    refuse() {
+      if (!on || !store?.refuse || !store.state().cartonPreview) return false;
+      store.refuse();
+      return true;
+    },
     // Join's "Open": the joined project in a tab of its own, as the Dashboard opens one (main's tabs:open).
     openProject(projectId) {
       if (!on || !store || !projectId) return Promise.reject(new Error("Sharing isn't available for this project right now"));

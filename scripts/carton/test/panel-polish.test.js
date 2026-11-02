@@ -157,6 +157,64 @@ test("P2-13: the panel keeps the preview usable: its width, narrower, or a drawe
   for (let room = 200; room <= 1200; room += 7) assert.deepEqual(U.fitPanel({ room, preferred: 420, viewport: 1400 }), U.fitPanel({ room, preferred: 420, viewport: 1400 }));
 });
 
+// Baseline P3-7 (final re-check): at a 960 px window the drawer (384 px, full height) covered the timeline's right end
+// and its toolbar's Fullscreen and Hide timeline buttons, as it reached past the chat column (about 240 px there) into
+// the editor's. It is as wide as the chat column when that is at least its 300 px minimum; when the chat is narrower,
+// it keeps 300 px and ends where the stage ends, so the timeline and its toolbar stay clear.
+test("baseline P3-7: the drawer covers the chat column only; past it, it stops above the timeline", opt, async () => {
+  // as wide as the chat when the chat is wide enough, up to the chosen width
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1100, chat: 340 }), { mode: "overlay", width: 340, over: false });
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1300, chat: 520 }), { mode: "overlay", width: 384, over: false });
+  // the audit's 960 px window: the chat is 240 px, so 300 px reaches past it
+  assert.deepEqual(U.fitPanel({ room: 263, preferred: 384, viewport: 960, chat: 240 }), { mode: "overlay", width: 300, over: true });
+  // the chat collapsed (0 px measured, not "unknown": review #2): the drawer is all past it, so it ends above the timeline
+  assert.deepEqual(U.fitPanel({ room: 600, preferred: 384, viewport: 960, chat: 0 }), { mode: "overlay", width: 300, over: true });
+  // inline, as before; with no chat measured, as before
+  assert.deepEqual(U.fitPanel({ room: 1100, preferred: 384, viewport: 1920, chat: 400 }), { mode: "inline", width: 384 });
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 960 }), { mode: "overlay", width: 384 });
+  // in the page: the drawer's box, from the stage's and the row's (Cardboard's layout at 960 px, as the laptop measured)
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/", width: 960, height: 770 });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame, win: { ...globalThis.window } };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+  Object.assign(globalThis.window, { innerWidth: 960, addEventListener() {}, removeEventListener() {} });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const box = (r) => () => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top, x: r.left, y: r.top });
+    // the editor's row (the aside's parent: the mount here), with the stage in it
+    const row = w.document.createElement("div"), stage = w.document.createElement("div");
+    stage.setAttribute("data-carton-stage-host", "");
+    row.getBoundingClientRect = box({ left: 0, right: 960, top: 40, bottom: 770 });
+    stage.getBoundingClientRect = box({ left: 366, right: 720, top: 40, bottom: 530 });
+    w.document.body.append(stage, row);
+    root = client.createRoot(row);
+    await React.act(async () => { root.render(React.createElement(T.CartonProvider, { ui: createMockUi({ versions: 5 }) }, React.createElement(T.Sidebar, { panel: "history", setPanel() {}, projectId: "p1", bridge: { call: async () => ({}), onEvent: () => () => {} } }))); });
+    const a = row.querySelector("aside");
+    assert.equal(a.getAttribute("data-fit"), "overlay");
+    assert.deepEqual([a.style.position, a.style.width, a.style.top, a.style.height], ["fixed", "300px", "40px", "490px"], "300 px wide, from the row's top to the stage's bottom: the timeline below stays clear");
+    // the chat collapsed: the stage reaches the row's right edge
+    await React.act(async () => root.unmount());
+    root = null;
+    stage.getBoundingClientRect = box({ left: 366, right: 960, top: 40, bottom: 530 });
+    root = client.createRoot(row);
+    await React.act(async () => { root.render(React.createElement(T.CartonProvider, { ui: createMockUi({ versions: 5 }) }, React.createElement(T.Sidebar, { panel: "history", setPanel() {}, projectId: "p1", bridge: { call: async () => ({}), onEvent: () => () => {} } }))); });
+    const b = row.querySelector("aside");
+    assert.deepEqual([b.getAttribute("data-fit"), b.style.width, b.style.height], ["overlay", "300px", "490px"], "no chat to cover: it ends above the timeline");
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+    for (const k of ["innerWidth", "addEventListener", "removeEventListener"]) delete globalThis.window[k];
+    Object.assign(globalThis.window, keep.win);
+    await w.happyDOM.close();
+  }
+});
+
 test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors' words", opt, () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   globalThis.document = { getElementById: () => null, createElement: () => ({}), head: { appendChild() {} }, activeElement: null };
@@ -169,20 +227,22 @@ test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors'
   assert.equal((html.match(/Join a shared project/g) ?? []).length, 1, "the title only, no second heading");
 });
 
-// The Dashboard patch (sync/patches/ui.js), on its own text: its two anchors, and its tile.
-function dashboard(ready, on = false) {
+// The Dashboard patch (sync/patches/ui.js), on its own text: its anchors, and its tile. `win` and `portal` stand in for
+// the page's; the dialog's chunk (`import("./carton-ui.js")`) is `win.__testUi()`.
+function dashboard(ready, on = false, { win = {}, portal = (x) => x, doc = {} } = {}) {
   const part = require(path.join(ROOT, "scripts", "carton", "sync", "patches", "ui.js"));
   const edits = [], pre = [];
   const file = (k) => ({ replace: (from, to, n = 1) => k === "index" && edits.push([from, to, n]), prepend: (t) => k === "index" && pre.push(t) });
   part.app({ editor: file("editor"), index: file("index") });
-  const win = { __carton: ready === undefined ? undefined : { on, ready } };
-  const api = new Function("r", "i", "Au", "window", "document", pre.join("\n") + "\nreturn { Tile: __cbCartonJoinTile, Button: __cbCartonJoinButton, useOn: __cbCartonUseOn };")(React, require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), { createPortal: (x) => x }, win, {});
+  if (ready !== undefined) win.__carton = { ...win.__carton, on, ready };
+  const src = pre.join("\n").split('import("./carton-ui.js")').join("window.__testUi()");
+  const api = new Function("r", "i", "Au", "window", "document", src + "\nreturn { Tile: __cbCartonJoinTile, Button: __cbCartonJoinButton, useOn: __cbCartonUseOn, Host: typeof __cbCartonJoinHost === 'function' ? __cbCartonJoinHost : null };")(React, require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), { createPortal: portal }, win, doc);
   return { edits, ...api };
 }
 
 test("P2-9: the Dashboard gets a Join tile beside New project, only once Carton says it is on", opt, async () => {
   const d = dashboard(Promise.resolve(true));
-  assert.equal(d.edits.length, 3);
+  assert.equal(d.edits.length, 4, "the grid's cells and their render, the empty library's row, the Join dialog's host");
   assert.ok(d.edits.every(([, , n]) => n === 1), "each anchor once");
   assert.match(d.edits[0][1], /\[null,\.\.\.\(__cbJ\?\[__cbCartonJoinCell\]:\[\]\),\.\.\.e\]/);
   assert.match(d.edits[0][1], /\[e,y,__cbJ\]\)$/, "the grid asks again when Carton's answer comes");
@@ -235,6 +295,89 @@ test("regress #3: an empty library offers Join beside Start a blank project, onl
   assert.equal(render(React.createElement(dashboard(Promise.resolve(false)).Button, { className: "x" })), "");
   assert.equal(render(React.createElement(dashboard(undefined).Button, { className: "x" })), "");
 });
+
+// Final re-check N1 (P2): joining from an empty library, the "… is in your library now · Open / Done" dialog closed on its
+// own as the joined project arrived, so Open couldn't be pressed and no tab opened (5 of 5 fresh profiles). The dialog
+// lived in the empty library's view ("Make your first video"), which Cardboard's Home replaces with the grid as soon as
+// the library holds a project. Here a Home as Cardboard's renders either view (its `P`), with the real Join dialog; the
+// library gets the project while the join is answered, before the answer and after it.
+for (const when of ["before", "after"])
+  test(`final N1: joining from an empty library keeps Open / Done until pressed (the project arrives ${when} the answer)`, opt, async () => {
+    const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+    const w = new Window({ url: "http://localhost/" });
+    const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
+    globalThis.document = w.document;
+    globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Bea" : null), setItem() {} };
+    globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    let root = null;
+    try {
+      const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+      const { createPortal } = require(path.join(CARTON, "node_modules", "react-dom"));
+      let addToLibrary = null;
+      const opened = [];
+      const bridge = {
+        on: true, ready: Promise.resolve(true), onEvent: () => () => {},
+        call: async (method) => {
+          assert.equal(method, "liveJoin");
+          // (inside the submit's act, which waits long enough for a timer)
+          if (when === "before") addToLibrary();
+          else setTimeout(addToLibrary, 0);
+          return { projectId: "p-fx", name: "FX ui" };
+        },
+        openProject: async (id) => { opened.push(id); },
+      };
+      const win = { __carton: bridge, __testUi: async () => ({ JoinDialog: U.JoinDialog }) };
+      const d = dashboard(bridge.ready, true, { win, portal: createPortal, doc: w.document });
+      // the host sits in Home's root, beside Cardboard's own dialogs: one anchor, in Cardboard 1.4.0 as shipped
+      const host = d.edits.find(([, to]) => to.includes("__cbCartonJoinHost"));
+      assert.deepEqual(host, ["i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog})", "i.jsx(iG,{...I.dialog}),i.jsx(CG,{...I.referenceDialog}),i.jsx(__cbCartonJoinHost,{})", 1]);
+      const pristine = process.env.CARDBOARD_PRISTINE && path.join(process.env.CARDBOARD_PRISTINE, "app-asar", "dist", "renderer", "assets");
+      if (pristine && fs.existsSync(pristine)) {
+        const hits = fs.readdirSync(pristine).filter((f) => /^index-.*\.js$/.test(f)).map((f) => fs.readFileSync(path.join(pristine, f), "utf8").split(host[0]).length - 1);
+        assert.deepEqual(hits.filter(Boolean), [1], "one match, in the Dashboard's chunk");
+      }
+      // Cardboard's Home (index-*.js): `P` is the empty view (E$, with Join in its row of buttons) while the library is
+      // empty, else the grid (Mq, with the Join tile); its root also holds its own dialogs, and the patch's Join host.
+      function Home() {
+        const [cards, setCards] = React.useState([]);
+        addToLibrary = () => setCards(["p-fx"]);
+        const P = cards.length === 0
+          ? React.createElement("section", { "data-view": "empty" }, React.createElement(d.Button, { className: "cb" }))
+          : React.createElement("div", { role: "list", "data-view": "grid" }, React.createElement(d.Tile), ...cards.map((c) => React.createElement("div", { key: c, role: "listitem" }, c)));
+        return React.createElement("div", null, P, d.Host ? React.createElement(d.Host) : null);
+      }
+      const el = w.document.createElement("div");
+      w.document.body.appendChild(el);
+      root = client.createRoot(el);
+      await React.act(async () => { root.render(React.createElement(Home)); await new Promise((r) => setTimeout(r, 10)); });
+      const body = w.document.body;
+      await React.act(async () => { body.querySelector("[data-carton-join]").click(); await new Promise((r) => setTimeout(r, 10)); });
+      const link = body.querySelector("#carton-join-link");
+      assert.ok(link, "the Join dialog is open");
+      // typed: react-dom was loaded here while `window` had no document, so it tells a change by its fallback (focus,
+      // then a key), not by the input event
+      await React.act(async () => {
+        link.focus();
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
+        for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
+      });
+      await React.act(async () => { link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 20)); });
+      await React.act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+      assert.ok(el.querySelector('[data-view="grid"]'), "the library shows the joined project: Cardboard swapped the empty view for the grid");
+      assert.match(body.textContent, /“FX ui” is in your library now\./, "the dialog says so, and stays");
+      const open = [...body.querySelectorAll("button")].find((b) => b.textContent === "Open");
+      assert.ok(open, "with its Open");
+      await React.act(async () => { open.click(); await new Promise((r) => setTimeout(r, 10)); });
+      assert.deepEqual(opened, ["p-fx"], "Open opens the joined project");
+      assert.equal(body.querySelector(".carton-join-dialog"), null, "and the dialog closes");
+    } finally {
+      if (root) await React.act(async () => root.unmount());
+      delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+      await w.happyDOM.close();
+    }
+  });
 
 // Regress 2026-11-02 #4 (UI audit P2-1: Esc closes the innermost layer only, "… → preview → panel"): with focus in the
 // side panel during a preview, Esc closed the whole panel and left the preview open. It returns from the preview first,

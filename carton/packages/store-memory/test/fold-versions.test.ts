@@ -155,3 +155,52 @@ test("P3: a partial fold that left out a split counts the split as one change", 
   assert.equal((await c2.fold(v2.id, { into: c2.cut, author: alice })).status, "confirmed");
   assert.equal((await top(c2, c2.cut)).summary, "Folded 'Client review' into 'Main cut': 2 changes");
 });
+
+// Final re-check, baseline P3-2: an Undo right after a Restore read as a fresh edit ("Added effect 'sharpen' on
+// 'clip.mp4'"), with nothing naming the restore. It says what it undid, as a restore and a fold say what they were;
+// its changes are its details. The redo of it says so too.
+test("baseline P3-2: the undo of a restore says it undid the restore, its redo that it redid it; the changes are listed", async () => {
+  const c = await open();
+  const main = c.cut;
+  await c.commit({ ops: [set("a", "name", "A1")], author: alice });
+  await c.commit({ ops: [set("b", "name", "B1")], author: alice });
+  await c.restore(`${main}@1`, { author: alice });
+  assert.equal((await top(c, main)).summary, "Restored an earlier version");
+  assert.equal((await c.undo(undefined, { author: alice })).status, "confirmed");
+  const u = await top(c, main);
+  assert.equal(u.kind, "undo");
+  assert.equal(u.summary, "Undid the restore");
+  assert.deepEqual(u.details, ['Changed \'b\' name "b" → "B1"'], "what the undo changed");
+  assert.equal((await c.redo(undefined, { author: alice })).status, "confirmed");
+  const r = await top(c, main);
+  assert.equal(r.summary, "Redid the restore");
+  assert.deepEqual(r.details, ['Changed \'B1\' name "B1" → "b"']);
+  // any other undo still reads as what it did
+  await c.commit({ ops: [set("c", "name", "C1")], author: alice });
+  await c.undo(undefined, { author: alice });
+  assert.equal((await top(c, main)).summary, 'Changed \'C1\' name "C1" → "c"');
+});
+
+// Final re-check, baseline P3-12b: "Folded the rest of 'Client review' into 'Main cut'" is a revert (of the partial
+// fold's inverse), which History marked as an undo (↺). log() says which partial fold's rest it is (`restOf`: the
+// partial fold's change), so a list can mark it as the fold it is. An undo of it, and the redo of that, aren't.
+test("baseline P3-12b: the rest of a partial fold names the partial fold it completes; its undo and redo don't", async () => {
+  const { c, main, v } = await review();
+  await c.foldSome(v.id, { into: main, reject: ["items/d"], author: alice });
+  const some = await top(c, main);
+  const [left] = await c.leftOut(v.id, { into: main });
+  assert.equal(left!.change, some.change, "the partial fold's version is its partial revert");
+  await c.revert(left!.change, { cut: main, author: alice });
+  const rest = await top(c, main);
+  assert.equal(rest.kind, "revert");
+  assert.equal(rest.restOf, some.change);
+  await c.undo(undefined, { cut: main, author: alice });
+  assert.equal((await top(c, main)).restOf, undefined, "its undo");
+  await c.redo(undefined, { cut: main, author: alice });
+  assert.equal((await top(c, main)).restOf, undefined, "the redo");
+  // an ordinary revert isn't one either
+  await c.commit({ cut: main, ops: [set("c", "name", "C9")], author: alice });
+  const plain = await top(c, main);
+  await c.revert(plain.change!, { cut: main, author: alice });
+  assert.equal((await top(c, main)).restOf, undefined);
+});

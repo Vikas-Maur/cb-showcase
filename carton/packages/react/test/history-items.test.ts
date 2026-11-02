@@ -216,3 +216,32 @@ test("P1-4 (review #2): undoing 'Fold in the rest' offers the rest again, on its
   assert.equal((await ui.planFold(v.id, main)).changes.length, 1, "and Fold in lists it");
   ui.dispose();
 });
+
+// Final re-check, baseline P3-12b: "Folded the rest of 'Alt' into 'Main cut'" had the ↺ mark, as a revert. It is a fold
+// (core's `restOf`); its undo is an undo.
+test("baseline P3-12b: the rest of a partial fold is a fold row; its undo an undo row", async () => {
+  const { ui, main, v } = await alt();
+  await ui.planFold(v.id, main);
+  await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} });
+  await settle();
+  assert.equal((await ui.foldRest((await rows(ui))[0]!.id)).ok, true);
+  const rest = (await rows(ui))[0]!;
+  assert.equal(rest.summary, "Folded the rest of 'Alt' into 'Main cut': 1 change");
+  assert.equal(rest.kind, "fold");
+  assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true);
+  assert.equal((await rows(ui))[0]!.kind, "undo");
+  ui.dispose();
+});
+
+// Final re-check, baseline P3-2: the panel's row for an Undo right after a Restore says what it undid.
+test("baseline P3-2: an Undo right after a Restore reads \"Undid the restore\", its changes in its details", async () => {
+  const { carton, ui } = await open();
+  await carton.commit({ ops: [set("a", "name", "A1"), set("b", "name", "B1")], author: alice });
+  await ui.restore(`${carton.cut}@0`);
+  await settle();
+  assert.equal((await rows(ui))[0]!.summary, "Restored an earlier version");
+  assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true);
+  const u = (await rows(ui))[0]!;
+  assert.deepEqual([u.kind, u.summary, u.details?.length], ["undo", "Undid the restore", 2]);
+  ui.dispose();
+});

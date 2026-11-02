@@ -240,6 +240,8 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out
     part is still left out, newest first: the inverse change, its version, who folded and the paths. Folding in the rest
     is `revert(change)` (as `cb fold` does when nothing new is left); a plain `fold` still doesn't bring it in (§5.3).
+    `log()` marks that revert's version with `restOf` (the partial fold's `change`), so a list shows it as a fold, not
+    an undo (final re-check P3-12b); its undo and the redo of that have none.
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
   Published cut's welcome carries `source: { branchId, at, head, versions }` (`sync.WelcomeMsg`): the cut it came from,
