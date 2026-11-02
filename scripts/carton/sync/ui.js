@@ -60,8 +60,9 @@ function useAction(fn, where) {
   };
   return [run, busy, error, setError];
 }
-// A failure no field owns: under the button, the raw text in its tooltip for support.
-const Problem = ({ error }) => (error && !error.field ? h("p", { className: "text-xs text-destructive", role: "alert", title: error.raw }, error.text) : null);
+// A failure under the button, the raw text in its tooltip for support: any the form has no field for (`fields`: the
+// ones it shows; Invite and Open show none, so theirs always show here: review finding 3).
+const Problem = ({ error, fields = [] }) => (error && !fields.includes(error.field) ? h("p", { className: "text-xs text-destructive", role: "alert", title: error.raw }, error.text) : null);
 const fieldError = (error, field) => (error?.field === field ? error.text : null);
 
 // The name teammates see, asked once (an app setting): shown as a line with "Change" once it is known.
@@ -169,12 +170,12 @@ function ShareForm({ projectId, bridge, onShared }) {
   const askSecret = checked === "invite" || error?.field === "secret";
   return h("form", { className: "flex flex-col gap-3", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); } },
     h("h3", { className: "text-sm font-medium" }, "Share this project"),
-    h("p", { className: "text-xs text-muted-foreground" }, "Teammates you invite edit it with you, live, with its history. They get preview copies of your footage; the originals stay on this computer."),
+    h("p", { className: "text-xs text-muted-foreground" }, "Teammates you invite edit it with you, live, with its history. They get preview copies of your video, whose originals stay on this computer; audio and still images go as they are."),
     h(Field, { id: "carton-share-host", label: "Sharing server", hint: "The address you were given, like https://share.example.com", error: hostError, value: hostUrl, inputMode: "url", spellCheck: false, onChange: (e) => setHost(e.target.value), placeholder: "https://share.example.com" }),
     askSecret ? h(Field, { id: "carton-share-secret", label: "Invite code", hint: "This server asks for one. Ask whoever runs it.", error: missing === "secret" ? "Enter the invite code." : fieldError(error, "secret"), value: secret, onChange: (e) => setSecret(e.target.value), type: "password", "data-carton-secret": "" }) : null,
     h(NameField, { id: "carton-share-name", name, setName, known, error: missing === "name" ? "Enter your name." : fieldError(error, "name") }),
     h("div", { className: "flex" }, h(Button, { type: "submit", busy, variant: "primary" }, busy ? "Sharing…" : "Share")),
-    h(Problem, { error }));
+    h(Problem, { error, fields: askSecret ? ["host", "secret"] : ["host"] }));
 }
 
 function Join({ bridge }) {
@@ -196,7 +197,7 @@ function Join({ bridge }) {
     // Joined: the way on is to open it, not a form left filled in.
     return h("section", { className: "flex flex-col gap-2 border-t border-white/[0.06] pt-4", role: "status" },
       h("p", { className: "text-sm" }, `“${done.name}” is in your library now.`),
-      h("p", { className: "text-xs text-muted-foreground" }, "Its footage arrives as preview copies while your teammate's computer sends it."),
+      h("p", { className: "text-xs text-muted-foreground" }, "Its footage arrives while your teammate's computer sends it: video as preview copies."),
       h("div", { className: "flex gap-2" },
         bridge.openProject ? h(Button, { variant: "primary", busy: opening, onClick: () => openIt() }, "Open") : null,
         h(Button, { variant: "ghost", onClick: () => { setDone(null); setOpen(false); } }, "Done")),
@@ -212,7 +213,7 @@ function Join({ bridge }) {
     h(Field, { id: "carton-join-link", label: "Invite link", error: missing === "link" ? "Paste the invite link you were sent." : fieldError(error, "link"), value: link, spellCheck: false, onChange: (e) => setLink(e.target.value), placeholder: "https://…/#join=…", autoFocus: true }),
     h(NameField, { id: "carton-join-name", name, setName, known, error: missing === "name" ? "Enter your name." : fieldError(error, "name") }),
     h("div", { className: "flex gap-2" }, h(Button, { type: "submit", busy, variant: "primary" }, busy ? "Joining…" : "Join"), h(Button, { variant: "ghost", onClick: () => { setOpen(false); setMissing(null); setError(null); } }, words.cancel)),
-    h(Problem, { error }));
+    h(Problem, { error, fields: ["link"] }));
 }
 
 // The "Live" section of a shared project: status words, why sync fails when it does, who is here.
@@ -255,4 +256,4 @@ export function SharePanel({ projectId, active, bridge }) {
     st.shared ? null : h(Join, { bridge }));
 }
 
-window.__cartonSyncUi = { SharePanel, LiveStatus, shareProblem, ShareForm, Join, Invite };
+window.__cartonSyncUi = { SharePanel, LiveStatus, shareProblem, ShareForm, Join, Invite, Problem };

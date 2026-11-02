@@ -252,15 +252,23 @@ function Player({ diff, props }: { diff: ShotDiff; props: WatchTheChangesProps }
       props.onClose();
       return;
     }
-    if ((e.target as HTMLElement).tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) return;
+    // The keys Watch uses stop here: Cardboard's own shortcuts (Space plays the editor, the arrows step it) must not
+    // also act on them (review finding 4). A button's own Space/Enter still presses it.
+    if ((e.target as HTMLElement).tagName === "BUTTON" && (e.key === " " || e.key === "Enter")) {
+      e.stopPropagation();
+      return;
+    }
     if (e.key === " ") {
       e.preventDefault();
+      e.stopPropagation();
       player.toggle();
     } else if (e.key === "ArrowRight") {
       e.preventDefault();
+      e.stopPropagation();
       player.next();
     } else if (e.key === "ArrowLeft") {
       e.preventDefault();
+      e.stopPropagation();
       player.previous();
     }
   };

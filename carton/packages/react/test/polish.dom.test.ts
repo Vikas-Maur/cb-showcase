@@ -198,4 +198,43 @@ test(name("P2-1, P2-20: Esc on a typed reply asks once before discarding it; the
   await m.unmount();
 });
 
+test(name("review finding 4: Space and the arrows in Watch never reach Cardboard's own shortcuts, nor does a button's Space"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  let reached = 0;
+  const m = await render(wrap(ui, h("div", { onKeyDown: () => reached++ }, h(WatchTheChanges, { a: "main@3", b: "main@9" }))));
+  await flush();
+  const root = $(m.container, ".carton-watch")!;
+  for (const k of [" ", "ArrowRight", "ArrowLeft"]) await key(root, k);
+  await key(byText(root, "button", "Play changes") ?? byText(root, "button", "Pause"), " ");
+  assert.equal(reached, 0);
+  await m.unmount();
+});
+
+test(name("review finding 5: Shift+Tab from the dialog itself wraps to its last control"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose() {} })));
+  await flush();
+  const dialog = document.activeElement as HTMLElement;
+  assert.equal(dialog.getAttribute("role"), "dialog");
+  const ev = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+  await act(async () => { dialog.dispatchEvent(ev); });
+  assert.equal(ev.defaultPrevented, true);
+  const controls = $$(dialog, "button:not([disabled]), input:not([disabled])");
+  assert.equal(document.activeElement, controls.at(-1));
+  await m.unmount();
+});
+
+test(name("review finding 7: with another row's menu open, only that row looks picked"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await click($$(m.container, "[role=option]")[1]!);
+  assert.equal($$(m.container, "[role=option]")[1]!.dataset.active, "");
+  await click($$(m.container, "[role=option]")[4]!.querySelector(".carton-version-more"));
+  assert.equal($(m.container, ".carton-history")!.dataset.menuOpen, "", "the panel says a menu is open (its skin then dims the active row)");
+  assert.equal($$(m.container, "[role=option]")[4]!.dataset.menu, "");
+  await key(document.activeElement, "Escape");
+  assert.equal($(m.container, ".carton-history")!.dataset.menuOpen, undefined);
+  await m.unmount();
+});
+
 void act;

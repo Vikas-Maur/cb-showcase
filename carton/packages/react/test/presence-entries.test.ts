@@ -80,6 +80,9 @@ test("fromCarton names a present teammate by the person the sync layer sends (wh
   // Ghosts are the teammate's own data: a malformed one is never drawn, and never a crash.
   emit({ type: "presence", branchId, actor: handleActor as CoreActor, state: { who: { id: "Leo", name: "Leo" }, ghosts: [null, { item: 1 }, { item: "a", track: "t1", start: 1, end: 2, label: { x: 1 } }, "drag"] } } as unknown as CartonEvent);
   assert.deepEqual(ui.ghosts().map((g) => [g.itemId, g.start, g.end, g.label]), [["a", 1, 2, undefined]]);
+  // review finding 6: a ghost names the person, as the peer does, so the ghost layer finds their name and colour
+  assert.equal(ui.ghosts()[0]!.actorKey, ui.peers()[0]!.actor.key);
+  assert.equal(ui.actor(ui.ghosts()[0]!.actorKey)?.name, "Leo");
   emit({ type: "presence", branchId, actor: handleActor as CoreActor, state: { who: { id: "Leo" }, ghosts: "not a list" } } as unknown as CartonEvent);
   assert.deepEqual(ui.ghosts(), []);
   emit({ type: "presence", branchId, actor: handleActor as CoreActor, state: null } as CartonEvent);

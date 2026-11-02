@@ -560,9 +560,18 @@ extend({
         const bundlePath = api.bundleOf(projectId);
         const cfg = bundlePath && store.readConfig(bundlePath, projectId);
         if (!cfg) return null;
+        // Which clips' originals were on this computer: the bundle's project.json (a path for each), and the clips this
+        // computer shared itself (media-shared.json). A project.json that can't be read (Windows: another reader, a
+        // save mid-rename) is read again; still unreadable, this says it can't tell (an error), never "a teammate's"
+        // (review finding 2: the person's own moved original would have lost Cardboard's dialog).
         let envelope = null;
-        try { envelope = JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")); } catch {}
-        const here = new Set((envelope?.media ?? []).filter((m) => m?.nativePath).map((m) => m.mediaId));
+        for (let i = 0; ; i++) {
+          try { envelope = JSON.parse(fs.readFileSync(path.join(bundlePath, "project.json"), "utf8")); break; } catch (e) {
+            if (i >= 10) throw new Error("This project's files couldn't be read to check its footage: " + (e?.code ?? e?.message ?? e));
+            await sleep(50);
+          }
+        }
+        const here = new Set([...(envelope?.media ?? []).filter((m) => m?.nativePath).map((m) => m.mediaId), ...Object.keys(readShared(bundlePath, projectId))]);
         const lc = await api.open(bundlePath).catch(() => null);
         const clips = {};
         const theirs = (mediaIds ?? []).filter((id) => { if (here.has(id)) clips[id] = "local"; return !here.has(id); });

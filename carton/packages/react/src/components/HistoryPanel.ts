@@ -224,7 +224,7 @@ export function HistoryPanel(props: HistoryPanelProps) {
 
   return h(
     "section",
-    { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history },
+    { ref: panel, className: cx("carton-history", props.className), "aria-label": words.history, "data-menu-open": menu ? "" : undefined },
     h(
       "header",
       { className: "carton-panel-head" },

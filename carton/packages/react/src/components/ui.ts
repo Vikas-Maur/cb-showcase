@@ -365,7 +365,8 @@ export function Dialog(p: DialogProps) {
     const f = [...ref.current.querySelectorAll<HTMLElement>("button:not([disabled]), input:not([disabled]), [tabindex='0']")];
     if (!f.length) return;
     const first = f[0]!, last = f[f.length - 1]!;
-    if (e.shiftKey && document.activeElement === first) {
+    // The dialog itself has focus when it opens: Shift+Tab from there wraps to the last control, never out behind it.
+    if (e.shiftKey && (document.activeElement === first || document.activeElement === ref.current)) {
       e.preventDefault();
       last.focus();
     } else if (!e.shiftKey && document.activeElement === last) {

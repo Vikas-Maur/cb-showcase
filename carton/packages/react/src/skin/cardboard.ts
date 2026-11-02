@@ -178,6 +178,8 @@ export const cardboardSkin = `
   transition:background-color var(--cb-fast)}
 :where(${S}) :where(.carton-version:hover){background:#ffffff08}
 :where(${S}) :where(.carton-version[data-active], .carton-version[data-menu]){background:#ffffff0f}
+/* while one row's menu is open, it is the only row that looks picked (review finding 7) */
+:where(${S}) :where(.carton-history[data-menu-open] .carton-version[data-active]:not([data-menu]):not(:hover)){background:transparent}
 :where(${S}) :where(.carton-version[data-compared]){background:#ffffff0f;box-shadow:inset 2px 0 0 var(--cb-fg-2)}
 :where(${S}) :where(.carton-history-list:focus-visible .carton-version[data-active]){box-shadow:inset 0 0 0 1px var(--cb-line-2)}
 /* The rail: one line through every version's mark, like a timeline of versions. */

@@ -85,7 +85,7 @@ test("P2-8, P2-10: the Share form asks in editors' words, validates inline, and 
   assert.doesNotMatch(form, /required/);
   assert.doesNotMatch(form, /Carton host|admin token|Owner invite|Alice/);
   assert.doesNotMatch(form, /Invite code/, "the code is asked for only when the server wants one");
-  assert.match(form, /the originals stay on this computer/);
+  assert.match(form, /whose originals stay on this computer/);
   const invite = render(React.createElement(ui.Invite, { projectId: "p", bridge, offline: false }));
   assert.doesNotMatch(invite, /<select/);
   assert.match(invite, /aria-haspopup="menu"/);
@@ -111,4 +111,19 @@ test("P2-12: offline says it once; the server's own words go to the tooltip, and
   assert.match(out, /title="couldn&#x27;t connect to the host/);
   assert.match(out, /Teammates see you as Bob\./);
   assert.doesNotMatch(out, />[^<]*(Shared through|127\.0\.0\.1)[^<]*</, "the address isn't in the text");
+});
+
+test("review finding 3: an Invite or Open failure shows under its button, whatever field its words name", () => {
+  const p = ui.shareProblem("fetch failed", "invite");
+  const shown = render(React.createElement(ui.Problem, { error: p }));
+  assert.match(shown, /role="alert"/);
+  assert.match(shown, /Can&#x27;t reach this address/);
+  // the Share form has a field for it: shown there, not twice
+  assert.equal(render(React.createElement(ui.Problem, { error: p, fields: ["host"] })), "");
+});
+
+test("review finding 8: the Share form doesn't claim every original stays here: audio and stills go as they are", () => {
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  const form = render(React.createElement(ui.ShareForm, { projectId: "p", bridge: { call: async () => ({}), onEvent: () => () => {} }, onShared() {} }));
+  assert.match(form, /preview copies of your video, whose originals stay on this computer; audio and still images go as they are/);
 });

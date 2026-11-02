@@ -853,7 +853,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const idle = state.idle === true;
         const peer = prev && prev.peer.actor === actor && prev.peer.idle === idle && prev.peer.activity === activity && prev.peer.cutId === on ? prev.peer : { actor, cutId: on, idle, ...(activity ? { activity } : {}) };
         // Ghosts are the teammate's own data, relayed as sent: only well-formed ones are drawn (UI audit P1-1).
-        const g = (Array.isArray(state.ghosts) ? state.ghosts : []).filter((x) => x && typeof x.item === "string" && typeof x.track === "string" && Number.isFinite(x.start) && Number.isFinite(x.end)).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(typeof x.label === "string" && x.label ? { label: x.label } : {}) }));
+        const g = (Array.isArray(state.ghosts) ? state.ghosts : []).filter((x) => x && typeof x.item === "string" && typeof x.track === "string" && Number.isFinite(x.start) && Number.isFinite(x.end)).map((x) => ({ actorKey: actor.key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(typeof x.label === "string" && x.label ? { label: x.label } : {}) }));
         peerMap.set(key, { peer, seen: clock(), ghosts: g, on, said: idle });
         if (peer !== prev?.peer) publishPeers();
         if ((on === cutId && g.length) || (prev?.on === cutId && prev.ghosts.length)) publishGhosts();

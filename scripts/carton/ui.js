@@ -279,7 +279,7 @@ function MediaNotice({ projectId, bridge }) {
   }, [projectId]);
   const waiting = here?.waiting ?? [];
   useEffect(() => {
-    if (closed || arrived || !waiting.length) return undefined;
+    if (closed || arrived || !waiting.length || here?.unchecked) return undefined;
     const t = setInterval(() => {
       bridge.call("liveMediaHere", [{ projectId, mediaIds: waiting.map((w) => w.mediaId) }]).then((r) => {
         if (r?.clips && waiting.every((w) => r.clips[w.mediaId] === "playable")) setArrived(true);
@@ -289,13 +289,15 @@ function MediaNotice({ projectId, bridge }) {
   }, [bridge, projectId, waiting, closed, arrived]);
   if (closed || !here || (!waiting.length && !here.playable)) return null;
   const names = waiting.slice(0, 2).map((w) => w.fileName).join(", ") + (waiting.length > 2 ? ` and ${waiting.length - 2} more` : "");
-  const text = arrived
+  const text = here.unchecked
+    ? `${waiting.length === 1 ? `${names} couldn't be checked, so it shows` : `${waiting.length} clips couldn't be checked (${names}), so they show`} as Offline. Nothing was removed. Close and reopen the project to check again.`
+    : arrived
     ? "Your teammate's footage has arrived. Close and reopen the project to play it."
     : waiting.length === 1
       ? `${names} hasn't arrived yet. It shows as Offline until your teammate's computer sends it. Nothing was removed.`
       : waiting.length
         ? `${waiting.length} clips haven't arrived yet (${names}). They show as Offline until your teammate's computer sends them. Nothing was removed.`
-        : "This footage plays from preview copies. The originals stay on your teammate's computer.";
+        : "This video plays from preview copies. Its originals stay on your teammate's computer.";
   return h("div", { className: "carton-media-notice", role: "status", "data-waiting": waiting.length && !arrived ? "" : undefined, onKeyDown: (e) => { if (e.key === "Escape") { e.stopPropagation(); setClosed(true); } } },
     h(Icon, { name: waiting.length && !arrived ? "cloudSlash" : "cloudCheck", size: 14 }),
     h("span", { className: "carton-media-notice-text" }, text),

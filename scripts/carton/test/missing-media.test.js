@@ -13,6 +13,7 @@ function load(bridge) {
   part.app({ main: file("main"), editor: file("editor") });
   const events = [];
   const window = { __carton: bridge, dispatchEvent: (e) => events.push(e.detail) };
+  // the loader's wait is read when it runs: tests shorten it on the returned window
   class CustomEvent { constructor(type, o) { this.type = type; this.detail = o?.detail; } }
   const api = new Function("window", "CustomEvent", pre.editor + "\nreturn { inspect: __cbCartonInspect, split: __cbCartonSplit };")(window, CustomEvent);
   return { ...api, edits: edits.editor, events, window };
@@ -61,9 +62,9 @@ test("all of a teammate's footage playable: the notice still says the originals 
   assert.deepEqual(offline, []);
 });
 
-test("Carton off, a project that isn't shared, or a worker that fails: Cardboard's own path, untouched", async () => {
+test("Carton off, or a project the worker says isn't shared: Cardboard's own path, untouched", async () => {
   const items = [missingItem("theirs-later"), missingItem("moved")];
-  for (const bridge of [{ on: false }, { on: true, call: async () => null }, { on: true, call: async () => { throw new Error("no worker"); } }]) {
+  for (const bridge of [{ on: false }, { on: true, call: async () => null }]) {
     const p = load(bridge);
     const before = inspected();
     const out = await p.inspect("proj", media, before);
@@ -72,4 +73,30 @@ test("Carton off, a project that isn't shared, or a worker that fails: Cardboard
     assert.equal(p.split("proj", items, (w) => offline.push(...w)), items);
     assert.deepEqual(offline, []);
   }
+});
+
+test("review finding 1: a worker that can't say whose a clip is (fails, or never answers) never leads to Remove and Open", async () => {
+  const items = [missingItem("theirs-later"), missingItem("moved")];
+  let tries = 0;
+  for (const call of [async () => { tries++; throw new Error("no worker"); }, () => new Promise(() => {})]) {
+    const p = load({ on: true, call });
+    p.window.__cartonMediaWaitMs = 1200;
+    const before = inspected();
+    const out = await p.inspect("proj", media, before);
+    assert.equal(out, before, "nothing is made available");
+    const offline = [];
+    const left = p.split("proj", items, (w) => offline.push(...w));
+    assert.deepEqual(left, [], "nothing goes to Missing Media Files, so Remove and Open has nothing to remove");
+    assert.deepEqual(offline.map((i) => [i.mediaId, i.status]), [["theirs-later", "carton_unchecked"], ["moved", "carton_unchecked"]]);
+    assert.equal(p.events.at(-1).unchecked, true, "the notice says they couldn't be checked");
+  }
+  assert.ok(tries >= 2, "a failing worker is asked again before giving up: " + tries);
+});
+
+test("a worker that fails once and then answers is used (retried)", async () => {
+  let n = 0;
+  const p = load({ on: true, call: async () => { if (n++ === 0) throw new Error("busy"); return { clips: { "theirs-ready": "playable" } }; } });
+  p.window.__cartonMediaWaitMs = 3000;
+  const out = await p.inspect("proj", media, inspected());
+  assert.equal(out.get("theirs-ready").status, "available");
 });
