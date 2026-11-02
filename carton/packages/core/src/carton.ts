@@ -1510,15 +1510,32 @@ class CartonImpl implements Carton {
     const words = new Map<number, { summary: string; details?: string[] }>();
     const name = (id: string) => this.#h.cut(id)?.name;
     // "Folded 'Client review' into 'Main cut'": the cut folded in by name (a copy's lineage node has none)
-    const fold = (m: ConfirmedChange, rest = false) => {
+    const foldOf = (m: ConfirmedChange, rest = false) => {
       const from = m.mergeOf && name(m.mergeOf.branchId);
-      return `Folded ${rest ? "the rest of " : ""}${from ? `'${from}'` : "another copy"} into '${name(cut) ?? "this cut"}'`;
+      return `${rest ? "the rest of " : ""}${from ? `'${from}'` : "another copy"} into '${name(cut) ?? "this cut"}'`;
     };
+    const fold = (m: ConfirmedChange, rest = false) => `Folded ${foldOf(m, rest)}`;
     // a change per record, a split one: as the Fold dialog lists them, and everything else counts them (E.countChanges)
     const records = (ops: readonly Op[], base: Doc) => E.countChanges(ops, base, this.schema);
     const changes = (n: number, of?: number) => (of !== undefined ? `${n} of ${of} change${of === 1 ? "" : "s"}` : `${n} change${n === 1 ? "" : "s"}`);
     let byId: Map<string, ConfirmedChange> | null = null;
     const find = (id: unknown) => (typeof id === "string" ? (byId ??= new Map(log.map((c) => [c.id, c]))).get(id) : undefined);
+    // An undo or a redo of a restore or a fold says so, however often it went back and forth (baseline P3-2, regress
+    // prod3 P3-D: the second ⌘Z after a restore read as a fresh edit): back along what each one undid or redid to the
+    // restore or fold it began with; an odd number of steps took it back. Others read as what they did.
+    const undid = (c: ConfirmedChange): string | undefined => {
+      let n = 0, x = c;
+      for (;;) {
+        const t = x.kind === "undo" || x.kind === "revert" ? find([x.reverts ?? []].flat().at(-1)) : undefined;
+        if (!t || (x.kind === "revert" && t.kind === "partial-revert")) break; // x is "fold in the rest" itself
+        n++;
+        x = t;
+      }
+      const rest = x.kind === "revert";
+      const m = x.mergeOf ? x : x.kind === "partial-revert" ? find(x.reverts) : rest ? find(find(x.reverts)?.reverts) : undefined;
+      const what = x.kind === "restore" ? "the restore" : m?.mergeOf ? `the fold of ${foldOf(m, rest)}` : "";
+      return n && what ? `${n % 2 ? "Undid" : "Redid"} ${what}` : undefined;
+    };
     let pairBase: Doc | null = null;
     for (let s = Math.max(1, lo); s <= versions[0]!.ref.seq; s++) {
       const c = log[s - 1]!;
@@ -1542,16 +1559,13 @@ class CartonImpl implements Carton {
         if (c.mergeOf || c.kind === "revert") n = records(ops, doc);
         after = E.apply(doc, c.ops, this.schema);
       }
-      let summary = v.summary;
+      let summary = v.summary, again: string | undefined;
       const merged = pairBase ? find(c.reverts) : c.mergeOf ? c : undefined;
       if (c.kind === "import") summary = "Imported the project"; // the whole project arriving: one line, not its first field
       else if (merged && pairBase) summary = `${fold(merged)}: ${changes(n, records(merged.ops, pairBase))}`;
       else if (merged) summary = n ? `${fold(merged)}: ${changes(n)}` : fold(merged);
       else if (c.kind === "restore") summary = "Restored an earlier version";
-      // an undo of a restore, and the redo of that, say so (baseline P3-2: it read as a fresh edit); others read as
-      // what they did
-      else if (c.kind === "undo" && find(c.reverts)?.kind === "restore") summary = "Undid the restore";
-      else if (c.kind === "revert" && find(find(c.reverts)?.kind === "undo" ? find(c.reverts)!.reverts : undefined)?.kind === "restore") summary = "Redid the restore";
+      else if ((c.kind === "undo" || c.kind === "revert") && (again = undid(c))) summary = again;
       else if (c.kind === "revert") {
         // "Fold in the rest" reverts a partial fold's inverse
         const inv = find(c.reverts), m = inv?.kind === "partial-revert" ? find(inv.reverts) : undefined;

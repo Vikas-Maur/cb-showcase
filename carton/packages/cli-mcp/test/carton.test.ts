@@ -60,6 +60,12 @@ test("real Carton: cuts, fold --check, fold in some of it, publish", async () =>
     const h = await cb(local, ["history", "--json", "--limit", "2"]);
     assert.deepEqual(h.json().versions.map((v: any) => [v.kind, v.leftOut ?? null]), [["merge", ["timelineItems/c3"]], ["edit", null]], h.out);
     assert.match((await cb(local, ["history", "--limit", "1"])).out.split("\n")[1]!, /\smerge \(1 left out\)$/);
+    // regress prod3: folding in the rest is the fold it finishes (it read "person revert")
+    assert.equal((await cb(local, ["fold", "Short", "--json"])).json().status, "confirmed");
+    const rest = (await cb(local, ["history", "--json", "--limit", "1"])).json().versions[0];
+    assert.deepEqual([rest.kind, rest.rest], ["merge", true], JSON.stringify(rest));
+    assert.match((await cb(local, ["history", "--limit", "1"])).out.split("\n")[1]!, /\smerge \(the rest\)$/);
+    assert.equal(((await local.carton.head()).doc.timelineItems as Rec[]).find((i) => i.id === "c3")!.name, "short-3");
     const p = await cb(local, ["publish", "--name", "Sent to client"]);
     assert.equal(p.code, 0, p.err);
     assert.match((await cb(local, ["cut", "list"])).out, /Sent to client\s+published/);

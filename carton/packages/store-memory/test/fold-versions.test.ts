@@ -204,3 +204,42 @@ test("baseline P3-12b: the rest of a partial fold names the partial fold it comp
   await c.revert(plain.change!, { cut: main, author: alice });
   assert.equal((await top(c, main)).restOf, undefined);
 });
+
+// Regress prod3 P3-D: Restore → ⌘Z ("Undid the restore") → redo ("Redid the restore") → ⌘Z → redo: the last two read
+// "Added track 'Text 1', moved 'W6'" and the reverse, worded as fresh edits under the ↺ icon. However often it goes back
+// and forth, each undo or redo of a restore says so; the undo of "Folded the rest…" and of a fold say what they undid.
+test("prod3 P3-D: every undo and redo of a restore names the restore; an undo of a fold names the fold", async () => {
+  const c = await open();
+  const main = c.cut;
+  await c.commit({ ops: [set("a", "name", "A1")], author: alice });
+  await c.commit({ ops: [set("b", "name", "B1")], author: alice });
+  await c.restore(`${main}@1`, { author: alice });
+  const said: string[] = [];
+  for (const step of ["undo", "redo", "undo", "redo", "undo"] as const) {
+    assert.equal((await c[step](undefined, { author: alice })).status, "confirmed", step);
+    said.push((await top(c, main)).summary!);
+  }
+  assert.deepEqual(said, ["Undid the restore", "Redid the restore", "Undid the restore", "Redid the restore", "Undid the restore"]);
+  // the details still list what each one changed
+  assert.deepEqual((await top(c, main)).details, ['Changed \'b\' name "b" → "B1"']);
+  // an edit after it reads as the edit it is, and its undo as what it did
+  await c.commit({ ops: [set("c", "name", "C1")], author: alice });
+  await c.undo(undefined, { author: alice });
+  assert.equal((await top(c, main)).summary, 'Changed \'C1\' name "C1" → "c"');
+
+  // "Folded the rest…", its undo and the redo of that
+  const r = await review();
+  await r.c.foldSome(r.v.id, { into: r.main, reject: ["items/d"], author: alice });
+  const [left] = await r.c.leftOut(r.v.id, { into: r.main });
+  await r.c.revert(left!.change, { cut: r.main, author: alice });
+  assert.equal((await top(r.c, r.main)).summary, "Folded the rest of 'Client review' into 'Main cut': 1 change");
+  await r.c.undo(undefined, { cut: r.main, author: alice });
+  assert.equal((await top(r.c, r.main)).summary, "Undid the fold of the rest of 'Client review' into 'Main cut'");
+  await r.c.redo(undefined, { cut: r.main, author: alice });
+  assert.equal((await top(r.c, r.main)).summary, "Redid the fold of the rest of 'Client review' into 'Main cut'");
+  // a whole fold's undo
+  const f = await review();
+  await f.c.fold(f.v.id, { into: f.main, author: alice });
+  await f.c.undo(undefined, { cut: f.main, author: alice });
+  assert.equal((await top(f.c, f.main)).summary, "Undid the fold of 'Client review' into 'Main cut'");
+});
