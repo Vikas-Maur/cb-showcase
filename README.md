@@ -459,7 +459,8 @@ What changes with it on:
   printed from, whether its header is Cardboard's number or Carton's version.
 - **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
   panel beside the agent's chat, in the chat's look (drag its edge to resize); the same icon closes it, and the icon
-  of the open panel shows as pressed. The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
+  of the open panel shows as pressed. Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
+  keymap). The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
   History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
   too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" (Undo and Redo look
   unavailable meanwhile); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.

@@ -99,7 +99,8 @@ function useConn(projectId, bridge) {
   return [conn, ready];
 }
 
-const PANELS = { history: { label: "History", icon: "versions" }, comments: { label: "Comments", icon: "comment" }, share: { label: "Share", icon: "users" } };
+const HISTORY_KEY = /Mac|iPhone|iPad/.test(globalThis.navigator?.platform ?? "") ? "⌘⇧H" : "Ctrl+Shift+H";
+const PANELS = { history: { label: "History", icon: "versions", key: HISTORY_KEY }, comments: { label: "Comments", icon: "comment" }, share: { label: "Share", icon: "users" } };
 // Which side panel is open, for the stage layer of this page (both parts live in this module, so it stays in it): the
 // card stack folds to its pill while a panel takes the room beside the chat.
 const sidePanel = { value: null, subs: new Set(), set(v) { this.value = v; for (const f of this.subs) f(v); } };
@@ -280,7 +281,7 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
       h("div", { className: "flex h-[40px] shrink-0 items-center gap-[2px] pr-[16px] pl-[12px]" },
         h("div", { className: "flex min-w-0 flex-1 items-center gap-[2px]", role: "tablist" },
           ...tabs.map((id) => h("button", {
-            key: id, type: "button", role: "tab", "aria-selected": panel === id, onClick: () => setPanel(id),
+            key: id, type: "button", role: "tab", "aria-selected": panel === id, onClick: () => setPanel(id), title: PANELS[id].key ? `${PANELS[id].label} (${PANELS[id].key})` : undefined, "aria-keyshortcuts": PANELS[id].key ? "Control+Shift+H" : undefined,
             className: "relative flex h-[26px] shrink-0 cursor-pointer items-center gap-[6px] rounded-ui-md px-[8px] text-ui-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/30 " +
               (panel === id ? "bg-white/[0.07] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"),
           }, h(Icon, { name: PANELS[id].icon, size: 14 }), PANELS[id].label))),
@@ -296,6 +297,19 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   const [conn] = useConn(projectId, bridge);
   const [panel, setPanelState] = useState(null);
   const setPanel = useCallback((p) => setPanelState(p), []);
+  // Ctrl+Shift+H (Cmd+Shift+H on a Mac) opens and closes History (UI audit P3-7): H is free in Cardboard's keymap,
+  // and Shift with Ctrl/Cmd pairs it with Cardboard's own Ctrl+Shift+B ("Report an issue"). Only the editor's page
+  // listens (this panel lives there), and only for that exact chord.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || !e.shiftKey || e.altKey || (e.code !== "KeyH" && e.key !== "H" && e.key !== "h")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setPanelState((p) => (p === "history" ? null : "history"));
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, []);
   // The title bar's icons: the same icon again closes it.
   useEffect(() => bridge.onCommand?.((ev) => {
     const which = ev?.action === "carton-history" ? "history" : ev?.action === "carton-share" ? "share" : null;

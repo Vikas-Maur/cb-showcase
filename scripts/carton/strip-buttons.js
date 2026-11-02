@@ -51,7 +51,7 @@ function __cbCartonStrip({ panel }) {
   }, []);
   const live = p.live ?? null;
   return n.jsxs("div", { className: "flex shrink-0 items-center gap-[2px]", "data-carton-narrow": narrow ? "" : void 0, children: [
-    n.jsx(__cbCartonStripButton, { id: "history", label: "Version history", pressed: p.panel === "history" || (narrow && p.panel === "share"), live: narrow && live ? { ...live, people: [], more: 0 } : null }, "history"),
+    n.jsx(__cbCartonStripButton, { id: "history", label: "Version history (" + (typeof G === "function" ? G("⇧H") : "Ctrl+Shift+H") + ")", pressed: p.panel === "history" || (narrow && p.panel === "share"), live: narrow && live ? { ...live, people: [], more: 0 } : null }, "history"),
     narrow ? null : n.jsx(__cbCartonStripButton, { id: "share", label: "Share", pressed: p.panel === "share", live }, "share"),
   ] });
 }

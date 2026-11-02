@@ -257,3 +257,25 @@ test("P2-11: a teammate who is here without input says idle instead of leaving: 
   presence(ALICE, { activity: "Editing", who: { id: "alice", name: "Alice" } });
   assert.equal(l.view().peers[0].idle, false);
 });
+
+test("P3-7: Ctrl+Shift+H opens History and closes it again; other chords and plain H do nothing", opt, async () => {
+  const { live: l } = await live();
+  const bridge = bridgeFor(status(l));
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = client.createRoot(container);
+  await act(() => root.render(h(CartonSide, { projectId: PROJECT, bridge })));
+  const press = async (init) => { await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init })); await sleep(10); }); };
+  await press({ key: "h", code: "KeyH" });
+  await press({ key: "H", code: "KeyH", shiftKey: true });
+  await press({ key: "h", code: "KeyH", ctrlKey: true });
+  assert.equal(container.querySelector(".carton-sidebar"), null, "only the exact chord");
+  await press({ key: "H", code: "KeyH", ctrlKey: true, shiftKey: true });
+  const tab = container.querySelector(".carton-sidebar [role=tab][aria-selected=true]");
+  assert.match(tab?.textContent ?? "", /History/);
+  assert.match(tab?.getAttribute("title") ?? "", /^History \((Ctrl\+Shift\+H|⌘⇧H)\)$/);
+  await press({ key: "H", code: "KeyH", metaKey: true, shiftKey: true });
+  assert.equal(container.querySelector(".carton-sidebar"), null, "the same chord closes it (Cmd on a Mac)");
+  await act(() => root.unmount());
+  container.remove();
+});
