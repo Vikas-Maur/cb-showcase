@@ -337,3 +337,47 @@ test("an abandoned stream is found by HEADs, without listing the store (e2e S5-7
   now += 11_000; // 61 s since the newest
   assert.equal((await claimProxyStream(store, src, "p1", "x", clock)).claimed, true);
 });
+
+test("a dropped request for a stream entry is retried, so a teammate's playback goes on (cf-lab, 2026-11-02)", async () => {
+  const { store, writer } = setup();
+  await writer.init(INIT);
+  for (let i = 0; i < 3; i++) await writer.segment(seg(i), 2);
+  await writer.end();
+  // every entry (ps/<stream>/…) fails twice on the network before it answers; the bytes are unaffected
+  const fails = new Map<string, number>();
+  const get = store.get.bind(store);
+  store.get = async (key, range) => {
+    if (key.startsWith("ps/") && (fails.get(key) ?? 0) < 2) {
+      fails.set(key, (fails.get(key) ?? 0) + 1);
+      throw new TypeError("fetch failed");
+    }
+    return get(key, range);
+  };
+  const reader = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache() }), id: writer.id, pollMs: 5, retryDelayMs: 1 });
+  const got: PlayedPart[] = [];
+  for await (const p of reader.play()) got.push(p);
+  assert.equal(got.length, 4, "init + 3 segments");
+  for (let i = 0; i < 3; i++) assert.ok(equalBytes(got[i + 1]!.bytes, seg(i)));
+  assert.ok([...fails.values()].every((n) => n === 2) && fails.size >= 4, "each entry read failed twice and was asked again");
+});
+
+test("an entry read that keeps failing ends the play after its retries, with the network's error", async () => {
+  const { store, writer } = setup();
+  await writer.init(INIT);
+  await writer.segment(seg(0), 2);
+  await writer.end();
+  let tries = 0;
+  const get = store.get.bind(store);
+  store.get = async (key, range) => {
+    if (key.startsWith("ps/") && key.includes("/s/")) {
+      tries++;
+      throw new TypeError("fetch failed");
+    }
+    return get(key, range);
+  };
+  const reader = new ProxyStreamReader({ store, media: new MediaReader({ store, hasher: nodeHasher, cache: new MemoryLeafCache() }), id: writer.id, pollMs: 5, retries: 2, retryDelayMs: 1 });
+  await assert.rejects(async () => {
+    for await (const _ of reader.play());
+  }, /fetch failed/);
+  assert.equal(tries, 3, "the first read and 2 retries");
+});

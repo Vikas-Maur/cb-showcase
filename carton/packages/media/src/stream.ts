@@ -218,6 +218,14 @@ export interface ProxyStreamReaderOptions {
    * the store unreachable (e2e S5-6). Entries are written once, so a kept one is never stale. Default: `media`'s cache.
    */
   cache?: LeafCache;
+  /**
+   * Retries of an entry read that failed on the network, with exponential backoff, as MediaReader retries the bytes
+   * (default 3, from 200 ms). Without them one dropped request for a small JSON entry ended a teammate's playback
+   * while every segment's bytes would have been fetched again (cf-lab, 2026-11-02). An entry that isn't up yet is not
+   * a failure: it reads as absent and the reader polls for it.
+   */
+  retries?: number;
+  retryDelayMs?: number;
 }
 
 export type PlayedPart = { part: "init"; bytes: Uint8Array } | { part: "segment"; segment: StreamSegment; bytes: Uint8Array };
@@ -264,10 +272,22 @@ export class ProxyStreamReader {
   async #entry<T>(key: string, as: (v: Record<string, unknown> | null) => T | null): Promise<T | null> {
     const kept = await this.#kept(key, as);
     if (kept) return kept;
-    const b = await this.#o.store.get(key);
+    const b = await this.#retry(() => this.#o.store.get(key));
     const v = b && as(parseJson(b));
     if (v) await this.#cache?.putEntry?.(key, b).catch(() => {});
     return v || null;
+  }
+
+  async #retry<T>(fn: () => Promise<T>): Promise<T> {
+    const retries = this.#o.retries ?? 3;
+    for (let a = 0; ; a++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if ((e as Error)?.name === "AbortError" || a >= retries) throw e;
+        await sleep((this.#o.retryDelayMs ?? 200) * 2 ** a);
+      }
+    }
   }
 
   async #kept<T>(key: string, as: (v: Record<string, unknown> | null) => T | null): Promise<T | null> {
