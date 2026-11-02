@@ -300,3 +300,53 @@ running on EC2 now; I'll stop you if it finds anything. `perf/apply-latency` isn
    - `writers.js --writers 4 --rate 1 --seconds 120`: the table looks as before, and `--out` has `samples` (each writer's
      edits) and `failures`.
 7. **Report** in step 5's format, then wait. If it's green, the next order is the merge to `main` and the reinstall.
+
+### Update 6b (2026-11-02 ~23:30 UTC): the final head `39312830`
+`merge/prod-2` = **`39312830`** = `3b2407c3` (your Update 6 pass) plus:
+- `perf/apply-latency` `c4ae6831`: cb loads Carton from Node's compile cache, and the open-time WAL checkpoint is deferred;
+  verified on Linux at about −61 ms per print+apply with Carton on;
+- `fix/fold-undo` `7617c20e`: P2-1, and `cb history` lists a redo as `redo`;
+- `fix/turn-hold` `66bf035e`: the hold covers the whole in-app turn, from the first `cb` call (a print too), in Bash or
+  PowerShell, renewed every 20 s.
+
+Each passed its own suite and one Codex review. The combined Linux suite is running on EC2 now; I'll stop you if it finds
+anything.
+
+1. **Build** `39312830` into `out/carton-prod5`, Carton on. Delete `out/carton-prod4` once it passes its checks.
+2. **Turn hold**, on fresh copies of `hold-base`, as `holdab.sh` does:
+   - Foreground: the exact ping prompt, `MUTE_AFTER_MS=15000`, `WATCH_MS=40000`. The mute reaches `timeline.tsx` only after
+     "turn over", and the agent answers "321, not muted". 2 runs.
+   - Background: the same prompt, with step 2 changed to "Then run `ping -n 31 127.0.0.1` in the background and wait for it
+     to finish, checking its output, before going on". Same expectations. If Claude Code ends its response while the ping
+     runs and resumes later on its own, that's outside the turn: note it, it isn't a failed hold.
+   - Past 60 s: `ping -n 91 127.0.0.1` in the foreground with `MUTE_AFTER_MS=70000`. The mute is held until the turn ends.
+   - Interrupt: press M during the ping, then Stop the turn. The mute reaches `timeline.tsx` within a second or so of the
+     Stop.
+   - In each chat log, note which tool ran `cb` (PowerShell or Bash), and that the turn's version is named after the
+     prompt.
+3. **P2-1**, on fresh `p2-1-repro` copies or a fresh mkproj:
+   - New cut "Alt": split the clip, and set W1's font 100 → 150. On Main: Fold "Alt" in here, untick the split, "Fold in
+     2 of 3". Then Fold "Alt" in here again.
+   - Ctrl+Z ① reads "Undid the fold of the rest of 'Alt' into 'Main cut'", and the clip is no longer split.
+   - Ctrl+Z ② reads "Undid the fold of 'Alt' into 'Main cut'". `cb compare` ①→② shows font 150 → 100 and the track/media
+     changes undone, with no "Split" line. Main equals the version before the first fold.
+   - Ctrl+Z ③: nothing left to undo from this session.
+   - Redo: Ctrl+Shift+Z → "Redid the fold of 'Alt'…" (font 150, one clip); again → "Redid the fold of the rest…" (split
+     back). `cb history` lists both as `redo`.
+   - `cb undo` twice from after "the rest": `Undo revert: …` then `Undo merge: …`, with states as above.
+   - Fold-some alone ("Fold in 2 of 3" only): Ctrl+Z gives Main as before; then Ctrl+Shift+Z, then Ctrl+Z.
+   - Shared, with two instances: A folds in 2 of 3, B edits another clip, A folds in the rest, B edits again. A's Ctrl+Z ①②
+     undo the rest and then the partial fold, and both of B's edits stay. Then: A folds in 2 of 3, B edits the left-out
+     title, A presses Ctrl+Z. A's fold is undone, B's edit stays, and there's no conflict card.
+4. **N-1 spot check:** delete W6 and Ctrl+Z, 3 times, noting the save orders. One version each, and W6 comes back with
+   its "Text: W6".
+5. **Timing B** (apply latency), now that perf is in:
+   - `writers.js run` at 1 and 4 writers, `--rate 1 --seconds 60`, Carton on vs off, 3 alternated runs a side (even
+     reps, alternating which goes first).
+   - Warm Node's compile cache first: one `cb` command after the install, before timing.
+   - On mains only, idle-gated as before.
+   - A separate subagent re-checks every number from the raw `--out` files (they now have `samples`) before you report
+     them.
+6. **Spot checks:** the share crash 3/3 (one side), bug 6, page shortcuts 25/25, and `--os` 9/9 when the user is away.
+7. **Report** in step 5's format, then wait. If it's green, Update 7 (the merge to `main` and the reinstall) follows at
+   once.
