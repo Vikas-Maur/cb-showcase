@@ -1,0 +1,6 @@
+start: head main@5 just now person edit | disk 16:9 · 0.0s · 0 tracks · 0 items
+restored: Actions for Added 2 tracks, video 'clip.mp4' and 6 titles | head main@6 just now person restore | disk 16:9 · 6.0s · 2 tracks · 7 items | editor {"tracks":["Mine","Agents"],"items":["video","W1","W2","W3","W4","W5","W6"]}
+sendkeys: pressed ctrl+z | exit 0
+toasts after the real Ctrl+Z: ["Can't undo that: the project would be left empty"]
+after: head main@6 just now person restore (no new version) | disk 16:9 · 6.0s · 2 tracks · 7 items | editor {"tracks":["Mine","Agents"],"items":["video","W1","W2","W3","W4","W5","W6"]} | snag false
+console errors: (none)

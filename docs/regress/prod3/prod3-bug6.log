@@ -1,0 +1,23 @@
+== drag (project cafeaaf1-d455-47c3-b06d-9afce9b1fd35)
+     whole [[0,3,""]]  split [[0,1.5,""],[1.5,3,""]]  edited [[0,1.5,""],[4.5,6,""]]
+ok   Ctrl+Z #1 undoes the drag: [[0,1.5,""],[1.5,3,""]]
+ok   Ctrl+Z undoes the split: [[0,3,""]]
+ok   Ctrl+Shift+Z redoes the split: [[0,1.5,""],[1.5,3,""]]
+ok   Ctrl+Y redoes the drag: [[0,1.5,""],[4.5,6,""]]
+== mute (project b2993d44-ab8e-463c-8009-322592b98630)
+     whole [[0,3,""]]  split [[0,1.5,""],[1.5,3,""]]  edited [[0,1.5,""],[1.5,3,"muted"]]
+ok   Ctrl+Z #1 undoes the mute: [[0,1.5,""],[1.5,3,""]]
+ok   Ctrl+Z undoes the split: [[0,3,""]]
+ok   Ctrl+Shift+Z redoes the split: [[0,1.5,""],[1.5,3,""]]
+ok   Ctrl+Y redoes the mute: [[0,1.5,""],[1.5,3,"muted"]]
+== trim (project e7ab07ee-7a5a-459d-bebf-998df60d2dd9)
+     whole [[0,3,""]]  split [[0,1.5,""],[1.5,3,""]]  edited [[0,1.5,""],[1.5,2.5,""]]
+ok   Ctrl+Z #1 undoes the trim: [[0,1.5,""],[1.5,3,""]]
+ok   Ctrl+Z undoes the split: [[0,3,""]]
+ok   Ctrl+Shift+Z redoes the split: [[0,1.5,""],[1.5,3,""]]
+ok   Ctrl+Y redoes the trim: [[0,1.5,""],[1.5,2.5,""]]
+== none (project 7bdab13b-92cd-4f1e-a41e-386c41b62db0)
+     whole [[0,3,""]]  split [[0,1.5,""],[1.5,3,""]]  edited [[0,1.5,""],[1.5,3,""]]
+ok   Ctrl+Z undoes the split: [[0,3,""]]
+ok   Ctrl+Shift+Z redoes the split: [[0,1.5,""],[1.5,3,""]]
+14 ok, 0 failed

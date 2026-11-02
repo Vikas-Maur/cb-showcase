@@ -1,0 +1,11 @@
+PASS  Ctrl+T shows the Dashboard, Ctrl+2 the project again
+PASS  Ctrl+1 shows the Dashboard
+PASS  Ctrl+, opens Settings, Ctrl+W closes its tab
+PASS  Ctrl+/ opens Keyboard Shortcuts
+PASS  Ctrl+N starts a project, Ctrl+W closes it
+PASS  Ctrl+Shift+B opens Report an Issue
+PASS  Ctrl+= / Ctrl+- zoom the window (Dashboard)
+PASS  F11 toggles full screen
+PASS  Activity log has menu accelerators, and no unhandled-key line for them
+
+9 passed, 0 failed
