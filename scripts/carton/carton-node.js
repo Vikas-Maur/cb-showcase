@@ -19,7 +19,7 @@ import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBus
 import { describeCardboardCard, fromHost, materializeProject, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
-import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper } from "@carton/local";
+import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
 import { register, registerMcp } from "@carton/cli-mcp";
 import { fromCarton, serveUi, commentsUi, serveComments } from "@carton/react";
 import { Comments } from "@carton/comments";
@@ -262,13 +262,74 @@ export const LEASE_PRINTS = ["leasePrints"];
 // is late or failed leaves the file to the worker, as before r2, so cb never writes over a frozen timeline.tsx; only
 // a View-less worker, already a degraded state, can then go without the file's update.
 async function workerWritesTimeline(lc) {
-  if (inWorker) return false;
+  return !!(await timelineWorker(lc));
+}
+// The worker's lease row when the worker prints this bundle's timeline.tsx (workerWritesTimeline), else null. A worker
+// that is gone (the app quit or crashed without letting go of the lease: its row stays live until it expires, up to 6 s)
+// prints nothing: its socket refuses at once, and then cb prints the file itself, as with the app closed. Before
+// (apply-ryw), a cb write in those seconds left timeline.tsx to nobody until a later write. A worker that is only slow
+// to answer the ping still prints it. One ping per cb process and bundle, kept for a second.
+const pings = new Map(); // bundlePath → {nonce, at, gone}
+async function timelineWorker(lc) {
+  if (inWorker) return null;
   try {
     const row = await lc.lease.read();
-    if (row?.kind !== "worker" || !(row.expires > Date.now())) return false;
+    if (row?.kind !== "worker" || !(row.expires > Date.now())) return null;
     const r = await lc.store.get("views", LEASE_PRINTS);
-    return !(r && r.prints === false && r.nonce === row.nonce);
-  } catch { return false; }
+    if (r && r.prints === false && r.nonce === row.nonce) return null;
+    let p = pings.get(lc.projectDir);
+    if (!p || p.nonce !== row.nonce || Date.now() - p.at > 1000) {
+      p = { nonce: row.nonce, at: Date.now(), gone: "gone" in (await pingWhy(row.socketPath)) };
+      pings.set(lc.projectDir, p);
+    }
+    return p.gone ? null : row;
+  } catch { return null; }
+}
+
+// ---------------------------------------------------------------- read-your-writes (apply-ryw)
+// A `cb` write answers once timeline.tsx shows it. With the app open, the worker's Materializer prints the file, and it
+// heard of a write cb committed in its own process only at its next poll of carton.db (250 ms), then rewrote the file
+// 20 ms later, after cb had answered: on the laptop an agent read timeline.tsx right after its `cb source apply`, saw
+// the old value, and told the user the file showed its turn's start. Now cb asks the worker's lease holder
+// (`carton.shown`), which looks at carton.db at once, makes its rewrite, and answers with the print that shows the
+// write: no poll, at most SHOW_MS. The result says how it went: `timeline` ("shown", "held": the file is frozen for
+// someone else's work and holds this change back, "elsewhere": another cut than the file's, "later": not within the
+// wait), and anything but "shown" with a sentence for the agent (`timelineNote`). With the app closed cb prints the file
+// itself before it answers, as Cardboard does, so there is nothing to wait for.
+const SHOW_MS = 2000;
+const TIMELINE_NOTES = {
+  held: "timeline.tsx doesn't show this change yet: it is held while an agent works on the project, and holds back everyone else's changes until that work ends. The change is saved (`cb history` lists it).",
+  elsewhere: "timeline.tsx shows the current cut, not the one this change was made on.",
+  later: "timeline.tsx will show this in a moment: the app hasn't rewritten it yet. The change is saved.",
+};
+// The writes this process committed through the store bridge (commit()), by the result it handed back: what to show.
+const toShow = new WeakMap();
+/** The write a commit's result made, as `carton.shown` names it: its change, cut, seq once confirmed, and author. */
+function showTarget(r, author) {
+  if (!r || !(r.status === "confirmed" || r.status === "pending" || r.status === "conflicts") || r.empty) return null;
+  const id = r.change?.id ?? (typeof r.id === "string" ? r.id : null);
+  if (!id) return null;
+  const cut = r.head?.ref?.branchId ?? r.ref?.branchId;
+  const seq = r.status === "pending" || (r.status === "conflicts" && r.landed === "pending") ? undefined : r.change?.seq ?? r.seq;
+  return { id, ...(typeof cut === "string" ? { cut } : {}), ...(typeof seq === "number" ? { seq } : {}), ...(author ? { author } : {}) };
+}
+/**
+ * Waits (at most SHOW_MS) for the app's timeline.tsx to show a write this cb process made; null when there is nothing to
+ * wait for (no change, the worker doesn't print the file here: cb printed it itself). `{timeline, timelineNote?}`.
+ */
+async function showWrite(lc, target) {
+  if (inWorker || !target) return null;
+  const row = await timelineWorker(lc);
+  if (!row) return null;
+  const timeline = (await showOnHolder(row.socketPath, target, SHOW_MS)) ?? "later";
+  return timeline === "shown" ? { timeline } : { timeline, timelineNote: TIMELINE_NOTES[timeline] ?? TIMELINE_NOTES.later };
+}
+/** The store bridge's apply result (`status`): how its write shows in timeline.tsx, once (an MCP server asks again). */
+async function showCommitted(bundlePath, r) {
+  const t = toShow.get(r);
+  if (!t || !bundlePath) return null;
+  if (!t.answer) t.answer = (async () => { const lc = await open(bundlePath); return lc ? showWrite(lc, t.target) : null; })().catch(() => null);
+  return t.answer;
 }
 // Whether Cardboard's mirror leaves timeline.tsx to Carton after a save (the store bridge's mirrorOwned): the same test
 // install() makes before it drops Cardboard's print of the file, made before the print, so the print isn't made at all.
@@ -574,6 +635,12 @@ async function commit({ bundlePath, base, doc, actor, meta }) {
   try {
     const out = await committed(lc, { bundlePath, doc, mine, baseRef, actor, meta, intent, gui });
     landing?.expect(out.doc);
+    // apply-ryw: a cb write (`cb source apply`, MCP's apply_timeline) answers once the app's timeline.tsx shows it (the
+    // store bridge's status asks, after the write and its project.json have landed)
+    if (!inWorker && !gui) {
+      const target = showTarget(out, actorOf(actor));
+      if (target) toShow.set(out, { target });
+    }
     return out;
   } catch (e) {
     landing?.settle();
@@ -1040,6 +1107,8 @@ export const cardboard14 = {
   timelineOwned,
   timelineEvent,
   mirrorOwned,
+  // apply-ryw: how a cb apply's write shows in the app's timeline.tsx, once it does (the store bridge's status)
+  showCommitted,
   // H11: which files in .scratch/views/ are Carton's (the store bridge's Save As walk and Open Project scrub)
   cartonViewFile,
   headProject,
@@ -1500,6 +1569,9 @@ export const internals = {
   // A bundle's LocalCarton, as this process opens it (tests that make a project's history as an older build left it).
   open: (bundlePath) => open(bundlePath) };
 
+// The Carton writes that change the timeline a cb call shows (apply-ryw); the others change no timeline (a name, a pin, a
+// new cut, a view's print), or are shown before the holder answers (a cut switch).
+const SHOWN_WRITES = new Set(["commit", "fold", "restore", "revert", "undo", "redo", "undoTurn"]);
 // A cb call's context: the project's Carton, who is acting, and its writes followed by head going into project.json.
 async function context(target, as, after) {
   const lc = await open(target.bundlePath, { projectId: target.id });
@@ -1532,7 +1604,10 @@ async function context(target, as, after) {
       // can't read (confirmed rows only): the holder hands it back (WriteOp `head`) for project.json, never printed.
       const { head, ...r } = await lc.write(op && typeof op === "object" ? { ...op, head: true } : op, o);
       if (r.status === "confirmed" || r.status === "pending" || r.status === "conflicts") await after(target, head);
-      return r;
+      // apply-ryw: a write that changed the timeline answers once the app's timeline.tsx shows it (with the app closed,
+      // `after` printed it already); a cut switch is shown before the holder answers it
+      const shows = SHOWN_WRITES.has(op?.kind) ? await showWrite(lc, showTarget({ ...r, head }, o?.actor ?? lc.actor)) : null;
+      return shows ? { ...r, ...shows } : r;
     },
   };
   return { project, actor: as ? identify({ declared: as }) : identify() };

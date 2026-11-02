@@ -47,9 +47,12 @@ The exit code is 0 for `confirmed` and `pending`, 1 otherwise. With `--json` the
    and the `.status` file says how it went (`confirmed`, `pending`, `conflicts`, `rejected` or `error`). If the answer
    is "views need the app open", edit as usual (`timeline.tsx`, `cb source apply`, or MCP `apply_timeline`). Small
    edits, one idea per save. Save from the version you printed: never paste an old file over a newer one.
-   While your turn runs, Carton doesn't rewrite `timeline.tsx` with the person's or remote teammates' changes. Local
-   agents' saves still go into it. It can still show newer state before your turn ends: after a plain print, a cut
-   switch, or a save that repeats an edit it hides. Print again before you rely on what others did.
+   While your turn runs, Carton doesn't rewrite `timeline.tsx` with the person's or remote teammates' changes, so it
+   doesn't change under you. Your own changes do go into it: a `cb` write (`cb source apply`, `cb undo`, a fold…) is in
+   the file by the time the command returns, and if it can't be yet the result says so (`timeline` in JSON, with a
+   note); a view save is in it by the time its `.status` says how it landed. It can still show newer state before your
+   turn ends: after a plain print, a cut switch, or a save that repeats an edit it hides. Print again before you rely on
+   what others did.
 4. **Read the result** of every save (table above).
 5. **After your turn, check your cards.** `cb conflicts <project>` lists the open cards of your edits, numbered:
 

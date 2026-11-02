@@ -74,8 +74,10 @@ module.exports = ({ dir, slice, who, codec }) => {
     "  applied as your change, and the status file says how it landed: " + q("confirmed") + ", " + q("conflicts") + " (someone else\n" +
     "  changed the same thing: what is there was kept, and the cards say what) or " + q("rejected") + " (with why). Read it\n" +
     "  after each save.\n" +
-    "- " + q("timeline.tsx") + " keeps showing the state you started from while you work, so it never changes under you; it\n" +
-    "  catches up once you are done.\n" +
+    "- While you work, " + q("timeline.tsx") + " holds back the person's and teammates' changes, so it doesn't change under\n" +
+    "  you; they reach it once you are done. Your own changes show in it: a " + q("cb") + " write's (" + q("cb source apply") + " and the\n" +
+    "  others) by the time it returns (if it can't yet, its result says so), a view save's by the time its status file\n" +
+    "  says how it landed.\n" +
     "- " + q("cb conflicts <project>") + " lists your cards and " + q("cb resolve") + " picks one; the ones you leave go to the person.\n";
   const agentsMd = (text) => (process.env.CARDBOARD_CARTON === "1" ? text + VIEWS_MD : text);
   if (process.env.CARDBOARD_CARTON !== "1") return { on: false, skipInArchive, cartonView, agentsMd };
@@ -110,6 +112,8 @@ module.exports = ({ dir, slice, who, codec }) => {
   let scoped = null;
   // The last commit's result per project, for the apply's status.
   const last = new Map();
+  // the bundle each project's last commit went to (apply-ryw: its timeline.tsx is asked about it)
+  const lastBundle = new Map();
 
   // Cardboard's own timeline.tsx printer and parser as Carton's TimelineCodec (carton/packages/cardboard/src/codec.ts),
   // for the Materializer's views and the shared file: globalThis.__cartonTimelineCodec, set below at bundle load. They
@@ -253,6 +257,7 @@ module.exports = ({ dir, slice, who, codec }) => {
         return { document: base, changed: false };
       }
       last.set(id, out);
+      lastBundle.set(id, entry?.bundlePath ?? null);
       if (!out?.doc || out.doc === res.document) return res;
       // The file gets head: the store and the queued write continue from it. When someone else's change was merged
       // in, the pages are told too (main broadcasts it as a project change, which the editor adopts).
@@ -330,8 +335,18 @@ module.exports = ({ dir, slice, who, codec }) => {
     // H3: Carton's merge3 in place of Cardboard's item-level 3-way merge; same result shape.
     merge3: (base, current, file, opts, rn) => (carton() ? carton().merge3({ base, current, file, prefer: opts?.prefer, rn }) : rn(base, current, file, opts)),
     // The apply's result gains carton: {status, ref, conflicts} when its write was committed; nothing when history
-    // is off for the project.
-    status: (id) => { const r = last.get(id); return r && r.status !== "off" && r.status !== "materialized" ? { carton: { status: r.status, ref: r.ref, conflicts: r.cards?.length ?? 0 } } : {}; },
+    // is off for the project. apply-ryw: in cb, it answers once the app's timeline.tsx shows the write (at most 2 s), and
+    // says how: \`timeline\` ("shown", "held", "elsewhere", "later") and, when not shown, \`note\`, a sentence the apply's
+    // text prints too. (With the app closed cb printed the file itself already: nothing is added.)
+    async status(id) {
+      const r = last.get(id);
+      if (!r || r.status === "off" || r.status === "materialized") return {};
+      const out = { status: r.status, ref: r.ref, conflicts: r.cards?.length ?? 0 };
+      let shows = null;
+      try { shows = (await carton()?.showCommitted?.(lastBundle.get(id), r)) ?? null; } catch {}
+      if (shows) Object.assign(out, { timeline: shows.timeline }, shows.timelineNote ? { note: shows.timelineNote } : {});
+      return { carton: out };
+    },
     // Runs fn with every write it starts attributed to who.
     as: (who, fn) => acting.run(who, fn),
     // H8 (worker only): the worker's carton RPC namespace, and who the worker's own RPC writers are. A full project

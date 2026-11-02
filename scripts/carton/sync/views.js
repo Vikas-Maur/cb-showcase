@@ -26,7 +26,9 @@
 //   connects sync only once Live runs (an unshared project has nothing to connect to).
 // - An agent's own `cb` write during a freeze shows in the frozen timeline.tsx at once, as with 1.4.0 (the Materializer's
 //   foldAgentChanges, whatever told it of head: this holder's write, local's follower, a confirmation); the person's
-//   and remote changes stay out until the freeze ends.
+//   and remote changes stay out until the freeze ends. Read-your-writes (apply-ryw): the `cb` write answers only once
+//   the file shows it: cb asks this holder (`carton.shown`), which looks at carton.db at once and answers with the
+//   Materializer's print (`showChange`). A terminal's cb (`onCb(caller)`) reads its own writes in the file it holds.
 // - The person's GUI save: head moves in the save, and the store writes project.json after it. The facade tells the
 //   Materializer so (onHeadChange("gui", { after }), the extension's hostWrite): its rewrites wait for that write, and
 //   take project.json's envelope and stamp from it instead of reading the file again.
@@ -184,8 +186,11 @@ export class View {
       hookRead: (a) => mz.hookRead(a),
       hookWrite: (a, rel) => mz.hookWrite(a, rel),
       hookStop: (a) => mz.hookStop(a),
-      onCb: () => mz.onCb(),
+      // a terminal's cb (`caller`) reads its own writes in the frozen file (apply-ryw)
+      onCb: (caller) => mz.onCb(caller),
       onHeadChange: (cause) => mz.onHeadChange(cause),
+      // read-your-writes (apply-ryw): a cb write answers once timeline.tsx shows it (the holder's carton.shown)
+      showChange: (c, ms) => mz.showChange(c, ms),
       onCutSwitch: (cut) => mz.onCutSwitch(cut),
       onExternalHeadChange: () => mz.onExternalHeadChange(),
       onChangeUpdate: (v, id, u) => mz.onChangeUpdate(v, id, u),

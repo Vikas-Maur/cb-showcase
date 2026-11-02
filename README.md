@@ -597,17 +597,26 @@ run below.
 8. Agents and the person editing at once (H8): the library worker runs Carton's materializer for each project it
    opens. It writes `timeline.tsx` from Carton's history (with that printer, under Carton's header) in place of
    Cardboard's own regeneration, and Cardboard's watcher hands it what others save there. While an agent works,
-   `timeline.tsx` stays as it was when the agent started: a turn of the Director or of your own Claude Code in the app
-   from its first `cb` call or read of the file until its turn ends; anyone without hooks (Codex, a Claude Code in a
-   terminal without Carton's hooks, a `cb` you type) until a minute after their last `cb` edit. The person's edits go on in
-   the editor and `project.json` meanwhile. An agent can also print its own copy, `cb source print <project> --view
+   `timeline.tsx` holds back other people's changes, so it doesn't change under the agent: a turn of the Director or of
+   your own Claude Code in the app from its first `cb` call or read of the file until its turn ends; anyone without hooks
+   (Codex, a Claude Code in a terminal without Carton's hooks, a `cb` you type) until a minute after their last `cb`
+   edit. The person's edits go on in the editor and `project.json` meanwhile, and reach the file when that ends. An agent can also print its own copy, `cb source print <project> --view
    <name>` (`.scratch\views\<name>.tsx`): each save of it is applied as that agent's change, and
    `.scratch\views\<name>.status` says how it landed. A clash keeps what is there and is a card on both sides: the
    agent's (`cb conflicts`, the Stop hook) and the person's (History). That worker is also the project's one lease
    holder, so `cb`'s writes and hook events reach it. A `timeline.tsx` printed by Cardboard 1.4.0 (a numbered header)
-   still applies as an edit of the version it shows. An agent's own `cb` edit shows in `timeline.tsx` at once, freeze
-   or not (the person's edits made meanwhile come with it). An agent that writes or edits `project.json` directly is
-   refused and pointed to its own view. The views are checked for saves by reading their size and time a few times a
+   still applies as an edit of the version it shows. **A `cb` write is in `timeline.tsx` by the time `cb` answers**,
+   freeze or not (read-your-writes): `cb source apply`, MCP's `apply_timeline` and the Carton writes (`cb undo`, `cb
+   fold`, `cb restore`…) ask the app to show it and wait for that print, at most 2 s, and the result says how it went
+   (`timeline` in JSON: `shown`, or why not, with a line in the text: held for an agent's turn, or "will show this in a
+   moment"). During a freeze only the writer's own change goes in, never the person's edits made meanwhile. Before, the
+   app noticed a `cb` commit at its next look at the history (it looks every 250 ms) and rewrote the file a moment
+   later, so a read right after `cb` answered could miss the write; in a real turn on the laptop the agent read the old
+   value and told the user the file showed its turn's start. A `cb` you type in a terminal holds the file as a
+   windowless agent does, and now sees its own write in it (it was held back from it for a minute). An app that quit
+   or crashed without letting go of the project leaves `timeline.tsx` to `cb` at once (its socket refuses), where `cb`
+   skipped the file for the few seconds its lease still looked live. An agent that writes or edits `project.json`
+   directly is refused and pointed to its own view. The views are checked for saves by reading their size and time a few times a
    second, not by a file watcher: on Windows an open watch inside the bundle could stop Cardboard renaming the
    project or moving it to the trash. Where the materializer writes `timeline.tsx`, Cardboard's own regeneration of it
    after each save is skipped (it printed the whole timeline, wrote it to a temp file and deleted it unread, on every

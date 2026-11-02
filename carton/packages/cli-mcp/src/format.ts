@@ -72,6 +72,9 @@ export function resultText(r: CbResult, what = "Saved"): string {
       lines.push(`Error: ${r.error}`);
       break;
   }
+  // apply-ryw: the app's timeline.tsx doesn't show this write yet (held for an agent's turn, or not within the wait):
+  // said, so an agent reading the file next knows why (`timeline` in JSON; nothing when it shows it)
+  if (typeof r.timelineNote === "string") lines.push(r.timelineNote);
   return lines.join("\n");
 }
 

@@ -80,8 +80,9 @@ anything.
 - **While an agent turn is running, the shared `timeline.tsx` is frozen (L16).** From the agent's first Read of it
   until its turn's Stop, Carton doesn't rewrite it with the person's or remote teammates' changes; the app always shows
   head. Local agents' saves still go into it, and so do their confirmed `cb` changes; on a shared cut, only those of
-  agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). It can show newer state
-  before the Stop. A plain `cb source print` and a cut switch reprint it from head. A save that repeats an edit the file
+  agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). A `cb` write answers once the
+  file shows it (read-your-writes: the holder's `carton.shown`, at most 2 s; the result's `timeline` says `shown`, or
+  `held`, `elsewhere` or `later` with a sentence). It can show newer state before the Stop. A plain `cb source print` and a cut switch reprint it from head. A save that repeats an edit the file
   hides, or whose check for that reads more than its limit of changes or fails, restarts the freeze from that save's
   state; a `cb` change restarts it from that change's state when merging it wouldn't add exactly its edits (it repeats,
   overwrites or builds on an edit the file hides). Claude Code sends no

@@ -441,7 +441,10 @@ built from a list of namespaces.
   subagent's Stop releases only what it pinned; the turn's Stop releases the whole turn's). Once no agent holds the
   file, the person's and remote teammates' changes reach it; the app always shows head. Local agents' saves still go
   into the frozen file, each merged on its own base, and so do their confirmed `cb` changes; on a shared cut, only those
-  of agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). A plain `cb source print`
+  of agents hooked here (cardboard-adapter's head; not yet in the snapshot the kit runs on). **Read-your-writes:** a
+  `cb` write that changed the timeline asks the holder to show it before it answers (`carton.shown`, `showOnHolder`;
+  the holder's engine `show`, the materializer's `showChange`), so an agent reading `timeline.tsx` next sees its own
+  change; the answer (`shown`, `held`, `elsewhere`, `later`) goes into the write's result. A plain `cb source print`
   and a cut switch reprint it from head. A save that repeats an edit the file hides, or whose check for that reads more
   than its limit of changes or fails, restarts the freeze from that save's state; a `cb` change restarts it from that
   change's state when merging it wouldn't add exactly its edits (it repeats, overwrites or builds on an edit the file
