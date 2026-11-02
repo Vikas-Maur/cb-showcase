@@ -1,0 +1,37 @@
+== prod4-1: build carton-prod4 (3b2407c3), profile copy of hold-base, project 4896fa7c-e7ae-4fe2-9dfe-d3772fd8e2a4
+picker shows: Opus 5.5
+0.3s timeline.tsx: Main cut@3~5fb68524 b:aabe7544 p:eaffec7d by carton | W2 font 100 | muted false
+4.3s prompt sent
+20.5s person muted the Mine clip (M) during the turn
+20.8s timeline.tsx: Main cut@4~545be487 b:aabe7544 p:9c850a2f by carton | W2 font 100 | muted true
+54.5s timeline.tsx: Main cut@4~164d9229 b:aabe7544 p:9c01f439 by carton | W2 font 321 | muted true
+62.9s timeline.tsx: Main cut@5~164d9229 b:aabe7544 p:7ea04a86 by carton | W2 font 321 | muted true
+68.3s turn over (agent idle 5 s)
+68.3s watching timeline.tsx for 100 s more
+chat tail:    | clip.mp4 0.0s–3.0s   | Opus 5.5
+history:
+VERSION  SAVED          BY           WHAT
+main@5   just now       Claude Code  First run `cb source print` for…
+main@4   1 minute ago   person       edit
+main@3   4 minutes ago  Terminal     edit
+main@2   4 minutes ago  Terminal     edit
+main@1   4 minutes ago  person       import
+main@0   4 minutes ago  unknown      root (empty)
+credits W2: 18c1a3fd-4e3c-4c4f-bec3-42279f9a9b7e: last changed by Claude Code
+activity:
+WHO          CHANGES  LAST           VERSIONS
+Claude Code  1        just now       @5
+person       2        1 minute ago   @1…@4
+Terminal     2        4 minutes ago  @2…@3
+views: 
+timeline.tsx now: W2 font 321 | muted true
+-- agent's answer:
+W2's font size is now 321, and timeline.tsx shows fontSize={321}.
+
+The clip on the Mine track (clip.mp4, 0–3s) is muted in timeline.tsx. It wasn't muted when I first printed the timeline. Someone else muted it during the 30-second wait: the project changed between that print and the font change, and the file marks the latest version "by carton". I didn't mute it, and my change left it as it was.
+
+That was unexpected, because the file is supposed to hold back other people's edits until my turn ends. This one appeared in it anyway.
+
+  
+clip.mp4 0.0s–3.0s  
+Opus 5.5

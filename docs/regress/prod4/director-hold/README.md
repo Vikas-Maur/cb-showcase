@@ -23,3 +23,15 @@ the first print without the mute, the ping, the apply) are in `agent-chat-run*.j
 
 Not affected, per the N-1 re-check subagent on the same build: a hook-less agent's `cb` write (a shell with CLAUDECODE=1)
 still holds the person's edit back and releases it after.
+
+## A/B with the same recipe (follow-up): not a regression, a gap in both builds
+`holdab.sh`: one base profile (project "Hold AB", made by 0cc587f1's own cb with no app running, onboarded once), a fresh
+copy per run, the exact ping recipe above, alternating builds.
+
+| Build | mute pressed | mute in timeline.tsx | agent's read after its apply |
+|---|---|---|---|
+| 0cc587f1 (`ab-carton-old-0cc587f1.log`) | 20.5 s | **20.9 s, mid-turn** | "321 … muted"; someone muted it during the wait |
+| 3b2407c3 (`ab-carton-prod4-3b2407c3.log`) | 20.5 s | **20.8 s, mid-turn** | "321 … muted"; "the file is supposed to hold back other people's edits until my turn ends" |
+
+Both builds let the person's edit into timeline.tsx during a long foreground non-`cb` tool call (the ping). The Update 3
+pass on 0cc587f1 used `sleep 30`, which Claude Code ran in the background, so it didn't exercise this path.
