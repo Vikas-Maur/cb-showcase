@@ -135,3 +135,36 @@ test(name("regress #5: the comment box has no resize grip, and its height stops 
   assert.equal(last("resize"), "none", "no resize grip");
   assert.equal(last("max-height"), "160px", "the box grows with its text to 160 px (TextBox), and no further");
 });
+
+// Regress P3-5: after Esc on a row's ⋯ menu, focus came back to the list with no row picked, so ↓ started at the top.
+// The row whose menu it was is the picked one, and ↓ goes on from it.
+test(name("regress P3-5: Esc on a row's menu leaves that row picked, and ↓ goes on from it"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const rows = $$(m.container, ".carton-version");
+  await click(rows[4]!.querySelector(".carton-version-more"));
+  assert.ok($(m.container, "[role=menu]"), "the menu is open");
+  await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await flush();
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  const list = $(m.container, "[role=listbox]")!;
+  assert.equal($(m.container, "[role=menu]"), null, "closed");
+  assert.equal(list.getAttribute("aria-activedescendant"), rows[4]!.id, "the menu's row is the picked one");
+  await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); });
+  await flush();
+  assert.equal(list.getAttribute("aria-activedescendant"), $$(m.container, ".carton-version")[5]!.id, "↓ goes to the next row");
+  await m.unmount();
+});
+
+// Regress P3-12: a version's one change was offered as "Show all 1 changes".
+test(name("regress P3-12: a version of one change offers \"Show the change\""), async () => {
+  const ui = createMockUi({ versions: 10 });
+  await act(async () => { ui.addVersion({ summary: "Folded 'Client review' into 'Main cut'", details: ["Moved 'clip.mp4' 0.0 s → 2.0 s"] } as never); });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const toggle = $(m.container, ".carton-version-expand")!;
+  assert.equal(toggle.getAttribute("aria-label"), "Show the change");
+  assert.equal(toggle.textContent, "1 change");
+  await m.unmount();
+});

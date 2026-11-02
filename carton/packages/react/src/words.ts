@@ -33,7 +33,7 @@ export const words = {
   dayFolded: (n: number, named: number) => `${plural(n, "version", "versions")}${named ? ` · ${named} named` : ""}`,
   // A version of several changes: its list, on expand (UI audit P1-5)
   versionChanges: (n: number) => plural(n, "change", "changes"),
-  showChanges: (n: number) => `Show all ${n} changes`,
+  showChanges: (n: number) => (n === 1 ? "Show the change" : `Show all ${n} changes`),
   hideChanges: "Hide the changes",
   turnEdits: (n: number) => plural(n, "edit", "edits"),
   provisional: "Waiting to sync",
