@@ -65,13 +65,31 @@ module.exports = String.raw`window.__carton = (() => {
   const SAVE_FAILED = "Your last change couldn't be saved. It's on screen, but it isn't in the project yet.";
   let saveFailedAt = 0;
   const duration = (items) => items.reduce((d, i) => Math.max(d, i.endTime), 0);
-  // H4 (one action, one save): the media entries the editor's current actions made, for the editor's project: "removedMediaIds:<id>" or
-  // "ownedMediaIds:<id>" → { carrier }: null while it waits for the action's timeline save, "boarding" while that save
-  // is being sent with it, then the save's promise. An entry's own save takes it out; at most RIDERS are kept (one whose
-  // own save never came: its write failed before it).
+  // H4 (one action, one save): the media entries the editor's actions made, for the editor's project, by entry
+  // ("removedMediaIds:<id>" or "ownedMediaIds:<id>"), one per time an action made it, oldest first: { carrier }, null
+  // while it waits for its action's timeline save, "boarding" while that save is being sent with it, then that save's
+  // promise. An entry's own save takes the oldest out (review #1: the same title deleted again after an undo, while
+  // the first delete's save still waited, is a second one, never the first's). Only carried ones are ever dropped,
+  // oldest first, past RIDERS (one whose own save never came: its write failed before it), and never one the save
+  // just sent carries, nor a waiting one (review #3: a Delete of 65 titles is one action, its entries' saves late).
   const riders = new Map();
-  let ridersOf = null;
-  const RIDERS = 64, MEDIA = ["ownedMediaIds", "removedMediaIds"];
+  let ridersOf = null, carriedCount = 0;
+  const RIDERS = 1024, MEDIA = ["ownedMediaIds", "removedMediaIds"];
+  const isCarried = (r) => typeof r?.carrier?.then === "function";
+  const take = (key, r) => {
+    const q = riders.get(key), i = q ? q.indexOf(r) : -1;
+    if (i < 0) return;
+    q.splice(i, 1);
+    if (!q.length) riders.delete(key);
+    if (isCarried(r)) carriedCount--;
+  };
+  const carry = (r, p) => { if (!isCarried(r)) carriedCount++; r.carrier = p; };
+  const trim = (now) => {
+    for (const [key, q] of [...riders]) {
+      if (carriedCount <= RIDERS) return;
+      for (const r of [...q]) if (carriedCount > RIDERS && isCarried(r) && r.carrier !== now) take(key, r);
+    }
+  };
   const timelineSave = (scope) => (scope?.ownedFields ?? []).some((f) => TIMELINE.has(f));
   // the media entries a save is made of, as rider keys; null when it holds anything else (a field, media details)
   const entriesOf = (scope) => {
@@ -87,11 +105,13 @@ module.exports = String.raw`window.__carton = (() => {
     if (!c) {
       c = { subs: new Set(), off: null };
       fanOut.set(channel, c);
-      c.off = store.on(channel, (ev) => { for (const g of [...c.subs]) try { g(ev); } catch (e) { console.warn("[carton] a " + channel + " handler failed:", e?.message ?? e); } });
+      c.off = store.on(channel, (ev) => { for (const g of [...c.subs]) try { g.f(ev); } catch (e) { console.warn("[carton] a " + channel + " handler failed:", e?.message ?? e); } });
     }
-    c.subs.add(f);
+    // one entry per subscription (review #5: the same handler subscribed twice is two, each with its own unsubscribe)
+    const entry = { f };
+    c.subs.add(entry);
     return () => {
-      if (!c.subs.delete(f) || c.subs.size) return;
+      if (!c.subs.delete(entry) || c.subs.size) return;
       fanOut.delete(channel);
       if (typeof c.off === "function") c.off();
     };
@@ -130,21 +150,19 @@ module.exports = String.raw`window.__carton = (() => {
       if (!on || !store || bypass) return;
       const st = store.state();
       if (st.cartonPreview || st.projectId !== projectId || !store.armed()) return;
-      if (ridersOf !== projectId) riders.clear(), (ridersOf = projectId);
+      if (ridersOf !== projectId) riders.clear(), (ridersOf = projectId), (carriedCount = 0);
       for (const k of MEDIA) for (const id of part?.[k] ?? []) {
         const key = k + ":" + id;
-        riders.delete(key);
-        riders.set(key, { carrier: null });
+        riders.set(key, [...(riders.get(key) ?? []), { carrier: null }]);
       }
-      while (riders.size > RIDERS) riders.delete(riders.keys().next().value);
     },
     // H4 (one action, one save): the scope of the editor's timeline save (the debounce's and its flush's), with the entries waiting for it.
     board(projectId, scope) {
       if (!on || ridersOf !== projectId || !riders.size) return scope;
       const add = { ownedMediaIds: [], removedMediaIds: [] };
-      for (const [key, r] of riders) {
+      for (const [key, q] of riders) for (const r of q) {
         // (still "boarding": the save it boarded never reached send, its document failed to serialize)
-        if (r.carrier !== null && r.carrier !== "boarding") continue;
+        if (isCarried(r)) continue;
         const i = key.indexOf(":");
         add[key.slice(0, i)].push(key.slice(i + 1));
         r.carrier = "boarding";
@@ -161,18 +179,20 @@ module.exports = String.raw`window.__carton = (() => {
       if (!on || !riders.size || ridersOf !== doc?.id) return go();
       if (timelineSave(scope)) {
         const p = go(), held = new Set(MEDIA.flatMap((k) => [...(scope[k] ?? [])].map((id) => k + ":" + id)));
-        for (const [key, r] of riders) if (r.carrier === "boarding" && held.has(key)) r.carrier = p;
+        for (const [key, q] of riders) if (held.has(key)) for (const r of q) if (r.carrier === "boarding") carry(r, p);
+        trim(p);
         return p;
       }
       const keys = entriesOf(scope);
       if (!keys || !keys.every((k) => riders.has(k))) return go();
-      const carried = () => keys.every((k) => typeof riders.get(k).carrier?.then === "function");
-      if (!carried() && store.armed() && store.state().projectId === doc.id) {
+      // the oldest of each entry: this save's own
+      const mine = keys.map((k) => [k, riders.get(k)[0]]);
+      if (!mine.every(([, r]) => isCarried(r)) && store.armed() && store.state().projectId === doc.id) {
         // the waiting timeline save goes first, with the entry (cN sends it before it returns)
         try { void Promise.resolve(store.flush()).catch(() => {}); } catch {}
       }
-      const ok = carried(), carriers = [...new Set(keys.map((k) => riders.get(k).carrier))];
-      for (const k of keys) riders.delete(k);
+      const ok = mine.every(([, r]) => isCarried(r)), carriers = [...new Set(mine.map(([, r]) => r.carrier))];
+      for (const [k, r] of mine) take(k, r);
       // not carried (its timeline save never went, or failed before it was sent): this save goes itself, as before
       if (!ok) return go();
       return carriers.length === 1 ? carriers[0] : Promise.all(carriers).then((v) => v[0]);

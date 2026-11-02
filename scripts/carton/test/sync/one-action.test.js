@@ -17,7 +17,7 @@ const t = { skip: S.skip || S.noBuild, timeout: S.TEST_MS };
 const TIMELINE = ["tracks", "timelineItems"];
 // The laptop's project (mkproj): one clip, then titles W1–W6 on their own track, made by a terminal's cb
 const TSX = `export default (\n  <timeline aspect="16:9">\n    <track name="Mine">\n      <clip src="clip.mp4" start={0} end={3} />\n    </track>\n    <track name="Agents">\n${Array.from({ length: 6 }, (_, k) => `      <text name="W${k + 1}" start={${k}} end={${k + 1}} fontSize={100} textContent="W${k + 1}" />`).join("\n")}\n    </track>\n  </timeline>\n);\n`;
-const NAMES = ["timeline-first", "media-first", "answered-first", "title-add", "cb-undo", "shared-timeline-first", "shared-media-first"];
+const NAMES = ["timeline-first", "media-first", "answered-first", "title-add", "cb-undo", "repeated-delete", "shared-timeline-first", "shared-media-first"];
 const SHARED = new Set(["shared-timeline-first", "shared-media-first"]);
 let b = null, host = null, pc = null, ids = null;
 
@@ -250,6 +250,32 @@ test("N-1: cb undo from a terminal takes back the whole delete too", t, async ()
   const d = await S.projectOf(pc, ids["cb-undo"]);
   got.afterCbUndo = { titles: titles(d), media: textMedia(d) };
   same("cb-undo", got, { afterDelete: shows(1, 2, 3, 4, 6), afterCbUndo: { titles: ALL.titles, media: ALL.media } });
+});
+
+test("N-1 (review #1): the same title deleted again after an undo, both entries' saves late: each delete takes back whole", t, async () => {
+  const name = "repeated-delete", ed = await editorOf(ids[name]);
+  const n0 = versions(name).length;
+  const w6 = () => ed.state().timelineItems.find((i) => i.name === "W6");
+  let freeFirst, freeSecond;
+  const first = ed.remove([w6().id], new Promise((r) => (freeFirst = r)));
+  await S.until(() => ed.sent.length === 1, 5_000, "the first delete's timeline save");
+  await ed.press("undo");
+  const got = { afterFirstUndo: await seen(name, ed) };
+  // deleted again while the first delete's entry save still waits for its cached files
+  const second = ed.remove([w6().id], new Promise((r) => (freeSecond = r)));
+  await S.until(() => ed.sent.length === 2, 5_000, "the second delete's timeline save");
+  freeFirst();
+  await Promise.all(first);
+  got.afterLateFirst = await seen(name, ed);
+  await ed.press("undo");
+  got.afterSecondUndo = await seen(name, ed);
+  freeSecond();
+  await Promise.all(second);
+  await S.sleep(400);
+  got.afterLateSecond = await seen(name, ed);
+  got.saves = ed.sent.length;
+  got.versions = made(name, n0);
+  same(name, got, { afterFirstUndo: ALL, afterLateFirst: FIVE, afterSecondUndo: ALL, afterLateSecond: ALL, saves: 2, versions: [["Deleted title 'W6'"], ["Added title 'W6' on 'Agents' at 5.0 s"], ["Deleted title 'W6'"], ["Added title 'W6' on 'Agents' at 5.0 s"]] });
 });
 
 test("N-1, shared project: a title's delete (timeline saved first) is one change pushed, one version, one undo step", t, async () => {

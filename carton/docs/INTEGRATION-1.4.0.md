@@ -361,12 +361,16 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   `updateScoped` (`send`), is answered by the save that carried it instead of being sent. If the entry's save comes
   while the timeline save still waits, that save goes now, carrying it. One save is one mutation, one version and one
   undo step (redo, `cb undo` and a shared cut alike). No timer: the boundary is the editor's own save. Anything not
-  carried (no timeline save armed, a save that failed before it was sent) goes on its own, as before.
+  carried (no timeline save armed, a save that failed before it was sent) goes on its own, as before. Each noting is
+  its own entry, and an entry's save takes the oldest: the same title deleted again after an undo, while the first
+  delete's entry save still waited, is answered by its own delete's save, never by the first's. Carried entries whose
+  own save never came are dropped past 1024, oldest first; never a waiting one, nor the save just sent's.
 - A library file's media (an import, a sound from the panel) stays a save of its own: stock's undo never takes it back
   either. Two actions inside one 300 ms debounce were one save before this and still are (stock: two undo steps).
 - History reads it as one change: describe, `countChanges` and the Fold dialog's rows take a record that is part of
-  another (`nounOf` null) added or deleted with the record holding it as that record's (`heldBy`), as a split's parts
-  are the split's: "Deleted title 'W6'".
+  another (`nounOf` null, `partOf` its holder: an item's `mediaItemId`) added or deleted with its one holder as that
+  holder's (`heldBy`), as a split's parts are the split's: "Deleted title 'W6'". An entry two titles share (a
+  duplicate) is told, and folded, on its own.
 - Histories saved before this keep their two versions, and Ctrl+Z never reaches them (it stays in the editor's
   session). `cb undo` and History's Undo take them a version at a time, as History lists them.
 
