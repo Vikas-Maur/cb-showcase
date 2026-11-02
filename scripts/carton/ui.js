@@ -12,7 +12,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, Dialog, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -407,6 +407,19 @@ function LiveChipView({ st, onOpen, peersToo = false }) {
     status ? h("span", null, status) : null,
     peers.length ? h("span", { className: "carton-live-peers", "aria-hidden": true }, ...peers.slice(0, 3).map((p) => h("span", { key: p.actor.key, className: "carton-avatar", "data-idle": p.idle ? "" : undefined, style: { ["--carton-actor"]: actorColor(p.actor), width: 20, height: 20, fontSize: 8 } }, h("span", { className: "carton-avatar-initials" }, initials(p.actor.name)))),
       peers.length > 3 ? h("span", { className: "carton-live-more" }, `+${peers.length - 3}`) : null) : null);
+}
+
+/**
+ * Join a shared project from the Dashboard (UI audit P2-9): its tile (sync/patches/ui.js) opens this dialog, which holds
+ * the Share panel's Join form; once joined, Open opens the project in its tab and the dialog closes.
+ */
+export function JoinDialog({ bridge, onClose }) {
+  useEffect(() => { injectCardboardSkin(document); }, []);
+  const Join = window.__cartonSyncUi?.Join;
+  return h("div", { "data-carton-skin": "cardboard" },
+    h(Dialog, { title: "Join a shared project", onClose, className: "carton-join-dialog" },
+      h("p", { className: "carton-join-lead" }, "Paste the invite link a teammate sent you. The project comes with its history; its footage arrives as their computer sends it."),
+      Join ? h(Join, { bridge, startOpen: true, onOpened: onClose, onCancel: onClose }) : h("p", { className: "carton-error", role: "alert" }, words.failed)));
 }
 
 /** The layer over the stage: the conflict cards' floating stack, the preview banner, and the shared-footage notice. */

@@ -19,7 +19,7 @@ test.before(async () => {
   await esbuild.build({
     bundle: true, format: "cjs", logLevel: "warning", absWorkingDir: CARTON, nodePaths: [path.join(CARTON, "node_modules")],
     platform: "browser", target: "chrome140", outfile: path.join(OUT, "carton-ui.cjs"),
-    stdin: { contents: 'export * from "./ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
+    stdin: { contents: 'export * from "./ui.js";\nimport "./sync/ui.js";\n', resolveDir: path.join(ROOT, "scripts", "carton"), loader: "js" },
     alias: { react: path.join(ROOT, "scripts", "carton", "react-shim.js") },
   });
   globalThis.window = { __cartonReact: require(path.join(CARTON, "node_modules", "react")) };
@@ -155,4 +155,61 @@ test("P2-13: the panel keeps the preview usable: its width, narrower, or a drawe
   assert.deepEqual(U.fitPanel({ room: 0, preferred: 384, viewport: 1280 }), { mode: "inline", width: 384 });
   // the choice depends only on room: the same room gives the same answer whatever the panel did before
   for (let room = 200; room <= 1200; room += 7) assert.deepEqual(U.fitPanel({ room, preferred: 420, viewport: 1400 }), U.fitPanel({ room, preferred: 420, viewport: 1400 }));
+});
+
+test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors' words", opt, () => {
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.document = { getElementById: () => null, createElement: () => ({}), head: { appendChild() {} }, activeElement: null };
+  const html = render(React.createElement(U.JoinDialog, { bridge: { call: async () => ({}), onEvent: () => () => {} }, onClose() {} }));
+  assert.match(html, /role="dialog"/);
+  assert.match(html, />Join a shared project</);
+  assert.match(html, /Paste the invite link a teammate sent you/);
+  assert.match(html, /id="carton-join-link"/, "the link field, with no extra button to get to it");
+  assert.doesNotMatch(html, /Got an invite link/);
+  assert.equal((html.match(/Join a shared project/g) ?? []).length, 1, "the title only, no second heading");
+});
+
+// The Dashboard patch (sync/patches/ui.js), on its own text: its two anchors, and its tile.
+function dashboard(ready) {
+  const part = require(path.join(ROOT, "scripts", "carton", "sync", "patches", "ui.js"));
+  const edits = [], pre = [];
+  const file = (k) => ({ replace: (from, to, n = 1) => k === "index" && edits.push([from, to, n]), prepend: (t) => k === "index" && pre.push(t) });
+  part.app({ editor: file("editor"), index: file("index") });
+  const win = { __carton: ready === undefined ? undefined : { on: false, ready } };
+  const api = new Function("r", "i", "Au", "window", "document", pre.join("\n") + "\nreturn { Tile: __cbCartonJoinTile, useOn: __cbCartonUseOn };")(React, require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), { createPortal: (x) => x }, win, {});
+  return { edits, ...api };
+}
+
+test("P2-9: the Dashboard gets a Join tile beside New project, only once Carton says it is on", opt, async () => {
+  const d = dashboard(Promise.resolve(true));
+  assert.equal(d.edits.length, 2);
+  assert.ok(d.edits.every(([, , n]) => n === 1), "each anchor once");
+  assert.match(d.edits[0][1], /\[null,\.\.\.\(__cbJ\?\[__cbCartonJoinCell\]:\[\]\),\.\.\.e\]/);
+  assert.match(d.edits[0][1], /\[e,y,__cbJ\]\)$/, "the grid asks again when Carton's answer comes");
+  const tile = render(React.createElement(d.Tile));
+  assert.match(tile, /data-carton-join=""/);
+  assert.match(tile, />Join a shared project</);
+  assert.match(tile, />From an invite link</);
+  // the hook: off at first, on once the bridge's ready says so (rendered through React's client renderer)
+  const seen = [];
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window();
+  globalThis.document = w.document;
+  const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+  const el = w.document.createElement("div");
+  const root = client.createRoot(el);
+  const Probe = () => { seen.push(d.useOn()); return null; };
+  await React.act(async () => { root.render(React.createElement(Probe)); await new Promise((r) => setTimeout(r, 10)); });
+  assert.deepEqual([seen[0], seen.at(-1)], [false, true]);
+  await React.act(async () => root.unmount());
+  await w.happyDOM.close();
+  // off: no tile ever
+  const off = dashboard(Promise.resolve(false));
+  const seenOff = [];
+  const w2 = new Window(); globalThis.document = w2.document;
+  const root2 = client.createRoot(w2.document.createElement("div"));
+  await React.act(async () => { root2.render(React.createElement(() => { seenOff.push(off.useOn()); return null; })); await new Promise((r) => setTimeout(r, 10)); });
+  assert.equal(seenOff.at(-1), false);
+  await React.act(async () => root2.unmount());
+  await w2.happyDOM.close();
 });

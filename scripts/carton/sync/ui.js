@@ -178,8 +178,9 @@ function ShareForm({ projectId, bridge, onShared }) {
     h(Problem, { error, fields: askSecret ? ["host", "secret"] : ["host"] }));
 }
 
-function Join({ bridge }) {
-  const [open, setOpen] = useState(false);
+// `startOpen`: the form at once (the Dashboard's Join dialog); `onOpened`: after Open, so a dialog can close.
+function Join({ bridge, startOpen = false, onOpened, onCancel }) {
+  const [open, setOpen] = useState(startOpen);
   const [link, setLink] = useState(""), [done, setDone] = useState(null), [missing, setMissing] = useState(null);
   const [name, setName, saveName] = useName();
   const [known] = useState(() => !!name.trim());
@@ -188,19 +189,20 @@ function Join({ bridge }) {
     setDone(await bridge.call("liveJoin", [{ link: link.trim(), name: name.trim() }]));
     setLink("");
   }, "join");
-  const [openIt, opening, openError] = useAction(() => bridge.openProject(done.projectId), "open");
+  const [openIt, opening, openError] = useAction(async () => { await bridge.openProject(done.projectId); onOpened?.(); }, "open");
+  const top = startOpen ? "" : " border-t border-white/[0.06] pt-4";
   if (!open && !done)
     return h("section", { className: "flex flex-col gap-1 border-t border-white/[0.06] pt-4" },
       h("p", { className: "text-xs text-muted-foreground" }, "Got an invite link from a teammate?"),
       h("div", { className: "flex" }, h(Button, { variant: "ghost", icon: "link", onClick: () => setOpen(true) }, "Join a shared project")));
   if (done)
     // Joined: the way on is to open it, not a form left filled in.
-    return h("section", { className: "flex flex-col gap-2 border-t border-white/[0.06] pt-4", role: "status" },
+    return h("section", { className: "flex flex-col gap-2" + top, role: "status" },
       h("p", { className: "text-sm" }, `“${done.name}” is in your library now.`),
       h("p", { className: "text-xs text-muted-foreground" }, "Its footage arrives while your teammate's computer sends it: video as preview copies."),
       h("div", { className: "flex gap-2" },
         bridge.openProject ? h(Button, { variant: "primary", busy: opening, onClick: () => openIt() }, "Open") : null,
-        h(Button, { variant: "ghost", onClick: () => { setDone(null); setOpen(false); } }, "Done")),
+        h(Button, { variant: "ghost", onClick: () => { setDone(null); setOpen(startOpen); if (startOpen) onCancel?.(); } }, "Done")),
       h(Problem, { error: openError }));
   const submit = () => {
     const miss = !link.trim() ? "link" : !name.trim() ? "name" : null;
@@ -208,11 +210,11 @@ function Join({ bridge }) {
     setError(null);
     if (!miss) join();
   };
-  return h("form", { className: "flex flex-col gap-3 border-t border-white/[0.06] pt-4", noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); } },
-    h("h3", { className: "text-sm font-medium" }, "Join a shared project"),
+  return h("form", { className: "flex flex-col gap-3" + top, noValidate: true, onSubmit: (e) => { e.preventDefault(); submit(); } },
+    startOpen ? null : h("h3", { className: "text-sm font-medium" }, "Join a shared project"),
     h(Field, { id: "carton-join-link", label: "Invite link", error: missing === "link" ? "Paste the invite link you were sent." : fieldError(error, "link"), value: link, spellCheck: false, onChange: (e) => setLink(e.target.value), placeholder: "https://…/#join=…", autoFocus: true }),
     h(NameField, { id: "carton-join-name", name, setName, known, error: missing === "name" ? "Enter your name." : fieldError(error, "name") }),
-    h("div", { className: "flex gap-2" }, h(Button, { type: "submit", busy, variant: "primary" }, busy ? "Joining…" : "Join"), h(Button, { variant: "ghost", onClick: () => { setOpen(false); setMissing(null); setError(null); } }, words.cancel)),
+    h("div", { className: "flex gap-2" }, h(Button, { type: "submit", busy, variant: "primary" }, busy ? "Joining…" : "Join"), h(Button, { variant: "ghost", onClick: () => { setOpen(startOpen); setMissing(null); setError(null); if (startOpen) onCancel?.(); } }, words.cancel)),
     h(Problem, { error, fields: ["link"] }));
 }
 
