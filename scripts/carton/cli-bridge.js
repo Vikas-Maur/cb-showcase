@@ -33,6 +33,9 @@ module.exports = String.raw`var __cartonCli = (() => {
     let next = await carton().headProject(bundlePath, current, head);
     const reprobed = next && carton().reprobeMedia ? await carton().reprobeMedia(lib, bundlePath, next) : null;
     if (reprobed) next = reprobed.project;
+    // P3-1: a file entry head brought back whole (its details kept) is listed again in the manifest, as the library
+    // would list it, so later cb commands don't recover it as unlisted each time
+    if (next && carton().placeMedia) await carton().placeMedia(lib, bundlePath, next);
     if (next) await lib.projects.updateScoped(next, carton().headScope(current, next));
     // A head Cardboard couldn't read is never written (laptop, build 915eb36): the write is in history, the file isn't.
     else if (carton().headRefused?.(bundlePath)) throw new Error("Saved in history, but project.json wasn't changed: Cardboard couldn't have read it (" + carton().headRefused(bundlePath).join("; ") + "). Restore another version.");

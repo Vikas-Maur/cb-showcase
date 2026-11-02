@@ -16,7 +16,7 @@ import { createHash } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { openSqliteStore, isThisMachine } from "@carton/store-sqlite";
 import { displaceThenInstall, hardLinksWork, statStamp, DisplacedFiles, retryBusy, cartonViewFile, MediaDetails, droppedMedia } from "@carton/cardboard/node";
-import { describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken } from "@carton/cardboard";
+import { describeCardboardCard, fromHost, materializeProject, lacksDetails, projectGuiSave, projectProblems, branchToken, completeMedia, undatedMedia } from "@carton/cardboard";
 import { hashDoc } from "@carton/core";
 import * as cardboardHost from "@carton/cardboard";
 import { openLocal, identify, localGroup, parseActorId, runHook, sendHookEvent, openExistingProjectStore, existingCartonDbs, StoreNoticeBox, stopHook, stopOutput, actorIdForHook, safePart, defaultFactory, helperEntry, spawnHelper, pingWhy, showOnHolder } from "@carton/local";
@@ -962,6 +962,45 @@ async function deriveMedia(lib, projectId) {
   }
 }
 
+// Laptop, final candidate P3-1: after `cb restore main@1` then `cb restore main@3`, project.json's manifest of where each
+// media file is (the envelope's `media`) stayed empty, so every cb command said "[library] Recovered 1 unlisted media
+// path(s)" until the project's next real save, through restarts. Cardboard's store lists a file only when its library
+// knows where it is (its registry, `buildManifest`), and a cb process knows a file only from the manifest it read: main@1
+// dropped the entry (and its file from the manifest); main@3 brought the entry back whole (its details kept, so
+// reprobeMedia, which registers a file it finds, had nothing to do), and nothing told the library where its file was.
+// So before head goes into project.json, a file entry the library can't place whose file is in the bundle's media/
+// folder is registered as Cardboard's own recovery of unlisted media finds it (by its id), and the manifest lists it.
+async function placeMedia(lib, bundlePath, project) {
+  if (!bundlePath || typeof lib?.media?.register !== "function" || typeof lib.media.resolvePath !== "function") return 0;
+  const want = (Array.isArray(project?.media) ? project.media : []).filter((m) => m && typeof m.id === "string" && FILE_KINDS.has(m.data?.type) && !lib.media.resolvePath(m.id));
+  if (!want.length) return 0;
+  const names = await mediaNames(bundlePath), found = [];
+  for (const m of want) {
+    const name = names.find((n) => path.basename(n, path.extname(n)) === m.id);
+    if (name) found.push({ mediaId: m.id, nativePath: path.join(bundlePath, "media", name), ownedByBundle: true });
+  }
+  if (!found.length) return 0;
+  try { lib.media.register(found); } catch (e) { warnOnce("place:" + bundlePath, "a media file couldn't be listed again: " + errText(e)); return 0; }
+  return found.length;
+}
+const FILE_KINDS = new Set(["video", "audio", "image"]);
+
+// Laptop, final candidate P1-1: a project.json whose media entries lack createdAt or addedAt (one an earlier build's
+// restore or recovery wrote) opens and plays, but Cardboard's editor throws "Invalid time value" at every save. The
+// project loaders (the store bridge's `loaded`, both copies of the store) give such entries their dates as they read the
+// file (@carton/cardboard's completeMedia: the project's own date when nothing kept theirs), so the editor's next save
+// writes them, and says so once per bundle. Nothing is written here.
+function completeLoaded(project, bundlePath) {
+  // (the dates kept for that media first: a date filled in here reads as the file's own to every later write)
+  let look;
+  const known = bundlePath ? (id, versioned) => {
+    try { return (look ??= detailsOf(bundlePath).known())(id, versioned); } catch { return (look = () => undefined), undefined; }
+  } : undefined;
+  const n = undatedMedia(project).length, out = completeMedia(project, known);
+  if (n) warnOnce("undated:" + (bundlePath ?? project?.id), `project ${project?.id ?? "?"} had ${n} media ${n === 1 ? "entry" : "entries"} without the date ${n === 1 ? "it was" : "they were"} added (an earlier restore wrote them so): ${n === 1 ? "it takes" : "they take"} the project's own date, so its edits save again`);
+  return out;
+}
+
 // ---------------------------------------------------------------- files: displace, then install
 const installs = new Map(); // target path → { files: DisplacedFiles, own, noLinks, timer }
 const SEEN_KEEP = 256;
@@ -1292,6 +1331,10 @@ export const cardboard14 = {
   // cb's `after` (cli-bridge.js): Cardboard's own probe of a media file whose entry head brought back without details,
   // before head goes into project.json (P2-1). cb doesn't derive (thumbnails, waveforms): the app does, one at a time.
   reprobeMedia,
+  // P3-1: a restored entry's file listed again in the manifest (cb's `after`; the worker's materializeIn).
+  placeMedia,
+  // P1-1: the store bridge's `loaded`: a project read from disk with media entries Cardboard's editor can't save.
+  completeMedia: (project, bundlePath) => completeLoaded(project, bundlePath),
   // What was wrong with the head last refused for this bundle's project.json, else null (cb's `after`).
   headRefused: (bundlePath) => headRefusals.get(bundlePath) ?? null,
   // Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, which Cardboard's reader
@@ -1628,7 +1671,15 @@ export const cardboard14 = {
       const here = extensions.find((e) => typeof e.serveHere === "function");
       const bundlePath = bundleOf(projectId);
       // the person's own action in the app (local's `gui`): it starts no timeline.tsx freeze, as a `cb` call would
-      let r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true }));
+      let r;
+      try { r = (bundlePath && (await here?.serveHere(bundlePath, op, actor))) ?? (await lc.write(op, { actor, gui: true })); }
+      catch (e) {
+        // P2-1: an undo or redo that would leave the project empty is refused (core, before anything is written): the
+        // page says so, and never falls back to Cardboard's own undo
+        if (e?.code === "EMPTY_VERSION") return { status: "refused", error: errText(e), ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
+        throw e;
+      }
+      if (r?.status === "error" && r.code === "EMPTY_VERSION") return { status: "refused", error: r.error, ...(await canStep(lc, since).then((can) => ({ can }), () => ({}))) };
       // local's write path answers a clash as `conflicts` (the cards)
       if (r?.status === "conflicts" && r.conflicts?.length && bundlePath) r = { ...r, conflicts: await keepStepCards(lc, bundlePath, actor, which, r.conflicts) };
       // what is left to undo and redo, read while head goes into project.json
@@ -1856,6 +1907,8 @@ async function materializeIn(library, projectId) {
     // file, as its import, and its file registered so the app serves it at once; its thumbnails come after (below)
     const reprobed = await reprobeMedia(library, bundlePath, next);
     if (reprobed) next = reprobed.project;
+    // P3-1: an entry head brought back whole, its file not in the library's list (the manifest)
+    await placeMedia(library, bundlePath, next);
     if (testHooks.materialize) await testHooks.materialize(projectId);
     const scope = headScope(current, next), token = ++materializations;
     await projects.updateScoped(next, { ...scope, carton: { ...scope.carton, head: made.ref, token } });

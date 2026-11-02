@@ -26,7 +26,20 @@ module.exports = String.raw`window.__carton = (() => {
   const TIMELINE = new Set(["tracks", "timelineItems", "aspectRatio"]);
   const PREVIEW = "Previewing an earlier version. Return to current to edit.";
   const call = (method, ...args) => store.invoke("carton:call", { method, args });
-  const timelineOf = (p) => ({ tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: p.aspectRatio });
+  // (laptop, final candidate P2-1: a project with no aspect ratio, which an undo right after a recovery made, crashed
+  // the tab: the layouts panel splits it. Cardboard's own load gives such a project its default, 16:9; so does this)
+  const timelineOf = (p) => ({ tracks: p.tracks ?? [], timelineItems: p.timelineItems ?? [], aspectRatio: typeof p.aspectRatio === "string" && p.aspectRatio ? p.aspectRatio : "16:9" });
+  // What the person is told over the stage (scripts/carton/ui.js shows each as a toast); the console has it too.
+  const noticeSubs = new Set();
+  const notice = (text) => {
+    console.info("[carton] " + text);
+    for (const f of noticeSubs) try { f(text); } catch {}
+  };
+  // Laptop, final candidate P1-1: every save of a project failed in the page ("Invalid time value", before anything
+  // reached the worker) and nobody was told. Cardboard logs a failed save and goes on; now the person is told too, at
+  // most every 20 s, and again after a save that landed.
+  const SAVE_FAILED = "Your last change couldn't be saved. It's on screen, but it isn't in the project yet.";
+  let saveFailedAt = 0;
   const duration = (items) => items.reduce((d, i) => Math.max(d, i.endTime), 0);
   return {
     get on() { return on; },
@@ -55,6 +68,17 @@ module.exports = String.raw`window.__carton = (() => {
     },
     // H7
     intent(i) { if (on) intents.push(i); },
+    // A project save that failed in the page (patch-carton: the editor store's scoped save, its catch).
+    saveFailed(e) {
+      if (!on) return;
+      console.warn("[carton] a save failed in the editor:", e?.message ?? e);
+      const now = Date.now();
+      if (now - saveFailedAt < 20_000) return;
+      saveFailedAt = now;
+      notice(SAVE_FAILED);
+    },
+    // ui.js: what to show over the stage
+    onNotice(f) { noticeSubs.add(f); return () => noticeSubs.delete(f); },
     // H5: a project:changed that main marked as Carton's. Returns sV's result, or null for Cardboard's own path.
     async receive(host, ev) {
       if (!store || ev.removed) return null;
@@ -67,6 +91,7 @@ module.exports = String.raw`window.__carton = (() => {
       if (st.cartonPreview) { stale = true; return { adopted: false, timeline: undefined }; }
       // The echo of our own save: the editor already shows it, only its base moves.
       if (sent && sent.id === ev.id && sent.rev === ev.stateUpdatedAt) {
+        saveFailedAt = 0; // it landed: a later failure is told again
         store.raw({ cartonBase: ev.stateUpdatedAt });
         this.refreshCan();
         return { adopted: false, timeline: undefined };
@@ -119,6 +144,8 @@ module.exports = String.raw`window.__carton = (() => {
       }).then((r) => {
         if (r?.status === "unavailable") return own();
         if (r?.can) this.setCan(r.can);
+        // refused (P2-1: it would leave the project empty): nothing changed, and Cardboard's own undo doesn't run either
+        if (r?.status === "refused") return notice(r.error);
         // the project the step wrote, adopted now, unless the person edited meanwhile (their save goes first: the
         // change event's path below then reads head again)
         const now = store.state();

@@ -259,3 +259,51 @@ test("the panel report carries a shared project's live summary for the title bar
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(sent, [["carton:panel", { panel: "share", live }], ["carton:panel", { panel: null }]]);
 });
+
+test("laptop, final candidate P2-1: a state with no aspect ratio is adopted with Cardboard's default (the layouts panel splits it); a refused undo is said, and Cardboard's own undo doesn't run", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const told = [];
+  t.c.onNotice((x) => told.push(x));
+  let own = 0;
+  t.setState({ undo: () => own++, redo: () => own++ });
+  // cb undo from a terminal: the change event's head has no aspect ratio
+  t.disk.doc = { ...t.project(400, []), tracks: [], aspectRatio: undefined };
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 400, carton: true });
+  assert.equal(t.state().aspectRatio, "16:9", "as Cardboard's own load gives it");
+  // Ctrl+Z whose answer has none either
+  t.answers.redo = () => ({ status: "confirmed", project: { ...t.project(401, []), aspectRatio: undefined } });
+  t.c.redo();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual([t.state().cartonBase, t.state().aspectRatio], [401, "16:9"]);
+  // refused: told in the worker's words, nothing adopted, no fallback
+  t.answers.undo = () => ({ status: "refused", error: "Can't undo that: the project would be left empty", can: { undo: true, redo: false } });
+  const before = t.state().cartonBase;
+  assert.equal(t.c.undo(), true);
+  await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(told, ["Can't undo that: the project would be left empty"]);
+  assert.equal(t.state().cartonBase, before);
+  assert.equal(own, 0, "Cardboard's own undo never ran");
+});
+
+test("laptop, final candidate P1-1: a save that fails in the page is told (at most every 20 s, again once a save landed); nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const told = [];
+  t.c.onNotice((x) => told.push(x));
+  const err = new RangeError("Invalid time value");
+  t.c.saveFailed(err);
+  t.c.saveFailed(err);
+  assert.deepEqual(told, ["Your last change couldn't be saved. It's on screen, but it isn't in the project yet."], "once, not on every edit");
+  // a save lands (its echo): the next failure is told again
+  t.c.saveMeta({ id: "p1", stateUpdatedAt: 150 }, { ownedFields: ["tracks", "timelineItems"] });
+  await t.c.receive(t.host, { id: "p1", stateUpdatedAt: 150, carton: true });
+  t.c.saveFailed(err);
+  assert.equal(told.length, 2);
+  const off = load({ enabled: false });
+  await off.c.ready;
+  const none = [];
+  off.c.onNotice((x) => none.push(x));
+  off.c.saveFailed(err);
+  assert.deepEqual(none, []);
+});

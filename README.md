@@ -529,11 +529,32 @@ What changes with it on:
   thumbnail, `cb media list` showed "-" for them, and the clip played black until Cardboard restarted. When nothing
   kept them (a project an earlier build left like that, or one the root restore broke), Cardboard's own probe reads
   the file again, as its import does, and the app makes its thumbnails and waveform again (from its cache when it has
-  them). Nothing is
-  guessed: when the clip was first added, which nothing recorded, stays unset. So a recovered project's clip plays at
-  once. A restore also moves the project's "Updated" time in the library. And `cb undo <project> 0` reads 0 as the
+  them). So a recovered project's clip plays at once. A restore also moves the project's "Updated" time in the library. And `cb undo <project> 0` reads 0 as the
   version to restore, `main@0`, which it refuses as empty, where it used to undo your newest change without a word.
   (`carton\packages\cardboard\src\node\media-details.ts`, `scripts\carton\carton-node.js`)
+- **A recovered project saves your edits.** A project brought back through History, from the state the earlier build's
+  bug left it in, came back with media entries that had no "created" and "added" dates. History doesn't keep those
+  dates, and nothing else had kept them, since the bug came before Restore kept clips' details. Cardboard's editor
+  writes both dates back at every save, so every edit on such a project failed ("Invalid time value" in the console),
+  with nothing said, and a later `cb source apply` reloaded the editor without it. Now every entry Carton writes has
+  both: the clip's own when the file or `.carton\media.json` has them, else the project's own date (no clip is older
+  than its project); a title also gets what Cardboard's own titles have. A project already saved that way (one an
+  earlier build recovered) gets them as Cardboard reads it, and its next save writes them. If a save still fails in
+  the editor, Carton says so over the stage: "Your last change couldn't be saved. It's on screen, but it isn't in the
+  project yet."
+- **Undo never empties a project.** Ctrl+Z (or `cb undo`) right after recovering such a project undid the Restore,
+  back into the state the bug left (a name, and no aspect ratio, tracks, clips or media), and the open tab crashed
+  ("This tab hit a snag"). Now an undo, redo or revert that would leave the project with nothing in it is refused
+  before anything is saved, with "Can't undo that: the project would be left empty", and nothing else runs instead.
+  Restore and "New cut from here" refuse such a version too. Their message used to say "the history starts there",
+  which is true only of the first row: a later emptied version says "nothing of the project is in it", and `cb`
+  names it ("main@4 holds nothing of the project"). The editor also never takes a project without an aspect ratio
+  from History without Cardboard's own default (16:9), so a tab can't crash on one.
+- **`cb restore` lists the clip's file again.** After `cb restore` to a version without a clip and back, the project's
+  list of where its media files are stayed empty, and every `cb` command printed "Recovered 1 unlisted media path(s)"
+  until the next real save. The restore now lists the clip's file, as the app's own restore did.
+  (`carton\packages\cardboard\src\host.ts`, `carton\packages\core\src\history\history.ts`,
+  `scripts\carton\store-bridge.js`, `scripts\carton\renderer-bridge.js`, `scripts\carton\carton-node.js`)
 
 The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases):
 
