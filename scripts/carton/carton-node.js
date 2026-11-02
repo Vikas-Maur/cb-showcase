@@ -657,7 +657,12 @@ const forCardboard = (project) => structuredClone(project);
 // project.json already shows head. (Through Cardboard's store: materializeIn, cb's `after`, sync's bring-in and pull.)
 // `given`: the state a write just made when this handle can't read it (a write still pending on a shared cut, which the
 // holder answered with its head: WriteOp `head`); the file never shows it yet.
+// The bundles whose head was last refused for project.json (headProject), with what was wrong: the History panel and cb
+// say so after a write, which otherwise looks done (Review of fix/restore-root, finding 3).
+const headRefusals = new Map();
+const HEAD_REFUSED = "This is saved in History, but the project file wasn't changed: Cardboard couldn't have opened it that way. Restore another version.";
 async function headProject(bundlePath, current, given) {
+  headRefusals.delete(bundlePath);
   const lc = await open(bundlePath, { projectId: current?.id });
   if (!lc) return null;
   const head = given?.doc ? given : await lc.carton.head();
@@ -666,7 +671,7 @@ async function headProject(bundlePath, current, given) {
   const out = forCardboard({ ...materializeProject(head.doc, current), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
   // a head Cardboard couldn't read is never handed on (the pages adopt an undo's project at once): nothing to write
   const problems = projectProblems({ format: "cardboard-project", project: out }, () => current);
-  if (problems.length) return refuseProject(bundlePath, current?.id, problems, "head"), null;
+  if (problems.length) return headRefusals.set(bundlePath, problems), refuseProject(bundlePath, current?.id, problems, "head"), null;
   await setRev(lc, out.stateUpdatedAt, head.ref);
   return out;
 }
@@ -1017,6 +1022,8 @@ export const cardboard14 = {
   cartonViewFile,
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
+  // What was wrong with the head last refused for this bundle's project.json, else null (cb's `after`).
+  headRefused: (bundlePath) => headRefusals.get(bundlePath) ?? null,
   // Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, which Cardboard's reader
   // refuses, so the project left the library and cb found nothing. When the reader refuses a bundle's project.json and
   // the bundle's history is in .carton/carton.db, the reader gets the file with the name the project last had in that
@@ -1230,6 +1237,7 @@ export const cardboard14 = {
           const agents = views.isAgent(card);
           const r = agents ? void (await views.resolve(lc, handle, a[0], a[1])) : await f.apply(ui, a);
           if (await materializeIn(library, projectId)) emit({ kind: "changed", id: projectId, bundlePath: bundleOf(projectId) });
+          else if (headRefusals.has(bundlePath)) throw new Error(HEAD_REFUSED);
           // The kept cards it stood for go (their notice with them, once empty), and nothing else: if another panel
           // resolved them first, they are already gone.
           if (card && !agents) for (const x of await keptHere()) {

@@ -333,3 +333,70 @@ test("3d. another project's history, or another computer's, is never used to fin
     S.killHelpers();
   }
 });
+
+/** Cardboard 1.4.0's own project.json reader (`ti`, library-worker.js), out of the pristine bundle: null when it refuses. */
+function cardboardReader() {
+  const Module = require("module");
+  const file = path.join(process.env.CARDBOARD_PRISTINE, "app-asar", "dist", "library-worker.js");
+  const src = fs.readFileSync(file, "utf8");
+  const m = new Module(file, module);
+  m.filename = file;
+  m.paths = Module._nodeModulePaths(path.dirname(file));
+  m._compile(src.slice(0, src.lastIndexOf("wte().catch(")) + "module.exports={parse:ti};", file);
+  return m.exports.parse;
+}
+
+test("3e. code graphics: restored with their size (from the clip that shows them); one no clip shows is never written, and History and cb say so", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("root-recover-code", b);
+  const read = cardboardReader();
+  const graphic = (id) => ({ id, createdAt: "2026-11-02T00:00:00.000Z", addedAt: "2026-11-02T00:00:00.000Z", data: { type: "code", fileName: "Graphic " + id, format: "code", size: 0, code: { source: "export default () => null;", width: 1920, height: 1080 } } });
+  // (each project its own media ids: the library drops two bundles that share one)
+  const make = (name, id, gid, items) => {
+    const dir = path.join(pc.root, name + ".cardboard");
+    fs.mkdirSync(dir, { recursive: true });
+    const project = { id, name, createdAt: "2026-11-02T00:00:00.000Z", updatedAt: "2026-11-02T00:00:00.000Z", stateUpdatedAt: 1, aspectRatio: "16:9", tracks: [{ id: "v1", name: "V1", order: 0, locked: false, visible: true, muted: false }], timelineItems: items, media: [graphic(gid)] };
+    fs.writeFileSync(path.join(dir, "project.json"), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
+    return dir;
+  };
+  const shown = make("Shown", "code-shown", "g-shown", [{ id: "c1", trackId: "v1", type: "code", mediaItemId: "g-shown", startTime: 0, endTime: 5, trimStart: 0, trimEnd: 5, codeComposition: { source: "export default () => null;", width: 1920, height: 1080 } }]);
+  const unused = make("Unused", "code-unused", "g-unused", []);
+  try {
+    for (const dir of [shown, unused]) {
+      assert.ok(read(fs.readFileSync(path.join(dir, "project.json"), "utf8")), "Cardboard reads it");
+      // history starts (cb reads it), then the file is broken as build 915eb36 broke it
+      must(pc.cb(["history", path.basename(dir, ".cardboard")]), "history");
+      const env = JSON.parse(fs.readFileSync(path.join(dir, "project.json"), "utf8"));
+      const { name: _n, aspectRatio: _a, ...rest } = env.project;
+      const broken = { ...rest, tracks: [], timelineItems: [], media: [], stateUpdatedAt: Date.now() };
+      asProcess(pc, b, `
+        const lc = await f.internals.open(args.dir);
+        const r = await lc.carton.commit({ doc: { tracks: [], timelineItems: [], media: [] }, author: { kind: "human", id: "person" } });
+        require("fs").writeFileSync(require("path").join(args.dir, "project.json"), JSON.stringify(args.file));
+        await f.internals.setRevFor(args.dir, args.rev, r.ref);`, { dir, file: { ...env, project: broken, media: [] }, rev: broken.stateUpdatedAt });
+      assert.equal(read(fs.readFileSync(path.join(dir, "project.json"), "utf8")), null, "broken: Cardboard can't read it");
+    }
+    // the graphic a clip shows: restored, with its size, and Cardboard reads the file
+    must(pc.cb(["restore", "Shown", "main@1"]), "cb restore Shown");
+    const text = fs.readFileSync(path.join(shown, "project.json"), "utf8");
+    assert.ok(read(text), "Cardboard reads the restored file");
+    assert.deepEqual(JSON.parse(text).project.media[0].data.code, graphic("g-shown").data.code);
+    // the graphic no clip shows: its size is nowhere in the history; cb says the file wasn't changed
+    const before = fs.readFileSync(path.join(unused, "project.json"), "utf8");
+    const r = pc.cb(["restore", "Unused", "main@1"]);
+    assert.equal(r.code, 1, r.out + r.err);
+    assert.match(r.out + r.err, /Saved in history, but project.json wasn't changed: Cardboard couldn't have read it \(media\[0\]\.data\.code needs its source, width and height\)\. Restore another version\./);
+    assert.equal(fs.readFileSync(path.join(unused, "project.json"), "utf8"), before);
+    // and the History panel, in the app
+    await pc.startWorker();
+    const id = (await pc.call("projects.list")).find((p) => p.name === "Unused").id;
+    const p = await panel(pc, id, "code-panel");
+    const back = await p.call("restore", p.rows().find((v) => v.seq === 1).ref);
+    assert.equal(back.ok, false);
+    assert.equal(back.error, "This is saved in History, but the project file wasn't changed: Cardboard couldn't have opened it that way. Restore another version.");
+    assert.equal(fs.readFileSync(path.join(unused, "project.json"), "utf8"), before);
+  } finally {
+    await pc.stopWorker();
+    S.killHelpers();
+  }
+});

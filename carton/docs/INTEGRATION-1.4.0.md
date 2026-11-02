@@ -199,7 +199,10 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    The Materializer, which also serves other hosts' files, refuses a write that turns a file Cardboard reads into one it
    can't (`breaks`). History never starts from a file Cardboard can't read (a bundle without `carton.db`, or one whose
    `carton.db` came from another machine). A refused write keeps the old file, and the refusal goes to the console and
-   to the bundle's `.carton/refused.log` (when, which writer, what was wrong; never the project's text). A head that has no name (a
+   to the bundle's `.carton/refused.log` (when, which writer, what was wrong; never the project's text). When head itself
+   is refused after a History action or a `cb` write, the panel and `cb` say the file wasn't changed (the write is in
+   history). A code graphic's size, which the reader requires and Carton doesn't version (only its source), comes from
+   the clip that shows it when the file being replaced lacks the graphic (`materializeProject`). A head that has no name (a
    teammate on an older build restored the root of a shared cut) is never written: the file keeps its last good state
    until a good version is restored.
 8. **Found through its history.** The bundle loader (both copies) reads a `project.json` its own parse refused through

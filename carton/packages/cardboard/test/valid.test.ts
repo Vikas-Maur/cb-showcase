@@ -80,3 +80,20 @@ test("breaks: a write never turns a project Cardboard reads into one it can't; o
   assert.deepEqual(breaks(nameless, { id: "p", name: "bare" }), [], "a file Cardboard can't read already (a host's own shape)");
   assert.deepEqual(breaks({ ...env, project: { ...env.project, name: "" } }, env), ["its name was removed"]);
 });
+
+test("a code graphic restored over a file that lost it gets its size from the clip that shows it (review finding 3)", () => {
+  const graphic = { id: "g", data: { type: "code", fileName: "Graphic", code: { source: "hello", width: 1920, height: 1080 } } };
+  const clipOf = (w?: number) => ({ id: "c", trackId: "v", type: "code", mediaItemId: "g", startTime: 0, endTime: 5, trimStart: 0, trimEnd: 5, ...(w ? { codeComposition: { source: "hello", width: w, height: 720 } } : {}) });
+  const project = (items: unknown[]) => ({ id: "p", name: "Code film", updatedAt: "x", stateUpdatedAt: 1, tracks: [{ id: "v", name: "V1", order: 0, locked: false, visible: true, muted: false }], timelineItems: items, media: [graphic] });
+  // Carton keeps the graphic's source, not its size; the file it is written over lost the entry (the bug wrote media: [])
+  const lost = { id: "p", updatedAt: "x", stateUpdatedAt: 2, tracks: [], timelineItems: [], media: [] };
+  const back = materializeProject(fromHost(project([clipOf(1280)])), lost);
+  assert.deepEqual((back.media as any)[0].data.code, { source: "hello", width: 1280, height: 720 });
+  assert.deepEqual(projectProblems({ format: "cardboard-project", project: back }), []);
+  // a file that still has it keeps its own size
+  assert.deepEqual((materializeProject(fromHost(project([clipOf(1280)])), project([clipOf(1280)])).media as any)[0].data.code, graphic.data.code);
+  // no clip shows it: nothing is guessed, and the file is refused
+  const none = materializeProject(fromHost(project([clipOf()])), lost);
+  assert.deepEqual((none.media as any)[0].data.code, { source: "hello" });
+  assert.deepEqual(projectProblems({ format: "cardboard-project", project: none }), ["media[0].data.code needs its source, width and height"]);
+});
