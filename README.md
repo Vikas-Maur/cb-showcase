@@ -471,7 +471,8 @@ What changes with it on:
   `cb history` (a fold made in the panel was "Terminal", or "Claude Code" when the app was started from its shell). A
   new cut's first version, "Made this cut", names who made it (it named no one; `cb history` said `unknown`). Who made a
   cut is kept beside the cut, not in it, so a Cardboard with an earlier Carton still edits and renames that cut; it
-  travels with a `.cbproj` that includes history, and a maker that isn't a well-formed name shows as no one.
+  travels with a `.cbproj` that includes history and with a shared cut to a teammate who joins it, and a maker that
+  isn't a well-formed name shows as no one.
 - **`cb`**: `cut`, `fold`, `credits`, `restore`, `compare`, `conflicts`, `resolve` and `publish`, and the MCP tools
   `timeline_cuts`, `timeline_fold`, `timeline_credits` and `timeline_publish`.
 

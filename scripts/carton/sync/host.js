@@ -107,10 +107,12 @@ export const getBlob = ({ host, projectId, token, key, fetchFn }) => mediaStore(
 /**
  * What a joiner needs beyond the token (the web client's format, `carton/apps/web/src/descriptor.ts`): the shared cut
  * as the host knows it after the hand-off, its state at seq 0 and that state's hash (Carton checks it before storing
- * anything), and the media records (T0) by id.
+ * anything), and the media records (T0) by id. `by`: who made the cut when it is a fork (Carton keeps it beside the
+ * cut's record, so a joiner's "Made this cut" names them too); the web client shares Main only and has none. A joiner
+ * from before it ignores it.
  */
-export function descriptor({ projectId, name, cut, doc0, rootHash, media = {} }) {
-  return { v: 1, projectId, name, cut, doc0, rootHash, media };
+export function descriptor({ projectId, name, cut, doc0, rootHash, media = {}, by = null }) {
+  return { v: 1, projectId, name, cut, doc0, rootHash, media, ...(by ? { by } : {}) };
 }
 export function parseDescriptor(text) {
   const d = JSON.parse(text);

@@ -365,7 +365,9 @@ async function uploadDescriptor(bundlePath, projectId, lc, rec, project) {
   const cfg = store.readConfig(bundlePath, projectId);
   const token = await store.sessionFor(bundlePath, projectId).token();
   const doc0 = await lc.carton.checkout(`${rec.id}@0`);
-  const d = host.descriptor({ projectId, name: project?.name ?? path.basename(bundlePath, ".cardboard"), cut: rec, doc0, rootHash: hashDoc(doc0, lc.carton.schema), media: mediaRecords(project) });
+  // a fork's maker goes with it, beside its record (core keeps it so): a joiner's "Made this cut" names them too
+  const by = rec.forkOf ? await lc.carton.maker(rec.id) : null;
+  const d = host.descriptor({ projectId, name: project?.name ?? path.basename(bundlePath, ".cardboard"), cut: rec, doc0, rootHash: hashDoc(doc0, lc.carton.schema), media: mediaRecords(project), by });
   await host.putBlob({ host: cfg.host, projectId, token, key: host.DESCRIPTOR_KEY, bytes: new TextEncoder().encode(JSON.stringify(d)), contentType: "application/json" });
 }
 
@@ -502,7 +504,7 @@ extend({
           fs.writeFileSync(path.join(staging, "project.json"), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }, null, 2));
           // The shared cut, from its root; its rows come from the host once the worker connects.
           const { store: st } = await openProjectStore({ bundleDir: staging, projectId: d.projectId });
-          const c = await Carton.open({ adapter: cardboardAdapter, store: st, hasher: nodeHasher, init: { join: { projectId: d.projectId, cut: d.cut, doc0: d.doc0, rootHash: d.rootHash } }, sync: { transport, url: "carton-sync:" + d.projectId, token: s.token, autoConnect: false } });
+          const c = await Carton.open({ adapter: cardboardAdapter, store: st, hasher: nodeHasher, init: { join: { projectId: d.projectId, cut: d.cut, doc0: d.doc0, rootHash: d.rootHash, ...(d.by ? { by: d.by } : {}) } }, sync: { transport, url: "carton-sync:" + d.projectId, token: s.token, autoConnect: false } });
           // That file is Carton's own (the root's state), not an outside save: its rev goes into the facade's rev map
           // (carton.db's local `views` table, ["rev", ms] → ref and ["ref", cut, seq] → ms). Without it the worker
           // would import the file as a foreign write the moment it reads it: a change taking the timeline back to the
