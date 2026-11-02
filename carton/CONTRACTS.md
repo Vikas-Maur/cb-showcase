@@ -235,6 +235,8 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     `leftOut` (the paths) and `leftOutChanges` (how many changes) in JSON. The fold's own state, with what was left out, is no one's version: History, `cb
     history`, the pickers and version counts leave it out, as they leave out withdraw rows. Seqs, ids, the DAG and
     undo are unchanged. A fold and partial revert with a change between them (a shared cut's queue) stay two versions.
+    The partial revert's id is always `<fold's id>.inverse` (local and shared), which is how a server, holding only
+    ids and flags, pairs them; its count reads archived rows from the segment index, so it holds across an archive.
   - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out
     part is still left out, newest first: the inverse change, its version, who folded and the paths. Folding in the rest
     is `revert(change)` (as `cb fold` does when nothing new is left); a plain `fold` still doesn't bring it in (§5.3).

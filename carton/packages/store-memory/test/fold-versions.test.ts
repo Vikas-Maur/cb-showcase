@@ -138,6 +138,11 @@ test("P3: a partial fold that left out a split counts the split as one change", 
   const f = await top(c, main);
   assert.equal(f.summary, "Folded 'Client review' into 'Main cut': 1 of 2 changes");
   assert.deepEqual([f.rejected?.length, f.leftOutChanges], [3, 1], "three records left out, one change");
+  // review: a local fold-some's partial revert is `<fold's id>.inverse`, as a shared cut's is, so a server that later
+  // holds this history pairs the two as one version
+  const fold = (await c.leftOut(v.id, { into: main }))[0]!;
+  assert.match(fold.change, /\.inverse$/);
+  assert.equal(f.change, fold.change);
   // folding in the rest brings in the split: one change
   const [left] = await c.leftOut(v.id, { into: main });
   assert.equal((await c.revert(left!.change, { author: alice })).status, "confirmed");

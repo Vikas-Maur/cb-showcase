@@ -5,8 +5,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { sync } from "@carton/core";
-import { createHmacAuth } from "../src/index.ts";
-import { BRANCH, clip, doc, fakeConn, memoryBlobs, push, set, world } from "./helpers.ts";
+import { createHmacAuth, createSequencer } from "../src/index.ts";
+import { BRANCH, clip, doc, fakeConn, memoryBlobs, push, set, staticAuth, world } from "./helpers.ts";
 
 const PUB = "pub-0000-0000";
 const hello = (branchId: string, have = -1): sync.HelloMsg => ({ type: "hello", branchId, have, pending: [], rids: [], schemaVersion: 1 });
@@ -214,4 +214,36 @@ test("a Published cut's welcome counts a fold-some (its fold and partial revert)
   assert.equal(seq.tables.versionsAfter(BRANCH, 1), 4, "the fold-some, rid.8, rid.9 and rid.8.inverse");
   // published at the fold half itself: its partial revert is a newer version (as publications() counts it)
   assert.equal(seq.tables.versionsAfter(BRANCH, 2), 4);
+});
+
+test("review: the newer-version count is the same after an archive and from a fresh instance (archived pairs, a pair across the boundary, withdraws)", async () => {
+  const d0 = doc([clip("c0", 0, 5), clip("c1", 5, 10), clip("c2", 10, 15)]);
+  const blobs = memoryBlobs();
+  const { seq, storage } = await world(d0, { blobs });
+  const editor = fakeConn("e/k");
+  await push(seq, editor, d0, [set("c0", "name", "one")]);
+  let s = 1;
+  const row = async (id: string, value: string) => {
+    await push(seq, editor, d0, [set("c1", "name", value)], { base: { seq: s, pending: [] }, id });
+    s++;
+  };
+  // after the published version (1): a fold-some, a withdraw, a fold-some, edits; the second pair lands across the
+  // archive boundary (rows 2..5 archived, keep 4: 6..9 live)
+  await row("a.1", "f1");
+  await row("a.1.inverse", "r1");
+  await seq.handle(editor, { type: "withdraw", branchId: BRANCH, id: "wd.1", base: s, epoch: 900 + s });
+  s++;
+  await row("a.2", "f2");
+  await row("a.2.inverse", "r2");
+  await row("a.3", "e3");
+  await row("a.4", "e4");
+  await row("a.5", "e5");
+  assert.equal(seq.tables.head(BRANCH), 9);
+  // 8 rows after 1: less the withdraw and the two fold halves
+  assert.equal(seq.tables.versionsAfter(BRANCH, 1), 5, "warm, all live");
+  assert.ok((await seq.archive(BRANCH, { keep: 4, segmentRows: 4 })) > 0, "rows archived");
+  assert.equal(seq.tables.versionsAfter(BRANCH, 1), 5, "warm, after the archive");
+  const fresh = createSequencer({ storage, auth: staticAuth, blobs });
+  assert.equal(fresh.tables.versionsAfter(BRANCH, 1), 5, "a fresh instance reads the archived rows' ids and flags");
+  assert.equal(fresh.tables.versionsAfter(BRANCH, 2), 5, "published at a fold half: its partial revert is a version");
 });

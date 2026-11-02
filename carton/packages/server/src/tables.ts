@@ -197,8 +197,8 @@ export class Tables {
    * `publications()` count them: its rows after `at` less its withdraw rows (H1), which spend an id and are no version,
    * and less the fold half of each fold-some (laptop re-check P3: a fold `X` and its partial revert `X.inverse` right
    * after it are one version, the partial revert's). Counted once, then only the rows past the head last counted, so a
-   * watcher asking every few seconds reads a row at most once. Archived rows (below the live ones) count as versions:
-   * their flags aren't read.
+   * watcher asking every few seconds reads a row at most once. Archived rows are read from the segment index
+   * (`idsIn`), so a count is the same before and after an archive, and from a fresh instance (review of fold-count).
    */
   versionsAfter(branch: string, at: number): number {
     const head = this.head(branch);
@@ -209,12 +209,16 @@ export class Tables {
     if (!c || c.head > head) c = { head: at, n: 0 };
     if (c.head < head) {
       let n = c.n;
-      for (const r of this.all<{ seq: number; id: string; flags: number }>("SELECT seq, id, flags FROM changes WHERE branch = ? AND seq > ? AND seq <= ? AND ((flags & ?) != 0 OR id LIKE '%.inverse')", branch, c.head, head, FLAG_WITHDRAWN)) {
-        if (num(r.flags) & FLAG_WITHDRAWN) n++;
-        else if (String(r.id).endsWith(".inverse") && num(r.seq) - 1 > at) {
+      // one row before the new ones too: a partial revert's fold may be the last row counted before
+      const rows = this.idsIn(branch, Math.max(at, c.head - 1), head);
+      const bySeq = new Map(rows.map((r) => [r.seq, r]));
+      for (const r of rows) {
+        if (r.seq <= c.head) continue;
+        if (r.withdrawn) n++;
+        else if (r.id.endsWith(".inverse") && r.seq - 1 > at) {
           // a fold-some's partial revert: the fold right before it, not withdrawn, is no version of its own
-          const [f] = this.all<{ id: string; flags: number }>("SELECT id, flags FROM changes WHERE branch = ? AND seq = ?", branch, num(r.seq) - 1);
-          if (f && `${f.id}.inverse` === r.id && !(num(f.flags) & FLAG_WITHDRAWN)) n++;
+          const f = bySeq.get(r.seq - 1);
+          if (f && `${f.id}.inverse` === r.id && !f.withdrawn) n++;
         }
       }
       byAt.set(at, (c = { head, n }));

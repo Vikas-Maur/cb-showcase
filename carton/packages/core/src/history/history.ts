@@ -986,14 +986,15 @@ export class History {
    * removed by the fold), nothing is committed and the result says why.
    */
   foldSome(into: string, from: NodeId, opts: FoldOptions & { reject: PathKey[] | readonly (readonly string[])[] }): FoldResult & { fold?: FoldResult; inverse?: CommitResult } {
-    // retried with its id: the inverse (`<id>.inverse`) or, if only the fold landed, the fold
+    // retried with its id: the inverse (`<id>.inverse`) or, if only the fold landed, the fold. The inverse is always
+    // `<fold's id>.inverse`, as a shared cut's is: a server counting versions pairs them by it (review of fold-count)
     const done = this.#done(opts.id && `${opts.id}.inverse`) ?? this.#done(opts.id);
     if (done) return done;
     const p = this.planFoldSome(into, from, opts);
     if (!("reject" in p)) return p;
     const r = this.fold(into, from, opts);
     if (r.status !== "confirmed" || !("change" in r) || !r.change) return r;
-    const inv = this.commit(into, { ops: p.ops, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", ...(opts.id ? { id: `${opts.id}.inverse` } : {}), extra: { rejected: p.reject, reverts: r.change.id } });
+    const inv = this.commit(into, { ops: p.ops, author: opts.author ?? { kind: "human", id: this.name }, kind: "partial-revert", id: `${r.change.id}.inverse`, extra: { rejected: p.reject, reverts: r.change.id } });
     const { merge: _m, ...invOnly } = inv as CommitResult & { merge?: unknown };
     return { ...invOnly, fold: r, inverse: inv } as FoldResult & { fold: FoldResult; inverse: CommitResult };
   }
