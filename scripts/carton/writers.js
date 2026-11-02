@@ -6,7 +6,8 @@
 // its own title, "W<k>", and nothing else, at --rate edits a second, each from a fresh print of the timeline (so each
 // edit's base is the version it read). At the end it reads the timeline back: every writer's last applied size must
 // be there. A size that isn't, though cb reported it applied, is a lost update. It prints each writer's applies,
-// failures and apply time (p50, p90, p99), and the lost count.
+// failures and apply time (p50, p90, p99), and the lost count; then, when any failed, why: each failure's step, exit
+// code and message in brief (also `failures` in --out), so a rare one can be diagnosed (a 4-writer run had 1 in 155).
 const fs = require("fs"), os = require("os"), path = require("path"), { spawn, spawnSync } = require("child_process");
 
 const [cmd, cbPath, root, ...rest] = process.argv.slice(2);
@@ -22,11 +23,19 @@ const cbSync = (...args) => {
 const cb = (...args) => new Promise((resolve) => {
   const [exe, a] = cbArgs(args);
   const p = spawn(exe, a, { shell: process.platform === "win32" && !exe.endsWith(".exe") && exe !== process.execPath });
-  let out = "";
+  let out = "", err = "";
   p.stdout.on("data", (d) => (out += d));
-  p.stderr.on("data", (d) => (out += d));
-  p.on("close", (code) => resolve({ code, out }));
+  p.stderr.on("data", (d) => ((out += d), (err += d)));
+  p.on("error", (e) => resolve({ code: null, out, err: err + String(e?.message ?? e) }));
+  p.on("close", (code) => resolve({ code, out, err }));
 });
+/** Why a cb call failed, briefly: its stderr and what its JSON said, else its output; one line, at most 300 chars. */
+const reasonOf = (r, json) => {
+  const { applied: _a, ...told } = json && typeof json === "object" ? json : {};
+  const said = Object.keys(told).length ? JSON.stringify(told) : "";
+  const t = ([String(r.err ?? "").trim(), said].filter(Boolean).join(" | ") || String(r.out || "no output")).replace(/\s+/g, " ").trim();
+  return t.length > 300 ? t.slice(0, 299) + "…" : t;
+};
 const pct = (xs, p) => { const s = [...xs].sort((a, b) => a - b); return s.length ? s[Math.min(s.length - 1, Math.ceil((p / 100) * s.length) - 1)] : null; };
 
 const bundle = () => JSON.parse(cbSync("project", "list", "--json")).find((p) => p.name === PROJECT)?.bundlePath;
@@ -48,6 +57,9 @@ if (cmd === "setup") {
   if (!dir) throw new Error(`no project "${PROJECT}" in ${root}: run setup first`);
   const end = Date.now() + seconds * 1000;
   const stats = Array.from({ length: writers }, () => ({ applied: 0, failed: 0, ms: [], last: null }));
+  // each failure: which writer, its edit number, the step (print, the title not found, apply), exit code and why
+  const failures = [];
+  const fail = (k, i, step, r, json) => { stats[k].failed++; failures.push({ writer: `W${k + 1}`, edit: i, step, code: r.code, reason: reasonOf(r, json) }); };
   const one = async (k) => {
     const s = stats[k], name = `W${k + 1}`;
     for (let i = 1; Date.now() < end; i++) {
@@ -56,14 +68,15 @@ if (cmd === "setup") {
       const printed = await cb("source", "print", PROJECT);
       const size = 100 + k * 1000 + i;
       const re = new RegExp(`(<text[^>]*name="${name}"[^>]*fontSize=\\{)\\d+(\\})`);
-      if (printed.code !== 0 || !re.test(printed.out)) { s.failed++; continue; }
+      if (printed.code !== 0) { fail(k, i, "print", printed); continue; }
+      if (!re.test(printed.out)) { fail(k, i, "print", { ...printed, err: `no title ${name} with a font size in the print` }); continue; }
       const tsx = path.join(os.tmpdir(), `carton-w${k}-${process.pid}.tsx`);
       fs.writeFileSync(tsx, printed.out.replace(re, `$1${size}$2`));
       const r = await cb("source", "apply", PROJECT, tsx, "--json");
       s.ms.push(Date.now() - started);
-      let applied = false;
-      try { applied = JSON.parse(r.out.slice(r.out.indexOf("{"))).applied === true; } catch {}
-      if (applied) s.applied++, (s.last = size); else s.failed++;
+      let applied = false, json = null;
+      try { json = JSON.parse(r.out.slice(r.out.indexOf("{"))); applied = json.applied === true; } catch {}
+      if (applied) s.applied++, (s.last = size); else fail(k, i, "apply", r, json);
       const wait = started + 1000 / rate - Date.now();
       if (wait > 0) await new Promise((res) => setTimeout(res, wait));
     }
@@ -78,9 +91,10 @@ if (cmd === "setup") {
       if (!kept) lost++;
       return { writer: `W${k + 1}`, applied: s.applied, failed: s.failed, last: s.last, onDisk: m ? Number(m[1]) : null, kept, p50: pct(s.ms, 50), p90: pct(s.ms, 90), p99: pct(s.ms, 99) };
     });
-    const result = { project: dir, writers, rate, seconds, lost, rows };
+    const result = { project: dir, writers, rate, seconds, lost, rows, failures };
     console.table(rows);
     console.log(lost ? `LOST: ${lost} writer(s) lost their last applied edit` : "no lost updates");
+    for (const f of failures) console.log(`failed: ${f.writer} edit ${f.edit} ${f.step}, exit ${f.code}: ${f.reason}`);
     if (opt("out")) fs.writeFileSync(opt("out"), JSON.stringify(result, null, 2));
     process.exitCode = lost ? 1 : 0;
   })();
