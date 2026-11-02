@@ -10,6 +10,7 @@ import { Materializer, TIMELINE_FILE, PROJECT_FILE, viewPath, statusPath, turnOw
 import { jsonTimelineCodec } from "../src/codec.ts";
 import { findRev } from "../src/header.ts";
 import { FakeClock, FakeEngine, plainHost } from "./helpers/fake-engine.ts";
+import { cardboardFilesHost } from "../src/index.ts";
 
 type Item = { id: string; [k: string]: unknown };
 
@@ -393,6 +394,43 @@ test("project.json follows head with every unversioned field kept, stateUpdatedA
   assert.equal(env.project.id, "p1", "host fields kept");
   assert.equal(env.project.timelineItems[0].name, "gui");
   assert.ok(env.project.stateUpdatedAt > 1);
+});
+
+test("a head Cardboard couldn't read (no name, nothing in it) is never written to project.json: the old file stays, the refusal is logged", async (t) => {
+  // laptop, build 915eb36: Restore of "Started the cut" made head the empty root, and project.json followed it. With
+  // Cardboard's own conversion (cardboardFilesHost: materializeProject), a head without a name drops it from the file.
+  fs.mkdirSync(SCRATCH, { recursive: true });
+  const bundle = fs.mkdtempSync(path.join(SCRATCH, "mz-"));
+  t.after(() => fs.rmSync(bundle, { recursive: true, force: true }));
+  const project = { id: "p1", name: "Demo", updatedAt: "2026-11-02T00:00:00.000Z", stateUpdatedAt: 1, aspectRatio: "16:9", tracks: [{ id: "V1", name: "V1", order: 0, locked: false, visible: true, muted: false }], timelineItems: [clip("a", 0, 5)], media: [] };
+  fs.writeFileSync(path.join(bundle, PROJECT_FILE), JSON.stringify({ format: "cardboard-project", version: 1, project, media: [] }));
+  const engine = new FakeEngine(cardboardFilesHost.fromProject(project, null));
+  const clock = new FakeClock();
+  const mz = new Materializer({ bundle, engine, host: cardboardFilesHost, codec: jsonTimelineCodec, clock });
+  t.after(() => mz.close());
+  await engine.putMeta(["file", PROJECT_FILE, "pin"], (await engine.pin({ owner: "project-file", ttlMs: 1 })).ref);
+  await mz.adoptCurrentFiles();
+  await mz.start();
+  const file = path.join(bundle, PROJECT_FILE);
+  const before = fs.readFileSync(file, "utf8");
+  const pin = await engine.getMeta(["file", PROJECT_FILE, "pin"]);
+  // head becomes the empty root: no root field, every collection empty
+  engine.external((d) => {
+    for (const k of Object.keys(d)) delete d[k];
+    Object.assign(d, { tracks: [], timelineItems: [], media: [] });
+  });
+  mz.onHeadChange("local");
+  await clock.advance(50, () => mz.idle());
+  assert.equal(fs.readFileSync(file, "utf8"), before, "the old file, byte for byte");
+  assert.deepEqual(mz.log.refused.map((r) => [r.path, r.problems]), [[PROJECT_FILE, ["no name"]]]);
+  assert.deepEqual(mz.log.errors, [], "a refusal, not a failure to retry");
+  assert.deepEqual(await engine.getMeta(["file", PROJECT_FILE, "pin"]), pin, "the file's pin is the state it shows");
+  // a head with a name again is written as usual
+  engine.external((d) => Object.assign(d, cardboardFilesHost.fromProject({ ...project, timelineItems: [clip("a", 0, 5, { name: "back" })] }, null)));
+  mz.onHeadChange("local");
+  await clock.advance(50, () => mz.idle());
+  const env = JSON.parse(fs.readFileSync(file, "utf8"));
+  assert.deepEqual([env.project.name, env.project.timelineItems[0].name, env.project.tracks.length], ["Demo", "back", 1]);
 });
 
 test("a foreign project.json write is imported as external:project.json against Carton's last materialization", async (t) => {

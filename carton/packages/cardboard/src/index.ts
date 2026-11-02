@@ -61,5 +61,6 @@ export { inferRipple } from "./ripple.ts";
 export { nameTurn, turnName, type TurnRef } from "./turns.ts";
 export { parseActor, subagentActorId, cardboardIdentity } from "./identity.ts";
 export { describeCardboardCard, cardboardValue } from "./words.ts";
+export { projectProblems } from "./valid.ts";
 export * from "./header.ts";
 export * from "./codec.ts";
