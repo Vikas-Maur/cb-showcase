@@ -299,3 +299,106 @@ test("the write cap is reserved once per append, for all of its writes", async (
   const stored = (await store.list("")).blobs.reduce((n, b) => n + b.size, 0);
   assert.equal(bytes, stored, "exactly what was stored");
 });
+
+// ---------------------------------------------------------------------------------------- review round (cf-proxy-path)
+
+const segPart = async (i: number, extra: Record<string, unknown> = {}) => {
+  const m = await mediaHash(seg(i), hasher);
+  return { kind: "segment" as const, hash: m.hash, size: m.size, manifest: m.bytes, bytes: seg(i) as Uint8Array | null, index: i, durationSec: 2, at: 1, ...extra };
+};
+
+test("every object an append writes is held to the host's per-object limit: an end entry over maxUploadBytes is 413", async () => {
+  const store = createMemoryBlobStore();
+  const { client } = host(store, { maxUploadBytes: 300_000 });
+  const media = await client();
+  const p0 = await segPart(0);
+  // the host writes the end as it reads it (unknown fields dropped), so only its lists can make it big
+  const big = { segments: 10_000, durationSec: 20_000, size: p0.size * 10_001, at: 1, parts: Array(10_001).fill(p0.hash) };
+  await assert.rejects(media.appendStream("a1".repeat(32), { parts: [], end: big }), (e: { status?: number }) => e.status === 413);
+  assert.deepEqual((await store.list("")).blobs, [], "nothing written");
+});
+
+test("a held read whose client goes away stops checking the store", async () => {
+  const store = createMemoryBlobStore();
+  let gets = 0;
+  const counting = new Proxy(store, { get: (t, p) => (p === "get" ? (...a: [string]) => (gets++, t.get(...a)) : Reflect.get(t, p, t)) });
+  const { deps, token } = host(counting as BlobStore);
+  const ac = new AbortController();
+  const t0 = Date.now();
+  setTimeout(() => ac.abort(), 1500);
+  const r = await handleHttp(new Request(`http://host/api/projects/p/streams/${"b1".repeat(32)}/read?from=0&wait=20000`, { headers: { authorization: `Bearer ${await token()}` }, signal: ac.signal }), deps);
+  assert.ok(Date.now() - t0 < 5000, `answered ${Date.now() - t0} ms after it started`);
+  assert.equal(r?.status, 499);
+  assert.ok(gets <= 6, `${gets} reads`);
+});
+
+test("batched playback: an entry gone from a finished stream whose end lists it plays from the end, not reported damaged", async () => {
+  const store = createMemoryBlobStore();
+  const { client } = host(store);
+  const w = new ProxyStreamWriter({ store: await client(), hasher });
+  await w.init(INIT);
+  for (let i = 0; i < 3; i++) await w.segment(seg(i), 2);
+  await w.end();
+  await store.delete(streamSegmentKey(w.id, 1));
+  assertStream(await playAll(reader(await client(), w.id)), 3);
+  assert.equal(await store.head(`bad/${w.id}`), null, "not reported");
+});
+
+test("a read keeps its header under what the client takes: a long stream's end goes without its lists, then tail entries go", async () => {
+  const store = createMemoryBlobStore();
+  const { client, fetch, token } = host(store);
+  const id = "c1".repeat(32);
+  const n = 16_000; // an end listing 16,000 parts is ~1.5 MB of JSON
+  const m0 = await mediaHash(seg(0), hasher);
+  for (let i = 0; i < 200; i++) await store.put(streamSegmentKey(id, i), enc.encode(JSON.stringify({ hash: m0.hash, size: m0.size, index: i, durationSec: 2, at: 1, manifest: toBase64(m0.bytes) })));
+  const end = { segments: n, durationSec: 2 * n, size: m0.size * (n + 1), at: 1, parts: Array(n + 1).fill(m0.hash), sizes: Array(n + 1).fill(m0.size), durations: Array(n).fill(2) };
+  await store.put(streamEndKey(id), enc.encode(JSON.stringify(end)));
+  // entries only, from 0: 200 entries, then the edge (entry 200 isn't there) and the end
+  const items = [];
+  for await (const it of (await client()).readStream(id, { from: 0, maxBytes: 0, maxParts: 1000 })) items.push(it);
+  const status = items.at(-1) as { kind: string; end?: { segments: number; parts?: unknown } };
+  assert.equal(status.kind, "status");
+  assert.equal(status.end?.segments, n);
+  assert.equal(status.end?.parts, undefined, "the lists dropped to fit");
+  const r = await fetch(`http://host/api/projects/p/streams/${id}/read?from=0&bytes=0`, { headers: { authorization: `Bearer ${await token()}` } });
+  assert.ok(new DataView(await r.arrayBuffer()).getUint32(0) <= 1 << 20);
+});
+
+test("a retried append must carry the same entry: another duration for a segment, or another end, is a 409", async () => {
+  const store = createMemoryBlobStore();
+  const media = await host(store).client();
+  const id = "d1".repeat(32);
+  const p0 = await segPart(0);
+  await media.appendStream(id, { parts: [p0], end: { segments: 1, durationSec: 2, size: p0.size, at: 1, parts: [p0.hash, p0.hash] } });
+  await media.appendStream(id, { parts: [p0], end: { segments: 1, durationSec: 2, size: p0.size, at: 9, parts: [p0.hash, p0.hash] } }); // a retry
+  await assert.rejects(media.appendStream(id, { parts: [{ ...p0, durationSec: 1.5 }] }), (e: { status?: number }) => e.status === 409);
+  await assert.rejects(media.appendStream(id, { parts: [], end: { segments: 1, durationSec: 2, size: p0.size, at: 1, parts: [p0.hash, "e".repeat(64)] } }), (e: { status?: number }) => e.status === 409);
+});
+
+test("a part sent again after a Missing answer for a damage report answers the report, so later dedup finds it stored", async () => {
+  const store = createMemoryBlobStore();
+  const { client } = host(store);
+  const media = await client();
+  const p0 = await segPart(0);
+  await store.put(mediaKey(p0.hash), seg(0));
+  await store.put(`bad/${p0.hash}`, enc.encode('{"leaf":0,"nonce":"1"}'));
+  // the writer's own path: found stored by the probe, refused as reported, sent again with its bytes
+  const w = new ProxyStreamWriter({ store: media, hasher });
+  await w.init(INIT);
+  await w.segment(seg(5), 2); // the first frame's batch (no probe)
+  await w.flush();
+  await w.segment(seg(0), 2);
+  await w.end();
+  assert.ok(await store.head(`repaired/${p0.hash}`), "the report is answered");
+  await media.appendStream("e1".repeat(32), { parts: [{ ...p0, bytes: null }] });
+  assert.ok(await store.head(streamSegmentKey("e1".repeat(32), 0)), "a later append that sends no bytes is taken");
+});
+
+test("a team host's append reserves its grants' writes too, in the one reservation", async () => {
+  const root = createMemoryBlobStore();
+  const a = projectMediaStore(root, "p", "t1");
+  const asked: [number, number][] = [];
+  const media = await host(a, { blobsForWrites: async (_p, b, o) => (asked.push([b, o]), a) }).client();
+  await media.appendStream("f1".repeat(32), { parts: [await segPart(0), await segPart(1)] });
+  assert.deepEqual(asked.map(([, o]) => o), [10], "manifest, bytes and entry per part, and a grant beside each of the first two");
+});

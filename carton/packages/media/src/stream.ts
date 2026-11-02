@@ -214,6 +214,8 @@ export interface StreamAppendPart {
   manifest: Uint8Array;
   /** The bytes; null when the store holds them already (the host checks, else StreamPartMissingError). */
   bytes: Uint8Array | null;
+  /** Sent again with its bytes after StreamPartMissingError: the host answers the part's open damage report. */
+  repair?: boolean;
   index?: number;
   durationSec?: number;
   at?: number;
@@ -497,9 +499,11 @@ export class ProxyStreamWriter {
         return;
       } catch (e) {
         if (e instanceof StreamPartMissingError) {
-          // a part it found stored went away since (or a reader reported it): send every byte
+          // a part it found stored went away since (or a reader reported it): send every byte, and the host answers
+          // the report for the ones sent without them (repair)
           this.#probe = false;
-          await this.#appender.appendStream(this.id, { parts, ...(end ? { end } : {}) }, signal);
+          const again = parts.map((p, n) => (batch[n]!.bytes === null ? { ...p, repair: true } : p));
+          await this.#appender.appendStream(this.id, { parts: again, ...(end ? { end } : {}) }, signal);
           return;
         }
         if (!(e instanceof StreamRouteMissingError)) throw e;
@@ -703,7 +707,9 @@ export class ProxyStreamReader {
     this.#endSeenAt = Date.now();
     if (!end || this.#end) return;
     this.#end = end;
-    await this.#cache?.putEntry?.(streamEndKey(this.id), utf8.encode(JSON.stringify(end))).catch(() => {});
+    // kept only whole: a host may send a long stream's end without its lists (to fit its answer), and a kept end is
+    // never read from the store again
+    if (end.parts) await this.#cache?.putEntry?.(streamEndKey(this.id), utf8.encode(JSON.stringify(end))).catch(() => {});
     this.#fromEnd();
   }
 
@@ -932,8 +938,16 @@ export class ProxyStreamReader {
       first = false;
       if (this.#end && i >= this.#end.segments) return;
       if (sawEnd && got === 0 && !initMissing) {
-        // The stream ended with this segment in it, yet its entry wasn't there. The host read the entry before the end,
-        // and the writer puts the end after every entry, so it may have landed in between: ask once more first.
+        // The stream ended with this segment in it, yet its entry wasn't there. The end may describe it (its lists):
+        // then its bytes are read the usual way, as an entry-by-entry reader would.
+        const known = this.#segments[i];
+        if (known && known.index === i) {
+          yield { part: "segment", segment: known, bytes: await this.#bytes(known, signal) };
+          i++;
+          continue;
+        }
+        // Else the host read the entry before the end, and the writer puts the end after every entry, so it may have
+        // landed in between: ask once more first.
         if (missingAt === i) {
           await this.#reportDamage({ entry: i });
           throw new StreamDamagedError(this.id, i);

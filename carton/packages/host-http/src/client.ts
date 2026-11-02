@@ -308,6 +308,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
           size: p.size,
           manifest: toBase64(p.manifest),
           bytes: p.bytes !== null,
+          ...(p.repair && p.bytes ? { repair: true } : {}),
           ...(p.kind === "segment" ? { index: p.index!, durationSec: p.durationSec!, at: p.at! } : {}),
         })),
         ...(batch.end ? { end: batch.end } : {}),

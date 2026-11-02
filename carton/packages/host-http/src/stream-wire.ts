@@ -11,8 +11,13 @@
 //   the usual way, which repairs and reports.
 
 export const STREAM_WIRE_VERSION = 1;
-/** The largest header either side accepts. */
+/** The largest read header a client accepts (a host keeps its answers under it). */
 export const MAX_STREAM_HEADER = 1 << 20;
+/**
+ * The largest append header a host accepts: the end entry rides in it, and a long stream's end lists every part (hash,
+ * size and duration, about 90 bytes a segment: 8 MiB is about 90,000 segments, 50 hours of 2 s segments).
+ */
+export const MAX_APPEND_HEADER = 8 << 20;
 
 export interface AppendHeaderPart {
   kind: "init" | "segment";
@@ -22,6 +27,11 @@ export interface AppendHeaderPart {
   manifest: string;
   /** Its bytes follow; false: the client found them stored (the host checks). */
   bytes: boolean;
+  /**
+   * Sent again with its bytes after the host answered that the stored copy was missing or reported damaged: the host
+   * answers the open damage report (repaired/<hash>) once the bytes are in, as an upload's repair does.
+   */
+  repair?: boolean;
   index?: number;
   durationSec?: number;
   at?: number;
@@ -75,10 +85,10 @@ export class StreamWireError extends Error {
 }
 
 /** A whole body's header and what follows it. */
-export function splitFrame(body: Uint8Array): { header: unknown; rest: Uint8Array } {
+export function splitFrame(body: Uint8Array, maxHeader = MAX_STREAM_HEADER): { header: unknown; rest: Uint8Array } {
   if (body.length < 4) throw new StreamWireError("body too short for its header");
   const n = new DataView(body.buffer, body.byteOffset, 4).getUint32(0);
-  if (n > MAX_STREAM_HEADER || 4 + n > body.length) throw new StreamWireError("bad header length");
+  if (n > maxHeader || 4 + n > body.length) throw new StreamWireError("bad header length");
   let header: unknown;
   try {
     header = JSON.parse(fromUtf8.decode(body.subarray(4, 4 + n)));

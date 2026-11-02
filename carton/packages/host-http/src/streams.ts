@@ -33,6 +33,7 @@ import {
   decodeManifest,
   fromBase64,
   manifestKey,
+  markRepaired,
   mediaKey,
   openReport,
   streamEndKey,
@@ -48,7 +49,7 @@ import {
 } from "@carton/media";
 import { eachLimit } from "./pool.ts";
 import { isTeamMediaStore } from "./team.ts";
-import { headerFrame, splitFrame, StreamWireError, STREAM_WIRE_VERSION, u32, type AppendHeaderPart, type ReadHeader, type ReadHeaderSegment } from "./stream-wire.ts";
+import { headerFrame, MAX_APPEND_HEADER, MAX_STREAM_HEADER, splitFrame, StreamWireError, STREAM_WIRE_VERSION, u32, type AppendHeaderPart, type ReadHeader, type ReadHeaderSegment } from "./stream-wire.ts";
 
 const hasher = webCryptoHasher();
 const utf8 = new TextEncoder();
@@ -111,7 +112,7 @@ export async function streamRoutes(req: Request, url: URL, rest: string, c: Stre
       return await append(req, stream, c);
     }
     if (req.method !== "GET") return err(405, "GET");
-    return await read(url, stream, c);
+    return await read(url, stream, c, req.signal);
   } catch (e) {
     if (e instanceof Refused) return err(e.status, e.message, e.extra);
     if (e instanceof StreamWireError) return err(400, e.message);
@@ -128,6 +129,8 @@ interface Part {
   entry: Uint8Array;
   key: string;
   index: number;
+  durationSec: number;
+  repair: boolean;
 }
 
 const isCount = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
@@ -148,7 +151,7 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
     throw e;
   }
   if (raw.length > max) return err(413, "append body too large");
-  const { header, rest } = splitFrame(raw);
+  const { header, rest } = splitFrame(raw, MAX_APPEND_HEADER);
   const h = header as { v?: unknown; parts?: unknown; end?: unknown };
   if (!h || typeof h !== "object" || h.v !== STREAM_WIRE_VERSION) return err(400, `stream wire version ${STREAM_WIRE_VERSION} expected`);
   if (!Array.isArray(h.parts) || h.parts.length > MAX_APPEND_PARTS || (h.parts.length === 0 && h.end === undefined))
@@ -188,7 +191,10 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
       key = streamSegmentKey(stream, index);
       entry = { hash: manifest.hash, size: manifest.size, index, durationSec: p.durationSec, at: p.at, manifest: p.manifest };
     }
-    parts.push({ kind: p.kind, manifest, bytes, entry: utf8.encode(JSON.stringify(entry)), key, index });
+    const entryBytes = utf8.encode(JSON.stringify(entry));
+    // every object this request writes is held to the host's per-object limit, as a signed PUT of it would be
+    if (c.maxUploadBytes !== undefined && Math.max(mb.length, entryBytes.length) > c.maxUploadBytes) return err(413, `part ${n}'s manifest or entry is bigger than this host takes`);
+    parts.push({ kind: p.kind, manifest, bytes, entry: entryBytes, key, index, durationSec: p.kind === "segment" ? (p.durationSec as number) : 0, repair: p.repair === true && !!bytes });
   }
   if (at !== rest.length) return err(400, `${rest.length - at} bytes follow the parts`);
   let end: StreamEnd | null = null, endBytes: Uint8Array | null = null;
@@ -197,13 +203,16 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
     if (!end) return err(400, "bad end entry");
     if (lastIndex >= 0 && end.segments !== lastIndex + 1) return err(400, `the end says ${end.segments} segments; the last one sent is ${lastIndex}`);
     endBytes = utf8.encode(JSON.stringify(end));
+    if (c.maxUploadBytes !== undefined && endBytes.length > c.maxUploadBytes) return err(413, "the end entry is bigger than this host takes");
   }
 
-  // one reservation for every write below (manifest, bytes and entry per part; the end)
+  // One reservation for every write below: the manifest, the bytes and the entry per part (a team store also writes a
+  // grant beside each of the first two), a repair's answer, and the end.
+  const team = isTeamMediaStore(c.store);
   let bytes = endBytes?.length ?? 0, ops = end ? 1 : 0;
   for (const p of parts) {
-    bytes += p.manifest.bytes.length + p.entry.length + (p.bytes?.length ?? 0);
-    ops += p.bytes ? 3 : 2;
+    bytes += p.manifest.bytes.length + p.entry.length + (p.bytes?.length ?? 0) + (p.repair ? 256 : 0);
+    ops += (p.bytes ? 3 : 2) + (team ? (p.bytes ? 2 : 1) : 0) + (p.repair ? 1 : 0);
   }
   const store = await c.storeForWrites(bytes, ops);
 
@@ -219,6 +228,9 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
       const there = await store.head(mk);
       if (!there || there.size !== p.manifest.size || (await openReport(store, hash))) throw new Refused(409, `part ${hash.slice(0, 12)} isn't stored: send its bytes`, { code: "Missing", index: p.index });
     }
+    // a part the client sends again after a Missing answer: the report that made it missing is answered once the
+    // bytes are in (read first, as an upload's repair reads it before replacing the object)
+    const report = p.repair ? await openReport(store, hash) : null;
     const manifest = () => store.put(manifestKey(hash), p.manifest.bytes, { contentType: "application/octet-stream" });
     const bytes = () => (p.bytes ? c.lock(mk, () => store.put(mk, p.bytes!, { contentType: "video/mp4" })) : Promise.resolve());
     if (together) await Promise.all([manifest(), bytes()]);
@@ -226,18 +238,25 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
       await manifest();
       await bytes();
     }
+    if (report) await markRepaired(store, hash, report);
   };
   await eachLimit(parts, together ? AT_ONCE / 2 : AT_ONCE, media);
   await eachLimit(parts, AT_ONCE, (p) =>
     putEntry(store, p.key, p.entry, (old) => {
-      const v = p.kind === "init" ? streamPartOf(old) : streamSegmentOf(old, p.index);
-      return !!v && v.hash === p.manifest.hash && v.size === p.manifest.size;
+      // a retried request writes the same entry; another writer's (or other metadata) is a conflict
+      if (p.kind === "init") {
+        const v = streamPartOf(old);
+        return !!v && v.hash === p.manifest.hash && v.size === p.manifest.size;
+      }
+      const v = streamSegmentOf(old, p.index);
+      return !!v && v.hash === p.manifest.hash && v.size === p.manifest.size && v.durationSec === p.durationSec;
     }),
   );
   if (end) {
     await putEntry(store, streamEndKey(stream), endBytes!, (old) => {
       const v = streamEndOf(old);
-      return !!v && v.segments === end!.segments && v.size === end!.size;
+      const same = (a?: unknown[], b?: unknown[]) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+      return !!v && v.segments === end!.segments && v.size === end!.size && v.durationSec === end!.durationSec && same(v.parts, end!.parts) && same(v.sizes, end!.sizes) && same(v.durations, end!.durations);
     });
   }
   return json({ stored: parts.length, ...(end ? { ended: true } : {}) });
@@ -257,7 +276,31 @@ async function putEntry(store: BlobStore, key: string, body: Uint8Array, same: (
 
 // -------------------------------------------------------------------------------------------------------------- read
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+/** Waits `ms`, or less if `signal` aborts (the caller checks it). */
+const sleep = (ms: number, signal?: AbortSignal) =>
+  new Promise<void>((r) => {
+    const t = setTimeout(done, ms);
+    function done() {
+      clearTimeout(t);
+      signal?.removeEventListener("abort", done);
+      r();
+    }
+    signal?.addEventListener("abort", done, { once: true });
+  });
+
+/**
+ * Keeps a read's header under what a client accepts (MAX_STREAM_HEADER): a long stream's end lists every part, and
+ * with a few hundred entries beside it could pass it. The end goes without its lists first (what a reader needs from it
+ * here is where the stream stops; the whole entry is one signed read away), then entries from the tail.
+ */
+function fitHeader(h: ReadHeader): void {
+  const room = MAX_STREAM_HEADER - 1024;
+  const size = () => utf8.encode(JSON.stringify(h)).length;
+  if (size() <= room) return;
+  const e = h.end as StreamEnd | null | undefined;
+  if (e) h.end = { segments: e.segments, durationSec: e.durationSec, size: e.size, at: e.at };
+  while (h.segments.length > 1 && size() > room) h.segments.pop();
+}
 
 async function getJson(store: BlobStore, key: string): Promise<unknown> {
   const b = await store.get(key);
@@ -282,7 +325,7 @@ interface Listed {
   bytes: boolean;
 }
 
-async function read(url: URL, stream: string, c: StreamRouteContext): Promise<Response> {
+async function read(url: URL, stream: string, c: StreamRouteContext, signal?: AbortSignal): Promise<Response> {
   // the same rule as a signed URL for these keys (a watch link's scope)
   if (!c.mayRead(streamInitKey(stream))) return err(403, "outside this link's scope");
   const from = intParam(url, "from", 0, MAX_INDEX);
@@ -295,13 +338,16 @@ async function read(url: URL, stream: string, c: StreamRouteContext): Promise<Re
 
   let h: ReadHeader;
   for (let checks = 0; ; checks++) {
+    // a reader that went away (its request aborted) costs no more storage reads
+    if (signal?.aborted) return err(499, "the client went away");
     h = await collect(store, stream, from, wantInit, maxBytes, maxParts);
     const something = wantInit ? h.init !== null : h.segments.length > 0;
     // once a second at first, then every two (each check is a storage read or two)
     const pause = checks < 4 ? READ_CHECK_MS : 2 * READ_CHECK_MS;
     if (something || (h.end !== undefined && h.end !== null) || Date.now() + pause > deadline) break;
-    await sleep(pause);
+    await sleep(pause, signal);
   }
+  fitHeader(h);
 
   // the manifests the entries don't carry (entries from before a batch writer wrote them)
   const sent: Listed[] = [...(h.init ? [h.init] : []), ...h.segments].filter((p) => p.bytes);
