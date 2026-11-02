@@ -5,6 +5,7 @@
 //   carton.handover  -> {ok}                  finish the in-flight push, release the lease, stop (the app is starting)
 //   carton.status    -> {kind, pid, nonce, …} for `cb status` and tests
 //   carton.nudge     -> {ok}                  another process wrote carton.db: the engine looks now (B11); no auth
+//   carton.shown     -> {timeline}            a cb write waits (<= 2 s) for the timeline.tsx this holder prints to show it
 //
 // Acquiring: a free or expired lease, or one whose holder doesn't answer a 100 ms ping, is taken at once (CAS on the
 // nonce we saw). A live helper is asked to hand over; a worker never waits for a helper's 60 s idle timeout.
@@ -16,6 +17,7 @@ import { join } from "node:path";
 import { ControlServer, ControlClient, RpcError } from "./ipc.ts";
 import { Lease, LEASE_BEAT_MS, LEASE_EXPIRY_MS, PING_TIMEOUT_MS } from "./lease.ts";
 import type { HolderKind, LeaseRow } from "./lease.ts";
+import type { ShowTarget, Showing } from "@carton/cardboard/node";
 
 /** What the holder runs for one replica: the engine with its store and (for shared cuts) its sync client. */
 export interface HolderEngine {
@@ -32,7 +34,15 @@ export interface HolderEngine {
   stop?(why: string): void | Promise<void>;
   /** Another process wrote carton.db without this holder (a `cb` that committed in its own process): look now (B11). */
   nudge?(): void | Promise<void>;
+  /**
+   * Read-your-writes (apply-ryw): the shared timeline.tsx this holder's materializer prints shows the write `target`
+   * (`carton.shown`), answered once it does or within `waitMs`; null when this holder prints no timeline.tsx.
+   */
+  show?(target: ShowTarget, waitMs: number): Promise<Showing | null>;
 }
+
+/** The longest a `cb` write waits for the app's timeline.tsx to show it (`carton.shown`, apply-ryw). */
+export const SHOW_WAIT_MS = 2000;
 
 export interface HolderOptions {
   lease: Lease;
@@ -135,6 +145,7 @@ export class Holder {
         "carton.ping": () => ({ pid: process.pid, nonce: this.nonce }),
         "carton.nudge": () => { void Promise.resolve(this.opts.engine.nudge?.()).catch(() => {}); return { ok: true }; },
         "carton.commit": (p) => this.commit(p),
+        "carton.shown": (p) => this.shown(p),
         "carton.handover": () => this.handover(),
         "carton.status": () => ({ kind: this.kind, pid: process.pid, nonce: this.nonce, stopped: this.stopped, busy: this.busy }),
       },
@@ -208,6 +219,20 @@ export class Holder {
       this.busy--;
       this.lastUse = Date.now();
     }
+  }
+
+  /**
+   * `carton.shown` (apply-ryw): a `cb` write waits, up to SHOW_WAIT_MS, for the timeline.tsx this holder prints to show
+   * it. `{timeline}`: the materializer's answer (`shown`, `held`, `elsewhere`, `later`), null when none prints the file.
+   */
+  private async shown(params: unknown): Promise<{ timeline: Showing | null }> {
+    if (this.stopped) throw new RpcError(`holder stopped (${this.stopped})`, -32003);
+    const p = (params ?? {}) as Partial<ShowTarget> & { waitMs?: unknown };
+    if (typeof p.id !== "string" || !p.id) throw new RpcError("bad carton.shown request: no change id", -32602);
+    const target: ShowTarget = { id: p.id, ...(typeof p.cut === "string" ? { cut: p.cut } : {}), ...(typeof p.seq === "number" ? { seq: p.seq } : {}), ...(p.author && typeof p.author === "object" ? { author: p.author } : {}) };
+    const waitMs = Math.min(SHOW_WAIT_MS, Math.max(0, typeof p.waitMs === "number" ? p.waitMs : SHOW_WAIT_MS));
+    this.lastUse = Date.now();
+    return { timeline: (await this.opts.engine.show?.(target, waitMs)) ?? null };
   }
 
   /** The app is starting: finish the in-flight push, release, stop. */

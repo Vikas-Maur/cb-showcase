@@ -8,8 +8,9 @@
 //
 // A holder that dies while answering (ECONNRESET) is retried with the **same change id**: the next holder finds the
 // id already in carton.db's queue or log and never makes a second change (stable ids, R3-01).
-import { ControlClient, RpcError } from "./ipc.ts";
-import { liveHolder, patientWithApp, probeHolder } from "./holder.ts";
+import { ControlClient, RpcError, callOnce } from "./ipc.ts";
+import { liveHolder, patientWithApp, probeHolder, SHOW_WAIT_MS } from "./holder.ts";
+import type { ShowTarget, Showing } from "@carton/cardboard/node";
 import type { Lease, LeaseRow } from "./lease.ts";
 
 export interface SubmitOptions {
@@ -112,6 +113,21 @@ export async function nudgeHolder(socketPath: string, timeoutMs = 200): Promise<
     return false;
   } finally {
     c?.close();
+  }
+}
+
+/**
+ * Read-your-writes (apply-ryw): ask the lease holder at `socketPath` to answer once the shared timeline.tsx it prints
+ * shows `target`, a write this process just made (`carton.shown`, at most `waitMs`). Its answer: `shown`, `held` (a
+ * freeze holds the change back for someone else's work), `elsewhere` (another cut than the file's) or `later` (not
+ * yet); null when that holder prints no timeline.tsx. A holder that can't be asked (gone, no answer in time) is `later`.
+ */
+export async function showOnHolder(socketPath: string, target: ShowTarget, waitMs: number = SHOW_WAIT_MS): Promise<Showing | null> {
+  try {
+    const r = await callOnce<{ timeline?: Showing | null }>(socketPath, "carton.shown", { ...target, waitMs }, { timeoutMs: waitMs + 1000 });
+    return r?.timeline ?? null;
+  } catch {
+    return "later";
   }
 }
 

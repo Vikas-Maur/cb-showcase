@@ -21,6 +21,7 @@ import { identify } from "./identity.ts";
 import { nodeHasher } from "./hasher.ts";
 import { destCut, IDEMPOTENT, runWrite, tellBusy, WAIT_MS, withRaceRetry } from "./writes.ts";
 import type { CbResult, ViewPrinter, WriteOp, WriteRequest } from "./writes.ts";
+import type { ShowTarget, Showing } from "@carton/cardboard/node";
 import { viewNameFor } from "@carton/cardboard/node";
 import { hookDelivered } from "./identity.ts";
 import type { HolderEngine } from "./holder.ts";
@@ -285,6 +286,19 @@ export class CartonHolderEngine implements HolderEngine {
   /** Look at carton.db now (a `cb` wrote without this holder). */
   async nudge(): Promise<void> {
     await this.follower?.check();
+  }
+
+  /**
+   * `carton.shown` (apply-ryw): the shared timeline.tsx shows `target` (a `cb` write), answered once it does or within
+   * `waitMs`. A write another process committed is looked for first, as a nudge would (the follower tells the
+   * materializer who is at work, then that head moved), so the freeze takes in the writer's own change; then the
+   * materializer's rewrite is made at once and the answer comes with the print that shows it. Null: no materializer.
+   */
+  async show(target: ShowTarget, waitMs: number): Promise<Showing | null> {
+    const mz = this.materializer;
+    if (!mz?.showChange) return null;
+    await this.follower?.check();
+    return mz.showChange(target, waitMs);
   }
 
   /** Stop following carton.db and forwarding answers (the engine is closing; the lease's stop() leaves both running: a
