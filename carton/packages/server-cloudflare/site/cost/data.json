@@ -1,0 +1,1251 @@
+{
+ "schema": 1,
+ "built": "2026-11-02T01:42:29.521Z",
+ "measured": {
+  "generated": "2026-11-02T01:42:29.466Z",
+  "source": {
+   "branch": "lab/cloudflare",
+   "commit": "716af880",
+   "runsDir": "_inspect/carton-build/cf-lab/runs",
+   "note": "Initial file made by bench/cost/initial-measured.mjs from the 2026-11-01 runs (CF-REPORT.md); none re-checked yet."
+  }
+ },
+ "inputs": {
+  "editDoReq": {
+   "value": 1.30833,
+   "unit": "DO requests per edit",
+   "status": "measured",
+   "n": 18,
+   "min": 1.15,
+   "max": 1.76667,
+   "runs": [
+    "sync-nor2-good-20p-r1-mvy5ptzn",
+    "sync-nor2-good-20p-r2-mvy6dxfi",
+    "sync-nor2-good-20p-r3-mvy6m0e0",
+    "sync-nor2-good-2p-r1-mvy560vo",
+    "sync-nor2-good-2p-r2-mvy5sdt2",
+    "sync-nor2-good-2p-r3-mvy6g896",
+    "sync-nor2-good-5p-r1-mvy57mhh",
+    "sync-nor2-good-5p-r2-mvy5uxof",
+    "sync-nor2-good-5p-r3-mvy6k4qc",
+    "sync-r2-good-20p-r1-mvy5i33s",
+    "sync-r2-good-20p-r2-mvy6c98m",
+    "sync-r2-good-20p-r3-mvy6kzs2",
+    "sync-r2-good-2p-r1-mvy53xcy",
+    "sync-r2-good-2p-r2-mvy5rbpr",
+    "sync-r2-good-2p-r3-mvy6femn",
+    "sync-r2-good-5p-r1-mvy56t7t",
+    "sync-r2-good-5p-r2-mvy5tf7n",
+    "sync-r2-good-5p-r3-mvy6iscj"
+   ],
+   "how": "Cloudflare's analytics for the room, divided by the edits in the run; includes each party's connect and the room's alarms, so it slightly over-counts."
+  },
+  "editRowsWritten": {
+   "value": 2.16667,
+   "unit": "rows written per edit",
+   "status": "measured",
+   "n": 18,
+   "min": 2.07,
+   "max": 2.78333,
+   "runs": [
+    "sync-nor2-good-20p-r1-mvy5ptzn",
+    "sync-nor2-good-20p-r2-mvy6dxfi",
+    "sync-nor2-good-20p-r3-mvy6m0e0",
+    "sync-nor2-good-2p-r1-mvy560vo",
+    "sync-nor2-good-2p-r2-mvy5sdt2",
+    "sync-nor2-good-2p-r3-mvy6g896",
+    "sync-nor2-good-5p-r1-mvy57mhh",
+    "sync-nor2-good-5p-r2-mvy5uxof",
+    "sync-nor2-good-5p-r3-mvy6k4qc",
+    "sync-r2-good-20p-r1-mvy5i33s",
+    "sync-r2-good-20p-r2-mvy6c98m",
+    "sync-r2-good-20p-r3-mvy6kzs2",
+    "sync-r2-good-2p-r1-mvy53xcy",
+    "sync-r2-good-2p-r2-mvy5rbpr",
+    "sync-r2-good-2p-r3-mvy6femn",
+    "sync-r2-good-5p-r1-mvy56t7t",
+    "sync-r2-good-5p-r2-mvy5tf7n",
+    "sync-r2-good-5p-r3-mvy6iscj"
+   ],
+   "how": "Rows the room wrote (Cloudflare's analytics), divided by the edits in the run."
+  },
+  "editRowsRead": {
+   "value": 0.96667,
+   "unit": "rows read per edit",
+   "status": "measured",
+   "n": 18,
+   "min": 0.73333,
+   "max": 1.2,
+   "runs": [
+    "sync-nor2-good-20p-r1-mvy5ptzn",
+    "sync-nor2-good-20p-r2-mvy6dxfi",
+    "sync-nor2-good-20p-r3-mvy6m0e0",
+    "sync-nor2-good-2p-r1-mvy560vo",
+    "sync-nor2-good-2p-r2-mvy5sdt2",
+    "sync-nor2-good-2p-r3-mvy6g896",
+    "sync-nor2-good-5p-r1-mvy57mhh",
+    "sync-nor2-good-5p-r2-mvy5uxof",
+    "sync-nor2-good-5p-r3-mvy6k4qc",
+    "sync-r2-good-20p-r1-mvy5i33s",
+    "sync-r2-good-20p-r2-mvy6c98m",
+    "sync-r2-good-20p-r3-mvy6kzs2",
+    "sync-r2-good-2p-r1-mvy53xcy",
+    "sync-r2-good-2p-r2-mvy5rbpr",
+    "sync-r2-good-2p-r3-mvy6femn",
+    "sync-r2-good-5p-r1-mvy56t7t",
+    "sync-r2-good-5p-r2-mvy5tf7n",
+    "sync-r2-good-5p-r3-mvy6iscj"
+   ],
+   "how": "Rows the room read (Cloudflare's analytics), divided by the edits in the run."
+  },
+  "editGBs": {
+   "value": 0.00156,
+   "unit": "GB-s per edit",
+   "status": "measured",
+   "n": 18,
+   "min": 0.00108,
+   "max": 0.00254,
+   "runs": [
+    "sync-nor2-good-20p-r1-mvy5ptzn",
+    "sync-nor2-good-20p-r2-mvy6dxfi",
+    "sync-nor2-good-20p-r3-mvy6m0e0",
+    "sync-nor2-good-2p-r1-mvy560vo",
+    "sync-nor2-good-2p-r2-mvy5sdt2",
+    "sync-nor2-good-2p-r3-mvy6g896",
+    "sync-nor2-good-5p-r1-mvy57mhh",
+    "sync-nor2-good-5p-r2-mvy5uxof",
+    "sync-nor2-good-5p-r3-mvy6k4qc",
+    "sync-r2-good-20p-r1-mvy5i33s",
+    "sync-r2-good-20p-r2-mvy6c98m",
+    "sync-r2-good-20p-r3-mvy6kzs2",
+    "sync-r2-good-2p-r1-mvy53xcy",
+    "sync-r2-good-2p-r2-mvy5rbpr",
+    "sync-r2-good-2p-r3-mvy6femn",
+    "sync-r2-good-5p-r1-mvy56t7t",
+    "sync-r2-good-5p-r2-mvy5tf7n",
+    "sync-r2-good-5p-r3-mvy6iscj"
+   ],
+   "how": "The room's active time in the run (Cloudflare's analytics) × 128 MB, divided by the edits; the room hibernates between messages."
+  },
+  "editWorkerCpuMs": {
+   "value": 0,
+   "unit": "Worker CPU ms per edit",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Edits travel over the open WebSocket straight to the room: no Worker runs for them."
+  },
+  "editArchiveRowsWritten": {
+   "value": 1,
+   "unit": "rows written per edit",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Once a project passes 10,000 changes, each old change is moved to a compressed archive file and its row deleted; Cloudflare bills a delete as a row written."
+  },
+  "connWorkerReq": {
+   "value": 1,
+   "unit": "Worker requests per connect",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "One Worker request: the WebSocket upgrade, after the token check."
+  },
+  "connWorkerCpuMs": {
+   "value": 3,
+   "unit": "Worker CPU ms per connect",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The Worker's median CPU per request in the live-sync runs was about 3 ms (token check and hand-off to the room)."
+  },
+  "connDoReq": {
+   "value": 1,
+   "unit": "DO requests per connect",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Cloudflare: \"A request is needed to create a WebSocket connection.\" Billed in full, not 20:1."
+  },
+  "connRowsWritten": {
+   "value": 2,
+   "unit": "rows written per connect",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "A hello arms the room's upkeep alarm: its due time is one row, and Cloudflare bills each setAlarm as one row written."
+  },
+  "connGBs": {
+   "value": 0.002,
+   "unit": "GB-s per connect",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "A hello wakes the room for about as long as an edit does (≈ 15 ms × 128 MB)."
+  },
+  "connRowsRead": {
+   "value": 20,
+   "unit": "rows read per connect",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The hello reads the project's branches, people and the changes the client missed; a short absence reads a few dozen rows."
+  },
+  "presenceMsgPerSecWhileDragging": {
+   "value": 10,
+   "unit": "messages a second",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Carton's client sends at most 10 presence messages a second (PRESENCE_PER_SEC); the Cardboard app's pages send at most 1 a second while you click or type, so 10 is the upper bound."
+  },
+  "presenceDoReq": {
+   "value": 1,
+   "unit": "DO requests per message",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Each presence message is one incoming WebSocket message to the room; it's relayed to the others and never stored."
+  },
+  "presenceGBs": {
+   "value": 0.0002,
+   "unit": "GB-s per message",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "About 1.6 ms of room time per message (no storage write) × 128 MB."
+  },
+  "presenceAlarmPerHour": {
+   "value": 60,
+   "unit": "alarms an hour",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "While someone shows presence, the room checks every 60 s (half the 120 s timeout) for sockets gone silent; counted per person-hour, an upper bound when teammates overlap."
+  },
+  "upkeepAlarmPerHour": {
+   "value": 1,
+   "unit": "alarms an hour",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The room's upkeep (archiving old changes, sweeping expired envelopes) is due an hour after an edit or a hello, so at most one an editing hour per project."
+  },
+  "alarmRowsWritten": {
+   "value": 1,
+   "unit": "rows written per alarm",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Cloudflare bills each setAlarm() as one row written."
+  },
+  "alarmGBs": {
+   "value": 0.0003,
+   "unit": "GB-s per alarm",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "An alarm wakes the room for a few milliseconds × 128 MB."
+  },
+  "idleDoReqPerHour": {
+   "value": 0,
+   "unit": "DO requests an hour",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Keepalive pings are answered by Cloudflare's auto-response without waking the room, and Cloudflare's pricing page says those aren't charged."
+  },
+  "idleGBsPerHour": {
+   "value": 0,
+   "unit": "GB-s an hour",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "An idle room hibernates; Cloudflare doesn't bill duration while it does."
+  },
+  "idleRowsWrittenPerHour": {
+   "value": 0,
+   "unit": "rows written an hour",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Nothing is stored while nobody edits."
+  },
+  "gbWorkerReq": {
+   "value": 140,
+   "unit": "Worker requests per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "8 MiB parts: 128 part uploads plus the checks, manifest, start and finish of the upload."
+  },
+  "gbWorkerCpuMs": {
+   "value": 840,
+   "unit": "Worker CPU ms per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "After fix/cf-stream-parts the lab measured 3–9 ms of CPU per part (32 parts, one 256 MB run): about 6 ms × 140 requests. Before the fix: 61–359 ms per part."
+  },
+  "gbR2ClassA": {
+   "value": 520,
+   "unit": "Class A per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Per 8 MiB part: the upload itself and three small records (lock, marker, release); plus starting and finishing the upload."
+  },
+  "gbR2ClassB": {
+   "value": 130,
+   "unit": "Class B per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "About one read per part (the upload's lock), plus the checks before it starts."
+  },
+  "gbDoReq": {
+   "value": 0,
+   "unit": "DO requests per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "None with R2. With the optional daily write cap switched on, one per part (its counter)."
+  },
+  "gbVaultDoReq": {
+   "value": 260,
+   "unit": "DO requests per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Without R2, each part goes to the vault Durable Object, plus the copy when the upload finishes."
+  },
+  "gbVaultRowsWritten": {
+   "value": 3072,
+   "unit": "rows written per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The vault stores 1 MiB per row: each MiB written as a part, copied once when the upload completes, and the part rows deleted."
+  },
+  "gbVaultGBs": {
+   "value": 30,
+   "unit": "GB-s per GB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The vault was active about 26 s for a 100 MB upload on the good profile (Cloudflare's analytics, one run)."
+  },
+  "segWorkerReq": {
+   "value": 6,
+   "unit": "Worker requests per segment",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Per preview segment the client checks the object, any damage report and the manifest, then writes the manifest, the bytes and the stream's list entry (upload.ts, stream.ts)."
+  },
+  "segWorkerCpuMs": {
+   "value": 2,
+   "unit": "Worker CPU ms per segment",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Small requests that stream through: about 2 ms in all (estimate)."
+  },
+  "segR2ClassA": {
+   "value": 3,
+   "unit": "Class A per segment",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Three writes per segment: the manifest, the bytes and the list entry."
+  },
+  "segR2ClassB": {
+   "value": 3,
+   "unit": "Class B per segment",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Three checks per segment: the object, a damage report and the manifest."
+  },
+  "segVaultDoReq": {
+   "value": 6,
+   "unit": "DO requests per segment",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Without R2, each of the segment's six calls is a request to the vault."
+  },
+  "segVaultRowsWritten": {
+   "value": 4,
+   "unit": "rows written per segment",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The bytes (one 1 MiB row), the manifest, the list entry and the object's record."
+  },
+  "viewWorkerReqPerMiB": {
+   "value": 4.2,
+   "unit": "Worker requests per MiB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "A teammate reads each 2 s segment (≈ 0.48 MiB at 2 Mbit/s) and its list entry: two requests per segment. Played media is cached on their disk, so replays are free."
+  },
+  "viewClassBPerMiB": {
+   "value": 4.2,
+   "unit": "Class B per MiB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "One R2 read per request."
+  },
+  "viewWorkerCpuMsPerMiB": {
+   "value": 6,
+   "unit": "Worker CPU ms per MiB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "About 1.5 ms per streamed read (estimate)."
+  },
+  "viewVaultRowsReadPerMiB": {
+   "value": 2.1,
+   "unit": "rows read per MiB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Without R2, the vault reads one 1 MiB row per segment."
+  },
+  "viewVaultGBsPerMiB": {
+   "value": 0.01,
+   "unit": "GB-s per MiB",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Without R2, the vault is awake about 80 ms per MiB it serves (estimate)."
+  },
+  "changeBytes": {
+   "value": 600,
+   "unit": "bytes per stored change",
+   "status": "estimated",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "A change row in the room's database until it's archived; the newest 10,000 stay in the room."
+  }
+ },
+ "missingInputs": [],
+ "extraInputs": [],
+ "speeds": [
+  {
+   "id": "sync-good-20p-vault",
+   "what": "live sync: an edit visible to every party",
+   "network": "good",
+   "storage": "vault",
+   "parties": 20,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 110,
+   "p90": 697,
+   "p99": 717,
+   "unit": "ms",
+   "runs": 3,
+   "status": "measured",
+   "note": ""
+  },
+  {
+   "id": "sync-good-2p-vault",
+   "what": "live sync: an edit visible to every party",
+   "network": "good",
+   "storage": "vault",
+   "parties": 2,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 103,
+   "p90": 110,
+   "p99": 123,
+   "unit": "ms",
+   "runs": 3,
+   "status": "measured",
+   "note": ""
+  },
+  {
+   "id": "sync-good-5p-vault",
+   "what": "live sync: an edit visible to every party",
+   "network": "good",
+   "storage": "vault",
+   "parties": 5,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 102,
+   "p90": 125,
+   "p99": 242,
+   "unit": "ms",
+   "runs": 3,
+   "status": "measured",
+   "note": ""
+  },
+  {
+   "id": "sync-3g-20p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "3g",
+   "storage": "r2",
+   "parties": 20,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 487,
+   "p90": 687,
+   "p99": 1095,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "one run only"
+  },
+  {
+   "id": "sync-3g-2p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "3g",
+   "storage": "r2",
+   "parties": 2,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 276,
+   "p90": 281,
+   "p99": 287,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "one run only"
+  },
+  {
+   "id": "sync-3g-5p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "3g",
+   "storage": "r2",
+   "parties": 5,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 280,
+   "p90": 317,
+   "p99": 329,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "one run only"
+  },
+  {
+   "id": "sync-4g-20p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "4g",
+   "storage": "r2",
+   "parties": 20,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 163,
+   "p90": 376,
+   "p99": 516,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "one run only"
+  },
+  {
+   "id": "sync-4g-2p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "4g",
+   "storage": "r2",
+   "parties": 2,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 144,
+   "p90": 149,
+   "p99": 153,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "one run only"
+  },
+  {
+   "id": "sync-4g-5p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "4g",
+   "storage": "r2",
+   "parties": 5,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 154,
+   "p90": 165,
+   "p99": 199,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "one run only"
+  },
+  {
+   "id": "sync-good-20p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 20,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 113,
+   "p90": 350,
+   "p99": 379,
+   "unit": "ms",
+   "runs": 3,
+   "status": "measured",
+   "note": ""
+  },
+  {
+   "id": "sync-good-2p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 2,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 107,
+   "p90": 111,
+   "p99": 131,
+   "unit": "ms",
+   "runs": 3,
+   "status": "measured",
+   "note": ""
+  },
+  {
+   "id": "sync-good-5p-r2",
+   "what": "live sync: an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 5,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 107,
+   "p90": 119,
+   "p99": 172,
+   "unit": "ms",
+   "runs": 3,
+   "status": "measured",
+   "note": ""
+  },
+  {
+   "id": "flap-good-20p-r2-fixed",
+   "what": "flapping link (5 s down every 30 s): an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 20,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 7679,
+   "p90": 9814,
+   "p99": 15169,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "client with fix/cf-dead-link"
+  },
+  {
+   "id": "flap-good-2p-r2-fixed",
+   "what": "flapping link (5 s down every 30 s): an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 2,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 139,
+   "p90": 6397,
+   "p99": 11423,
+   "unit": "ms",
+   "runs": 2,
+   "status": "measured",
+   "note": "client with fix/cf-dead-link"
+  },
+  {
+   "id": "flap-good-2p-r2-old",
+   "what": "flapping link (5 s down every 30 s): an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 2,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 109,
+   "p90": 7101,
+   "p99": 9694,
+   "unit": "ms",
+   "runs": 2,
+   "status": "measured",
+   "note": "old client (before fix/cf-dead-link)"
+  },
+  {
+   "id": "flap-good-5p-r2-fixed",
+   "what": "flapping link (5 s down every 30 s): an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 5,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 2821,
+   "p90": 7713,
+   "p99": 11218,
+   "unit": "ms",
+   "runs": 2,
+   "status": "measured",
+   "note": "client with fix/cf-dead-link"
+  },
+  {
+   "id": "flap-good-5p-r2-old",
+   "what": "flapping link (5 s down every 30 s): an edit visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 5,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 3991,
+   "p90": 7786,
+   "p99": 12171,
+   "unit": "ms",
+   "runs": 2,
+   "status": "measured",
+   "note": "old client (before fix/cf-dead-link)"
+  },
+  {
+   "id": "outage-good-2p-r2-baseline-old-client",
+   "what": "5-minute outage: an edit made offline visible to every party",
+   "network": "good",
+   "storage": "r2",
+   "parties": 2,
+   "sizeMB": null,
+   "metric": "convergence",
+   "p50": 213034,
+   "p90": 339350,
+   "p99": 365855,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "old client: never noticed the link was dead and resumed on TCP's retransmission timer; the fixed client's outage runs weren't run yet"
+  },
+  {
+   "id": "upload-good-105MB-vault",
+   "what": "upload: sharing a file until teammates can fetch it",
+   "network": "good",
+   "storage": "vault",
+   "parties": null,
+   "sizeMB": 105,
+   "metric": "duration",
+   "p50": 53251,
+   "p90": 53251,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "15.8 Mbit/s"
+  },
+  {
+   "id": "preview-good-vault",
+   "what": "time until a teammate can preview (the first 2 s proxy segment)",
+   "network": "good",
+   "storage": "vault",
+   "parties": 2,
+   "sizeMB": 0.66,
+   "metric": "duration",
+   "p50": 4678,
+   "p90": 4678,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "uploader's PUT 2136 ms, teammate's fetch 1395 ms"
+  },
+  {
+   "id": "download-good-105MB-vault",
+   "what": "download: a teammate fetching a shared file",
+   "network": "good",
+   "storage": "vault",
+   "parties": null,
+   "sizeMB": 105,
+   "metric": "duration",
+   "p50": 57926,
+   "p90": 57926,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "14.5 Mbit/s; first byte after 2.5 s"
+  },
+  {
+   "id": "upload-none-105MB-vault",
+   "what": "upload: sharing a file until teammates can fetch it",
+   "network": "none",
+   "storage": "vault",
+   "parties": null,
+   "sizeMB": 105,
+   "metric": "duration",
+   "p50": 14653,
+   "p90": 14653,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "57.2 Mbit/s"
+  },
+  {
+   "id": "preview-none-vault",
+   "what": "time until a teammate can preview (the first 2 s proxy segment)",
+   "network": "none",
+   "storage": "vault",
+   "parties": 2,
+   "sizeMB": 0.66,
+   "metric": "duration",
+   "p50": 3991,
+   "p90": 3991,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "uploader's PUT 1709 ms, teammate's fetch 952 ms"
+  },
+  {
+   "id": "upload-none-1074MB-vault-before-fix",
+   "what": "upload: sharing a file until teammates can fetch it",
+   "network": "none",
+   "storage": "vault",
+   "parties": null,
+   "sizeMB": 1074,
+   "metric": "duration",
+   "p50": 132518,
+   "p90": 132518,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "64.8 Mbit/s; finished only after 4 sessions (3 stopped by error 1102, before fix/cf-stream-parts)"
+  },
+  {
+   "id": "upload-3g-21MB-vault",
+   "what": "upload: sharing a file until teammates can fetch it",
+   "network": "3g",
+   "storage": "vault",
+   "parties": null,
+   "sizeMB": 21,
+   "metric": "duration",
+   "p50": 194094,
+   "p90": 194094,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "0.9 Mbit/s"
+  },
+  {
+   "id": "preview-3g-vault",
+   "what": "time until a teammate can preview (the first 2 s proxy segment)",
+   "network": "3g",
+   "storage": "vault",
+   "parties": 2,
+   "sizeMB": 0.66,
+   "metric": "duration",
+   "p50": 17257,
+   "p90": 17257,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "uploader's PUT 7847 ms, teammate's fetch 7836 ms"
+  },
+  {
+   "id": "download-bad-5MB-vault",
+   "what": "download: a teammate fetching a shared file",
+   "network": "bad",
+   "storage": "vault",
+   "parties": null,
+   "sizeMB": 5,
+   "metric": "duration",
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "failed: the request timed out (the lab's ranged download has no retry)"
+  },
+  {
+   "id": "upload-none-105MB-r2",
+   "what": "upload: sharing a file until teammates can fetch it",
+   "network": "none",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": 105,
+   "metric": "duration",
+   "p50": 28348,
+   "p90": 28348,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "29.6 Mbit/s"
+  },
+  {
+   "id": "preview-none-r2",
+   "what": "time until a teammate can preview (the first 2 s proxy segment)",
+   "network": "none",
+   "storage": "r2",
+   "parties": 2,
+   "sizeMB": 0.66,
+   "metric": "duration",
+   "p50": 3239,
+   "p90": 4234,
+   "p99": null,
+   "unit": "ms",
+   "runs": 2,
+   "status": "measured",
+   "note": "2 runs"
+  },
+  {
+   "id": "upload-none-1074MB-r2-before-fix",
+   "what": "upload: sharing a file until teammates can fetch it",
+   "network": "none",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": 1074,
+   "metric": "duration",
+   "p50": null,
+   "p90": null,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "never completed: every session ended with error 1102 (CPU limit), before fix/cf-stream-parts"
+  },
+  {
+   "id": "upload-none-268MB-r2",
+   "what": "upload: sharing a file until teammates can fetch it",
+   "network": "none",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": 268,
+   "metric": "duration",
+   "p50": 51138,
+   "p90": 51138,
+   "p99": null,
+   "unit": "ms",
+   "runs": 1,
+   "status": "measured",
+   "note": "42.0 Mbit/s; with fix/cf-stream-parts"
+  }
+ ],
+ "limits": [
+  {
+   "id": "worker-cpu-10ms",
+   "status": "measured",
+   "value": "10 ms of CPU per request on Workers Free (5 minutes on Paid)",
+   "observed": "Upload parts were read whole into memory: 61–359 ms of CPU each. After a burst Cloudflare stopped them with error 1102 (HTTP 503), so a 1 GB upload never finished. With fix/cf-stream-parts: 3–9 ms per part, 32 of 32 parts ok.",
+   "carton": "A clear error, 4 retries with backoff, then a stop the upload can resume from. The fix streams each part straight to storage (branch fix/cf-stream-parts, not yet merged).",
+   "runs": [
+    "media-r2-1G-none-mvy6i8d7",
+    "media-r2-256M-none-streamfix-mvy709f7"
+   ]
+  },
+  {
+   "id": "worker-memory-128mb",
+   "status": "measured",
+   "value": "128 MB of memory per Worker isolate",
+   "observed": "A 96 MiB part failed (HTTP 503) while another upload shared the isolate; a 99 MiB part alone passed.",
+   "carton": "The same retry path. Streaming parts (fix/cf-stream-parts) never holds a part in memory.",
+   "runs": [
+    "limits-r2-body-96MiB-mvy6m258",
+    "limits-r2-body-99MiB-mvy6mfbr"
+   ]
+  },
+  {
+   "id": "request-body-100mb",
+   "status": "measured",
+   "value": "100 MB per request body (Free and Pro plans)",
+   "observed": "A 101 MiB part was refused at Cloudflare's edge with HTTP 413; 64, 96 and 99 MiB passed.",
+   "carton": "Upload parts are 8–64 MiB, so a file would need to be over 640 GiB (10,000 parts) to come near it.",
+   "runs": [
+    "limits-r2-body-101MiB-mvy6mqxe",
+    "limits-r2-body-64MiB-mvy6lrsn",
+    "limits-r2-body-99MiB-mvy6mfbr"
+   ]
+  },
+  {
+   "id": "ws-message-32mib",
+   "status": "measured",
+   "value": "32 MiB per incoming WebSocket message",
+   "observed": "A raw 33 MiB frame: Cloudflare closed the socket (code 1009). The room closes 1009 above its own 24 MiB cap.",
+   "carton": "Changes over 1 MiB travel as uploaded envelopes (5 MiB: 2.0–3.5 s, 20 MiB: 3.9–5.1 s). A 30 MiB change is refused on your machine as \"too large\" in 215 ms, and the next edit still goes through.",
+   "runs": [
+    "limits-r2-frame-33MiB-mvy6py7c",
+    "limits-r2-change-20MiB-mvy6njph",
+    "limits-r2-change-30MiB-mvy6ns89"
+   ]
+  },
+  {
+   "id": "subrequests",
+   "status": "measured",
+   "value": "50 subrequests per request on Free (1,000 to Cloudflare's own services); 10,000 on Paid",
+   "observed": "R2 calls count against the 1,000, not the 50. Checking 200 files at once worked (4.1 s); asked for 1,000, the server answered 200 per call (9.4 s).",
+   "carton": "The server checks at most 200 files per request (BLOB_HEADS_PER_REQUEST) and the client asks again for the rest.",
+   "runs": [
+    "limits-r2-heads-200-mvy6l2ig",
+    "limits-r2-heads-1000-mvy6lh4l"
+   ]
+  },
+  {
+   "id": "do-value-2mb",
+   "status": "documented",
+   "value": "2 MB per database row in a Durable Object",
+   "observed": "Not hit: the vault stores media in 1 MiB rows.",
+   "carton": "Media without R2 is cut into 1 MiB rows; changes over 1 MiB go as envelopes.",
+   "runs": []
+  },
+  {
+   "id": "daily-workers-requests",
+   "status": "documented",
+   "value": "100,000 Worker requests a day on Free (resets 00:00 UTC)",
+   "observed": "Not tested directly (it needed a late-night window and approval). A client whose session was refused retried 86 times a minute, about 2 requests per try: ≈ 245,000 a day from one stuck client, 2.5× the limit.",
+   "carton": "Past it, Cloudflare answers error 1027 until midnight UTC and nobody can connect. fix/cf-reconnect-backoff slows retries to 15 s, or 5 minutes while the session is refused (not yet merged).",
+   "runs": [
+    "refused-r2-60s-old-client-mvy5pp79"
+   ]
+  },
+  {
+   "id": "daily-do-requests",
+   "status": "documented",
+   "value": "100,000 Durable Object requests a day on Free",
+   "observed": "Not tested (the lab stayed under 50% of every daily limit; it used 5,409 on its busiest day).",
+   "carton": "Past it, edits and uploads fail until midnight UTC; Carton keeps them on your machine and sends them when it can.",
+   "runs": []
+  },
+  {
+   "id": "daily-do-duration",
+   "status": "documented",
+   "value": "13,000 GB-s of Durable Object time a day on Free",
+   "observed": "Not tested (the lab used 28 GB-s on its busiest day).",
+   "carton": "As above: requests fail until midnight UTC.",
+   "runs": []
+  },
+  {
+   "id": "daily-rows-written",
+   "status": "documented",
+   "value": "100,000 rows written a day on Free (5 million read)",
+   "observed": "Not tested (the lab wrote 14,983 rows on its busiest day).",
+   "carton": "The room archives old changes in batches from an alarm, never on an edit, because each archived row costs one more row written.",
+   "runs": []
+  },
+  {
+   "id": "do-storage-5gb",
+   "status": "documented",
+   "value": "5 GB of Durable Object storage in total on Free",
+   "observed": "Not hit (12.7 MB used). The vault has no sweep for abandoned uploads, so their parts stay and count against it.",
+   "carton": "Without R2, all media sits in Durable Objects, so a solo editor's footage alone can pass 5 GB. Keep media in R2.",
+   "runs": []
+  },
+  {
+   "id": "r2-free-monthly",
+   "status": "documented",
+   "value": "R2: 10 GB-month of storage, 1 million Class A and 10 million Class B a month free",
+   "observed": "The lab used 993 Class A and 698 Class B this month. A bucket lifecycle rule deletes test files and aborts unfinished uploads after a day.",
+   "carton": "Past it, R2 bills (it never stops). Its free amounts are monthly, not daily.",
+   "runs": []
+  },
+  {
+   "id": "dead-link",
+   "status": "measured",
+   "value": "Not a Cloudflare limit: a link that dies without closing",
+   "observed": "Through a 5-minute outage the socket stayed \"open\": status \"Syncing\", no offline event. 66 edits made offline, 0 lost; they all arrived 66.5 s after the link came back, on TCP's retransmission timer.",
+   "carton": "fix/cf-dead-link closes a link whose keepalive goes unanswered for 15 s, so the app shows offline and reconnects at once (not yet merged).",
+   "runs": [
+    "sync-r2-good-outage-2p-r1-baseline-old-client-mvy5o78o"
+   ]
+  }
+ ],
+ "networkProfiles": {
+  "none": "Unshaped: the lab's server in Mumbai, 1–2 ms from Cloudflare's edge",
+  "good": "20 Mbit/s each way, 30 ms round trip, no loss",
+  "4g": "5 Mbit/s, 80 ms round trip, 0.5% packet loss",
+  "3g": "1 Mbit/s, 200 ms round trip, 1% packet loss",
+  "bad": "256 kbit/s, 400 ms round trip (± 50 ms jitter), 3% packet loss"
+ },
+ "prices": {
+  "fetched": "2026-11-02",
+  "currency": "USD",
+  "sources": [
+   {
+    "name": "Workers pricing",
+    "url": "https://developers.cloudflare.com/workers/platform/pricing/",
+    "fetched": "2026-11-02"
+   },
+   {
+    "name": "Durable Objects pricing",
+    "url": "https://developers.cloudflare.com/durable-objects/platform/pricing/",
+    "fetched": "2026-11-02"
+   },
+   {
+    "name": "R2 pricing",
+    "url": "https://developers.cloudflare.com/r2/pricing/",
+    "fetched": "2026-11-02"
+   },
+   {
+    "name": "Workers limits",
+    "url": "https://developers.cloudflare.com/workers/platform/limits/",
+    "fetched": "2026-11-02"
+   },
+   {
+    "name": "Durable Objects limits",
+    "url": "https://developers.cloudflare.com/durable-objects/platform/limits/",
+    "fetched": "2026-11-02"
+   }
+  ],
+  "paid": {
+   "base": 5,
+   "workersReq": {
+    "included": 10000000,
+    "per": 0.3,
+    "perUnit": 1000000
+   },
+   "workersCpuMs": {
+    "included": 30000000,
+    "per": 0.02,
+    "perUnit": 1000000
+   },
+   "doReq": {
+    "included": 1000000,
+    "per": 0.15,
+    "perUnit": 1000000
+   },
+   "doGBs": {
+    "included": 400000,
+    "per": 12.5,
+    "perUnit": 1000000
+   },
+   "doRowsRead": {
+    "included": 25000000000,
+    "per": 0.001,
+    "perUnit": 1000000
+   },
+   "doRowsWritten": {
+    "included": 50000000,
+    "per": 1,
+    "perUnit": 1000000
+   },
+   "doStorageGBMonth": {
+    "included": 5,
+    "per": 0.2,
+    "perUnit": 1
+   },
+   "wsMessagesPerRequest": 20
+  },
+  "free": {
+   "workersReqDay": 100000,
+   "workersCpuMsPerRequest": 10,
+   "doReqDay": 100000,
+   "doGBsDay": 13000,
+   "doRowsReadDay": 5000000,
+   "doRowsWrittenDay": 100000,
+   "doStorageGB": 5
+  },
+  "r2": {
+   "storageGBMonth": {
+    "included": 10,
+    "per": 0.015,
+    "perUnit": 1
+   },
+   "classA": {
+    "included": 1000000,
+    "per": 4.5,
+    "perUnit": 1000000
+   },
+   "classB": {
+    "included": 10000000,
+    "per": 0.36,
+    "perUnit": 1000000
+   },
+   "egress": 0
+  },
+  "notes": {
+   "workersFree": "Workers Free: 100,000 requests a day, 10 ms of CPU per request, no fee. Requests to static assets are free and unlimited.",
+   "doFree": "Durable Objects on Workers Free (SQLite-backed only): 100,000 requests, 13,000 GB-s, 5 million rows read and 100,000 rows written a day; 5 GB stored in total.",
+   "ws": "A request is needed to create a WebSocket connection. For billing only, a 20:1 ratio is applied to incoming WebSocket messages; outgoing messages and incoming protocol pings aren't charged; auto-responses (setWebSocketAutoResponse) aren't charged.",
+   "alarm": "Each setAlarm() is billed as a single row written; deletes are counted as rows written.",
+   "duration": "Duration bills the 128 MB a Durable Object is allocated, whatever it uses; an object that is idle and eligible for hibernation isn't billed for duration.",
+   "r2": "R2 bills on either Workers plan; its free amounts are monthly and apply to Standard storage only. Storage is the average of each day's peak over the month. Egress is free. DeleteObject and AbortMultipartUpload are free.",
+   "dailyReset": "Workers Free daily limits reset at 00:00 UTC."
+  }
+ }
+}

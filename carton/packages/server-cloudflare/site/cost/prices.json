@@ -1,0 +1,46 @@
+{
+ "fetched": "2026-11-02",
+ "currency": "USD",
+ "sources": [
+  { "name": "Workers pricing", "url": "https://developers.cloudflare.com/workers/platform/pricing/", "fetched": "2026-11-02" },
+  { "name": "Durable Objects pricing", "url": "https://developers.cloudflare.com/durable-objects/platform/pricing/", "fetched": "2026-11-02" },
+  { "name": "R2 pricing", "url": "https://developers.cloudflare.com/r2/pricing/", "fetched": "2026-11-02" },
+  { "name": "Workers limits", "url": "https://developers.cloudflare.com/workers/platform/limits/", "fetched": "2026-11-02" },
+  { "name": "Durable Objects limits", "url": "https://developers.cloudflare.com/durable-objects/platform/limits/", "fetched": "2026-11-02" }
+ ],
+ "paid": {
+  "base": 5,
+  "workersReq": { "included": 10000000, "per": 0.30, "perUnit": 1000000 },
+  "workersCpuMs": { "included": 30000000, "per": 0.02, "perUnit": 1000000 },
+  "doReq": { "included": 1000000, "per": 0.15, "perUnit": 1000000 },
+  "doGBs": { "included": 400000, "per": 12.50, "perUnit": 1000000 },
+  "doRowsRead": { "included": 25000000000, "per": 0.001, "perUnit": 1000000 },
+  "doRowsWritten": { "included": 50000000, "per": 1.00, "perUnit": 1000000 },
+  "doStorageGBMonth": { "included": 5, "per": 0.20, "perUnit": 1 },
+  "wsMessagesPerRequest": 20
+ },
+ "free": {
+  "workersReqDay": 100000,
+  "workersCpuMsPerRequest": 10,
+  "doReqDay": 100000,
+  "doGBsDay": 13000,
+  "doRowsReadDay": 5000000,
+  "doRowsWrittenDay": 100000,
+  "doStorageGB": 5
+ },
+ "r2": {
+  "storageGBMonth": { "included": 10, "per": 0.015, "perUnit": 1 },
+  "classA": { "included": 1000000, "per": 4.50, "perUnit": 1000000 },
+  "classB": { "included": 10000000, "per": 0.36, "perUnit": 1000000 },
+  "egress": 0
+ },
+ "notes": {
+  "workersFree": "Workers Free: 100,000 requests a day, 10 ms of CPU per request, no fee. Requests to static assets are free and unlimited.",
+  "doFree": "Durable Objects on Workers Free (SQLite-backed only): 100,000 requests, 13,000 GB-s, 5 million rows read and 100,000 rows written a day; 5 GB stored in total.",
+  "ws": "A request is needed to create a WebSocket connection. For billing only, a 20:1 ratio is applied to incoming WebSocket messages; outgoing messages and incoming protocol pings aren't charged; auto-responses (setWebSocketAutoResponse) aren't charged.",
+  "alarm": "Each setAlarm() is billed as a single row written; deletes are counted as rows written.",
+  "duration": "Duration bills the 128 MB a Durable Object is allocated, whatever it uses; an object that is idle and eligible for hibernation isn't billed for duration.",
+  "r2": "R2 bills on either Workers plan; its free amounts are monthly and apply to Standard storage only. Storage is the average of each day's peak over the month. Egress is free. DeleteObject and AbortMultipartUpload are free.",
+  "dailyReset": "Workers Free daily limits reset at 00:00 UTC."
+ }
+}
