@@ -167,6 +167,8 @@ test("baseline P3-7: the drawer covers the chat column only; past it, it stops a
   assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1300, chat: 520 }), { mode: "overlay", width: 384, over: false });
   // the audit's 960 px window: the chat is 240 px, so 300 px reaches past it
   assert.deepEqual(U.fitPanel({ room: 263, preferred: 384, viewport: 960, chat: 240 }), { mode: "overlay", width: 300, over: true });
+  // the chat collapsed (0 px measured, not "unknown": review #2): the drawer is all past it, so it ends above the timeline
+  assert.deepEqual(U.fitPanel({ room: 600, preferred: 384, viewport: 960, chat: 0 }), { mode: "overlay", width: 300, over: true });
   // inline, as before; with no chat measured, as before
   assert.deepEqual(U.fitPanel({ room: 1100, preferred: 384, viewport: 1920, chat: 400 }), { mode: "inline", width: 384 });
   assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 960 }), { mode: "overlay", width: 384 });
@@ -195,6 +197,14 @@ test("baseline P3-7: the drawer covers the chat column only; past it, it stops a
     const a = row.querySelector("aside");
     assert.equal(a.getAttribute("data-fit"), "overlay");
     assert.deepEqual([a.style.position, a.style.width, a.style.top, a.style.height], ["fixed", "300px", "40px", "490px"], "300 px wide, from the row's top to the stage's bottom: the timeline below stays clear");
+    // the chat collapsed: the stage reaches the row's right edge
+    await React.act(async () => root.unmount());
+    root = null;
+    stage.getBoundingClientRect = box({ left: 366, right: 960, top: 40, bottom: 530 });
+    root = client.createRoot(row);
+    await React.act(async () => { root.render(React.createElement(T.CartonProvider, { ui: createMockUi({ versions: 5 }) }, React.createElement(T.Sidebar, { panel: "history", setPanel() {}, projectId: "p1", bridge: { call: async () => ({}), onEvent: () => () => {} } }))); });
+    const b = row.querySelector("aside");
+    assert.deepEqual([b.getAttribute("data-fit"), b.style.width, b.style.height], ["overlay", "300px", "490px"], "no chat to cover: it ends above the timeline");
   } finally {
     if (root) await React.act(async () => root.unmount());
     delete globalThis.IS_REACT_ACT_ENVIRONMENT;
