@@ -94,15 +94,11 @@ test("#2: a split saved by the editor reads as a split in History", t, async () 
     const id = (await pc.call("projects.list"))[0]?.id;
     const panel = await openPanel(pc, id, "page-1");
     const before = panel.history().length;
-    // auto reframe turned on by an agent (the editor's save can't write it; Carton keeps it, B10)
-    const seeded = await S.projectOf(pc, id);
-    const on = seeded.timelineItems.map((it) => (it.type === "video" ? { ...it, autoReframe: true } : it));
-    await pc.call("projects.updateScoped", { ...seeded, timelineItems: on }, { ownedFields: ["tracks", "timelineItems"], carton: { actor: "director/chat1/turn3" } });
-    await S.until(() => panel.history().length > before, 20_000, "the agent's version");
+    // the seeded clip has auto reframe on (cb fitted it to the frame), which the editor's save can't write: Carton
+    // keeps it (B10)
     const doc = await S.projectOf(pc, id);
     const clip = doc.timelineItems.find((it) => it.type === "video");
     assert.equal(clip?.autoReframe, true, "the seeded clip, auto reframe on: " + JSON.stringify(clip));
-    const before2 = panel.history().length;
     // Cardboard 1.4.0's split at 1.0 s (`cl` in the renderer): two new clips over the old one's range
     const at = clip.startTime + 1, cut = clip.trimStart + 1 * (clip.playbackSpeed ?? 1);
     const left = { ...clip, id: "split-left-0001", endTime: at, trimEnd: cut };
@@ -112,7 +108,7 @@ test("#2: a split saved by the editor reads as a split in History", t, async () 
     delete left.autoReframe, delete right.autoReframe;
     const items = doc.timelineItems.flatMap((it) => (it.id === clip.id ? [left, right] : [it]));
     await pc.call("projects.updateScoped", { ...doc, timelineItems: items, stateUpdatedAt: Date.now() }, { ownedFields: ["tracks", "timelineItems"], carton: { base: doc.stateUpdatedAt, actor: "person" } });
-    const row = await S.until(() => panel.history().length > before2 && panel.history().at(-1), 20_000, "the split's version in the panel");
+    const row = await S.until(() => panel.history().length > before && panel.history().at(-1), 20_000, "the split's version in the panel");
     await panel.want([row.id]);
     const said = await S.until(() => panel.history().find((v) => v.id === row.id)?.summary, 20_000, "the split's version in words");
     assert.equal(said, "Split 'clip.mp4' at 1.0 s", "History says it was split: " + JSON.stringify(panel.history().at(-1)));
