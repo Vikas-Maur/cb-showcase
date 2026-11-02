@@ -1,6 +1,6 @@
 {
  "schema": 1,
- "built": "2026-11-02T09:11:52.631Z",
+ "built": "2026-11-02T11:43:24.827Z",
  "measured": {
   "generated": "2026-11-02T03:07:43.727Z",
   "source": {
@@ -1641,44 +1641,6 @@
     "note": "graphql"
    }
   },
-  "pvoStreamWorkerReq": {
-   "value": 7,
-   "unit": "Worker requests per stream",
-   "status": "verified",
-   "source": "proxy-check",
-   "n": null,
-   "min": null,
-   "max": null,
-   "runs": [],
-   "how": "Optimized: the stream's setup (pointer check, claim, read back: 3 signs and 3 signed requests) and one dedup probe: 16 requests at 8 parts = 9 appends + this. Confirmed exact by the preview-path re-check (cf-verify2, CF-VERIFY-PROXY.md).",
-   "verdict": "confirmed",
-   "check": {
-    "value": 7,
-    "n": null,
-    "min": null,
-    "max": null,
-    "note": "exact"
-   }
-  },
-  "pvoStreamCapReserves": {
-   "value": 1,
-   "unit": "write-cap reserves per stream",
-   "status": "verified",
-   "source": "proxy-check",
-   "n": null,
-   "min": null,
-   "max": null,
-   "runs": [],
-   "how": "Optimized, with the daily write cap on: one reserve per append, plus 1 a stream (10 = 9 appends + 1). Confirmed exact by the preview-path re-check (cf-verify2, CF-VERIFY-PROXY.md).",
-   "verdict": "confirmed",
-   "check": {
-    "value": 1,
-    "n": null,
-    "min": null,
-    "max": null,
-    "note": "exact (client log) and graphql (125 / 10 per run, unsampled)"
-   }
-  },
   "pvoStreamClassB": {
    "value": 4,
    "unit": "Class B per stream",
@@ -1700,193 +1662,269 @@
    }
   },
   "pvoAppendsPerSeg": {
-   "value": 0.375,
+   "value": 1,
    "unit": "appends per segment",
-   "status": "measured",
+   "status": "verified",
    "source": "proxy-check",
-   "n": 2,
+   "n": null,
    "min": null,
    "max": null,
    "runs": [],
-   "how": "Optimized at the release's batches (4 parts / 2 MiB): 15 appends for the clip's 41 parts of 0.62 MiB (bytes decide: 3 parts fit 2 MiB), exact, 2 runs by the verifier (not re-checked by another). The model scales it with the segment's size.",
-   "verdict": null,
+   "how": "The release: one part per append (the server advertises 1 part / 1 MiB), so one append a segment. 42 appends for the clip's 40 segments: 1 lease-only append, [init, 0], segments 1-39 one each, and the end alone (stream.ts:347; CF-VERIFY-PROXY-4.md). Checked by cf-verify4 (its own live run: 42 appends, 2 + 41 reads, all 200).",
+   "verdict": "confirmed",
    "check": {
-    "value": 0.375,
-    "n": 2,
+    "value": 1,
+    "n": null,
     "min": null,
     "max": null,
-    "note": "exact (client log) and graphql (125 / 10 per run, unsampled)"
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
+   }
+  },
+  "pvoStreamAppends": {
+   "value": 2,
+   "unit": "appends per stream",
+   "status": "verified",
+   "source": "proxy-check",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The release: a stream's own appends, the lease and the end (42 − 40). Checked by cf-verify4 (its own live run: 42 appends, 2 + 41 reads, all 200).",
+   "verdict": "confirmed",
+   "check": {
+    "value": 2,
+    "n": null,
+    "min": null,
+    "max": null,
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
+   }
+  },
+  "pvoStreamWorkerReq": {
+   "value": 7,
+   "unit": "Worker requests per stream",
+   "status": "verified",
+   "source": "proxy-check",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The release: a stream's setup, 3 signs, 2 signed GETs and 1 signed PUT (the pointer: check, claim, read back), and 1 dedup probe: 49 requests a share with the appends. cf-verify3 (CF-VERIFY-PROXY-3.md) counted 1.2 a segment (48 a share: 41 appends, 3 signs, 2 signed GETs, 1 signed PUT, 1 heads (exact, client log checked against the tail)) before the end went alone.",
+   "verdict": "confirmed",
+   "check": {
+    "value": 7,
+    "n": null,
+    "min": null,
+    "max": null,
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
+   }
+  },
+  "pvoSegCapReserves": {
+   "value": 1,
+   "unit": "write-cap reserves per segment",
+   "status": "verified",
+   "source": "proxy-check",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The release, with the daily write cap on: 42 reserves a share = 1 a segment + 2. cf-verify3 (CF-VERIFY-PROXY-3.md): 1.05 a segment (42 a share (GraphQL, unsampled)); cf-verify4's run: 42.",
+   "verdict": "confirmed",
+   "check": {
+    "value": 1,
+    "n": null,
+    "min": null,
+    "max": null,
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
+   }
+  },
+  "pvoStreamCapReserves": {
+   "value": 2,
+   "unit": "write-cap reserves per stream",
+   "status": "verified",
+   "source": "proxy-check",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The release, with the daily write cap on: a stream's own reserves (42 − 40).",
+   "verdict": "confirmed",
+   "check": {
+    "value": 2,
+    "n": null,
+    "min": null,
+    "max": null,
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
    }
   },
   "pvoSegCpuMs": {
-   "value": 4.01,
+   "value": 4.905,
    "unit": "Worker CPU ms per segment",
-   "status": "measured",
+   "status": "verified",
    "source": "proxy-check",
-   "n": 2,
-   "min": 3.83,
-   "max": 4.19,
+   "n": 4,
+   "min": 3.92,
+   "max": 5.72,
    "runs": [],
-   "how": "Optimized at the release's batches: Worker CPU per segment (GraphQL), the verifier's 2 runs on the final build (not re-checked by another). The 8-part build read 2.85–4.93.",
-   "verdict": null,
+   "how": "The release: Worker CPU per segment published (GraphQL per phase), cf-verify3 (CF-VERIFY-PROXY-3.md)'s 4 runs: 5.51, 5.72, 4.3, 3.92 (good, good, 4G, 4G). The server is the release's (byte-identical); its client then sent the last appends one at a time, which doesn't change their CPU.",
+   "verdict": "confirmed",
    "check": {
-    "value": 4.01,
-    "n": 2,
-    "min": 3.83,
-    "max": 4.19,
-    "note": "before: 5 runs; after: their 3 runs on server face0120 (confirmed within 7%), my 2 runs on the final server 9669368c measured ~4.9"
+    "value": 4.904999999999999,
+    "n": 4,
+    "min": 3.92,
+    "max": 5.72,
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
    }
   },
-  "pvoViewWorkerReqPerMiB": {
-   "value": 0.59,
-   "unit": "Worker requests per MiB played",
-   "status": "measured",
+  "pvoStreamReads": {
+   "value": 1,
+   "unit": "reads per stream",
+   "status": "verified",
    "source": "proxy-check",
-   "n": 2,
+   "n": null,
    "min": null,
    "max": null,
    "runs": [],
-   "how": "Optimized at the release's 2 MiB reads: 15 reads for the 25.33 MiB stream, exact, the verifier's 2 runs (8 parts / 4 MiB, confirmed: 0.32).",
-   "verdict": null,
+   "how": "The release: a 1 MiB read holds one of the clip's 0.62 MiB segments (a 1 MiB read holds one 0.65 MB segment (two don't fit); 40 media reads and one more): 41 reads for 40 segments, so 1 more a stream. Checked by cf-verify4 (its own live run: 42 appends, 2 + 41 reads, all 200); cf-verify3 (CF-VERIFY-PROXY-3.md) counted 1.58 reads per MiB (40 reads for the 25.33 MiB stream, each one segment).",
+   "verdict": "confirmed",
    "check": {
-    "value": 0.59,
-    "n": 2,
+    "value": 1,
+    "n": null,
     "min": null,
     "max": null,
-    "note": "exact (250 / 8 / 15 requests for 25.33 MiB)"
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
    }
   },
-  "pvoViewClassBPerMiB": {
-   "value": 3.95,
-   "unit": "Class B per MiB played",
-   "status": "measured",
+  "pvoReadCpuMs": {
+   "value": 3.401899,
+   "unit": "Worker CPU ms per read",
+   "status": "verified",
    "source": "proxy-check",
-   "n": 2,
+   "n": 4,
+   "min": 2.848101265822785,
+   "max": 3.867088607594937,
+   "runs": [],
+   "how": "The release: Worker CPU per 1 MiB read, cf-verify3 (CF-VERIFY-PROXY-3.md)'s CPU per MiB played (6.01, 4.74, 4.5, 6.11; median 5.375) over its 1.58 reads per MiB. Its exact single reads: p50 3.25, max 9.72 ms.",
+   "verdict": "confirmed",
+   "check": {
+    "value": 3.401898734177215,
+    "n": 4,
+    "min": 2.848101265822785,
+    "max": 3.867088607594937,
+    "note": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')"
+   }
+  },
+  "pvoAppendCpuMsTypical": {
+   "value": 3.915,
+   "unit": "Worker CPU ms per append (typical)",
+   "status": "verified",
+   "source": "proxy-check",
+   "n": 3,
    "min": null,
    "max": null,
    "runs": [],
-   "how": "Optimized at 2 MiB reads: a GET of each segment's entry and bytes, plus the reads' edge GETs: 100 Class B for the stream by the code path, the verifier's 2 runs (4 MiB reads, confirmed: 3.63).",
-   "verdict": null,
+   "how": "The release: a typical append's CPU, the median of 3 runs' exact p50s (3.915, 5.264, 3.709 ms). By cf-verify4 (CF-VERIFY-PROXY-4.md), recomputed exactly from the runs and its own live run.",
+   "verdict": "confirmed-from-data",
    "check": {
-    "value": 3.95,
-    "n": 2,
+    "value": 3.915,
+    "n": 3,
     "min": null,
     "max": null,
-    "note": "the claim also counts the live viewer's first segment (before +15-19, after ~+7-10 Class B per join): with it, ~10.5 / ~3.95, within 15% of the claim"
-   }
-  },
-  "pvoViewCpuMsPerMiB": {
-   "value": 3.38,
-   "unit": "Worker CPU ms per MiB played",
-   "status": "measured",
-   "source": "proxy-check",
-   "n": 2,
-   "min": 2.93,
-   "max": 3.83,
-   "runs": [],
-   "how": "Optimized at 2 MiB reads: Worker CPU per MiB played (GraphQL), the verifier's 2 runs (4 MiB reads: 2.62, revised).",
-   "verdict": null,
-   "check": {
-    "value": 3.38,
-    "n": 2,
-    "min": 2.93,
-    "max": 3.83,
-    "note": "graphql"
-   }
-  },
-  "pvoAppendCpuMsMean": {
-   "value": 9.76,
-   "unit": "Worker CPU ms per append (mean)",
-   "status": "measured",
-   "source": "proxy-check",
-   "n": 25,
-   "min": null,
-   "max": 20.55,
-   "runs": [],
-   "how": "Optimized: CPU of one append at the release's batches, exact per request (GraphQL), 25 appends: p50 9.14, p90 14.94, max 20.55 ms; 10 of 25 over 10 ms.",
-   "verdict": null,
-   "check": {
-    "value": 9.76,
-    "n": 25,
-    "min": null,
-    "max": 20.55,
-    "note": "exact per request: GraphQL per-second CPU in seconds holding one request"
+    "note": "5 of 8 were: r1 [init,0] append 16.11, r1 first live read 23 (floor), r2 [init,0] append 12.84, r2 player's first read 13.35, cv4 first live read 10 (floor). 3 were not: r1 the live viewer's second read 13 (floor, segment 1), r2 segment 1's append 11.87, cv4 append #30 (mid-stream, about segment 28) 10.60."
    }
   },
   "pvoAppendCpuMsMax": {
-   "value": 20.55,
+   "value": 16.113,
    "unit": "Worker CPU ms (max)",
-   "status": "measured",
+   "status": "verified",
    "source": "proxy-check",
-   "n": 25,
+   "n": 3,
    "min": null,
    "max": null,
    "runs": [],
-   "how": "Optimized: the slowest of 25 appends at the release's batches.",
-   "verdict": null,
+   "how": "The release: the slowest append in 3 runs (16.113, 12.841, 10.599 ms exact). By cf-verify4 (CF-VERIFY-PROXY-4.md), recomputed exactly from the runs and its own live run.",
+   "verdict": "confirmed-from-data",
    "check": {
-    "value": 20.55,
-    "n": 25,
+    "value": 16.113,
+    "n": 3,
     "min": null,
     "max": null,
-    "note": "exact per request: GraphQL per-second CPU in seconds holding one request"
+    "note": "5 of 8 were: r1 [init,0] append 16.11, r1 first live read 23 (floor), r2 [init,0] append 12.84, r2 player's first read 13.35, cv4 first live read 10 (floor). 3 were not: r1 the live viewer's second read 13 (floor, segment 1), r2 segment 1's append 11.87, cv4 append #30 (mid-stream, about segment 28) 10.60."
    }
   },
-  "pvoAppendOver10Share": {
-   "value": 0.4,
-   "unit": "share of appends",
-   "status": "measured",
+  "pvoReadCpuMsTypical": {
+   "value": 3.182,
+   "unit": "Worker CPU ms per read (typical)",
+   "status": "verified",
    "source": "proxy-check",
-   "n": 25,
+   "n": 3,
    "min": null,
    "max": null,
    "runs": [],
-   "how": "Optimized: the share of appends over 10 ms of CPU (10 of 25).",
-   "verdict": null,
+   "how": "The release: a typical 1 MiB read's CPU, the median of 3 runs' exact p50s (3.182, 3.724, 2.807 ms). By cf-verify4 (CF-VERIFY-PROXY-4.md), recomputed exactly from the runs and its own live run.",
+   "verdict": "confirmed-from-data",
    "check": {
-    "value": 0.4,
-    "n": 25,
+    "value": 3.182,
+    "n": 3,
     "min": null,
     "max": null,
-    "note": "exact per request: GraphQL per-second CPU in seconds holding one request"
-   }
-  },
-  "pvoReadCpuMsMean": {
-   "value": 5.7,
-   "unit": "Worker CPU ms per read (mean)",
-   "status": "measured",
-   "source": "proxy-check",
-   "n": 30,
-   "min": null,
-   "max": 9.15,
-   "runs": [],
-   "how": "Optimized: CPU of one 2 MiB read, exact per request, 30 reads: p50 5.99, max 9.15 ms; none over 10 ms.",
-   "verdict": null,
-   "check": {
-    "value": 5.7,
-    "n": 30,
-    "min": null,
-    "max": 9.15,
-    "note": "exact per request: GraphQL per-second CPU in seconds holding one request"
+    "note": "5 of 8 were: r1 [init,0] append 16.11, r1 first live read 23 (floor), r2 [init,0] append 12.84, r2 player's first read 13.35, cv4 first live read 10 (floor). 3 were not: r1 the live viewer's second read 13 (floor, segment 1), r2 segment 1's append 11.87, cv4 append #30 (mid-stream, about segment 28) 10.60."
    }
   },
   "pvoReadCpuMsMax": {
-   "value": 9.15,
+   "value": 23,
    "unit": "Worker CPU ms (max)",
-   "status": "measured",
+   "status": "verified",
    "source": "proxy-check",
-   "n": 30,
+   "n": 3,
    "min": null,
    "max": null,
    "runs": [],
-   "how": "Optimized: the slowest of 30 2 MiB reads.",
-   "verdict": null,
+   "how": "The release: the slowest read, a live viewer's first (23 ms, whole-ms floor from the tail; it waited 4.2 s at the edge). By cf-verify4 (CF-VERIFY-PROXY-4.md), recomputed exactly from the runs and its own live run.",
+   "verdict": "confirmed-from-data",
    "check": {
-    "value": 9.15,
-    "n": 30,
+    "value": 23,
+    "n": 3,
     "min": null,
     "max": null,
-    "note": "exact per request: GraphQL per-second CPU in seconds holding one request"
+    "note": "5 of 8 were: r1 [init,0] append 16.11, r1 first live read 23 (floor), r2 [init,0] append 12.84, r2 player's first read 13.35, cv4 first live read 10 (floor). 3 were not: r1 the live viewer's second read 13 (floor, segment 1), r2 segment 1's append 11.87, cv4 append #30 (mid-stream, about segment 28) 10.60."
+   }
+  },
+  "pvoOver10Count": {
+   "value": 8,
+   "unit": "requests at or over 10 ms",
+   "status": "verified",
+   "source": "proxy-check",
+   "n": 255,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The release: appends and reads at or over 10 ms of CPU, 8 of 255 over 3 runs: \"mostly a stream's first media append or a client's first read\". By cf-verify4 (CF-VERIFY-PROXY-4.md), recomputed exactly from the runs and its own live run.",
+   "verdict": "confirmed-from-data",
+   "check": {
+    "value": 8,
+    "n": 255,
+    "min": null,
+    "max": null,
+    "note": "5 of 8 were: r1 [init,0] append 16.11, r1 first live read 23 (floor), r2 [init,0] append 12.84, r2 player's first read 13.35, cv4 first live read 10 (floor). 3 were not: r1 the live viewer's second read 13 (floor, segment 1), r2 segment 1's append 11.87, cv4 append #30 (mid-stream, about segment 28) 10.60."
+   }
+  },
+  "pvoOver10Of": {
+   "value": 255,
+   "unit": "requests",
+   "status": "verified",
+   "source": "proxy-check",
+   "n": 3,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "The release: appends and reads in the 3 runs (42 appends and 43 reads each).",
+   "verdict": "confirmed-from-data",
+   "check": {
+    "value": 255,
+    "n": 3,
+    "min": null,
+    "max": null,
+    "note": "5 of 8 were: r1 [init,0] append 16.11, r1 first live read 23 (floor), r2 [init,0] append 12.84, r2 player's first read 13.35, cv4 first live read 10 (floor). 3 were not: r1 the live viewer's second read 13 (floor, segment 1), r2 segment 1's append 11.87, cv4 append #30 (mid-stream, about segment 28) 10.60."
    }
   },
   "writeCapDoReqPerGB": {
@@ -1965,6 +2003,30 @@
    "how": "Only with the daily write cap on: each reserve writes a row in the counter's room (the verifier, from write-cap.ts); no lab input carries it.",
    "verdict": null
   },
+  "pvoViewClassBPerSegment": {
+   "value": 2,
+   "unit": "",
+   "status": "estimated",
+   "source": "model",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Optimized: a read GETs each segment's list entry and its bytes from R2, 2 Class B a segment, by the read path the first preview re-check verified at 2 and 4 MiB (CF-VERIFY-PROXY.md). Not measured at the release's 1 MiB reads.",
+   "verdict": null
+  },
+  "pvoViewClassBPerRead": {
+   "value": 1,
+   "unit": "",
+   "status": "estimated",
+   "source": "model",
+   "n": null,
+   "min": null,
+   "max": null,
+   "runs": [],
+   "how": "Optimized: each read also GETs the next list entry past its byte budget (and the end at the edge): 1 Class B a read, by the same verified read path. Not measured at 1 MiB reads.",
+   "verdict": null
+  },
   "segVaultDoReq": {
    "value": 6,
    "unit": "",
@@ -1986,7 +2048,7 @@
    "min": null,
    "max": null,
    "runs": [],
-   "how": "Optimized, without R2: a batched append writes each part's 3 objects to the vault: about 3 vault requests a segment. Not measured on the vault.",
+   "how": "Optimized, without R2: an append writes its part's 3 objects to the vault: about 3 vault requests a segment. Not measured on the vault.",
    "verdict": null
   },
   "segVaultRowsWritten": {
@@ -2056,6 +2118,8 @@
   "replicaRowsWritten",
   "upkeepAlarmPerHour",
   "writeCapRowsPerReserve",
+  "pvoViewClassBPerSegment",
+  "pvoViewClassBPerRead",
   "segVaultDoReq",
   "pvoSegVaultDoReq",
   "segVaultRowsWritten",
@@ -2070,6 +2134,8 @@
   "replicaRowsWritten",
   "upkeepAlarmPerHour",
   "writeCapRowsPerReserve",
+  "pvoViewClassBPerSegment",
+  "pvoViewClassBPerRead",
   "segVaultDoReq",
   "pvoSegVaultDoReq",
   "segVaultRowsWritten",
@@ -4389,62 +4455,14 @@
    "unit": "x",
    "runs": 5,
    "status": "verified",
-   "note": "before the fix (part by part); per run: 0.46, 0.47, 0.49, 0.47, 0.45",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 0.46, 0.47, 0.49, 0.47, 0.45",
    "verdict": "confirmed",
    "check": {
     "p50": 0.47,
     "p90": null,
     "p99": null,
     "runs": 5,
-    "note": "timing"
-   }
-  },
-  {
-   "id": "pvpublish-good-release",
-   "what": "publish the preview, as a multiple of real time (higher is faster)",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "realtime",
-   "p50": 2.58,
-   "p90": null,
-   "p99": null,
-   "unit": "x",
-   "runs": 2,
-   "status": "measured",
-   "note": "the fix, release batches (4 parts / 2 MiB); the verifier's own runs; per run: 2.57, 2.59",
-   "verdict": null,
-   "check": {
-    "p50": 2.58,
-    "p90": null,
-    "p99": null,
-    "runs": 2,
-    "note": "timing"
-   }
-  },
-  {
-   "id": "pvpublish-good-8parts",
-   "what": "publish the preview, as a multiple of real time (higher is faster)",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "realtime",
-   "p50": 3.51,
-   "p90": null,
-   "p99": null,
-   "unit": "x",
-   "runs": 5,
-   "status": "verified",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB); per run: 3.37, 3.93, 3.22, 3.51, 3.55",
-   "verdict": "confirmed",
-   "check": {
-    "p50": 3.51,
-    "p90": null,
-    "p99": null,
-    "runs": 5,
-    "note": "timing"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
@@ -4461,38 +4479,14 @@
    "unit": "x",
    "runs": 4,
    "status": "verified",
-   "note": "before the fix (part by part); per run: 0.27, 0.32, 0.29, 0.29",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 0.27, 0.32, 0.29, 0.29",
    "verdict": "confirmed",
    "check": {
     "p50": 0.29,
     "p90": null,
     "p99": null,
     "runs": 4,
-    "note": "timing"
-   }
-  },
-  {
-   "id": "pvpublish-4g-8parts",
-   "what": "publish the preview, as a multiple of real time (higher is faster)",
-   "network": "4g",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "realtime",
-   "p50": 1.345,
-   "p90": null,
-   "p99": null,
-   "unit": "x",
-   "runs": 4,
-   "status": "verified",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB); per run: 1.37, 1.32, 1.38, 1.27",
-   "verdict": "confirmed",
-   "check": {
-    "p50": 1.345,
-    "p90": null,
-    "p99": null,
-    "runs": 4,
-    "note": "timing"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
@@ -4509,62 +4503,14 @@
    "unit": "x",
    "runs": 5,
    "status": "verified",
-   "note": "before the fix (part by part); per run: 0.74, 0.75, 1.08, 0.74, 0.72; revised from the claimed 0.75",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 0.74, 0.75, 1.08, 0.74, 0.72",
    "verdict": "revised",
    "check": {
     "p50": 0.74,
     "p90": null,
     "p99": null,
     "runs": 5,
-    "note": "timing (fetch-as-fast-as-possible throughput of the whole stream, not playback)"
-   }
-  },
-  {
-   "id": "pvplay-good-release",
-   "what": "fetch the whole finished preview, as a multiple of real time (higher is faster)",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "realtime",
-   "p50": 2.795,
-   "p90": null,
-   "p99": null,
-   "unit": "x",
-   "runs": 2,
-   "status": "measured",
-   "note": "the fix, release batches (4 parts / 2 MiB); the verifier's own runs; per run: 3.2, 2.39",
-   "verdict": null,
-   "check": {
-    "p50": 2.795,
-    "p90": null,
-    "p99": null,
-    "runs": 2,
-    "note": "timing (fetch-as-fast-as-possible throughput of the whole stream, not playback)"
-   }
-  },
-  {
-   "id": "pvplay-good-8parts",
-   "what": "fetch the whole finished preview, as a multiple of real time (higher is faster)",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "realtime",
-   "p50": 3.23,
-   "p90": null,
-   "p99": null,
-   "unit": "x",
-   "runs": 5,
-   "status": "verified",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB); per run: 3.95, 3.23, 3.98, 3.19, 3.14; revised from the claimed 3.95",
-   "verdict": "revised",
-   "check": {
-    "p50": 3.23,
-    "p90": null,
-    "p99": null,
-    "runs": 5,
-    "note": "timing (fetch-as-fast-as-possible throughput of the whole stream, not playback)"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
@@ -4581,38 +4527,14 @@
    "unit": "x",
    "runs": 4,
    "status": "verified",
-   "note": "before the fix (part by part); per run: 0.52, 0.51, 0.51, 0.66",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 0.52, 0.51, 0.51, 0.66",
    "verdict": "confirmed",
    "check": {
     "p50": 0.515,
     "p90": null,
     "p99": null,
     "runs": 4,
-    "note": "timing"
-   }
-  },
-  {
-   "id": "pvplay-4g-8parts",
-   "what": "fetch the whole finished preview, as a multiple of real time (higher is faster)",
-   "network": "4g",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "realtime",
-   "p50": 1.345,
-   "p90": null,
-   "p99": null,
-   "unit": "x",
-   "runs": 4,
-   "status": "verified",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB); per run: 1.35, 1.32, 1.34, 1.35",
-   "verdict": "confirmed",
-   "check": {
-    "p50": 1.345,
-    "p90": null,
-    "p99": null,
-    "runs": 4,
-    "note": "timing"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
@@ -4629,62 +4551,14 @@
    "unit": "ms",
    "runs": 1,
    "status": "measured",
-   "note": "before the fix (part by part)",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 4469",
    "verdict": null,
    "check": {
     "p50": 4469,
     "p90": null,
     "p99": null,
     "runs": 1,
-    "note": "timing (time to the first media segment from play start; my runs only)"
-   }
-  },
-  {
-   "id": "pvfirstseg-good-release",
-   "what": "time to the first video segment of a finished preview, from play start",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "time",
-   "p50": 1491.5,
-   "p90": null,
-   "p99": null,
-   "unit": "ms",
-   "runs": 2,
-   "status": "measured",
-   "note": "the fix, release batches (4 parts / 2 MiB); the verifier's own runs; per run: 1252, 1731",
-   "verdict": null,
-   "check": {
-    "p50": 1491.5,
-    "p90": null,
-    "p99": null,
-    "runs": 2,
-    "note": "timing (time to the first media segment from play start; my runs only)"
-   }
-  },
-  {
-   "id": "pvfirstseg-good-8parts",
-   "what": "time to the first video segment of a finished preview, from play start",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "time",
-   "p50": 1731,
-   "p90": null,
-   "p99": null,
-   "unit": "ms",
-   "runs": 2,
-   "status": "measured",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB); per run: 1757, 1705",
-   "verdict": null,
-   "check": {
-    "p50": 1731,
-    "p90": null,
-    "p99": null,
-    "runs": 2,
-    "note": "timing (time to the first media segment from play start; my runs only)"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
@@ -4701,38 +4575,14 @@
    "unit": "ms",
    "runs": 1,
    "status": "measured",
-   "note": "before the fix (part by part)",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 4728",
    "verdict": null,
    "check": {
     "p50": 4728,
     "p90": null,
     "p99": null,
     "runs": 1,
-    "note": "timing"
-   }
-  },
-  {
-   "id": "pvfirstseg-4g-8parts",
-   "what": "time to the first video segment of a finished preview, from play start",
-   "network": "4g",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "time",
-   "p50": 2770,
-   "p90": null,
-   "p99": null,
-   "unit": "ms",
-   "runs": 1,
-   "status": "measured",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB)",
-   "verdict": null,
-   "check": {
-    "p50": 2770,
-    "p90": null,
-    "p99": null,
-    "runs": 1,
-    "note": "timing"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
@@ -4749,62 +4599,14 @@
    "unit": "ms",
    "runs": 5,
    "status": "verified",
-   "note": "before the fix (part by part); per run: 17065, 14521, 12266, 13112, 12806",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 17065, 14521, 12266, 13112, 12806",
    "verdict": "confirmed",
    "check": {
     "p50": 13112,
     "p90": null,
     "p99": null,
     "runs": 5,
-    "note": "timing"
-   }
-  },
-  {
-   "id": "pvlive-good-release",
-   "what": "a live viewer's first segment, from the share's start",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "time",
-   "p50": 7056,
-   "p90": null,
-   "p99": null,
-   "unit": "ms",
-   "runs": 2,
-   "status": "measured",
-   "note": "the fix, release batches (4 parts / 2 MiB); the verifier's own runs; per run: 6843, 7269",
-   "verdict": null,
-   "check": {
-    "p50": 7056,
-    "p90": null,
-    "p99": null,
-    "runs": 2,
-    "note": "timing"
-   }
-  },
-  {
-   "id": "pvlive-good-8parts",
-   "what": "a live viewer's first segment, from the share's start",
-   "network": "good",
-   "storage": "r2",
-   "parties": null,
-   "sizeMB": null,
-   "metric": "time",
-   "p50": 7220,
-   "p90": null,
-   "p99": null,
-   "unit": "ms",
-   "runs": 5,
-   "status": "verified",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB); per run: 8109, 5571, 7686, 6969, 7220",
-   "verdict": "confirmed",
-   "check": {
-    "p50": 7220,
-    "p90": null,
-    "p99": null,
-    "runs": 5,
-    "note": "timing"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
@@ -4815,54 +4617,270 @@
    "parties": null,
    "sizeMB": null,
    "metric": "time",
-   "p50": 17925,
+   "p50": 17924.5,
    "p90": null,
    "p99": null,
    "unit": "ms",
    "runs": 4,
    "status": "verified",
-   "note": "before the fix (part by part); per run: 17868, 19726, 16889, 17981",
+   "note": "before the fix (part by part); the first preview re-check (cf-verify2); per run: 17868, 19726, 16889, 17981",
    "verdict": "confirmed",
    "check": {
-    "p50": 17925,
+    "p50": 17924.5,
     "p90": null,
     "p99": null,
     "runs": 4,
-    "note": "timing"
+    "note": "before the fix (part by part); the first preview re-check (cf-verify2)"
    }
   },
   {
-   "id": "pvlive-4g-8parts",
+   "id": "pvpublish-4g-release",
+   "what": "publish the preview, as a multiple of real time (higher is faster)",
+   "network": "4g",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "realtime",
+   "p50": 1.521,
+   "p90": null,
+   "p99": null,
+   "unit": "x",
+   "runs": 3,
+   "status": "verified",
+   "note": "the release; checked by cf-verify4 (2 runs re-computed, 1 of its own); per run: 1.521, 1.545, 1.499; 4G publish is now link-bound (about 4.3 Mbit/s of the 5)",
+   "verdict": "confirmed",
+   "check": {
+    "p50": 1.521,
+    "p90": null,
+    "p99": null,
+    "runs": 3,
+    "note": "the release; checked by cf-verify4 (2 runs re-computed, 1 of its own)"
+   }
+  },
+  {
+   "id": "pvplay-4g-release",
+   "what": "fetch the whole finished preview, as a multiple of real time (higher is faster)",
+   "network": "4g",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "realtime",
+   "p50": 1.373,
+   "p90": null,
+   "p99": null,
+   "unit": "x",
+   "runs": 3,
+   "status": "verified",
+   "note": "the release; checked by cf-verify4; per run: 1.63, 1.32, 1.373",
+   "verdict": "confirmed",
+   "check": {
+    "p50": 1.373,
+    "p90": null,
+    "p99": null,
+    "runs": 3,
+    "note": "the release; checked by cf-verify4"
+   }
+  },
+  {
+   "id": "pvlive-4g-release",
    "what": "a live viewer's first segment, from the share's start",
    "network": "4g",
    "storage": "r2",
    "parties": null,
    "sizeMB": null,
    "metric": "time",
-   "p50": 9312,
+   "p50": 9503,
    "p90": null,
    "p99": null,
    "unit": "ms",
-   "runs": 4,
+   "runs": 3,
    "status": "verified",
-   "note": "the fix, the first test's batches (8 parts / 4 MiB); per run: 9934, 9719, 8904, 8467",
+   "note": "the release; checked by cf-verify4; per run: 9571, 8684, 9503",
    "verdict": "confirmed",
    "check": {
-    "p50": 9312,
+    "p50": 9503,
     "p90": null,
     "p99": null,
-    "runs": 4,
-    "note": "timing"
+    "runs": 3,
+    "note": "the release; checked by cf-verify4"
+   }
+  },
+  {
+   "id": "pvpublish-good-release-pretail",
+   "what": "publish the preview, as a multiple of real time (higher is faster)",
+   "network": "good",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "realtime",
+   "p50": 1.75,
+   "p90": null,
+   "p99": null,
+   "unit": "x",
+   "runs": 2,
+   "status": "verified",
+   "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3; per run: 1.74, 1.76",
+   "verdict": "confirmed",
+   "check": {
+    "p50": 1.75,
+    "p90": null,
+    "p99": null,
+    "runs": 2,
+    "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3"
+   }
+  },
+  {
+   "id": "pvplay-good-release-pretail",
+   "what": "fetch the whole finished preview, as a multiple of real time (higher is faster)",
+   "network": "good",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "realtime",
+   "p50": 1.66,
+   "p90": null,
+   "p99": null,
+   "unit": "x",
+   "runs": 2,
+   "status": "verified",
+   "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3; per run: 1.99, 1.33",
+   "verdict": "confirmed",
+   "check": {
+    "p50": 1.66,
+    "p90": null,
+    "p99": null,
+    "runs": 2,
+    "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3"
+   }
+  },
+  {
+   "id": "pvlive-good-release-pretail",
+   "what": "a live viewer's first segment, from the share's start",
+   "network": "good",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "time",
+   "p50": 7328,
+   "p90": null,
+   "p99": null,
+   "unit": "ms",
+   "runs": 2,
+   "status": "verified",
+   "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3; per run: 7599, 7057",
+   "verdict": "confirmed",
+   "check": {
+    "p50": 7328,
+    "p90": null,
+    "p99": null,
+    "runs": 2,
+    "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3"
+   }
+  },
+  {
+   "id": "pvfirstseg-good-release-pretail",
+   "what": "time to the first video segment of a finished preview, from play start",
+   "network": "good",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "time",
+   "p50": 1437,
+   "p90": null,
+   "p99": null,
+   "unit": "ms",
+   "runs": 2,
+   "status": "verified",
+   "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3; per run: 1108, 1766",
+   "verdict": "confirmed",
+   "check": {
+    "p50": 1437,
+    "p90": null,
+    "p99": null,
+    "runs": 2,
+    "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3"
+   }
+  },
+  {
+   "id": "pvfirstseg-4g-release-pretail",
+   "what": "time to the first video segment of a finished preview, from play start",
+   "network": "4g",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "time",
+   "p50": 2615,
+   "p90": null,
+   "p99": null,
+   "unit": "ms",
+   "runs": 2,
+   "status": "verified",
+   "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3; per run: 2940, 2290",
+   "verdict": "confirmed",
+   "check": {
+    "p50": 2615,
+    "p90": null,
+    "p99": null,
+    "runs": 2,
+    "note": "the release's sizes before the in-flight fix (its last appends went one at a time, one read in flight); cf-verify3"
+   }
+  },
+  {
+   "id": "pvpublish-good-release-local",
+   "what": "publish the preview, as a multiple of real time (higher is faster)",
+   "network": "good",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "realtime",
+   "p50": 3.88,
+   "p90": null,
+   "p99": null,
+   "unit": "x",
+   "runs": 2,
+   "status": "measured",
+   "note": "the release, measured locally (local workerd with a 500 ms R2 delay, not Cloudflare; the implementer's runs, not re-checked); per run: 3.93, 3.83",
+   "verdict": null,
+   "check": {
+    "p50": 3.88,
+    "p90": null,
+    "p99": null,
+    "runs": 2,
+    "note": "the release, measured locally (local workerd with a 500 ms R2 delay, not Cloudflare; the implementer's runs, not re-checked)"
+   }
+  },
+  {
+   "id": "pvplay-good-release-local",
+   "what": "fetch the whole finished preview, as a multiple of real time (higher is faster)",
+   "network": "good",
+   "storage": "r2",
+   "parties": null,
+   "sizeMB": null,
+   "metric": "realtime",
+   "p50": 1.83,
+   "p90": null,
+   "p99": null,
+   "unit": "x",
+   "runs": 2,
+   "status": "measured",
+   "note": "the release, measured locally (local workerd with a 500 ms R2 delay, not Cloudflare; the implementer's runs, not re-checked); per run: 1.83, 1.83",
+   "verdict": null,
+   "check": {
+    "p50": 1.83,
+    "p90": null,
+    "p99": null,
+    "runs": 2,
+    "note": "the release, measured locally (local workerd with a 500 ms R2 delay, not Cloudflare; the implementer's runs, not re-checked)"
    }
   }
  ],
  "limits": [
   {
    "id": "worker-cpu-10ms-preview",
-   "status": "measured",
+   "status": "verified",
    "value": "10 ms of CPU per request on Workers Free (on Paid, 5 minutes: it doesn't apply in practice)",
-   "observed": "With the release's batches (4 parts / 2 MiB), an append averages 9.76 ms and 10 of 25 went over 10 ms (p90 14.94, max 20.55 ms). 2 MiB reads stayed under it: max 9.15 ms, 10.1 in a burst of 120. One-part appends stayed under in every case (max 7.25 ms). No request failed (0 exceededCpu / 1102 on any lab Worker that day). But the Free plan does enforce it: on 2026-11-01 Cloudflare cut the lab's requests off at about 10 ms after bursts of slow part uploads.",
-   "carton": "An append Cloudflare cuts off is sent again in smaller batches, down to one part (confirmed from the code and a unit test; not yet against a real 1102). The tighter fix would stream each part to storage instead of buffering it, so larger batches fit. On Workers Paid the limit is 5 minutes a request.",
+   "observed": "Appends and reads stay under 10 ms apart from a few, mostly a stream's first media append or a client's first read. 8 of 255 were at or over 10 ms (max 23 ms), and none were refused (no 1102 on any Worker that day). Typical: an append 3.915 ms, a 1 MiB read 3.182 ms (cf-verify4, 3 runs on 4G).",
+   "carton": "The release keeps every preview request small: one part (1 MiB) per append and 1 MiB reads, the limits the server advertises, with 4 appends and 2 reads in flight to keep the speed. On Workers Paid the limit is 5 minutes a request.",
    "runs": []
   },
   {

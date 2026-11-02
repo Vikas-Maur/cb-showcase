@@ -404,12 +404,14 @@ function freeCard(r) {
   }
   if (fc.cpu.worst) list.append(h("li", {}, h("div", { class: "row" },
     h("span", { class: "name" }, "CPU per request (10 ms)", q(T.FREE_CHECKS.cpu, "the CPU limit")),
-    h("span", { class: "num muted long", text: `about ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})` }))));
+    h("span", { class: "num muted long", text: `about ${sigNum(fc.cpu.worst.ms)} ms typically (${fc.cpu.worst.what})` }))));
   if (fc.cpu.risk && !fc.cpu.over) {
     const k = fc.cpu.risk;
-    card.append(h("p", { class: "caution" }, h("b", { text: "One caution: CPU per request. " }),
-      `${k.what[0].toUpperCase()}${k.what.slice(1)} averages ${sigNum(k.ms)} ms${k.overShare ? `, but ${pct(k.overShare)} go over Free's 10 ms` : ""} (the slowest ${sigNum(k.max)} ms). None failed in the re-check; Cloudflare has cut requests off after bursts before, and then the app sends smaller batches.`,
-      q(T.FREE_CHECKS.cpuRisk, "the CPU caution")));
+    card.append(h("p", { class: "caution soft" }, h("b", { text: "A note on CPU per request. " }),
+      k.count !== undefined
+        ? `In the re-check, preview appends and reads stayed under 10 ms apart from a few, mostly a stream's first media append or a client's first read: ${k.count} of ${k.of} were at or over 10 ms (max ${sigNum(k.max)} ms), and none were refused.`
+        : `Some ${k.what} requests took ${sigNum(k.max)} ms, over Free's 10 ms; none were refused in the re-check.`,
+      q(T.FREE_CHECKS.cpuRisk, "the note on CPU per request")));
   }
   card.append(list);
   return card;
@@ -693,7 +695,7 @@ function renderLimitsAtSettings(r) {
     }
     if (key === "cpu") {
       const k = fc.cpu.risk;
-      td.textContent = fc.cpu.worst ? `About ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})${fc.cpu.over ? ": over the limit" : k ? `; the slowest ${sigNum(k.max)} ms${k.overShare ? `, ${pct(k.overShare)} over 10 ms` : ""}` : ""}.` : "–";
+      td.textContent = fc.cpu.worst ? `About ${sigNum(fc.cpu.worst.ms)} ms typically (${fc.cpu.worst.what})${fc.cpu.over ? ": over the limit" : k ? `; ${k.count !== undefined ? `${k.count} of ${k.of} at or over 10 ms, ` : ""}the slowest ${sigNum(k.max)} ms, none refused` : ""}.` : "–";
       continue;
     }
     const c = fc.checks.find((x) => x.key === key);

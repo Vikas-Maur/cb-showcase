@@ -17,27 +17,38 @@ from the lab's measurements and Cloudflare's prices.
 
 ## Rebuild `data.json` from a new `measured.json`
 
-From `carton/packages/server-cloudflare`, with the lab's file, the verifier's verdicts on it, and the preview-path
-re-check (`CF-VERIFY-PROXY.md`):
+From `carton/packages/server-cloudflare`, with the lab's file, the verifier's verdicts on it, the first preview-path
+re-check (`CF-VERIFY-PROXY.md`, cf-verify2), the release's preview settings (`bench/cost/proxy-release.json`, from
+`CF-VERIFY-PROXY-3.md` and the final runs) and the check of the final runs (`CF-VERIFY-PROXY-4.md`, cf-verify4):
 
 ```sh
 git show origin/lab/cloudflare:carton/bench/cloudflare/results/measured.json > /tmp/measured.json
 node site/cost/build-data.mjs /tmp/measured.json site/cost/prices.json \
   --verified /home/ubuntu/gfv-scratch/carton/cf-verify/verified.json \
-  --proxy-verified /home/ubuntu/gfv-scratch/carton/cf-verify2/verified.json
+  --proxy-verified /home/ubuntu/gfv-scratch/carton/cf-verify2/verified.json \
+  --proxy-release bench/cost/proxy-release.json \
+  --proxy-final /home/ubuntu/gfv-scratch/carton/cf-verify4/verified.json
 node --test test/cost-model.test.ts
 ```
 
-The preview path ("Preview path" setting: optimized, the default, or before the fix) takes its inputs from the
-preview-path re-check, measured on one 80 s clip (40 segments and the init, 0.618 MiB a part: `PV_REF_PART_MIB`):
-per segment published, per stream (one a clip shared: the "Average clip length" setting) and per MiB played. Its
-per-stream costs are split from the per-segment ones by the request structure the re-check gives (before: 418 Worker
-requests a stream = 10 a segment + 18; optimized: 7 setup requests a stream plus one per append, and 4 Class B a
-stream). The before path and the optimized path's request structure at 8 parts / 4 MiB are confirmed or revised there
-(Verified); the release's batch size (4 parts / 2 MiB) was measured by the verifier itself, 2 runs (Measured). The
-round-2 lab keys `seg*` and `view*` are superseded and listed as extras. The build adds the preview path's speeds
-(publish and fetch speed, first video segment, a live viewer's first segment; good and 4G) and its CPU line in the
-limits table.
+The preview path ("Preview path" setting: optimized, the default, or before the fix) is priced per segment published,
+per stream (one a clip shared: the "Average clip length" setting) and per MiB played, on the re-checks' 80 s clip (40
+segments and the init, 0.618 MiB a part: `PV_REF_PART_MIB`).
+
+- **Before the fix** (part by part), from cf-verify2: 418 Worker requests a stream = 10 a segment + 18; 169 Class B =
+  4 a segment + 9; 9.87 requests and 9.83 Class B per MiB played. Verified.
+- **Optimized, the release** (`merge/prod-2` @ `51f4d243`: 1 part / 1 MiB per append, 4 in flight; 1 MiB reads, 2 in
+  flight; `PV_RELEASE`): one append a segment plus the lease and the end (42 for 40 segments), 7 setup requests a
+  stream, 42 write-cap reserves, and as many segments a read as fit 1 MiB plus one read a stream (41 reads for 40 0.62
+  MiB segments). CPU per segment and per read from cf-verify3's 4 runs; the per-request CPU distribution from
+  cf-verify4 ("8 of 255 at or over 10 ms, max 23 ms, none refused"). Verified.
+- Both paths: 3 Class A a segment + 5 a stream; optimized publish Class B is 4 a stream.
+- **Not measured at the release's 1 MiB reads, so Estimated:** playback Class B (2 a segment, its list entry and
+  bytes, + 1 a read, the next entry past the budget), from the read path cf-verify2 verified at 2 and 4 MiB.
+
+The round-2 lab keys `seg*` and `view*` are superseded and listed as extras. The build adds the preview path's speeds
+(before the fix from cf-verify2; the release on 4G from cf-verify4; on the good link, cf-verify3's live runs before the
+in-flight fix and the implementer's local runs, marked as such) and its CPU line in the limits table.
 
 Statuses: `confirmed` and `confirmed-from-data` are Verified; `revised` is Verified with the verifier's value (the
 lab's is kept as `was` and shown); `not-verified` stays Measured. A key the model reads that the file lacks, or an

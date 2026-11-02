@@ -153,8 +153,15 @@ test("playback: each person plays a share of every teammate's proxies; a solo ed
   // optimized reads: 2 GETs a segment (82% of the measured Class B at 0.618 MiB parts, scaled to 0.477 MiB ones) and the
   // reads' own (18%, per 2 MiB read)
   const perSeg = M.PV_REF_PART_MIB / u.derived.segMiB;
-  close(u.activities.playback.r2ClassB, u.derived.viewedMiB * M.INPUT_DEFAULTS.pvoViewClassBPerMiB * (0.82 * perSeg + 0.18));
-  close(u.activities.playback.workersReq, u.derived.viewedMiB * 0.59);
+  void perSeg;
+  // the release reads 1 MiB at a time: two 0.477 MiB segments a read, plus 1 read a stream (2-minute clips: 28.6 MiB)
+  const segs = u.derived.viewedMiB / u.derived.segMiB;
+  const streamsViewed = u.derived.viewedMiB / ((2 * 60 * 2e6) / 8 / 1024 / 1024);
+  assert.equal(u.derived.segsPerRead, 2);
+  close(u.derived.reads, segs / 2 + streamsViewed);
+  close(u.activities.playback.workersReq, u.derived.reads);
+  // Class B: each segment's list entry and bytes (2), and one more entry per read
+  close(u.activities.playback.r2ClassB, segs * 2 + u.derived.reads);
 });
 
 test("connects, idle sessions and the room's alarms are their own line", () => {
@@ -297,15 +304,16 @@ test("one boundary for 'fits': maxTeams, over and the curve agree, floating-poin
   assert.equal(M.freeCheck({ ...s, teams: 1_000_001 }, inputs, prices).fits, false);
 });
 
-test("CPU per request: an average for each kind; the preview's appends are flagged as a risk on Free", () => {
-  // optimized: the re-check measured each append (mean 9.76 ms, max 20.55, 40% over 10 ms): under on average, at risk
-  const fc = M.freeCheck({ ...solo, shareOriginals: true }, {}, prices);
+test("CPU per request: typical for each kind; the preview's few slow requests are noted on Free", () => {
+  // the release: a typical append 3.92 ms, read 3.18 ms; 8 of 255 at or over 10 ms (max 23 ms, a live viewer's first read)
+  const fc = M.freeCheck({ ...M.PRESETS.team5.settings, shareOriginals: true }, {}, prices);
   assert.equal(fc.cpu.basis, "average");
   assert.equal(fc.cpu.worst!.what, "a preview append");
-  close(fc.cpu.worst!.ms, 9.76);
+  close(fc.cpu.worst!.ms, 3.92);
   assert.equal(fc.cpu.over, false);
-  assert.equal(fc.cpu.risk!.what, "a preview append");
-  close(fc.cpu.risk!.max!, 20.55);
+  assert.equal(fc.cpu.risk!.what, "preview append and preview read");
+  close(fc.cpu.risk!.max!, 23);
+  assert.deepEqual([fc.cpu.risk!.count, fc.cpu.risk!.of], [8, 255]);
   assert.ok(fc.fits);
   // before the fix: an upload part (the lab's CPU per GB over its requests per GB) is the most, no risk flagged
   const b = M.freeCheck({ ...solo, shareOriginals: true, previewPath: "before" }, {}, prices);
@@ -320,10 +328,13 @@ test("the preview path: hand-computed requests and R2 operations, optimized agai
   const old = M.usage({ ...s, previewPath: "before" }, {});
   close(opt.derived.segments, 90_000);
   close(opt.derived.streams, 1_500);
-  // appends: 0.375 a segment at 0.618 MiB parts; 2 s at 2 Mbit/s is 0.477 MiB, so 0.375 × 0.477 / 0.618 (above 1/4)
-  const appends = (0.375 * opt.derived.segMiB) / M.PV_REF_PART_MIB;
-  close(opt.derived.appendsPerSeg, appends);
-  close(opt.activities.segments.workersReq, 90_000 * appends + 1_500 * 7);
+  // the release: one append a segment, plus a stream's lease and end; 7 setup requests a stream
+  close(opt.derived.appendsPerSeg, 1);
+  close(opt.derived.appends, 90_000 + 1_500 * 2);
+  close(opt.activities.segments.workersReq, 90_000 + 1_500 * (2 + 7)); // 103,500
+  // on the re-check's clip (40 segments a stream): (40 + 9) / 40 = 1.225 a segment, as the final runs counted (49)
+  const clip = M.usage({ people: 1, footageHoursPerMonth: 80 / 3600, clipMinutes: 80 / 60, previewMbps: 2, segmentSeconds: 2, viewShare: 0 }, {});
+  close(clip.activities.segments.workersReq / clip.derived.segments, 49 / 40);
   close(old.activities.segments.workersReq, 90_000 * 10 + 1_500 * 18); // 927,000
   close(opt.activities.segments.r2ClassB, 1_500 * 4); // 4 a stream
   close(old.activities.segments.r2ClassB, 90_000 * 4 + 1_500 * 9);
@@ -331,17 +342,17 @@ test("the preview path: hand-computed requests and R2 operations, optimized agai
   close(old.activities.segments.r2ClassA, opt.activities.segments.r2ClassA);
   // shorter clips: more streams, more fixed costs
   const short = M.usage({ ...s, clipMinutes: 1 }, {});
-  close(short.activities.segments.workersReq - opt.activities.segments.workersReq, 1_500 * 7);
-  // a segment over the 2 MiB batch goes alone: 1080p (5 Mbit/s) in 6 s segments is 3.6 MiB
-  assert.equal(M.usage({ ...s, previewMbps: 5, segmentSeconds: 6 }, {}).derived.appendsPerSeg, 1);
+  close(short.activities.segments.workersReq - opt.activities.segments.workersReq, 1_500 * (2 + 7)); // a stream's appends and setup
+  // a segment over 1 MiB is read alone: 1080p (5 Mbit/s) in 6 s segments is 3.6 MiB
+  assert.equal(M.usage({ ...s, previewMbps: 5, segmentSeconds: 6 }, {}).derived.segsPerRead, 1);
   // the bill: the fix makes the team-of-5 day fit Workers Free with room; before it, Worker requests ran out
   const free = M.freeCheck({ ...s, plan: "free" }, {}, prices);
   const freeOld = M.freeCheck({ ...s, plan: "free", previewPath: "before" }, {}, prices);
-  assert.ok(free.fits && free.maxTeams > 10);
+  assert.ok(free.fits && free.maxTeams >= 10);
   assert.equal(freeOld.checks.find((c) => c.key === "workersReq")!.maxTeams, 0);
-  // with the write cap: one reserve per append and 1 a stream (optimized), per write and 5 a stream (before)
+  // with the write cap: one reserve a segment and 2 a stream (optimized: 42 for 40 segments), per write and 5 a stream (before)
   const capOpt = M.usage({ ...s, writeCap: true }, {});
-  close(capOpt.activities.segments.doReq - opt.activities.segments.doReq, 90_000 * appends + 1_500 * 1);
+  close(capOpt.activities.segments.doReq - opt.activities.segments.doReq, 90_000 + 1_500 * 2);
   const capOld = M.usage({ ...s, previewPath: "before", writeCap: true }, {});
   close(capOld.activities.segments.doReq - old.activities.segments.doReq, 90_000 * 3 + 1_500 * 5);
 });
@@ -371,7 +382,7 @@ test("the daily write cap is off by default; on, it adds its counter's requests 
   const on = M.usage({ ...s, writeCap: true }, {});
   assert.equal(off.activities.originals.doReq, 0); // gbDoReq is 0 for a default deployment
   close(on.activities.originals.doReq - off.activities.originals.doReq, off.derived.originalsGB * M.INPUT_DEFAULTS.writeCapDoReqPerGB);
-  const reserves = off.derived.segments * off.derived.appendsPerSeg + off.derived.streams; // optimized: per append, 1 a stream
+  const reserves = off.derived.segments + off.derived.streams * 2; // the release: 1 a segment, 2 a stream
   close(on.activities.segments.doReq - off.activities.segments.doReq, reserves);
   close(on.activities.segments.doRowsWritten - off.activities.segments.doRowsWritten, reserves);
 });
@@ -464,7 +475,17 @@ test("build-data: the preview-path re-check sets both paths' inputs, its speeds 
   };
   writeFileSync(join(dir, "m.json"), JSON.stringify(measured));
   writeFileSync(join(dir, "p.json"), JSON.stringify(proxy));
-  execFileSync(process.execPath, [site("build-data.mjs"), join(dir, "m.json"), site("prices.json"), "--proxy-verified", join(dir, "p.json"), "--out", join(dir, "d.json")], { stdio: "pipe" });
+  const final = {
+    runs: {
+      r1: { publish_x: 1.521, play_x: 1.63, live_first_ms: 9571, append_cpu: { tail: { n: 42, max: 16, ge10: 1 }, exact: { p50: 3.915, max: 16.113 } }, read_cpu: { tail: { n: 43, max: 23, ge10: 2 }, exact: { p50: 3.182, max: 6.304 } } },
+      r2: { publish_x: 1.545, play_x: 1.32, live_first_ms: 8684, append_cpu: { tail: { n: 42, max: 12, ge10: 2 }, exact: { p50: 5.264, max: 12.841 } }, read_cpu: { tail: { n: 43, max: 13, ge10: 1 }, exact: { p50: 3.724, max: 13.349 } } },
+      cv4: { publish_x: 1.499, play_x: 1.373, live_first_ms: 9503, append_cpu: { tail: { n: 42, max: 10, ge10: 1 }, exact: { p50: 3.709, max: 10.599 } }, read_cpu: { tail: { n: 43, max: 10, ge10: 1 }, exact: { p50: 2.807, max: 5.4 } } },
+    },
+    no_1102: { verdict: "confirmed" },
+  };
+  writeFileSync(join(dir, "f.json"), JSON.stringify(final));
+  const release = fileURLToPath(new URL("../bench/cost/proxy-release.json", import.meta.url));
+  execFileSync(process.execPath, [site("build-data.mjs"), join(dir, "m.json"), site("prices.json"), "--proxy-verified", join(dir, "p.json"), "--proxy-release", release, "--proxy-final", join(dir, "f.json"), "--out", join(dir, "d.json")], { stdio: "pipe" });
   const d = JSON.parse(readFileSync(join(dir, "d.json"), "utf8"));
   const i = d.inputs;
   // before: 418 requests a stream = 10 a segment + 18; 169 Class B = 4 + 9; revised CPU keeps the claim
@@ -472,20 +493,27 @@ test("build-data: the preview-path re-check sets both paths' inputs, its speeds 
   assert.equal(i.pvSegWorkerReq.status, "verified");
   assert.equal(i.pvSegCpuMs.value, 23.78);
   assert.equal(i.pvSegCpuMs.was, 18.41);
-  // optimized: 7 requests and 4 Class B a stream (confirmed); the release's batches are the verifier's own runs
-  assert.deepEqual([i.pvoStreamWorkerReq.value, i.pvoStreamClassB.value, i.pvoStreamCapReserves.value], [7, 4, 1]);
-  assert.equal(i.pvoStreamWorkerReq.status, "verified");
-  assert.equal(i.pvoAppendsPerSeg.value, 0.375);
-  assert.equal(i.pvoAppendsPerSeg.status, "measured");
-  assert.equal(i.pvoAppendCpuMsMean.value, 9.76);
-  assert.equal(i.pvoAppendOver10Share.value, 0.4);
+  // the release: 1 append a segment + 2 a stream (42 for 40), 7 setup requests, 42 write-cap reserves, 41 reads
+  assert.deepEqual([i.pvoAppendsPerSeg.value, i.pvoStreamAppends.value, i.pvoStreamWorkerReq.value, i.pvoStreamClassB.value], [1, 2, 7, 4]);
+  assert.deepEqual([i.pvoSegCapReserves.value, i.pvoStreamCapReserves.value, i.pvoStreamReads.value], [1, 2, 1]);
+  assert.equal(i.pvoAppendsPerSeg.status, "verified");
+  // per-segment CPU: the median of cf-verify3's 4 runs; per read: its CPU per MiB over its reads per MiB
+  assert.equal(i.pvoSegCpuMs.value, 4.905);
+  close(i.pvoReadCpuMs.value, 5.375 / 1.58);
+  // per-request CPU from cf-verify4: typical append 3.915 ms, slowest read 23 ms, 8 of 255 at or over 10 ms
+  assert.deepEqual([i.pvoAppendCpuMsTypical.value, i.pvoReadCpuMsMax.value, i.pvoOver10Count.value, i.pvoOver10Of.value], [3.915, 23, 8, 255]);
+  assert.equal(i.pvoOver10Count.status, "verified");
   assert.deepEqual([i.pubSegClassA.value, i.pubStreamClassA.value], [3, 5]);
-  // speeds: before and 8 parts Verified, the release Measured; the CPU line comes first among the limits
+  // speeds: before Verified; the release on 4G Verified (cf-verify4); the good link local-only, Measured
   const sp = Object.fromEntries(d.speeds.map((x: { id: string }) => [x.id, x]));
   assert.equal(sp["pvpublish-good-before"].status, "verified");
-  assert.equal(sp["pvpublish-good-release"].status, "measured");
-  assert.equal(sp["pvpublish-good-release"].p50, 2.58);
-  assert.equal(sp["pvpublish-good-release"].unit, "x");
+  assert.equal(sp["pvpublish-4g-release"].status, "verified");
+  assert.equal(sp["pvpublish-4g-release"].p50, 1.521);
+  assert.equal(sp["pvplay-4g-release"].p50, 1.373);
+  assert.equal(sp["pvlive-4g-release"].p50, 9503);
+  assert.equal(sp["pvpublish-good-release-local"].status, "measured");
+  assert.equal(sp["pvpublish-good-release-pretail"].p50, 1.75);
+  assert.equal(sp["pvpublish-4g-release"].unit, "x");
   assert.equal(d.limits[0].id, "worker-cpu-10ms-preview");
-  assert.match(d.limits[0].observed, /10 of 25 went over 10 ms/);
+  assert.match(d.limits[0].observed, /8 of 255 were at or over 10 ms \(max 23 ms\), and none were refused/);
 });

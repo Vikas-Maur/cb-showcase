@@ -42,11 +42,12 @@ export const REF_SEGMENT_MIB = 188.53 / 301;
  * the init, 26,561,665 bytes. Its per-segment and per-MiB inputs are at this part size (0.618 MiB).
  */
 export const PV_REF_PART_MIB = 26_561_665 / 41 / (1024 * 1024);
-/** The release's batch limits for the optimized path (fix/cf-proxy-path-r): appends of at most 4 parts and 2 MiB. */
-export const PV_BATCH = Object.freeze({ parts: 4, mib: 2 });
-/** Of the optimized path's Class B per MiB played, the share that goes per segment (2 GETs of 41 parts' 100). */
-export const PVO_VIEW_B_PER_SEGMENT_SHARE = 82 / 100;
-/** The preview path: Carton's batched uploads and reads (the fix, release batch size), or the part-by-part path before. */
+/**
+ * The release's preview limits (merge/prod-2 @ 51f4d243; the server advertises them): 1 part (1 MiB) per append, 4
+ * appends in flight; 1 MiB reads, 2 in flight. So one append a segment, and as many segments a read as fit 1 MiB.
+ */
+export const PV_RELEASE = Object.freeze({ appendParts: 1, appendMiB: 1, readMiB: 1 });
+/** The preview path: Carton's batched uploads and reads (the release), or the part-by-part path before the fix. */
 export const PREVIEW_PATHS = Object.freeze({ optimized: "Optimized (release)", before: "Before the fix" });
 /** Rows the room keeps before archiving older changes (server §18 default, ARCHIVE_KEEP). */
 export const ARCHIVE_KEEP = 10_000;
@@ -122,20 +123,25 @@ export const INPUT_DEFAULTS = Object.freeze({
   pvViewWorkerReqPerMiB: 9.87,
   pvViewClassBPerMiB: 9.83,
   pvViewCpuMsPerMiB: 13.02,
-  // optimized (release): batched appends of at most 4 parts / 2 MiB, batched 2 MiB reads
-  pvoAppendsPerSeg: 0.375,
+  // optimized (the release, PV_RELEASE): one append a segment plus the lease and the end; 1 MiB reads
+  pvoAppendsPerSeg: 1,
+  pvoStreamAppends: 2,
   pvoStreamWorkerReq: 7,
   pvoStreamClassB: 4,
-  pvoStreamCapReserves: 1,
-  pvoSegCpuMs: 4.01,
-  pvoViewWorkerReqPerMiB: 0.59,
-  pvoViewClassBPerMiB: 3.95,
-  pvoViewCpuMsPerMiB: 3.38,
-  pvoAppendCpuMsMean: 9.76,
-  pvoAppendCpuMsMax: 20.55,
-  pvoAppendOver10Share: 0.4,
-  pvoReadCpuMsMean: 5.7,
-  pvoReadCpuMsMax: 9.15,
+  pvoSegCapReserves: 1,
+  pvoStreamCapReserves: 2,
+  pvoSegCpuMs: 4.905,
+  pvoStreamReads: 1,
+  pvoReadCpuMs: 3.4,
+  pvoViewClassBPerSegment: 2,
+  pvoViewClassBPerRead: 1,
+  // optimized: CPU of single requests (the re-check's distribution: typical = median of the runs' p50s)
+  pvoAppendCpuMsTypical: 3.92,
+  pvoAppendCpuMsMax: 16.11,
+  pvoReadCpuMsTypical: 3.18,
+  pvoReadCpuMsMax: 23,
+  pvoOver10Count: 8,
+  pvoOver10Of: 255,
   // without R2 (the vault): not measured
   segVaultDoReq: 6,
   pvoSegVaultDoReq: 3,
@@ -158,7 +164,9 @@ export const INPUT_NOTES = Object.freeze({
   writeCapDoReqPerGB: "Only with the optional daily write cap on: one request to its counter per blob write. The lab's measured counter traffic (153.7 per GB, an upper bound: other runs shared the counter); the code path gives about 122.",
   writeCapRowsPerReserve: "Only with the daily write cap on: each reserve writes a row in the counter's room (the verifier, from write-cap.ts); no lab input carries it.",
   segVaultDoReq: "Before the fix, without R2: a segment's 3 writes, the damage check and 2 heads go to the vault: 6 vault requests (the lab's request structure per segment, measured on R2). Not measured on the vault.",
-  pvoSegVaultDoReq: "Optimized, without R2: a batched append writes each part's 3 objects to the vault: about 3 vault requests a segment. Not measured on the vault.",
+  pvoSegVaultDoReq: "Optimized, without R2: an append writes its part's 3 objects to the vault: about 3 vault requests a segment. Not measured on the vault.",
+  pvoViewClassBPerSegment: "Optimized: a read GETs each segment's list entry and its bytes from R2, 2 Class B a segment, by the read path the first preview re-check verified at 2 and 4 MiB (CF-VERIFY-PROXY.md). Not measured at the release's 1 MiB reads.",
+  pvoViewClassBPerRead: "Optimized: each read also GETs the next list entry past its byte budget (and the end at the edge): 1 Class B a read, by the same verified read path. Not measured at 1 MiB reads.",
   pvoViewVaultDoReqPerSegment: "Optimized, without R2: a batched read gets each segment's list entry and bytes: 2 vault requests a segment. Not measured on the vault.",
   segVaultRowsWritten: "Without R2, a segment is 3 objects (bytes, manifest, list entry), each a record row and a 1 MiB chunk row (blob-do.ts); deleting it later costs the same. Not measured on the vault.",
   viewVaultDoReqPerSegment: "Without R2, a segment played is 3 signed reads (list entry, manifest, bytes), each one request to the vault (the lab's read structure per segment, measured on R2). Not measured on the vault.",
@@ -348,12 +356,12 @@ export function usage(settingsIn, inputsIn) {
   // one stream per clip shared: its fixed costs (setup, pointer, end) come once per stream
   const streams = (footageHours * 60) / s.clipMinutes;
   const optimized = s.previewPath === "optimized";
-  // optimized appends carry up to PV_BATCH.parts parts and PV_BATCH.mib MiB: bytes decide at the measured part size
-  // (0.375 a segment at 0.618 MiB), parts at small ones, and a part over the byte limit goes alone
-  const appendsPerSeg = segMiB > PV_BATCH.mib ? 1 : Math.max(1 / PV_BATCH.parts, (m.pvoAppendsPerSeg * segMiB) / PV_REF_PART_MIB);
+  // the release appends one part at a time (PV_RELEASE): one append a segment, plus a stream's lease and end
+  const appendsPerSeg = m.pvoAppendsPerSeg;
+  const appends = segments * appendsPerSeg + streams * m.pvoStreamAppends;
   const g = act.segments;
   if (optimized) {
-    g.workersReq = segments * appendsPerSeg + streams * m.pvoStreamWorkerReq;
+    g.workersReq = appends + streams * m.pvoStreamWorkerReq;
     g.workersCpuMs = segments * m.pvoSegCpuMs;
   } else {
     g.workersReq = segments * m.pvSegWorkerReq + streams * m.pvStreamWorkerReq;
@@ -371,7 +379,7 @@ export function usage(settingsIn, inputsIn) {
   // the optional daily write cap: a reserve on its counter per blob write (before) or per append (optimized), each a
   // request and a row
   if (s.writeCap) {
-    const reserves = optimized ? segments * appendsPerSeg + streams * m.pvoStreamCapReserves : segments * m.pvSegCapReserves + streams * m.pvStreamCapReserves;
+    const reserves = optimized ? segments * m.pvoSegCapReserves + streams * m.pvoStreamCapReserves : segments * m.pvSegCapReserves + streams * m.pvStreamCapReserves;
     g.doReq += reserves;
     g.doRowsWritten += reserves * m.writeCapRowsPerReserve;
   }
@@ -410,14 +418,19 @@ export function usage(settingsIn, inputsIn) {
 
   // playback: each person plays `viewShare` of every teammate's proxies once (played media is cached on disk). Before
   // the fix reads go per segment, so its per-MiB inputs (measured at PV_REF_PART_MIB parts) scale with the segment's
-  // size; optimized reads go per 2 MiB, and only their per-segment GETs scale
+  // size. The release reads 1 MiB at a time: as many whole segments as fit (one 0.62 MiB segment, two 0.48 MiB ones;
+  // a bigger segment alone), plus one more read a stream
   const viewedMiB = (s.people * Math.max(0, s.people - 1) * s.footageHoursPerMonth * proxyBytesPerHour * s.viewShare) / MIB;
   const perSeg = PV_REF_PART_MIB / Math.max(segMiB, 1e-9);
   const segmentsViewed = viewedMiB / Math.max(segMiB, 1e-9);
+  const streamMiB = (s.clipMinutes * 60 * s.previewMbps * 1e6) / 8 / MIB;
+  const streamsViewed = viewedMiB / Math.max(streamMiB, 1e-9);
+  const segsPerRead = Math.max(1, Math.floor(PV_RELEASE.readMiB / Math.max(segMiB, 1e-9)));
+  const reads = segmentsViewed / segsPerRead + streamsViewed * m.pvoStreamReads;
   const v = act.playback;
   if (optimized) {
-    v.workersReq = viewedMiB * m.pvoViewWorkerReqPerMiB;
-    v.workersCpuMs = viewedMiB * m.pvoViewCpuMsPerMiB;
+    v.workersReq = reads;
+    v.workersCpuMs = reads * m.pvoReadCpuMs;
   } else {
     v.workersReq = viewedMiB * m.pvViewWorkerReqPerMiB * perSeg;
     v.workersCpuMs = viewedMiB * m.pvViewCpuMsPerMiB * perSeg;
@@ -427,7 +440,7 @@ export function usage(settingsIn, inputsIn) {
     // each object read is its record row and its 1 MiB chunk rows: the input counts one chunk for the bytes
     v.doRowsRead = segmentsViewed * (m.viewVaultRowsReadPerSegment - 1 + Math.ceil(segMiB));
     v.doGBs = viewedMiB * m.viewVaultGBsPerMiB;
-  } else if (optimized) v.r2ClassB = viewedMiB * m.pvoViewClassBPerMiB * (PVO_VIEW_B_PER_SEGMENT_SHARE * perSeg + (1 - PVO_VIEW_B_PER_SEGMENT_SHARE));
+  } else if (optimized) v.r2ClassB = segmentsViewed * m.pvoViewClassBPerSegment + reads * m.pvoViewClassBPerRead;
   else v.r2ClassB = viewedMiB * m.pvViewClassBPerMiB * perSeg;
 
   // duration is wall-clock time, shared by everything an object does at once: the room (edits, presence, connections)
@@ -450,7 +463,7 @@ export function usage(settingsIn, inputsIn) {
     activities: act,
     totals,
     derived: {
-      edits, presenceMsgs, presenceAlarms, connects, idleHours, upkeepAlarms, footageHours, proxyGB, segments, segMiB, streams, appendsPerSeg, originalsGB, storedGB, viewedMiB, editHours,
+      edits, presenceMsgs, presenceAlarms, connects, idleHours, upkeepAlarms, footageHours, proxyGB, segments, segMiB, streams, appendsPerSeg, appends, reads, segsPerRead, originalsGB, storedGB, viewedMiB, editHours,
       // the largest single Durable Object: a project's vault (its media) or its room (recent changes)
       roomGB: e.doStorageGB, vaultGB: vault ? storedGB : 0, roomCapped, vaultCapped,
     },
@@ -575,8 +588,8 @@ export function freeCheck(settingsIn, inputsIn, prices) {
     // append and read, and the largest matters as much as the average
     ...(s.previewPath === "optimized"
       ? [
-          { what: "a preview append", ms: m.pvoAppendCpuMsMean, max: m.pvoAppendCpuMsMax, overShare: m.pvoAppendOver10Share, used: u.derived.segments > 0 },
-          { what: "a preview read", ms: m.pvoReadCpuMsMean, max: m.pvoReadCpuMsMax, used: u.derived.viewedMiB > 0 },
+          { what: "a preview append", ms: m.pvoAppendCpuMsTypical, max: m.pvoAppendCpuMsMax, used: u.derived.segments > 0 },
+          { what: "a preview read", ms: m.pvoReadCpuMsTypical, max: m.pvoReadCpuMsMax, used: u.derived.viewedMiB > 0 },
         ]
       : [
           { what: "a preview-segment request", ms: m.pvSegWorkerReq ? m.pvSegCpuMs / m.pvSegWorkerReq : 0, used: u.derived.segments > 0 },
@@ -589,7 +602,18 @@ export function freeCheck(settingsIn, inputsIn, prices) {
   const cpuOver = !!cpuWorst && cpuWorst.ms > cpuLimit;
   // under the limit on average, but some requests of this kind go over it: Cloudflare tolerates bursts, and cut the
   // lab's requests off at about 10 ms after sustained ones (2026-11-01); the client then retries in smaller batches
-  const cpuRisk = cpu.find((x) => x.max !== undefined && x.max > cpuLimit) ?? null;
+  const over = cpu.filter((x) => x.max !== undefined && x.max >= cpuLimit);
+  const cpuRisk = over.length
+    ? {
+        what: over.map((x) => x.what.replace(/^an? /, "")).join(" and "),
+        ms: Math.max(...over.map((x) => x.ms)),
+        max: Math.max(...over.map((x) => x.max)),
+        // the preview's appends and reads together (the re-check counted them as one set)
+        count: s.previewPath === "optimized" ? m.pvoOver10Count : undefined,
+        of: s.previewPath === "optimized" ? m.pvoOver10Of : undefined,
+        used: true,
+      }
+    : null;
   const sorted = [...checks].sort((a, b) => a.breaksAt - b.breaksAt);
   const first = sorted[0].breaksAt === Infinity ? null : sorted[0];
   const fits = !cpuOver && checks.every((c) => !c.over);

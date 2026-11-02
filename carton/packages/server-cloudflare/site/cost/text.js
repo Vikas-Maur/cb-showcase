@@ -46,7 +46,7 @@ export const SETTINGS = {
   dragShare: "The share of editing time someone's cursor or playhead is moving and shared with teammates. 5% is about 9 minutes of a 3-hour session. With the Cardboard app, count the time you're clicking, typing or scrolling: it sends an update then, at most once a second.",
   presenceRate: "How many cursor and playhead updates a second go to the room while someone drags. The Cardboard app sends at most 1 a second (on clicks, keys and scrolling, nothing after 30 s idle); the Carton web app sends 10 (its drag ghosts, capped by the sync client). Each update is a Durable Object request (20 for the price of 1 on Paid).",
   newProjectsPerMonth: "How many projects each team shares for the first time a month. The first time costs a few dozen rows written once: the room takes in the cut, and each person's first edit registers their copy.",
-  previewPath: "How shared previews travel. Optimized (in the release): the app uploads several segments in one request and teammates read 2 MiB at a time, about 20 times fewer requests. Before the fix: every segment's bytes, manifest and list entry went one signed request at a time, and so did every read. Pick \"Before the fix\" to see what the change saves.",
+  previewPath: "How shared previews travel. Optimized (the release): each segment goes up in one small request, with several in flight, and teammates read 1 MiB at a time, two reads in flight: several times fewer requests than before. Before the fix: every segment's bytes, manifest and list entry went one signed request at a time, and so did every read. Pick \"Before the fix\" to see what the change saves.",
   clipMinutes: "How long a shared clip is, on average. Each clip is its own preview stream, and a stream has a few fixed costs (setting it up, its pointer, its end), so many short clips cost a little more than a few long ones.",
   writeCap: "An optional safety limit on how much a deployment stores a day (fix/cf-write-cap). Off unless you set it; the lab's servers had it on. With it on, every stored file first books its size with a counter: one more Durable Object request and row each.",
   connectsPerDay: "How often a person's app connects to the project a day: opening it, waking the laptop, changing Wi-Fi. Each connect costs one Worker request and one full-price Durable Object request.",
@@ -66,10 +66,10 @@ export const LINES = {
   edits: "Each save or agent edit is a message to the project's room (a Durable Object), which stores it and sends it to everyone else. It costs Durable Object requests (20 messages for the price of 1 on Paid), rows written and a few milliseconds of room time.",
   presence: "While someone drags, their cursor and playhead go to teammates: at most 1 update a second from the Cardboard app, 10 from the web app; these are never stored. While anyone's active, the room also checks every minute for people who went silent, so their cursor disappears. Each check is an alarm: one request and one row written.",
   connections: "Opening the project and reconnecting: a Worker request, and three Durable Object requests (the upgrade, the hello, the close), billed in full. Also the room's hourly upkeep (moving old changes into an archive), sessions left open while nobody edits (measured: free, the room sleeps), and the few rows a newly shared project writes once.",
-  segments: "Uploading the preview copy in short segments. Each segment is 3 R2 writes (Class A). With the fix, several segments go up in one Worker request; before it, each segment took about 10 requests and 4 checks (Class B). Each clip's stream also has a few fixed requests. With the vault instead of R2: Durable Object requests and rows written.",
+  segments: "Uploading the preview copy in short segments. Each segment is 3 R2 writes (Class A). With the fix, each segment goes up in one small Worker request (several in flight); before it, each took about 10 requests and 4 checks (Class B). Each clip's stream also has a few fixed requests. With the vault instead of R2: Durable Object requests and rows written.",
   originals: "Uploading camera originals, when you share them: resumable uploads in 8 MiB parts, each a Worker request and a few R2 writes. A dropped connection only costs the parts in flight.",
   storage: "Keeping the shared previews (and originals) for the months you chose. In R2: $0.015 a GB-month past 10 free. In the vault: $0.20 a GB-month past the 5 included on Paid; on Free, 5 GB in all.",
-  playback: "Teammates watching each other's previews. With the fix, one Worker request reads 2 MiB (a few segments) and each segment is 2 R2 reads (Class B); before it, each segment took 6 requests and 6 reads. R2 doesn't charge for the bytes going out (egress is free).",
+  playback: "Teammates watching each other's previews. With the fix, one Worker request reads 1 MiB (one or two segments) and each segment is about 2 R2 reads (Class B); before it, each segment took 6 requests and 6 reads. R2 doesn't charge for the bytes going out (egress is free).",
 };
 
 export const METERS = {
@@ -93,14 +93,14 @@ export const FREE_CHECKS = {
   doRowsWritten: "Workers Free allows 100,000 rows written a day. Each edit writes about 2 rows, plus one when it's archived; each alarm writes one.",
   doStorageGB: "Workers Free allows 5 GB in all Durable Objects together: what's kept, not a daily amount, so midnight doesn't reset it. Past it, writes fail until data is deleted. Media in the vault counts against it.",
   doObjectGB: "One Durable Object can hold at most 1 GB on Free and 10 GB on Paid. Without R2, a project's media all sits in one object (its vault), so the media you keep must fit, on either plan. Past it, writes fail until data is deleted.",
-  cpuRisk: "On average the preview's batched uploads stay under Free's 10 ms of processor time per request, but some go over (the re-check measured the release's batch size). Cloudflare let all of them through in the re-check, but it has cut the lab's requests off before after bursts of slow ones (error 1102). When that happens the app sends the batch again in smaller pieces, down to one segment, which stays under. On Workers Paid the limit is 5 minutes, so this doesn't apply.",
+  cpuRisk: "Workers Free stops a request that uses more than 10 ms of processor time (error 1102). The release keeps preview requests small (one segment per upload request, 1 MiB per read), and in the re-check they stayed well under it, apart from a few: mostly a stream's first media upload or a client's first read, which do some setup. None were refused. On Workers Paid the limit is 5 minutes, so it doesn't apply.",
   cpu: "Workers Free stops any single request that uses more than 10 ms of processor time (error 1102), every time, at any hour. This shows each kind of request's average CPU from the model's inputs; a request above its average could still pass 10 ms, so under the limit here means likely, not certain.",
 };
 
 export const LIMITS = {
   "worker-cpu-10ms-preview": {
     name: "10 ms CPU per request (Free): the preview path",
-    tip: "On Cloudflare's free plan, the server code handling one request may use at most 10 milliseconds of processor time; time waiting on the network or storage doesn't count. Go over it and Cloudflare may stop the request (error 1102). The preview's batched uploads average just under it, and some go over. On Workers Paid the limit is 5 minutes, so it doesn't apply in practice.",
+    tip: "On Cloudflare's free plan, the server code handling one request may use at most 10 milliseconds of processor time; time waiting on the network or storage doesn't count. Go over it and Cloudflare may stop the request (error 1102). The release keeps every preview request small, one segment per upload and 1 MiB per read, and they stay well under it apart from a few first requests. On Workers Paid the limit is 5 minutes, so it doesn't apply in practice.",
     check: "cpu",
   },
   "worker-cpu-10ms": {
@@ -180,8 +180,9 @@ export const VARIANTS = [
   [/after-part-lock-fix/, "with the part-lock fix"],
   [/before-part-lock-fix/, "before the part-lock fix"],
   [/^pv[a-z]+-[a-z0-9]+-before$/, "before the fix (part by part)"],
-  [/^pv[a-z]+-[a-z0-9]+-release$/, "the fix, release batches (4 parts / 2 MiB)"],
-  [/^pv[a-z]+-[a-z0-9]+-8parts$/, "the fix, first test's batches (8 parts / 4 MiB)"],
+  [/^pv[a-z]+-[a-z0-9]+-release$/, "the release (1 part per append, 4 in flight; 1 MiB reads, 2 in flight)"],
+  [/^pv[a-z]+-[a-z0-9]+-release-pretail$/, "the release's sizes, before the in-flight fix (live, Cloudflare)"],
+  [/^pv[a-z]+-[a-z0-9]+-release-local$/, "the release, measured locally (not Cloudflare)"],
 ];
 
 export const GLOSSARY = [
@@ -260,18 +261,22 @@ export const INPUT_LABELS = {
   pvViewClassBPerMiB: "Before: R2 Class B per MiB played",
   pvViewCpuMsPerMiB: "Before: Worker CPU per MiB played",
   pvoAppendsPerSeg: "Optimized: appends per segment published",
+  pvoStreamAppends: "Optimized: appends per stream (lease, end)",
+  pvoSegCapReserves: "Optimized: write-cap reserves per segment (cap on)",
+  pvoStreamReads: "Optimized: reads per stream played (extra)",
+  pvoReadCpuMs: "Optimized: Worker CPU per 1 MiB read",
+  pvoViewClassBPerSegment: "Optimized: R2 Class B per segment played",
+  pvoViewClassBPerRead: "Optimized: R2 Class B per read (extra)",
+  pvoAppendCpuMsTypical: "Optimized: CPU of a typical append",
+  pvoReadCpuMsTypical: "Optimized: CPU of a typical 1 MiB read",
+  pvoOver10Count: "Optimized: appends and reads at or over 10 ms",
+  pvoOver10Of: "Optimized: appends and reads checked",
   pvoStreamWorkerReq: "Optimized: Worker requests per stream",
   pvoStreamClassB: "Optimized: R2 Class B per stream",
   pvoStreamCapReserves: "Optimized: write-cap reserves per stream (cap on)",
   pvoSegCpuMs: "Optimized: Worker CPU per segment published",
-  pvoViewWorkerReqPerMiB: "Optimized: Worker requests per MiB played",
-  pvoViewClassBPerMiB: "Optimized: R2 Class B per MiB played",
-  pvoViewCpuMsPerMiB: "Optimized: Worker CPU per MiB played",
-  pvoAppendCpuMsMean: "Optimized: CPU of one append (average)",
   pvoAppendCpuMsMax: "Optimized: CPU of the slowest append",
-  pvoAppendOver10Share: "Optimized: share of appends over 10 ms",
-  pvoReadCpuMsMean: "Optimized: CPU of one 2 MiB read (average)",
-  pvoReadCpuMsMax: "Optimized: CPU of the slowest 2 MiB read",
+  pvoReadCpuMsMax: "Optimized: CPU of the slowest 1 MiB read",
   pvoSegVaultDoReq: "Optimized: vault requests per segment published",
   pvoViewVaultDoReqPerSegment: "Optimized: vault requests per segment played",
   segWorkerReq: "Worker requests per preview segment",
@@ -294,9 +299,9 @@ export const INPUT_GROUPS = [
   ["Live edits", ["editDoReq", "editRowsWritten", "editRowsRead", "editGBs", "editWorkerCpuMs", "editArchiveRowsWritten", "changeBytes", "editRoomCpuMs"]],
   ["Cursors and playheads", ["presenceDoReq", "presenceGBs", "presenceRowsWritten", "presenceAlarmPerHour", "presenceAlarmDoReqPerHour", "presenceAlarmRowsWritten", "presenceAlarmGBs", "presenceMsgPerSecWhileDragging", "presenceFanoutPerMsg"]],
   ["Connections, idle time and new projects", ["connWorkerReq", "connWorkerCpuMs", "connDoReq", "connRowsWritten", "connRowsRead", "connGBs", "upkeepAlarmPerHour", "idleDoReqPerHour", "idleGBsPerHour", "idleRowsWrittenPerHour", "adoptRowsWritten", "replicaRowsWritten"]],
-  ["Preview uploads: optimized (the release)", ["pvoAppendsPerSeg", "pvoStreamWorkerReq", "pubSegClassA", "pubStreamClassA", "pvoStreamClassB", "pvoStreamCapReserves", "pvoSegCpuMs", "pvoAppendCpuMsMean", "pvoAppendCpuMsMax", "pvoAppendOver10Share", "pvoSegVaultDoReq", "segVaultRowsWritten"]],
+  ["Preview uploads: optimized (the release)", ["pvoAppendsPerSeg", "pvoStreamAppends", "pvoStreamWorkerReq", "pubSegClassA", "pubStreamClassA", "pvoStreamClassB", "pvoSegCapReserves", "pvoStreamCapReserves", "pvoSegCpuMs", "pvoAppendCpuMsTypical", "pvoAppendCpuMsMax", "pvoOver10Count", "pvoOver10Of", "pvoSegVaultDoReq", "segVaultRowsWritten"]],
   ["Preview uploads: before the fix", ["pvSegWorkerReq", "pvStreamWorkerReq", "pvSegClassB", "pvStreamClassB", "pvSegCapReserves", "pvStreamCapReserves", "pvSegCpuMs", "segVaultDoReq"]],
-  ["Playback: optimized (the release)", ["pvoViewWorkerReqPerMiB", "pvoViewClassBPerMiB", "pvoViewCpuMsPerMiB", "pvoReadCpuMsMean", "pvoReadCpuMsMax", "pvoViewVaultDoReqPerSegment", "viewVaultRowsReadPerSegment", "viewVaultGBsPerMiB"]],
+  ["Playback: optimized (the release)", ["pvoStreamReads", "pvoReadCpuMs", "pvoViewClassBPerSegment", "pvoViewClassBPerRead", "pvoReadCpuMsTypical", "pvoReadCpuMsMax", "pvoViewVaultDoReqPerSegment", "viewVaultRowsReadPerSegment", "viewVaultGBsPerMiB"]],
   ["Playback: before the fix", ["pvViewWorkerReqPerMiB", "pvViewClassBPerMiB", "pvViewCpuMsPerMiB", "viewVaultDoReqPerSegment"]],
   ["Camera originals", ["gbWorkerReq", "gbWorkerCpuMs", "gbR2ClassA", "gbR2ClassB", "gbDoReq", "gbVaultWorkerReq", "gbVaultWorkerCpuMs", "gbVaultDoReq", "gbVaultRowsWritten", "gbVaultGBs"]],
   ["The optional daily write cap", ["writeCapDoReqPerGB", "writeCapRowsPerReserve"]],
@@ -304,7 +309,7 @@ export const INPUT_GROUPS = [
 
 /** The page's notes on the bill. */
 export const NOTES = {
-  previewPath: "Uploading previews and teammates playing them used to be most of the bill at scale, and nearly all of Workers Free's daily requests: about 10 Worker requests per segment published and 10 per MiB played. The fix in the release batches both (the \"Preview path\" setting compares them).",
+  previewPath: "Uploading previews and teammates playing them used to be most of the bill at scale, and nearly all of Workers Free's daily requests: about 10 Worker requests per segment published and 10 per MiB played. The release sends each segment in one small request and reads 1 MiB at a time (the \"Preview path\" setting compares them).",
   sparseEdits: "Room time per edit was measured with edits arriving about twice a second. In one run with an edit every 15 s, each edit woke the room and used about 2.7× the room time (one run, not repeated).",
 };
 
