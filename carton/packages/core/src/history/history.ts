@@ -576,9 +576,10 @@ export class History {
     let ops: Op[] = o.ops ?? E.diff(baseDoc, mine, this.schema);
     const extra = o.extra ?? {};
     let intent: Intent | null = o.intent ?? null;
-    if (!intent && !extra.mergeOf) {
+    if (!intent && !extra.mergeOf && !o.inverse) {
       // an unrecorded edit (an agent's file save) that is unambiguously a ripple: record the inferred remap on the
-      // change, so its [t0, ∞) span is declared and later merges use it as an intent
+      // change, so its [t0, ∞) span is declared and later merges use it as an intent (never on a planned undo, redo or
+      // revert: it records only the inverse of what its changes recorded, HistoryCommit.inverse)
       const maps = E.inferRemaps(this.schema, baseDoc, ops.flatMap((op) => (op.op === "remap" ? [] : [{ path: op.path, op }])));
       if (!isEmptyMap(maps)) intent = { maps, inferred: true };
     }
@@ -971,7 +972,7 @@ export class History {
     if (!c) throw new Error(`no change ${changeId}`);
     const inv = this.#inverted(cutId, [c], tail);
     if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
-    return { doc: inv.doc, author: author ?? c.author, kind, ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: changeId } };
+    return { doc: inv.doc, author: author ?? c.author, kind, ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: changeId }, inverse: true };
   }
   #log(cutId: string, tail?: Tail): readonly ConfirmedChange[] {
     const log = this.#mustCut(cutId).log;
@@ -1122,7 +1123,7 @@ export class History {
     const inv = this.#inverted(cutId, changes, tail);
     if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
     const ids = changes.map((c) => c.id);
-    return { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, entry: top };
+    return { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, inverse: true, entry: top };
   }
 
   // ------------------------------------------------------------ credits (blame)

@@ -2541,12 +2541,12 @@ class CartonImpl implements Carton {
     return { sc, done: null };
   }
   /** Queue a change synchronously (nothing may run between computing `ops` on the optimistic state and this). */
-  #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name">, history?: HistoryFields, held = false): CommitResult {
+  #enqueue(sc: SharedCut, cut: string, id: ChangeId, author: Actor, ops: Op[], input: Pick<CommitInput, "policy" | "intent" | "kinds" | "name"> & { inferIntent?: false }, history?: HistoryFields, held = false): CommitResult {
     const hist: HistoryFields | undefined = history ?? (input.name ? { name: input.name } : undefined);
     const at = this.#opts.clock?.() ?? Date.now();
     this.#authors.set(id, author);
     this.#queuedIn(cut).add(id);
-    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(hist ? { history: hist } : {}), ...(held ? { held: true } : {}) }, { deferEmpty: true });
+    const r = sc.commit({ id, author, ops, at, ...(input.policy ? { policy: input.policy } : {}), ...(input.intent ? { intent: input.intent } : {}), ...(input.kinds ? { kinds: input.kinds } : {}), ...(input.inferIntent === false ? { inferIntent: false } : {}), ...(hist ? { history: hist } : {}), ...(held ? { held: true } : {}) }, { deferEmpty: true });
     if (r.status === "confirmed") {
       // nothing to record: the id is spent anyway (`#persistEnqueued` records it), named at the version History holds
       this.#authors.delete(id);
@@ -2772,7 +2772,7 @@ class CartonImpl implements Carton {
    * so ⌘Z right after an edit undoes it) and queued as an ordinary change with its intent, kind and `reverts` under a
    * stable id: pending, then confirmed or rebased like any edit, and credited to its author.
    */
-  async #planShared<R extends object>(cut: string, given: ChangeId | undefined, plan: (tail: Tail) => (Omit<Planned, "extra"> & { extra?: Planned["extra"] } & R) | (CommitResult & { status: "conflicts" }) | null): Promise<CommitResult & Partial<R>> {
+  async #planShared<R extends object>(cut: string, given: ChangeId | undefined, plan: (tail: Tail) => (Omit<Planned, "extra" | "inverse"> & { extra?: Planned["extra"]; inverse?: true } & R) | (CommitResult & { status: "conflicts" }) | null): Promise<CommitResult & Partial<R>> {
     const id = given ?? `${this.#rid}.${++this.#n}`;
     const { sc, done } = await this.#prepShared(cut, id);
     if (done) return done;
@@ -2781,9 +2781,10 @@ class CartonImpl implements Carton {
     if (p && "status" in p) return { ...p, ref: this.#sharedRef(cut) };
     // nothing to undo: an empty write, so a retry under the same id stays a no-op
     if (!p) return this.#persistEnqueued(sc, cut, id, this.#enqueue(sc, cut, id, this.#actor(), [], {}));
-    const { doc, author, kind, intent, extra, ...rest } = p;
+    const { doc, author, kind, intent, extra, inverse, ...rest } = p;
     const ops = E.diff(sc.queue.optimistic(cut).doc, doc, this.schema);
-    const r = this.#enqueue(sc, cut, id, author, ops, intent ? { intent } : {}, { kind, ...extra });
+    // an undo, redo or revert records only the inverse of what its changes recorded: the queue infers no remap for it
+    const r = this.#enqueue(sc, cut, id, author, ops, { ...(intent ? { intent } : {}), ...(inverse ? { inferIntent: false } : {}) }, { kind, ...extra });
     return { ...(await this.#persistEnqueued(sc, cut, id, r)), ...(rest as Partial<R>) };
   }
   /** A shared cut's pending changes as History's newest changes, each with the optimistic state after it. */
