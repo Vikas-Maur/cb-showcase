@@ -134,9 +134,10 @@ export const CHECKPOINT_EVERY_MS = 30_000;
  * At open, a WAL file larger than this is checkpointed at once (SQLite's own trigger, 1,000 frames of 4 KiB). A smaller
  * one is checkpointed OPEN_CHECKPOINT_DELAY_MS after open (perf/apply-latency): a checkpoint copies the frames into the
  * database file and syncs it, and a short `cb` call, which exits before then, left that to the processes that stay
- * open (the app's library worker, a sync helper, an MCP server), which still run it. It is also the WAL's
- * journal_size_limit, so a WAL a burst grew past it shrinks back to it when SQLite next starts it over, and the file's
- * size keeps bounding the frames a short process leaves unchecked.
+ * open (the app's library worker, a sync helper, an MCP server), which still run it. The WAL file's size bounds the
+ * frames in it, so a short process never leaves more than this unchecked. (SQLite shrinks the file only to
+ * journal_size_limit, 16 MiB: one a burst grew past this bound keeps the checkpoint at open, as before. A smaller
+ * journal_size_limit would end that, but SQLite truncates inside COMMIT, under the write lock: left as it was.)
  */
 export const OPEN_CHECKPOINT_BYTES = 1000 * 4096;
 export const OPEN_CHECKPOINT_DELAY_MS = 2000;
@@ -195,7 +196,7 @@ export class Db {
       const full = opts.durability === "full";
       db.raw.exec(`PRAGMA synchronous=${full ? "FULL" : "NORMAL"};
         PRAGMA temp_store=MEMORY;
-        PRAGMA journal_size_limit=${OPEN_CHECKPOINT_BYTES};`);
+        PRAGMA journal_size_limit=${16 * 1024 * 1024};`);
       // Checkpoints out of the write lock for the default only (see #watchWal). With "full" every commit already
       // fsyncs under the lock, which dominates its worst case, so moving the checkpoint out bought nothing there and
       // cost every commit (verify-ci S3c: +23% p50, +33% mean per commit, worst hold unchanged): SQLite's automatic
@@ -280,15 +281,34 @@ export class Db {
   // SQLite's own checkpoint too). (After a checkpoint SQLite reuses the WAL from the start, shrinking the file only to
   // journal_size_limit: so its size bounds the frames in it, and is no guide below that.)
   #watchWal(): void {
-    let walBytes = 0;
-    try { walBytes = fs.statSync(`${this.path}-wal`).size; } catch { /* no WAL yet: nothing left behind */ }
-    if (walBytes > OPEN_CHECKPOINT_BYTES) this.#queueCheckpoint();
+    if (this.#walBytes() > OPEN_CHECKPOINT_BYTES) this.#queueCheckpoint();
     else {
       this.#openTimer = setTimeout(() => { this.#openTimer = null; this.#queueCheckpoint(); }, OPEN_CHECKPOINT_DELAY_MS);
       this.#openTimer.unref?.();
     }
     this.#walTimer = setInterval(() => this.#queueCheckpoint(), CHECKPOINT_EVERY_MS);
     this.#walTimer.unref?.();
+  }
+
+  /**
+   * The size of this database's WAL file, in bytes; Infinity when it can't be told (so the caller checkpoints, as
+   * before). The WAL is beside the file SQLite opened, which isn't the path given when that is a symlink to the
+   * database file (review: the WAL then is the target's): SQLite's own name for it is used.
+   */
+  #walBytes(): number {
+    let file = this.path;
+    try {
+      const main = (this.raw.prepare("PRAGMA database_list").all() as { name: string; file: string }[]).find((d) => d.name === "main");
+      if (main && !main.file) return 0; // a memory or temporary database: no WAL file
+      if (main?.file) file = main.file;
+    } catch {
+      return Infinity;
+    }
+    try {
+      return fs.statSync(`${file}-wal`).size;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException)?.code === "ENOENT" ? 0 : Infinity; // no WAL yet: nothing left behind
+    }
   }
 
   #queueCheckpoint(): void {

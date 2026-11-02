@@ -372,46 +372,75 @@ test("each durability gets its checkpoint mode: deferred and out of the lock by 
   await full.close();
 });
 
-// perf/apply-latency: a short `cb` call never paid for a checkpoint at open while the WAL is small; a process that stays
-// still runs it, and the WAL file's size keeps bounding what is left unchecked.
+// perf/apply-latency: a short `cb` call doesn't pay for a checkpoint at open while the WAL is small; a process that
+// stays still runs it, and the WAL file's size bounds what is left unchecked. Waits are on the condition, not on a
+// sleep: a timer that fires only queues the checkpoint for the next turn, and a loaded runner delivers timers late.
+const until = async (what: string, f: () => boolean, ms = OPEN_CHECKPOINT_DELAY_MS + 15_000) => {
+  for (const end = performance.now() + ms; !f(); ) {
+    if (performance.now() > end) throw new Error(`timed out waiting for ${what}`);
+    await sleepMs(20);
+    await new Promise((r) => setImmediate(r));
+  }
+};
+const quick = async () => { await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r)); };
+
 test("a small WAL left by other processes is checkpointed OPEN_CHECKPOINT_DELAY_MS after open, not at once", async () => {
   const file = fresh();
   const w = await openSqliteStore(file);
-  await sleepMs(OPEN_CHECKPOINT_DELAY_MS + 200); // w's own open checkpoint is behind it
-  const before = w.db.checkpoints;
-  // Another connection (a cb process) adds a few frames and stays open, so closing it doesn't checkpoint.
-  for (let i = 0; i < 20; i++) await w.write([{ table: "changes", key: ["x", i], value: { i } }]);
-  const walBytes = fs.statSync(`${file}-wal`).size;
-  assert.ok(walBytes > 0 && walBytes <= OPEN_CHECKPOINT_BYTES, `a small WAL: ${walBytes} bytes`);
-  const s = await openSqliteStore(file);
-  await new Promise((r) => setImmediate(r));
-  await new Promise((r) => setImmediate(r));
-  assert.equal(s.db.checkpoints, 0, "not at open: a short process exits before it");
-  await sleepMs(OPEN_CHECKPOINT_DELAY_MS + 200);
-  assert.equal(s.db.checkpoints, 1, "a process that stays runs it");
-  assert.equal(w.db.checkpoints, before, "w's next one is on its 30 s timer");
-  await w.close();
-  await s.close();
+  let s: Awaited<ReturnType<typeof openSqliteStore>> | null = null;
+  try {
+    await until("w's own deferred checkpoint", () => w.db.checkpoints >= 1);
+    const before = w.db.checkpoints;
+    // Another connection (a cb process) adds a few frames and stays open, so closing it doesn't checkpoint.
+    for (let i = 0; i < 20; i++) await w.write([{ table: "changes", key: ["x", i], value: { i } }]);
+    const walBytes = fs.statSync(`${file}-wal`).size;
+    assert.ok(walBytes > 0 && walBytes <= OPEN_CHECKPOINT_BYTES, `a small WAL: ${walBytes} bytes`);
+    const t0 = performance.now();
+    s = await openSqliteStore(file);
+    await quick();
+    // (unless this process was held up past the delay itself, when the deferred one may have run already)
+    if (performance.now() - t0 < OPEN_CHECKPOINT_DELAY_MS) assert.equal(s.db.checkpoints, 0, "not at open: a short process exits before it");
+    const opened = s;
+    await until("s's deferred checkpoint", () => opened.db.checkpoints >= 1);
+    assert.equal(s.db.checkpoints, 1, "a process that stays runs it, once");
+    if (performance.now() - t0 < 25_000) assert.equal(w.db.checkpoints, before, "w's next one is on its 30 s timer");
+  } finally {
+    await w.close();
+    await s?.close();
+  }
+});
+
+test("a WAL past OPEN_CHECKPOINT_BYTES is checkpointed at open through a symlink to carton.db too (SQLite's WAL is the target's)", async (t) => {
+  const file = fresh();
+  const link = path.join(path.dirname(file), "alias.db");
+  const w = await openSqliteStore(file);
+  let s: Awaited<ReturnType<typeof openSqliteStore>> | null = null;
+  try {
+    await until("w's own deferred checkpoint", () => w.db.checkpoints >= 1);
+    try { fs.symlinkSync(file, link); } catch (e) { t.skip(`no symlinks here: ${(e as Error).message}`); return; }
+    const blob = randomBytes(4500).toString("base64");
+    for (let i = 0; i < 900; i++) await w.write([{ table: "changes", key: ["x", i], value: { blob } }]);
+    assert.ok(fs.statSync(`${file}-wal`).size > OPEN_CHECKPOINT_BYTES, "a large WAL beside the real file");
+    assert.equal(fs.existsSync(`${link}-wal`), false, "and none beside the link");
+    const before = w.db.checkpoints;
+    s = await openSqliteStore(link);
+    await quick();
+    assert.equal(s.db.checkpoints + w.db.checkpoints - before, 1, "checkpointed at open, through the link");
+  } finally {
+    await w.close();
+    await s?.close();
+  }
 });
 
 test("closing a store before its open checkpoint is due drops it (no timer keeps a closed store)", async () => {
   const s = await openSqliteStore(fresh());
+  const t0 = performance.now();
   await s.write([{ table: "changes", key: ["x", 0], value: 0 }]);
   await s.close();
-  await sleepMs(OPEN_CHECKPOINT_DELAY_MS + 200);
-  assert.equal(s.db.checkpoints, 0);
-});
-
-test("a WAL a burst grew past OPEN_CHECKPOINT_BYTES shrinks back to it when SQLite starts it over", async () => {
-  const file = fresh();
-  const s = await openSqliteStore(file);
-  const blob = randomBytes(4500).toString("base64");
-  for (let i = 0; i < 1000; i++) await s.write([{ table: "changes", key: ["main", i], value: { blob, i } }]);
-  assert.ok(fs.statSync(`${file}-wal`).size > OPEN_CHECKPOINT_BYTES, "the burst grew the WAL past the bound");
-  s.db.checkpoint();
-  await s.write([{ table: "changes", key: ["main", 5000], value: 1 }]);
-  assert.ok(fs.statSync(`${file}-wal`).size <= OPEN_CHECKPOINT_BYTES, `back to at most the bound: ${fs.statSync(`${file}-wal`).size} bytes`);
-  await s.close();
+  const closedAt = performance.now() - t0;
+  await sleepMs(OPEN_CHECKPOINT_DELAY_MS + 500);
+  await quick();
+  if (closedAt < OPEN_CHECKPOINT_DELAY_MS) assert.equal(s.db.checkpoints, 0);
 });
 
 test("a caller that never yields still gets checkpoints: the WAL stays bounded through the Store API alone", async () => {

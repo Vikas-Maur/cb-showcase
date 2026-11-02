@@ -63,13 +63,25 @@ async function cell({ tree, build, mode, writers, trips, round, quiet, tmpdir, c
   // as %TEMP% is on the laptop. Never the shared /tmp.
   pc.env.TMPDIR = tmpdir;
   const cli = path.join(b.cli, "cardboard.mjs");
+  // every cb this cell starts, so a failure stops them all before the cell's files go (review #3); a call past
+  // CALL_MS is killed and fails, and a whole cell past CELL_MS stops everything and fails
+  const CALL_MS = 120_000, CELL_MS = 20 * 60_000;
+  const children = new Set();
+  const killAll = () => { for (const c of children) try { c.kill("SIGKILL"); } catch {} };
+  const allGone = () => Promise.all([...children].map((c) => new Promise((ok) => (c.exitCode !== null || c.signalCode !== null ? ok() : c.once("close", ok)))));
+  const cellTimer = setTimeout(() => { killAll(); pc.kill(); S.killHelpers(); out({ fatal: "the cell ran past " + CELL_MS + " ms" }); process.exit(1); }, CELL_MS);
+  cellTimer.unref();
   const run = (argv, env = {}) => new Promise((resolve) => {
     const t0 = performance.now();
     const p = spawn(process.execPath, [cli, "--root", pc.root, ...argv], { env: { ...pc.env, ...env } });
-    let so = "", se = "";
+    children.add(p);
+    let so = "", se = "", done = false;
+    const end = (code) => { if (done) return; done = true; clearTimeout(t); children.delete(p); resolve({ code, out: so, err: se, ms: performance.now() - t0 }); };
+    const t = setTimeout(() => { se += "\n(killed after " + CALL_MS + " ms)"; try { p.kill("SIGKILL"); } catch {} }, CALL_MS);
     p.stdout.on("data", (d) => (so += d));
     p.stderr.on("data", (d) => (se += d));
-    p.on("close", (code) => resolve({ code, out: so, err: se, ms: performance.now() - t0 }));
+    p.on("error", (e) => { se += String(e?.message ?? e); end(null); });
+    p.on("close", (code) => end(code));
   });
   const must = async (argv, what) => { const r = await run(argv); if (r.code !== 0) throw new Error(what + ": " + r.out + r.err); return r; };
   const rows = [];
@@ -89,11 +101,12 @@ async function cell({ tree, build, mode, writers, trips, round, quiet, tmpdir, c
     if (mode === "on") await S.until(() => { try { return /cardboard:rev .+@\d+~[0-9a-f]{8} b:/.test(fs.readFileSync(tsx, "utf8")); } catch { return false; } }, 30_000, "the worker's Materializer printing timeline.tsx");
     else await sleep(500);
     const last = Array(writers).fill(null);
+    let stop = false; // one writer failed: the others stop at their next step
     const one = async (k) => {
       const name = `W${k + 1}`, re = new RegExp(`(<text[^>]*name="${name}"[^>]*fontSize=\\{)\\d+(\\})`);
       const edit = path.join(pc.home, `w${k}.tsx`);
       // one warm-up round trip each (not measured), then `trips` measured
-      for (let i = 0; i <= trips; i++) {
+      for (let i = 0; i <= trips && !stop; i++) {
         const size = 100 + k * 1000 + round * 100 + i + 1;
         const t0 = performance.now();
         // (--cb-env: more environment for the measured cb calls only, e.g. a NODE_OPTIONS preload that records spans)
@@ -115,17 +128,23 @@ async function cell({ tree, build, mode, writers, trips, round, quiet, tmpdir, c
       }
     };
     const t0 = performance.now();
-    await Promise.all(Array.from({ length: writers }, (_, k) => one(k)));
+    const settled = await Promise.allSettled(Array.from({ length: writers }, (_, k) => one(k).catch((e) => { stop = true; throw e; })));
     const wallMs = performance.now() - t0;
+    const failed = settled.find((x) => x.status === "rejected");
+    if (failed) throw failed.reason;
     // no writer's edit lost (G1): every writer's last applied size in timeline.tsx and in a fresh print
     const now = fs.readFileSync(tsx, "utf8"), printed = (await must(["source", "print", PROJECT], "final print")).out;
     const has = (text, k) => new RegExp(`<text[^>]*name="W${k + 1}"[^>]*fontSize=\\{${last[k]}\\}`).test(text);
     checks = { lostInFile: last.filter((v, k) => v === null || !has(now, k)).length, lostInPrint: last.filter((v, k) => v === null || !has(printed, k)).length, wallMs: r1(wallMs) };
   } finally {
+    // nothing of this cell outlives it: its cb calls, then the worker and helpers, then its files
+    killAll();
+    await allGone();
     await pc.stopWorker();
     S.killHelpers();
     try { fs.rmSync(pc.home, { recursive: true, force: true }); } catch {}
   }
+  clearTimeout(cellTimer);
   for (const r of rows) out({ row: r });
   out({ cell: { tree, build, mode, writers, round, trips, gate: { cores: r1(busy), attempts: attempts + 1 }, uptimeBefore: up0, uptimeAfter: uptime(), ...checks } });
 }
@@ -146,16 +165,31 @@ async function drive() {
     bld.dir = path.join(OUT, bld.name, "build");
     bld.tmp = path.join("/dev/shm", `apply-bench-${path.basename(OUT)}-${bld.name}-tmp`);
     fs.mkdirSync(bld.tmp, { recursive: true });
-    const head = spawnSync("git", ["-C", bld.tree, "rev-parse", "--short", "HEAD"], { encoding: "utf8" }).stdout.trim() || fs.readFileSync(path.join(bld.tree, ".commit"), "utf8").trim();
+    // A tree is a checkout (its HEAD; uncommitted changes are refused) or an export with its commit in .commit
+    // (`git archive <c>` with `git rev-parse --short <c> > .commit`).
+    const git = spawnSync("git", ["-C", bld.tree, "rev-parse", "--short", "HEAD"], { encoding: "utf8" });
+    const head = git.status === 0 ? git.stdout.trim() : fs.readFileSync(path.join(bld.tree, ".commit"), "utf8").trim();
+    if (git.status === 0 && spawnSync("git", ["-C", bld.tree, "status", "--porcelain"], { encoding: "utf8" }).stdout.trim()) throw new Error(bld.name + ": " + bld.tree + " has uncommitted changes; measure a commit");
     bld.head = head;
-    if (!fs.existsSync(path.join(bld.dir, "bundle", "carton", "carton-node.cjs"))) {
+    // A build is reused only if it was made from this commit and is whole; else made again.
+    const stamp = path.join(bld.dir, "built-from.json"), facade = path.join(bld.dir, "bundle", "carton", "carton-node.cjs");
+    let made = null;
+    try { made = JSON.parse(fs.readFileSync(stamp, "utf8")); } catch {}
+    if (!(made?.head === head && made?.tree === bld.tree && fs.existsSync(facade) && fs.existsSync(path.join(bld.dir, "clip.mp4")))) {
+      fs.rmSync(bld.dir, { recursive: true, force: true });
       const r = spawnSync(process.execPath, [me, "--prepare", bld.tree], { env: { ...process.env, CARTON_TEST_DIR: bld.dir }, stdio: ["ignore", "ignore", "inherit"] });
       if (r.status !== 0) throw new Error(bld.name + " didn't build");
+      fs.writeFileSync(stamp, JSON.stringify({ tree: bld.tree, head, at: new Date().toISOString() }));
     }
-    console.log(JSON.stringify({ build: bld.name, tree: bld.tree, head }));
+    // what actually runs: the facade and cb's two patched bundles, by hash
+    const sha = (f) => require("crypto").createHash("sha256").update(fs.readFileSync(f)).digest("hex").slice(0, 16);
+    const b = builtIn(bld.dir);
+    bld.artifacts = { facade: sha(facade), cb: sha(path.join(b.cli, "cardboard.mjs")), cbChunk: sha(path.join(b.cli, "chunks", "chunk-LL26E55H.mjs")), worker: sha(b.worker) };
+    console.log(JSON.stringify({ build: bld.name, tree: bld.tree, head, artifacts: bld.artifacts }));
   }
   const rowsFile = path.join(OUT, "rows.jsonl"), cellsFile = path.join(OUT, "cells.jsonl");
-  const rows = [];
+  const RUN = new Date().toISOString(); // this invocation's rows, told apart from an earlier run's in the same files
+  const rows = [], cells = [];
   for (let r = 0; r < ROUNDS; r++) for (const w of WRITERS) for (const mode of MODES) {
     // alternate which build goes first, so a warming (or busier) box favours neither
     const order = (r + MODES.indexOf(mode)) % 2 ? [...builds].reverse() : builds;
@@ -168,9 +202,10 @@ async function drive() {
         const fatal = lines.find((x) => x.fatal);
         if (p.status !== 0 || fatal) { console.error(bld.name, mode, "w" + w, "round", r, "failed:", fatal?.fatal ?? p.stderr.slice(-3000)); if (attempt < 1) continue; throw new Error("cell failed twice"); }
         for (const x of lines) {
-          if (x.row) { rows.push(x.row); fs.appendFileSync(rowsFile, JSON.stringify({ head: bld.head, ...x.row }) + "\n"); }
+          if (x.row) { rows.push(x.row); fs.appendFileSync(rowsFile, JSON.stringify({ run: RUN, head: bld.head, facade: bld.artifacts.facade, ...x.row }) + "\n"); }
           if (x.cell) {
-            fs.appendFileSync(cellsFile, JSON.stringify({ head: bld.head, ...x.cell }) + "\n");
+            cells.push({ build: bld.name, ...x.cell });
+            fs.appendFileSync(cellsFile, JSON.stringify({ run: RUN, head: bld.head, artifacts: bld.artifacts, ...x.cell }) + "\n");
             const mine = rows.filter((y) => y.build === bld.name && y.mode === mode && y.writers === w && y.round === r);
             console.log(JSON.stringify({ build: bld.name, mode, writers: w, round: r, roundMedianMs: r1(median(mine.map((y) => y.roundMs))), applyMedianMs: r1(median(mine.map((y) => y.applyMs))), printMedianMs: r1(median(mine.map((y) => y.printMs))), notShown: mine.filter((y) => !y.shown).length, notApplied: mine.filter((y) => !y.applied).length, lostInFile: x.cell.lostInFile, lostInPrint: x.cell.lostInPrint, gate: x.cell.gate, uptime: x.cell.uptimeBefore }));
           }
@@ -181,17 +216,21 @@ async function drive() {
   }
   const summary = {};
   for (const w of WRITERS) for (const mode of MODES) for (const bld of builds) {
-    const mine = rows.filter((y) => y.build === bld.name && y.mode === mode && y.writers === w);
+    const all = rows.filter((y) => y.build === bld.name && y.mode === mode && y.writers === w), mine = all.filter((y) => y.applied);
     const rounds = [...new Set(mine.map((y) => y.round))];
+    const myCells = cells.filter((c) => c.build === bld.name && c.mode === mode && c.writers === w);
     summary[`${bld.name}/${mode}/w${w}`] = {
-      head: bld.head, trips: mine.length,
+      head: bld.head, artifacts: bld.artifacts, trips: all.length, applied: mine.length,
       roundMedianMs: r1(median(mine.map((y) => y.roundMs))), applyMedianMs: r1(median(mine.map((y) => y.applyMs))), printMedianMs: r1(median(mine.map((y) => y.printMs))),
       cellRoundMediansMs: rounds.map((rr) => r1(median(mine.filter((y) => y.round === rr).map((y) => y.roundMs)))),
-      notShown: mine.filter((y) => !y.shown).length, notApplied: mine.filter((y) => !y.applied).length,
+      notShown: all.filter((y) => !y.shown).length, notApplied: all.length - mine.length,
+      lostInFile: myCells.reduce((a, c) => a + (c.lostInFile ?? 0), 0), lostInPrint: myCells.reduce((a, c) => a + (c.lostInPrint ?? 0), 0),
     };
   }
   fs.writeFileSync(path.join(OUT, "summary.json"), JSON.stringify(summary, null, 2));
-  console.log(JSON.stringify({ summary, unverified: true }, null, 1));
+  const bad = Object.values(summary).some((x) => x.notShown || x.notApplied || x.lostInFile || x.lostInPrint);
+  console.log(JSON.stringify({ summary, checks: bad ? "FAILED: see notShown / notApplied / lost" : "all applied, all shown, none lost", unverified: true }, null, 1));
+  if (bad) process.exitCode = 2;
 }
 
 if (args[0] === "--prepare") prepare().catch((e) => { console.error(e); process.exit(1); });
