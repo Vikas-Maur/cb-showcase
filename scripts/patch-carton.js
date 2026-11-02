@@ -265,7 +265,7 @@ if (mode === "--cli") {
     replace('e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s})', 'e.tabs.broadcast("project:changed",{id:i,stateUpdatedAt:o.stateUpdatedAt,...s,...__cartonMain.on&&{carton:!0}})');
     // H8: the worker's Carton events go to every tab.
     replace('onChange:async i=>{if(i.kind==="removed"){n(i.id);return}', 'onChange:async i=>{if(i.kind==="carton"){e.tabs.broadcast("carton:event",i);return}if(i.kind==="removed"){n(i.id);return}');
-    // H9: who is acting, for every agent main starts.
+    // H9: who is acting, for every agent main starts (agentEnv: the agents deps.spawn starts, Codex in 1.4.0).
     // The title bar's History and Share icons (the tab strip, tabsFile below): their commands go to the active tab's
     // page as carton:command (not menu:action, which Cardboard logs and maps to native commands), and the page's report
     // of the panel open (carton:panel) joins the tab's editor state, which the strip draws from. Carton off: neither.
@@ -275,15 +275,20 @@ if (mode === "--cli") {
     replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.panel??null)}),');
     replace("this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})", "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:__cartonMain.agentEnv(b,a.provider,s)})");
     replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
-    // H9: the Director's Bash hook names the turn and the subagent; Stop and SubagentStop return late conflicts.
+    // H9: the Bash hook of Cardboard's Agent SDK transport (oH) names who runs each cb call; Stop and SubagentStop
+    // return late conflicts. oH runs two agents in 1.4.0: the Director (RVt) and the person's own Claude Code (v_e,
+    // provider "claude"; deps.spawn never starts it). Laptop #8: main-bridge's hookActor names the Director's turn
+    // (director/<chat>/<turn>) and the person's Claude Code claude-code/<session>, never the Director.
     replace('PreToolUse:[{matcher:"Bash",hooks:[async v=>{', 'PreToolUse:[{matcher:"Bash",hooks:[__cartonMain.directorHook(e,async v=>{');
     // H8: and its Read/Write/Edit calls reach the worker's Materializer (the shared timeline.tsx's freeze, credit).
     replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt},...__cartonMain.fileHooks(e)],...__cartonMain.stopHooks(e)}");
-    // H9: each Director turn's last version is named from the turn's prompt when the turn ends (as the chat's
-    // checkpoints are); the label stays in the project's history.
+    // H9: each in-app agent's turn (the Director's, the person's own Claude Code's, Codex's) ends here (closeTurn: the
+    // stream's result, an interrupt, an error): its hold on timeline.tsx ends, and its last version is named from the
+    // turn's prompt (as the chat's checkpoints are); the label stays in the project's history.
     replace('n.turn={state:"running",id:s.id,text:s.text}', 'n.turn={state:"running",id:s.id,text:s.text},__cartonMain.turnStarted(n,t,i.project?.bundlePath,s,i.launch?.provider)');
     replace('closeTurn(t,r){t.turn.state==="running"&&', 'closeTurn(t,r){__cartonMain.turnEnded(t,r);t.turn.state==="running"&&');
-    // H9: host Claude Code gets the same hooks through --settings.
+    // H9: a Claude Code started as a process (its args) gets the same hooks through --settings. 1.4.0 runs its Claude
+    // Code through the Agent SDK transport instead (the hooks above), so this reaches it only if a build spawns it.
     replace('"--append-system-prompt",ju(e),', '"--append-system-prompt",ju(e),...__cartonMain.hostSettings(),');
     // H8 (item 4): every agent's appended system prompt (ju: the Director, host Claude Code, Codex, the others) gains
     // Carton's view flow with Carton on; with Carton off the list is Cardboard's.

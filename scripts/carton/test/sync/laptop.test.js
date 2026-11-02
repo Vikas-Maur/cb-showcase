@@ -149,23 +149,56 @@ test("#9 cb's `project create` says nothing about history being off: the project
   assert.equal(pc.cb(["history", "Demo"]).json().versions.length, n0 + 1, "the apply is the next version");
 });
 
-test("#8 an in-app turn on the person's own Claude Code (not the Director) is a turn too: the freeze ends with it and its last version takes the prompt's name", t, async () => {
+// Claude Code's Bash tool on Windows runs Git Bash (CLAUDE_CODE_GIT_BASH_PATH, else Git's own), as director-turn.test.js.
+const BASH = process.platform !== "win32" ? "bash" : process.env.CLAUDE_CODE_GIT_BASH_PATH
+  ?? [path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe")].find((f) => fs.existsSync(f)) ?? "bash";
+
+test("#8 an in-app turn on the person's own Claude Code (not the Director), as Cardboard 1.4.0 runs it, is a turn too: credited to Claude Code, the freeze ends with it, its last version takes the prompt's name", t, async () => {
   const b = await S.build();
   const pc = await S.computer("laptop-8", b);
   const must = (x, what) => assert.equal(x.code, 0, what + ": " + x.out + x.err);
+  // (before the worker runs: a terminal's cb write while it runs freezes timeline.tsx for a minute, by design)
   must(pc.cb(["project", "create", "Demo"]), "create");
   fs.writeFileSync(path.join(pc.home, "titles.tsx"), TITLES);
   must(pc.cb(["source", "apply", "Demo", path.join(pc.home, "titles.tsx")]), "apply");
   const bundle = pc.cb(["project", "list"]).json().find((p) => p.name === "Demo").bundlePath;
   const id = JSON.parse(fs.readFileSync(path.join(bundle, "project.json"), "utf8")).project.id;
   const tsxFile = path.join(bundle, "timeline.tsx"), tsx = () => fs.readFileSync(tsxFile, "utf8");
+  // `cb` on PATH for the agent's shell (the app's agent-bin shim), on this computer's library
+  const bin = path.join(pc.home, "bin"), slash = (p) => p.replace(/\\/g, "/");
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, "cb"), `#!/bin/sh\nexec "${slash(process.execPath)}" "${slash(path.join(b.cli, "cardboard.mjs"))}" --root "${slash(pc.root)}" "$@"\n`, { mode: 0o755 });
   // main's bridge, with the worker as its library (as dist/main.js holds them)
   const saved = { ...process.env };
   Object.assign(process.env, { CARDBOARD_CARTON: "1", CARDBOARD_CARTON_TIMING: "" });
   let m;
   try { m = new Function("require", require("../../main-bridge.js") + "return __cartonMain;")(require); } finally { process.env = saved; }
-  const session = "abcd1234-5678-4000-8000-000000000001", hookActor = "claude-code/abcd1234";
-  const env = m.agentEnv({}, "claude", "c2");
+  // Cardboard 1.4.0 runs the composer's own Claude Code (provider "claude") through its Agent SDK transport (v_e → oH),
+  // as it runs the Director (RVt → oH): deps.spawn never starts it (no agentEnv) and its args never run (no --settings,
+  // no `cb carton-hook`). Its hooks are main's, in process (the ones patch-carton.js extends), with main's launch
+  // context; its environment is the binary's (no CARDBOARD_ACTOR), and Claude Code's Bash tool adds CLAUDECODE. Ids as
+  // on the laptop (chat 7a09…, session 787d66ff…).
+  const chatId = "7a09b6cc-8553-4fe8-9942-0cf44eec39e2", session = "787d66ff-b5c3-4f50-a5cd-4a497e39021a", ME = "claude-code/787d66ff";
+  const ctx = { project: { id, name: "Demo", bundlePath: bundle }, chatId, binary: { path: "claude", environment: {} }, launch: { provider: "claude", model: "default" }, sessionId: null };
+  const env = { ...pc.env, CLAUDECODE: "1", PATH: bin + path.delimiter + process.env.PATH };
+  delete env.CARDBOARD_ACTOR;
+  /** One Bash tool call: the transport's PreToolUse hook (the credit gate allows) decides, then bash runs it. */
+  const bash = async (command) => {
+    const r = await m.directorHook(ctx, async () => ({}))({ hook_event_name: "PreToolUse", session_id: session, tool_name: "Bash", tool_input: { command }, cwd: bundle });
+    const run = r?.hookSpecificOutput?.updatedInput?.command ?? command;
+    const x = spawnSync(BASH, ["-c", run], { env, cwd: bundle, encoding: "utf8", timeout: 120_000 });
+    return { code: x.status, out: x.stdout ?? "", err: x.stderr ?? "", ran: run };
+  };
+  /** The agent's edit of W1, through cb (`cb source apply` of an edited print), as its own Bash call. */
+  const agentEdit = async (size) => {
+    const file = path.join(pc.home, `w1-${size}.tsx`);
+    fs.writeFileSync(file, setSize(raw(pc, b, ["source", "print", "Demo"]).out, "W1", size));
+    const r = await bash(`cb source apply Demo '${slash(file)}'`);
+    must(r, "the agent's apply");
+    assert.match(r.ran, new RegExp(`^export CARDBOARD_ACTOR='${ME}'; `), "its cb call is Claude Code's, never director/<chat>");
+  };
+  const versionNamed = (label) => S.until(() => pc.cb(["history", "Demo", "--limit", "20"]).json().versions.find((v) => v.name === label), 20_000, `the version named "${label}"`);
+  const ends = [];
   try {
     await pc.startWorker();
     m.library({ call: (method, arg) => pc.call(method, arg) });
@@ -173,27 +206,54 @@ test("#8 an in-app turn on the person's own Claude Code (not the Director) is a 
     // the project open in the app: a GUI save opens its Carton, and the worker's Materializer prints timeline.tsx
     await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, textContent: "W2 title" } : null));
     await S.until(() => / p:\S+ by carton$/m.test(tsx()) && tsx().includes('textContent="W2 title"'), 20_000, "the Materializer's timeline.tsx");
-    const chat = { chatId: "c2", sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "Make the first title bigger. Then stop." } };
+
+    // Turn 1, ended without a Stop (an interrupt: Cardboard's end() → closeTurn): the turn's end alone lets go.
+    const chat = { chatId, sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "Make the first title bigger. Then stop." } };
     m.turnStarted(chat, id, bundle, chat.turn, "claude");
-    // host Claude Code reads timeline.tsx: its hook (cb carton-hook, through --settings) tells the worker's holder
-    const read = spawnSync(process.execPath, [path.join(b.cli, "cardboard.mjs"), "carton-hook", "pre-tool-use", "--project", bundle], { env: { ...pc.env, ...env }, input: JSON.stringify({ hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: tsxFile }, cwd: bundle }), encoding: "utf8", timeout: 60_000 });
-    must({ code: read.status, out: read.stdout, err: read.stderr }, "the hook");
-    // the person's GUI edit stays out of the frozen file; the agent's own cb edit (as its Bash hook names it) shows
+    // its first command runs cb and reads timeline.tsx, as on the laptop: the shared file freezes for the turn
+    const first = await bash('cb history Demo --limit 1 >/dev/null; grep -n "W2" timeline.tsx');
+    must(first, "the first command");
+    assert.match(first.ran, new RegExp(`^export CARDBOARD_ACTOR='${ME}'; `));
+    // the person's GUI edit stays out of the frozen file; the agent's own cb edit shows
     await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, fontSize: 180 } : null));
-    const printed = raw(pc, b, ["source", "print", "Demo"]).out;
-    fs.writeFileSync(path.join(pc.home, "w1.tsx"), setSize(printed, "W1", 160));
-    const r = spawnSync(process.execPath, [path.join(b.cli, "cardboard.mjs"), "--root", pc.root, "source", "apply", "Demo", path.join(pc.home, "w1.tsx")], { env: { ...pc.env, CARDBOARD_ACTOR: hookActor }, encoding: "utf8", timeout: 120_000 });
-    must({ code: r.status, out: r.stdout, err: r.stderr }, "the agent's apply");
+    await agentEdit(160);
     await S.until(() => sizeOf(tsx(), "W1") === 160, 20_000, "the agent's own edit in the frozen file");
     await S.sleep(1500);
     assert.equal(sizeOf(tsx(), "W2"), 100, "the person's edit stays out while the turn runs");
-    // the turn ends (Cardboard's closeTurn): the freeze lets go at once, and the agent's version is named
-    const ended = Date.now();
-    m.turnEnded(chat, "result");
+    let ended = Date.now();
+    m.turnEnded(chat, "stopped");
+    chat.turn = { state: "idle" };
     await S.until(() => sizeOf(tsx(), "W2") === 180, 10_000, "timeline.tsx back to head after the turn");
-    assert.ok(Date.now() - ended < 10_000);
-    const named = await S.until(() => pc.cb(["history", "Demo", "--limit", "20"]).json().versions.find((v) => v.name === "Make the first title bigger"), 20_000, "the turn's version named");
-    assert.equal(named.by?.id ?? named.by, hookActor, JSON.stringify(named));
+    ends.push(Date.now() - ended);
+    const named = await versionNamed("Make the first title bigger");
+    assert.equal(named.by?.id ?? named.by, ME, JSON.stringify(named));
+    // credits and History say Claude Code, not the Director
+    const credits = raw(pc, b, ["credits", "Demo", "W1"]);
+    must(credits, "credits");
+    assert.match(credits.out, /last changed by Claude Code/, credits.out);
+    assert.doesNotMatch(credits.out, /Director/, credits.out);
+    assert.equal(named.by?.name, "Claude Code", JSON.stringify(named.by));
+
+    // Turn 2, ended as the stream's result ends it: its Stop hook (main's, for this agent), then closeTurn.
+    chat.turn = { id: "t2", state: "running", text: "Bigger first title again. Then stop." };
+    m.turnStarted(chat, id, bundle, chat.turn, "claude");
+    must(await bash("grep -n 'W1' timeline.tsx"), "the read");
+    await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, fontSize: 190 } : null));
+    await agentEdit(170);
+    await S.until(() => sizeOf(tsx(), "W1") === 170, 20_000, "the agent's own edit in the frozen file (turn 2)");
+    await S.sleep(1500);
+    assert.equal(sizeOf(tsx(), "W2"), 180, "the person's second edit stays out while turn 2 runs");
+    ended = Date.now();
+    assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session, stop_hook_active: false }), {}, "nothing to hand back: the turn stops");
+    m.turnEnded(chat, "result");
+    chat.turn = { state: "idle" };
+    await S.until(() => sizeOf(tsx(), "W2") === 190, 10_000, "timeline.tsx back to head after turn 2");
+    ends.push(Date.now() - ended);
+    const named2 = await versionNamed("Bigger first title again");
+    assert.equal(named2.by?.id ?? named2.by, ME, JSON.stringify(named2));
+    assert.ok(await versionNamed("Make the first title bigger"), "turn 1's version keeps its name");
+    console.log(`# laptop #8: timeline.tsx back to head ${ends.join(" ms, ")} ms after each turn's end`);
+    for (const ms of ends) assert.ok(ms < 5_000, "promptly after the turn's end: " + ends);
   } finally { await pc.stopWorker(); }
 });
 

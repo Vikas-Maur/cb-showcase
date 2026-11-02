@@ -442,8 +442,9 @@ What changes with it on:
 - **History** keeps every version, not the last 20, with who made it, down to the Director's turn and subagent.
   `cb history` shows who made each version, and each turn of an agent in the app (the Director, your own Claude Code,
   Codex, the others) is named from your prompt ("Make the intro tighter"); its hold on `timeline.tsx` ends with the
-  turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one
-  agent turn.
+  turn (an agent without Claude Code's hooks, such as Codex, holds it until a minute after its last `cb` call). Your
+  own Claude Code's edits are credited to "Claude Code" (they used to read "Director (chat …)", and its turns went
+  unnamed). `cb undo <rev>` reaches any version, and `cb undo --turn <id>` undoes one agent turn.
 - **Undo (Ctrl+Z)** undoes your edits and the agent turns you started, never someone else's change. A change from
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit.
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
@@ -512,14 +513,19 @@ run below.
 3. A `.cbproj` never carries `.carton\` or Carton's view files in `.scratch\views\` (on or off: the database holds
    local paths); anything else in `.scratch\views\` goes in.
 4. `cb`: the commands, WHO in `cb history`, `undo --turn`, the MCP tools, `cb source print --view <name>` (an agent's
-   own view, below), and a `cb carton-hook` command host Claude Code runs for its hooks (which also tell the app what
-   the agent reads and writes, below). Its hooks on Read, Write and Edit run only for `timeline.tsx` and `project.json`
+   own view, below), and a `cb carton-hook` command a Claude Code started as a process runs for its hooks (which also
+   tell the app what the agent reads and writes, below; the app's own agents run theirs inside the app, item 5). Its
+   hooks on Read, Write and Edit run only for `timeline.tsx` and `project.json`
    (Claude Code's `if` conditions, checked inside Claude Code): a call on any other file starts no process, so an
    agent's ordinary reads cost nothing extra. A Claude Code too old for `if` runs them on every call, with the same
    answers.
 5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent; `Stop` and
    `SubagentStop` hand a late conflict back to the agent once (then the cards it left are the person's); the
-   Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below); the GUI save's base
+   Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below). Cardboard 1.4.0 runs your
+   own Claude Code the way it runs the Director (its Agent SDK, with the same hooks inside the app; it never starts it
+   as a process with `--settings`), so those hooks tell the two apart: your Claude Code's `cb` calls and reads of
+   `timeline.tsx` are `claude-code/<session>` ("Claude Code"), and its turn's end lets go of exactly those and names its
+   last version from your prompt. Codex, which Cardboard does start as a process, is `codex/<chat>`. The GUI save's base
    reaches the worker; `carton:call` for the pages. With Carton on, every agent's instructions (its system prompt and
    the `AGENTS.md` Cardboard writes into each bundle) describe the per-agent view; with Carton off they are
    Cardboard's, word for word.
@@ -534,8 +540,9 @@ run below.
 8. Agents and the person editing at once (H8): the library worker runs Carton's materializer for each project it
    opens. It writes `timeline.tsx` from Carton's history (with that printer, under Carton's header) in place of
    Cardboard's own regeneration, and Cardboard's watcher hands it what others save there. While an agent works,
-   `timeline.tsx` stays as it was when the agent started: a Director turn from its first `cb` call or read of the file
-   until its turn ends; an agent without hooks until a minute after its last `cb` call. The person's edits go on in
+   `timeline.tsx` stays as it was when the agent started: a turn of the Director or of your own Claude Code in the app
+   from its first `cb` call or read of the file until its turn ends; anyone without hooks (Codex, a Claude Code in a
+   terminal without Carton's hooks, a `cb` you type) until a minute after their last `cb` edit. The person's edits go on in
    the editor and `project.json` meanwhile. An agent can also print its own copy, `cb source print <project> --view
    <name>` (`.scratch\views\<name>.tsx`): each save of it is applied as that agent's change, and
    `.scratch\views\<name>.status` says how it landed. A clash keeps what is there and is a card on both sides: the

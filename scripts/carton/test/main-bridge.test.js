@@ -108,6 +108,54 @@ test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's 
   assert.equal(asked[0][1].actor, "director/c1/t7");
 });
 
+test("laptop #8: the person's own Claude Code, as Cardboard 1.4.0 runs it (the Agent SDK transport's in-process hooks, a \"claude\" launch, no directorEnv), is claude-code/<session>, and its turn's end tells and names exactly that", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
+  // main's launch context, as oH gets it from v_e (dist/main.js: {project, chatId, binary, launch, sessionId, text})
+  const chatId = "7a09b6cc-8553-4fe8-9942-0cf44eec39e2", session = "787d66ff-b5c3-4f50-a5cd-4a497e39021a", me = "claude-code/787d66ff";
+  const ctx = { project: { id: "p1", name: "Demo", bundlePath: "/b" }, chatId, binary: { path: "claude", environment: {} }, launch: { provider: "claude", model: "default" }, sessionId: null, text: "x" };
+  const chat = { chatId, sessionIds: {}, turn: { id: "t1", state: "running", text: "Set W2 to 321." } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  // every hook input carries the session (Claude Code's); the chat learns it from the stream's init
+  const bash = m.directorHook(ctx, gate({}));
+  const r = await bash({ hook_event_name: "PreToolUse", session_id: session, tool_name: "Bash", tool_input: { command: 'cb docs 2>&1 | head -50; grep -n "W2" timeline.tsx' } });
+  assert.equal(r.hookSpecificOutput.updatedInput.command, `export CARDBOARD_ACTOR='${me}'; cb docs 2>&1 | head -50; grep -n "W2" timeline.tsx`, "Claude Code, never director/<chat>");
+  assert.deepEqual(asked.pop(), ["carton.agentHook", { bundlePath: "/b", actor: me, event: "pre-tool-use", input: { hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: "/b" } }]);
+  const sub = await bash({ hook_event_name: "PreToolUse", session_id: session, agent_id: "a-1", agent_type: "Explore", tool_input: { command: "cb history Demo" } });
+  assert.match(sub.hookSpecificOutput.updatedInput.command, new RegExp(`^export CARDBOARD_ACTOR='${me}/sub-Explore-a_1'; `));
+  const [files] = m.fileHooks(ctx);
+  await files.hooks[0]({ hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" } });
+  assert.equal(asked.pop()[1].actor, me);
+  // its Stop: the worker's stopHook names it so too (@carton/local's actorIdForHook without a turn)
+  assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session }), {});
+  assert.deepEqual(asked.splice(0).map(([method, a]) => [method, a.actor, a.event]), [["carton.stopHook", me, undefined], ["carton.agentHook", me, "stop"]]);
+  // the turn's end (Cardboard's closeTurn on the stream's result, or an interrupt): the actors its hooks used
+  m.turnEnded(chat, "result");
+  await new Promise((r) => setImmediate(r));
+  const ends = asked.filter(([method, a]) => method === "carton.agentHook" && a.event === "endTurn").map(([, a]) => a.actor);
+  assert.ok(ends.includes(me), "the turn's end lets go of what its hooks held: " + ends);
+  const named = asked.find(([method]) => method === "carton.nameTurn")[1];
+  assert.ok(named.actors.includes(me), "its version is found by its hooks' actor: " + named.actors);
+  assert.equal(named.prompt, "Set W2 to 321.");
+  // the next turn starts afresh; a hook with another session (a reset chat) is that turn's
+  asked.splice(0);
+  const chat2 = { chatId, sessionIds: { claude: session }, turn: { id: "t2", state: "running", text: "Again." } };
+  m.turnStarted(chat2, "p1", "/b", chat2.turn, "claude");
+  await bash({ hook_event_name: "PreToolUse", session_id: "11112222-new", tool_input: { command: "cb history Demo" } });
+  m.turnEnded(chat2, "result");
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(asked.find(([method]) => method === "carton.nameTurn")[1].actors, ["claude/" + chatId, me, "claude-code/11112222"]);
+  // the Director, as 1.4.0 launches it (provider "director"), keeps its turn's ids
+  asked.splice(0);
+  const dctx = { ...ctx, chatId: "c9", launch: { provider: "director", model: "x" } };
+  m.directorEnv({}, dctx, () => "t5");
+  const d = await m.directorHook(dctx, gate({}))({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "cb history Demo" } });
+  assert.match(d.hookSpecificOutput.updatedInput.command, /^export CARDBOARD_ACTOR='director\/c9\/t5'; /);
+  await m.stopHooks(dctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session });
+  assert.deepEqual(asked.map(([, a]) => a.actor), ["director/c9/t5", "director/c9/t5"]);
+});
+
 test("H8: every agent's appended prompt gains the view flow with Carton on", () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const [line] = m.viewPrompt({ id: "p1" });
