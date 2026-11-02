@@ -380,7 +380,7 @@ typed into a field. Every line has `t` (local time) and `ev`; lines from a proje
 | `key` | A key with Ctrl/Alt/Win anywhere, or any key outside a text field, that ran no shortcut or menu item | `combo`, `handled` (`false`: nothing took it; `native`: it pressed a focused button, named in `on`), `field` (see below) |
 | `director.answer` | An agent question was answered | `kind` (`generation`, `question`, `clone`), `outcome` (`approved`, `skipped`, `replied`, `answered`), `waitMs`, `via` (`key:Ctrl+Enter`, `pointer`…), `credits` |
 | `toast` | An error or warning toast | `kind`, `msg`, `detail` |
-| `error` | An uncaught error in a page | `msg`, `src`, `rejection` |
+| `error` | An uncaught error in a page; with Carton, also one its side panel or stage layer caught (the editor stays: the panel says so), and a teammate's presence the Share panel skipped | `msg`, `src`, `rejection`, `panel` |
 | `main.warn`, `main.error` | Main's warnings and errors (`[desktop] …`) | `msg` |
 | `worker` | The library worker's output, with `[media]` notes on NVENC, CUDA and CPU fallbacks | `msg` |
 | `gpu` | Which GPU draws the app, 15 s after start | `vendor` (PCI id: `0x10de` NVIDIA, `0x8086` Intel, `0x1002` AMD), `device`, `gpus` (how many), `asked` (`high-performance` or `default`, see patch 13) |

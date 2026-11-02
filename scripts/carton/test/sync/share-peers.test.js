@@ -17,7 +17,7 @@ const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gf
 const opt = { skip, timeout: 60_000 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-let React, client, act, Live, CartonSide, win;
+let React, client, act, Live, CartonSide, CartonBoundary, win;
 const logged = []; // the pages' activity log (window.__cbLog, patch-renderer.js)
 test.before(async () => {
   if (skip) return;
@@ -49,7 +49,7 @@ test.before(async () => {
   act = React.act;
   window.__cartonReact = React;
   window.__cbLog = (ev, f) => logged.push({ ev, ...f });
-  ({ CartonSide } = require(path.join(OUT, "carton-ui.cjs")));
+  ({ CartonSide, CartonBoundary } = require(path.join(OUT, "carton-ui.cjs")));
 }, { timeout: 300_000 });
 test.after(async () => { await win?.happyDOM.close(); });
 
@@ -206,4 +206,39 @@ test("boundary: any throw in the side panel shows a message in the panel, never 
     assert.ok(!m.container.querySelector(".carton-sidebar [role=alert]"), "the message went");
     assert.match(m.container.querySelector(".carton-share li")?.textContent ?? "", /Alice/);
   } finally { window.__cartonSyncUi = sync; await m.done(); }
+});
+
+test("two agents of one teammate (same id, their own agentId) are two rows, each with its own key", opt, async () => {
+  const { live: l, presence } = await live();
+  presence({ kind: "agent", id: "claude-code", agentId: "a1", name: "Claude Code" }, { activity: "Editing captions" });
+  presence({ kind: "agent", id: "claude-code", agentId: "a2", name: "Claude Code" }, { activity: "Trimming" });
+  const errors = [];
+  const was = console.error;
+  console.error = (...a) => { errors.push(a.join(" ")); };
+  const m = await openShare(status(l));
+  try {
+    assert.deepEqual([...m.container.querySelectorAll(".carton-share li")].map((li) => li.textContent), ["CCClaude CodeEditing captions", "CCClaude CodeTrimming"]);
+    assert.ok(!errors.some((e) => /same key/.test(e)), "no duplicate React keys: " + errors.join("\n"));
+  } finally { console.error = was; await m.done(); }
+});
+
+test("boundary, stage layer: a throw over the stage shows a small Try again there, never takes the editor tab down", opt, async () => {
+  let boom = true;
+  const Bad = () => { if (boom) throw new TypeError("Cannot read properties of undefined (reading 'length')"); return h("p", { id: "banner" }, "the preview banner"); };
+  logged.length = 0;
+  const container = document.createElement("div");
+  document.body.appendChild(container);
+  const root = client.createRoot(container, { onCaughtError() {}, onUncaughtError() {} });
+  try {
+    await act(() => root.render(h(tabBoundary(), null, h("main", { id: "editor" }, "the timeline"), h("div", { className: "carton-stage" }, h(CartonBoundary, { panel: "stage" }, h(Bad))))));
+    assert.ok(!container.querySelector("#snag"), "the editor tab hit a snag");
+    assert.ok(!!container.querySelector("#editor"), "the editor is still there");
+    const alert = container.querySelector(".carton-stage-snag[role=alert]");
+    assert.ok(!!alert, "the layer says so: " + container.textContent);
+    const errs = logged.filter((e) => e.ev === "error");
+    assert.deepEqual(errs.map((e) => e.panel), ["stage"]);
+    boom = false;
+    await act(async () => { alert.querySelector("button").click(); await sleep(20); });
+    assert.equal(container.querySelector("#banner")?.textContent, "the preview banner");
+  } finally { await act(() => root.unmount()); container.remove(); }
 });

@@ -830,7 +830,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       case "presence": {
         const key = actorKey(e.actor);
         if (key === actorKey(opts.me)) break;
-        const state = e.state as { ghosts?: { item: string; track: string; start: number; end: number; label?: string }[]; activity?: string } | null;
+        const state = e.state as { ghosts?: { item: string; track: string; start: number; end: number; label?: string }[]; activity?: string; who?: { id?: unknown; name?: unknown } } | null;
         if (!state) {
           if (peerMap.delete(key)) {
             publishPeers();
@@ -839,12 +839,17 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           break;
         }
         const prev = peerMap.get(key);
-        const actor = ui(e.actor);
+        // The person behind the sender's handle, as the sync layer sends them (`who`: their account and name on the
+        // host; the handle's own actor was fixed before the share), as live.js shows them in the Share panel. A
+        // malformed `who` is no one: the handle's actor stays (UI audit P1-1).
+        const who = state.who && typeof state.who.id === "string" && state.who.id ? { kind: "human" as const, id: state.who.id, ...(typeof state.who.name === "string" && state.who.name ? { name: state.who.name } : {}) } : null;
+        const actor = ui(who ?? e.actor);
         const activity = typeof state.activity === "string" ? state.activity : undefined;
         // Presence says which cut the peer is on; their drags are ghosts only over that cut's timeline.
         const on = e.branchId;
         const peer = prev && prev.peer.actor === actor && !prev.peer.idle && prev.peer.activity === activity && prev.peer.cutId === on ? prev.peer : { actor, cutId: on, idle: false, ...(activity ? { activity } : {}) };
-        const g = (state.ghosts ?? []).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(x.label ? { label: x.label } : {}) }));
+        // Ghosts are the teammate's own data, relayed as sent: only well-formed ones are drawn (UI audit P1-1).
+        const g = (Array.isArray(state.ghosts) ? state.ghosts : []).filter((x) => x && typeof x.item === "string" && typeof x.track === "string" && Number.isFinite(x.start) && Number.isFinite(x.end)).map((x) => ({ actorKey: key, itemId: x.item, trackId: x.track, start: x.start, end: x.end, ...(typeof x.label === "string" && x.label ? { label: x.label } : {}) }));
         peerMap.set(key, { peer, seen: clock(), ghosts: g, on });
         if (peer !== prev?.peer) publishPeers();
         if ((on === cutId && g.length) || (prev?.on === cutId && prev.ghosts.length)) publishGhosts();

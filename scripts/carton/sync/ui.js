@@ -38,7 +38,7 @@ function shownPeers(sent) {
 function Peers({ peers: sent }) {
   const peers = shownPeers(sent);
   if (!peers?.length) return h("p", { className: "text-xs text-muted-foreground" }, "Nobody else is here right now.");
-  return h("ul", { className: "flex flex-col gap-1.5" }, peers.map((p) => h("li", { key: p.actor.id, className: "flex items-center gap-2 text-sm", style: { opacity: p.idle ? 0.55 : 1 } },
+  return h("ul", { className: "flex flex-col gap-1.5" }, peers.map((p) => h("li", { key: p.actor.key, className: "flex items-center gap-2 text-sm", style: { opacity: p.idle ? 0.55 : 1 } },
     h("span", { className: "carton-avatar", style: { ["--carton-actor"]: actorColor(p.actor, () => undefined), width: 22, height: 22, fontSize: 9 } }, h("span", { className: "carton-avatar-initials" }, initials(p.actor.name ?? p.actor.id))),
     h("span", null, p.actor.name ?? p.actor.id),
     p.activity ? h("span", { className: "text-xs text-muted-foreground" }, p.activity) : null,
