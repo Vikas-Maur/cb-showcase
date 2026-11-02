@@ -1,8 +1,8 @@
 // Builds site/cost/data.json, the one file the calculator page loads: the lab's measurements (measured.json, schema 1),
 // an independent verifier's verdicts on them (verified.json, optional) and Cloudflare's prices (prices.json), checked.
 //
-//   node site/cost/build-data.mjs <measured.json> [prices.json] [--verified <verified.json>] [--out <data.json>]
-//   (from packages/server-cloudflare)
+//   node site/cost/build-data.mjs <measured.json> [prices.json] [--verified <verified.json>]
+//     [--proxy-verified <cf-verify2 verified.json>] [--out <data.json>]                (from packages/server-cloudflare)
 //
 // Status of each input the page shows:
 // - Verified: the verifier confirmed it (by re-running, or by recomputing it from the lab's records), or revised it;
@@ -27,6 +27,7 @@ const flag = (name) => {
 };
 const out = flag("--out") ?? join(here, "data.json");
 const verifiedPath = flag("--verified");
+const proxyVerifiedPath = flag("--proxy-verified");
 const [measuredPath, pricesPath = join(here, "prices.json")] = args;
 if (!measuredPath) {
   console.error("usage: node build-data.mjs <measured.json> [prices.json] [--verified verified.json] [--out data.json]");
@@ -55,6 +56,8 @@ const strList = (x) => (Array.isArray(x) ? x.filter((r) => typeof r === "string"
 const measured = load(measuredPath);
 const prices = load(pricesPath);
 const verified = verifiedPath ? load(verifiedPath) : null;
+const proxyVerified = proxyVerifiedPath ? load(proxyVerifiedPath) : null;
+let proxyCheck = null;
 
 // ---- measured.json
 if (!isObj(measured)) fail("measured.json is not an object");
@@ -122,6 +125,75 @@ for (const [key, v] of Object.entries(measured.inputs)) {
     } else entry.status = "measured"; // not-verified
   } else if (status === "estimated") warn(`input ${key}: the file marks it estimated; it drives the bill and the page counts it as an estimate`);
   inputs[key] = entry;
+}
+
+// ---- the preview path, from its own re-check (--proxy-verified: cf-verify2's verified.json, CF-VERIFY-PROXY.md).
+// Both paths were measured on one 80 s clip (40 segments and the init). Per-stream costs are split from per-segment
+// ones by the request structure the re-check gives (e.g. before: 418 Worker requests a stream = 10 a segment + 18;
+// optimized: 4 Class B a stream). Confirmed and revised values are Verified (a revised one keeps the claim as `was`);
+// the release batch size's values (4 parts / 2 MiB) are the verifier's own runs, not re-checked by another: Measured.
+if (proxyVerified) {
+  const PM = proxyVerified.metrics;
+  if (!isObj(PM)) fail("proxy verified.json has no `metrics` object");
+  const SEGS = 40; // the clip's segments (meta.clip)
+  const CPU = isObj(PM["cpu.perRequestMs"]) ? PM["cpu.perRequestMs"] : {};
+  const metric = (name) => {
+    const m = PM[name]?.good;
+    if (!isObj(m)) fail(`proxy verified.json: metrics["${name}"].good is missing`);
+    return m;
+  };
+  const statusOf = (m) => (m.verdict === "confirmed" || m.verdict === "revised" || m.verdict === "confirmed-from-data" ? "verified" : "measured");
+  const by = "the preview-path re-check (cf-verify2, CF-VERIFY-PROXY.md)";
+  const put = (key, value, m, how, extra = {}) => {
+    if (!isNum(value)) fail(`proxy verified.json: no number for ${key}`);
+    inputs[key] = { value: Math.round(value * 1e6) / 1e6, unit: extra.unit ?? "", status: extra.status ?? statusOf(m), source: "proxy-check", n: extra.n ?? null, min: extra.min ?? null, max: extra.max ?? null, runs: [], how, verdict: extra.status === "measured" ? null : m.verdict ?? null, ...(extra.was !== undefined ? { was: extra.was } : {}), check: { value, n: extra.n ?? null, min: extra.min ?? null, max: extra.max ?? null, note: str(m.note ?? m.basis, 1500) } };
+  };
+  const wr = metric("publish.workerRequestsPerSegment");
+  const ca = metric("publish.r2ClassAPerSegment");
+  const cb = metric("publish.r2ClassBPerSegment");
+  const cap = metric("publish.writeCapDoRequestsPerSegment");
+  const cpuP = metric("publish.workerCpuMsPerSegment");
+  const vr = metric("play.workerRequestsPerMiB");
+  const vb = metric("play.r2ClassBPerMiB");
+  const cpuV = metric("play.workerCpuMsPerMiB");
+  // before: part by part
+  const beforeReq = wr.before * SEGS; // 418: 10 a segment + 18 a stream
+  put("pvSegWorkerReq", 10, wr, `Before the fix: ${wr.before} Worker requests a segment on the 80 s clip, exact (${beforeReq} a stream: 10 a segment, signs and signed requests for 3 objects and 2 checks, plus 18 a stream). By ${by}.`, { unit: "Worker requests per segment" });
+  put("pvStreamWorkerReq", beforeReq - 10 * SEGS, wr, `Before the fix: the stream's own requests (pointer, claim, init, end), ${beforeReq} − 10 × ${SEGS}. By ${by}.`, { unit: "Worker requests per stream" });
+  const beforeB = cb.before * SEGS; // 169: 4 a part + end + pointer
+  put("pvSegClassB", 4, cb, `Before the fix: ${beforeB} Class B a stream by the code path (2 heads, the damage check and the entry's create-only head per part, plus the end's and 4 for the pointer): 4 a segment + ${beforeB - 4 * SEGS} a stream. Revised from the claimed ${cb.claimed?.before} a segment (R2 analytics sampling). By ${by}.`, { unit: "Class B per segment", was: cb.claimed?.before });
+  put("pvStreamClassB", beforeB - 4 * SEGS, cb, `Before the fix: the stream's own Class B (the init part, the end, the pointer). By ${by}.`, { unit: "Class B per stream" });
+  const writes = ca.before * SEGS; // 125: 3 a part + end + pointer
+  put("pubSegClassA", 3, ca, `Both paths write the same objects: ${writes} PutObject a stream (manifest, bytes and list entry per part, the end, the pointer) = 3 a segment + ${writes - 3 * SEGS} a stream. Confirmed by ${by}.`, { unit: "Class A per segment" });
+  put("pubStreamClassA", writes - 3 * SEGS, ca, `The stream's own writes (the init part, the end, the pointer). Confirmed by ${by}.`, { unit: "Class A per stream" });
+  const beforeCap = cap.before * SEGS;
+  put("pvSegCapReserves", 3, cap, `Before the fix, with the daily write cap on: one reserve per write, ${beforeCap} a stream = 3 a segment + ${beforeCap - 3 * SEGS} a stream (exact; GraphQL unsampled). By ${by}.`, { unit: "write-cap reserves per segment" });
+  put("pvStreamCapReserves", beforeCap - 3 * SEGS, cap, `Before the fix: the stream's own reserves. By ${by}.`, { unit: "write-cap reserves per stream" });
+  put("pvSegCpuMs", cpuP.before, cpuP, `Before the fix: Worker CPU per segment from Cloudflare's own CPU sums (GraphQL), 5 runs; the stream's own requests are spread over its 40 segments. Revised from the claimed ${cpuP.claimed?.before} (wrangler tail rounds each request down to whole ms). By ${by}.`, { unit: "Worker CPU ms per segment", was: cpuP.claimed?.before, n: 5, min: cpuP.beforeRange?.[0], max: cpuP.beforeRange?.[1] });
+  put("pvViewWorkerReqPerMiB", vr.before, vr, `Before the fix: a sign and a signed GET for each of a segment's 3 objects, exact: 250 requests for the 25.33 MiB stream. By ${by}.`, { unit: "Worker requests per MiB played" });
+  put("pvViewClassBPerMiB", vb.before, vb, `Before the fix: each signed GET is a head and a get: 249 Class B for the stream by the code path, checked against pooled analytics. By ${by}.`, { unit: "Class B per MiB played" });
+  put("pvViewCpuMsPerMiB", cpuV.before, cpuV, `Before the fix: Worker CPU per MiB played (GraphQL), 5 runs. Revised from the claimed ${cpuV.claimed?.before}. By ${by}.`, { unit: "Worker CPU ms per MiB played", was: cpuV.claimed?.before, n: 5, min: cpuV.beforeRange?.[0], max: cpuV.beforeRange?.[1] });
+  // optimized: the request structure is confirmed at 8 parts / 4 MiB; the release's 4 parts / 2 MiB was measured by the verifier
+  const appends8 = cap.after * SEGS - 1; // 10 reserves a run = 9 appends + the pointer
+  put("pvoStreamWorkerReq", wr.after * SEGS - appends8, wr, `Optimized: the stream's setup (pointer check, claim, read back: 3 signs and 3 signed requests) and one dedup probe: ${wr.after * SEGS} requests at 8 parts = ${appends8} appends + this. Confirmed exact by ${by}.`, { unit: "Worker requests per stream" });
+  put("pvoStreamCapReserves", 1, cap, `Optimized, with the daily write cap on: one reserve per append, plus 1 a stream (${cap.after * SEGS} = ${appends8} appends + 1). Confirmed exact by ${by}.`, { unit: "write-cap reserves per stream" });
+  put("pvoStreamClassB", cb.after * SEGS, cb, `Optimized: 4 Class B a stream (pointer GET, the pointer's create-only head, pointer read-back, one dedup head), fixed per stream. Revised from the claimed ${cb.claimed?.after} a segment. By ${by}.`, { unit: "Class B per stream", was: cb.claimed?.after !== undefined ? cb.claimed.after * SEGS : undefined });
+  const appendsSmall = cap.afterSmall * SEGS - 1; // 16 reserves = 15 appends + 1
+  put("pvoAppendsPerSeg", appendsSmall / SEGS, cap, `Optimized at the release's batches (4 parts / 2 MiB): ${appendsSmall} appends for the clip's 41 parts of 0.62 MiB (bytes decide: 3 parts fit 2 MiB), exact, 2 runs by the verifier (not re-checked by another). The model scales it with the segment's size.`, { unit: "appends per segment", status: "measured", n: 2 });
+  put("pvoSegCpuMs", cpuP.afterSmall, cpuP, `Optimized at the release's batches: Worker CPU per segment (GraphQL), the verifier's 2 runs on the final build (not re-checked by another). The 8-part build read ${cpuP.after}–${cpuP.afterFinalBuild}.`, { unit: "Worker CPU ms per segment", status: "measured", n: 2, min: cpuP.afterSmallRange?.[0], max: cpuP.afterSmallRange?.[1] });
+  put("pvoViewWorkerReqPerMiB", vr.afterSmall, vr, `Optimized at the release's 2 MiB reads: ${Math.round(vr.afterSmall * 25.33)} reads for the 25.33 MiB stream, exact, the verifier's 2 runs (8 parts / 4 MiB, confirmed: ${vr.after}).`, { unit: "Worker requests per MiB played", status: "measured", n: 2 });
+  put("pvoViewClassBPerMiB", vb.afterSmall, vb, `Optimized at 2 MiB reads: a GET of each segment's entry and bytes, plus the reads' edge GETs: 100 Class B for the stream by the code path, the verifier's 2 runs (4 MiB reads, confirmed: ${vb.after}).`, { unit: "Class B per MiB played", status: "measured", n: 2 });
+  put("pvoViewCpuMsPerMiB", cpuV.afterSmall, cpuV, `Optimized at 2 MiB reads: Worker CPU per MiB played (GraphQL), the verifier's 2 runs (4 MiB reads: ${cpuV.after}, revised).`, { unit: "Worker CPU ms per MiB played", status: "measured", n: 2, min: cpuV.afterSmallRange?.[0], max: cpuV.afterSmallRange?.[1] });
+  const ap = CPU.append?.finalBuild_4parts2MiB;
+  const rd = CPU.read?.finalBuild_2MiB;
+  if (!isObj(ap) || !isObj(rd)) fail("proxy verified.json: cpu.perRequestMs for 4 parts / 2 MiB is missing");
+  const cpuMeta = { verdict: null, basis: CPU.append?.basis };
+  put("pvoAppendCpuMsMean", ap.mean, cpuMeta, `Optimized: CPU of one append at the release's batches, exact per request (GraphQL), ${ap.n} appends: p50 ${ap.p50}, p90 ${ap.p90}, max ${ap.max} ms; ${ap.over10ms} of ${ap.n} over 10 ms.`, { unit: "Worker CPU ms per append (mean)", status: "measured", n: ap.n, min: null, max: ap.max });
+  put("pvoAppendCpuMsMax", ap.max, cpuMeta, `Optimized: the slowest of ${ap.n} appends at the release's batches.`, { unit: "Worker CPU ms (max)", status: "measured", n: ap.n });
+  put("pvoAppendOver10Share", ap.over10ms / ap.n, cpuMeta, `Optimized: the share of appends over 10 ms of CPU (${ap.over10ms} of ${ap.n}).`, { unit: "share of appends", status: "measured", n: ap.n });
+  put("pvoReadCpuMsMean", rd.mean, cpuMeta, `Optimized: CPU of one 2 MiB read, exact per request, ${rd.n} reads: p50 ${rd.p50}, max ${rd.max} ms; none over 10 ms.`, { unit: "Worker CPU ms per read (mean)", status: "measured", n: rd.n, max: rd.max });
+  put("pvoReadCpuMsMax", rd.max, cpuMeta, `Optimized: the slowest of ${rd.n} 2 MiB reads.`, { unit: "Worker CPU ms (max)", status: "measured", n: rd.n });
+  proxyCheck = { by: str(proxyVerified.meta?.verifier, 60), at: str(proxyVerified.meta?.at, 40), subject: str(proxyVerified.meta?.subject, 300), ap, rd, burst2: CPU.read?.["burst_2MiB_120back-to-back"], failures: CPU.exceededCpuOr1102, one: CPU.append?.finalBuild_1part };
 }
 
 // The lab's gbDoReq is all the optional daily write cap's counter (the verifier), which a default deployment doesn't
@@ -199,6 +271,54 @@ for (const [i, s] of (measured.speeds ?? []).entries()) {
   }
   speeds.push(row);
 }
+// the preview path's speeds, before and after the fix, from its re-check (good and 4G; the release's batches on good)
+if (proxyVerified?.metrics) {
+  const PM = proxyVerified.metrics;
+  const median = (xs) => {
+    const a = [...xs].sort((x, y) => x - y);
+    return a.length % 2 ? a[a.length >> 1] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2;
+  };
+  const ROWS = [
+    ["pvpublish", "publish.speedXRealTime", "x", "publish the preview, as a multiple of real time (higher is faster)"],
+    ["pvplay", "play.speedXRealTime", "x", "fetch the whole finished preview, as a multiple of real time (higher is faster)"],
+    ["pvfirstseg", "play.firstMediaSegmentMs", "ms", "time to the first video segment of a finished preview, from play start"],
+    ["pvlive", "live.firstSegmentMsFromShareStart", "ms", "a live viewer's first segment, from the share's start"],
+  ];
+  const statusOf = (m) => (m.verdict === "confirmed" || m.verdict === "revised" ? "verified" : "measured");
+  for (const [kind, name, unit, what] of ROWS)
+    for (const net of ["good", "4g"]) {
+      const m = PM[name]?.[net];
+      if (!isObj(m)) continue;
+      const variants = [
+        ["before", m.before, m.beforeRuns ?? null, m.n?.before, statusOf(m), "before the fix (part by part)"],
+        ["release", m.afterSmallRuns ? median(m.afterSmallRuns) : m.afterSmall, m.afterSmallRuns ?? null, m.afterSmallRuns?.length, "measured", "the fix, release batches (4 parts / 2 MiB); the verifier's own runs"],
+        ["8parts", m.after, m.afterRuns ?? null, m.n?.after, statusOf(m), "the fix, the first test's batches (8 parts / 4 MiB)"],
+      ];
+      for (const [tag, value, runs, n, status, words] of variants) {
+        if (!isNum(value)) continue;
+        const count = Array.isArray(runs) ? runs.length : isNum(n) ? n : 1;
+        const claimed = m.claimed?.[tag === "8parts" ? "after" : tag];
+        speeds.push({
+          id: `${kind}-${net}-${tag}`,
+          what,
+          network: net,
+          storage: "r2",
+          parties: null,
+          sizeMB: null,
+          metric: unit === "x" ? "realtime" : "time",
+          p50: value,
+          p90: null,
+          p99: null,
+          unit,
+          runs: count,
+          status,
+          note: `${words}${Array.isArray(runs) ? `; per run: ${runs.join(", ")}` : ""}${m.verdict === "revised" && tag !== "release" && isNum(claimed) && claimed !== value ? `; revised from the claimed ${claimed}` : ""}`,
+          verdict: status === "verified" ? (m.verdict === "revised" ? "revised" : "confirmed") : null,
+          check: { p50: value, p90: null, p99: null, runs: count, note: str(m.basis, 600) },
+        });
+      }
+    }
+}
 if (verified?.speeds) for (const id of Object.keys(verified.speeds)) if (!speeds.some((s) => s.id === id)) warn(`verified.json: speed ${id} isn't in measured.json`);
 
 // ---- limits: the lab's, then Cloudflare's documented ones the lab's file doesn't carry (prices.json)
@@ -214,6 +334,19 @@ for (const [i, l] of [...(measured.limits ?? []).entries()]) {
 for (const l of Array.isArray(prices.documentedLimits) ? prices.documentedLimits : [])
   if (isObj(l) && typeof l.id === "string" && !limits.some((x) => x.id === l.id))
     limits.push({ id: l.id, status: "documented", value: str(l.value, 400), observed: str(l.observed, 1200), carton: str(l.carton, 1200), runs: [] });
+
+// the preview path against Workers Free's 10 ms of CPU per request, from its re-check
+if (proxyCheck) {
+  const { ap, rd, burst2, failures, one } = proxyCheck;
+  limits.unshift({
+    id: "worker-cpu-10ms-preview",
+    status: "measured",
+    value: "10 ms of CPU per request on Workers Free (on Paid, 5 minutes: it doesn't apply in practice)",
+    observed: `With the release's batches (4 parts / 2 MiB), an append averages ${ap.mean} ms and ${ap.over10ms} of ${ap.n} went over 10 ms (p90 ${ap.p90}, max ${ap.max} ms). 2 MiB reads stayed under it in the runs (max ${rd.max} ms${isObj(burst2) ? `; ${burst2.graphqlQuantiles?.max} ms at most in a burst of 120 back to back` : ""}). One-part appends stayed under in every case (max ${one?.range?.[1] ?? "7.3"} ms). No request failed (${failures?.count ?? 0} exceededCpu / 1102 on any lab Worker that day). But the Free plan does enforce it: on 2026-11-01 Cloudflare cut the lab's requests off at about 10 ms after bursts of slow part uploads.`,
+    carton: "An append Cloudflare cuts off is sent again in smaller batches, down to one part (confirmed from the code and a unit test; not yet against a real 1102). The tighter fix would stream each part to storage instead of buffering it, so larger batches fit. On Workers Paid the limit is 5 minutes a request.",
+    runs: [],
+  });
+}
 
 const networkProfiles = {};
 for (const [k, v] of Object.entries(measured.networkProfiles ?? {})) if (typeof v === "string") networkProfiles[k] = v.slice(0, 300);
@@ -236,6 +369,7 @@ const data = {
   built: new Date().toISOString(),
   measured: { generated: str(measured.generated, 40), source: isObj(measured.source) ? measured.source : {} },
   verified: verified ? { by: str(verified.verifier, 60), at: str(verified.at, 40), commit: str(verified.checked?.commit, 60) } : null,
+  proxyCheck: proxyCheck ? { by: proxyCheck.by, at: proxyCheck.at, subject: proxyCheck.subject } : null,
   inputs,
   estimatedInputs: used.filter((k) => inputs[k].status === "estimated"),
   missingInputs: missing,

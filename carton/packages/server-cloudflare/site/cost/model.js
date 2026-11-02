@@ -37,6 +37,17 @@ const DO_MEMORY_GB = 0.128;
  * segment, so per-MiB playback costs scale with REF_SEGMENT_MIB / the segment's size.
  */
 export const REF_SEGMENT_MIB = 188.53 / 301;
+/**
+ * The preview-path re-check's clip (cf-verify2, CF-VERIFY-PROXY.md): 80 s of the app's 720p encode, 40 segments and
+ * the init, 26,561,665 bytes. Its per-segment and per-MiB inputs are at this part size (0.618 MiB).
+ */
+export const PV_REF_PART_MIB = 26_561_665 / 41 / (1024 * 1024);
+/** The release's batch limits for the optimized path (fix/cf-proxy-path-r): appends of at most 4 parts and 2 MiB. */
+export const PV_BATCH = Object.freeze({ parts: 4, mib: 2 });
+/** Of the optimized path's Class B per MiB played, the share that goes per segment (2 GETs of 41 parts' 100). */
+export const PVO_VIEW_B_PER_SEGMENT_SHARE = 82 / 100;
+/** The preview path: Carton's batched uploads and reads (the fix, release batch size), or the part-by-part path before. */
+export const PREVIEW_PATHS = Object.freeze({ optimized: "Optimized (release)", before: "Before the fix" });
 /** Rows the room keeps before archiving older changes (server §18 default, ARCHIVE_KEEP). */
 export const ARCHIVE_KEEP = 10_000;
 /**
@@ -95,20 +106,42 @@ export const INPUT_DEFAULTS = Object.freeze({
   gbVaultGBs: 14.22,
   // the optional daily write cap (fix/cf-write-cap): its counter, per GB written and per blob write
   writeCapDoReqPerGB: 153.7,
-  writeCapReservesPerSegment: 3,
   writeCapRowsPerReserve: 1,
-  // preview segments published (the app's 2 s CMAF segments), per segment
-  segWorkerReq: 10.06,
-  segWorkerCpuMs: 18.1,
-  segR2ClassA: 2.977,
-  segR2ClassB: 4.577,
+  // the preview path (see PV_REF_PART_MIB): per segment published, per stream (one a clip shared), per MiB played.
+  // Both paths write the same objects: 3 per part, plus the end and the pointer.
+  pubSegClassA: 3,
+  pubStreamClassA: 5,
+  // before the fix: every object one signed request, part by part
+  pvSegWorkerReq: 10,
+  pvStreamWorkerReq: 18,
+  pvSegClassB: 4,
+  pvStreamClassB: 9,
+  pvSegCapReserves: 3,
+  pvStreamCapReserves: 5,
+  pvSegCpuMs: 23.78,
+  pvViewWorkerReqPerMiB: 9.87,
+  pvViewClassBPerMiB: 9.83,
+  pvViewCpuMsPerMiB: 13.02,
+  // optimized (release): batched appends of at most 4 parts / 2 MiB, batched 2 MiB reads
+  pvoAppendsPerSeg: 0.375,
+  pvoStreamWorkerReq: 7,
+  pvoStreamClassB: 4,
+  pvoStreamCapReserves: 1,
+  pvoSegCpuMs: 4.01,
+  pvoViewWorkerReqPerMiB: 0.59,
+  pvoViewClassBPerMiB: 3.95,
+  pvoViewCpuMsPerMiB: 3.38,
+  pvoAppendCpuMsMean: 9.76,
+  pvoAppendCpuMsMax: 20.55,
+  pvoAppendOver10Share: 0.4,
+  pvoReadCpuMsMean: 5.7,
+  pvoReadCpuMsMax: 9.15,
+  // without R2 (the vault): not measured
   segVaultDoReq: 6,
+  pvoSegVaultDoReq: 3,
   segVaultRowsWritten: 6,
-  // playback, per MiB played at REF_SEGMENT_MIB segments
-  viewWorkerReqPerMiB: 9.601,
-  viewClassBPerMiB: 10.05,
-  viewWorkerCpuMsPerMiB: 13.2,
   viewVaultDoReqPerSegment: 3,
+  pvoViewVaultDoReqPerSegment: 2,
   viewVaultRowsReadPerSegment: 6,
   viewVaultGBsPerMiB: 0.01,
 });
@@ -123,9 +156,10 @@ export const INPUT_NOTES = Object.freeze({
   replicaRowsWritten: "From the verifier's fit over 81 edit runs (rows = 64.5 + 2 × parties + 1.025 × edits, no residual): a person's first push to a project writes 2 rows once. Not a separate input in the lab's file.",
   upkeepAlarmPerHour: "The room's upkeep (archiving old changes, sweeping expired envelopes) is due an hour after an edit or a hello: at most one an editing hour per project (room.ts). Priced like a presence-check alarm. Not measured.",
   writeCapDoReqPerGB: "Only with the optional daily write cap on: one request to its counter per blob write. The lab's measured counter traffic (153.7 per GB, an upper bound: other runs shared the counter); the code path gives about 122.",
-  writeCapReservesPerSegment: "Only with the daily write cap on: each preview segment makes 3 blob writes (bytes, manifest, list entry), each reserved on the counter (write-cap.ts). From the code.",
   writeCapRowsPerReserve: "Only with the daily write cap on: each reserve writes a row in the counter's room (the verifier, from write-cap.ts); no lab input carries it.",
-  segVaultDoReq: "Without R2, a segment's 3 writes, the damage check and 2 heads go to the vault: 6 vault requests (the lab's request structure per segment, measured on R2). Not measured on the vault.",
+  segVaultDoReq: "Before the fix, without R2: a segment's 3 writes, the damage check and 2 heads go to the vault: 6 vault requests (the lab's request structure per segment, measured on R2). Not measured on the vault.",
+  pvoSegVaultDoReq: "Optimized, without R2: a batched append writes each part's 3 objects to the vault: about 3 vault requests a segment. Not measured on the vault.",
+  pvoViewVaultDoReqPerSegment: "Optimized, without R2: a batched read gets each segment's list entry and bytes: 2 vault requests a segment. Not measured on the vault.",
   segVaultRowsWritten: "Without R2, a segment is 3 objects (bytes, manifest, list entry), each a record row and a 1 MiB chunk row (blob-do.ts); deleting it later costs the same. Not measured on the vault.",
   viewVaultDoReqPerSegment: "Without R2, a segment played is 3 signed reads (list entry, manifest, bytes), each one request to the vault (the lab's read structure per segment, measured on R2). Not measured on the vault.",
   viewVaultRowsReadPerSegment: "Without R2, each of a segment's 3 objects reads its record row and its 1 MiB chunk row (blob-do.ts); a segment over 1 MiB reads a chunk row per MiB. Not measured on the vault.",
@@ -156,6 +190,8 @@ export const DEFAULT_SETTINGS = Object.freeze({
   storage: "r2",
   plan: "free",
   segmentSeconds: 2,
+  clipMinutes: 2,
+  previewPath: "optimized",
   writeCap: false,
 });
 
@@ -227,6 +263,8 @@ export function normalizeSettings(sIn) {
     storage: s.storage === "vault" ? "vault" : s.storage === "r2" ? "r2" : d.storage,
     plan: s.plan === "paid" ? "paid" : s.plan === "free" ? "free" : d.plan,
     segmentSeconds: within(s.segmentSeconds, d.segmentSeconds, 0.5, 3600),
+    clipMinutes: within(s.clipMinutes, d.clipMinutes, 0.1, 1440),
+    previewPath: s.previewPath === "before" ? "before" : s.previewPath === "optimized" ? "optimized" : d.previewPath,
     writeCap: typeof s.writeCap === "boolean" ? s.writeCap : d.writeCap,
   };
 }
@@ -307,22 +345,35 @@ export function usage(settingsIn, inputsIn) {
   // rows a segment takes in the vault: its three objects (bytes, manifest, list entry), each a record row and its 1 MiB
   // chunk rows; the input counts one chunk for the bytes
   const vaultSegRows = m.segVaultRowsWritten - 1 + Math.ceil(segMiB);
+  // one stream per clip shared: its fixed costs (setup, pointer, end) come once per stream
+  const streams = (footageHours * 60) / s.clipMinutes;
+  const optimized = s.previewPath === "optimized";
+  // optimized appends carry up to PV_BATCH.parts parts and PV_BATCH.mib MiB: bytes decide at the measured part size
+  // (0.375 a segment at 0.618 MiB), parts at small ones, and a part over the byte limit goes alone
+  const appendsPerSeg = segMiB > PV_BATCH.mib ? 1 : Math.max(1 / PV_BATCH.parts, (m.pvoAppendsPerSeg * segMiB) / PV_REF_PART_MIB);
   const g = act.segments;
-  g.workersReq = segments * m.segWorkerReq;
-  g.workersCpuMs = segments * m.segWorkerCpuMs;
+  if (optimized) {
+    g.workersReq = segments * appendsPerSeg + streams * m.pvoStreamWorkerReq;
+    g.workersCpuMs = segments * m.pvoSegCpuMs;
+  } else {
+    g.workersReq = segments * m.pvSegWorkerReq + streams * m.pvStreamWorkerReq;
+    g.workersCpuMs = segments * m.pvSegCpuMs;
+  }
   if (vault) {
-    g.doReq = segments * m.segVaultDoReq;
+    g.doReq = segments * (optimized ? m.pvoSegVaultDoReq : m.segVaultDoReq);
     // the vault keeps 1 MiB per row: a segment's bytes take ceil(size) rows; the input counts one
     g.doRowsWritten = segments * vaultSegRows;
     g.doGBs = proxyGB * m.gbVaultGBs;
   } else {
-    g.r2ClassA = segments * m.segR2ClassA;
-    g.r2ClassB = segments * m.segR2ClassB;
+    g.r2ClassA = segments * m.pubSegClassA + streams * m.pubStreamClassA;
+    g.r2ClassB = optimized ? streams * m.pvoStreamClassB : segments * m.pvSegClassB + streams * m.pvStreamClassB;
   }
-  // the optional daily write cap: a reserve on its counter per blob write, each a request and a row
+  // the optional daily write cap: a reserve on its counter per blob write (before) or per append (optimized), each a
+  // request and a row
   if (s.writeCap) {
-    g.doReq += segments * m.writeCapReservesPerSegment;
-    g.doRowsWritten += segments * m.writeCapReservesPerSegment * m.writeCapRowsPerReserve;
+    const reserves = optimized ? segments * appendsPerSeg + streams * m.pvoStreamCapReserves : segments * m.pvSegCapReserves + streams * m.pvStreamCapReserves;
+    g.doReq += reserves;
+    g.doRowsWritten += reserves * m.writeCapRowsPerReserve;
   }
 
   // camera originals: only when shared; resumable multipart uploads in 8 MiB parts
@@ -357,20 +408,27 @@ export function usage(settingsIn, inputsIn) {
     st.doRowsWritten = s.retentionMonths > 0 ? segments * vaultSegRows + Math.ceil((originalsGB * 1e9) / MIB) : 0;
   } else st.r2StorageGB = storedGB;
 
-  // playback: each person plays `viewShare` of every teammate's proxies once (played media is cached on disk); reads
-  // go per segment, so the per-MiB inputs (measured at REF_SEGMENT_MIB segments) scale with the segment's size
+  // playback: each person plays `viewShare` of every teammate's proxies once (played media is cached on disk). Before
+  // the fix reads go per segment, so its per-MiB inputs (measured at PV_REF_PART_MIB parts) scale with the segment's
+  // size; optimized reads go per 2 MiB, and only their per-segment GETs scale
   const viewedMiB = (s.people * Math.max(0, s.people - 1) * s.footageHoursPerMonth * proxyBytesPerHour * s.viewShare) / MIB;
-  const perSeg = REF_SEGMENT_MIB / Math.max(segMiB, 1e-9);
+  const perSeg = PV_REF_PART_MIB / Math.max(segMiB, 1e-9);
   const segmentsViewed = viewedMiB / Math.max(segMiB, 1e-9);
   const v = act.playback;
-  v.workersReq = viewedMiB * m.viewWorkerReqPerMiB * perSeg;
-  v.workersCpuMs = viewedMiB * m.viewWorkerCpuMsPerMiB * perSeg;
+  if (optimized) {
+    v.workersReq = viewedMiB * m.pvoViewWorkerReqPerMiB;
+    v.workersCpuMs = viewedMiB * m.pvoViewCpuMsPerMiB;
+  } else {
+    v.workersReq = viewedMiB * m.pvViewWorkerReqPerMiB * perSeg;
+    v.workersCpuMs = viewedMiB * m.pvViewCpuMsPerMiB * perSeg;
+  }
   if (vault) {
-    v.doReq = segmentsViewed * m.viewVaultDoReqPerSegment;
+    v.doReq = segmentsViewed * (optimized ? m.pvoViewVaultDoReqPerSegment : m.viewVaultDoReqPerSegment);
     // each object read is its record row and its 1 MiB chunk rows: the input counts one chunk for the bytes
     v.doRowsRead = segmentsViewed * (m.viewVaultRowsReadPerSegment - 1 + Math.ceil(segMiB));
     v.doGBs = viewedMiB * m.viewVaultGBsPerMiB;
-  } else v.r2ClassB = viewedMiB * m.viewClassBPerMiB * perSeg;
+  } else if (optimized) v.r2ClassB = viewedMiB * m.pvoViewClassBPerMiB * (PVO_VIEW_B_PER_SEGMENT_SHARE * perSeg + (1 - PVO_VIEW_B_PER_SEGMENT_SHARE));
+  else v.r2ClassB = viewedMiB * m.pvViewClassBPerMiB * perSeg;
 
   // duration is wall-clock time, shared by everything an object does at once: the room (edits, presence, connections)
   // and the vault (media) are each awake at most the whole month, 128 MB
@@ -392,7 +450,7 @@ export function usage(settingsIn, inputsIn) {
     activities: act,
     totals,
     derived: {
-      edits, presenceMsgs, presenceAlarms, connects, idleHours, upkeepAlarms, footageHours, proxyGB, segments, segMiB, originalsGB, storedGB, viewedMiB, editHours,
+      edits, presenceMsgs, presenceAlarms, connects, idleHours, upkeepAlarms, footageHours, proxyGB, segments, segMiB, streams, appendsPerSeg, originalsGB, storedGB, viewedMiB, editHours,
       // the largest single Durable Object: a project's vault (its media) or its room (recent changes)
       roomGB: e.doStorageGB, vaultGB: vault ? storedGB : 0, roomCapped, vaultCapped,
     },
@@ -513,17 +571,29 @@ export function freeCheck(settingsIn, inputsIn, prices) {
   // CPU per request: each kind's total CPU over its requests, an average (the limit applies to every single request)
   const cpu = [
     { what: "a connect", ms: m.connWorkerReq ? m.connWorkerCpuMs / m.connWorkerReq : 0, used: u.totals.workersReq > 0 && u.derived.connects > 0 },
-    { what: "a preview-segment request", ms: m.segWorkerReq ? m.segWorkerCpuMs / m.segWorkerReq : 0, used: u.derived.segments > 0 },
+    // the preview path: before the fix, each segment's requests share its CPU; optimized, the re-check measured each
+    // append and read, and the largest matters as much as the average
+    ...(s.previewPath === "optimized"
+      ? [
+          { what: "a preview append", ms: m.pvoAppendCpuMsMean, max: m.pvoAppendCpuMsMax, overShare: m.pvoAppendOver10Share, used: u.derived.segments > 0 },
+          { what: "a preview read", ms: m.pvoReadCpuMsMean, max: m.pvoReadCpuMsMax, used: u.derived.viewedMiB > 0 },
+        ]
+      : [
+          { what: "a preview-segment request", ms: m.pvSegWorkerReq ? m.pvSegCpuMs / m.pvSegWorkerReq : 0, used: u.derived.segments > 0 },
+          { what: "a playback read", ms: m.pvViewWorkerReqPerMiB ? m.pvViewCpuMsPerMiB / m.pvViewWorkerReqPerMiB : 0, used: u.derived.viewedMiB > 0 },
+        ]),
     { what: "an upload part", ms: s.storage === "vault" ? (m.gbVaultWorkerReq ? m.gbVaultWorkerCpuMs / m.gbVaultWorkerReq : 0) : m.gbWorkerReq ? m.gbWorkerCpuMs / m.gbWorkerReq : 0, used: u.derived.originalsGB > 0 },
-    { what: "a playback read", ms: m.viewWorkerReqPerMiB ? m.viewWorkerCpuMsPerMiB / m.viewWorkerReqPerMiB : 0, used: u.derived.viewedMiB > 0 },
   ].filter((x) => x.used);
   const cpuLimit = F.workersCpuMsPerRequest ?? 10;
   const cpuWorst = cpu.reduce((w, x) => (x.ms > (w?.ms ?? -1) ? x : w), null);
   const cpuOver = !!cpuWorst && cpuWorst.ms > cpuLimit;
+  // under the limit on average, but some requests of this kind go over it: Cloudflare tolerates bursts, and cut the
+  // lab's requests off at about 10 ms after sustained ones (2026-11-01); the client then retries in smaller batches
+  const cpuRisk = cpu.find((x) => x.max !== undefined && x.max > cpuLimit) ?? null;
   const sorted = [...checks].sort((a, b) => a.breaksAt - b.breaksAt);
   const first = sorted[0].breaksAt === Infinity ? null : sorted[0];
   const fits = !cpuOver && checks.every((c) => !c.over);
-  return { fits, first, checks, sorted, cpu: { limit: cpuLimit, worst: cpuWorst, over: cpuOver, basis: "average" }, maxTeams: cpuOver ? 0 : first ? first.maxTeams : Infinity };
+  return { fits, first, checks, sorted, cpu: { limit: cpuLimit, worst: cpuWorst, over: cpuOver, risk: cpuRisk, basis: "average" }, maxTeams: cpuOver ? 0 : first ? first.maxTeams : Infinity };
 }
 
 /** The biggest line (the plan fee included), and one way to lower it, priced by running the model again. */
@@ -570,10 +640,12 @@ function suggest(b, inputsIn, prices, fc) {
         if (s.storage === "vault") options.push({ text: "Keep media in R2 instead of the vault.", total: tryWith({ storage: "r2" }) });
         break;
       case "segments":
+        if (s.previewPath === "before") options.push({ text: "Use the optimized preview path (batched uploads and reads, in the release): far fewer requests per segment.", total: tryWith({ previewPath: "optimized" }) });
         options.push({ text: `Upload previews in ${longer} s segments instead of ${s.segmentSeconds} s: fewer writes, but a teammate waits a little longer for the first one.`, total: tryWith({ segmentSeconds: longer }) });
         if (s.storage === "vault") options.push({ text: "Keep media in R2 instead of the vault.", total: tryWith({ storage: "r2" }) });
         break;
       case "playback":
+        if (s.previewPath === "before") options.push({ text: "Use the optimized preview path (batched reads, in the release): far fewer requests per MiB played.", total: tryWith({ previewPath: "optimized" }) });
         if (s.previewMbps > PREVIEW_QUALITY["540p"]) options.push({ text: "Share previews at 540p (1 Mbit/s): fewer bytes and fewer reads.", total: tryWith({ previewMbps: PREVIEW_QUALITY["540p"] }) });
         options.push({ text: `Use ${longer} s preview segments: fewer, larger reads.`, total: tryWith({ segmentSeconds: longer }) });
         if (s.storage === "vault") options.push({ text: "Keep media in R2 instead of the vault.", total: tryWith({ storage: "r2" }) });

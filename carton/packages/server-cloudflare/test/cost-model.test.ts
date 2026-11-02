@@ -135,8 +135,13 @@ test("longer preview segments mean fewer storage writes and reads", () => {
   const base = M.usage({ ...M.PRESETS.team5.settings, segmentSeconds: 2 }, {});
   const longer = M.usage({ ...M.PRESETS.team5.settings, segmentSeconds: 6 }, {});
   close(base.derived.segments, 5 * 10 * 1800); // 5 people × 10 h × 1,800 two-second segments an hour
-  close(longer.activities.segments.r2ClassA, base.activities.segments.r2ClassA / 3);
-  close(longer.activities.playback.r2ClassB, base.activities.playback.r2ClassB / 3);
+  // 3 writes a segment, plus 5 a stream (streams don't change with the segment length)
+  const fixedA = base.derived.streams * 5;
+  close(longer.activities.segments.r2ClassA - fixedA, (base.activities.segments.r2ClassA - fixedA) / 3);
+  // before the fix, every read goes per segment
+  const b2 = M.usage({ ...M.PRESETS.team5.settings, previewPath: "before" }, {});
+  const b6 = M.usage({ ...M.PRESETS.team5.settings, previewPath: "before", segmentSeconds: 6 }, {});
+  close(b6.activities.playback.r2ClassB, b2.activities.playback.r2ClassB / 3);
   close(longer.totals.r2StorageGB, base.totals.r2StorageGB); // the same bytes stored
 });
 
@@ -145,8 +150,11 @@ test("playback: each person plays a share of every teammate's proxies; a solo ed
   // 5 people × 4 teammates × 10 h × 900 MB × 50% = 90 GB read
   const u = M.usage({ ...M.PRESETS.team5.settings, viewShare: 0.5 }, {});
   close((u.derived.viewedMiB * 1024 * 1024) / 1e9, 90);
-  // reads go per segment: the per-MiB input was measured with 0.626 MiB segments, so 0.477 MiB ones read more per MiB
-  close(u.activities.playback.r2ClassB, u.derived.viewedMiB * M.INPUT_DEFAULTS.viewClassBPerMiB * (M.REF_SEGMENT_MIB / u.derived.segMiB));
+  // optimized reads: 2 GETs a segment (82% of the measured Class B at 0.618 MiB parts, scaled to 0.477 MiB ones) and the
+  // reads' own (18%, per 2 MiB read)
+  const perSeg = M.PV_REF_PART_MIB / u.derived.segMiB;
+  close(u.activities.playback.r2ClassB, u.derived.viewedMiB * M.INPUT_DEFAULTS.pvoViewClassBPerMiB * (0.82 * perSeg + 0.18));
+  close(u.activities.playback.workersReq, u.derived.viewedMiB * 0.59);
 });
 
 test("connects, idle sessions and the room's alarms are their own line", () => {
@@ -160,7 +168,7 @@ test("connects, idle sessions and the room's alarms are their own line", () => {
 });
 
 test("missing, extra and malformed inputs and settings never throw; missing inputs fall back to the defaults", () => {
-  const weird = { editDoReq: "x", gbWorkerReq: { value: Number.NaN }, segR2ClassA: -3, someNewKey: { value: 9 }, presenceDoReq: { value: 2, status: "measured" } };
+  const weird = { editDoReq: "x", gbWorkerReq: { value: Number.NaN }, pubSegClassA: -3, someNewKey: { value: 9 }, presenceDoReq: { value: 2, status: "measured" } };
   const r = M.compute({ people: Number.NaN, teams: -4, storage: "floppy" as never, plan: undefined, dragShare: 7 } as never, weird, prices);
   assert.ok(Number.isFinite(r.total));
   assert.equal(r.settings.people, M.DEFAULT_SETTINGS.people);
@@ -170,7 +178,7 @@ test("missing, extra and malformed inputs and settings never throw; missing inpu
   const i = M.resolveInputs(weird);
   assert.equal(i.editDoReq, M.INPUT_DEFAULTS.editDoReq);
   assert.equal(i.gbWorkerReq, M.INPUT_DEFAULTS.gbWorkerReq);
-  assert.equal(i.segR2ClassA, M.INPUT_DEFAULTS.segR2ClassA);
+  assert.equal(i.pubSegClassA, M.INPUT_DEFAULTS.pubSegClassA); // a negative value is refused
   assert.equal(i.presenceDoReq, 2);
   assert.ok(!("someNewKey" in i));
   assert.doesNotThrow(() => M.curve({}, undefined, prices));
@@ -289,10 +297,53 @@ test("one boundary for 'fits': maxTeams, over and the curve agree, floating-poin
   assert.equal(M.freeCheck({ ...s, teams: 1_000_001 }, inputs, prices).fits, false);
 });
 
-test("CPU per request is an average of each kind of request", () => {
+test("CPU per request: an average for each kind; the preview's appends are flagged as a risk on Free", () => {
+  // optimized: the re-check measured each append (mean 9.76 ms, max 20.55, 40% over 10 ms): under on average, at risk
   const fc = M.freeCheck({ ...solo, shareOriginals: true }, {}, prices);
   assert.equal(fc.cpu.basis, "average");
-  close(fc.cpu.worst!.ms, 381.9 / 126.7); // the lab's CPU per GB over its requests per GB
+  assert.equal(fc.cpu.worst!.what, "a preview append");
+  close(fc.cpu.worst!.ms, 9.76);
+  assert.equal(fc.cpu.over, false);
+  assert.equal(fc.cpu.risk!.what, "a preview append");
+  close(fc.cpu.risk!.max!, 20.55);
+  assert.ok(fc.fits);
+  // before the fix: an upload part (the lab's CPU per GB over its requests per GB) is the most, no risk flagged
+  const b = M.freeCheck({ ...solo, shareOriginals: true, previewPath: "before" }, {}, prices);
+  close(b.cpu.worst!.ms, 381.9 / 126.7);
+  assert.equal(b.cpu.risk, null);
+});
+
+test("the preview path: hand-computed requests and R2 operations, optimized against before the fix", () => {
+  // team of 5: 5 × 10 h × 1,800 = 90,000 two-second segments a month, in 5 × 10 h × 60 / 2 min = 1,500 streams
+  const s: Partial<Settings> = { ...M.PRESETS.team5.settings, clipMinutes: 2 };
+  const opt = M.usage({ ...s, previewPath: "optimized" }, {});
+  const old = M.usage({ ...s, previewPath: "before" }, {});
+  close(opt.derived.segments, 90_000);
+  close(opt.derived.streams, 1_500);
+  // appends: 0.375 a segment at 0.618 MiB parts; 2 s at 2 Mbit/s is 0.477 MiB, so 0.375 × 0.477 / 0.618 (above 1/4)
+  const appends = (0.375 * opt.derived.segMiB) / M.PV_REF_PART_MIB;
+  close(opt.derived.appendsPerSeg, appends);
+  close(opt.activities.segments.workersReq, 90_000 * appends + 1_500 * 7);
+  close(old.activities.segments.workersReq, 90_000 * 10 + 1_500 * 18); // 927,000
+  close(opt.activities.segments.r2ClassB, 1_500 * 4); // 4 a stream
+  close(old.activities.segments.r2ClassB, 90_000 * 4 + 1_500 * 9);
+  close(opt.activities.segments.r2ClassA, 90_000 * 3 + 1_500 * 5); // the same writes on both paths
+  close(old.activities.segments.r2ClassA, opt.activities.segments.r2ClassA);
+  // shorter clips: more streams, more fixed costs
+  const short = M.usage({ ...s, clipMinutes: 1 }, {});
+  close(short.activities.segments.workersReq - opt.activities.segments.workersReq, 1_500 * 7);
+  // a segment over the 2 MiB batch goes alone: 1080p (5 Mbit/s) in 6 s segments is 3.6 MiB
+  assert.equal(M.usage({ ...s, previewMbps: 5, segmentSeconds: 6 }, {}).derived.appendsPerSeg, 1);
+  // the bill: the fix makes the team-of-5 day fit Workers Free with room; before it, Worker requests ran out
+  const free = M.freeCheck({ ...s, plan: "free" }, {}, prices);
+  const freeOld = M.freeCheck({ ...s, plan: "free", previewPath: "before" }, {}, prices);
+  assert.ok(free.fits && free.maxTeams > 10);
+  assert.equal(freeOld.checks.find((c) => c.key === "workersReq")!.maxTeams, 0);
+  // with the write cap: one reserve per append and 1 a stream (optimized), per write and 5 a stream (before)
+  const capOpt = M.usage({ ...s, writeCap: true }, {});
+  close(capOpt.activities.segments.doReq - opt.activities.segments.doReq, 90_000 * appends + 1_500 * 1);
+  const capOld = M.usage({ ...s, previewPath: "before", writeCap: true }, {});
+  close(capOld.activities.segments.doReq - old.activities.segments.doReq, 90_000 * 3 + 1_500 * 5);
 });
 
 test("odd settings never throw or give a non-finite bill", () => {
@@ -320,8 +371,9 @@ test("the daily write cap is off by default; on, it adds its counter's requests 
   const on = M.usage({ ...s, writeCap: true }, {});
   assert.equal(off.activities.originals.doReq, 0); // gbDoReq is 0 for a default deployment
   close(on.activities.originals.doReq - off.activities.originals.doReq, off.derived.originalsGB * M.INPUT_DEFAULTS.writeCapDoReqPerGB);
-  close(on.activities.segments.doReq - off.activities.segments.doReq, off.derived.segments * 3);
-  close(on.activities.segments.doRowsWritten - off.activities.segments.doRowsWritten, off.derived.segments * 3);
+  const reserves = off.derived.segments * off.derived.appendsPerSeg + off.derived.streams; // optimized: per append, 1 a stream
+  close(on.activities.segments.doReq - off.activities.segments.doReq, reserves);
+  close(on.activities.segments.doRowsWritten - off.activities.segments.doRowsWritten, reserves);
 });
 
 test("a newly shared project writes its one-off rows: the adoption, and 2 per person", () => {
@@ -338,7 +390,7 @@ test("build-data: verdicts set each status; revised values replace the lab's; es
   const lab = (value: number, status = "measured") => ({ value, unit: "u", status, n: 3, min: value, max: value, runs: ["r1"], how: "how" });
   const measured = {
     schema: 1, generated: "2026-11-02T03:07:43Z", source: { commit: "3a02b402" },
-    inputs: { editDoReq: lab(1.033), editRowsWritten: lab(1.188), gbWorkerCpuMs: lab(381.9), gbDoReq: lab(153.7), segR2ClassA: lab(9, "estimated"), labOnly: lab(5) },
+    inputs: { editDoReq: lab(1.033), editRowsWritten: lab(1.188), gbWorkerCpuMs: lab(381.9), gbDoReq: lab(153.7), connGBs: lab(9, "estimated"), labOnly: lab(5) },
     speeds: [{ id: "sync-4g-5p-r2", what: "live sync", network: "4g", storage: "r2", parties: 5, metric: "convergence", p50: 154, p90: 167, p99: 255, unit: "ms", runs: 3, status: "measured" },
       { id: "sync-good-2p-nor2", what: "live sync", network: "good", storage: "nor2", parties: 2, metric: "convergence", p50: 103, p90: 110, p99: 123, unit: "ms", runs: 3, status: "measured" }],
     limits: [{ id: "worker-cpu-10ms", status: "measured", value: "10 ms", observed: "o", carton: "c", runs: [] }],
@@ -369,10 +421,10 @@ test("build-data: verdicts set each status; revised values replace the lab's; es
   assert.equal(d.inputs.gbWorkerCpuMs.status, "measured");
   assert.equal(d.inputs.gbDoReq.value, 0);
   assert.equal(d.inputs.writeCapDoReqPerGB.value, 153.7); // the write cap's traffic, back for the setting
-  assert.equal(d.inputs.segR2ClassA.status, "estimated"); // the file says estimated: it stays visible as such
-  assert.ok(d.estimatedInputs.includes("segR2ClassA"));
-  assert.ok(d.estimatedInputs.includes("viewClassBPerMiB")); // missing from the file: the model's figure, Estimated
-  assert.equal(d.inputs.viewClassBPerMiB.source, "model");
+  assert.equal(d.inputs.connGBs.status, "estimated"); // the file says estimated: it stays visible as such
+  assert.ok(d.estimatedInputs.includes("connGBs"));
+  assert.ok(d.estimatedInputs.includes("pvSegWorkerReq")); // missing from the files: the model's figure, Estimated
+  assert.equal(d.inputs.pvSegWorkerReq.source, "model");
   assert.deepEqual(d.extraInputs, ["labOnly"]);
   const s4g = d.speeds.find((x: { id: string }) => x.id === "sync-4g-5p-r2");
   assert.equal(s4g.status, "verified");
@@ -381,4 +433,59 @@ test("build-data: verdicts set each status; revised values replace the lab's; es
   assert.equal(sNor2.storage, "vault");
   assert.equal(sNor2.status, "verified");
   assert.ok(d.limits.some((l: { id: string }) => l.id === "do-object-storage")); // Cloudflare's documented limits are added
+});
+
+test("build-data: the preview-path re-check sets both paths' inputs, its speeds and the CPU line", async () => {
+  const { mkdtempSync, writeFileSync } = await import("node:fs");
+  const { execFileSync } = await import("node:child_process");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = mkdtempSync(join(tmpdir(), "cost-build-pv-"));
+  const measured = { schema: 1, generated: "2026-11-02T03:07:43Z", source: {}, inputs: {}, speeds: [], limits: [], networkProfiles: {} };
+  const g = (x: object) => ({ good: x, "4g": x });
+  const proxy = {
+    meta: { verifier: "cf-verify2", at: "2026-11-02T09:05Z", subject: "fix/cf-proxy-path" },
+    metrics: {
+      "publish.workerRequestsPerSegment": g({ before: 10.45, after: 0.4, afterSmall: 0.55, verdict: "confirmed" }),
+      "publish.r2ClassAPerSegment": g({ before: 3.125, after: 3.125, afterSmall: 3.125, verdict: "confirmed" }),
+      "publish.r2ClassBPerSegment": g({ before: 4.225, after: 0.1, afterSmall: 0.1, verdict: "revised", claimed: { before: 4.05, after: 0.13 } }),
+      "publish.writeCapDoRequestsPerSegment": g({ before: 3.125, after: 0.25, afterSmall: 0.4, verdict: "confirmed" }),
+      "publish.workerCpuMsPerSegment": g({ before: 23.78, beforeRange: [22.85, 27.59], after: 2.85, afterFinalBuild: 4.93, afterSmall: 4.01, afterSmallRange: [3.83, 4.19], verdict: "revised", claimed: { before: 18.41, after: 2.67 } }),
+      "publish.speedXRealTime": { good: { before: 0.47, beforeRuns: [0.46, 0.47], after: 3.51, afterRuns: [3.37, 3.93], afterSmall: 2.58, afterSmallRuns: [2.57, 2.59], verdict: "confirmed" } },
+      "play.workerRequestsPerMiB": g({ before: 9.87, after: 0.32, afterSmall: 0.59, verdict: "confirmed" }),
+      "play.r2ClassBPerMiB": g({ before: 9.83, after: 3.63, afterSmall: 3.95, verdict: "confirmed" }),
+      "play.workerCpuMsPerMiB": g({ before: 13.02, beforeRange: [12.08, 13.52], after: 2.62, afterSmall: 3.38, afterSmallRange: [2.93, 3.83], verdict: "revised", claimed: { before: 8.59, after: 2.21 } }),
+      "cpu.perRequestMs": {
+        append: { finalBuild_4parts2MiB: { n: 25, p50: 9.14, p90: 14.94, max: 20.55, mean: 9.76, over10ms: 10 }, finalBuild_1part: { n: 15, range: [3.01, 7.25] } },
+        read: { finalBuild_2MiB: { n: 30, p50: 5.99, max: 9.15, mean: 5.7, over10ms: 0 } },
+        exceededCpuOr1102: { count: 0 },
+      },
+    },
+  };
+  writeFileSync(join(dir, "m.json"), JSON.stringify(measured));
+  writeFileSync(join(dir, "p.json"), JSON.stringify(proxy));
+  execFileSync(process.execPath, [site("build-data.mjs"), join(dir, "m.json"), site("prices.json"), "--proxy-verified", join(dir, "p.json"), "--out", join(dir, "d.json")], { stdio: "pipe" });
+  const d = JSON.parse(readFileSync(join(dir, "d.json"), "utf8"));
+  const i = d.inputs;
+  // before: 418 requests a stream = 10 a segment + 18; 169 Class B = 4 + 9; revised CPU keeps the claim
+  assert.deepEqual([i.pvSegWorkerReq.value, i.pvStreamWorkerReq.value, i.pvSegClassB.value, i.pvStreamClassB.value], [10, 18, 4, 9]);
+  assert.equal(i.pvSegWorkerReq.status, "verified");
+  assert.equal(i.pvSegCpuMs.value, 23.78);
+  assert.equal(i.pvSegCpuMs.was, 18.41);
+  // optimized: 7 requests and 4 Class B a stream (confirmed); the release's batches are the verifier's own runs
+  assert.deepEqual([i.pvoStreamWorkerReq.value, i.pvoStreamClassB.value, i.pvoStreamCapReserves.value], [7, 4, 1]);
+  assert.equal(i.pvoStreamWorkerReq.status, "verified");
+  assert.equal(i.pvoAppendsPerSeg.value, 0.375);
+  assert.equal(i.pvoAppendsPerSeg.status, "measured");
+  assert.equal(i.pvoAppendCpuMsMean.value, 9.76);
+  assert.equal(i.pvoAppendOver10Share.value, 0.4);
+  assert.deepEqual([i.pubSegClassA.value, i.pubStreamClassA.value], [3, 5]);
+  // speeds: before and 8 parts Verified, the release Measured; the CPU line comes first among the limits
+  const sp = Object.fromEntries(d.speeds.map((x: { id: string }) => [x.id, x]));
+  assert.equal(sp["pvpublish-good-before"].status, "verified");
+  assert.equal(sp["pvpublish-good-release"].status, "measured");
+  assert.equal(sp["pvpublish-good-release"].p50, 2.58);
+  assert.equal(sp["pvpublish-good-release"].unit, "x");
+  assert.equal(d.limits[0].id, "worker-cpu-10ms-preview");
+  assert.match(d.limits[0].observed, /10 of 25 went over 10 ms/);
 });

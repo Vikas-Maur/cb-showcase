@@ -94,6 +94,7 @@ function inputBadge(v) {
   if (v.status === "verified" && v.was !== undefined) return badge("verified", `Revised by the re-check: was ${sigNum(v.was)}, now ${sigNum(v.value)}, because: ${v.check?.note ?? "see the verifier's report."}`, "Verified · revised");
   if (v.status === "verified") return badge("verified", v.verdict === "confirmed-from-data" ? `The verifier recomputed it from the lab's own records and the code path, without a new run of its own. ${v.check?.note ?? ""}` : `The verifier re-ran it and got ${v.check?.value !== null && v.check?.value !== undefined ? sigNum(v.check.value) : "the same"}. ${v.check?.note ?? ""}`);
   if (v.verdict === "not-verified") return badge("measured", `The re-check couldn't confirm it: ${v.check?.note ?? ""}`);
+  if (v.source === "proxy-check" && v.status === "measured") return badge("measured", "Measured by the preview-path verifier itself at the release's batch size (4 parts / 2 MiB), not re-checked by anyone else. The same request structure at 8 parts / 4 MiB was confirmed.");
   if (v.source === "model") return badge("estimated", "The measurement file has no value for it, so the model's own figure is used.");
   return badge(v.status);
 }
@@ -219,6 +220,8 @@ const FIELDS = [
     { key: "retentionMonths", label: "Keep media for", min: 0, max: 120, step: 1, unit: "months" },
     { key: "viewShare", label: "Teammates' footage each plays", min: 0, max: 100, step: 5, unit: "%", percent: true },
     { key: "segmentSeconds", label: "Preview segment length", min: 1, max: 30, step: 1, unit: "s" },
+    { key: "clipMinutes", label: "Average clip length", min: 0.5, max: 600, step: 0.5, unit: "min" },
+    { key: "previewPath", label: "Preview path", type: "segs", options: Object.entries(M.PREVIEW_PATHS) },
   ] },
   { legend: "Where it runs", fields: [
     { key: "storage", label: "Media storage", type: "segs", options: [["r2", "R2"], ["vault", "Vault (no R2)"]] },
@@ -402,6 +405,12 @@ function freeCard(r) {
   if (fc.cpu.worst) list.append(h("li", {}, h("div", { class: "row" },
     h("span", { class: "name" }, "CPU per request (10 ms)", q(T.FREE_CHECKS.cpu, "the CPU limit")),
     h("span", { class: "num muted long", text: `about ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})` }))));
+  if (fc.cpu.risk && !fc.cpu.over) {
+    const k = fc.cpu.risk;
+    card.append(h("p", { class: "caution" }, h("b", { text: "One caution: CPU per request. " }),
+      `${k.what[0].toUpperCase()}${k.what.slice(1)} averages ${sigNum(k.ms)} ms${k.overShare ? `, but ${pct(k.overShare)} go over Free's 10 ms` : ""} (the slowest ${sigNum(k.max)} ms). None failed in the re-check; Cloudflare has cut requests off after bursts before, and then the app sends smaller batches.`,
+      q(T.FREE_CHECKS.cpuRisk, "the CPU caution")));
+  }
   card.append(list);
   return card;
 }
@@ -464,7 +473,11 @@ function billCard(r) {
   const values = Object.fromEntries(Object.entries(INPUTS).map(([k, v]) => [k, v?.value]));
   const sparse = M.bill(r.settings, { ...values, editGBs: (values.editGBs ?? M.INPUT_DEFAULTS.editGBs) * 2.7 }, DATA.prices).total - total;
   const notes = h("div", { class: "notes" },
-    h("p", { class: "note" }, h("b", { text: "The preview path. " }), T.NOTES.previewPath, pathCost > 0 && total > 0 ? ` In this bill: ${money(pathCost)}, ${pct(pathCost / total)}.` : ""),
+    h("p", { class: "note" }, h("b", { text: "The preview path. " }), T.NOTES.previewPath, pathCost > 0 && total > 0 ? ` In this bill: ${money(pathCost)}, ${pct(pathCost / total)}.` : "", (() => {
+      const other = r.settings.previewPath === "optimized" ? "before" : "optimized";
+      const alt = M.bill({ ...r.settings, previewPath: other }, values, DATA.prices).total;
+      return ` ${other === "before" ? "Before the fix" : "With the fix"}, this bill would be ${money(alt)}.`;
+    })()),
     h("p", { class: "note" }, h("b", { text: "Edits spread out. " }), T.NOTES.sparseEdits, sparse >= 0.005 ? ` At that rate this bill would be ${money(total + sparse)} (+${money(sparse)}).` : " At that rate this bill wouldn't change (room time stays inside what's included)."));
   card.append(h("div", {}, h("table", { class: "tbl rt" },
     h("thead", {}, h("tr", {}, h("th", { text: "Line" }), h("th", { class: "r", text: "A month" }), h("th", { class: "r", text: "Share" }))),
@@ -679,7 +692,8 @@ function renderLimitsAtSettings(r) {
       continue;
     }
     if (key === "cpu") {
-      td.textContent = fc.cpu.worst ? `About ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})${fc.cpu.over ? ": over the limit" : "; the per-request maximum isn't measured"}.` : "–";
+      const k = fc.cpu.risk;
+      td.textContent = fc.cpu.worst ? `About ${sigNum(fc.cpu.worst.ms)} ms on average (${fc.cpu.worst.what})${fc.cpu.over ? ": over the limit" : k ? `; the slowest ${sigNum(k.max)} ms${k.overShare ? `, ${pct(k.overShare)} over 10 ms` : ""}` : ""}.` : "–";
       continue;
     }
     const c = fc.checks.find((x) => x.key === key);
@@ -699,7 +713,7 @@ function renderLimitsAtSettings(r) {
 }
 
 // ------------------------------------------------------------------------------------------------ speeds
-const KIND_ORDER = ["sync", "flap", "syncOutage", "outage-offline-shown", "outage-reconnect", "outage-catch-up", "preview", "upload", "full", "download", "dedup", "proxyShare", "proxyPlay"];
+const KIND_ORDER = ["sync", "flap", "syncOutage", "outage-offline-shown", "outage-reconnect", "outage-catch-up", "pvpublish", "pvplay", "pvfirstseg", "pvlive", "preview", "upload", "full", "download", "dedup", "proxyShare", "proxyPlay"];
 const NET_ORDER = ["none", "good", "4g", "3g", "bad"];
 /** The scenario a speed row belongs to, from its id (and metric): the groups of the table. */
 const kindOf = (sp) => {
@@ -755,18 +769,24 @@ function speedsSection() {
       const who = sp.parties ? `${sp.parties} parties` : sp.sizeMB ? `${sp.sizeMB.toLocaleString("en-US")} MB` : "";
       const variant = variantOf(sp);
       const fails = sp.p50 === null;
+      const fmt = (x) => (sp.unit === "x" ? `${x.toFixed(2)}× real time` : dur(x));
       const cell = (p) => {
-        if (sp.unconfirmed?.[p]) return h("td", { class: "r num", "data-label": p }, sp[p] === null ? "–" : dur(sp[p]), h("span", { class: "sub", text: sp.unconfirmed[p] }));
-        return h("td", { class: "r num", "data-label": p, text: p === "p50" && fails ? "failed" : sp[p] === null ? "–" : dur(sp[p]) });
+        if (sp.unconfirmed?.[p]) return h("td", { class: "r num", "data-label": p }, sp[p] === null ? "–" : fmt(sp[p]), h("span", { class: "sub", text: sp.unconfirmed[p] }));
+        return h("td", { class: "r num", "data-label": p, text: p === "p50" && fails ? "failed" : sp[p] === null ? "–" : fmt(sp[p]) });
       };
-      const how = sp.status !== "verified" ? undefined
+      const pv = sp.id.startsWith("pv");
+      const how = pv
+        ? sp.status === "verified"
+          ? `The preview-path re-check re-ran this case and ${sp.verdict === "revised" ? "revised the claim to this value" : "confirmed it"} (${sp.runs} runs).`
+          : `Measured by the preview-path verifier in its own ${sp.runs} run${sp.runs === 1 ? "" : "s"}; nobody else has re-checked it yet.`
+        : sp.status !== "verified" ? undefined
         : sp.verdict === "confirmed" ? `The verifier re-ran this case (${sp.check?.runs ?? "?"} runs) and got p50/p90 within 15%: ${sp.check?.note ?? ""}`
         : "The verifier recomputed p50, p90 and p99 exactly from the lab's per-run records (not re-run).";
       tbody.append(h("tr", {},
         h("td", { class: "first", "data-label": "Case" }, h("span", { class: "cellname" }, [who, netName(sp.network)].filter(Boolean).join(" · "), q(netTip(sp.network), `the ${netName(sp.network)} network`)), variant ? h("span", { class: "sub", text: variant }) : null),
         cell("p50"), cell("p90"), cell("p99"),
         h("td", { class: "r num", "data-label": "Runs", text: String(sp.runs) }),
-        h("td", { "data-label": "Status" }, badge(sp.status, how, sp.verdict === "confirmed" ? "Verified · re-run" : undefined)),
+        h("td", { "data-label": "Status" }, badge(sp.status, how, sp.status === "verified" && (sp.verdict === "confirmed" || sp.verdict === "revised") ? (sp.verdict === "revised" ? "Verified · revised" : "Verified · re-run") : undefined)),
         h("td", { class: "note", "data-label": "Note", text: sp.note || "" })));
     }
     if (!rows.length) tbody.append(h("tr", {}, h("td", { colspan: 7, class: "muted", text: "Not measured on this network with this storage yet." })));

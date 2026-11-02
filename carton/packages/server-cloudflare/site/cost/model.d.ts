@@ -24,8 +24,11 @@ export interface Settings {
   storage: Storage;
   plan: Plan;
   segmentSeconds: number;
+  clipMinutes: number;
+  previewPath: PreviewPath;
   writeCap: boolean;
 }
+export type PreviewPath = "optimized" | "before";
 
 export type InputKey = keyof typeof INPUT_DEFAULTS;
 export type Inputs = Record<InputKey, number>;
@@ -49,7 +52,7 @@ export interface Usage {
   inputs: Inputs;
   activities: Record<Exclude<ActivityKey, "fee">, Meters>;
   totals: Meters;
-  derived: Record<"edits" | "presenceMsgs" | "presenceAlarms" | "connects" | "idleHours" | "upkeepAlarms" | "footageHours" | "proxyGB" | "segments" | "segMiB" | "originalsGB" | "storedGB" | "viewedMiB" | "editHours" | "roomGB" | "vaultGB", number> & { roomCapped: boolean; vaultCapped: boolean };
+  derived: Record<"edits" | "presenceMsgs" | "presenceAlarms" | "connects" | "idleHours" | "upkeepAlarms" | "footageHours" | "proxyGB" | "segments" | "segMiB" | "originalsGB" | "storedGB" | "viewedMiB" | "editHours" | "roomGB" | "vaultGB" | "streams" | "appendsPerSeg", number> & { roomCapped: boolean; vaultCapped: boolean };
 }
 
 export interface MeterRow {
@@ -74,14 +77,19 @@ export interface FreeCheck {
   first: FreeLimitCheck | null;
   checks: FreeLimitCheck[];
   sorted: FreeLimitCheck[];
-  cpu: { limit: number; worst: { what: string; ms: number; used: boolean } | null; over: boolean; basis: "average" };
+  cpu: { limit: number; worst: CpuKind | null; over: boolean; risk: CpuKind | null; basis: "average" };
   maxTeams: number;
 }
+export interface CpuKind { what: string; ms: number; max?: number; overShare?: number; used: boolean }
 export interface Suggestion { driver: ActivityKey | "limit" | "capacity" | null; lever?: ActivityKey; text: string; saving: number; newTotal?: number; paidTotal?: number | null; alternative?: { storage: Storage; plan: Plan; total: number } }
 export interface Result extends Bill { free: FreeCheck; driver: Line | null; suggestion: Suggestion }
 export interface Series { key: string; storage: Storage; plan: Plan; maxTeams: number; capacity: Capacity; points: { teams: number; total: number | null }[] }
 
 export const REF_SEGMENT_MIB: number;
+export const PV_REF_PART_MIB: number;
+export const PV_BATCH: Readonly<{ parts: number; mib: number }>;
+export const PVO_VIEW_B_PER_SEGMENT_SHARE: number;
+export const PREVIEW_PATHS: Readonly<Record<PreviewPath, string>>;
 export const PRESENCE_RATES: Readonly<{ cardboard: number; web: number }>;
 export const INPUT_NOTES: Readonly<Partial<Record<InputKey, string>>>;
 export const ARCHIVE_KEEP: number;
@@ -93,9 +101,15 @@ export const INPUT_DEFAULTS: Readonly<{
   presenceDoReq: number; presenceGBs: number; presenceRowsWritten: number; presenceAlarmPerHour: number; presenceAlarmDoReqPerHour: number; presenceAlarmRowsWritten: number; presenceAlarmGBs: number; upkeepAlarmPerHour: number;
   idleDoReqPerHour: number; idleGBsPerHour: number; idleRowsWrittenPerHour: number;
   gbWorkerReq: number; gbWorkerCpuMs: number; gbR2ClassA: number; gbR2ClassB: number; gbDoReq: number; gbVaultWorkerReq: number; gbVaultWorkerCpuMs: number; gbVaultDoReq: number; gbVaultRowsWritten: number; gbVaultGBs: number;
-  writeCapDoReqPerGB: number; writeCapReservesPerSegment: number; writeCapRowsPerReserve: number;
-  segWorkerReq: number; segWorkerCpuMs: number; segR2ClassA: number; segR2ClassB: number; segVaultDoReq: number; segVaultRowsWritten: number;
-  viewWorkerReqPerMiB: number; viewClassBPerMiB: number; viewWorkerCpuMsPerMiB: number; viewVaultDoReqPerSegment: number; viewVaultRowsReadPerSegment: number; viewVaultGBsPerMiB: number;
+  writeCapDoReqPerGB: number; writeCapRowsPerReserve: number;
+  pubSegClassA: number; pubStreamClassA: number;
+  pvSegWorkerReq: number; pvStreamWorkerReq: number; pvSegClassB: number; pvStreamClassB: number; pvSegCapReserves: number; pvStreamCapReserves: number; pvSegCpuMs: number;
+  pvViewWorkerReqPerMiB: number; pvViewClassBPerMiB: number; pvViewCpuMsPerMiB: number;
+  pvoAppendsPerSeg: number; pvoStreamWorkerReq: number; pvoStreamClassB: number; pvoStreamCapReserves: number; pvoSegCpuMs: number;
+  pvoViewWorkerReqPerMiB: number; pvoViewClassBPerMiB: number; pvoViewCpuMsPerMiB: number;
+  pvoAppendCpuMsMean: number; pvoAppendCpuMsMax: number; pvoAppendOver10Share: number; pvoReadCpuMsMean: number; pvoReadCpuMsMax: number;
+  segVaultDoReq: number; pvoSegVaultDoReq: number; segVaultRowsWritten: number;
+  viewVaultDoReqPerSegment: number; pvoViewVaultDoReqPerSegment: number; viewVaultRowsReadPerSegment: number; viewVaultGBsPerMiB: number;
 }>;
 export const PREVIEW_QUALITY: Readonly<Record<"540p" | "720p" | "1080p", number>>;
 export const DEFAULT_SETTINGS: Readonly<Settings>;

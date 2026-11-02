@@ -17,14 +17,27 @@ from the lab's measurements and Cloudflare's prices.
 
 ## Rebuild `data.json` from a new `measured.json`
 
-From `carton/packages/server-cloudflare`, with the lab's file and the verifier's verdicts:
+From `carton/packages/server-cloudflare`, with the lab's file, the verifier's verdicts on it, and the preview-path
+re-check (`CF-VERIFY-PROXY.md`):
 
 ```sh
 git show origin/lab/cloudflare:carton/bench/cloudflare/results/measured.json > /tmp/measured.json
 node site/cost/build-data.mjs /tmp/measured.json site/cost/prices.json \
-  --verified /home/ubuntu/gfv-scratch/carton/cf-verify/verified.json
+  --verified /home/ubuntu/gfv-scratch/carton/cf-verify/verified.json \
+  --proxy-verified /home/ubuntu/gfv-scratch/carton/cf-verify2/verified.json
 node --test test/cost-model.test.ts
 ```
+
+The preview path ("Preview path" setting: optimized, the default, or before the fix) takes its inputs from the
+preview-path re-check, measured on one 80 s clip (40 segments and the init, 0.618 MiB a part: `PV_REF_PART_MIB`):
+per segment published, per stream (one a clip shared: the "Average clip length" setting) and per MiB played. Its
+per-stream costs are split from the per-segment ones by the request structure the re-check gives (before: 418 Worker
+requests a stream = 10 a segment + 18; optimized: 7 setup requests a stream plus one per append, and 4 Class B a
+stream). The before path and the optimized path's request structure at 8 parts / 4 MiB are confirmed or revised there
+(Verified); the release's batch size (4 parts / 2 MiB) was measured by the verifier itself, 2 runs (Measured). The
+round-2 lab keys `seg*` and `view*` are superseded and listed as extras. The build adds the preview path's speeds
+(publish and fetch speed, first video segment, a live viewer's first segment; good and 4G) and its CPU line in the
+limits table.
 
 Statuses: `confirmed` and `confirmed-from-data` are Verified; `revised` is Verified with the verifier's value (the
 lab's is kept as `was` and shown); `not-verified` stays Measured. A key the model reads that the file lacks, or an
@@ -39,8 +52,9 @@ file doesn't carry come from `prices.json` (`documentedLimits`).
 
 The model reads the lab's own key names. These are still the model's own figures (Estimated), because the lab's file
 has no key for them: `editArchiveRowsWritten`, `changeBytes`, `replicaRowsWritten` (from the verifier's fit, not a
-file input), `upkeepAlarmPerHour`, `writeCapReservesPerSegment`, `writeCapRowsPerReserve`, `segVaultDoReq`,
-`segVaultRowsWritten`, `viewVaultDoReqPerSegment`, `viewVaultRowsReadPerSegment`, `viewVaultGBsPerMiB`.
+file input), `upkeepAlarmPerHour`, `writeCapRowsPerReserve`, and the vault-only `segVaultDoReq`, `pvoSegVaultDoReq`,
+`segVaultRowsWritten`, `viewVaultDoReqPerSegment`, `pvoViewVaultDoReqPerSegment`, `viewVaultRowsReadPerSegment`,
+`viewVaultGBsPerMiB`.
 
 What the model expects of a few inputs, so they aren't counted twice:
 
@@ -50,8 +64,9 @@ What the model expects of a few inputs, so they aren't counted twice:
   `replicaRowsWritten`, counted once per new shared project (a setting), with the room's `adoptRowsWritten`.
 - `gbDoReq` is 0 for a default deployment. The lab's measured value is all the optional daily write cap's counter, so
   the build keeps it as `writeCapDoReqPerGB`, counted only with the "daily write cap on" setting.
-- Per-GB inputs (`gb*`) are per 10⁹ bytes. Per-MiB playback inputs were measured with the app's 0.626 MiB segments
-  (`REF_SEGMENT_MIB`) and scale with the segment's size (reads go per segment).
+- Per-GB inputs (`gb*`) are per 10⁹ bytes. Before the fix, every read goes per segment, so its per-MiB inputs scale
+  with the segment's size; optimized reads go per 2 MiB, and only their per-segment GETs (82% of the Class B) scale.
+  Optimized appends carry at most 4 parts and 2 MiB (`PV_BATCH`), so appends per segment scale with the part size.
 - `segVaultRowsWritten` counts a segment's three vault objects with one chunk row each; the model adds a row per MiB
   past the first, and charges the same rows again when the media expires (a delete is a row written).
 - The presence rate is a setting (1 a second: the Cardboard app; 10: the Carton web app), not an input.
