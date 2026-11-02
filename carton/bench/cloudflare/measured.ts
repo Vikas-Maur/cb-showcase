@@ -11,7 +11,8 @@ import { RUNS_DIR } from "./paths.ts";
 import { MEASURED } from "./costmodel.ts";
 
 const out = process.argv[2] ?? join(import.meta.dirname, "results", "measured.json");
-const files = readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json") && !/\.(cost|c2)\.json$/.test(f));
+// runs tagged `cfv` are the independent verifier's (it reuses this harness and folder): never mixed into these medians
+const files = readdirSync(RUNS_DIR).filter((f) => f.endsWith(".json") && !/\.(cost|c2|note)\.json$/.test(f) && !/-cfv/.test(f));
 const runs = new Map<string, any>();
 for (const f of files) runs.set(f, JSON.parse(readFileSync(join(RUNS_DIR, f), "utf8")));
 const c2 = new Map<string, any>();
