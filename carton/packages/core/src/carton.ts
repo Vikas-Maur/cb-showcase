@@ -642,6 +642,8 @@ class CartonImpl implements Carton {
   #rq: ReplicaQueue | null = null;
   #shared = new Map<string, SharedCut>();
   #connected: { nonce: string; fence?: (nonce: string) => boolean } | null = null;
+  /** The cut this handle's presence shows on (its last word there wasn't a leave), and as whom. */
+  #presenceOn: { cut: string; who: Actor } | null = null;
   /** Store conditions every settling write carries (`connect({ conditions })`); `#fenced` once one failed. */
   #settleConds: StoreCondition[] = [];
   #fenced = false;
@@ -784,7 +786,7 @@ class CartonImpl implements Carton {
           for (const sc of self.#shared.values()) await sc.disconnect(o);
         },
         // as this replica's person once set (windows-sync R3): teammates' cursors are told apart, never all "person"
-        presence: (state) => self.#shared.get(self.#h.current)?.sendPresence(self.#who(self.#actor(), `${self.#rid}.0`)!, state),
+        presence: (state) => self.#presence(state),
         waitFor: async (id, ms, cut) => {
           const b = cut ?? self.#h.current;
           const sc = self.#shared.get(b);
@@ -1843,9 +1845,31 @@ class CartonImpl implements Carton {
     );
     return rec;
   }
+  /**
+   * As this replica's person once set (windows-sync R3): teammates' cursors are told apart, never all "person". On the
+   * current cut; first a leave on the cut it showed on before, if the current cut has changed since (a switch here,
+   * or another process's that this handle followed), so teammates never keep it on a cut it left: a host would tell
+   * that old presence to anyone subscribing there later (presence P2 review).
+   */
+  #presence(state: PresenceState | null): void {
+    const who = this.#who(this.#actor(), `${this.#rid}.0`)!;
+    const cut = this.#h.current;
+    this.#leavePresence(cut);
+    const sc = this.#shared.get(cut);
+    sc?.sendPresence(who, state);
+    this.#presenceOn = sc && state !== null ? { cut, who } : null;
+  }
+  /** A leave on the cut this handle's presence shows on, unless that is `stay`. */
+  #leavePresence(stay: string): void {
+    const on = this.#presenceOn;
+    if (!on || on.cut === stay) return;
+    this.#presenceOn = null;
+    this.#shared.get(on.cut)?.sendPresence(on.who, null);
+  }
   async switchTo(cut: string, opts: { persist?: boolean } = {}): Promise<void> {
     await this.#refresh();
     this.#h.current = cut;
+    this.#leavePresence(cut);
     if (opts.persist !== false) await this.store.write([{ table: T.meta, key: CURRENT, value: cut }]);
   }
   async renameCut(cut: string, name: string): Promise<CutRecord> {

@@ -295,6 +295,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     comments.forget(peerOf(c));
     outboxes.delete(c);
     presenceBuckets.delete(c);
+    presenceKept.delete(c);
     clearTrailing(c);
   }
 
@@ -820,10 +821,15 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId), versions: tables.versionsAfter(src.branchId, src.at) };
     // the client then never sends what would be refused unread (round 2 finding 2)
     if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
+    let joined = false;
     if (last < head) msg.more = true;
     // fan-out starts with the last page: a subscriber still paging would get live rows ahead of its backlog (finding 3)
-    else if (!st.subs.includes(m.branchId)) st.subs.push(m.branchId);
+    else if (!st.subs.includes(m.branchId)) {
+      st.subs.push(m.branchId);
+      joined = true;
+    }
     send(c, msg);
+    if (joined) tellPresent(c, m.branchId);
   }
 
   async function onPush(c: HostConnection, m: sync.PushMsg) {
@@ -1142,20 +1148,57 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
   // Who a connection shows (ConnectionState.shown), noted as each presence is accepted, so a leave is owed for every
   // actor whose last word wasn't `null`, whether or not the rate cap has relayed that word yet.
   const sameActor = (a: ShownPresence["actor"], b: sync.PresenceFanoutMsg["actor"]) => a.kind === b.kind && a.id === b.id && a.agentId === (b.agentId ?? undefined);
-  function noteShown(c: HostConnection, branchId: string, actor: sync.PresenceFanoutMsg["actor"], showing: boolean): void {
+  /** Notes `actor` as shown (or not) on `branchId`; true when the connection's `shown` now holds it. */
+  function noteShown(c: HostConnection, branchId: string, actor: sync.PresenceFanoutMsg["actor"], showing: boolean): boolean {
     const st = stateOf(c);
     const i = st.shown?.findIndex((s) => s.branchId === branchId && sameActor(s.actor, actor)) ?? -1;
     if (!showing) {
-      if (i < 0) return;
+      if (i < 0) return false;
       st.shown!.splice(i, 1);
       if (st.shown!.length === 0) delete st.shown;
+      return false;
+    }
+    if (i >= 0) return true;
+    if ((st.shown?.length ?? 0) >= PRESENCE_SHOWN_MAX) return false;
+    const { kind, id, agentId } = actor;
+    if (typeof kind !== "string" || typeof id !== "string" || id.length > PRESENCE_ID_MAX || branchId.length > PRESENCE_ID_MAX) return false;
+    if (agentId !== undefined && (typeof agentId !== "string" || agentId.length > PRESENCE_ID_MAX)) return false;
+    (st.shown ??= []).push({ branchId, actor: { kind, id, ...(agentId !== undefined ? { agentId } : {}) } });
+    return true;
+  }
+
+  // Who is here, for a connection that subscribes later: the latest presence each connection shows, per branch and
+  // actor (only actors `shown` holds, so at most PRESENCE_SHOWN_MAX each, of at most PRESENCE_KEPT_BYTES; a leave or
+  // a bigger update drops it). A teammate joining, or rejoining after the host restarted, is told who is already there
+  // right after its welcome, instead of waiting for their next update, which an idle editor never sends (presence
+  // P2: after a host restart the first client back re-announced to an empty room, and the latecomer never listed it).
+  // In memory only, never in ConnectionState: a hibernating host's socket attachment stays small. A host that lost it
+  // (a Durable Object's wake) tells a newcomer nobody; the sync client covers that by announcing itself again to a
+  // peer it sees for the first time on a connection.
+  const presenceKept = new Map<HostConnection, Map<string, sync.PresenceFanoutMsg>>();
+  const keptKey = (branchId: string, a: sync.PresenceFanoutMsg["actor"]) => `${branchId}\n${a.kind}\n${a.id}\n${a.agentId ?? ""}`;
+  function keepPresence(c: HostConnection, msg: sync.PresenceFanoutMsg, shown: boolean): void {
+    const k = keptKey(msg.branchId, msg.actor);
+    if (shown && msg.state !== null && sync.jsonBytesBound(msg, PRESENCE_KEPT_BYTES) <= PRESENCE_KEPT_BYTES) {
+      let kept = presenceKept.get(c);
+      if (!kept) presenceKept.set(c, (kept = new Map()));
+      if (!msg.arrived) kept.set(k, msg);
+      else {
+        const { arrived: _a, ...plain } = msg; // told later as `kept`, never as an arrival
+        kept.set(k, plain);
+      }
       return;
     }
-    if (i >= 0 || (st.shown?.length ?? 0) >= PRESENCE_SHOWN_MAX) return;
-    const { kind, id, agentId } = actor;
-    if (typeof kind !== "string" || typeof id !== "string" || id.length > PRESENCE_ID_MAX || branchId.length > PRESENCE_ID_MAX) return;
-    if (agentId !== undefined && (typeof agentId !== "string" || agentId.length > PRESENCE_ID_MAX)) return;
-    (st.shown ??= []).push({ branchId, actor: { kind, id, ...(agentId !== undefined ? { agentId } : {}) } });
+    const kept = presenceKept.get(c);
+    if (!kept?.delete(k)) return;
+    if (kept.size === 0) presenceKept.delete(c);
+  }
+  /** `c` just subscribed to `branchId`: the presence every other connection there shows, marked `kept`. */
+  function tellPresent(c: HostConnection, branchId: string): void {
+    for (const [o, kept] of presenceKept) {
+      if (o === c || !attached(o) || !stateOf(o).subs.includes(branchId)) continue;
+      for (const p of kept.values()) if (p.branchId === branchId) send(c, { ...p, kept: true });
+    }
   }
 
   function onPresence(c: HostConnection, m: sync.PresenceMsg) {
@@ -1166,16 +1209,19 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
+    // a connection's first presence: its peers answer with theirs (presence P2 review: a second tab of someone shown)
+    if (m.arrived === true && msg.state !== null) msg.arrived = true;
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
-    noteShown(c, m.branchId, actor, msg.state !== null);
+    keepPresence(c, msg, noteShown(c, m.branchId, actor, msg.state !== null));
     if (!presenceAllowed(c)) {
       stats.presenceDropped++;
       const byBranch = presenceTrailing.get(c) ?? new Map();
       presenceTrailing.set(c, byBranch);
       const waiting = byBranch.get(m.branchId);
       if (waiting) {
-        waiting.msg = msg;
+        // the newest state, still saying `arrived` if one it replaces did: the peers' answer is owed either way
+        waiting.msg = waiting.msg.arrived && msg.state !== null && !msg.arrived ? { ...msg, arrived: true } : msg;
         return;
       }
       const b = presenceBuckets.get(c)!;
@@ -1284,6 +1330,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       conns.delete(c.id);
       outboxes.delete(c);
       presenceBuckets.delete(c);
+      presenceKept.delete(c);
       comments.forget(peerOf(c));
       // Its peers stop showing it. A client that crashed, lost its network or timed out never sends its own
       // `state: null`: a leave waiting behind its rate cap goes out now, then one for every actor it still showed.
@@ -1458,6 +1505,8 @@ function declarationTooLarge(ch: Change): boolean {
 const PRESENCE_SHOWN_MAX = 4;
 /** Longest actor id, agent id or branch id kept for it (an attachment of a Durable Object's socket stays small). */
 const PRESENCE_ID_MAX = 200;
+/** The biggest presence (JSON) kept for a connection that subscribes later; a bigger one shows at its next update. */
+const PRESENCE_KEPT_BYTES = 16 * 1024;
 /** Presence per connection: a burst of 20, then 20 a second (twice what the sync client sends); the rest is dropped. */
 const PRESENCE_BURST = 20;
 const PRESENCE_PER_SEC = 20;

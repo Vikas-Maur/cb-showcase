@@ -65,7 +65,7 @@ async function live({ log } = {}) {
   const view = { connectSync: async () => {}, materializeSoon() {}, holds: () => true };
   const l = new Live({ api: { emit: (e) => events.push(e) }, bundlePath: "C:\\p.cardboard", projectId: PROJECT, lc, view, log });
   await l.start();
-  return { live: l, events, presence: (actor, state) => on({ type: "presence", branchId: "main", actor, state }) };
+  return { live: l, events, presence: (actor, state, branchId = "main") => on({ type: "presence", branchId, actor, state }) };
 }
 // What the worker's liveStatus answers (worker.js): the share's config, then Live.view().
 const status = (l) => ({ host: "http://127.0.0.1:8791", account: "bob", name: "Bob", role: "editor", ...JSON.parse(JSON.stringify(l.view())) });
@@ -157,6 +157,28 @@ test("guard, worker: a teammate's malformed presence is skipped (said once, with
   // a leave still removes a teammate
   presence(ALICE, null);
   assert.deepEqual(l.view().peers.map((p) => p.actor.id), ["mia"]);
+});
+
+test("a teammate is kept per cut: a leave on a cut they have left (that cut's connection closing says it) keeps them on the other (presence P2)", opt, async () => {
+  const { live: l, events, presence } = await live();
+  presence(ALICE, editing, "variant");
+  presence(ALICE, editing, "main"); // she moved to main
+  presence(ALICE, null, "variant"); // the variant's connection closed: everyone it showed is told gone
+  assert.deepEqual(l.view().peers.map((p) => [p.actor.id, p.cut]), [["alice", "main"]]);
+  const published = events.length;
+  presence({ kind: "human", id: "nobody" }, null); // a leave for someone never shown: nothing changed, nothing published
+  presence(ALICE, null, "variant"); // and again
+  assert.equal(events.length, published);
+  presence(ALICE, null, "main"); // her own leave, on the cut she is on
+  assert.deepEqual(l.view().peers, []);
+  // on two cuts at once (two tabs): listed by the latest; a leave on one keeps her, on the other
+  presence(ALICE, editing, "main");
+  presence(ALICE, { activity: "Trimming", who: editing.who }, "variant");
+  assert.deepEqual(l.view().peers.map((p) => [p.cut, p.activity]), [["variant", "Trimming"]]);
+  presence(ALICE, null, "variant");
+  assert.deepEqual(l.view().peers.map((p) => [p.cut, p.activity]), [["main", "Editing"]]);
+  presence(ALICE, null, "main");
+  assert.deepEqual(l.view().peers, []);
 });
 
 test("guard, panel: an entry it can't show is skipped and logged once; the rest are listed and the editor stays", opt, async () => {
