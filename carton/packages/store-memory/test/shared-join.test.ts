@@ -4,7 +4,7 @@
 // the in-process host of @carton/server.
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { Carton, hashDoc, type Actor, type Version } from "@carton/core";
+import { Carton, canonical, hashDoc, type Actor, type CutRecord, type JoinInit, type Version } from "@carton/core";
 import { createMemoryStore } from "../src/index.ts";
 import { adapter, doc0, schema, set } from "./fixture.ts";
 import { until, world } from "./world.ts";
@@ -16,11 +16,12 @@ const director = (turn: string): Actor => ({ kind: "agent", id: "director", name
 const ITEMS = ["a", "b", "c", "d", "e", "f"];
 const versions = (vs: Version[]) => vs.map((v) => ({ seq: v.ref.seq, cut: v.ref.branchId, change: v.change, author: v.author, name: v.name, kind: v.kind, at: v.at }));
 
-/** Open a fresh replica on `cut` from what an invite carries (its record and root), as a browser would. */
-async function join(a: Carton, w: ReturnType<typeof world>, cut: string, actor: Actor, name: string) {
+/** Open a fresh replica on `cut` from what an invite carries (its record, root, and a fork's maker), as a browser would. */
+async function join(a: Carton, w: ReturnType<typeof world>, cut: string, actor: Actor, name: string, edit: (j: JoinInit) => JoinInit = (j) => j) {
   const rec = (await a.cuts()).find((c) => c.id === cut)!;
   const root = await a.checkout(`${cut}@0`);
-  return Carton.open({ adapter, store: createMemoryStore(), init: { join: { projectId: a.projectId, cut: rec, doc0: root, rootHash: hashDoc(root, schema) } }, actor, sync: w.sync(name) });
+  const by = rec.forkOf ? await a.maker(cut) : null;
+  return Carton.open({ adapter, store: createMemoryStore(), init: { join: edit({ projectId: a.projectId, cut: rec, doc0: root, rootHash: hashDoc(root, schema), ...(by ? { by } : {}) }) }, actor, sync: w.sync(name) });
 }
 
 test("F2: a cut shared with its history: a teammate who joins from nothing sees the same log, names, credits and undo stack", async () => {
@@ -76,6 +77,38 @@ test("F2: a cut forked from a local cut and shared: the joiner gets its fork poi
   await a.close();
   await d.close();
   w.host.close();
+});
+
+// Who made a shared fork reaches its joiner beside the cut's record (JoinInit.by), never in it: the record is stored as
+// any client rebuilds it, so the joiner's writes on the cut hold. A record that carried it inside (a build that kept it
+// there, fix/lap2-fold-author 717916d) gives it up the same way.
+test("F2: a joiner of a shared fork is told who made it, and the cut's record it stores is the one it rebuilds", async () => {
+  for (const inRecord of [false, true]) {
+    const w = world();
+    const a = await Carton.open({ adapter, store: createMemoryStore(), init: { doc: doc0() }, actor: alice, sync: w.sync("alice") });
+    const short = await a.fork("30s cut", { author: director("t0") });
+    await a.share(short.id);
+    await until(async () => (await a.cuts()).find((x) => x.id === short.id)!.sequencer.kind === "server", 5000, "the hand-off");
+    assert.deepEqual(await a.maker(short.id), director("t0"));
+    const rec = (await a.cuts()).find((c) => c.id === short.id)!;
+    const root = await a.checkout(`${short.id}@0`);
+    const j: JoinInit = { projectId: a.projectId, cut: rec, doc0: root, rootHash: hashDoc(root, schema), by: director("t0") };
+    // not connected yet: what the join itself stored
+    const store = createMemoryStore();
+    const d = await Carton.open({ adapter, store, init: { join: inRecord ? { ...j, cut: { ...rec, by: director("t0") } as CutRecord, by: undefined } : j }, actor: carol, sync: w.sync("carol", false) });
+    const stored = (await store.get<CutRecord>("cuts", [short.id]))!;
+    assert.ok(!("by" in stored), "the record holds no maker: " + JSON.stringify(stored));
+    assert.equal(canonical((await d.cuts()).find((c) => c.id === short.id)), canonical(stored), "the record this client holds is the stored one (its writes are conditioned on it)");
+    assert.deepEqual(await store.get("meta", ["maker", short.id]), director("t0"), "the maker, beside it");
+    await d.sync!.connect();
+    await until(async () => (await d.cuts()).find((x) => x.id === short.id)?.forkOf != null, 5000, "the fork point at the joiner");
+    const fork = (await d.log({ cut: short.id })).find((v) => v.kind === "fork");
+    assert.deepEqual(fork?.author, director("t0"), inRecord ? "from the record" : "from JoinInit.by");
+    assert.equal((await d.commit({ cut: short.id, ops: [set("f", "name", "Carol's")], wait: 5000 })).status, "confirmed", "the joiner edits it");
+    await a.close();
+    await d.close();
+    w.host.close();
+  }
 });
 
 test("F3: a joiner that caught up through a keyframe loads the stretch it jumped: log, credits and diff work across it", async () => {
