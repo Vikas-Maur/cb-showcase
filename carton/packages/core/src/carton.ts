@@ -276,7 +276,7 @@ export interface Carton {
   /** Rename a cut (its id never changes; the name is only a label). */
   renameCut(cut: string, name: string): Promise<CutRecord>;
   /** Publish a version (default: the current cut's head) as a Published cut: what the share link shows. */
-  publish(opts?: { from?: StateRef | string; name?: string; id?: string }): Promise<CutRecord>;
+  publish(opts?: { from?: StateRef | string; name?: string; id?: string; author?: Actor }): Promise<CutRecord>;
   /** Published cuts, each with the cut it came from and whether that cut has edits newer than what was published. */
   publications(): Promise<Publication[]>;
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
@@ -306,7 +306,8 @@ export interface Carton {
   /** History: versions of a cut, newest first; `summary`: each says what it did in plain words. */
   log(opts?: { cut?: string; limit?: number; before?: number; summary?: boolean }): Promise<Version[]>;
   /** Name a version ("Sent to client, Monday"). */
-  name(ref: StateRef | string, name: string): Promise<void>;
+  /** Name a version; `author`: who named it (default: this handle's actor). */
+  name(ref: StateRef | string, name: string, opts?: { author?: Actor }): Promise<void>;
   /** Restore: the state at `ref`, saved as a new version on the current cut. */
   restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** Undo one change (revert by change). */
@@ -922,7 +923,7 @@ class CartonImpl implements Carton {
         if (p) await add(p, [...stack, c.id]);
       }
       const root = roots.get(c.id) ?? null;
-      h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}) });
+      h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}), ...(c.by ? { by: c.by } : {}) });
       if (c.protected !== undefined || c.sequencer.kind !== "local" || c.source) h.updateCut(c.id, { ...(c.protected !== undefined ? { protected: c.protected } : {}), sequencer: c.sequencer, ...(c.source ? { source: c.source } : {}) });
       done.add(c.id);
       if (c.shallow) return;
@@ -1672,6 +1673,7 @@ class CartonImpl implements Carton {
     return { node, doc: this.#h.resolve(ref).doc };
   }
   async fork(name: string, opts: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string; source?: string } = {}): Promise<CutRecord> {
+    const author = this.#actor(opts.author);
     const cur = this.#h.current;
     await this.#whole();
     let rec!: CutRecord;
@@ -1683,10 +1685,11 @@ class CartonImpl implements Carton {
         const known = opts.id ? this.#h.cut(opts.id) : undefined;
         if (known) return void (rec = known); // a retried fork: the cut it already made
         const from = opts.from === undefined ? { node: this.#h.head(cur), doc: null } : this.#held(opts.from);
-        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
+        // who made it is recorded with it: its fork version's author (History's "Made this cut", cb history)
+        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, by: author, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
         made = true;
         // forking from a held state: the cut forks at its version and the held edits are its first change
-        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author: this.#actor(opts.author), publish: opts.kind === "published", ...(opts.id ? { id: `${opts.id}.held` } : {}) });
+        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author, publish: opts.kind === "published", ...(opts.id ? { id: `${opts.id}.held` } : {}) });
         rec = this.#h.cut(rec.id)!;
       },
       {
@@ -1719,7 +1722,7 @@ class CartonImpl implements Carton {
     );
     return rec;
   }
-  async publish(opts: { from?: StateRef | string; name?: string; id?: string } = {}): Promise<CutRecord> {
+  async publish(opts: { from?: StateRef | string; name?: string; id?: string; author?: Actor } = {}): Promise<CutRecord> {
     const cur = this.#h.current;
     await this.#whole();
     // the cut it comes from, said explicitly: a fork node is canonical, so an unedited variant's would name its parent;
@@ -1730,7 +1733,7 @@ class CartonImpl implements Carton {
       const p = this.#h.parseRef(from);
       return "legacy" in p ? cur : p.branchId;
     })();
-    return this.fork(opts.name ?? "Published cut", { kind: "published", source, from: from ?? cur, ...(opts.id ? { id: opts.id } : {}) });
+    return this.fork(opts.name ?? "Published cut", { kind: "published", source, from: from ?? cur, ...(opts.id ? { id: opts.id } : {}), ...(opts.author ? { author: opts.author } : {}) });
   }
   async publications(): Promise<Publication[]> {
     await this.#whole();
@@ -1787,15 +1790,17 @@ class CartonImpl implements Carton {
     const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
     return out as FoldResult;
   }
-  async name(ref: StateRef | string, name: string): Promise<void> {
+  /** Name a version; `author`: who named it (default: this handle's actor). */
+  async name(ref: StateRef | string, name: string, opts: { author?: Actor } = {}): Promise<void> {
     await this.#whole();
+    const by = this.#actor(opts.author);
     let node!: NodeId;
-    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, this.#actor()), {
+    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, by), {
       extra: () => {
         const { branchId, seq } = parseNode(node);
         // a named version keeps a keyframe (§5.4)
         const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
-        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by: this.#actor() } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });

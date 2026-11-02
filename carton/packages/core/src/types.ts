@@ -353,6 +353,8 @@ export interface CutRecord {
   at?: number;
   /** A Published cut: the cut it was published from (its fork node alone can't say: a fork node is canonical). */
   source?: string;
+  /** Who made the cut (a fork): its fork version's author in the log. Absent on cuts made before it was recorded. */
+  by?: Actor;
 }
 
 /** A version: a confirmed state, optionally named. `ref` prints as `main@57`. */
