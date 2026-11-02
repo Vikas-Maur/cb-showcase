@@ -194,6 +194,11 @@ export interface Comparison {
   readonly a: CompareSide;
   readonly b: CompareSide;
   readonly diff: DiffSummary;
+  /**
+   * What changed from a to b, one plain-words line each, as History and Fold in word them ("Moved 'Intro' 0:02.0 →
+   * 0:04.0"). Optional: a host without it shows only the summary.
+   */
+  readonly changes?: readonly string[];
 }
 
 /** Credits for one clip: who last changed each part of it, down to the subagent. */

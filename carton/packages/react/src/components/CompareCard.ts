@@ -1,7 +1,7 @@
 // Compare card (§9, generalizing the recovery picker): for two versions, when and by whom, how many clips, how long,
 // and "N shots / X s of Y s differ", with a way into Watch the changes.
 
-import { createElement as h, useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
+import { createElement as h, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { duration, exactTime, when } from "../format.ts";
 import { useAsync, useCartonUi, useLocale, useNow, useWords } from "../hooks.ts";
 import type { CompareSide, Comparison } from "../model.ts";
@@ -40,6 +40,9 @@ function Side({ side, now }: { side: CompareSide; now: number }) {
   );
 }
 
+/** Changes listed at once on the card; "Show N more" lists the rest. */
+const COMPARE_SHOWN = 5;
+
 export function CompareCard(p: CompareCardProps) {
   const ui = useCartonUi();
   const words = useWords();
@@ -56,18 +59,33 @@ export function CompareCard(p: CompareCardProps) {
     e.stopPropagation();
     p.onClose();
   };
+  const [all, setAll] = useState(false);
   let body: ReactNode;
   if (loaded.status === "loading") body = h("p", { className: "carton-muted" }, words.loading);
   else if (loaded.status === "error") body = h("p", { className: "carton-error", role: "alert" }, words.failed);
   else {
     const c = loaded.value;
+    // What changed, first (UI audit P2-5): the changes in History's words, a few at once, the rest one click away.
+    const changes = c.changes ?? null;
+    const shown = changes ? (all ? changes : changes.slice(0, COMPARE_SHOWN)) : [];
+    const same = changes ? changes.length === 0 : c.diff.shots === 0;
     body = [
-      h("div", { key: "sides", className: "carton-compare-sides" }, h(Side, { side: c.a, now }), h(Side, { side: c.b, now })),
       h(
         "p",
-        { key: "diff", className: "carton-compare-diff", "data-same": c.diff.shots === 0 ? "" : undefined },
-        words.differ(c.diff.shots, c.diff.seconds, c.diff.total),
+        { key: "diff", className: "carton-compare-diff", "data-same": same ? "" : undefined },
+        words.compareSummary(changes ? changes.length : null, c.diff.seconds, c.diff.total),
       ),
+      shown.length
+        ? h(
+            "ul",
+            { key: "changes", className: "carton-compare-changes", "aria-label": words.compareChanges },
+            ...shown.map((t, i) => h("li", { key: i, className: "carton-compare-change", title: t }, t)),
+          )
+        : null,
+      changes && changes.length > COMPARE_SHOWN
+        ? h(Button, { key: "more", variant: "ghost", className: "carton-compare-more", onClick: () => setAll((x) => !x) }, all ? words.compareLess : words.compareMore(changes.length - COMPARE_SHOWN))
+        : null,
+      h("div", { key: "sides", className: "carton-compare-sides" }, h(Side, { side: c.a, now }), h(Side, { side: c.b, now })),
     ];
   }
   return h(
@@ -85,7 +103,7 @@ export function CompareCard(p: CompareCardProps) {
       { className: "carton-card-actions" },
       p.onRestore ? h(Button, { icon: "restore", onClick: p.onRestore, description: words.restoreHint }, words.restore) : null,
       p.onWatch
-        ? h(Button, { variant: "primary", icon: "eye", disabled: loaded.status !== "ready" || loaded.value.diff.shots === 0, onClick: () => p.onWatch!(p.a, p.b) }, words.watchTheChanges)
+        ? h(Button, { variant: "primary", icon: "eye", disabled: loaded.status !== "ready" || loaded.value.diff.shots === 0, description: loaded.status === "ready" && loaded.value.diff.shots === 0 && loaded.value.changes?.length ? "These changes don't change the picture." : undefined, onClick: () => p.onWatch!(p.a, p.b) }, words.watchTheChanges)
         : null,
     ),
   );

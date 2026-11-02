@@ -351,6 +351,11 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-compare-diff){display:flex;align-items:center;gap:6px;font-size:13px;font-weight:500;color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-compare-diff)::before{content:"";width:6px;height:6px;border-radius:50%;background:var(--cb-warn)}
 :where(${S}) :where(.carton-compare-diff[data-same])::before{background:var(--cb-ok)}
+/* the changes, in History's words (UI audit P2-5) */
+:where(${S}) :where(.carton-compare-changes){display:flex;flex-direction:column;gap:2px;padding:8px 10px;border-radius:8px;background:var(--cb-sunken)}
+:where(${S}) :where(.carton-compare-change){position:relative;padding-left:12px;font-size:12.5px;line-height:18px;color:var(--cb-fg-1);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-compare-change)::before{content:"";position:absolute;left:2px;top:8px;width:4px;height:4px;border-radius:50%;background:var(--cb-fg-3)}
+:where(${S}) :where(.carton-compare-more){align-self:flex-start;height:24px;margin-top:-4px;padding:0 8px;font-size:12px}
 
 /* ---------------------------------------------------------------- dialog (Fold in) */
 :where(${S}) :where(.carton-overlay){background:#000000a3;animation:carton-fade var(--cb-base) var(--cb-decel)}

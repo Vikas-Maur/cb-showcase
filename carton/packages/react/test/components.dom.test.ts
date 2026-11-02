@@ -201,13 +201,14 @@ test(name("fold in: leave a change out, pick on the card, then fold in N of M"),
   await m.unmount();
 });
 
-test(name("compare card: time, author, clips, length and N shots / X s of Y s differ"), async () => {
+test(name("compare card: time, author, clips, length, and what changed (N changes · X s of Y s differ)"), async () => {
   const ui = createMockUi({ versions: 10 });
   let watched: string[] | null = null;
   const m = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@9", onWatch: (a: string, b: string) => (watched = [a, b]) })));
   await flush();
   const text = m.container.textContent ?? "";
-  assert.match(text, /\d+ shots \/ \d+\.\d s of \d+\.\d s differ/);
+  assert.match(text, /\d+ changes? · \d+\.\d s of \d+\.\d s differ/);
+  assert.doesNotMatch(text, /shots? \//, "never shots (UI audit P2-5)");
   assert.match(text, /clips/);
   assert.match(text, /\d:\d\d\.\d/);
   await click(byText(m.container, "button", "Watch the changes"));

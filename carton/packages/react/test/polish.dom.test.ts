@@ -3,7 +3,7 @@
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime, type } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, CommentsPanel, CutsMenu, FoldInDialog, HistoryPanel, WatchTheChanges, createMockComments } from "../src/index.ts";
+import { CartonProvider, CommentsPanel, CompareCard, CutsMenu, FoldInDialog, HistoryPanel, WatchTheChanges, createMockComments } from "../src/index.ts";
 import { timecode } from "../src/components/WatchTheChanges.ts";
 import { createMockUi } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
@@ -295,6 +295,28 @@ test(name("P2-17: the reader keeps their place in a grouped History while versio
   await flush();
   assert.equal(list.scrollTop, before + 2 * 52, "shifted by the two rows that arrived above");
   assert.equal(topRow(), was, "the same row is still at the top");
+  await m.unmount();
+});
+
+test(name("P2-5: the Compare card lists what changed, five at once, the rest on Show more"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const changes = ["Moved 'Intro' 0:02.0 → 0:04.0", "Changed 'W1' text \"Hi\" → \"Hello world\"", "Trimmed 'Outro' end 6.0 s → 4.5 s", "Added caption 'Sale'", "Deleted video 'B-roll'", "Changed 'Intro' volume 100 → 80", "Moved 'CTA' 0:30.0 → 0:31.0"];
+  const comparison = { ...(await ui.compare("main@3", "main@30")), changes };
+  const m = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@30", comparison })));
+  await flush();
+  const card = $(m.container, ".carton-compare")!;
+  assert.match($(card, ".carton-compare-diff")!.textContent ?? "", /^7 changes · /);
+  assert.deepEqual($$(card, ".carton-compare-change").map((li) => li.textContent), changes.slice(0, 5));
+  await click(byText(card, "button", "Show 2 more"));
+  assert.equal($$(card, ".carton-compare-change").length, 7);
+  await click(byText(card, "button", "Show fewer"));
+  assert.equal($$(card, ".carton-compare-change").length, 5);
+  // the same two versions
+  const same = await render(wrap(ui, h(CompareCard, { a: "main@3", b: "main@3", comparison: { ...comparison, changes: [], diff: { shots: 0, seconds: 0, total: 10 } } })));
+  await flush();
+  assert.equal($(same.container, ".carton-compare-diff")!.textContent, "No differences");
+  assert.equal($(same.container, ".carton-compare-changes"), null);
+  await same.unmount();
   await m.unmount();
 });
 

@@ -114,6 +114,12 @@ export const words = {
   watchTheChanges: "Watch the changes",
   clips: (n: number) => plural(n, "clip", "clips"),
   length: (s: number) => duration(s),
+  // The Compare card's summary (UI audit P2-5): changes and seconds, as Watch the changes counts them; never shots.
+  compareSummary: (changes: number | null, s: number, total: number) =>
+    changes === 0 || (changes == null && s <= 0) ? "No differences" : `${changes == null ? "" : `${plural(changes, "change", "changes")} · `}${seconds(s)} of ${seconds(total)} differ`,
+  compareChanges: "What changed",
+  compareMore: (n: number) => `Show ${n} more`,
+  compareLess: "Show fewer",
   differ: (shots: number, s: number, total: number) =>
     shots === 0 ? "No shots differ" : `${plural(shots, "shot", "shots")} / ${seconds(s)} of ${seconds(total)} differ`,
   current: "Current",

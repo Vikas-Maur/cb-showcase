@@ -206,6 +206,8 @@ test("compare and watch the changes: real shots, aligned, and the N shots / X s 
   assert.equal(c.a.clipCount, 4);
   assert.equal(c.b.length, 20);
   assert.equal(c.diff.shots, 1, "one clip's look changed: one shot differs");
+  // what changed, in History's words (UI audit P2-5)
+  assert.deepEqual(c.changes, ["Changed 'B' color \"red\" → \"blue\""]);
   assert.equal(c.diff.seconds, 5);
   const d = await ui.shotDiff(first, head);
   assert.equal(d.a.length, 4);

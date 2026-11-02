@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, deepEqual, describe, describeCard as coreDescribeCard, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
+import { actorKey, apply, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -1115,7 +1115,15 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         const m = measure(doc, schema);
         return { label, ref, at: v?.at ?? clock(), author: v?.author ?? me, clipCount: m.clips, length: m.length };
       };
-      const c: Comparison = { a: side(a, da, d.aLabel), b: side(b, db, d.bLabel), diff: diffSummary(d) };
+      // What changed, in History's words (UI audit P2-5: the card said only "N shots differ"): the ops from a to b,
+      // described against a. A describe that fails leaves the card with its summary.
+      let changes: string[] | undefined;
+      try {
+        changes = engine.describe(docDiff(da, db, schema), da, schema);
+      } catch {
+        changes = undefined;
+      }
+      const c: Comparison = { a: side(a, da, d.aLabel), b: side(b, db, d.bLabel), diff: diffSummary(d), ...(changes ? { changes } : {}) };
       return c;
     },
 
