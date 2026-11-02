@@ -5,6 +5,8 @@ import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
 import { createMockUi } from "../src/mock.ts";
+import { commentsSkin } from "../src/comments/skin.ts";
+import { cardboardSkin } from "../src/skin/cardboard.ts";
 import type { CartonUi } from "../src/model.ts";
 
 const h = React.createElement;
@@ -85,4 +87,16 @@ test(name("regress #4: Esc returns from a preview when focus is on the page; a f
   window.removeEventListener("keydown", count);
   assert.equal(seen, 0, "no preview: the key is left alone");
   await m.unmount();
+});
+
+// Regress #5 (UI audit P2-20): the comment box still showed a textarea's resize grip. The comments skin said
+// `resize:none` for it, then a later rule of the same weight (every rule is in :where()) said `resize:vertical` and won.
+// What a box gets is the last declaration among the rules that reach it, in the order the skins are injected.
+test(name("regress #5: the comment box has no resize grip, and its height stops where the box stops growing (160 px)"), () => {
+  const decls = (css: string) => [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)]
+    .filter(([, sel]) => /\.carton-comment-text\b/.test(sel!))
+    .flatMap(([, , body]) => body!.split(";").map((d) => d.split(":").map((x) => x.trim()) as [string, string]));
+  const last = (prop: string) => [...decls(cardboardSkin), ...decls(commentsSkin)].filter(([k]) => k === prop).at(-1)?.[1];
+  assert.equal(last("resize"), "none", "no resize grip");
+  assert.equal(last("max-height"), "160px", "the box grows with its text to 160 px (TextBox), and no further");
 });

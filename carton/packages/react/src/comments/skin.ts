@@ -19,7 +19,6 @@ export const commentsSkin = `
 :where(${S}) :where(.carton-comments-title){margin:0;font-size:13px;font-weight:600;color:var(--cb-fg-1)}
 /* in Cardboard's side panel its tab already says "Comments" (UI audit P2-20) */
 :where(${S}) :where(.carton-sidebar .carton-comments-title){display:none}
-:where(${S}) :where(.carton-comment-text){resize:none;min-height:56px;max-height:160px;overflow-y:auto}
 /* a disabled send button as Cardboard's own: a quiet grey, not the white primary at half strength */
 :where(${S}) :where(.carton-comment-box .carton-btn[data-variant=primary]:disabled){background:var(--cb-secondary);color:var(--cb-fg-4);opacity:1}
 :where(${S}) :where(.carton-comment-esc){margin:0;font-size:11.5px;color:var(--cb-fg-3)}
@@ -39,7 +38,9 @@ export const commentsSkin = `
 :where(${S}) :where(.carton-comments-list){padding:0 8px 12px;scrollbar-width:thin;scrollbar-color:#ffffff1f transparent}
 
 :where(${S}) :where(.carton-comment-box){display:flex;flex-direction:column;gap:6px}
-:where(${S}) :where(.carton-comment-text){height:auto;min-height:52px;padding:7px 10px;line-height:18px;resize:vertical;field-sizing:content;max-height:200px}
+/* no resize grip: the box grows with its text, up to 160 px (TextBox), then scrolls (UI audit P2-20; regress 2026-11-02 #5:
+   a resize:vertical here, after a resize:none of the same weight, won and showed the grip) */
+:where(${S}) :where(.carton-comment-text){height:auto;min-height:52px;max-height:160px;padding:7px 10px;line-height:18px;resize:none;overflow-y:auto;field-sizing:content}
 :where(${S}) :where(.carton-comment-box-actions){display:flex;justify-content:flex-end;gap:6px}
 
 :where(${S}) :where(.carton-thread){position:relative;margin-top:6px;padding:8px 10px;border-radius:10px;background:var(--cb-card);
