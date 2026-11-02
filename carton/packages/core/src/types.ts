@@ -382,6 +382,11 @@ export interface Version {
   summary?: string;
   /** Every change the version made, one line each (describe()), when the summary doesn't already say it all. */
   details?: string[];
+  /**
+   * A partial fold ("fold in some of it"): what it left out, by path. Its fold and the partial revert after it are one
+   * version (UI audit P1-3), of kind `merge`; `change` is the partial revert's id, which "fold in the rest" reverts.
+   */
+  rejected?: PathKey[];
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";
