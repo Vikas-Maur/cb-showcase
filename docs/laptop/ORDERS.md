@@ -106,3 +106,15 @@ files.
      - Join → Open: the clip plays from its preview or shows Offline, with no "Missing Media Files";
      - one share of a ~1-minute clip to a second instance: the teammate's preview starts and plays to the end.
   3. Use `out/carton-rc2` for steps 3–4.
+
+### Update 2 (2026-11-02 ~12:20 UTC): push the regression reports
+EC2 is fixing the new P2s and P3s from 2.3–2.5. The fixers need the reports.
+1. **Push them now** to a new branch `audit/regress-2026-11-02`, branched from `origin/main`, holding only docs:
+   - `docs/regress/restore-root/REPORT.md` and `docs/regress/ui/REPORT.md`, plus any other step-2 REPORT.md;
+   - **at most ~8 MB of screenshots**: the P2s' shots and a few P3s', downscaled or cropped if needed. Keep the full
+     17 MB set on the laptop.
+2. **Then carry on:** G1; the 9 `--os` real-key tests and the timing runs (step 3) when the user is idle; the Wi-Fi test
+   (step 4).
+3. **Rebuilds:** Update 1's rebuild to `51f4d243` still applies. The fixes now in progress (presence after a reconnect,
+   read-your-writes after `cb source apply`, a split's wording and the cut menu, the restore media details, and the UI
+   P2s) will land in a later head, given as Update 3, with re-check steps. Do the final re-check on that.
