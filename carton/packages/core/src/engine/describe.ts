@@ -351,6 +351,14 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
   for (const op of rest) {
     const field = fieldWords(schema, op.path).words;
     const list = fieldWords(schema, op.path.slice(0, 3)).words;
+    // a keyed list set whole where there was none (a clip's first effect: no effects field yet) is its elements added,
+    // as an insert into a list that was there says it (regress 2026-11-02 P3-1: "Changed 'clip.mp4' effect")
+    const spec = op.op === "set" && op.path.length === 3 && Array.isArray(op.value) && op.value.length ? specAt(schema, op.path) : undefined;
+    const was = spec?.kind === "keyed" ? getIn(doc, op.path, schema) : null;
+    if (spec?.kind === "keyed" && (was === undefined || (Array.isArray(was) && !was.length))) {
+      for (const v of (op as { value: Rec[] }).value) parts.push(`added ${list}${elem({ op: "insert", path: [...op.path, String(v?.[spec.key] ?? "")], value: v } as PlainOp)}`);
+      continue;
+    }
     if (op.op === "insert") parts.push(`added ${list}${elem(op)}`);
     else if (op.op === "remove") parts.push(`removed ${list}${elem(op)}`);
     else if (op.path.at(-1) === POS) parts.push(`reordered ${list}`);
