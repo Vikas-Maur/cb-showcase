@@ -82,34 +82,83 @@ test("newerDetails: what says something new replaces; an entry that only lost fi
 test("MediaDetails: kept in .carton/media.json when dropped, read back by another process's instance, never replaced by less", async (t) => {
   const bundle = scratch(t);
   const a = new MediaDetails(bundle), b = new MediaDetails(bundle);
-  assert.equal(a.known()("m-clip"), undefined, "no file yet");
+  const v = (m: any) => ({ id: m.id, ...(m.contentHash ? { contentHash: m.contentHash } : {}), data: { type: m.data.type } });
+  assert.equal(a.known()("m-clip", v(clip)), undefined, "no file yet");
   const ch = a.changes(droppedMedia(project([clip, text]), project([])));
   assert.deepEqual([...ch!.details.keys()], ["m-clip", "m-text"]);
   await a.save(ch!);
   const file = path.join(bundle, MEDIA_DETAILS_FILE);
   const kept = JSON.parse(fs.readFileSync(file, "utf8"));
   assert.equal(kept.v, 1);
-  assert.deepEqual(kept.media["m-clip"], mediaDetails(clip));
+  assert.deepEqual(kept.media["m-clip"], { details: mediaDetails(clip), type: "video" });
   assert.ok(!JSON.stringify(kept).includes("Hello"), "a text's content isn't copied");
   // the same entries again: nothing to write (by identity, then by content)
   assert.equal(a.changes([clip, text]), null);
   assert.equal(a.changes([structuredClone(clip)]), null);
   // another process sees them, and keeps its own beside them
-  assert.deepEqual(b.known()("m-clip"), mediaDetails(clip));
+  assert.deepEqual(b.known()("m-clip", v(clip)), mediaDetails(clip));
   await b.save(b.changes([graphic])!);
-  assert.deepEqual(a.known()("m-code"), mediaDetails(graphic), "read again once the file changed");
-  assert.deepEqual(a.known()("m-text"), mediaDetails(text));
+  assert.deepEqual(a.known()("m-code", v(graphic)), mediaDetails(graphic), "read again once the file changed");
+  assert.deepEqual(a.known()("m-text", v(text)), mediaDetails(text));
   // an entry made from history alone, or one that only lost fields, says nothing new
   assert.equal(a.changes([{ id: "m-clip", data: { type: "video", fileName: "clip.mp4" } }]), null);
   assert.equal(a.changes([{ ...clip, data: { type: "video", size: 43902 } }]), null);
   // a newer probe replaces
   const newer = { ...clip, data: { ...clip.data, duration: 3.04 } };
   await a.save(a.changes([newer])!);
-  assert.equal((b.known()("m-clip") as any).data.duration, 3.04);
+  assert.equal((b.known()("m-clip", v(clip)) as any).data.duration, 3.04);
   // a damaged file is read as nothing known, and the next save replaces it
   fs.writeFileSync(file, "{not json");
-  assert.equal(a.known()("m-clip"), undefined);
+  assert.equal(a.known()("m-clip", v(clip)), undefined);
   await a.save(a.changes([structuredClone(clip)])!);
-  assert.deepEqual(b.known()("m-clip"), mediaDetails(clip));
+  assert.deepEqual(b.known()("m-clip", v(clip)), mediaDetails(clip));
   assert.deepEqual(fs.readdirSync(path.dirname(file)).filter((n) => n.endsWith(".tmp")), [], "no temp file left");
+});
+
+test("MediaDetails: details go back only to the same media (its kind, its content id where both have one)", async (t) => {
+  const bundle = scratch(t);
+  const d = new MediaDetails(bundle);
+  const shared = { ...clip, contentHash: "a".repeat(64) };
+  await d.save(d.changes([shared])!);
+  const known = d.known();
+  assert.deepEqual(known("m-clip", { id: "m-clip", contentHash: "a".repeat(64), data: { type: "video" } }), mediaDetails(clip));
+  assert.deepEqual(known("m-clip", { id: "m-clip", data: { type: "video" } }), mediaDetails(clip), "unlinked from sharing since: still its file");
+  assert.equal(known("m-clip", { id: "m-clip", contentHash: "b".repeat(64), data: { type: "video" } }), undefined, "other content under the id");
+  assert.equal(known("m-clip", { id: "m-clip", data: { type: "audio" } }), undefined, "another kind");
+  // and through materializeProject: an id brought back with other content has history's fields only
+  const other = { id: "m-clip", contentHash: "b".repeat(64), data: { type: "video", fileName: "clip.mp4" } };
+  assert.deepEqual((materializeProject(fromHost(project([other])), project([]), known).media as unknown[])[0], other);
+  // the same id seen again with other content replaces what was kept
+  const relinked = { ...clip, contentHash: "b".repeat(64), data: { ...clip.data, duration: 9 } };
+  await d.save(d.changes([relinked])!);
+  assert.equal((d.known()("m-clip", other) as any).data.duration, 9);
+});
+
+test("MediaDetails: a save that fails keeps nothing in memory either, so the next drop of the same details tries again", async (t) => {
+  const bundle = scratch(t);
+  const d = new MediaDetails(bundle);
+  // .carton is a file: nothing can be written under it
+  fs.writeFileSync(path.join(bundle, ".carton"), "");
+  await assert.rejects(d.save(d.changes([clip])!));
+  assert.equal(d.known()("m-clip", { id: "m-clip", data: { type: "video" } }), undefined);
+  fs.rmSync(path.join(bundle, ".carton"));
+  const again = d.changes([structuredClone(clip)]);
+  assert.ok(again, "tried again");
+  await d.save(again!);
+  assert.deepEqual(new MediaDetails(bundle).known()("m-clip", { id: "m-clip", data: { type: "video" } }), mediaDetails(clip));
+});
+
+test("materializeProject: a file's entry the current file holds without its details (src only) takes what is known of that media, its own fields first", () => {
+  const doc = fromHost(project([clip]));
+  const known = (id: string) => (id === "m-clip" ? mediaDetails(clip) : undefined);
+  const partial = { id: "m-clip", data: { type: "video", fileName: "clip.mp4", src: "cardboard-media://media/m-clip", duration: 3.04 } };
+  const out = (materializeProject(doc, project([partial]), known).media as any[])[0];
+  assert.deepEqual(out, { ...clip, data: { ...clip.data, duration: 3.04 } }, "the file's own duration stays; the rest is filled in");
+  // an entry with its details is the file's as it is, and nothing is looked up for it
+  let asked = 0;
+  materializeProject(doc, project([clip]), (id) => (asked++, known(id)));
+  assert.equal(asked, 0);
+  // a text's entry has no src: never looked up
+  materializeProject(fromHost(project([text])), project([text]), (id) => (asked++, known(id)));
+  assert.equal(asked, 0);
 });

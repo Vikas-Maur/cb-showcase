@@ -6,9 +6,11 @@
 // app restarted. So every write that drops an entry from project.json keeps the entry's details here first, and an
 // entry the current file doesn't have takes the details last kept for its id (`materializeProject`'s `known`).
 //
-// Kept per bundle in `.carton/media.json` ({v: 1, media: {<id>: details}}): beside seen.json and displaced/, never in a
-// .cbproj (H11 leaves `.carton` out), never in a log. Details only, without what history versions (the file name, a
-// text's content, a code graphic's source), so the project's own text isn't copied here.
+// Kept per bundle in `.carton/media.json` ({v: 1, media: {<id>: {details, type, contentHash?}}}): beside seen.json and
+// displaced/, never in a .cbproj (H11 leaves `.carton` out), never in a log. Details only, without what history
+// versions (the file name, a text's content, a code graphic's source), so the project's own text isn't copied here; with
+// the entry's kind and content id (shared media's), so details are only ever given back to the same media (review of
+// fix/media-meta #1: an id brought back with other content never takes the old file's facts).
 import fs from "node:fs";
 import path from "node:path";
 import { deepEqual } from "@carton/core";
@@ -18,9 +20,15 @@ import { retryBusy, type BusyOptions } from "./displace.ts";
 
 export const MEDIA_DETAILS_FILE = path.join(".carton", "media.json");
 
+/** What is kept for a media id: its details, and what they were seen with (its kind, its content id when shared). */
+export interface KeptMedia {
+  readonly details: Rec;
+  readonly type?: string;
+  readonly contentHash?: string;
+}
 /** Each id's newer details, and the entries they came from (not looked at again once kept). */
 export interface MediaDetailsChanges {
-  readonly details: ReadonlyMap<string, Rec>;
+  readonly details: ReadonlyMap<string, KeptMedia>;
   readonly entries: readonly object[];
 }
 
@@ -35,6 +43,19 @@ function within(a: unknown, b: unknown): boolean {
  * lost fields (one made from history alone, or from a file that lost them) never replaces what was known.
  */
 export const newerDetails = (kept: Rec | undefined, next: Rec): boolean => !kept || !within(next, kept);
+const str = (v: unknown): string | undefined => (typeof v === "string" && v ? v : undefined);
+const keptOf = (m: Rec, details: Rec): KeptMedia => {
+  const type = str((m.data as Rec | undefined)?.type), contentHash = str(m.contentHash);
+  return { details, ...(type ? { type } : {}), ...(contentHash ? { contentHash } : {}) };
+};
+/** The same media: of the same kind, and of the same content where both say which (an entry shared later, or unlinked from sharing, is still its file). */
+const sameMedia = (kept: KeptMedia, m: Readonly<Rec>): boolean => {
+  const type = str((m.data as Rec | undefined)?.type), hash = str(m.contentHash);
+  return (!kept.type || !type || kept.type === type) && (!kept.contentHash || !hash || kept.contentHash === hash);
+};
+/** Whether `next` replaces what is kept: other media, or details saying anything the kept ones don't. */
+const replaces = (kept: KeptMedia | undefined, next: KeptMedia): boolean =>
+  !kept || kept.type !== next.type || kept.contentHash !== next.contentHash || newerDetails(kept.details, next.details);
 
 /**
  * The media entries of `before` that `after` doesn't have (by id): what a write of `after` over `before` drops from
@@ -58,7 +79,7 @@ export function droppedMedia(before: Readonly<Record<string, unknown>> | null | 
 export class MediaDetails {
   readonly file: string;
   #seen = new WeakSet<object>();
-  #kept = new Map<string, Rec>();
+  #kept = new Map<string, KeptMedia>();
   #stamp: string | null | undefined = undefined; // the file's stamp when last read; undefined: never read
   readonly #busy: BusyOptions;
 
@@ -67,16 +88,22 @@ export class MediaDetails {
     this.#busy = busy;
   }
 
-  /** The details last kept for each media id, for `materializeProject` (the file read again if it changed). */
+  /**
+   * The details last kept for each media id, for `materializeProject` (the file read again if it changed): only for the
+   * same media (its kind, and its content id where both have one), else none.
+   */
   known(): KnownMedia {
     this.#load();
     const kept = this.#kept;
-    return (id) => kept.get(id);
+    return (id, versioned) => {
+      const k = kept.get(id);
+      return k && sameMedia(k, versioned) ? k.details : undefined;
+    };
   }
 
   /** What `entries` say that isn't kept yet: null when nothing. An entry with nothing new isn't looked at again. */
   changes(entries: Iterable<unknown>): MediaDetailsChanges | null {
-    let details: Map<string, Rec> | null = null;
+    let details: Map<string, KeptMedia> | null = null;
     const from: object[] = [];
     let loaded = false;
     for (const m of entries) {
@@ -84,8 +111,9 @@ export class MediaDetails {
       const d = typeof m.id === "string" && m.id ? mediaDetails(m) : null;
       if (!d) { this.#seen.add(m); continue; }
       if (!loaded) this.#load(), (loaded = true);
-      if (!newerDetails(this.#kept.get(m.id as string), d)) { this.#seen.add(m); continue; }
-      (details ??= new Map()).set(m.id as string, d);
+      const next = keptOf(m, d);
+      if (!replaces(this.#kept.get(m.id as string), next)) { this.#seen.add(m); continue; }
+      (details ??= new Map()).set(m.id as string, next);
       from.push(m);
     }
     return details ? { details, entries: from } : null;
@@ -96,15 +124,24 @@ export class MediaDetails {
    * caller holds the bundle's install lock, which every writer of this file takes, so two processes don't lose each
    * other's.
    */
+  // What is kept in memory changes only once the file says so (review of fix/media-meta #5: a failed write left this
+  // process believing them kept, so it never tried again): a failure throws, and the next drop of them tries again.
   async save(changes: MediaDetailsChanges): Promise<void> {
     this.#load();
+    const next = new Map(this.#kept);
     let wrote = false;
-    for (const [id, d] of changes.details) if (newerDetails(this.#kept.get(id), d)) this.#kept.set(id, d), (wrote = true);
+    for (const [id, k] of changes.details) if (replaces(next.get(id), k)) next.set(id, k), (wrote = true);
     if (wrote) {
       fs.mkdirSync(path.dirname(this.file), { recursive: true });
       const tmp = `${this.file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify({ v: 1, media: Object.fromEntries(this.#kept) }));
-      try { await retryBusy(() => fs.renameSync(tmp, this.file), this.#busy); } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+      try {
+        fs.writeFileSync(tmp, JSON.stringify({ v: 1, media: Object.fromEntries(next) }));
+        await retryBusy(() => fs.renameSync(tmp, this.file), this.#busy);
+      } catch (e) {
+        fs.rmSync(tmp, { force: true });
+        throw e;
+      }
+      this.#kept = next;
       this.#stamp = this.#stampNow();
     }
     for (const e of changes.entries) this.#seen.add(e);
@@ -121,7 +158,12 @@ export class MediaDetails {
     if (stamp === null) return;
     try {
       const j = JSON.parse(fs.readFileSync(this.file, "utf8"));
-      if (isObj(j?.media)) for (const [id, d] of Object.entries(j.media)) if (isObj(d)) this.#kept.set(id, d);
+      if (isObj(j?.media)) {
+        for (const [id, k] of Object.entries(j.media)) {
+          if (!isObj(k) || !isObj(k.details)) continue;
+          this.#kept.set(id, { details: k.details, ...(str(k.type) ? { type: k.type as string } : {}), ...(str(k.contentHash) ? { contentHash: k.contentHash as string } : {}) });
+        }
+      }
     } catch {
       // unreadable (half-written by hand, or damaged): nothing is known; the next save replaces it
     }

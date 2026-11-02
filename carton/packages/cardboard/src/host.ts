@@ -216,8 +216,12 @@ export function mediaDetails(entry: Readonly<Rec>): Rec | null {
   return Object.keys(rest).length ? rest : null;
 }
 
-/** Where a media entry's details come from when the current file doesn't have the entry (`materializeProject`). */
-export type KnownMedia = (id: string) => Readonly<Rec> | null | undefined;
+/**
+ * Where a media entry's details come from when the current file doesn't have the entry (`materializeProject`): given
+ * its id and what history holds of it (its kind, its content id when shared), the details last seen for that same
+ * media, or nothing.
+ */
+export type KnownMedia = (id: string, versioned: Readonly<Rec>) => Readonly<Rec> | null | undefined;
 
 /**
  * The `project` object to write to project.json for engine state `doc`: the current file's project with the
@@ -247,18 +251,27 @@ export function materializeProject(doc: Doc, current: Readonly<Record<string, un
   });
   if (slice.media) {
     const curMedia = new Map((cur.media ?? []).map((m) => [m.id, m]));
-    const had = (id: string): Rec | undefined => {
-      const c = curMedia.get(id);
-      if (c) return c;
-      const d = known?.(id);
-      return d && typeof d === "object" ? { ...d, id } : undefined;
+    const had = (m: Rec): Rec | undefined => {
+      const c = curMedia.get(m.id);
+      // a file's entry the current file holds without what Cardboard's import gives it (review of fix/media-meta #3:
+      // one an older writer left with its src only): what is known of that media fills in what it lacks, its own first
+      if (c && !(known && lacksDetails(c))) return c;
+      const d = known?.(m.id as string, m);
+      if (!d || typeof d !== "object") return c;
+      return c ? { ...d, ...c, data: { ...((d.data as Rec | undefined) ?? {}), ...((c.data as Rec | undefined) ?? {}) } } : { ...d, id: m.id };
     };
-    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, had(m.id as string), m), out[ITEMS] as Rec[]));
+    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, had(m), m), out[ITEMS] as Rec[]));
   }
   return out;
 }
 
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const FILE_MEDIA: ReadonlySet<unknown> = new Set(["video", "audio", "image"]);
+/** A file's media entry without what Cardboard's import always gives it: where it plays from and its size. */
+export function lacksDetails(m: Readonly<Rec>): boolean {
+  const d = m.data as Rec | undefined;
+  return !!d && typeof d === "object" && FILE_MEDIA.has(d.type) && (d.src === undefined || d.size === undefined || ((d.type === "video" || d.type === "audio") && d.duration === undefined));
+}
 /**
  * A code graphic's size, which Cardboard's reader requires and Carton doesn't version (only its source), for an entry the
  * current file doesn't have (a restore after the file lost its media, a teammate's new graphic): the composition size of
