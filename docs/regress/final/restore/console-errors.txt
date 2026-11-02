@@ -1,0 +1,54 @@
+Console errors on the editor page, final candidate out/carton-final (merge/prod-2 @ 0cc587f1), Windows, Carton on.
+Captured over DevTools (Runtime.consoleAPICalled / exceptionThrown) by the laptop manager on 2026-11-02, on fresh
+copies of the profile `dl` (the 2 projects broken by 915eb36). Script: recover-errs.js (laptop D:\cbwork\regress\final\mine).
+
+== P1-1: any GUI edit on a project recovered through History (here: "Oldest restore", after History → Restore
+   "Added 2 tracks, 7 clips and 6 media files"). Logged on every edit; no version is made, disk unchanged.
+   Disk before and after the edit: "16:9 · 6.0s · 2 tracks · 7 items", head "main@6 person restore".
+
+console.error: Failed to update scoped project data: RangeError: Invalid time value
+    at Date.toISOString (<anonymous>)
+    at p9 (app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:196:87925)
+    at Array.map (<anonymous>)
+    at fm (app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:203:104837)
+    at Jt (app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:203:112920)
+    at app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:204:192645
+  (logged from)
+    at Jt (assets/installErrorTelemetry-DxKId8tA.js:203:112955)
+    at (anonymous) (assets/installErrorTelemetry-DxKId8tA.js:204:192645)
+console.error: Failed to save timeline to IndexedDB: RangeError: Invalid time value
+    at Date.toISOString (<anonymous>)
+    at p9 (app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:196:87925)
+    at Array.map (<anonymous>)
+    at fm (app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:203:104837)
+    at Jt (app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:203:112920)
+    at app://cardboard/assets/installErrorTelemetry-DxKId8tA.js:204:192645
+  (logged from)
+    at (anonymous) (assets/installErrorTelemetry-DxKId8tA.js:204:189753)
+
+Cause: the recovered project.json's project.media[] entries are {id, data} only (no createdAt / addedAt);
+p9 calls .toISOString() on both. Compare project-json/recovered-final-0cc587f1.project.json (7 entries, no dates)
+with project-json/healthy-final-0cc587f1.project.json (createdAt/addedAt on every entry). The rc's recovered file
+(project-json/recovered-rc-12826273.project.json, from the 12826273 check) has the same date-less entries: not new
+in 0cc587f1.
+
+== P2-1: undo right after the recovery. Reproduced with `cb undo "Oldest restore"` while the tab is open:
+   cb: "Undo external:project.json: edit: confirmed …@9"; head main@9 Terminal undo; disk "16:9 · 0.0s · 0 tracks ·
+   0 items"; the tab shows "This tab hit a snag. Your project files are safe."
+
+console.error: TypeError: Cannot read properties of undefined (reading 'split')
+    at Ge (app://cardboard/assets/LayoutsPanel-BztyTnqC.js:1:6929)
+    at xc (app://cardboard/assets/styles-9rk1jtaN.js:8:47994)
+    at Qc (app://cardboard/assets/styles-9rk1jtaN.js:8:70787)
+    at em (app://cardboard/assets/styles-9rk1jtaN.js:8:81121)
+    at Dm (app://cardboard/assets/styles-9rk1jtaN.js:8:116845)
+    at lv (app://cardboard/assets/styles-9rk1jtaN.js:8:115891)
+    at pr (app://cardboard/assets/styles-9rk1jtaN.js:8:115723)
+    at Em (app://cardboard/assets/styles-9rk1jtaN.js:8:112521)
+    at Vm (app://cardboard/assets/styles-9rk1jtaN.js:8:124427)
+    at fi (app://cardboard/assets/styles-9rk1jtaN.js:8:122975)
+
+   With Ctrl+Z (one try, a DevTools key) right after the recovery the tab did NOT crash, but the undo didn't stick:
+   main@7 "person undo" then at once main@8 "external:project.json edit" put the restored state back (7 items).
+   The restore subagent saw the crash on Ctrl+Z twice. History of that run:
+     main@8 external:project.json edit / main@7 person undo / main@6 person restore / main@5 person edit (on open)
