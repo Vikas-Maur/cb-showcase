@@ -118,3 +118,44 @@ EC2 is fixing the new P2s and P3s from 2.3–2.5. The fixers need the reports.
 3. **Rebuilds:** Update 1's rebuild to `51f4d243` still applies. The fixes now in progress (presence after a reconnect,
    read-your-writes after `cb source apply`, a split's wording and the cut menu, the restore media details, and the UI
    P2s) will land in a later head, given as Update 3, with re-check steps. Do the final re-check on that.
+
+### Update 3 (2026-11-02 ~15:00 UTC): the final release candidate `0cc587f1`
+`merge/prod-2` = **`0cc587f1`**: every fix. On Linux it's green: typecheck, 3,236 workspace tests with 0 failures, all 34
+app sync files in the real 1.4.0 worker, the size budgets, and a re-test after the last merge.
+1. **Build it** into `out/carton-final`, Carton on. Delete `out/carton-rc` once the build passes its checks. Keep the A/B
+   builds until timing C is done, then delete them.
+2. **Re-check on `out/carton-final`** (own profiles; DevTools while the user is at the laptop, real keys only when they're
+   away):
+   - **Presence after a reconnect:** `node check.js out/carton-final --trigger host --wait 180`, 3 runs. Both sides
+     re-list each other within seconds.
+   - **Read-your-writes:**
+     - A real in-app Claude Code turn: "Set W2's font size to 321 with `cb source apply`, then immediately read
+       `timeline.tsx` and tell me W2's font size". It must say 321 within the same turn.
+     - In the same turn, after a GUI edit of yours, the agent's apply shows and your edit stays held until the turn ends.
+     - 15 terminal applies with the app open, each read immediately: 15/15 show the change.
+   - **The split wording:** split a clip, and History reads "Split '<file>' at N.N s"; split then move, and it reads
+     "…, moved its right part …". In the Fold dialog a split is one row, and unticking it keeps the clip whole on Main.
+   - **The cut menu:** `cb cut new "<p>" "30s cut"` appears in History's cut menu within ~1 s, and is still there after
+     reopening.
+   - **Media details:**
+     - Restore "Started the project's history" (main@1), then the newest version: the clip keeps its thumbnail, plays at
+       once, and `cb media list` shows its duration and size. Then the same via `cb restore`.
+     - Recover a broken project (on a copy), then restore a pre-break version: the clip plays without a restart.
+     - `cb undo <p> 0` is refused, naming main@1.
+     - With a broken project in the library, `cb history <other>` prints no warning.
+     - Restore moves the library's "Updated" time.
+   - **ui-regress:**
+     - With `CLAUDECODE=1` (no hook), a Claude Code view save reads "Claude Code" in History and on the card ("Keep
+       Claude Code's"; the toast "Kept Claude Code's"). A plain terminal's view still reads "You".
+     - History keeps your place when versions arrive, also after picking a row with the keyboard (`s-keepplace3.js`).
+     - "Join a shared project" shows on an empty library and on the Projects page (Carton on only).
+     - Esc returns from a preview: the first Esc deselects a clip, the next returns. From the History list, the first Esc
+       returns and the second closes.
+     - The comment box has no grip and grows to ~8 lines.
+     - A first effect is named, the 300 px header is clean, Esc on a row menu then ↓ moves on, and a one-change row's
+       toggle reads "Show the change".
+   - **Spot checks:** the share crash 3/3 on one side; bug 6 (split → drag → Ctrl+Z ×2, then redo); page shortcuts
+     25/25. Run `--os` 9/9 too when the user is away.
+3. **Timing:** finish C. Then **B** (apply latency, 1 and 4 writers, Carton on vs off) on `out/carton-final`. A separate
+   subagent re-checks every number.
+4. **Report** with step 5's format, then wait for the merge to `main` and the reinstall order.
