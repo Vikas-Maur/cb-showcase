@@ -1,0 +1,36 @@
+{
+ "_about": "The release's preview settings (merge/prod-2 @ 51f4d243: 1 part / 1 MiB per append, 4 appends in flight to the end; 1 MiB reads, 2 in flight; the server advertises the limits), as the cost calculator reads them: build-data.mjs --proxy-release. Transcribed from the sources named in each section; the numbers are theirs. The final runs' CPU distribution and 4G speeds come from cf-verify4's verified.json (--proxy-final), not from here.",
+ "clip": { "segments": 40, "parts": 41, "bytes": 26561665, "note": "80 s of the app's 720p encode: 40 segments and the init, 0.618 MiB a part" },
+ "structure": {
+  "_source": "the final runs' own client counts (cf-proxy-path/runs-r5, both 4G runs) and cf-verify4's run (CF-VERIFY-PROXY-4.md: 42 appends, 2 + 41 reads); the same counts in the implementer's local runs (runs-local, 'after')",
+  "publish": { "appends": 42, "appendsNote": "1 lease-only append, [init, 0], segments 1-39 one each, and the end alone (stream.ts:347; CF-VERIFY-PROXY-4.md)", "sign": 3, "signedGET": 2, "signedPUT": 1, "heads": 1, "workerRequests": 49 },
+  "writeCapReserves": 42,
+  "play": { "reads": 41, "liveReads": 2, "readMiB": 1, "segmentsPerRead": 1, "readsNote": "a 1 MiB read holds one 0.65 MB segment (two don't fit); 40 media reads and one more" },
+  "status": "verified",
+  "checkedBy": "cf-verify4 (its own live run: 42 appends, 2 + 41 reads, all 200)"
+ },
+ "cfVerify3": {
+  "_source": "CF-VERIFY-PROXY-3.md (cf-verify3, 2026-11-02 10:15-10:45 UTC) on fix/cf-proxy-path-r @ 16544692: the same server bundle as the release (CF-VERIFY-PROXY-4.md: byte-identical), the client before the in-flight fix (the end queued early, so the last 15 appends went one at a time; one read in flight). Run records in gfv-scratch/carton/cf-verify3/runs/.",
+  "workerRequestsPerSegment": 1.2,
+  "workerRequestsNote": "48 a share: 41 appends, 3 signs, 2 signed GETs, 1 signed PUT, 1 heads (exact, client log checked against the tail)",
+  "writeCapDoRequestsPerSegment": 1.05,
+  "writeCapNote": "42 a share (GraphQL, unsampled)",
+  "playRequestsPerMiB": 1.58,
+  "playRequestsNote": "40 reads for the 25.33 MiB stream, each one segment",
+  "publishCpuMsPerSegment": { "good": [5.51, 5.72], "4g": [4.3, 3.92], "note": "GraphQL per phase, with cf-verify3's two hand corrections of sampled seconds" },
+  "playCpuMsPerMiB": { "good": [6.01, 4.74], "4g": [4.5, 6.11] },
+  "appendCpu": { "tailFloors": { "n": 164, "p50": 3, "p90": 6, "max": 21, "ge10": 2 }, "exact": { "n": 84, "p50": 3.48, "p90": 4.86, "max": 9.16 } },
+  "readCpu": { "tailFloors": { "n": 159, "p50": 3, "p90": 4, "max": 9, "ge10": 0 }, "exact": { "n": 150, "p50": 3.25, "p90": 4.29, "max": 9.72 } },
+  "speeds": {
+   "good": { "publishX": [1.74, 1.76], "playX": [1.99, 1.33], "liveFirstMs": [7599, 7057], "playFirstSegMs": [1108, 1766] },
+   "4g": { "publishX": [0.94, 0.88], "playX": [0.81, 1.0], "liveFirstMs": [9841, 10073], "playFirstSegMs": [2940, 2290] }
+  },
+  "status": "verified"
+ },
+ "local": {
+  "_source": "the implementer's local matrix (cf-proxy-path/NOTES.md 'Round 5', runs-local/): local workerd (wrangler dev) with a 500 ms R2 delay, the client in a shaped namespace, the 80 s clip, client d9bce5e5 ('after') against 16544692 ('before'), 2 runs each. Not on Cloudflare, and not re-checked.",
+  "good": { "publishX": [3.93, 3.83], "playX": [1.83, 1.83], "liveFirstMs": [6988, 7376] },
+  "4g": { "publishX": [1.49, 1.51], "playX": [1.04, 1.14], "liveFirstMs": [10160, 9987] },
+  "status": "measured"
+ }
+}
