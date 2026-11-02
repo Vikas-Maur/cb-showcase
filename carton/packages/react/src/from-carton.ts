@@ -803,7 +803,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           void track(refreshCuts()); // tracked: settled() waits for it too
           break;
         }
-        appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
+        // A withdraw row (H1: a sent edit a rebase emptied, its id spent) moves the head but is no version: History
+        // leaves it out, as log() does
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
