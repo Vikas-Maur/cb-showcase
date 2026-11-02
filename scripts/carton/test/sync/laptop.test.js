@@ -153,9 +153,14 @@ test("#9 cb's `project create` says nothing about history being off: the project
 const BASH = process.platform !== "win32" ? "bash" : process.env.CLAUDE_CODE_GIT_BASH_PATH
   ?? [path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe")].find((f) => fs.existsSync(f)) ?? "bash";
 
-test("#8 an in-app turn on the person's own Claude Code (not the Director), as Cardboard 1.4.0 runs it, is a turn too: credited to Claude Code, the freeze ends with it, its last version takes the prompt's name", t, async () => {
+/**
+ * #8's setting: a computer with the project (W1, W2), main's bridge, and the person's own Claude Code as Cardboard 1.4.0
+ * runs it (its Bash calls through the transport's hook, then Git Bash). The worker starts with `open(library)`: main's
+ * library for the bridge is the worker's own, or `library`, which a test can put between them.
+ */
+async function inAppClaudeCode(name) {
   const b = await S.build();
-  const pc = await S.computer("laptop-8", b);
+  const pc = await S.computer(name, b);
   const must = (x, what) => assert.equal(x.code, 0, what + ": " + x.out + x.err);
   // (before the worker runs: a terminal's cb write while it runs freezes timeline.tsx for a minute, by design)
   must(pc.cb(["project", "create", "Demo"]), "create");
@@ -198,14 +203,23 @@ test("#8 an in-app turn on the person's own Claude Code (not the Director), as C
     assert.match(r.ran, new RegExp(`^export CARDBOARD_ACTOR='${ME}'; `), "its cb call is Claude Code's, never director/<chat>");
   };
   const versionNamed = (label) => S.until(() => pc.cb(["history", "Demo", "--limit", "20"]).json().versions.find((v) => v.name === label), 20_000, `the version named "${label}"`);
-  const ends = [];
-  try {
+  /** The worker running, main's bridge on it (or on `library`), and the project open in the app. */
+  const open = async (library = (method, arg) => pc.call(method, arg)) => {
     await pc.startWorker();
-    m.library({ call: (method, arg) => pc.call(method, arg) });
+    m.library({ call: library });
     await pc.call("projects.list");
     // the project open in the app: a GUI save opens its Carton, and the worker's Materializer prints timeline.tsx
     await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, textContent: "W2 title" } : null));
     await S.until(() => / p:\S+ by carton$/m.test(tsx()) && tsx().includes('textContent="W2 title"'), 20_000, "the Materializer's timeline.tsx");
+  };
+  return { b, pc, must, m, id, bundle, tsx, chatId, session, ME, ctx, bash, agentEdit, versionNamed, open };
+}
+
+test("#8 an in-app turn on the person's own Claude Code (not the Director), as Cardboard 1.4.0 runs it, is a turn too: credited to Claude Code, the freeze ends with it, its last version takes the prompt's name", t, async () => {
+  const { b, pc, must, m, id, bundle, tsx, chatId, session, ME, ctx, bash, agentEdit, versionNamed, open } = await inAppClaudeCode("laptop-8");
+  const ends = [];
+  try {
+    await open();
 
     // Turn 1, ended without a Stop (an interrupt: Cardboard's end() → closeTurn): the turn's end alone lets go.
     const chat = { chatId, sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "Make the first title bigger. Then stop." } };
@@ -254,6 +268,75 @@ test("#8 an in-app turn on the person's own Claude Code (not the Director), as C
     assert.ok(await versionNamed("Make the first title bigger"), "turn 1's version keeps its name");
     console.log(`# laptop #8: timeline.tsx back to head ${ends.join(" ms, ")} ms after each turn's end`);
     for (const ms of ends) assert.ok(ms < 5_000, "promptly after the turn's end: " + ends);
+  } finally { await pc.stopWorker(); }
+});
+
+test("#8 (review P2) on the person's own Claude Code: a Stop the worker answers after its turn was interrupted lets go of nothing the next turn holds, and a turn's late name request names its own version, not the next turn's", t, async () => {
+  const { pc, must, m, id, tsx, session, ME, ctx, bash, agentEdit, open } = await inAppClaudeCode("laptop-8-p2");
+  // main's library, with a door the test opens: the next call of a method waits there until the test lets it through
+  // to the worker (a slow worker, a delayed request), and its answer is the worker's
+  const doors = new Map();
+  const hold = (method) => {
+    const door = { done: null };
+    door.opened = new Promise((r) => (door.open = r));
+    door.arrived = new Promise((r) => (door.came = r));
+    doors.set(method, door);
+    return door;
+  };
+  const library = (method, arg) => {
+    const door = doors.get(method);
+    if (!door) return pc.call(method, arg);
+    doors.delete(method);
+    door.came(arg);
+    door.done = door.opened.then(() => pc.call(method, arg));
+    return door.done;
+  };
+  const mine = () => pc.cb(["history", "Demo", "--limit", "20"]).json().versions.filter((v) => (v.by?.id ?? v.by) === ME);
+  try {
+    await open(library);
+    // Turn 1 reads the shared file and edits W1; the person's edit of W2 stays out of the frozen file
+    const chat = { chatId: ctx.chatId, sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "Make the first title bigger. Then stop." } };
+    m.turnStarted(chat, id, ctx.project.bundlePath, chat.turn, "claude");
+    must(await bash('grep -n "W2" timeline.tsx'), "turn 1's read");
+    await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, fontSize: 180 } : null));
+    await agentEdit(160);
+    await S.until(() => sizeOf(tsx(), "W1") === 160, 20_000, "turn 1's edit in the frozen file");
+    assert.equal(sizeOf(tsx(), "W2"), 100, "the person's edit stays out while turn 1 runs");
+    // its Stop asks the worker, which is slow to answer; the person interrupts (closeTurn: the turn's end), and the turn's
+    // name request is slow to reach the worker too
+    const slowStop = hold("carton.stopHook"), slowName = hold("carton.nameTurn");
+    const stop1 = m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session, stop_hook_active: false });
+    await slowStop.arrived;
+    m.turnEnded(chat, "stopped");
+    chat.turn = { state: "idle" };
+    await slowName.arrived;
+    await S.until(() => sizeOf(tsx(), "W2") === 180, 10_000, "timeline.tsx back to head after the interrupt");
+    // Turn 2, the same session resumed: it reads (the freeze again, the same claude-code/<session>) and edits W1 again
+    chat.turn = { id: "t2", state: "running", text: "Bigger first title again. Then stop." };
+    m.turnStarted(chat, id, ctx.project.bundlePath, chat.turn, "claude");
+    must(await bash("grep -n 'W1' timeline.tsx"), "turn 2's read");
+    await S.guiSave(pc, id, (it) => (it.name === "W2" ? { ...it, fontSize: 190 } : null));
+    await agentEdit(170);
+    await S.until(() => sizeOf(tsx(), "W1") === 170, 20_000, "turn 2's edit in the frozen file");
+    // turn 1's Stop comes back now: it must not let go of turn 2's hold
+    slowStop.open();
+    assert.deepEqual(await stop1, {});
+    await S.sleep(1500);
+    assert.equal(sizeOf(tsx(), "W2"), 180, "turn 1's late Stop let the person's edit into timeline.tsx while turn 2 runs");
+    // turn 1's name request reaches the worker now, after turn 2's edit: it names turn 1's version (W1 160)
+    slowName.open();
+    assert.deepEqual(await slowName.done, { status: "named" });
+    const [v2, v1] = mine();
+    assert.ok(v1 && v2, "both turns' versions are Claude Code's: " + JSON.stringify(mine()));
+    assert.equal(v1.name, "Make the first title bigger", "turn 1's version takes turn 1's name: " + JSON.stringify([v2, v1]));
+    assert.equal(v2.name ?? null, null, "turn 2's version isn't named after turn 1: " + JSON.stringify(v2));
+    // turn 2 ends as the stream's result ends it: its own Stop, then closeTurn; it lets go and takes its name
+    assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session, stop_hook_active: false }), {});
+    m.turnEnded(chat, "result");
+    chat.turn = { state: "idle" };
+    await S.until(() => sizeOf(tsx(), "W2") === 190, 10_000, "timeline.tsx back to head after turn 2");
+    await S.until(() => mine()[0]?.name === "Bigger first title again", 20_000, "turn 2's version named");
+    assert.equal(mine()[1].name, "Make the first title bigger", "turn 1's keeps its name");
   } finally { await pc.stopWorker(); }
 });
 

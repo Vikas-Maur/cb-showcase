@@ -284,7 +284,10 @@ if (mode === "--cli") {
     replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt},...__cartonMain.fileHooks(e)],...__cartonMain.stopHooks(e)}");
     // H9: each in-app agent's turn (the Director's, the person's own Claude Code's, Codex's) ends here (closeTurn: the
     // stream's result, an interrupt, an error): its hold on timeline.tsx ends, and its last version is named from the
-    // turn's prompt (as the chat's checkpoints are); the label stays in the project's history.
+    // turn's prompt (as the chat's checkpoints are); the label stays in the project's history. The transport, and so its
+    // hooks, outlives the turn (n.process): review P2 (lap2), each start and end is a new turn generation in main-bridge,
+    // so a hook still waiting at the end (an interrupted turn's Stop) sends nothing after it, and the turn's name request
+    // carries its end (a late one never takes the next turn's version).
     replace('n.turn={state:"running",id:s.id,text:s.text}', 'n.turn={state:"running",id:s.id,text:s.text},__cartonMain.turnStarted(n,t,i.project?.bundlePath,s,i.launch?.provider)');
     replace('closeTurn(t,r){t.turn.state==="running"&&', 'closeTurn(t,r){__cartonMain.turnEnded(t,r);t.turn.state==="running"&&');
     // H9: a Claude Code started as a process (its args) gets the same hooks through --settings. 1.4.0 runs its Claude

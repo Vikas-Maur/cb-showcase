@@ -1236,16 +1236,20 @@ export const cardboard14 = {
       },
       // An in-app agent's turn ended: its last version on the current cut takes the turn's label, unless it has a name.
       // The Director's versions name their turn; another provider's (laptop #8: the person's own Claude Code, Codex)
-      // are told by who made them (`actors`, a subagent's as its agent's) and when (from `since`, the turn's start).
-      nameTurn: async ({ projectId, chat, turn, prompt, actors, since }) => {
+      // are told by who made them (`actors`, a subagent's as its agent's) and when: from `since`, the turn's start, to
+      // `until`, its end. Review P2 (lap2): those actors are the same in every turn of a session, and the request can
+      // reach this worker after the next turn's edits; bounded by the turn's end, it never takes the next turn's version
+      // (a request without `until` has no end, as before).
+      nameTurn: async ({ projectId, chat, turn, prompt, actors, since, until }) => {
         const lc = await lcOf(projectId), label = turnLabel(prompt);
         if (!lc || !label) return { status: "unavailable" };
         const want = { turn: safePart(String(turn)), chat: chat ? safePart(String(chat)) : null };
         const by = Array.isArray(actors) ? new Set(actors.map(String)) : null;
+        const end = typeof until === "number" && Number.isFinite(until) ? until : Infinity;
         const ours = (v) => {
           if (!by) return v.author?.turn === want.turn && (!want.chat || v.author?.chat === want.chat);
           const who = String((v.authoredAs ?? v.author)?.id ?? "").replace(/\/sub-[^/]*$/, "");
-          return by.has(who) && typeof v.at === "number" && v.at >= (Number(since) || 0);
+          return by.has(who) && typeof v.at === "number" && v.at >= (Number(since) || 0) && v.at <= end;
         };
         for (const v of await lc.carton.log({ limit: 200 })) {
           if (!ours(v)) continue;

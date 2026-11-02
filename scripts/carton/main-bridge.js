@@ -45,6 +45,17 @@ module.exports = String.raw`var __cartonMain = (() => {
     if (ctx?.chatId !== undefined) (hooked.get(ctx.chatId) ?? hooked.set(ctx.chatId, new Set()).get(ctx.chatId)).add(base);
     return base + subOf(input);
   };
+  // Review P2 (lap2): each chat's turn generation, one more at every turn's start and end (turnStarted, turnEnded). A
+  // hook that waits (the worker's stopHook, the credit gate's question) can come back after its turn ended: an interrupt
+  // ends it at once (closeTurn), and the person can resume the same session straight away. The person's own Claude Code
+  // has the same id in every turn of a session (claude-code/<session>), so a late Stop's release would let go of the
+  // next turn's hold on timeline.tsx (the person's edits in the file while that turn runs). Such a hook sends nothing
+  // after its wait: the turn's end already let go of everything the turn held (endTurn). The Director's hooks share the
+  // check (their ids carry the turn, so theirs could only release an ended turn's). Hook events go to the worker in the
+  // order main sends them, so one sent before the turn's end is handled before anything the next turn sends.
+  const gens = new Map();
+  const genOf = (chatId) => gens.get(chatId) ?? 0;
+  const nextGen = (chatId) => void gens.set(chatId, genOf(chatId) + 1);
   // Commands that reach Carton: cb, cardboard, or a script under the bundle that runs them. Others keep the actor
   // main gave the process (director/<chat>), so a script that calls cb is still the Director's, just without the turn.
   // (The person's own Claude Code has no actor of its own in its environment: a script's cb call there is cb's own
@@ -60,13 +71,14 @@ module.exports = String.raw`var __cartonMain = (() => {
   // Block once per conflict set: whatever the agent leaves unresolved becomes a card for the person (the worker's
   // stopHook: @carton/local's, as host Claude Code's cb carton-hook runs it, so the agent's own cards stay for cb
   // conflicts and cb resolve). A stop that goes through ends the agent's hold on the shared file (H8); a blocked one goes
-  // on with the turn.
+  // on with the turn. Only within its turn (review P2, gens): one the worker answers after the turn ended lets go of
+  // nothing.
   const stop = (ctx) => async (input) => {
-    const actor = hookActor(ctx, input);
+    const gen = genOf(ctx?.chatId), actor = hookActor(ctx, input);
     let out = {};
     try { out = (await library?.call("carton.stopHook", { bundlePath: ctx.project.bundlePath, actor, input })) ?? {}; } catch {}
     if (out.decision === "block") return out;
-    await agentHook(ctx, actor, "stop");
+    if (genOf(ctx?.chatId) === gen) await agentHook(ctx, actor, "stop");
     return {};
   };
   // Gate G2 (§6.2): with CARDBOARD_CARTON_TIMING=<file>, every GUI save's round trip to the library worker (the
@@ -81,7 +93,7 @@ module.exports = String.raw`var __cartonMain = (() => {
   // provider's process outlives its turns, so its ids name no turn: agentEnv's <provider>/<chat> (the cb calls of an
   // agent Cardboard spawns: Codex), and for the person's own Claude Code the ids its hooks gave this turn
   // (claude-code/<session>: its Bash cb calls and its reads of timeline.tsx, hookActor) and the one from the session main
-  // keeps for the chat. Its turn is told by time instead (nameTurn's since: the turn's start).
+  // keeps for the chat. Its turn is told by time instead (nameTurn's since and until: the turn's start and end).
   const actorsOf = (chat, t) => {
     if (t.provider === "director") return ["director/" + safe(chat.chatId) + "/" + safe(t.turn)];
     const out = new Set([t.provider + "/" + chat.chatId]);
@@ -101,16 +113,21 @@ module.exports = String.raw`var __cartonMain = (() => {
       if (!on || !provider) return;
       running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since: Date.now() });
       hooked.delete(chat.chatId);
+      nextGen(chat.chatId);
     },
     turnEnded(chat) {
       const t = on ? running.get(chat) : null;
       if (!t) return;
+      // review P2: the turn's hooks still waiting send nothing from here on (gens)
+      nextGen(chat.chatId);
       running.delete(chat);
       const actors = actorsOf(chat, t), director = t.provider === "director";
       hooked.delete(chat.chatId);
       // H8: the turn and its subagents stop holding the shared file, however the turn ended (a stop, an interrupt).
       for (const actor of actors) void agentHook({ project: { bundlePath: t.bundlePath } }, actor, "endTurn");
-      if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt, ...(director ? {} : { actors, since: t.since }) }).catch(() => {});
+      // Another provider's turn is told by its actors and its time, from its start to now (review P2: until): the request
+      // can reach the worker after the next turn's edits, by the same actors.
+      if (chat.turn?.state === "running" && library) library.call("carton.nameTurn", { projectId: t.projectId, chat: chat.chatId, turn: t.turn, prompt: t.prompt, ...(director ? {} : { actors, since: t.since, until: Date.now() }) }).catch(() => {});
     },
     time(p) {
       if (!timing) return p;
@@ -142,19 +159,25 @@ module.exports = String.raw`var __cartonMain = (() => {
     },
     // Wraps the PreToolUse Bash hook of Cardboard's Agent SDK transport (the credit gate; the Director's and, in 1.4.0,
     // the person's own Claude Code's): after it decides, a command that reaches Carton runs with the turn's (and
-    // subagent's) actor, hookActor's. A denied command is left alone; a rewritten one is prefixed.
+    // subagent's) actor, hookActor's. A denied command is left alone; a rewritten one is prefixed. A gate that answers
+    // after its turn ended (its question waits on the person) adds nothing (review P2, gens): a read sent then would hold
+    // timeline.tsx with no turn left to let go of it.
     directorHook(ctx, inner) {
       if (!on) return inner;
       return async (input) => {
+        const gen = genOf(ctx?.chatId);
         const r = await inner(input);
-        if (input?.hook_event_name !== "PreToolUse") return r;
+        if (input?.hook_event_name !== "PreToolUse" || genOf(ctx?.chatId) !== gen) return r;
         const out = r?.hookSpecificOutput;
         if (out?.permissionDecision === "deny") return r;
         const tool = { ...input.tool_input, ...out?.updatedInput };
+        const reads = typeof tool.command === "string" && /timeline\.tsx/i.test(tool.command), cb = typeof tool.command === "string" && reachesCarton(tool.command);
+        if (!reads && !cb) return r;
+        const actor = hookActor(ctx, input);
         // H8: a command that reads the shared file freezes it for the turn, as a Read of it does.
-        if (typeof tool.command === "string" && /timeline\.tsx/i.test(tool.command)) await agentHook(ctx, hookActor(ctx, input), "pre-tool-use", { ...input, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: ctx.project?.bundlePath });
-        if (typeof tool.command !== "string" || !reachesCarton(tool.command)) return r;
-        return { ...r, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", ...out, updatedInput: { ...tool, command: "export CARDBOARD_ACTOR=" + shQuote(hookActor(ctx, input)) + "; " + tool.command } } };
+        if (reads) await agentHook(ctx, actor, "pre-tool-use", { ...input, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: ctx.project?.bundlePath });
+        if (!cb) return r;
+        return { ...r, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", ...out, updatedInput: { ...tool, command: "export CARDBOARD_ACTOR=" + shQuote(actor) + "; " + tool.command } } };
       };
     },
     stopHooks(ctx) {

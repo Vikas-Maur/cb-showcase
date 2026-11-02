@@ -156,6 +156,126 @@ test("laptop #8: the person's own Claude Code, as Cardboard 1.4.0 runs it (the A
   assert.deepEqual(asked.map(([, a]) => a.actor), ["director/c9/t5", "director/c9/t5"]);
 });
 
+/** A promise and the function that settles it, for a worker answer the test lets through when it chooses. */
+const deferred = () => {
+  let resolve;
+  const promise = new Promise((r) => (resolve = r));
+  return { promise, resolve };
+};
+const settle = () => new Promise((r) => setImmediate(r));
+
+test("review P2 (lap2): a Stop still asking the worker when its turn ends (an interrupt) never lets go of the next turn's hold; the Director's shares it, and a Stop inside its turn still lets go", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [], held = [];
+  // the worker's stopHook answers only when the test says (a slow worker, the reviewer's case)
+  m.library({ call: (method, arg) => {
+    asked.push([method, arg]);
+    if (method !== "carton.stopHook") return Promise.resolve({ delivered: true });
+    const d = deferred();
+    held.push(d);
+    return d.promise;
+  } });
+  const chatId = "7a09b6cc-8553-4fe8-9942-0cf44eec39e2", session = "787d66ff-b5c3-4f50-a5cd-4a497e39021a", me = "claude-code/787d66ff";
+  const ctx = { project: { id: "p1", name: "Demo", bundlePath: "/b" }, chatId, binary: { path: "claude", environment: {} }, launch: { provider: "claude", model: "default" }, sessionId: null };
+  const chat = { chatId, sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "One." } };
+  const [files] = m.fileHooks(ctx);
+  const read = { hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" } };
+  const releases = () => asked.filter(([method, a]) => method === "carton.agentHook" && a.event === "stop").map(([, a]) => a.actor);
+  // turn 1 reads the shared file; its Stop asks the worker, which is slow to answer
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  await files.hooks[0](read);
+  const stop1 = m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session });
+  await settle();
+  assert.equal(held.length, 1, "the Stop is waiting on the worker");
+  // the person interrupts: the turn's end lets go of what it held; they resume the same session, and turn 2 reads
+  m.turnEnded(chat, "stopped");
+  chat.turn = { id: "t2", state: "running", text: "Two." };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  await files.hooks[0](read);
+  assert.deepEqual(asked.filter(([, a]) => a.event === "endTurn").map(([, a]) => a.actor), ["claude/" + chatId, me], "turn 1's end let go");
+  // turn 1's Stop comes back: the hold is turn 2's now (the same claude-code/<session>), so it lets nothing go
+  held.shift().resolve({});
+  assert.deepEqual(await stop1, {});
+  await settle();
+  assert.deepEqual(releases(), [], "a stale Stop released the next turn's hold");
+  // turn 2's own Stop, answered in its turn, lets go
+  const stop2 = m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session });
+  await settle();
+  held.shift().resolve({});
+  assert.deepEqual(await stop2, {});
+  assert.deepEqual(releases(), [me], "the turn's own Stop lets go");
+  m.turnEnded(chat, "result");
+  // a Stop that comes back after its turn ended with no next turn yet: the end let go already, nothing more is sent
+  asked.splice(0);
+  chat.turn = { id: "t3", state: "running", text: "Three." };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  const stop3 = m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session });
+  await settle();
+  m.turnEnded(chat, "error");
+  held.shift().resolve({});
+  await stop3;
+  assert.deepEqual(releases(), [], "the errored turn's end let go; its Stop sends nothing after");
+  assert.deepEqual(asked.filter(([, a]) => a.event === "endTurn").map(([, a]) => a.actor), ["claude/" + chatId, me], "the errored turn still ends");
+  // the Director (the same hook code): its Stop in its turn lets go of the turn; one that outlives the turn does not
+  asked.splice(0);
+  const dctx = { ...ctx, chatId: "c9", launch: { provider: "director", model: "x" } };
+  const dchat = { chatId: "c9", turn: { id: "d1", state: "running", text: "Cut it." } };
+  let dturn = "d1";
+  m.directorEnv({}, dctx, () => dturn);
+  m.turnStarted(dchat, "p1", "/b", dchat.turn, "director");
+  const ds1 = m.stopHooks(dctx).Stop[0].hooks[0]({ hook_event_name: "Stop" });
+  await settle();
+  m.turnEnded(dchat, "stopped");
+  dchat.turn = { id: "d2", state: "running", text: "Again." };
+  dturn = "d2";
+  m.turnStarted(dchat, "p1", "/b", dchat.turn, "director");
+  held.shift().resolve({});
+  await ds1;
+  assert.deepEqual(releases(), [], "the Director's stale Stop sends nothing");
+  const ds2 = m.stopHooks(dctx).Stop[0].hooks[0]({ hook_event_name: "Stop" });
+  await settle();
+  held.shift().resolve({});
+  await ds2;
+  assert.deepEqual(releases(), ["director/c9/d2"], "the Director's own Stop lets go of its turn");
+});
+
+test("review P2 (lap2): a Bash hook whose credit gate answers after its turn ended (an interrupt) starts no hold on timeline.tsx", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: true }) });
+  const chatId = "c1", session = "787d66ff-b5c3", ctx = { project: { id: "p1", bundlePath: "/b" }, chatId, launch: { provider: "claude" } };
+  const chat = { chatId, sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "One." } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  const gate = deferred();
+  const pending = m.directorHook(ctx, () => gate.promise)({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "grep W2 timeline.tsx" } });
+  m.turnEnded(chat, "stopped");
+  asked.splice(0);
+  gate.resolve({});
+  await pending;
+  await settle();
+  assert.deepEqual(asked, [], "a read from an ended turn would hold timeline.tsx with no turn left to let go");
+  // in its turn, the same command holds it
+  chat.turn = { id: "t2", state: "running", text: "Two." };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  await m.directorHook(ctx, async () => ({}))({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "grep W2 timeline.tsx" } });
+  assert.deepEqual(asked.map(([, a]) => [a.actor, a.event]), [["claude-code/787d66ff", "pre-tool-use"]]);
+});
+
+test("review P2 (lap2): a turn's name request carries the turn's end, so a late answer can't take the next turn's version", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { status: "named" }) });
+  const chat = { chatId: "c2", sessionIds: { claude: "abcd1234-5678" }, turn: { id: "t1", state: "running", text: "One." } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  await new Promise((r) => setTimeout(r, 5));
+  const before = Date.now();
+  m.turnEnded(chat, "result");
+  const after = Date.now();
+  const named = asked.find(([method]) => method === "carton.nameTurn")[1];
+  assert.ok(typeof named.until === "number" && named.until >= before && named.until <= after, "until is the turn's end: " + JSON.stringify(named));
+  assert.ok(named.since <= named.until);
+});
+
 test("H8: every agent's appended prompt gains the view flow with Carton on", () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const [line] = m.viewPrompt({ id: "p1" });
@@ -230,15 +350,15 @@ test("an in-app turn's end asks the worker to name its last version (the Directo
     await new Promise((r) => setImmediate(r));
   } finally { Object.assign(console, original); }
   // (H8: first the turn lets go of the shared timeline.tsx; the prompt goes only to nameTurn)
-  const since = asked.find(([method, a]) => method === "carton.nameTurn" && a.chat === "c2")?.[1].since;
-  assert.ok(typeof since === "number" && since <= Date.now());
+  const { since, until } = asked.find(([method, a]) => method === "carton.nameTurn" && a.chat === "c2")?.[1] ?? {};
+  assert.ok(typeof since === "number" && since <= until && until <= Date.now());
   assert.deepEqual(asked, [
     ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t9", event: "endTurn", input: undefined }],
     ["carton.nameTurn", { projectId: "p1", chat: "c1", turn: "t9", prompt: "Make the intro tighter, then add a title." }],
     // host Claude Code: its cb calls' actor (agentEnv) and its hooks' (claude-code/<session>)
     ["carton.agentHook", { bundlePath: "/b", actor: "claude/c2", event: "endTurn", input: undefined }],
     ["carton.agentHook", { bundlePath: "/b", actor: "claude-code/abcd1234", event: "endTurn", input: undefined }],
-    ["carton.nameTurn", { projectId: "p1", chat: "c2", turn: "t1", prompt: "secret words", actors: ["claude/c2", "claude-code/abcd1234"], since }],
+    ["carton.nameTurn", { projectId: "p1", chat: "c2", turn: "t1", prompt: "secret words", actors: ["claude/c2", "claude-code/abcd1234"], since, until }],
   ]);
   assert.ok(!logged.some((l) => /intro|secret/.test(l)), logged.join("\n"));
   // Off: nothing is remembered or asked.

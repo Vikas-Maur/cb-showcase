@@ -525,7 +525,11 @@ run below.
    own Claude Code the way it runs the Director (its Agent SDK, with the same hooks inside the app; it never starts it
    as a process with `--settings`), so those hooks tell the two apart: your Claude Code's `cb` calls and reads of
    `timeline.tsx` are `claude-code/<session>` ("Claude Code"), and its turn's end lets go of exactly those and names its
-   last version from your prompt. Codex, which Cardboard does start as a process, is `codex/<chat>`. The GUI save's base
+   last version from your prompt. That id is the same in every turn of a session, so the turn's end draws the line: a
+   hook still waiting when you stop a turn (its `Stop`, a credit question) does nothing once it's answered, rather than
+   letting go of the next turn's hold on `timeline.tsx`; and a turn is named only from a version made between its start
+   and its end, never the next turn's, however late the naming runs. Codex, which Cardboard does start as a process, is
+   `codex/<chat>`. The GUI save's base
    reaches the worker; `carton:call` for the pages. With Carton on, every agent's instructions (its system prompt and
    the `AGENTS.md` Cardboard writes into each bundle) describe the per-agent view; with Carton off they are
    Cardboard's, word for word.
