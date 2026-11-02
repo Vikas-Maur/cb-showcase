@@ -92,10 +92,17 @@ test("H8: the Director's file tools, a Bash read of timeline.tsx and the turn's 
   assert.deepEqual(await files.hooks[0](read), {}, "never an allow");
   asked.splice(0);
   m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? {} : { delivered: true }) });
-  // a Bash command that reads the shared file freezes it as a Read does; one that doesn't name it sends nothing
+  // a Bash command that reads the shared file freezes it as a Read does, and so does one that runs cb (regress prod4:
+  // the turn's first cb call, a `cb source print` too, held nothing); one that does neither sends nothing
+  const holdRead = (actor) => ["carton.agentHook", { bundlePath: "/b", actor, event: "pre-tool-use", input: { hook_event_name: "PreToolUse", tool_input: { file_path: "timeline.tsx" }, tool_name: "Read", cwd: "/b" } }];
   await m.directorHook(ctx, gate({}))({ hook_event_name: "PreToolUse", tool_input: { command: "cat timeline.tsx" } });
-  assert.deepEqual(asked.pop(), ["carton.agentHook", { bundlePath: "/b", actor: "director/c1/t7", event: "pre-tool-use", input: { hook_event_name: "PreToolUse", tool_input: { file_path: "timeline.tsx" }, tool_name: "Read", cwd: "/b" } }]);
-  await m.directorHook(ctx, gate({}))({ hook_event_name: "PreToolUse", tool_input: { command: "cb history Demo" } });
+  assert.deepEqual(asked.pop(), holdRead("director/c1/t7"));
+  await m.directorHook(ctx, gate({}))({ hook_event_name: "PreToolUse", tool_input: { command: "cb source print Demo" } });
+  assert.deepEqual(asked.pop(), holdRead("director/c1/t7"));
+  await m.directorHook(ctx, gate({}))({ hook_event_name: "PreToolUse", tool_input: { command: "ping -n 31 127.0.0.1" } });
+  assert.equal(asked.length, 0);
+  // a command the credit gate refuses holds nothing
+  await m.directorHook(ctx, gate({ hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "no credits" } }))({ hook_event_name: "PreToolUse", tool_input: { command: "cb generate video" } });
   assert.equal(asked.length, 0);
   // an allowed Stop lets go; the turn's end lets go of the turn and its subagents (however it ended)
   assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop" }), {});
@@ -124,6 +131,8 @@ test("laptop #8: the person's own Claude Code, as Cardboard 1.4.0 runs it (the A
   assert.deepEqual(asked.pop(), ["carton.agentHook", { bundlePath: "/b", actor: me, event: "pre-tool-use", input: { hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: "/b" } }]);
   const sub = await bash({ hook_event_name: "PreToolUse", session_id: session, agent_id: "a-1", agent_type: "Explore", tool_input: { command: "cb history Demo" } });
   assert.match(sub.hookSpecificOutput.updatedInput.command, new RegExp(`^export CARDBOARD_ACTOR='${me}/sub-Explore-a_1'; `));
+  // (its cb call holds timeline.tsx for the subagent: regress prod4)
+  assert.equal(asked.pop()[1].actor, me + "/sub-Explore-a_1");
   const [files] = m.fileHooks(ctx);
   await files.hooks[0]({ hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" } });
   assert.equal(asked.pop()[1].actor, me);
@@ -153,7 +162,8 @@ test("laptop #8: the person's own Claude Code, as Cardboard 1.4.0 runs it (the A
   const d = await m.directorHook(dctx, gate({}))({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "cb history Demo" } });
   assert.match(d.hookSpecificOutput.updatedInput.command, /^export CARDBOARD_ACTOR='director\/c9\/t5'; /);
   await m.stopHooks(dctx).Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session });
-  assert.deepEqual(asked.map(([, a]) => a.actor), ["director/c9/t5", "director/c9/t5"]);
+  // its cb call's hold, then its Stop (the worker's stopHook, the release)
+  assert.deepEqual(asked.map(([, a]) => a.actor), ["director/c9/t5", "director/c9/t5", "director/c9/t5"]);
 });
 
 /** A promise and the function that settles it, for a worker answer the test lets through when it chooses. */
@@ -274,6 +284,115 @@ test("review P2 (lap2): a turn's name request carries the turn's end, so a late 
   const named = asked.find(([method]) => method === "carton.nameTurn")[1];
   assert.ok(typeof named.until === "number" && named.until >= before && named.until <= after, "until is the turn's end: " + JSON.stringify(named));
   assert.ok(named.since <= named.until);
+});
+
+// Regress prod4 (director-hold): on the laptop the person's own Claude Code ran its first `cb source print` and a 30 s
+// ping in Claude Code's PowerShell tool, which the transport hooked nowhere, so nothing held timeline.tsx until a
+// later Bash command, and the person's mute reached the file mid-turn.
+test("regress prod4: PowerShell commands get the Bash hook's Carton part: a cb command runs as the turn's actor (PowerShell's form) and holds timeline.tsx, a read of it holds, anything else is left alone; no decision is ever given", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: true }) });
+  const session = "787d66ff-b5c3-4f50-a5cd-4a497e39021a", me = "claude-code/787d66ff";
+  const ctx = { project: { id: "p1", bundlePath: "/b" }, chatId: "c1", launch: { provider: "claude" } };
+  const ps = m.fileHooks(ctx).find((h) => h.matcher === "PowerShell");
+  assert.ok(ps, "a PowerShell entry among the transport's hooks");
+  const call = (command, more = {}) => ps.hooks[0]({ hook_event_name: "PreToolUse", session_id: session, tool_name: "PowerShell", tool_input: { command, description: "x", timeout: 60000 }, ...more });
+  const print = await call("cb source print 6288cf04");
+  assert.deepEqual(print, { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { command: `$env:CARDBOARD_ACTOR='${me}'; cb source print 6288cf04`, description: "x", timeout: 60000 } } }, "the actor in PowerShell's form; no permission decision");
+  assert.deepEqual(asked.splice(0), [["carton.agentHook", { bundlePath: "/b", actor: me, event: "pre-tool-use", input: { hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: "/b" } }]], "the print holds timeline.tsx");
+  // a subagent's call is its own
+  const sub = await call("& cb history Demo", { agent_id: "a-1", agent_type: "Explore" });
+  assert.equal(sub.hookSpecificOutput.updatedInput.command, `$env:CARDBOARD_ACTOR='${me}/sub-Explore-a_1'; & cb history Demo`);
+  assert.equal(asked.pop()[1].actor, me + "/sub-Explore-a_1");
+  // a read of the file holds it, unchanged; anything else is left alone and sends nothing
+  assert.deepEqual(await call("Get-Content timeline.tsx | Select-String W2"), {});
+  assert.equal(asked.pop()[1].event, "pre-tool-use");
+  assert.deepEqual(await call("ping -n 31 127.0.0.1"), {});
+  assert.deepEqual(await ps.hooks[0]({ hook_event_name: "PostToolUse", tool_name: "PowerShell", tool_input: { command: "cb history Demo" } }), {});
+  assert.deepEqual(asked, [], "a call that touches neither cb nor timeline.tsx tells the worker nothing");
+});
+
+test("regress prod4: while the turn runs, each actor holding timeline.tsx is told again every 20 s (a long tool call with no hook never outlasts the worker's quiet bound); its Stop, a subagent's own, its end and Cardboard's closeTurn stop the beats first", async (tt) => {
+  tt.mock.timers.enable({ apis: ["setInterval"] });
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  let stopAnswer = {};
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), method === "carton.stopHook" ? stopAnswer : { delivered: true }) });
+  const session = "787d66ff-b5c3-4f50-a5cd-4a497e39021a", me = "claude-code/787d66ff", sub = me + "/sub-Explore-a_1";
+  const ctx = { project: { id: "p1", bundlePath: "/b" }, chatId: "c1", launch: { provider: "claude" } };
+  const bash = m.directorHook(ctx, gate({}));
+  const [files] = m.fileHooks(ctx);
+  const stop = m.stopHooks(ctx);
+  const beats = () => asked.splice(0).filter(([method, a]) => method === "carton.agentHook" && a.event === "pre-tool-use").map(([, a]) => a.actor).sort();
+  // a chat whose turn main doesn't track: its holds last until the worker's quiet bound, as before (no beats)
+  await bash({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "cb source print Demo" } });
+  asked.splice(0);
+  tt.mock.timers.tick(60_000);
+  assert.deepEqual(beats(), [], "no beats without a running turn");
+  // the turn: its first cb call holds; a long call with no hook follows
+  const chat = { chatId: "c1", sessionIds: { claude: session }, turn: { id: "t1", state: "running", text: "One." } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  await bash({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "cb source print Demo" } });
+  await bash({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "ping -n 121 127.0.0.1" } });
+  asked.splice(0);
+  tt.mock.timers.tick(19_999);
+  assert.deepEqual(beats(), []);
+  tt.mock.timers.tick(1);
+  assert.deepEqual(asked[0], ["carton.agentHook", { bundlePath: "/b", actor: me, event: "pre-tool-use", input: { tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: "/b" } }], "the beat is the hold's own event");
+  assert.deepEqual(beats(), [me]);
+  tt.mock.timers.tick(100_000);
+  assert.deepEqual(beats(), [me, me, me, me, me], "every 20 s, for as long as the turn runs");
+  // a subagent's Read of the file holds too (a Read of another file doesn't); its SubagentStop stops its own beats only
+  await files.hooks[0]({ hook_event_name: "PreToolUse", session_id: session, agent_id: "a-1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: "/b/notes.md" } });
+  assert.equal(asked.splice(0).length, 1, "(the Read itself goes to the worker, which decides)");
+  tt.mock.timers.tick(20_000);
+  assert.deepEqual(beats(), [me]);
+  await files.hooks[0]({ hook_event_name: "PreToolUse", session_id: session, agent_id: "a-1", agent_type: "Explore", tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" } });
+  tt.mock.timers.tick(20_000);
+  assert.deepEqual(beats(), [me, sub, sub].sort(), "(its Read, then its beat)");
+  assert.deepEqual(await stop.SubagentStop[0].hooks[0]({ hook_event_name: "SubagentStop", session_id: session, agent_id: "a-1", agent_type: "Explore" }), {});
+  asked.splice(0);
+  tt.mock.timers.tick(20_000);
+  assert.deepEqual(beats(), [me], "a stopped subagent holds no longer");
+  // a Stop the late-conflict hook blocks: the turn goes on, and so does its hold
+  stopAnswer = { decision: "block", reason: "resolve" };
+  assert.equal((await stop.Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session })).decision, "block");
+  tt.mock.timers.tick(20_000);
+  assert.deepEqual(beats(), [me]);
+  // the turn's Stop: the beats stop before it lets go, and none comes after
+  stopAnswer = {};
+  assert.deepEqual(await stop.Stop[0].hooks[0]({ hook_event_name: "Stop", session_id: session, stop_hook_active: true }), {});
+  assert.deepEqual(asked.splice(0).map(([method, a]) => [method, a.event]), [["carton.stopHook", undefined], ["carton.agentHook", "stop"]]);
+  tt.mock.timers.tick(60_000);
+  assert.deepEqual(beats(), [], "no beat after the Stop");
+  m.turnEnded(chat, "result");
+  chat.turn = { state: "idle" };
+  // an interrupted turn (no Stop): its end stops the beats
+  chat.turn = { id: "t2", state: "running", text: "Two." };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  await files.hooks[0]({ hook_event_name: "PreToolUse", session_id: session, tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" } });
+  tt.mock.timers.tick(20_000);
+  assert.deepEqual(beats(), [me, me]);
+  m.turnEnded(chat, "stopped");
+  chat.turn = { state: "idle" };
+  asked.splice(0);
+  tt.mock.timers.tick(60_000);
+  assert.deepEqual(beats(), [], "no beat after the turn's end");
+  // a turn Cardboard closed without the end reaching the bridge: its own turn state stops the beats
+  chat.turn = { id: "t3", state: "running", text: "Three." };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  await bash({ hook_event_name: "PreToolUse", session_id: session, tool_input: { command: "cb history Demo" } });
+  chat.turn = { state: "idle" };
+  asked.splice(0);
+  tt.mock.timers.tick(60_000);
+  assert.deepEqual(beats(), [], "a turn Cardboard no longer runs holds nothing");
+  // the next turn holds afresh, and a hold of the ended turn's never comes back
+  chat.turn = { id: "t4", state: "running", text: "Four." };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "claude");
+  tt.mock.timers.tick(60_000);
+  assert.deepEqual(beats(), [], "nothing held until the new turn's first cb call");
+  m.turnEnded(chat, "result");
 });
 
 test("H8: every agent's appended prompt gains the view flow with Carton on", () => {

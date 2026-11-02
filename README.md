@@ -660,7 +660,8 @@ run below.
    (Claude Code's `if` conditions, checked inside Claude Code): a call on any other file starts no process, so an
    agent's ordinary reads cost nothing extra. A Claude Code too old for `if` runs them on every call, with the same
    answers.
-5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent; `Stop` and
+5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent (and so does a hook
+   on Claude Code's PowerShell tool, which Cardboard's hooks don't cover: `$env:CARDBOARD_ACTOR` there); `Stop` and
    `SubagentStop` hand a late conflict back to the agent once (then the cards it left are the person's); the
    Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below). Cardboard 1.4.0 runs your
    own Claude Code the way it runs the Director (its Agent SDK, with the same hooks inside the app; it never starts it
@@ -691,9 +692,16 @@ run below.
    opens. It writes `timeline.tsx` from Carton's history (with that printer, under Carton's header) in place of
    Cardboard's own regeneration, and Cardboard's watcher hands it what others save there. While an agent works,
    `timeline.tsx` holds back other people's changes, so it doesn't change under the agent: a turn of the Director or of
-   your own Claude Code in the app from its first `cb` call or read of the file until its turn ends; anyone without hooks
-   (Codex, a Claude Code in a terminal without Carton's hooks, a `cb` you type) until a minute after their last `cb`
-   edit. The person's edits go on in the editor and `project.json` meanwhile, and reach the file when that ends. An agent can also print its own copy, `cb source print <project> --view
+   your own Claude Code in the app from its first `cb` call or read of the file until its turn ends, whatever runs in
+   between: a `cb source print` holds it as a write does, `cb` in Claude Code's PowerShell tool as in Bash, and a long
+   call that isn't `cb` (a ping, a render, a command the agent left running in the background) doesn't end it. Before,
+   a real turn on the laptop let the person's mute into the file mid-turn: its first print and a 30 s ping ran in
+   PowerShell, which the app's hooks didn't cover, so nothing held the file until a later Bash command; and the worker
+   let go of an agent it hadn't heard from for a minute, so any longer call would have done the same. Now, while the
+   turn runs, the app tells the worker so every 20 s; the turn's Stop or end lets go at once, and if the app goes away
+   the worker lets go a minute after the last word, so no hold outlives its turn. Anyone without hooks
+   (Codex, a Claude Code in a terminal without Carton's hooks, a `cb` you type) holds it until a minute after their last
+   `cb` edit. The person's edits go on in the editor and `project.json` meanwhile, and reach the file when that ends. An agent can also print its own copy, `cb source print <project> --view
    <name>` (`.scratch\views\<name>.tsx`): each save of it is applied as that agent's change, and
    `.scratch\views\<name>.status` says how it landed. A clash keeps what is there and is a card on both sides: the
    agent's (`cb conflicts`, the Stop hook) and the person's (History). That worker is also the project's one lease
