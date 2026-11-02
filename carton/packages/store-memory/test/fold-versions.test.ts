@@ -118,3 +118,40 @@ test("P1-4 (review #2): folding in the rest, then undoing that, leaves the rest 
   assert.equal((await c.redo(undefined, { cut: main, author: alice })).status, "confirmed");
   assert.deepEqual(await c.leftOut(v.id, { into: main }), []);
 });
+
+// Laptop re-check P3 (fold counts): with only a split left out, the Fold dialog said "2 changes" (the split one row),
+// History "1 of 4 changes" and `cb history` "merge (3 left out)". A split counts as one change everywhere.
+test("P3: a partial fold that left out a split counts the split as one change", async () => {
+  const c = await open();
+  const main = c.cut;
+  const v = await c.fork("Client review");
+  const a = item(await c.checkout(`${v.id}@0`), "a")!;
+  // the editor's split of 'a' at 2.0 s: 'a' removed, two parts of it in its place
+  const split = [
+    { op: "remove", path: ["items", "a"] },
+    { op: "insert", path: ["items", "a1"], value: { ...a, id: "a1", endTime: 2, trimEnd: 2 } },
+    { op: "insert", path: ["items", "a2"], value: { ...a, id: "a2", startTime: 2, trimStart: 2 } },
+  ] as never[];
+  await c.commit({ cut: v.id, ops: split, author: alice });
+  await c.commit({ cut: v.id, ops: [set("b", "name", "Alternate opening")], author: director });
+  assert.equal((await c.foldSome(v.id, { into: main, reject: ["items/a", "items/a1", "items/a2"], author: alice })).status, "confirmed");
+  const f = await top(c, main);
+  assert.equal(f.summary, "Folded 'Client review' into 'Main cut': 1 of 2 changes");
+  assert.deepEqual([f.rejected?.length, f.leftOutChanges], [3, 1], "three records left out, one change");
+  // review: a local fold-some's partial revert is `<fold's id>.inverse`, as a shared cut's is, so a server that later
+  // holds this history pairs the two as one version
+  const fold = (await c.leftOut(v.id, { into: main }))[0]!;
+  assert.match(fold.change, /\.inverse$/);
+  assert.equal(f.change, fold.change);
+  // folding in the rest brings in the split: one change
+  const [left] = await c.leftOut(v.id, { into: main });
+  assert.equal((await c.revert(left!.change, { author: alice })).status, "confirmed");
+  assert.equal((await top(c, main)).summary, "Folded the rest of 'Client review' into 'Main cut': 1 change");
+  // and a full fold of a split and a rename is 2 changes
+  const c2 = await open();
+  const v2 = await c2.fork("Client review");
+  await c2.commit({ cut: v2.id, ops: split, author: alice });
+  await c2.commit({ cut: v2.id, ops: [set("b", "name", "Alternate opening")], author: director });
+  assert.equal((await c2.fold(v2.id, { into: c2.cut, author: alice })).status, "confirmed");
+  assert.equal((await top(c2, c2.cut)).summary, "Folded 'Client review' into 'Main cut': 2 changes");
+});

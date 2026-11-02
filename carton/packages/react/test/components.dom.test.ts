@@ -264,12 +264,12 @@ test(name("watch the changes: aligned strips, change count, next, A/B toggle and
   const m = await render(wrap(ui, h(WatchTheChanges, { a: "main@3", b: "main@9", onFrame: (s: string, t: number) => frames.push([s, t]) })));
   await flush();
   const root = $(m.container, ".carton-watch")!;
-  assert.match(root.textContent ?? "", /Change 1 of 4/);
+  assert.match(root.textContent ?? "", /Section 1 of 4/);
   assert.equal($$(root, ".carton-strip").length, 2);
   assert.ok($$(root, "[data-kind=fold]").length >= 2, "unchanged runs folded");
   assert.ok($$(root, "[data-tone=removed]").length === 1 && $$(root, "[data-tone=added]").length === 1);
-  await click($(root, "[aria-label='Next change']"));
-  assert.match(root.textContent ?? "", /Change 2 of 4/);
+  await click($(root, "[aria-label='Next section']"));
+  assert.match(root.textContent ?? "", /Section 2 of 4/);
   const before = byText(root, "[role=radio]", "Before")!;
   await click(before);
   assert.equal(before.getAttribute("aria-checked"), "true");

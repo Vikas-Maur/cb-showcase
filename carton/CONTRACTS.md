@@ -211,15 +211,32 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     'clip.mp4' at 4.0 s" (several points: "at 3.0 s and 7.0 s"). A part changed after it in the same version is told
     against what the split made of it: "Split 'clip.mp4' at 4.0 s, moved its right part 4.0 s → 20.0 s" (one part
     where the split left it, the other keeping the cut's source point: moved, or trimmed at its far end). A field the
-    split itself drops or rescales (a transition, a fade, keyframes) is no change of its own. `splits(ops, base, schema)`
-    names them (removed clip, parts left to right), so a list by record (the Fold dialog) shows a split as one row,
-    left out whole.
+    split itself drops or rescales (a transition, a fade, keyframes) is no change of its own, nor is a field the host's
+    split leaves off every part (`TimelineConfig.splitDrops`; Cardboard: `autoReframe`, which its editor's save doesn't
+    write on a new clip; laptop re-check P3: "…, cleared auto reframe on its left part, … on its right part"); a value
+    set on a part, or cleared on one part only, is still told. `splits(ops, base, schema)` names them (removed clip,
+    parts left to right), so a list by record (the Fold dialog) shows a split as one row, left out whole.
+  - **One counting rule for changes** (laptop re-check P3: the Fold dialog said "2 changes", History "1 of 4 changes"
+    and `cb history` "merge (3 left out)" for one fold; Compare "3 changes" where Watch said "2"). `countChanges(ops,
+    base, schema, among?)` counts a change per record (a root field: one each), a split one, a ripple's remap none:
+    the Fold dialog's rows. History's fold titles, `cb history`'s left out (`leftOutChanges` on a partial fold's
+    version), Compare (`Comparison.changeCount`) and Watch the changes (`ShotDiff.changes`) all use it. Watch's counter
+    steps through the sections of the edit that differ ("Section 1 of 2"), which aren't changes.
+  - **A record by what it is** (laptop re-check P3-8, P3-10). `CollectionDef.nounOf(record)` names a record when its
+    collection holds several kinds (Cardboard: a text item is a title, a code item a code graphic, a caption a
+    caption), or returns null for a record that is part of another (a title's own media entry, "Text: W1"). A version's
+    summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
+    media files"), an add or delete line names it ("Added title 'W1'"), and Compare's clip count leaves titles apart
+    ("1 clip, 6 titles").
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
     only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3
-    changes", its `details` exactly the changes taken. `cb history` shows it as `merge (1 left out)`, `leftOut` in JSON. The fold's own state, with what was left out, is no one's version: History, `cb
+    changes" (a split one change), its `details` exactly the changes taken. `cb history` shows it as `merge (1 left out)`,
+    `leftOut` (the paths) and `leftOutChanges` (how many changes) in JSON. The fold's own state, with what was left out, is no one's version: History, `cb
     history`, the pickers and version counts leave it out, as they leave out withdraw rows. Seqs, ids, the DAG and
     undo are unchanged. A fold and partial revert with a change between them (a shared cut's queue) stay two versions.
+    The partial revert's id is always `<fold's id>.inverse` (local and shared), which is how a server, holding only
+    ids and flags, pairs them; its count reads archived rows from the segment index, so it holds across an archive.
   - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out
     part is still left out, newest first: the inverse change, its version, who folded and the paths. Folding in the rest
     is `revert(change)` (as `cb fold` does when nothing new is left); a plain `fold` still doesn't bring it in (§5.3).
@@ -227,7 +244,8 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
   Published cut's welcome carries `source: { branchId, at, head, versions }` (`sync.WelcomeMsg`): the cut it came from,
   the version published, that cut's head now and how many versions it has since (its rows after `at` less withdraw
-  rows), so a watch page can say "newer edits exist" (versions > 0; `head - at` from a host that sends no count) without
+  rows, and less each fold-some's fold row `X` right before its partial revert `X.inverse`: one version, as `log()`
+  lists it; laptop re-check P3), so a watch page can say "newer edits exist" (versions > 0; `head - at` from a host that sends no count) without
   reading them. `publications()` gives the same count as `versions` (and `newer`), as `log()` lists versions. A watch link's invite is scoped to the Published cut (`createInvite(project, "viewer", ttl, [cut])`): a scoped
   reader's hello for any other cut is refused before a row is sent.
 - **Processes and the sync lease (§6.2):** many processes open one `carton.db`; only the lease holder (Cardboard's

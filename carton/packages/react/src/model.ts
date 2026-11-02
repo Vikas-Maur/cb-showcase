@@ -181,7 +181,10 @@ export interface CompareSide {
   readonly ref: string;
   readonly at: number;
   readonly author: Actor;
+  /** Clips only: a title, a code graphic or a caption is no clip (the schema's `nounOf`, laptop re-check P3-10). */
   readonly clipCount: number;
+  /** The timeline's other kinds of item, counted apart ("6 titles"). */
+  readonly kinds?: readonly { readonly noun: string; readonly n: number }[];
   /** Seconds. */
   readonly length: number;
 }
@@ -204,6 +207,11 @@ export interface Comparison {
    * 0:04.0"). Optional: a host without it shows only the summary.
    */
   readonly changes?: readonly string[];
+  /**
+   * How many changes, counted as History, `cb history`, the Fold dialog and Watch the changes count them: a record each,
+   * a split one (core's `countChanges`; laptop re-check P3-11). Lines in `changes` can be more (a ripple's own line).
+   */
+  readonly changeCount?: number;
 }
 
 /** Credits for one clip: who last changed each part of it, down to the subagent. */
@@ -308,6 +316,11 @@ export interface ShotDiff {
   readonly matches: readonly (readonly [number, number])[];
   readonly aLabel: string;
   readonly bLabel: string;
+  /**
+   * How many changes from a to b, counted as Compare and History count them (laptop re-check P3-11). Watch the changes
+   * says it; its counter steps through the sections of the edit that differ, which can be fewer or more.
+   */
+  readonly changes?: number;
 }
 
 export type Topic =

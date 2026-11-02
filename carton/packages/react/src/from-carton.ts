@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, lcs, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -68,7 +68,7 @@ export interface FromCartonOptions {
   /** Engine functions (default: @carton/core's). Tests may pass lighter ones. */
   engine?: { shots: typeof engineShots; lcs: typeof lcs; describe: typeof describe };
   /** Clip count and length of a state (Compare card). Default: the schema's timeline collection and end field. */
-  measure?: (doc: Doc, schema: Schema) => { clips: number; length: number };
+  measure?: (doc: Doc, schema: Schema) => { clips: number; length: number; kinds?: { noun: string; n: number }[] };
   /** The parts of a clip Credits lists, as record paths. Default: the whole clip, "Last change". */
   creditParts?: (itemId: string, schema: Schema) => { what: string; path: readonly string[] }[];
   /** A clip's display name for Credits. Default: the item id. */
@@ -231,9 +231,17 @@ function defaultMeasure(doc: Doc, schema: Schema) {
   const tl = schema.timeline;
   if (!tl) return { clips: 0, length: 0 };
   const items = (doc[tl.collection] as Rec[] | undefined) ?? [];
-  let end = 0;
-  for (const it of items) end = Math.max(end, Number(it[tl.end]) || 0);
-  return { clips: items.length, length: end };
+  const nounOf = schema.collections[tl.collection]?.nounOf;
+  let end = 0, clips = 0;
+  // clips only; titles and the like by what they are (laptop re-check P3-10: "7 clips" for 1 clip and 6 titles)
+  const kinds = new Map<string, number>();
+  for (const it of items) {
+    end = Math.max(end, Number(it[tl.end]) || 0);
+    const noun = nounOf?.(it);
+    if (noun) kinds.set(noun, (kinds.get(noun) ?? 0) + 1);
+    else if (noun === undefined) clips++;
+  }
+  return { clips, length: end, ...(kinds.size ? { kinds: [...kinds].map(([noun, n]) => ({ noun, n })) } : {}) };
 }
 
 const KIND: Record<string, VersionKind> = { edit: "edit", merge: "fold", revert: "undo", undo: "undo", "partial-revert": "fold", restore: "restore", rebalance: "edit", import: "import", external: "edit", root: "edit", fork: "edit" };
@@ -1107,6 +1115,15 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     if (head) return head.current ? "Current" : head.label;
     return v?.summary || "Earlier version";
   };
+  // How many changes from one state to another, counted one way everywhere (core's countChanges: a record each, a split
+  // one; laptop re-check P3-11); undefined when it can't be told
+  const countOf = (da: Doc, db: Doc): number | undefined => {
+    try {
+      return countChanges(docDiff(da, db, schema), da, schema);
+    } catch {
+      return undefined;
+    }
+  };
   const diffCache = new Map<string, Promise<ShotDiff>>();
   const shotDiff = (a: string, b: string): Promise<ShotDiff> => {
     const key = `${a}|${b}`;
@@ -1114,6 +1131,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     if (!p) {
       p = (async () => {
         const [da, db] = await Promise.all([carton.checkout(a), carton.checkout(b)]);
+        const changes = countOf(da, db);
         const intern = new Map<string, number>();
         const A = engine.shots(da, schema, intern), B = engine.shots(db, schema, intern);
         const matches = engine.lcs(A.map((s) => s.sig), B.map((s) => s.sig));
@@ -1126,6 +1144,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           // a version by its name or what it did, never its ref (an id)
           aLabel: refLabel(a),
           bLabel: refLabel(b),
+          ...(changes === undefined ? {} : { changes }),
         };
       })();
       diffCache.set(key, p);
@@ -1266,7 +1285,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const side = (ref: string, doc: Doc, label: string) => {
         const v = versionAt(ref);
         const m = measure(doc, schema);
-        return { label, ref, at: v?.at ?? clock(), author: v?.author ?? me, clipCount: m.clips, length: m.length };
+        return { label, ref, at: v?.at ?? clock(), author: v?.author ?? me, clipCount: m.clips, ...(m.kinds?.length ? { kinds: m.kinds } : {}), length: m.length };
       };
       // What changed, in History's words (UI audit P2-5: the card said only "N shots differ"): the ops from a to b,
       // described against a. A describe that fails leaves the card with its summary.
@@ -1276,7 +1295,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       } catch {
         changes = undefined;
       }
-      const c: Comparison = { a: side(a, da, d.aLabel), b: side(b, db, d.bLabel), diff: diffSummary(d), ...(changes ? { changes } : {}) };
+      // counted as Watch the changes counts them (the same shot diff's count)
+      const changeCount = d.changes ?? countOf(da, db);
+      const c: Comparison = { a: side(a, da, d.aLabel), b: side(b, db, d.bLabel), diff: diffSummary(d), ...(changes ? { changes } : {}), ...(changeCount === undefined ? {} : { changeCount }) };
       return c;
     },
 

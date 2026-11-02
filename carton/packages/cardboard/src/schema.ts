@@ -26,7 +26,16 @@ const TL: TimelineConfig = {
   source: "trimStart",
   sourceEnd: "trimEnd",
   speed: "playbackSpeed",
+  // What the editor's split leaves off its parts: its splitter (`dt` in 1.4.0's renderer) clears the transitions and the
+  // fades on the cut's side, and the parts are new clips its save writes through `fm`, which has no `autoReframe` or
+  // `autoReframeFallback` (laptop re-check P3: "…, cleared auto reframe on its left part, … on its right part")
+  splitDrops: ["transitionIn", "transitionOut", "audioFadeIn", "audioFadeOut", "autoReframe", "autoReframeFallback"],
 };
+
+/** What a timeline item is called when it isn't a clip (`nounOf`). */
+const ITEM_NOUNS: ReadonlyMap<unknown, string> = new Map([["text", "title"], ["code", "code graphic"], ["caption", "caption"]]);
+/** Media kinds that are an item's own record, not a file (1.4.0's `td`: a title's text, a code graphic's source). */
+const OWN_MEDIA: ReadonlySet<unknown> = new Set(["text", "code"]);
 
 /** `$.type` in 1.4.0. */
 export const ITEM_TYPES: ReadonlySet<string> = new Set(["video", "audio", "image", "text", "code", "adjustment", "caption", "shader"]);
@@ -322,6 +331,9 @@ export const cardboardSchema: Schema = defineSchema({
       key: "id",
       parent: { field: "trackId", collection: TRACKS },
       noun: "clip",
+      // a title is no clip (laptop re-check P3-8, P3-10: "7 clips" for 1 clip and 6 titles), nor a code graphic or a
+      // caption
+      nounOf: (r) => ITEM_NOUNS.get(r.type),
       labels: ITEM_LABELS,
       groups: [{ name: "time", fields: [...TIME_FIELDS], algebra: timeAlgebra(TL) }],
       fields: itemFields,
@@ -330,6 +342,8 @@ export const cardboardSchema: Schema = defineSchema({
       key: "id",
       only: true, // the versioned subset: data.code.source (text), data.content, data.fileName, data.type, contentHash, shared
       noun: "media",
+      // a title's or a code graphic's own entry (1.4.0 adds one per title, "Text: W1") is no media file: part of it
+      nounOf: (r) => (OWN_MEDIA.has((r.data as Rec | undefined)?.type) ? null : undefined),
       labels: MEDIA_LABELS,
       phrases: MEDIA_PHRASES,
       fields: {

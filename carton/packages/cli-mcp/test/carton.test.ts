@@ -68,6 +68,31 @@ test("real Carton: cuts, fold --check, fold in some of it, publish", async () =>
   }
 });
 
+test("real Carton: cb history counts a split left out of a fold as one change, as the Fold dialog and History do", async () => {
+  // laptop re-check P3 (fold counts): "merge (3 left out)" for a split (three records) the dialog showed as one row
+  const { local } = await realProject("cli-real-split", human);
+  try {
+    assert.equal((await cb(local, ["cut", "new", "Split"])).code, 0);
+    const cut = (await local.carton.cuts()).find((c) => c.name === "Split")!.id;
+    const c1 = ((await local.carton.head()).doc.timelineItems as Rec[]).find((i) => i.id === "c1")!;
+    const split = [
+      { op: "remove", path: ["timelineItems", "c1"] },
+      { op: "insert", path: ["timelineItems", "c1a"], value: { ...c1, id: "c1a", endTime: 7, trimEnd: 2 } },
+      { op: "insert", path: ["timelineItems", "c1b"], value: { ...c1, id: "c1b", startTime: 7, trimStart: 2 } },
+    ];
+    await local.write({ kind: "commit", cut, ops: split });
+    await local.write({ kind: "commit", cut, ops: [set("c3", "name", "split-3")] });
+    const f = await cb(local, ["fold", "Split", "--reject", "timelineItems/c1", "--reject", "timelineItems/c1a", "--reject", "timelineItems/c1b", "--json"]);
+    assert.equal(f.json().status, "confirmed", f.out);
+    const v = (await cb(local, ["history", "--json", "--limit", "1"])).json().versions[0];
+    assert.deepEqual([v.kind, v.leftOut.length, v.leftOutChanges], ["merge", 3, 1]);
+    assert.match((await cb(local, ["history", "--limit", "1"])).out.split("\n")[1]!, /\smerge \(1 left out\)$/);
+    assert.equal((await local.carton.log({ limit: 1, summary: true }))[0]!.summary, "Folded 'Split' into 'Main cut': 1 of 2 changes");
+  } finally {
+    await local.close();
+  }
+});
+
 test("real Carton: undo by actor group; undo --turn as one change keeps the person's edit made in between; restore", async () => {
   const { local } = await realProject("cli-real-3", human);
   try {

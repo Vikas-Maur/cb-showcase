@@ -2,7 +2,7 @@
 // "Trimmed 'Intro' end 6.0 s → 5.0 s". Never prints more than four parts per record.
 import { POS } from "../types.ts";
 import type { FieldSpec, Schema } from "../schema.ts";
-import type { ConflictCard, Doc, Intent, Op, Path, Rec, RemapMaps, RemapOp } from "../types.ts";
+import type { ConflictCard, Doc, Intent, Op, Path, PathKey, Rec, RemapMaps, RemapOp } from "../types.ts";
 import { getIn, specAt } from "./doc.ts";
 import { EMPTY, deepEqual, unescapeSegment } from "./json.ts";
 import { composeMaps, inferRemaps, near, remapSpan } from "./remap.ts";
@@ -53,6 +53,8 @@ interface Line {
   verb?: string;
   coll?: string;
   one?: string;
+  /** The record (as it was; as added), for what the host calls it (`nounOf`). */
+  rec?: Rec;
 }
 
 // A value no person reads (UI audit P1-2): a hash, a UUID, or a structure holding one. Shown by its field's name only.
@@ -80,20 +82,29 @@ const lower = (x: string) => (/^[A-Z][a-z]/.test(x) ? x[0]!.toLowerCase() + x.sl
 const plural = (noun: string) => (noun.endsWith("s") ? noun : noun === "media" ? "media files" : `${noun}s`);
 const and = (xs: readonly string[]) => (xs.length < 2 ? (xs[0] ?? "") : `${xs.slice(0, -1).join(", ")} and ${xs[xs.length - 1]}`);
 
-function summaryOf(ls: readonly Line[], schema: Schema): string {
+function summaryOf(all: readonly Line[], schema: Schema): string {
+  // each record by what it is (laptop re-check P3-8: titles were counted as clips, and their own media entries as
+  // media files): the host's noun for it, and a record that is part of another left out
+  const nounOf = (l: Line) => {
+    const cs = l.coll === undefined ? undefined : schema.collections[l.coll];
+    const own = cs?.nounOf && l.rec ? cs.nounOf(l.rec) : undefined;
+    return own === null ? null : (own ?? cs?.noun ?? (l.coll === schema.timeline?.lanes ? "track" : "item"));
+  };
+  const kept = all.filter((l) => !l.verb || nounOf(l) !== null);
+  const ls = kept.length ? kept : all;
   if (ls.length <= 1) return ls[0]?.text ?? "";
-  const groups: { verb?: string; text?: string; n: number; byColl: Map<string, string[]> }[] = [];
+  const groups: { verb?: string; text?: string; n: number; byNoun: Map<string, string[]> }[] = [];
   for (const l of ls) {
     let g = l.verb ? groups.find((x) => x.verb === l.verb) : undefined;
-    if (!g) groups.push((g = { ...(l.verb ? { verb: l.verb } : { text: l.text }), n: 0, byColl: new Map() }));
+    if (!g) groups.push((g = { ...(l.verb ? { verb: l.verb } : { text: l.text }), n: 0, byNoun: new Map() }));
     g.n++;
-    if (l.verb) (g.byColl.get(l.coll!) ?? g.byColl.set(l.coll!, []).get(l.coll!)!).push(l.one!);
+    const k = l.verb ? (nounOf(l) ?? "item") : "";
+    if (l.verb) (g.byNoun.get(k) ?? g.byNoun.set(k, []).get(k)!).push(l.one!);
   }
-  const noun = (coll: string) => schema.collections[coll]?.noun ?? (coll === schema.timeline?.lanes ? "track" : "item");
   const words = groups.map((g) => {
     if (!g.verb) return g.text!;
-    const one = g.byColl.size === 1;
-    const what = [...g.byColl].map(([coll, xs]) => (xs.length === 1 ? xs[0]! : one && xs.length === 2 ? `${xs[0]} and ${xs[1]}` : `${xs.length} ${plural(noun(coll))}`));
+    const one = g.byNoun.size === 1;
+    const what = [...g.byNoun].map(([noun, xs]) => (xs.length === 1 ? xs[0]! : one && xs.length === 2 ? `${xs[0]} and ${xs[1]}` : `${xs.length} ${plural(noun)}`));
     return g.verb.replace("%s", and(what));
   });
   if (words.length > 3) {
@@ -260,6 +271,30 @@ export function splits(ops: readonly Op[], base: Doc, schema: Schema): { collect
   return findSplits(groupOps(plain, schema), base, schema, labeller(plain, base, schema).label).map((s) => ({ collection: s.coll, removed: String(s.rec[K]), parts: s.parts.map((p) => String(p.rec[K])) }));
 }
 
+/**
+ * How many changes `ops` make, counted one way everywhere (History's fold titles, `cb history`'s left out, Compare,
+ * Watch the changes and the Fold dialog's rows; laptop re-check P3): one per record changed, one per root field, and
+ * a split (its removed clip and its parts) one. A ripple's remap is no change of its own. `among` (a partial fold's
+ * left-out paths): only the records those paths name, a split among them still one.
+ */
+export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, among?: readonly PathKey[]): number {
+  const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
+  const groups = groupOps(plain, schema);
+  let keys: ReadonlySet<string> = new Set(groups.keys());
+  if (among) {
+    const ks = new Set<string>();
+    for (const k of among) {
+      const [c, id] = k.split("/").map(unescapeSegment);
+      if (c) ks.add(schema.collections[c] && id !== undefined ? `${c}/${id}` : c);
+    }
+    keys = ks;
+  }
+  let n = keys.size;
+  if (n < 3) return n; // a split is three records at least
+  for (const sp of findSplits(groups, base, schema, labeller(plain, base, schema).label)) if (keys.has(sp.key) && sp.parts.every((p) => keys.has(p.key))) n -= sp.parts.length;
+  return n;
+}
+
 const PART = ["first", "second", "third", "fourth", "fifth"];
 
 function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null): Line[] {
@@ -375,7 +410,7 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
   const p0 = parts[0]!;
   if (!/^[A-Z]/.test(p0))
     parts[0] = p0.startsWith("set ") ? `Set ${name} ${p0.slice(4)}` : p0.startsWith("changed ") ? `Changed ${name} ${p0.slice(8)}` : /^(added|removed|reordered|cleared) /.test(p0) ? `${p0[0]!.toUpperCase()}${p0.slice(1)} on ${name}` : `Changed ${name} ${p0}`;
-  return { text: parts.map((p, i) => (i ? lower(p) : p)).join(", "), verb, coll, one: name };
+  return { text: parts.map((p, i) => (i ? lower(p) : p)).join(", "), verb, coll, one: name, ...(before ? { rec: before } : {}) };
   };
   const split = new Map<string, Split | null>();
   for (const sp of findSplits(groups, base, schema, label)) {
@@ -388,9 +423,11 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     if (sp) {
       // "Split 'clip.mp4' at 4.0 s", and what was done to a part after it, worded against what the split made of it:
       // its times, track, values set or cleared, plain values changed (a transition or a fade the split itself dropped,
-      // keyframes it rescaled, are no change of their own)
+      // a field the host's split leaves off its parts, `splitDrops`, keyframes it rescaled, are no change of their own)
       const name = `'${label(sp.coll, sp.rec)}'`;
       const said: string[] = [`Split ${name} at ${and(sp.at.map(fmtT))}`];
+      // a field the host's split leaves off its parts (`splitDrops`), gone from every part: the split's own
+      const drops = new Set((tl!.splitDrops ?? EMPTY).filter((f) => sp.rec[f] !== undefined && sp.parts.every((p) => p.rec[f] === undefined)));
       sp.parts.forEach(({ rec, ideal }, i) => {
         const id = rec[schema.collections[sp.coll]!.key] as string;
         const fs = new Set([...Object.keys(rec), ...Object.keys(ideal)]);
@@ -405,7 +442,8 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
           } else if (was === undefined) {
             if (v !== undefined) ops.push({ op: "set", path: [sp.coll, id, f], value: v }); // set on the part since
           } else if (v === undefined) {
-            if (plainV(was)) ops.push({ op: "unset", path: [sp.coll, id, f] }); // a value cleared (a transition, a fade: the split's)
+            // a value cleared, unless the split dropped it from every part (Cardboard: autoReframe, laptop re-check P3)
+            if (plainV(was) && !drops.has(f)) ops.push({ op: "unset", path: [sp.coll, id, f] });
           } else if (plainV(v) && plainV(was) && v !== was) ops.push({ op: "set", path: [sp.coll, id, f], value: v });
           // a structure in both that differs (keyframes): the split rescales those; not told as a change of the part
         }
@@ -415,7 +453,7 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
         const l = recordLine(sp.coll, id, ops, ideal, doc, part);
         if (l) said.push(lower(l.text));
       });
-      out.push({ text: said.join(", "), verb: "Split %s", coll: sp.coll, one: name });
+      out.push({ text: said.join(", "), verb: "Split %s", coll: sp.coll, one: name, rec: sp.rec });
       continue;
     }
     if (!g.coll) {
@@ -436,15 +474,18 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     const before = getIn(base, [g.coll, g.id as string], schema) as Rec | undefined;
     const whole = g.ops.find((op) => op.path.length === 2);
     const cs = schema.collections[g.coll]!;
-    const noun = g.coll === tl?.lanes ? cs.noun ?? "track" : ((((before ?? (whole as { value?: Rec } | undefined)?.value) as Rec | undefined)?.type as string | undefined) ?? cs.noun ?? "item");
+    const rec = (before ?? (whole as { value?: Rec } | undefined)?.value) as Rec | undefined;
+    // what the host calls it ("title"), else its kind ("video")
+    const own = rec && cs.nounOf?.(rec);
+    const noun = g.coll === tl?.lanes ? cs.noun ?? "track" : (own || ((rec?.type as string | undefined) ?? cs.noun ?? "item"));
     if (whole?.op === "insert") {
       const r = whole.value as Rec;
       const where = tl && g.coll === tl.collection ? ` on ${laneName(r[tl.lane])} at ${fmtT(r[tl.start] as number)}` : "";
-      out.push({ text: `Added ${noun} '${label(g.coll, r)}'${where}`, verb: "Added %s", coll: g.coll, one: `${noun} '${label(g.coll, r)}'` });
+      out.push({ text: `Added ${noun} '${label(g.coll, r)}'${where}`, verb: "Added %s", coll: g.coll, one: `${noun} '${label(g.coll, r)}'`, rec: r });
       continue;
     }
     if (whole) {
-      out.push({ text: `Deleted ${noun} '${label(g.coll, before)}'`, verb: "Deleted %s", coll: g.coll, one: `${noun} '${label(g.coll, before)}'` });
+      out.push({ text: `Deleted ${noun} '${label(g.coll, before)}'`, verb: "Deleted %s", coll: g.coll, one: `${noun} '${label(g.coll, before)}'`, ...(before ? { rec: before } : {}) });
       continue;
     }
     const l = recordLine(g.coll, g.id, g.ops, before, base);
