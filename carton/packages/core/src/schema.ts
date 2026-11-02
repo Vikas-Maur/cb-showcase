@@ -103,6 +103,20 @@ export interface CollectionDef {
    * out: `{"colorGrade.saturation": "saturation", "effects": "effect"}`. Unlabelled fields print their path.
    */
   labels?: Record<string, string>;
+  /**
+   * Fields told as a phrase in descriptions, never by their values (a content hash, shared-media facts): by top-level
+   * field, the sentence for a field set where it was absent (`set`), changed (`changed`, default `set`) and cleared;
+   * `%s` is the record's name in quotes. `{contentHash: {set: "Linked %s for sharing", cleared: "Unlinked %s from
+   * sharing"}}`. Ops under one field read once.
+   */
+  phrases?: Record<string, FieldPhrase>;
+}
+
+/** A field's phrase in descriptions (`CollectionDef.phrases`). */
+export interface FieldPhrase {
+  readonly set: string;
+  readonly changed?: string;
+  readonly cleared: string;
 }
 
 /** A collection after `defineSchema`: groups indexed by field and the record spec built. */
@@ -110,6 +124,7 @@ export interface CollectionSpec extends Required<Pick<CollectionDef, "key">> {
   readonly fields?: Record<string, FieldSpec>;
   readonly noun?: string;
   readonly labels?: Readonly<Record<string, string>>;
+  readonly phrases?: Readonly<Record<string, FieldPhrase>>;
   readonly parent?: { field: string; collection: string };
   readonly seq?: boolean;
   readonly only?: boolean;

@@ -180,6 +180,20 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   - Presence goes out as the resolved person.
   - A `people` event says authors may read differently.
   - An app shows its own edits as "You" by passing its resolved person as `me` (`identity()`, with its `group`).
+- **Versions in words (UI audit 2026-11-02).** `log({summary: true})` gives each version one line (`summary`) and,
+  when that line doesn't say it all, every change it made (`details`, describe()'s lines). A version of several changes
+  is summed up (`describeVersion`: "Moved 'clip.mp4', changed 'W1' and 'W2'"); a fold, the rest of a partial fold, a
+  restore and the import say what they were ("Folded 'Client review' into 'Main cut': 3 changes", "Restored an earlier
+  version"). Descriptions never print an id or a hash: an id field (`…Id`, `…Ids`, `…Hash`) or a hash-like value is
+  told by its field's name, and a collection's `phrases` tell a field in a sentence ("Linked %s for sharing").
+  - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
+    only the partial revert (the state that was chosen), titled "Folded 'X' into 'Y': 2 of 3 changes", its `details`
+    exactly the changes taken. The fold's own state, with what was left out, is no one's version: History, `cb
+    history`, the pickers and version counts leave it out, as they leave out withdraw rows. Seqs, ids, the DAG and
+    undo are unchanged. A fold and partial revert with a change between them (a shared cut's queue) stay two versions.
+  - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out
+    part is still left out, newest first: the inverse change, its version, who folded and the paths. Folding in the rest
+    is `revert(change)` (as `cb fold` does when nothing new is left); a plain `fold` still doesn't bring it in (§5.3).
 - **Published cuts are read-only** to every write (`commit`, `undo`, `revert`, `restore`, `fold` / `foldSome` into
   them), local or shared, even one that would change nothing: they change only by publishing again. A shared
   Published cut's welcome carries `source: { branchId, at, head, versions }` (`sync.WelcomeMsg`): the cut it came from,
