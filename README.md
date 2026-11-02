@@ -468,7 +468,7 @@ What changes with it on:
   stays the editor's, whichever was selected first, and with focus in the History panel the first Esc returns from the
   version and the next closes the panel). An edit tried meanwhile is refused with Cardboard's own "Previewing an earlier
   version. Return to current to edit.", the stage's text editor included (Enter or a double-click on a title no longer
-  opens it there), and the keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
+  opens it there, and a selected title or caption shows no text toolbar there: nothing in it looks editable), and the keys the History list uses (arrows, Enter) stay the list's. A version shorter than the
   playhead shows from its end, and the playhead goes back where it was on return, unless you moved it. "Watch the
   changes" moves the preview's playhead with it, so the frames are the real ones.
   Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
@@ -477,7 +477,8 @@ What changes with it on:
   day but today starts folded. The reader keeps their place as versions arrive. In a narrow window the panel never takes the preview's room: it narrows (down to
   300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer, as
   wide as the chat column (a chat narrower than 300 px: 300 px, ending above the timeline, so the timeline and its
-  toolbar stay clear).
+  toolbar stay clear). Wherever the timeline's toolbar runs on under the drawer (at 960 px with the chat open it reaches
+  under the chat column), the drawer ends above it too, so it never covers Fullscreen or Hide timeline.
   Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
   Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows
@@ -515,7 +516,14 @@ What changes with it on:
   once. A split of a clip with auto reframe reads "Split 'clip.mp4' at 1.5 s" (it went on "…, cleared auto reframe on
   its left part, … on its right part": the editor's save drops it from the new parts). Titles are titles: "Added 2
   tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'" (it read "7 clips and 6 media files", counting each
-  title's own media entry), and Compare's clips read "1 clip, 6 titles". **You can fold in the rest later** is true now: the next Fold in lists what
+  title's own media entry), and Compare's clips read "1 clip, 6 titles". A title's own media entry ("Text: W1") is the
+  title's in the counts and lists too: that setup version counts and lists its tracks, clip and titles, with no "Added
+  media 'Text: W1'" lines (each title counted twice before), a restore's list names the titles only, and in the Fold dialog a new title and its entry are one
+  row, left out together. The Fold dialog names a track the same fold adds ("Moved 'W1' to track 'Text 1'", as
+  History's row says it; it read "to track another track"). Every undo or redo of a restore says so ("Undid the
+  restore", "Redid the restore"), also the second and later ones (they read as fresh edits), and the undo of a fold or
+  of "Folded the rest…" reads "Undid the fold of 'Alt' into 'Main cut'". `cb history` lists "Folded the rest" as
+  `merge (the rest)` (it read `revert`). **You can fold in the rest later** is true now: the next Fold in lists what
   was left out ("Left out earlier") beside anything new, instead of "Nothing to fold in"; what one fold left out comes
   in, or stays out, together. The filter "Agent turns" (it was "Director turns", and empty for agents with no turn
   recorded) lists every agent's turns: a Director turn, and a run of your Claude Code's or Codex's versions up to the
@@ -775,7 +783,9 @@ with Carton off none of it runs at all.
   tab of its own. Joining starts from the Dashboard too: a "Join a shared project" tile beside "New project" (Carton on
   only) opens the same form in a dialog. An empty library (a new user's first screen, "Make your first video") has a
   "Join a shared project" button beside "Start a blank project" instead. The dialog stays until you press Open or
-  Done, also when the project you joined is the library's first (it used to close by itself there).
+  Done, also when the project you joined is the library's first (it used to close by itself there). Joining the first
+  project keeps the home page where you were (it jumped back to the Dashboard's top as the library's empty view gave
+  way to the grid) and brings the new tile into view.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
