@@ -196,10 +196,17 @@ export function VirtualList(p: VirtualListProps) {
     return () => ro.disconnect();
   }, []);
 
-  // Scroll the active row into view (keyboard navigation).
+  // Scroll the active row into view when it becomes the active one (keyboard navigation), never because rows arrived or
+  // moved around it (regress 2026-11-02: a version arriving shifts the active row's index and the layout, and a reader
+  // who had picked a row and scrolled away from it, into an older day, was pulled back to it). Told by its key: a row
+  // hidden meanwhile (its day folded) and shown again is the same row, and doesn't pull either.
+  const shownActive = useRef<string | null>(null);
   useEffect(() => {
     const el = ref.current;
     if (!el || p.active == null || p.active < 0 || p.active >= p.count) return;
+    const key = rowKeyRef.current(p.active);
+    if (key === shownActive.current) return;
+    shownActive.current = key;
     const y = topOf(p.active), rh = heightAt(p.active);
     if (y < el.scrollTop) el.scrollTop = y;
     else if (y + rh > el.scrollTop + el.clientHeight) el.scrollTop = Math.min(y, y + rh - el.clientHeight);
