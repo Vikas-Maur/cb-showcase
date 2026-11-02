@@ -752,8 +752,16 @@ export class History {
    */
   leftOut(into: string, from: string): ConfirmedChange[] {
     const log = this.#mustCut(into).log;
-    const reverted = new Set<ChangeId>();
-    for (const c of log) if (c.kind !== "partial-revert") for (const x of [c.reverts ?? []].flat()) reverted.add(x);
+    // reverted: by a change still in effect (an undo of the "fold in the rest" puts its partial fold back; a redo of
+    // that undo takes it out again: review #2)
+    const by = new Map<ChangeId, ChangeId[]>();
+    for (const c of log) if (c.kind !== "partial-revert") for (const x of [c.reverts ?? []].flat()) (by.get(x) ?? by.set(x, []).get(x)!).push(c.id);
+    const memo = new Map<ChangeId, boolean>();
+    const undone = (id: ChangeId): boolean => {
+      if (!memo.has(id)) memo.set(id, false), memo.set(id, (by.get(id) ?? []).some((r) => !undone(r)));
+      return memo.get(id)!;
+    };
+    const reverted = { has: undone };
     const out: ConfirmedChange[] = [];
     let head: Doc | undefined;
     for (let i = log.length - 1; i >= 0; i--) {

@@ -38,3 +38,13 @@ test("P1-2: no Cardboard media change prints an id: a clip's media swapped reads
   const lines = describe([set(["timelineItems", "IyUFHiQ2m7Kd0aXbT9pLw", "mediaItemId"], "9c1f0b1d-8f1e-4c55-a4e2-3c1f0b1d9a77")], two, cardboardSchema);
   assert.deepEqual(lines, ["Changed 'clip.mp4' media"]);
 });
+
+test("P1-2 (review #3): adding or removing a clip's effect names the effect, never its id (the real schema)", () => {
+  const d = doc();
+  const UUID = "7ba56a6c-9992-42a1-88be-b30091622288";
+  const withFx = (fx: Rec[]) => ({ ...d, timelineItems: (d.timelineItems as Rec[]).map((r) => ({ ...r, effects: fx })) });
+  const a = withFx([]), b = withFx([{ id: UUID, type: "blur", amount: 4 }]);
+  const added = describe(diff(a, b, cardboardSchema), a, cardboardSchema);
+  const removed = describe(diff(b, a, cardboardSchema), b, cardboardSchema);
+  assert.deepEqual([added, removed], [["Added effect \"blur\" on 'clip.mp4'"], ["Removed effect \"blur\" on 'clip.mp4'"]]);
+});

@@ -102,3 +102,17 @@ test("P1-3: a Published cut's newer versions count a partial fold once, as log()
   assert.equal(p!.versions, 1, "one version since the publication");
   assert.equal(p!.newer, true);
 });
+
+test("P1-4 (review #2): folding in the rest, then undoing that, leaves the rest left out, and foldable again", async () => {
+  const { c, main, v } = await review();
+  await c.foldSome(v.id, { into: main, reject: ["items/d"], author: alice });
+  const [left] = await c.leftOut(v.id, { into: main });
+  assert.equal((await c.revert(left!.change, { cut: main, author: alice })).status, "confirmed");
+  assert.deepEqual(await c.leftOut(v.id, { into: main }), []);
+  assert.equal((await c.undo(undefined, { cut: main, author: alice })).status, "confirmed");
+  assert.equal(item((await c.head(main)).doc, "d")!.name, "d", "the undo left 'd' out again");
+  assert.deepEqual((await c.leftOut(v.id, { into: main })).map((x) => x.change), [left!.change], "and it can be folded in again");
+  // a redo folds it in again: nothing left out
+  assert.equal((await c.redo(undefined, { cut: main, author: alice })).status, "confirmed");
+  assert.deepEqual(await c.leftOut(v.id, { into: main }), []);
+});

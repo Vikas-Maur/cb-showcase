@@ -105,3 +105,21 @@ test("P1-5: a version of several changes is summed up in one line; every change 
   const mixed: Op[] = [...ops, { op: "remove", path: ["media", "m2"] }, { op: "insert", path: ["tracks", "t2"], value: { id: "t2", name: "Agents", [core.POS]: "b" } }];
   assert.equal(core.describeVersion(mixed, d, schema).summary, "Moved 'clip.mp4', changed 'W1' and 'W2', and 2 more changes");
 });
+
+test("P1-2 (review #3): an element of a keyed list is named by its own name or type, never its id", () => {
+  const ks = core.defineSchema({
+    collections: {
+      items: { noun: "clip", labels: { effects: "effect", keyframeTracks: "keyframes" }, fields: { effects: core.keyed("id"), keyframeTracks: core.keyed("property") } },
+    },
+    label: (_c, r) => String(r?.name ?? "?"),
+  });
+  const UUID = "7ba56a6c-9992-42a1-88be-b30091622288";
+  const d: Doc = { items: [{ id: "c1", name: "clip.mp4", effects: [{ id: "e0", type: "glow" }], keyframeTracks: [] }] };
+  const lines = [
+    ...core.describe([{ op: "insert", path: ["items", "c1", "effects", UUID], value: { id: UUID, type: "blur" } }], d, ks),
+    ...core.describe([{ op: "insert", path: ["items", "c1", "effects", "e9"], value: { id: "e9", amount: 2 } }], d, ks),
+    ...core.describe([{ op: "remove", path: ["items", "c1", "effects", "e0"] }], d, ks),
+    ...core.describe([{ op: "insert", path: ["items", "c1", "keyframeTracks", "opacity"], value: { property: "opacity", keyframes: [] } }], d, ks),
+  ];
+  assert.deepEqual(lines, ["Added effect \"blur\" on 'clip.mp4'", "Added effect on 'clip.mp4'", "Removed effect \"glow\" on 'clip.mp4'", "Added keyframes \"opacity\" on 'clip.mp4'"]);
+});

@@ -3,7 +3,7 @@
 import { POS } from "../types.ts";
 import type { FieldSpec, Schema } from "../schema.ts";
 import type { ConflictCard, Doc, Intent, Op, Path, Rec, RemapMaps, RemapOp } from "../types.ts";
-import { getIn } from "./doc.ts";
+import { getIn, specAt } from "./doc.ts";
 import { EMPTY, deepEqual, unescapeSegment } from "./json.ts";
 import { composeMaps, inferRemaps, near, remapSpan } from "./remap.ts";
 
@@ -233,11 +233,20 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
       if (!n0 && parts.length) verb = `${parts[0]!.split(" ")[0]} %s`;
       rest = rest.filter((op) => !used.has(op));
     }
+    // an element of a keyed list by its own name or type ("blur"), else its key when that isn't an id ("opacity"
+    // keyframes), else nothing: never an effect's id (UI audit P1-2, review #3)
+    const elem = (op: PlainOp) => {
+      const v = (op.op === "insert" ? op.value : getIn(base, op.path, schema)) as Rec | undefined;
+      const own = v && typeof v === "object" ? [v.name, v.type, v.label].find((x) => typeof x === "string" && x) : undefined;
+      if (own) return ` ${short(own)}`;
+      const spec = specAt(schema, op.path.slice(0, 3)), k = op.path.at(-1);
+      return (spec?.kind === "keyed" && isIdKey(spec.key)) || opaque("", k) ? "" : ` ${short(k)}`;
+    };
     for (const op of rest) {
       const field = fieldWords(schema, op.path).words;
       const list = fieldWords(schema, op.path.slice(0, 3)).words;
-      if (op.op === "insert") parts.push(`added ${list} ${short(op.path.at(-1))}`);
-      else if (op.op === "remove") parts.push(`removed ${list} ${short(op.path.at(-1))}`);
+      if (op.op === "insert") parts.push(`added ${list}${elem(op)}`);
+      else if (op.op === "remove") parts.push(`removed ${list}${elem(op)}`);
       else if (op.path.at(-1) === POS) parts.push(`reordered ${list}`);
       else if (op.op === "unset") parts.push(`cleared ${field}`);
       else {
