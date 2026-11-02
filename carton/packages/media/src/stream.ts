@@ -268,8 +268,12 @@ const noAppend = new WeakSet<BlobStore>();
 const BATCH_PARTS = 4;
 const BATCH_BYTES = 2 << 20;
 const QUEUED_BYTES = 12 << 20;
-/** Batches under way at once (see ProxyStreamWriter.#kick). */
-const IN_FLIGHT = 2;
+/**
+ * Batches under way at once (see ProxyStreamWriter.#kick): more when batches are small, since a small append waits on its
+ * round trips (a Worker's write-cap counter, the bytes, the entries), not on its bytes. A host that asks for 1 part per
+ * append (a Worker on the Free plan) gets 4; 2 parts, 3; else 2.
+ */
+const inFlightFor = (parts: number): number => (parts <= 1 ? 4 : parts <= 2 ? 3 : 2);
 
 /** When a write refused for a while may go again (an error with `retryAt`, BlobStore's contract), else null. */
 function retryAtOf(e: unknown): number | null {
@@ -530,7 +534,7 @@ export class ProxyStreamWriter {
   }
 
   /**
-   * Starts batches while fewer than `inFlight` are under way: two by default, so the next batch uploads while the host
+   * Starts batches while fewer than `inFlight` are under way (inFlightFor: two, more for small batches), so the next uploads while the host
    * writes the last one to storage (round trips the link would otherwise sit idle through), and a lossy link carries two
    * TCP streams (one stream on the 4G profile, 0.5% loss and an 80 ms round trip, tops out near the proxy's own rate).
    * Entries of two batches may land in either order: a reader waits at the gap a moment, as within one batch. The end
@@ -538,7 +542,7 @@ export class ProxyStreamWriter {
    */
   #kick(): void {
     const limits = this.#o.batch || {};
-    const inFlight = Math.max(1, limits.inFlight ?? IN_FLIGHT);
+    const inFlight = Math.max(1, limits.inFlight ?? inFlightFor(this.#partsLimit()));
     while (!this.#failure && this.#inflight < inFlight && this.#queue.length) {
       // The init segment alone is of no use to a viewer (a player needs it and the first segment): it waits for the
       // first segment, so both go in one request, unless the writer flushes or ends first.

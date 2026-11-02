@@ -392,3 +392,28 @@ test("the writer follows the host's limits from its first answer on (and keeps i
   await done;
   assert.ok(plain.batches.some((b) => b.parts.length === 4), JSON.stringify(plain.batches.map((b) => b.parts.length)));
 });
+
+test("a host asking for 1 part an append gets 4 appends under way (each waits on round trips, not bytes); 2 parts, 3", async () => {
+  for (const [parts, want] of [[1, 4], [2, 3]] as const) {
+    class Limiting extends AppendingStore {
+      open = 0;
+      most = 0;
+      override async appendStream(stream: string, batch: StreamAppendBatch) {
+        this.most = Math.max(this.most, ++this.open);
+        await new Promise((r) => setTimeout(r, 15));
+        this.open--;
+        await super.appendStream(stream, batch);
+        return { limits: { parts, bytes: 10 << 20 } };
+      }
+    }
+    const store = new Limiting();
+    const w = new ProxyStreamWriter({ store, hasher: nodeHasher });
+    await w.init(INIT);
+    await w.segment(seg(0), 2);
+    await w.flush(); // the first answer says the limits
+    for (let i = 1; i < 13; i++) await w.segment(seg(i), 2);
+    await w.end();
+    assert.equal(store.most, want, `${parts} part(s) an append`);
+    assert.deepEqual(await indexes(reader(store, w.id)), Array.from({ length: 13 }, (_, i) => i));
+  }
+});

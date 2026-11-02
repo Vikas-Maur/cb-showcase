@@ -24,11 +24,13 @@ function authFor(env: Env): HmacAuth {
 
 /**
  * A proxy stream's batch limits on a Worker (env PREVIEW_BATCH_PARTS, PREVIEW_BATCH_BYTES, PREVIEW_READ_BYTES), chosen
- * so one request stays inside the Free plan's 10 ms of CPU. Measured on Cloudflare (cf-proxy-path, cf-verify2): an
- * append costs about 3 ms plus about 1.5-3 ms per part of a 2 s, ~650 KB segment (1 part: at most 7.3 ms; 4 parts: p50
- * 9.1, max 20.6); a read about 5 ms plus 1.5 ms per MiB (2 MiB: at most 9.2 in 30 reads, 10.1 in a 120-read burst).
+ * so one request stays under about 8 ms of the Free plan's 10 ms of CPU. Measured on carton-lab-proxy, exact per request
+ * (GraphQL; cf-proxy-path 2026-11-02, not yet re-checked): appends of 1 part (a 2 s, ~650 KB segment) p50 3.4 ms, max
+ * 5.2 (n=14); of 2 parts p50 10.0, max 12.0 (n=7, 4 over 10 ms); cf-verify2 saw 4 parts at p50 9.1, max 20.6. Reads of
+ * up to 2 MiB p50 8-9 ms, max 13 (n=12, 4 over 10 ms); a read costs about 5 ms plus 1.5 ms per MiB, so 1 MiB.
+ * A Paid plan (30 s of CPU) can raise them for fewer requests.
  */
-export const PREVIEW_DEFAULTS = { appendParts: 2, appendBytes: 1_572_864, readBytes: 2 << 20 } as const;
+export const PREVIEW_DEFAULTS = { appendParts: 1, appendBytes: 1 << 20, readBytes: 1 << 20 } as const;
 
 const positiveOr = (v: string | undefined, dflt: number): number => {
   const n = Number(v);
