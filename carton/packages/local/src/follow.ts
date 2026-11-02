@@ -24,6 +24,26 @@ export const FOLLOW_MS = 250;
 const KNOWN_MAX = 8192;
 
 /**
+ * The person's own actions in the app that this process handed to a lease holder (`LocalCarton.write` with `gui`, by
+ * request id: a GUI save, ⌘Z). Served by another process's holder (a helper that took the lease while the app's engine
+ * thread was busy), the row is another connection's write, but nobody is about to work on the shared timeline.tsx
+ * because of it: the follower tells the head move without it among the authors, so it freezes nothing (windows-sync
+ * review round 4 #1; served here, runWrite skips the freeze itself). One set per JS realm, shared by every copy of
+ * this module in it: the write and the follower may be two handles on one project. Bounded like `known`; kept after a
+ * scan sees the row, as another follower in this process may see it later.
+ */
+const GUI_WRITES = Symbol.for("@carton/local: gui writes");
+const guiWrites = (): Set<string> => ((globalThis as { [GUI_WRITES]?: Set<string> })[GUI_WRITES] ??= new Set<string>());
+/** A request this process sends with `gui` (`LocalCarton.write`): its change is the person's own action in the app. */
+export function noteGuiWrite(id: string): void {
+  const s = guiWrites();
+  s.add(id);
+  if (s.size > KNOWN_MAX) s.delete(s.values().next().value!);
+}
+/** A row of such a request (a fold's rest is reverted as `<id>.rest`). */
+const isGuiWrite = (id: string): boolean => guiWrites().has(id) || (id.endsWith(".rest") && guiWrites().has(id.slice(0, -5)));
+
+/**
  * A stamp that changes whenever another connection has committed to the store, or null when the store can't tell
  * (an in-memory store: nothing else writes to it). store-sqlite's `db` is a public member; the stamp is its
  * `PRAGMA data_version`, read through `db.read` (which waits out a WAL recovery like any read).
@@ -39,7 +59,9 @@ export function externalStamp(store: Store): (() => Promise<number>) | null {
 export interface FollowOptions {
   /**
    * The current cut's head moved under this handle (another process wrote it). `authors`: who made those changes, one
-   * entry per change (null: a change with no author); none when it can't tell (merged with a notice that couldn't).
+   * entry per change (null: a change with no author), less the person's own actions in the app this process handed to
+   * another holder (`noteGuiWrite`; empty when those are all: nobody is at work); none when it can't tell (merged with
+   * a notice that couldn't).
    */
   onHead(cut: string, authors?: readonly (Actor | null)[]): void | Promise<void>;
   /** This machine's current cut is another one now (another process switched it); this handle has switched too. */
@@ -183,7 +205,7 @@ export function followStore(carton: Carton, store: Store, o: FollowOptions): Fol
     if (foreign.length) { await new Promise((r) => setImmediate(r)); foreign = foreign.filter((r) => !known.has(r.id)); }
     for (const r of mine) known.delete(r.id);
     if (switched) return { kind: "cut", cut: switched };
-    if (foreign.length) return { kind: "head", cut, authors: foreign.map((r) => r.author ?? null) };
+    if (foreign.length) return { kind: "head", cut, authors: foreign.filter((r) => !isGuiWrite(r.id)).map((r) => r.author ?? null) };
     return !first && o.onMoved ? { kind: "moved", cut } : null;
   };
   const look = async (): Promise<void> => {

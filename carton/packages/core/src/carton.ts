@@ -16,7 +16,7 @@ import type { BlobStore, Hasher, HostAdapter, IdentitySource, OwnFn, ProxyEncode
 import type { FieldSpec, Schema } from "./schema.ts";
 import type { KeyframeData, Person, PersonRids, PresenceState } from "./sync/messages.ts";
 import type { SyncStatus } from "./sync/index.ts";
-import { ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
+import { hashOps, ReplicaQueue, type HistoryFields, type QueuedChange, type QueueVersion, type RestoreInput } from "./sync/queue.ts";
 import { SharedCut, type SharedCutEvent, type SyncState, type WriteOutcome } from "./sync/replica.ts";
 import { STORE_TABLES as T, StateUnknown, type FoldOptions, type FoldPreview, type FoldResult, type HeldBase, type Planned, type ShallowImport, type Tail } from "./history/common.ts";
 import { History, actorKey, groupOf, nodeId, parseNode, randomHex, undoLabel, unseenCards, type UndoScope } from "./history/history.ts";
@@ -393,7 +393,15 @@ interface PendingRow {
   /** Its latest version's rebase count. */
   k?: number;
   supersedes?: string[];
-  /** A rebase changed its ops (`pendingChanges`' `edited`), kept with `k`: once restored, its earlier versions are gone. */
+  /**
+   * The digest of the ops it was committed with (`hashOps(ops, null)`), kept with `k`: once restored, its earlier versions
+   * are gone, and `pendingChanges`' `edited` compares its latest ops with this (review R6-14).
+   */
+  committed?: string;
+  /**
+   * A rebase changed its ops, as of this write (kept for a reader from before `committed`). A row with no `committed`
+   * (stored before it): true stays edited, its committed ops unknown; absent, its stored ops are the committed ones.
+   */
   edited?: boolean;
   /** The cards its rebases raised, by rebase count: what it reports when it settles. */
   cards?: { k: number; cards: ConflictCard[] }[];
@@ -413,10 +421,23 @@ interface PendingRow {
 }
 /** The undo scope in a call's options (only the fields given, so a plain call sees the whole group). */
 const scopeOf = (o: UndoScope): UndoScope => ({ ...(o.since !== undefined ? { since: o.since } : {}), ...(o.app ? { app: true } : {}) });
-/** A rebase changed its ops: its latest version's differ from its first's, or did before it was restored. */
+/** The digest of a version's ops alone (`hashOps(ops, null)`), once per version. */
+const opsDigest = (v: QueueVersion): string => {
+  let d = OPS_DIGEST.get(v);
+  if (d === undefined) OPS_DIGEST.set(v, (d = hashOps(v.ops, null)));
+  return d;
+};
+const OPS_DIGEST = new WeakMap<QueueVersion, string>();
+/** The digest of the ops it was committed with; undefined when unknown (restored from a row from before it that said edited). */
+const committedOf = (p: QueuedChange): string | undefined => p.committed ?? (p.edited ? undefined : opsDigest(p.versions[0]!));
+/**
+ * A rebase changed its ops: its latest version's differ from those it was committed with. Restored from a row: from the
+ * digest it kept (review R6-14); a row from before the digest that said so stays edited.
+ */
 const editedOf = (p: QueuedChange): boolean => {
-  if (p.edited) return true;
   const v = p.versions[p.versions.length - 1]!, first = p.versions[0]!;
+  if (p.committed !== undefined) return opsDigest(v) !== p.committed;
+  if (p.edited) return true;
   // the hash covers the intent too: a remap re-expressed over the same ops edits nothing (review R6-12). Its ops are
   // compared only when the hashes differ, once per latest version
   if (v.hash === first.hash) return false;
@@ -427,6 +448,7 @@ const editedOf = (p: QueuedChange): boolean => {
 const OPS_CHANGED = new WeakMap<QueueVersion, boolean>();
 const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow => {
   const v = p.versions[p.versions.length - 1]!;
+  const committed = v.k ? committedOf(p) : undefined;
   const delta = q.baseDelta(p.branchId, v);
   const cards = p.versions.filter((x) => x.cards.length).map((x) => ({ k: x.k, cards: x.cards }));
   return {
@@ -442,7 +464,7 @@ const pendingRow = (p: QueuedChange, order: number, q: ReplicaQueue): PendingRow
     kinds: v.kinds,
     policy: v.policy,
     ...(p.history ? { history: p.history } : {}),
-    ...(v.k ? { k: v.k, supersedes: v.supersedes, edited: editedOf(p) } : {}),
+    ...(v.k ? { k: v.k, supersedes: v.supersedes, ...(committed !== undefined ? { committed } : {}), edited: editedOf(p) } : {}),
     ...(cards.length ? { cards } : {}),
     ...(p.sentBases.length ? { sentBases: [...p.sentBases] } : {}),
     ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -461,7 +483,7 @@ const restoreInput = (p: PendingRow): RestoreInput => ({
   ...(p.history ? { history: p.history } : {}),
   k: p.k ?? 0,
   supersedes: p.supersedes ?? [],
-  ...(p.edited ? { edited: true } : {}),
+  ...(p.committed !== undefined ? { committed: p.committed } : p.edited ? { edited: true } : {}),
   cards: p.cards ?? [],
   sentBases: p.sentBases ?? [],
   ...(p.rejecting !== undefined ? { rejecting: p.rejecting } : {}),
@@ -646,6 +668,12 @@ class CartonImpl implements Carton {
   #pinsGen: string | undefined = undefined;
   /** The pins must be read again whatever the token says: a pin write landed after a rebuild replaced its History. */
   #pinsStale = false;
+  /**
+   * Refreshes that loaded other processes' rows into History (a count), and how many of them the people read since
+   * covers: while they differ, those rows' people are still to read and their events to tell (R6-15).
+   */
+  #rowsLoaded = 0;
+  #rowsPeople = 0;
   #ridSaved = false;
   /** People by replica id, as the server said (meta ["person", rid]); this replica's own person (meta ["identity"]). */
   #people = new Map<string, Person>();
@@ -659,6 +687,10 @@ class CartonImpl implements Carton {
   #joined = false;
   /** The last write of people the server sent: a reload waits for it, so it never reads the store from before it. */
   #peopleSaved: Promise<unknown> = Promise.resolve();
+  /** People reads one at a time (#readPeople): the chain, how many began, and the newest whose snapshot is set. */
+  #peopleReads: Promise<unknown> = Promise.resolve();
+  #peopleRead = 0;
+  #peopleSet = 0;
   #closed = false;
   /** close() has begun: nothing starts a load or a connection any more. */
   #closing = false;
@@ -1065,17 +1097,22 @@ class CartonImpl implements Carton {
       if (E.canonical(known) !== E.canonical(e.value)) this.#h.updateCut(e.value.id, { name: e.value.name, kind: e.value.kind, sequencer: e.value.sequencer, ...(e.value.protected !== undefined ? { protected: e.value.protected } : {}), ...(e.value.source ? { source: e.value.source } : {}) });
     }
     const cuts = cut ? [cut] : this.#h.cuts().filter((c) => !c.shallow).map((c) => c.id);
-    let loaded = false;
     for (const id of cuts) {
       const rows = (await s.range<ConfirmedChange>(T.changes, { prefix: [id], gt: [id, this.#h.headSeq(id)] })).map((e) => e.value);
       // a compaction by another process squashed rows this handle holds into a new one: what it holds is from before,
       // the new row's ops from after; read it all again
       if (rows.some((r) => r.squashedFrom! <= this.#h.headSeq(id))) return this.#rebuild();
-      if (rows.length) (loaded = true), this.#h.load(id, rows);
+      if (rows.length) this.#rowsLoaded++, this.#h.load(id, rows);
     }
     // another process's rows: its replica id and what it learnt of people may be new too; and events waiting for them
-    // (rows another handle fetched: R6-10)
-    if (loaded) await this.#loadPeople(), this.#drain();
+    // (rows another handle fetched: R6-10). Kept until done: rows loaded by a refresh whose next read failed (a later
+    // cut's rows, or people) are in History already, so the next refresh loads none and does this for them (R6-15)
+    if (this.#rowsPeople !== this.#rowsLoaded) {
+      const n = this.#rowsLoaded;
+      await this.#loadPeople();
+      this.#rowsPeople = Math.max(this.#rowsPeople, n);
+      this.#drain();
+    }
     // the pins only when their token moved (`pins`: always, for a compaction, which keeps every pinned version)
     if (pins || this.#pinsStale || (await s.get<string>(T.meta, PINS_GEN)) !== this.#pinsGen) {
       const h = this.#h,
@@ -1100,15 +1137,30 @@ class CartonImpl implements Carton {
   async #loadPeople(): Promise<void> {
     (await this.#readPeople())();
   }
-  /** People, this replica's identity and this store's replica ids as stored; the function sets them on the handle. */
-  async #readPeople(): Promise<() => void> {
-    const s = this.store;
-    await this.#peopleSaved;
-    const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
-    const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
-    const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
-    const joined = (await s.get<boolean>(T.meta, ["joined"])) === true;
-    return () => ((this.#people = people), (this.#me = me), (this.#ownRids = rids), (this.#joined = joined));
+  /**
+   * People, this replica's identity and this store's replica ids as stored; the function sets them on the handle. The
+   * reads run one at a time, numbered in order, and a snapshot is set only if none read after it was set first: an older
+   * read finishing late (a refresh's retry, a rebuild that sets everything at its end) never takes back what a newer one
+   * set, which no later refresh would read again if it loads no row (review of fix/core-deferred, finding 2).
+   */
+  #readPeople(): Promise<() => void> {
+    const read = async () => {
+      const s = this.store;
+      await this.#peopleSaved;
+      const n = ++this.#peopleRead;
+      const people = new Map((await s.range<Person>(T.meta, { prefix: ["person"] })).map((e) => [e.key[1] as string, e.value]));
+      const me = (await s.get<Person>(T.meta, ["identity"])) ?? null;
+      const rids = new Set((await s.range(T.meta, { prefix: ["rid"] })).map((e) => e.key[1] as string));
+      const joined = (await s.get<boolean>(T.meta, ["joined"])) === true;
+      return () => {
+        if (n <= this.#peopleSet) return;
+        this.#peopleSet = n;
+        (this.#people = people), (this.#me = me), (this.#ownRids = rids), (this.#joined = joined);
+      };
+    };
+    const p = this.#peopleReads.then(read, read);
+    this.#peopleReads = p.catch(() => {});
+    return p;
   }
   /**
    * A pin row write conditioned on the row being what we last read, so two processes' owner sets never overwrite, with a
@@ -2423,12 +2475,15 @@ class CartonImpl implements Carton {
   }
   /**
    * #tell on the serialized chain, after any settle under way has told its `change` events (so a batch's notice or
-   * absorption never comes before them): for every cut, or `cut`, with `all`.
+   * absorption never comes before them): for every cut, or `cut`, with `all`. An `all` drain (a fetch that failed) is
+   * queued even with nothing waiting yet: a settle under way may still be storing a batch whose events wait for that
+   * fetch, and they go into #due only once it is stored (R6-13). A fetch of the cut started since (the next sync
+   * event's retry) holds them again, as any fetch under way does.
    */
   #drain(cut?: string, all = false): void {
-    if (!this.#due.size) return;
+    if (!all && !this.#due.size) return;
     const run = () => {
-      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all);
+      for (const c of cut ? [cut] : [...this.#due.keys()]) this.#tell(c, all && !this.#fetching.has(c));
     };
     // a listener that throws doesn't break the chain
     this.#queue = this.#queue.then(run, run).catch(() => {});
@@ -2695,7 +2750,11 @@ class CartonImpl implements Carton {
   #sinceBase(sc: SharedCut, cut: string, at: { seq: number; causal: readonly ChangeId[]; cutId: string }): { remap?: ReturnType<typeof E.intentRemap>; kinds: EditKinds } {
     const rows = sc.queue.rows(cut).slice(at.seq);
     if (at.cutId !== cut || rows.some((r) => r.placeholder)) return { kinds: {} };
-    return E.sideOf([...rows, ...sc.queue.pending(cut).filter((p) => !at.causal.includes(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
+    // the base's causal changes are in it, pending or confirmed since (a held GUI save's own change, confirmed before the
+    // next save: its ripple was composed again, moving a clip twice; as History's local commit, `causal` is never the
+    // other side's)
+    const causal = new Set(at.causal);
+    return E.sideOf([...rows.filter((r) => !causal.has((r as ConfirmedChange).id)), ...sc.queue.pending(cut).filter((p) => !causal.has(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };

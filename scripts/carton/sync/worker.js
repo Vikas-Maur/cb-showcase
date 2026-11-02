@@ -243,7 +243,8 @@ async function commitShared(lc, { doc, base, author, intent }) {
     let resolved = [];
     const r = await lc.carton.commit({ doc, ...(base ? { base } : {}), author, ...(intent ? { intent } : {}), choices: () => "ours" });
     if ((r.status === "pending" || r.status === "confirmed") && r.resolved?.length) resolved = r.resolved;
-    if (resolved.length) return { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status };
+    // the change's id in every answer that queued one (the facade holds a merged GUI save's document on it: ui-words)
+    if (resolved.length) return { status: "conflicts", cards: resolved, ref: r.ref, landed: r.status, ...((r.id ?? r.change?.id) ? { id: r.id ?? r.change.id } : {}) };
     // Offline (pending), the holder's head is its optimistic state: what it merged this edit onto included.
     if (r.status === "pending") return { ...r, rebased: rebasedFrom((await lc.carton.head()).doc) };
     return r;
@@ -261,9 +262,11 @@ async function commitShared(lc, { doc, base, author, intent }) {
   if (w.status === "rejected") return { status: "rejected", reason: w.reason };
   const head = w.head?.doc ? w.head : await lc.carton.head();
   // the holder's write kept the cards as a notice for the author already (local's cardsWrite, or core's late conflict)
-  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, kept: true, ref: head.ref, ...(w.head?.doc ? { head } : {}) };
+  // its change's id (the holder's answer names it): the facade holds a merged GUI save's document on it (ui-words)
+  const id = typeof w.id === "string" ? { id: w.id } : {};
+  if (w.status === "conflicts") return { status: "conflicts", cards: w.conflicts, kept: true, ref: head.ref, ...id, ...(w.head?.doc ? { head } : {}) };
   const pending = w.status === "pending";
-  return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...(w.head?.doc ? { head } : {}) };
+  return { status: pending ? "pending" : "confirmed", seq: w.seq, ref: head.ref, rebased: rebasedFrom(head.doc), empty: !!w.empty, notices: [], ...id, ...(w.head?.doc ? { head } : {}) };
 }
 
 /**

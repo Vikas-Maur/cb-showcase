@@ -12,7 +12,7 @@
 // whose answer was lost with its holder gets them again; the outcome a write is still waiting for is that write's to
 // report, never another call's.
 import { merge3 } from "@carton/core";
-import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, Notice, PathKey, StateRef } from "@carton/core";
+import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, HeldBase, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { statusPath } from "@carton/cardboard/node";
 import { hookDelivered, isFallbackActor } from "./identity.ts";
@@ -28,7 +28,7 @@ export type WriteOp =
    * its own handle has the confirmed rows only. A confirmed answer needs it too: a write that changed nothing confirms
    * at once while the holder's own edits still wait for the server.
    */
-  | { kind: "commit"; cut?: string; base?: string | StateRef; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
+  | { kind: "commit"; cut?: string; base?: string | StateRef | HeldBase; doc?: unknown; ops?: unknown[]; intent?: unknown; kinds?: unknown; policy?: "merge" | "lww"; name?: string; head?: boolean }
   | { kind: "fold"; from: string; into?: string; check?: boolean; reject?: PathKey[]; missingBase?: "dialog" | "all-cards"; keep?: "mine" | "theirs"; head?: boolean }
   | { kind: "restore"; ref: string; cut?: string; head?: boolean }
   | { kind: "revert"; changeId: ChangeId; cut?: string; head?: boolean }
@@ -72,8 +72,10 @@ export interface WriteRequest {
    * work on the shared timeline.tsx because of it, so it doesn't start or extend a freeze of the file (`tellBusy`). A
    * freeze an agent already holds still applies (the file shows the write once it ends). `cb` never sets it. Only
    * `true` counts. Written by the holder (or in-process); a helper that took the lease from a stalled app answers it
-   * too, but the app's follower then sees the change as another process's and freezes the file as for a `cb` call
-   * (the flag isn't stored with the change).
+   * too, and the app's follower, which then finds the change as another process's, knows it by its id as the person's
+   * own (`LocalCarton.write` notes it: `noteGuiWrite`) and freezes nothing for it (windows-sync review round 4 #1). The
+   * flag isn't stored with the change: a follower in another process than the write's would count it as a `cb` call
+   * (the app makes its GUI writes in the process that follows).
    */
   gui?: boolean;
 }

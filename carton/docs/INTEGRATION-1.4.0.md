@@ -269,8 +269,9 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 - A save sent before the previous one's echo holds that save too, while `cartonBase` still names the version before
   both. It also carries `after`: the previous save's `rev` (ui-words #3). The worker makes it on that save's state: the
   version it was recorded as when it landed as sent, or, when it was merged with another change, the person's
-  document held in memory as core's `HeldBase` (that save in its causal past). Unknown there (a shared cut, a
-  restart), the save is made on `base` as before. Without `after`, the second save clashed with the first at head: a
+  document held in memory as core's `HeldBase` (that save in its causal past), on a local cut or a shared one (its
+  queued edit's id; a non-holder hands the `HeldBase` to the lease holder with the commit). Unknown there (a restart, or
+  a shared cut's base this handle can't read), the save is made on `base` as before. Without `after`, the second save clashed with the first at head: a
   conflict card of the person against themself.
 - A GUI save is written under its own `rev` (so its echo only moves the base) only when head is the person's document.
   Core confirms a save without a rebase when the changes since its base touched other records; the worker counts
@@ -303,7 +304,10 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
   project's lease; before, local's write path reached the same holder through its control socket. Elsewhere (another
   process holds the lease, no View runs) it still goes through local's write path. `save-cost.test.js` counts it.
   Either way it is a `gui` write (local-cli `3962f27`): the person's own action starts no `timeline.tsx` freeze, as a GUI
-  save on a shared cut handed to another process's holder doesn't either (an agent's freeze still holds).
+  save on a shared cut handed to another process's holder doesn't either (an agent's freeze still holds). Served by
+  another process's holder, its row is another connection's write: the worker's follower knows it by its request id
+  (`LocalCarton.write` notes every `gui` request, `noteGuiWrite`) and tells the head move with no one busy (windows-sync
+  review round 4 #1; before, it froze the file as for a `cb` call).
 - With Carton off, or without history for the project, Cardboard's snapshot undo runs.
 
 **Remaps (H7).**
