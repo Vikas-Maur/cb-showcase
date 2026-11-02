@@ -786,8 +786,8 @@ async function keepDropped(bundle, before, after) {
 async function projectFor(bundle, doc, current, { keep = true } = {}) {
   if (!bundle) return materializeProject(doc, current);
   let look;
-  const known = (id) => {
-    try { return (look ??= detailsOf(bundle).known())(id); } catch (e) {
+  const known = (id, versioned) => {
+    try { return (look ??= detailsOf(bundle).known())(id, versioned); } catch (e) {
       look = () => undefined;
       warnOnce("media-details:" + bundle, "the media details kept for " + path.basename(bundle) + " couldn't be read: " + errText(e));
     }

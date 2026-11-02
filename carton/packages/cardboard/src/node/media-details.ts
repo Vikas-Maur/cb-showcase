@@ -49,7 +49,8 @@ const keptOf = (m: Rec, details: Rec): KeptMedia => {
   return { details, ...(type ? { type } : {}), ...(contentHash ? { contentHash } : {}) };
 };
 /** The same media: of the same kind, and of the same content where both say which (an entry shared later, or unlinked from sharing, is still its file). */
-const sameMedia = (kept: KeptMedia, m: Readonly<Rec>): boolean => {
+const sameMedia = (kept: KeptMedia, m: Readonly<Rec> | undefined): boolean => {
+  if (!isObj(m)) return false;
   const type = str((m.data as Rec | undefined)?.type), hash = str(m.contentHash);
   return (!kept.type || !type || kept.type === type) && (!kept.contentHash || !hash || kept.contentHash === hash);
 };

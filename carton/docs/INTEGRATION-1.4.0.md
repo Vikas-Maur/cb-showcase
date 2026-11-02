@@ -225,12 +225,17 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
      document it was applied to against the one it made) and every materialization (`projectFor`: the file it replaces
      against what it writes). A write that drops nothing does no I/O for it.
    - Every materialization (`headAt`, a merged GUI save, the page's `checkout`) carries an entry's details over from
-     the file it replaces, else as last kept for its id (`materializeProject`'s `known`).
-   - An entry still without them (a project an earlier build's restore, or the root-restore bug, left so): the
-     worker's `materializeIn` and cb's `after` ask Cardboard as its import does (`reprobeMedia`): the file its library
-     has for the id, else the one its loader's recovery of unlisted media (`eH`) finds (`media/<id>.<ext>`), registered
-     with the library as that recovery does, so main's `cardboard-media://` map has it at once; Cardboard's cached
-     probe (`inspect.probe`); the fields the import's `j4` sets from it. After the write, Cardboard's derive
+     the file it replaces, else as last kept for that media (`materializeProject`'s `known`: the same id, kind and,
+     where both say, content id); a file's entry the replaced file holds without them (`lacksDetails`: no `src`, `size`
+     or duration) has what it lacks filled in from them, its own fields first.
+   - An entry still without them (a project an earlier build's restore, or the root-restore bug, left so), playing from
+     a file of this library: the worker's `materializeIn` and cb's `after` ask Cardboard as its import does
+     (`reprobeMedia`): the file its library has for the id, else the one its loader's recovery of unlisted media (`eH`)
+     finds (`media/<id>.<ext>`), registered with the library as that recovery does, so main's `cardboard-media://` map
+     has it at once; Cardboard's probe of the file as it is now (`inspect.probePath`, not the probe cached for the id,
+     which may be of a file since replaced); the fields the import's `j4` sets from it, where the entry lacks them. A
+     file not there is looked for again at the next materialization (the `media/` listing cached until the folder
+     changes); a failed probe once the file changes. After the write, Cardboard's derive
      (`ensureDerived`, which main otherwise runs once per session at the first save) fills in thumbnails and the
      waveform, and the worker announces the change. Nothing is guessed: `createdAt` and `addedAt` stay unset.
    - Every Carton write into `project.json` (`headAt`) also moves `updatedAt`, the library's "Updated" time.
