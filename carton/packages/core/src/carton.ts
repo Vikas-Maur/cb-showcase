@@ -1882,11 +1882,12 @@ class CartonImpl implements Carton {
       const from = this.#h.canon(cut.forkOf);
       const source = cut.source ?? parseNode(from).branchId;
       const src = this.#h.cut(source);
-      // the versions after the one published, as log() lists them: a withdraw row (H1) or a squashed change is none
+      // the versions after the one published, as log() lists them: a withdraw row (H1), a squashed change or a
+      // fold-some's fold half (its partial revert is the version, UI audit P1-3) is none
       let versions = 0;
       if (src && !src.shallow && this.#h.head(source) !== from) {
         const log = this.#h.changes(source), at = parseNode(from);
-        for (let s = at.branchId === source ? at.seq : 0; s < log.length; s++) if (!log[s]!.withdrawn && !log[s]!.squashedInto) versions++;
+        for (let s = at.branchId === source ? at.seq : 0; s < log.length; s++) if (!log[s]!.withdrawn && !log[s]!.squashedInto && !completedAt(log, s + 1)) versions++;
       }
       out.push({ cut, from, source, newer: versions > 0, versions });
     }

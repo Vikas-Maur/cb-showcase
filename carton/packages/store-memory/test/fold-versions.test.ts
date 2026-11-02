@@ -93,3 +93,12 @@ test("P1-4: a left-out part changed on Main since is no longer offered as left o
   await c.commit({ cut: main, ops: [set("d", "name", "Main's own")], author: alice });
   assert.deepEqual(await c.leftOut(v.id, { into: main }), []);
 });
+
+test("P1-3: a Published cut's newer versions count a partial fold once, as log() lists it", async () => {
+  const { c, main, v } = await review();
+  await c.publish({ from: main, author: alice });
+  await c.foldSome(v.id, { into: main, reject: ["items/d"], author: alice });
+  const [p] = await c.publications();
+  assert.equal(p!.versions, 1, "one version since the publication");
+  assert.equal(p!.newer, true);
+});
