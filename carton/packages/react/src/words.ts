@@ -31,6 +31,7 @@ export const words = {
   preview: "Preview",
   create: "Create",
   restoreHint: "Restoring saves this version as a new version. Nothing is lost.",
+  emptyVersionHint: "The history starts here, before the project was added. There's nothing to restore.",
   compareWithCurrent: "Compare with current",
   nameVersion: "Name this version",
   nameVersionPlaceholder: "Sent to client, Monday",

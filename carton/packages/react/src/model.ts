@@ -58,6 +58,11 @@ export interface Version {
    * CartonUi.foldRest().
    */
   readonly foldRest?: boolean;
+  /**
+   * Nothing in it (core's `blank`): the start of an imported project's history, from before the project was added. It
+   * can't be previewed, restored or made into a cut (laptop, build 915eb36: restoring it emptied the project).
+   */
+  readonly empty?: boolean;
 }
 
 /** Which rows History shows. */

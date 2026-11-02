@@ -360,6 +360,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       ...(c.name ? { name: c.name } : {}),
       ...(kind === "turn" ? { turn: { label: c.name ?? "", edits: turnEdits ?? 1 } } : {}),
       ...(rest ? { foldRest: true } : {}),
+      ...(c.blank ? { empty: true } : {}),
     };
   };
   const sameShape = (v: Version, kind: VersionKind, edits: number) => v.kind === kind && (kind !== "turn" || v.turn?.edits === edits);

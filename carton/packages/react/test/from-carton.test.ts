@@ -403,6 +403,12 @@ test("ui-words: the import row is the person's ('Imported the project', You); th
   assert.deepEqual([imp.author.isYou, imp.author.kind], [true, "human"]);
   const root = rows.find((v) => v.seq === 0)!;
   assert.deepEqual([root.summary, root.author.kind, root.author.name], ["Started the cut", "system", ""]);
+  // the empty root it was imported over: nothing to preview, restore or make a cut from (laptop, build 915eb36)
+  assert.equal(root.empty, true);
+  assert.equal(imp.empty, undefined);
+  await assert.rejects(ui.restore(root.ref), /Nothing to restore/);
+  await assert.rejects(ui.newCut("From the start", root.ref), /Nothing to make a cut from/);
+  assert.equal((await carton.head()).doc.name, doc0().name, "the project is as it was");
   ui.dispose();
   await carton.close();
 });

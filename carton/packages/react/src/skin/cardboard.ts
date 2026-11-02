@@ -205,6 +205,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version:hover .carton-version-more, .carton-version[data-active] .carton-version-more){opacity:1}
 :where(${S}) :where(.carton-version-more:hover){background:var(--cb-accent);color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-history-compare){margin:8px 12px 12px}
+:where(${S}) :where(.carton-history-error){padding:0 12px 8px;text-wrap:pretty}
 
 /* ---------------------------------------------------------------- avatars and presence */
 :where(${S}) :where(.carton-avatar){--carton-actor:#999;display:inline-flex;align-items:center;justify-content:center;flex:none;border-radius:50%;
