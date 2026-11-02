@@ -307,9 +307,23 @@ const sharedMedia = object(
   { only: true },
 );
 
+const none = (v: unknown): boolean => !Array.isArray(v) || !v.length;
+/**
+ * A state Cardboard can't open as a project though it has a name (`Schema.empty`, laptop, final candidate P2-1): no
+ * aspect ratio, tracks, clips or media. What an earlier build's Restore of the empty root left, named again when the
+ * library listed it; the editor's layouts read the aspect ratio, so the tab that showed it crashed ("This tab hit a
+ * snag"). Every project Cardboard makes has an aspect ratio (its new project's default is 16:9), so a blank project
+ * (main@1 of one just made) is never empty.
+ */
+export function emptyProject(doc: Doc): boolean {
+  const ar = doc.aspectRatio;
+  return !(typeof ar === "string" && ar) && none(doc[TRACKS]) && none(doc[ITEMS]) && none(doc[MEDIA]);
+}
+
 export const cardboardSchema: Schema = defineSchema({
   root: {}, // name, description, aspectRatio: scalars (undeclared root fields are leaves)
   labels: ROOT_LABELS,
+  empty: emptyProject,
   collections: {
     [TRACKS]: {
       key: "id",
