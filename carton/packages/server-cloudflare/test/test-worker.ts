@@ -1,6 +1,10 @@
 // Test-only Worker (never deployed): the real Worker, plus routes the Node tests use to reach inside workerd.
 //   /__test/storage-checks       runs the SequencerStorage checks on a fresh Durable Object's ctx.storage.sql
-//   /__test/vault/<name>/<path>  forwards to that project's BlobVault, so the Node-side DoBlobStore is the client
+//   /__test/vault/<name>/<path>  forwards to that project's BlobVault, so the Node-side DoBlobStore is the client (the
+//                                body streamed through as it arrives, as the Worker's own calls send it)
+//   /__test/r2-fixed-length      a streamed R2 part shorter, then longer, than its declared size, then whole: each
+//                                outcome, the parts listed after the two bad ones, and the completed object's size
+//   /__test/r2-lock?id=&n=       an R2 upload's part lock: its state ("held", "released") and when, or null
 //   /__test/stats/<project>      the room's row counters and database size
 //   /__test/wake/<project>       a new room instance over the same state, as after hibernation
 //   /__test/legacy/<project>?at= the room as code from before `maintain_at` left it: its alarm at `at`, no due time
@@ -15,6 +19,7 @@ import worker, { ProjectRoom as Room, BlobVault as Vault } from "../src/worker.t
 import { doSqlStorage } from "../src/storage.ts";
 import { storageChecks } from "../../conformance/src/hosts/storage-checks.ts";
 import { AUTH_HEADER, PROJECT_HEADER } from "../src/room.ts";
+import { r2BlobStore } from "../src/blob-r2.ts";
 import type { DurableObjectNamespace, DurableObjectState, DurableObjectStorage, ExecutionContext } from "../src/cf.ts";
 import type { Env } from "../src/env.ts";
 
@@ -209,8 +214,36 @@ export default {
     if (v) {
       if (!env.BLOB_VAULT) return new Response("no vault", { status: 404 });
       const init: RequestInit = { method: req.method };
-      if (req.method !== "GET" && req.method !== "HEAD") init.body = await req.arrayBuffer();
+      if (req.method !== "GET" && req.method !== "HEAD") init.body = req.body;
       return env.BLOB_VAULT.get(env.BLOB_VAULT.idFromName(decodeURIComponent(v[1]!))).fetch(`https://vault${v[2]}${url.search}`, init);
+    }
+    if (url.pathname === "/__test/r2-fixed-length") {
+      if (!env.BLOBS) return new Response("no R2", { status: 404 });
+      const store = r2BlobStore(env.BLOBS);
+      const up = await store.createMultipart(`fixed-length/${crypto.randomUUID()}`);
+      const SIZE = 64 * 1024;
+      const body = (n: number) => new Blob([new Uint8Array(n).fill(7)]).stream();
+      const outcome = async (n: number) => {
+        try {
+          await up.uploadPartStream!(1, body(n), SIZE);
+          return "stored";
+        } catch (e) {
+          return `refused: ${(e as Error).message}`;
+        }
+      };
+      const short = await outcome(SIZE - 100);
+      const long = await outcome(SIZE + 100);
+      const listed = (await up.listParts()).length;
+      const whole = await outcome(SIZE); // the part's lock was released after each refusal: taken at once
+      const parts = await up.listParts();
+      const info = whole === "stored" ? await up.complete(parts.map(({ partNumber, etag }) => ({ partNumber, etag }))) : null;
+      return Response.json({ short, long, listed, whole, size: info?.size ?? null });
+    }
+    if (url.pathname === "/__test/r2-lock") {
+      if (!env.BLOBS) return new Response("no R2", { status: 404 });
+      const n = String(url.searchParams.get("n")).padStart(5, "0");
+      const lock = await env.BLOBS.head(`.carton-uploads/${url.searchParams.get("id")}/l${n}`);
+      return Response.json(lock ? { state: lock.customMetadata?.state ?? null, at: Number(lock.customMetadata?.at ?? 0) } : null);
     }
     const al = /^\/__test\/alarm\/([^/]+)$/.exec(url.pathname);
     if (al) {

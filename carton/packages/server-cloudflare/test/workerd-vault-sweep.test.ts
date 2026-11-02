@@ -7,8 +7,8 @@
 import { after, describe, test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { request } from "node:http";
 import { createHmacAuth } from "@carton/server";
+import { mediaApi } from "./media-api.ts";
 import { doBlobStore } from "../src/blob-do.ts";
 import type { DurableObjectNamespace } from "../src/cf.ts";
 import { startDev } from "./dev-server.ts";
@@ -51,42 +51,9 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const bytes = (n: number, seed = 1) => new Uint8Array(n).map((_, i) => (i * 31 + seed) % 251);
 const MiB = 1 << 20;
 
-// The Worker's own media API (the production part route: host-http streams the body to the vault as it arrives), as
-// an editor of `project`. The vault of a project is named by its id; media keys sit under `media/` in it.
+// The Worker's own media API (the production part route: host-http streams the body to the vault as it arrives). The
+// vault of a project is named by its id; media keys sit under `media/` in it.
 const auth = createHmacAuth({ secret: SECRET });
-async function mediaApi(project: string) {
-  const token = await auth.issue({ account: "o", credential: "o/dev", role: "editor", projectId: project, ttlMs: 600_000 });
-  const headers = { authorization: `Bearer ${token}` };
-  const call = async (path: string, init: RequestInit = {}) => {
-    const r = await fetch(`${dev.origin}/api/projects/${project}${path}`, { ...init, headers: { ...headers, ...(init.headers as Record<string, string> | undefined) } });
-    return { status: r.status, body: (await r.json().catch(() => null)) as Record<string, unknown> | null };
-  };
-  /**
-   * PUT a part over HTTP with its length declared and its bytes sent `pieces` at a time, `everyMs` apart. `cutAfter`:
-   * the connection is destroyed after that many pieces (an uploader killed mid-part).
-   */
-  const slowPart = (key: string, id: string, n: number, data: Uint8Array, o: { pieces: number; everyMs: number; cutAfter?: number }) =>
-    new Promise<{ status: number; body: Record<string, unknown> | null } | "cut">((resolve, reject) => {
-      const u = new URL(`${dev.origin}/api/projects/${project}/uploads/${encodeURIComponent(id)}/${n}?key=${encodeURIComponent(key)}`);
-      const req = request(u, { method: "PUT", headers: { ...headers, "content-length": String(data.byteLength) } }, (res) => {
-        let text = "";
-        res.on("data", (d) => (text += d));
-        res.on("end", () => resolve({ status: res.statusCode ?? 0, body: (() => { try { return JSON.parse(text); } catch { return null; } })() }));
-      });
-      req.on("error", (e) => (o.cutAfter !== undefined ? resolve("cut") : reject(e)));
-      const size = Math.ceil(data.byteLength / o.pieces);
-      let i = 0;
-      const next = () => {
-        if (o.cutAfter !== undefined && i === o.cutAfter) return void (req.destroy(), resolve("cut"));
-        if (i * size >= data.byteLength) return void req.end();
-        req.write(data.subarray(i * size, (i + 1) * size));
-        i++;
-        setTimeout(next, o.everyMs);
-      };
-      next();
-    });
-  return { call, slowPart };
-}
 
 /** Polls the vault until `ok`, every 100 ms; returns the state that passed. */
 async function until(name: string, what: string, ok: (s: Sweep) => boolean, ms = 30_000): Promise<Sweep> {
@@ -256,7 +223,7 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
   // and the part then failed NoSuchUpload. Through the production route, so the body really arrives over time.
   test("a part whose body is still arriving when its upload's touch expires is stored, and the parts already saved survive (cf review finding 1)", async () => {
     const project = `lease-a-${Date.now()}`;
-    const api = await mediaApi(project);
+    const api = await mediaApi(dev.origin, auth, project);
     const key = `m/${"a".repeat(64)}`;
     const made = await api.call("/uploads", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, size: 128 * 1024 }) });
     assert.equal(made.status, 200, JSON.stringify(made.body));
@@ -285,7 +252,7 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
 
   test("an upload whose part was cut off mid-body still expires a TTL after it was last touched (cf review finding 1)", async () => {
     const project = `lease-b-${Date.now()}`;
-    const api = await mediaApi(project);
+    const api = await mediaApi(dev.origin, auth, project);
     const key = `m/${"b".repeat(64)}`;
     const made = await api.call("/uploads", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, size: 64 * 1024 }) });
     const id = String(made.body!.uploadId);
@@ -301,11 +268,12 @@ describe("BlobVault sweeps abandoned uploads", { concurrency: true }, () => {
     const v = doBlobStore(vaultNs, name);
     await v.head("m/none");
     // made more than a TTL ago, with a part written just now: by its own `touched` alone it would be swept at once
+    const firstAt = Date.now();
     assert.equal((await fetch(vaultUrl(name, `/__first?k=m%2Factive&age=${TTL + 2000}`), { method: "POST" })).status, 204);
     await v.head("m/none"); // the migration runs, and the sweep is armed
     let s = await state(name);
     assert.ok(has(s, "active"), JSON.stringify(s));
-    assert.ok(s.uploads.find((u) => u.id === "active")!.touched! >= Date.now() - 2000, "the upload's touch is its newest part's");
+    assert.ok(s.uploads.find((u) => u.id === "active")!.touched! >= firstAt, `the upload's touch is its newest part's: ${JSON.stringify(s.uploads)}`);
     s = await until(name, "the leftover data is deleted", (s) => !s.parts.leftover && !s.chunks.leftover);
     assert.ok(has(s, "active"), "the upload with a recent part is kept");
     assert.ok(!has(s, "leftover"), "the row made for the leftover data is gone with it");
