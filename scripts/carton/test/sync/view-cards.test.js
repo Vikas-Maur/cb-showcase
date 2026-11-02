@@ -176,6 +176,37 @@ async function clash(lc, actorId, item, field, mine, theirs, extra = {}) {
   out.five.fontSize = await fieldAt(lc, TEXT, "fontSize");
   out.five.left = (await lc.store.range("notices", {})).filter((r) => r.value?.cards?.some((x) => x.path === e.path)).length;
 
+  // 6. UI audit 2026-11-02 P1-6: a card's "Preview" of each side shows that side. The person drags the title 2 s later and
+  //    onto a new track (the audit's drag made "Text 1"); Claude Code's view save moves it 4 s later. Preview of Claude
+  //    Code's side showed the person's (head), and the person's showed Claude Code's.
+  {
+    const base = await lc.carton.head();
+    const t0 = base.doc.timelineItems.find((r) => r.id === TEXT), len = t0.endTime - t0.startTime;
+    const lane = "p16-text-1", tracks = base.doc.tracks;
+    const person = await lc.carton.commit({ ops: [
+      { op: "insert", path: ["tracks", lane], value: { ...tracks.find((t) => t.id === t0.trackId), id: lane, name: "Text 1", "#pos": "zz" } },
+      { op: "set", path: ["timelineItems", TEXT, "trackId"], value: lane },
+      { op: "set", path: ["timelineItems", TEXT, "startTime"], value: t0.startTime + 2 },
+      { op: "set", path: ["timelineItems", TEXT, "endTime"], value: t0.startTime + 2 + len },
+    ], author: api.actorOf("person") });
+    const doc = structuredClone(base.doc);
+    doc.timelineItems = doc.timelineItems.map((r) => (r.id === TEXT ? { ...r, startTime: t0.startTime + 4, endTime: t0.startTime + 4 + len } : r));
+    const engine = F.cartonMaterializerEngine(lc.carton), actor = api.actorOf("claude-code/ab12cd34"), id = engine.newChangeId();
+    const res = await engine.commit({ doc, base: { baseDoc: base.doc, baseSeq: base.ref.seq, causal: [] }, author: actor, id });
+    await api.agentCards(bundle, { batch: res.id ?? "save-" + id, change: res.id ?? null, request: id, file: ".scratch/views/claude.tsx", actor, cards: res.cards ?? [], at: Date.now() });
+    await sleep(50);
+    await open("p6");
+    const card6 = shown("p6").find((x) => x.path.startsWith("timelineItems/" + TEXT));
+    const at = async (side) => {
+      const ref = await call("p6", "conflictRef", card6.id, side);
+      const it = (await lc.carton.checkout(ref)).timelineItems.find((r) => r.id === TEXT);
+      return { start: +(it.startTime - t0.startTime).toFixed(3), track: it.trackId === lane ? "Text 1" : "its own" };
+    };
+    out.six = { person: person.status, saved: res.status, card: card6 && { path: card6.path, mine: card6.mine.summary, theirs: card6.theirs.summary, theirsName: card6.theirs.author.name, provisional: card6.provisional }, mine: await at("mine"), theirs: await at("theirs") };
+    out.six.headAfter = +((await lc.carton.head()).doc.timelineItems.find((r) => r.id === TEXT).startTime - t0.startTime).toFixed(3);
+    await call("p6", "resolve", card6.id, "mine");
+  }
+
   // A person's own carded view save (a hand edit of a view): theirs already, nothing kept under @human.
   out.person = await F.agentCards(bundle, { batch: "p", change: null, file: "timeline.tsx", actor: api.actorOf("person"), cards: [{ kind: "field", path: e.path, base: 1, ours: 2, theirs: 3 }], at: Date.now() });
   out.none = await F.agentCards(bundle, { batch: "x", actor: api.actorOf("codex/h1"), cards: [] });
@@ -262,6 +293,15 @@ test("@carton/local's hand-over copy and the person's row show one card; a pick 
   assert.equal(out.five.shown, 1);
   assert.deepEqual(out.five.view, { mine: "111", theirs: "112", mineYou: true, mineKind: "human", theirsName: "Codex", theirsKind: "agent", provisional: "mine" });
   assert.deepEqual([out.five.fontSize, out.five.left], [112, 0]);
+});
+
+test("P1-6: a card's Preview of each side shows that side: Claude Code's is its time, yours is yours (on your new track)", opt, () => {
+  assert.deepEqual([out.six.person, out.six.saved], ["confirmed", "conflicts"], JSON.stringify(out.six));
+  assert.equal(out.six.card?.theirsName, "Claude Code", JSON.stringify(out.six.card));
+  assert.equal(out.six.card?.provisional, "mine", "yours is showing now");
+  assert.deepEqual(out.six.mine, { start: 2, track: "Text 1" }, "Preview of yours: your drag, on the track it made");
+  assert.deepEqual(out.six.theirs, { start: 4, track: "Text 1" }, "Preview of Claude Code's: its time (the track is yours: the card is about timing)");
+  assert.equal(out.six.headAfter, 2, "previewing changes nothing");
 });
 
 test("a person's own carded view save is theirs already; no cards, nothing to do", opt, () => {
