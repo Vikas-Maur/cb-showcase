@@ -207,11 +207,30 @@ function overlay(spec: ObjectSpec, cur: Rec | undefined, ver: Rec): Rec {
 }
 
 /**
+ * A media entry's details: everything on it that Carton doesn't version (its probe's facts, size, where it plays from,
+ * thumbnails, when it was added…), without its id. null when it has none (an entry made from history alone).
+ */
+export function mediaDetails(entry: Readonly<Rec>): Rec | null {
+  if (!entry || typeof entry !== "object") return null;
+  const { id: _id, ...rest } = overlay(S.collections[MEDIA]!.record, entry as Rec, {});
+  return Object.keys(rest).length ? rest : null;
+}
+
+/**
+ * Where a media entry's details come from when the current file doesn't have the entry (`materializeProject`): given
+ * its id and what history holds of it (its kind, its content id when shared), the details last seen for that same
+ * media, or nothing.
+ */
+export type KnownMedia = (id: string, versioned: Readonly<Rec>) => Readonly<Rec> | null | undefined;
+
+/**
  * The `project` object to write to project.json for engine state `doc`: the current file's project with the
  * versioned slice replaced, every record's unversioned fields kept from the current file (matched by id), and the
- * host's own root fields untouched. Track `order` comes from the engine (B12).
+ * host's own root fields untouched. Track `order` comes from the engine (B12). A media entry the current file doesn't
+ * have (a restore after a version without it, a fold that brings it back) takes its details from `known` (the details
+ * last seen for that id: `mediaDetails` of an earlier file's entry), else it has only what history versions.
  */
-export function materializeProject(doc: Doc, current: Readonly<Record<string, unknown>> | null): Record<string, unknown> {
+export function materializeProject(doc: Doc, current: Readonly<Record<string, unknown>> | null, known?: KnownMedia): Record<string, unknown> {
   const slice = toHost(doc);
   const cur = (current ?? {}) as CardboardProject;
   const out: Record<string, unknown> = { ...cur };
@@ -232,12 +251,27 @@ export function materializeProject(doc: Doc, current: Readonly<Record<string, un
   });
   if (slice.media) {
     const curMedia = new Map((cur.media ?? []).map((m) => [m.id, m]));
-    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, curMedia.get(m.id), m), out[ITEMS] as Rec[]));
+    const had = (m: Rec): Rec | undefined => {
+      const c = curMedia.get(m.id);
+      // a file's entry the current file holds without what Cardboard's import gives it (review of fix/media-meta #3:
+      // one an older writer left with its src only): what is known of that media fills in what it lacks, its own first
+      if (c && !(known && lacksDetails(c))) return c;
+      const d = known?.(m.id as string, m);
+      if (!d || typeof d !== "object") return c;
+      return c ? { ...d, ...c, data: { ...((d.data as Rec | undefined) ?? {}), ...((c.data as Rec | undefined) ?? {}) } } : { ...d, id: m.id };
+    };
+    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, had(m), m), out[ITEMS] as Rec[]));
   }
   return out;
 }
 
 const num = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v);
+const FILE_MEDIA: ReadonlySet<unknown> = new Set(["video", "audio", "image"]);
+/** A file's media entry without what Cardboard's import always gives it: where it plays from and its size. */
+export function lacksDetails(m: Readonly<Rec>): boolean {
+  const d = m.data as Rec | undefined;
+  return !!d && typeof d === "object" && FILE_MEDIA.has(d.type) && (d.src === undefined || d.size === undefined || ((d.type === "video" || d.type === "audio") && d.duration === undefined));
+}
 /**
  * A code graphic's size, which Cardboard's reader requires and Carton doesn't version (only its source), for an entry the
  * current file doesn't have (a restore after the file lost its media, a teammate's new graphic): the composition size of

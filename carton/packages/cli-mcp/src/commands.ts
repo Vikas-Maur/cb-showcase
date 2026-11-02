@@ -338,7 +338,9 @@ const undo: CommandSpec = {
   async run(ctx, a) {
     const { carton } = ctx.project;
     const cut = a.cut ? (await resolveCut(carton, a.cut)).id : undefined;
-    if (a.version) return restore.run(ctx, { version: a.version });
+    // Any version given is one to restore, refused if it can't be: 1.4.0's `[rev]` hands it over as a number, and 0
+    // read as no version undid the newest change instead (laptop, merge/prod-2 P3)
+    if (a.version !== undefined && a.version !== null) return restore.run(ctx, { version: String(a.version) });
     if (a.turn !== undefined) {
       const turn = a.turn === true || a.turn === "" ? ctx.actor.turn : String(a.turn);
       if (!turn) throw new UsageError("no turn to undo: pass --turn <turn id> (see `cb history`)");

@@ -24,9 +24,15 @@ module.exports = String.raw`var __cartonCli = (() => {
   // Head into project.json through the store (the store bridge writes it without committing a second change).
   // (R4: description, and media through Cardboard's media scope: the facade's headScope.) head: the state the write
   // made when it is still pending on a shared cut (the holder's, which this process can't read itself).
+  // A media entry head brings back with nothing but what history holds (no details kept anywhere: a project an earlier
+  // build's restore left so) gets them from Cardboard's own probe of its file first, as its import (the facade's
+  // reprobeMedia). Its thumbnails and waveform come from the app's derive: cb doesn't run it, since the app's may be
+  // making the same file's at the same moment, and Cardboard's cache can't take two at once.
   const after = async ({ id, bundlePath, lib }, head) => {
     const current = await lib.projects.read(id);
-    const next = await carton().headProject(bundlePath, current, head);
+    let next = await carton().headProject(bundlePath, current, head);
+    const reprobed = next && carton().reprobeMedia ? await carton().reprobeMedia(lib, bundlePath, next) : null;
+    if (reprobed) next = reprobed.project;
     if (next) await lib.projects.updateScoped(next, carton().headScope(current, next));
     // A head Cardboard couldn't read is never written (laptop, build 915eb36): the write is in history, the file isn't.
     else if (carton().headRefused?.(bundlePath)) throw new Error("Saved in history, but project.json wasn't changed: Cardboard couldn't have read it (" + carton().headRefused(bundlePath).join("; ") + "). Restore another version.");

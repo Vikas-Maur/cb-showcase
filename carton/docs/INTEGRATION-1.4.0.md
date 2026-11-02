@@ -211,7 +211,36 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    project's history would put its versions into this one; another computer's would be set aside on open): the file
    with the name the project last had in its history (else its folder's), parsed again by Cardboard's reader. The library lists it, `cb` finds it, the editor opens it with its
    History, and Restore of a good version writes it whole again. Nothing is written to find it; a project Cardboard
-   reads costs nothing more (the hook runs only after its parse failed).
+   reads costs nothing more (the hook runs only after its parse failed). `cb` reads every project of the library
+   before each command, so it says a project can't be read only when its command line names that project (id, name,
+   folder or path); the library worker says it once, in the app's log.
+9. **Media details across a restore or fold** (laptop, merge/prod-2 P2-1, P2-2). A media entry's details (what
+   Cardboard's import and derive give it and Carton doesn't version: `src`, `format`, `size`, the probe's `duration`,
+   `width`, `height`, `frameRate`, `hasAudio`, `codec`, the thumbnail, waveform and album-art ids and statuses,
+   `createdAt`, `addedAt`) lived only in `project.json`. Restore of `main@1` dropped `clip.mp4`'s entry, and Restore of
+   the newest version brought back `{id, data: {type, fileName}}`: no duration, size or thumbnail, and, with no `src`,
+   a clip the editor played black until a restart (the editor's load fills `src` in; its adopt of a change doesn't).
+   - A write that drops entries keeps their details first, in the bundle's `.carton/media.json`
+     (`@carton/cardboard/node`'s `MediaDetails`, under the install lock): a store mutation (the facade's `commit`: the
+     document it was applied to against the one it made) and every materialization (`projectFor`: the file it replaces
+     against what it writes). A write that drops nothing does no I/O for it.
+   - Every materialization (`headAt`, a merged GUI save, the page's `checkout`) carries an entry's details over from
+     the file it replaces, else as last kept for that media (`materializeProject`'s `known`: the same id, kind and,
+     where both say, content id); a file's entry the replaced file holds without them (`lacksDetails`: no `src`, `size`
+     or duration) has what it lacks filled in from them, its own fields first.
+   - An entry still without them (a project an earlier build's restore, or the root-restore bug, left so), playing from
+     a file of this library: the worker's `materializeIn` and cb's `after` ask Cardboard as its import does
+     (`reprobeMedia`): the file its library has for the id, else the one its loader's recovery of unlisted media (`eH`)
+     finds (`media/<id>.<ext>`), registered with the library as that recovery does, so main's `cardboard-media://` map
+     has it at once; Cardboard's probe of the file as it is now (`inspect.probePath`, not the probe cached for the id,
+     which may be of a file since replaced); the fields the import's `j4` sets from it, where the entry lacks them. A
+     file not there is looked for again at the next materialization (the `media/` listing cached until the folder
+     changes); a failed probe once the file changes. After the worker's write, Cardboard's derive
+     (`ensureDerived`, which main otherwise runs once per session at the first save) fills in thumbnails and the
+     waveform, and the worker announces the change; the worker runs one derive per project at a time (main's waits
+     for it), and cb runs none (two processes deriving one file's artefacts at once break Cardboard's cache write:
+     an ENOENT nothing catches ended cb in cbproj.test.js). Nothing is guessed: `createdAt` and `addedAt` stay unset.
+   - Every Carton write into `project.json` (`headAt`) also moves `updatedAt`, the library's "Updated" time.
 
 **Tests:**
 - 4 concurrent `cb source apply` on different clips keep all 4 edits (B1; `research/pretty-extra/race-cb-apply.sh`
