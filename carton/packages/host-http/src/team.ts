@@ -208,6 +208,14 @@ export function teamMediaStore(o: TeamMediaOptions): TeamMediaStore {
       return wrap(await team.resumeMultipart(key, uploadId), hash);
     },
   };
+  if (project.getWithInfo && team.getWithInfo) {
+    const pg = project.getWithInfo.bind(project), tg = team.getWithInfo.bind(team);
+    store.getWithInfo = async (key, range) => {
+      const hash = shared(key);
+      if (!hash) return pg(key, range);
+      return (await granted(hash)) ? tg(key, range) : null;
+    };
+  }
   if (project.getStream && team.getStream) {
     const ps = project.getStream.bind(project), ts = team.getStream.bind(team);
     store.getStream = async (key, range) => {

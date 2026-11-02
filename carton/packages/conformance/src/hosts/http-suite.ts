@@ -4,6 +4,7 @@
 
 import { describe, test } from "node:test";
 import assert from "node:assert/strict";
+import { mediaHash, toBase64, webCryptoHasher } from "@carton/media";
 
 export interface HttpFixture {
   origin: string;
@@ -260,6 +261,75 @@ export function httpApiSuite(name: string, make: () => Promise<HttpFixture>): vo
       assert.deepEqual([...tail], [1, 1, 2, 2]);
       const viewer = await joinAs(p, o.token, "viewer");
       assert.equal((await call(`/api/projects/${p}/uploads`, { method: "POST", token: viewer, json: { key: "media/v" } })).status, 403);
+    });
+
+    // cf-proxy-path: a proxy stream's batch routes (host-http streams.ts), over this host's real store and HTTP stack.
+    test("stream routes: a batch appended in one request (an editor's), read back in one with its bytes; a live read is held, then ends", async () => {
+      const p = project();
+      const o = await owner(p);
+      const id = "ab".repeat(32);
+      const hasher = webCryptoHasher();
+      const bytes = (n: number, seed: number) => new Uint8Array(n).map((_, i) => (i * 13 + seed) & 0xff);
+      const init = bytes(600, 1), s0 = bytes(70_000, 2), s1 = bytes(1_100_000, 3); // s1 spans two leaves
+      const [mi, m0, m1] = await Promise.all([init, s0, s1].map((b) => mediaHash(b, hasher)));
+      const frame = (header: unknown, ...parts: Uint8Array[]) => {
+        const h = enc.encode(JSON.stringify(header));
+        const out = new Uint8Array(4 + h.length + parts.reduce((n, b) => n + b.length, 0));
+        new DataView(out.buffer).setUint32(0, h.length);
+        out.set(h, 4);
+        let at = 4 + h.length;
+        for (const b of parts) out.set(b, (at += b.length) - b.length);
+        return out;
+      };
+      const part = (kind: string, m: { hash: string; size: number; bytes: Uint8Array }, index?: number) => ({ kind, hash: m.hash, size: m.size, manifest: toBase64(m.bytes), bytes: true, ...(index !== undefined ? { index, durationSec: 2, at: Date.now() } : {}) });
+      const append = (token: string, body: Uint8Array) => call(`/api/projects/${p}/streams/${id}/append`, { method: "POST", token, body, headers: { "content-type": "application/octet-stream" } });
+      const viewer = await joinAs(p, o.token, "viewer");
+      assert.equal((await append(viewer, frame({ v: 1, parts: [part("init", mi!)] }, init))).status, 403, "a viewer can't append");
+      const first = await append(o.token, frame({ v: 1, parts: [part("init", mi!), part("segment", m0!, 0)] }, init, s0));
+      assert.equal(first.status, 200, await first.clone().text());
+      // read: header, then u32 length + bytes per part
+      const read = async (q: string, token = viewer) => {
+        const r = await call(`/api/projects/${p}/streams/${id}/read?${q}`, { token });
+        assert.equal(r.status, 200);
+        const b = new Uint8Array(await r.arrayBuffer());
+        const view = new DataView(b.buffer, b.byteOffset);
+        const n = view.getUint32(0);
+        const header = JSON.parse(new TextDecoder().decode(b.subarray(4, 4 + n))) as { init?: { hash: string; bytes: boolean; manifest?: string } | null; segments: { index: number; hash: string; bytes: boolean; manifest?: string }[]; end?: unknown };
+        const parts: Uint8Array[] = [];
+        let at = 4 + n;
+        while (at < b.length) {
+          const len = view.getUint32(at);
+          parts.push(b.subarray(at + 4, at + 4 + len));
+          at += 4 + len;
+        }
+        return { header, parts };
+      };
+      const a = await read("from=0&init=1");
+      assert.equal(a.header.init?.hash, mi!.hash);
+      assert.equal(a.header.init?.manifest, toBase64(mi!.bytes));
+      assert.deepEqual(a.header.segments.map((s) => [s.index, s.hash, s.bytes]), [[0, m0!.hash, true]]);
+      assert.equal(a.header.end, null, "looked for the end at the edge: not there");
+      assert.deepEqual(a.parts, [init, s0]);
+      // held at the edge while nothing comes, then answered
+      const t0 = Date.now();
+      const held = await read("from=1&wait=1500");
+      assert.ok(Date.now() - t0 >= 900, "held");
+      assert.deepEqual(held.header.segments, []);
+      // the next segment and the end, then read from 1: its bytes (two leaves) and the end
+      const end = { segments: 2, durationSec: 4, size: mi!.size + m0!.size + m1!.size, at: Date.now(), parts: [mi!.hash, m0!.hash, m1!.hash], sizes: [mi!.size, m0!.size, m1!.size], durations: [2, 2] };
+      assert.equal((await append(o.token, frame({ v: 1, parts: [part("segment", m1!, 1)], end }, s1))).status, 200);
+      const b = await read("from=1&wait=5000");
+      assert.deepEqual(b.header.segments.map((s) => s.index), [1]);
+      assert.deepEqual(b.parts, [s1]);
+      const c = await read("from=2&wait=5000");
+      assert.deepEqual(c.header.end, end, "an ended stream answers at once with its end");
+      // entries only
+      const e = await read("from=0&bytes=0");
+      assert.deepEqual(e.header.segments.map((s) => [s.index, s.bytes]), [[0, false], [1, false]]);
+      assert.deepEqual(e.parts, []);
+      // the same layout the part-by-part path reads: a signed GET of the entry
+      const sign = (await (await call(`/api/projects/${p}/blobs/sign`, { method: "POST", token: viewer, json: { key: `ps/${id}/s/000001`, method: "GET", expiresIn: 60 } })).json()) as { url: string };
+      assert.equal(((await (await fetch(sign.url)).json()) as { hash: string }).hash, m1!.hash);
     });
 
     test("unknown API routes are 404; static files are served when the host has a client", async () => {

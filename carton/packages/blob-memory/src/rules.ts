@@ -56,6 +56,16 @@ export function checkRange(range: { offset: number; length?: number }): void {
     throw new BlobError("InvalidRange", `bad range length ${range.length}`);
 }
 
+/**
+ * The bytes a read of `range` gets from an object of `size` bytes (BlobStore.getWithInfo's `range`): the whole object
+ * without a range, else clipped at the end; null when the range starts at or past the end (HTTP 416).
+ */
+export function servedRange(size: number, range?: { offset: number; length?: number }): { offset: number; length: number } | null {
+  if (!range) return { offset: 0, length: size };
+  if (range.offset >= size) return null;
+  return { offset: range.offset, length: Math.min(range.length ?? Infinity, size - range.offset) };
+}
+
 export function checkPartNumber(n: number): void {
   if (!Number.isInteger(n) || n < 1 || n > MAX_PARTS) throw new BlobError("InvalidPartNumber", `part number ${n} not in 1..${MAX_PARTS}`);
 }

@@ -8,7 +8,7 @@ import { createHmacAuth, type HmacAuth, offersCartonProtocol } from "@carton/ser
 import { handleHttp, dayOf, OPEN_CREATE_MAX_UPLOAD, OPEN_CREATE_PER_DAY, type HttpDeps, type OpenCreate } from "@carton/host-http";
 import type { Env } from "./env.ts";
 import type { ExecutionContext } from "./cf.ts";
-import { ProjectRoom, mediaBlobs, sequencerBlobs, maxEnvelopeOf, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
+import { ProjectRoom, mediaBlobs, mediaBlobsForWrites, sequencerBlobs, maxEnvelopeOf, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
 import { BlobVault } from "./blob-do.ts";
 import { WriteCapError, writeCapResponse } from "./write-cap.ts";
 
@@ -27,6 +27,8 @@ export function depsFor(env: Env): HttpDeps {
     auth: authFor(env),
     secret: env.AUTH_SECRET,
     blobsFor: (projectId) => mediaBlobs(env, projectId),
+    // a stream append reserves the daily write cap once for all its writes (one counter request, not one per write)
+    blobsForWrites: (projectId, bytes, ops) => mediaBlobsForWrites(env, projectId, bytes, ops),
     sequencerBlobsFor: (projectId) => sequencerBlobs(env, projectId),
     maxEnvelopeBytes: maxEnvelopeOf(env),
     maxBlobHeads: Number(env.BLOB_HEADS_PER_REQUEST ?? 200) || 200,
@@ -98,7 +100,9 @@ export default {
   async fetch(req: Request, env: Env, ctx?: ExecutionContext): Promise<Response> {
     let res: Response | null;
     const work = handleHttp(req, depsFor(env));
-    ctx?.waitUntil(work.catch(() => {}));
+    // Only writes are held. A read holds no lock, and one held at a stream's live edge (host-http streams.ts, up to
+    // 25 s of storage checks) must stop when its client goes, as the runtime stops a request's work then.
+    if (req.method !== "GET" && req.method !== "HEAD") ctx?.waitUntil(work.catch(() => {}));
     try {
       res = await work;
     } catch (e) {
