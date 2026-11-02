@@ -11,7 +11,7 @@
 // once the result exists (a call that fails gives none away), recorded against the request, so a retry of a request
 // whose answer was lost with its holder gets them again; the outcome a write is still waiting for is that write's to
 // report, never another call's.
-import { merge3 } from "@carton/core";
+import { merge3, EmptyVersion } from "@carton/core";
 import type { Actor, Carton, CartonEvent, ChangeId, CommitResult, ConfirmedChange, ConflictCard, Doc, HeldBase, Notice, PathKey, StateRef } from "@carton/core";
 import type { Store, StoreCondition, StoreWrite } from "@carton/core/plugins";
 import { statusPath } from "@carton/cardboard/node";
@@ -666,6 +666,9 @@ async function undoTurn(carton: Carton, id: ChangeId, turn: string, author: Acto
       byPath.set(c.path, { ...kept, theirs: c.theirs });
     }
   }
+  // an undo never empties a project its head holds (P2-1; core's planUndo refuses the same for ⌘Z and cb undo)
+  const empty = carton.schema.empty;
+  if (empty?.(doc) && !empty(head.doc)) throw new EmptyVersion(null, "undo", "result");
   const cards = [...byPath.values()];
   if (store) {
     // the cards go in only while this request has no answer yet: a copy of it that finished meanwhile (and whose cards

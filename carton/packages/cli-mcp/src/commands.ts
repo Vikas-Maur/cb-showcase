@@ -3,7 +3,7 @@
 // carton.db; writes go through `project.write`, which hands them to the sync-lease holder (§6.2) and answers with the
 // cb result contract: confirmed@seq, pending, or conflicts, with the actor's late-conflict notices first.
 import { join } from "node:path";
-import { pathKey } from "@carton/core";
+import { isBlank, pathKey } from "@carton/core";
 import type { Actor, Carton, ConflictCard, CutRecord, Doc, Notice, Op, StateRef, Version } from "@carton/core";
 import type { CbResult, WriteOp } from "@carton/local";
 import { ago, cardLine, exitCodeOf, noticeLines, resultText, shellWord, table, who } from "./format.ts";
@@ -79,7 +79,15 @@ const versionOf = (v: Version, cuts: Map<string, CutRecord>) => versionName(cuts
  * which version holds the project. (Core refuses it too; this says it in the words of `cb history`.)
  */
 async function refuseEmpty(carton: Carton, v: StateRef | string, what: string): Promise<void> {
-  if (typeof v === "string" || v.seq !== 0) return;
+  if (typeof v === "string") return;
+  if (v.seq !== 0) {
+    // a later version that holds nothing of the project (core's isBlank with the schema's own rule: what an earlier
+    // build's bug left, laptop, final candidate P3-2), said as what it is: not where the history starts
+    const doc = await carton.checkout(v).catch(() => null);
+    if (!doc || !isBlank(doc, carton.schema)) return;
+    const cut = (await carton.cuts()).find((c) => c.id === v.branchId) ?? v.branchId.slice(0, 8);
+    throw Object.assign(new Error(`${versionName(cut, v.seq)} holds nothing of the project: there is nothing in it to ${what}. Pick another version (see \`cb history\`).`), { code: "EMPTY_VERSION" });
+  }
   const [start, next] = [(await carton.log({ cut: v.branchId, before: 1, limit: 1 }))[0], (await carton.log({ cut: v.branchId, before: 2, limit: 1 }))[0]];
   if (!start?.blank) return;
   const cut = (await carton.cuts()).find((c) => c.id === v.branchId) ?? v.branchId.slice(0, 8);
