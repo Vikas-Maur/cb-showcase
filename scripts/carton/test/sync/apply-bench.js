@@ -262,8 +262,10 @@ async function drive() {
     };
   }
   fs.writeFileSync(path.join(OUT, "summary.json"), JSON.stringify(summary, null, 2));
-  const bad = Object.values(summary).some((x) => x.notShown || x.notApplied || x.lostInFile || x.lostInPrint);
-  console.log(JSON.stringify({ summary, checks: bad ? "FAILED: see notShown / notApplied / lost" : "all applied, all shown, none lost", unverified: true }, null, 1));
+  // The guarantees are Carton's: with it off, several writers can lose an edit or miss their own in timeline.tsx
+  // (Cardboard 1.4.0's lost update, B1, which Carton fixes): counted and shown, not a failed run.
+  const bad = Object.entries(summary).some(([k, x]) => x.notApplied || (k.includes("/on/") && (x.notShown || x.lostInFile || x.lostInPrint)));
+  console.log(JSON.stringify({ summary, checks: bad ? "FAILED: see notShown / notApplied / lost" : "Carton on: all applied, all shown, none lost (Carton off: see its counts)", unverified: true }, null, 1));
   if (bad) process.exitCode = 2;
 }
 
