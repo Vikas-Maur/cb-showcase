@@ -207,11 +207,26 @@ function overlay(spec: ObjectSpec, cur: Rec | undefined, ver: Rec): Rec {
 }
 
 /**
+ * A media entry's details: everything on it that Carton doesn't version (its probe's facts, size, where it plays from,
+ * thumbnails, when it was added…), without its id. null when it has none (an entry made from history alone).
+ */
+export function mediaDetails(entry: Readonly<Rec>): Rec | null {
+  if (!entry || typeof entry !== "object") return null;
+  const { id: _id, ...rest } = overlay(S.collections[MEDIA]!.record, entry as Rec, {});
+  return Object.keys(rest).length ? rest : null;
+}
+
+/** Where a media entry's details come from when the current file doesn't have the entry (`materializeProject`). */
+export type KnownMedia = (id: string) => Readonly<Rec> | null | undefined;
+
+/**
  * The `project` object to write to project.json for engine state `doc`: the current file's project with the
  * versioned slice replaced, every record's unversioned fields kept from the current file (matched by id), and the
- * host's own root fields untouched. Track `order` comes from the engine (B12).
+ * host's own root fields untouched. Track `order` comes from the engine (B12). A media entry the current file doesn't
+ * have (a restore after a version without it, a fold that brings it back) takes its details from `known` (the details
+ * last seen for that id: `mediaDetails` of an earlier file's entry), else it has only what history versions.
  */
-export function materializeProject(doc: Doc, current: Readonly<Record<string, unknown>> | null): Record<string, unknown> {
+export function materializeProject(doc: Doc, current: Readonly<Record<string, unknown>> | null, known?: KnownMedia): Record<string, unknown> {
   const slice = toHost(doc);
   const cur = (current ?? {}) as CardboardProject;
   const out: Record<string, unknown> = { ...cur };
@@ -232,7 +247,13 @@ export function materializeProject(doc: Doc, current: Readonly<Record<string, un
   });
   if (slice.media) {
     const curMedia = new Map((cur.media ?? []).map((m) => [m.id, m]));
-    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, curMedia.get(m.id), m), out[ITEMS] as Rec[]));
+    const had = (id: string): Rec | undefined => {
+      const c = curMedia.get(id);
+      if (c) return c;
+      const d = known?.(id);
+      return d && typeof d === "object" ? { ...d, id } : undefined;
+    };
+    out[MEDIA] = slice.media.map((m) => codeSize(overlay(S.collections[MEDIA]!.record, had(m.id as string), m), out[ITEMS] as Rec[]));
   }
   return out;
 }

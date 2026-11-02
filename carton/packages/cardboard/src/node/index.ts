@@ -5,6 +5,7 @@ export * from "./displaced.ts";
 export * from "./install-lock.ts";
 export * from "./materializer.ts";
 export * from "./migrate.ts";
+export * from "./media-details.ts";
 export * from "./carton-engine.ts";
 export { exportCbproj, readCbproj, extractFullHistory, importFullHistory, bringInTheirChanges } from "./cbproj/cbproj.ts";
 export type { CbprojExportOptions, CbprojExportResult, CbprojContents, CbprojTarget, BringInResult, HistoryTarget, FullHistoryOptions, FullHistoryResult } from "./cbproj/cbproj.ts";
