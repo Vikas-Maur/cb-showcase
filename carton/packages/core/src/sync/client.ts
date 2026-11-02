@@ -21,7 +21,7 @@
 import type { BlobStore, TransportConnection } from "../plugins.ts";
 import type { Change, ConfirmedChange, Doc } from "../types.ts";
 import { hashDoc } from "../engine/index.ts";
-import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, Person, PersonRids, PresenceState, ServerMessage } from "./messages.ts";
+import type { AdoptMsg, ClientMessage, ClosureEntry, HistoryMsg, PendingClaim, Person, PersonRids, PresenceMsg, PresenceState, ServerMessage } from "./messages.ts";
 import { VALIDATION_REASONS, PROTOCOL } from "./messages.ts";
 import { KeyframeMismatch, last, type QueuedChange, type ReplicaQueue } from "./queue.ts";
 import { ENVELOPE_BYTES, Inbox, Outbox, clientEnvelopeKey, jsonBytesBound, oversized, seal, unseal } from "./envelope.ts";
@@ -145,8 +145,10 @@ function mergeLineage(have: ClosureEntry[], page: readonly ClosureEntry[]): Clos
 
 /** One key per actor in presence (`kind:id`; anything else by its JSON). */
 const presenceKey = (a: unknown): string => {
-  const x = a as { kind?: unknown; id?: unknown } | null;
-  return x && typeof x === "object" && typeof x.id === "string" ? `${String(x.kind)}:${x.id}` : JSON.stringify(a);
+  const x = a as { kind?: unknown; id?: unknown; agentId?: unknown } | null;
+  if (!x || typeof x !== "object" || typeof x.id !== "string") return JSON.stringify(a);
+  // an agent's own id beside its person's: two agents of one person are two peers
+  return typeof x.agentId === "string" ? `${String(x.kind)}:${x.id}:${x.agentId}` : `${String(x.kind)}:${x.id}`;
 };
 
 export class SyncClient {
@@ -174,6 +176,8 @@ export class SyncClient {
   private presenceTimer: unknown = null;
   /** The latest presence asked for, sent or not: shown again after a reconnect (review SF4-8). */
   private presenceLast: { actor: Change["author"]; state: PresenceState | null } | null = null;
+  /** The connection whose first presence (not a leave) went out already, marked `arrived` (see presenceMsg). */
+  private presenceSentOn = 0;
   /** Peers this connection shows (their last presence not a leave), by actor: told gone when it closes. */
   private shown = new Map<string, unknown>();
   private waiters: ((ok: boolean) => void)[] = [];
@@ -258,7 +262,7 @@ export class SyncClient {
     // sends right after its last move, and peers have no other way to learn the person left (the relay keeps none)
     const p = this.presenceNext;
     this.presenceNext = null;
-    if (p && this.conn?.open) this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
+    if (p && this.conn?.open) this.send(this.presenceMsg(p.actor, p.state));
     const c = this.conn;
     this.conn = null;
     c?.close();
@@ -659,11 +663,12 @@ export class SyncClient {
         if (m.state === null) this.shown.delete(k);
         else this.shown.set(k, m.actor);
         this.emit({ type: "presence", branchId: m.branchId, actor: m.actor, state: m.state });
-        // A peer this connection didn't show yet (a teammate joining, or back after the host restarted) may have
-        // subscribed after our own presence went out, and a host that restarted keeps none to tell it: ours goes again,
-        // once per arrival (the throttle coalesces several). Not for one the host told us from what it keeps (`kept`):
-        // that peer was there when we came, so it had ours (presence P2).
-        if (arrived && !m.kept && m.branchId === b) {
+        // A peer this connection didn't show yet (a teammate joining, or back after the host restarted), or a connection
+        // that says it just `arrived` (a second tab of someone shown already), may have subscribed after our own
+        // presence went out, and a host that restarted keeps none to tell it: ours goes again, once per arrival (the
+        // throttle coalesces several). Not for one the host told us from what it keeps (`kept`): that peer was there
+        // when we came, so it had ours (presence P2).
+        if ((arrived || m.arrived) && !m.kept && m.state !== null && m.branchId === b) {
           const p = this.presenceLast;
           if (p?.state) this.sendPresence(p.actor, p.state);
         }
@@ -746,7 +751,7 @@ export class SyncClient {
     const wait = this.presenceAt + 1000 / PRESENCE_PER_SEC - now;
     if (wait <= 0 && this.presenceTimer === null) {
       this.presenceAt = now;
-      this.send({ type: "presence", branchId: this.branchId, actor, state });
+      this.send(this.presenceMsg(actor, state));
       return;
     }
     this.presenceNext = { actor, state };
@@ -757,8 +762,21 @@ export class SyncClient {
       this.presenceNext = null;
       if (!p || !this.conn?.open) return;
       this.presenceAt = (this.o.clock ?? Date.now)();
-      this.send({ type: "presence", branchId: this.branchId, actor: p.actor, state: p.state });
+      this.send(this.presenceMsg(p.actor, p.state));
     }, Math.max(0, wait));
+  }
+  /**
+   * A presence message for the current connection: its first one that isn't a leave says `arrived`, so peers answer
+   * with theirs even when they already show this actor through another connection (a second tab, after a host lost
+   * what it kept). One per connection: an answer to it never says `arrived` again, so no round goes on.
+   */
+  private presenceMsg(actor: Change["author"], state: PresenceState | null): PresenceMsg {
+    const m: PresenceMsg = { type: "presence", branchId: this.branchId, actor, state };
+    if (state !== null && this.presenceSentOn !== this.connId) {
+      this.presenceSentOn = this.connId;
+      m.arrived = true;
+    }
+    return m;
   }
 
   // ---------------------------------------------------------------- pushing

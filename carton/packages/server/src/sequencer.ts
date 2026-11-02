@@ -1182,7 +1182,11 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (shown && msg.state !== null && sync.jsonBytesBound(msg, PRESENCE_KEPT_BYTES) <= PRESENCE_KEPT_BYTES) {
       let kept = presenceKept.get(c);
       if (!kept) presenceKept.set(c, (kept = new Map()));
-      kept.set(k, msg);
+      if (!msg.arrived) kept.set(k, msg);
+      else {
+        const { arrived: _a, ...plain } = msg; // told later as `kept`, never as an arrival
+        kept.set(k, plain);
+      }
       return;
     }
     const kept = presenceKept.get(c);
@@ -1205,6 +1209,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     // relayed, never stored; the actor is stamped from the connection, not trusted from the client
     const actor = { ...(m.actor ?? {}), kind: m.actor?.kind ?? "human", id: m.actor?.id ?? c.auth.account } as sync.PresenceFanoutMsg["actor"];
     const msg: sync.PresenceFanoutMsg = { type: "presence", branchId: m.branchId, actor, state: m.state ?? null };
+    // a connection's first presence: its peers answer with theirs (presence P2 review: a second tab of someone shown)
+    if (m.arrived === true && msg.state !== null) msg.arrived = true;
     // a playhead, a selection, drag ghosts: over 64 KiB is dropped, so a client can't make the relay (10–20 Hz) costly
     if (sync.oversized(msg, sync.PRESENCE_BYTES)) return;
     keepPresence(c, msg, noteShown(c, m.branchId, actor, msg.state !== null));
@@ -1214,7 +1220,8 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
       presenceTrailing.set(c, byBranch);
       const waiting = byBranch.get(m.branchId);
       if (waiting) {
-        waiting.msg = msg;
+        // the newest state, still saying `arrived` if one it replaces did: the peers' answer is owed either way
+        waiting.msg = waiting.msg.arrived && msg.state !== null && !msg.arrived ? { ...msg, arrived: true } : msg;
         return;
       }
       const b = presenceBuckets.get(c)!;

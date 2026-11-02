@@ -159,17 +159,25 @@ test("guard, worker: a teammate's malformed presence is skipped (said once, with
   assert.deepEqual(l.view().peers.map((p) => p.actor.id), ["mia"]);
 });
 
-test("a stale leave keeps a teammate: one from a cut they have left for another, as that cut's connection closing says (presence P2)", opt, async () => {
+test("a teammate is kept per cut: a leave on a cut they have left (that cut's connection closing says it) keeps them on the other (presence P2)", opt, async () => {
   const { live: l, events, presence } = await live();
   presence(ALICE, editing, "variant");
   presence(ALICE, editing, "main"); // she moved to main
-  const published = events.length;
   presence(ALICE, null, "variant"); // the variant's connection closed: everyone it showed is told gone
   assert.deepEqual(l.view().peers.map((p) => [p.actor.id, p.cut]), [["alice", "main"]]);
-  assert.equal(events.length, published, "nothing changed, nothing published");
-  presence({ kind: "human", id: "nobody" }, null); // a leave for someone never shown
+  const published = events.length;
+  presence({ kind: "human", id: "nobody" }, null); // a leave for someone never shown: nothing changed, nothing published
+  presence(ALICE, null, "variant"); // and again
   assert.equal(events.length, published);
   presence(ALICE, null, "main"); // her own leave, on the cut she is on
+  assert.deepEqual(l.view().peers, []);
+  // on two cuts at once (two tabs): listed by the latest; a leave on one keeps her, on the other
+  presence(ALICE, editing, "main");
+  presence(ALICE, { activity: "Trimming", who: editing.who }, "variant");
+  assert.deepEqual(l.view().peers.map((p) => [p.cut, p.activity]), [["variant", "Trimming"]]);
+  presence(ALICE, null, "variant");
+  assert.deepEqual(l.view().peers.map((p) => [p.cut, p.activity]), [["main", "Editing"]]);
+  presence(ALICE, null, "main");
   assert.deepEqual(l.view().peers, []);
 });
 

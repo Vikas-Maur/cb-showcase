@@ -352,3 +352,28 @@ test("what is kept for later subscribers stays small: an update over 16 KiB is r
   assert.deepEqual(presenceIn(c).map((m) => m.state), [{ at: 3 }]);
   for (const x of [a, b, c]) seq.disconnect(x);
 });
+
+test("`arrived` is relayed (never on a leave), never kept, and survives the rate cap until the trailing relay", async () => {
+  let now = 5_000_000;
+  const { seq } = await world(doc([clip("c0", 0, 5)]), { clock: () => now });
+  const a = fakeConn("alice/1"), b = fakeConn("bob/1");
+  for (const x of [a, b]) await seq.handle(x, hello());
+  const ana = { kind: "human" as const, id: "ana" };
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 1 }, arrived: true });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: null, arrived: true } as sync.PresenceMsg);
+  assert.deepEqual(presenceIn(b).map((m) => m.arrived), [true, undefined]);
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 2 }, arrived: true });
+  const c = fakeConn("carol/1");
+  await seq.handle(c, hello());
+  assert.deepEqual(presenceIn(c).map((m) => [m.kept, m.arrived]), [[true, undefined]], "kept, not an arrival");
+  // behind the cap: the arrival waits, and a later update that replaces it still says it
+  b.inbox.length = 0;
+  for (let i = 0; i < 20; i++) await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 10 + i } });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 40 }, arrived: true });
+  await seq.handle(a, { type: "presence", branchId: BRANCH, actor: ana, state: { at: 41 } });
+  now += 1000;
+  await new Promise((r) => setTimeout(r, 120));
+  const last = presenceIn(b).at(-1)!;
+  assert.deepEqual([last.state, last.arrived], [{ at: 41 }, true]);
+  for (const x of [a, b, c]) seq.disconnect(x);
+});

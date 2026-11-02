@@ -143,7 +143,11 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   replica's own connection closes (or it stops), every peer it showed gets a `presence` event with `state: null`: a
   host that restarts keeps no one to send leaves for. This replica's own latest presence (unless it was a leave) goes
   out again after each reconnect's welcome, an update a disconnect caught waiting included, and again (once, coalesced
-  by the throttle) when a peer shows for the first time on a connection, unless the host sent that peer as `kept`.
+  by the throttle) when a peer shows for the first time on a connection or relays its connection's first presence
+  (`arrived`: a second tab of someone shown already), unless the host sent that peer as `kept`. A connection's first
+  presence that isn't a leave says `arrived`; an answer never does, so no round goes on. Peers are told apart by
+  kind, id and agentId. The handle's `sync.presence()` shows on its current cut: when that changes (`switchTo`, or
+  another process's switch it follows), the cut it showed on gets a leave.
   The sequencer keeps each connection's latest presence per branch and actor in memory (the actors `shown` holds, up
   to 16 KiB each) and sends a connection that subscribes the presence every other connection there shows, right
   after its welcome, marked `kept`. So after a host restart or a join, in either order, each side lists the other

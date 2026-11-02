@@ -37,7 +37,7 @@ export class Live {
     this.lease = null;
     this.off = null;
     this.timer = null;
-    this.peers = new Map(); // actor key → {actor: peerActor(), cut, activity, at}
+    this.peers = new Map(); // actor key → {actor: peerActor(), cuts: Map(cut → {activity, idle, at}), the latest last}
     this.skippedPeer = false;
     this.status = lc.carton.sync?.state() ?? { status: "offline", pending: 0, label: "Offline" };
     this.error = lc.carton.sync?.error?.() ?? null;
@@ -124,21 +124,26 @@ export class Live {
         // Peers are kept by the sender's handle actor, which a `null` (stopped) also carries.
         // Both are as the teammate's replica sent them (the host relays presence as it is): one the Share panel can't
         // show (no id) is skipped, said once, with none of its text (UI audit P1-1).
+        // Kept per cut: a leave on one cut (theirs, or our connection there closing, which says it of everyone it
+        // showed) never takes away a teammate who still shows on another; the panel shows their latest (presence P2).
         const key = actorKey(e.actor);
+        const peer = this.peers.get(key);
         if (e.state) {
           const actor = peerActor(e.actor, e.state.who);
           // `idle`: here, without input for a while (the page says so instead of leaving: UI audit P2-11)
-          if (actor) this.peers.set(key, { actor, cut: e.branchId, activity: typeof e.state.activity === "string" ? e.state.activity : null, idle: e.state.idle === true, at: Date.now() });
-          else if (!this.skippedPeer) {
+          if (actor) {
+            const p = peer ?? { actor, cuts: new Map() };
+            p.actor = actor;
+            p.cuts.delete(e.branchId); // the latest goes last
+            p.cuts.set(e.branchId, { activity: typeof e.state.activity === "string" ? e.state.activity : null, idle: e.state.idle === true, at: Date.now() });
+            this.peers.set(key, p);
+          } else if (!this.skippedPeer) {
             this.skippedPeer = true;
             this.log({ type: "presence-skipped", project: this.projectId, why: "no id" });
           }
         } else {
-          // a stale leave keeps them: one from a cut they have since left for another (they show there now), as a
-          // connection on the old cut closing says of everyone it showed
-          const was = this.peers.get(key);
-          if (!was || was.cut !== e.branchId) break;
-          this.peers.delete(key);
+          if (!peer?.cuts.delete(e.branchId)) break; // nothing shown there: nothing changes
+          if (!peer.cuts.size) this.peers.delete(key);
         }
         this.#publish();
         break;
@@ -165,7 +170,10 @@ export class Live {
   /** The state the Share panel shows; each of `peers` is `{actor: {key, kind, id, name}, cut, activity, idle}`. */
   view() {
     const now = Date.now();
-    const peers = [...this.peers.values()].map((p) => ({ actor: p.actor, cut: p.cut, activity: p.activity, idle: !!p.idle || now - p.at > PEER_IDLE_MS }));
+    const peers = [...this.peers.values()].map((p) => {
+      const [cut, c] = [...p.cuts].at(-1);
+      return { actor: p.actor, cut, activity: c.activity, idle: !!c.idle || now - c.at > PEER_IDLE_MS };
+    });
     return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers, problem: problemOf(this.error) };
   }
   #publish() {

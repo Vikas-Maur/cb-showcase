@@ -204,3 +204,56 @@ test("a peer arriving on this connection gets our presence again, once; a kept o
   assert.deepEqual(presence(), [{ idle: true }, { idle: true }, { idle: true }, null]);
   client.stop();
 });
+
+// Presence P2 review: a second tab of someone already shown (after a host lost what it keeps, a Durable Object's wake)
+// says nothing new by its actor, so a connection's first presence says `arrived`, and peers answer that too.
+test("a connection's first presence says `arrived` (again after a reconnect, never on a leave); an arrival is answered even from a known actor; agents of one person are told apart", async () => {
+  const vt = virtualTime();
+  const q = new ReplicaQueue(schema);
+  q.addBranch({ id: "b", name: "main", kind: "main", sequencer: { kind: "server", since: 0 } }, d0);
+  class Dropping extends Conn {
+    private closed: ((why: string) => void)[] = [];
+    override onClose(l?: (why: string) => void) {
+      if (l) this.closed.push(l);
+    }
+    lose(why: string) {
+      this.open = false;
+      for (const l of this.closed) l(why);
+    }
+  }
+  const conns: Dropping[] = [];
+  const client = new SyncClient({ queue: q, branchId: "b", schemaVersion: 1, connect: async () => (conns.push(new Dropping()), conns.at(-1)!), timers: vt.timers, clock: vt.clock, defer: (fn) => queueMicrotask(fn) }).start();
+  const tick = () => new Promise((r) => setTimeout(r, 0));
+  await tick();
+  const sentOn = (c: Conn) => (c.sent.filter((m) => m.type === "presence") as Extract<ClientMessage, { type: "presence" }>[]).map((m) => [m.state, m.arrived ?? false]);
+  conns[0]!.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  const me = { kind: "human" as const, id: "me" };
+  client.sendPresence(me, null); // a leave first: not an arrival
+  vt.advance(200);
+  client.sendPresence(me, { at: 1 });
+  vt.advance(200);
+  client.sendPresence(me, { at: 2 });
+  vt.advance(200);
+  assert.deepEqual(sentOn(conns[0]!), [[null, false], [{ at: 1 }, true], [{ at: 2 }, false]]);
+  const ann = { kind: "human" as const, id: "ann" };
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 1 } }); // arrives: answered
+  vt.advance(200);
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 2 }, arrived: true }); // her second tab: answered
+  vt.advance(200);
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: ann, state: { at: 3 } }); // known: not
+  vt.advance(200);
+  assert.equal(sentOn(conns[0]!).length, 5);
+  // two agents of one person are two peers: the second's arrival is answered too
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: { kind: "agent", id: "ann", agentId: "a-1" }, state: { at: 1 } });
+  vt.advance(200);
+  conns[0]!.feed({ type: "presence", branchId: "b", actor: { kind: "agent", id: "ann", agentId: "a-2" }, state: { at: 1 } });
+  vt.advance(200);
+  assert.deepEqual(sentOn(conns[0]!).slice(3), [[{ at: 2 }, false], [{ at: 2 }, false], [{ at: 2 }, false], [{ at: 2 }, false]], "answers never say `arrived`");
+  // a new connection: its first presence (the re-announce after the welcome) arrives again
+  conns[0]!.lose("host restarted");
+  vt.advance(1000);
+  await tick();
+  conns[1]!.feed({ type: "hello", branchId: "b", head: 0, rows: [], confirmed: [] });
+  assert.deepEqual(sentOn(conns[1]!), [[{ at: 2 }, true]]);
+  client.stop();
+});
