@@ -206,6 +206,13 @@ export interface MultipartUpload {
   readonly key: string;
   readonly uploadId: string;
   uploadPart(partNumber: number, data: Uint8Array): Promise<{ partNumber: number; etag: string }>;
+  /**
+   * The same, from a stream of exactly `size` bytes, never held whole in memory (optional). A host whose requests have
+   * a small CPU and memory budget (a Worker: 10 ms of CPU on the Free plan, 128 MB) passes a part's request body
+   * straight through instead of reading it into a buffer first: reading 8 to 64 MiB in JavaScript took 60 to 360 ms of
+   * CPU per part, and Cloudflare killed such requests (error 1102) until a 1 GB upload could not finish (cf-lab).
+   */
+  uploadPartStream?(partNumber: number, body: ReadableStream<Uint8Array>, size: number): Promise<{ partNumber: number; etag: string }>;
   /** Parts already stored (resume after a cut link). */
   listParts(): Promise<{ partNumber: number; etag: string; size: number }[]>;
   complete(parts: { partNumber: number; etag: string }[]): Promise<BlobInfo>;
