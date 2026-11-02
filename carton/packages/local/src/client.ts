@@ -8,7 +8,7 @@
 //
 // A holder that dies while answering (ECONNRESET) is retried with the **same change id**: the next holder finds the
 // id already in carton.db's queue or log and never makes a second change (stable ids, R3-01).
-import { ControlClient, RpcError, callOnce } from "./ipc.ts";
+import { ControlClient, RpcError } from "./ipc.ts";
 import { liveHolder, patientWithApp, probeHolder, SHOW_WAIT_MS } from "./holder.ts";
 import type { ShowTarget, Showing } from "@carton/cardboard/node";
 import type { Lease, LeaseRow } from "./lease.ts";
@@ -123,13 +123,25 @@ export async function nudgeHolder(socketPath: string, timeoutMs = 200): Promise<
  * yet); null when that holder prints no timeline.tsx. A holder that can't be asked (gone, no answer in time) is `later`.
  */
 export async function showOnHolder(socketPath: string, target: ShowTarget, waitMs: number = SHOW_WAIT_MS): Promise<Showing | null> {
+  // one deadline for all of it: the connection, its auth, and the holder's look at carton.db and print (review #4:
+  // each had a budget of its own, and a slow holder answered past the wait)
+  const end = Date.now() + waitMs;
+  let c: ControlClient | null = null;
   try {
-    const r = await callOnce<{ timeline?: Showing | null }>(socketPath, "carton.shown", { ...target, waitMs }, { timeoutMs: waitMs + 1000 });
+    c = await ControlClient.connect(socketPath, { timeoutMs: Math.max(1, Math.min(1000, waitMs)) });
+    const left = end - Date.now();
+    if (left <= 0) return "later";
+    // the holder's own budget leaves its answer time to come back
+    const r = await c.call<{ timeline?: Showing | null }>("carton.shown", { ...target, waitMs: Math.max(0, left - SHOW_REPLY_MS) }, left);
     return r?.timeline ?? null;
   } catch {
     return "later";
+  } finally {
+    c?.close();
   }
 }
+/** What `showOnHolder` keeps of its wait for the holder's answer to come back over the socket. */
+const SHOW_REPLY_MS = 50;
 
 /** Wait until the lease has moved on from `seen` and its new holder answers a ping. */
 export async function waitForHolder(lease: Lease, seen: string | null, timeoutMs: number): Promise<LeaseRow | null> {

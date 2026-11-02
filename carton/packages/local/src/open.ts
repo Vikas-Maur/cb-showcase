@@ -297,8 +297,14 @@ export class CartonHolderEngine implements HolderEngine {
   async show(target: ShowTarget, waitMs: number): Promise<Showing | null> {
     const mz = this.materializer;
     if (!mz?.showChange) return null;
-    await this.follower?.check();
-    return mz.showChange(target, waitMs);
+    // one deadline: the look at carton.db comes out of the wait, not on top of it (review #4)
+    const end = Date.now() + waitMs;
+    if (this.follower) {
+      let timer: NodeJS.Timeout | null = null;
+      await Promise.race([this.follower.check(), new Promise<void>((r) => { timer = setTimeout(r, waitMs); timer.unref?.(); })]);
+      if (timer) clearTimeout(timer);
+    }
+    return mz.showChange(target, Math.max(0, end - Date.now()));
   }
 
   /** Stop following carton.db and forwarding answers (the engine is closing; the lease's stop() leaves both running: a

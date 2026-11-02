@@ -123,3 +123,18 @@ test("a terminal's cb holds the file as a windowless agent does, and its own wri
 test("a holder that is gone answers 'later', never an error", async () => {
   assert.equal(await showOnHolder(join(bundle("ryw-gone").dir, "no-such-holder.sock"), { id: "x.1" }, 200), "later");
 });
+
+// Review #4: one deadline across the connection, its auth, the holder's look at carton.db and its print. A holder that
+// answers late (here: never within the wait) costs the writer at most the wait, never the wait plus a second budget.
+test("a slow holder costs a write at most its wait: 'later' on time", { timeout: 30_000 }, async (t) => {
+  const { ControlServer } = await import("../src/ipc.ts");
+  const path = join(bundle("ryw-slow").dir, "slow.sock");
+  const seen: number[] = [];
+  const srv = await ControlServer.listen({ path, methods: { "carton.shown": async (p: { waitMs: number }) => { seen.push(p.waitMs); await sleep(3_000); return { timeline: "shown" }; } } });
+  t.after(() => srv.close());
+  const t0 = Date.now();
+  assert.equal(await showOnHolder(path, { id: "x.1" }, 500), "later");
+  const took = Date.now() - t0;
+  assert.ok(took < 700, `answered within the wait (500 ms), not past it: ${took} ms`);
+  assert.ok(seen.length === 1 && seen[0]! < 500, "the holder is given what is left of the wait, less the reply's time: " + JSON.stringify(seen));
+});
