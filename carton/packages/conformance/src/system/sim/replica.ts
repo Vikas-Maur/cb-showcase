@@ -212,6 +212,8 @@ export class Replica {
       maxBehind: this.world.maxBehind,
       pipeline: this.pipeline,
       backoffMs: 500,
+      // the fixed retry these seeded scenarios were written for (the backoff policy has its own tests in core)
+      maxBackoffMs: 500,
       timers: this.sim.timers(),
       defer: (fn, cost) => {
         if (cost > 0) proc.engine.post(() => {}, cost); // the rebase holds the engine thread...
