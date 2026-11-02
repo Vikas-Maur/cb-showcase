@@ -92,4 +92,17 @@ The orchestrator merges to `main` and adds "Updates: reinstall" here when it's t
 while waiting; a T3 scheduled task on the laptop is fine for that.
 
 ## Updates
-(none yet)
+
+### Update 1 (2026-11-02 ~11:45 UTC): new release head `51f4d243`, previews only
+`merge/prod-2` is now **`51f4d243`**. It adds one client-side change to shared previews (`fix/cf-proxy-path-r` @
+`d9bce5e5`): the publish tail keeps 4 appends in flight, and playback keeps 2 reads in flight. Linux is green: typecheck,
+media, host-http, server-cloudflare, e2e, size, and the live, cbproj, cbproj-offline, open-share and share-peers sync
+files.
+- **Carry on with step 2 on `out/carton-rc` (`12826273`) as you are.** Nothing else changed.
+- **When step 2 is done:**
+  1. Build `51f4d243` into `out/carton-rc2`, then delete `out/carton-rc`.
+  2. Re-run only the preview and sharing items on it:
+     - the Share crash, 3/3 on both sides;
+     - Join → Open: the clip plays from its preview or shows Offline, with no "Missing Media Files";
+     - one share of a ~1-minute clip to a second instance: the teammate's preview starts and plays to the end.
+  3. Use `out/carton-rc2` for steps 3–4.
