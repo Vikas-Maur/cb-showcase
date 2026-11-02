@@ -59,3 +59,8 @@ PRESENCE_TIMEOUT_MS = "120000"
 OPEN_CREATE = "1"
 OPEN_CREATE_PER_DAY = "10"
 MAX_UPLOAD_BYTES = "209715200"
+# The daily write cap (src/write-cap.ts), across every project: bytes stored and blob write calls per UTC day. Over
+# either, writes answer 429 (code DailyWriteCap, Retry-After until 00:00 UTC); reads and deletes go on. Off unless set.
+# Each write then costs one more Durable Object request (the day's counter).
+# WRITE_CAP_BYTES_PER_DAY = "2147483648"
+# WRITE_CAP_OPS_PER_DAY = "20000"

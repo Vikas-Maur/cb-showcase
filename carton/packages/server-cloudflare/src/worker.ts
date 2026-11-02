@@ -9,6 +9,7 @@ import { handleHttp, dayOf, OPEN_CREATE_MAX_UPLOAD, OPEN_CREATE_PER_DAY, type Ht
 import type { Env } from "./env.ts";
 import { ProjectRoom, mediaBlobs, sequencerBlobs, maxEnvelopeOf, AUTH_HEADER, PROJECT_HEADER } from "./room.ts";
 import { BlobVault } from "./blob-do.ts";
+import { WriteCapError, writeCapResponse } from "./write-cap.ts";
 
 export { ProjectRoom, BlobVault };
 
@@ -88,7 +89,14 @@ function openCreateOf(env: Env): OpenCreate {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    const res = await handleHttp(req, depsFor(env));
+    let res: Response | null;
+    try {
+      res = await handleHttp(req, depsFor(env));
+    } catch (e) {
+      // the daily write cap refused a write (write-cap.ts): 429 with Retry-After, before any byte was stored
+      if (e instanceof WriteCapError) return writeCapResponse(e);
+      throw e;
+    }
     if (res) return res;
     if (env.ASSETS) return env.ASSETS.fetch(req);
     return new Response("not found", { status: 404 });

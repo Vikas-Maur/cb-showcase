@@ -41,4 +41,8 @@ export interface Env {
   OPEN_CREATE_PER_DAY?: string;
   // the largest file one upload stores, in bytes (default: none; 200 MiB when OPEN_CREATE is on)
   MAX_UPLOAD_BYTES?: string;
+  // the deployment's daily write cap (write-cap.ts), across every project: bytes stored and blob write calls per UTC
+  // day. Over either, writes answer 429 (code DailyWriteCap) until 00:00 UTC; reads and deletes go on. Off unless set.
+  WRITE_CAP_BYTES_PER_DAY?: string;
+  WRITE_CAP_OPS_PER_DAY?: string;
 }
