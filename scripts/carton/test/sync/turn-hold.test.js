@@ -77,12 +77,14 @@ function cbOnPath() {
   return dir;
 }
 
-// Claude Code's Bash tool on Windows runs Git Bash; its PowerShell tool runs PowerShell. This box has no PowerShell:
-// there the command runs in sh, after the one PowerShell form a hook adds (`$env:NAME='value'; `) becomes environment.
+// Claude Code's Bash tool on Windows runs Git Bash; its PowerShell tool runs PowerShell: CARTON_PWSH (a pwsh, e.g.
+// PowerShell 7 for Linux), else Windows' own. With neither, the command runs in sh, after the one PowerShell form a
+// hook adds (`$env:NAME='value'; `) becomes environment.
 const BASH = process.platform !== "win32" ? "bash" : process.env.CLAUDE_CODE_GIT_BASH_PATH ?? path.join(process.env.ProgramFiles ?? "C:\\Program Files", "Git", "bin", "bash.exe");
+const PWSH = process.env.CARTON_PWSH || (process.platform === "win32" ? "powershell.exe" : null);
 function shell(tool, command) {
   if (tool === "Bash") return { file: BASH, args: ["-c", command], env };
-  if (process.platform === "win32") return { file: "powershell.exe", args: ["-NoProfile", "-Command", command], env };
+  if (PWSH) return { file: PWSH, args: ["-NoProfile", "-NonInteractive", "-Command", command], env };
   const more = {};
   let rest = command, x;
   while ((x = /^\$env:([A-Za-z_][A-Za-z0-9_]*)='((?:[^']|'')*)';\s*/.exec(rest))) more[x[1]] = x[2].replace(/''/g, "'"), (rest = rest.slice(x[0].length));

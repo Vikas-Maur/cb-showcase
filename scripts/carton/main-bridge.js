@@ -61,8 +61,11 @@ module.exports = String.raw`var __cartonMain = (() => {
   // Commands that reach Carton: cb, cardboard, or a script under the bundle that runs them. Others keep the actor
   // main gave the process (director/<chat>), so a script that calls cb is still the Director's, just without the turn.
   // (The person's own Claude Code has no actor of its own in its environment: a script's cb call there is cb's own
-  // guess, claude-code@<host>, "Claude Code" without hooks.)
-  const reachesCarton = (cmd) => /(^|[\s;&|(\x60])(cb|cardboard)(\.cmd)?(\s|$)/.test(cmd);
+  // guess, claude-code@<host>, "Claude Code" without hooks.) Review of fix/turn-hold #2: any case (PowerShell's command
+  // names are, and Windows finds CB.cmd for CB), and as a path's last part, quoted or not (& 'C:\...\cb.cmd' source
+  // print). A command that only mentions the word is prefixed and holds the file too: harmless, an environment variable
+  // and a hold that ends with the turn.
+  const reachesCarton = (cmd) => /(^|[\s;&|(\x60'"\\/])(cb|cardboard)(\.cmd|\.exe)?(?=$|[\s;&|)\x60'"])/i.test(cmd);
   // H8: a hook event for the worker's Materializer, waited for up to 3 s (the agent's tool call waits on it; a worker
   // that doesn't answer in time leaves the file as it is, never the agent stuck).
   const agentHook = (ctx, actor, event, input) => {
@@ -82,53 +85,68 @@ module.exports = String.raw`var __cartonMain = (() => {
   const HOLD_BEAT_MS = 20_000;
   // The chat's turn as turnStarted saw it (Cardboard's chat object: closeTurn replaces its turn), and its generation.
   const live = new Map();
-  // chatId → { gen, ctx, actors, timer }: the actors holding timeline.tsx in the chat's running turn.
+  // chatId → the chat's running turn's holds: its generation, the actors holding timeline.tsx, the ones whose Stop
+  // went through (gone; stopped: the turn's own Stop), and the beat.
   const holds = new Map();
   const turnRuns = (chatId, gen) => {
     const l = live.get(chatId);
     return !!l && l.gen === gen && genOf(chatId) === gen && l.chat.turn?.state === "running" && l.chat.turn.id === l.turn;
   };
-  // The actor stops holding (its SubagentStop); without one, the whole turn does (its Stop, its end).
-  const dropHolds = (chatId, actor) => {
+  // The turn's holds for generation gen, made if needed (another generation's are let go first).
+  const holdsOf = (chatId, gen, ctx) => {
+    let h = holds.get(chatId);
+    if (h && h.gen !== gen) endHolds(chatId), (h = null);
+    if (!h) holds.set(chatId, (h = { gen, ctx, actors: new Set(), gone: new Set(), stopped: false, timer: null }));
+    return h;
+  };
+  // The turn started or ended: its beats stop and its holds are forgotten.
+  const endHolds = (chatId) => {
     const h = holds.get(chatId);
-    if (!h) return;
-    if (actor) h.actors.delete(actor);
-    if (actor && h.actors.size) return;
-    clearInterval(h.timer);
+    if (h?.timer) clearInterval(h.timer);
     holds.delete(chatId);
+  };
+  // A Stop that went through in generation gen: the subagent's own (actor), else the whole turn's. Kept, so a hook
+  // of the turn's that answers after it (review of fix/turn-hold #1) can't hold again in this turn.
+  const stopHolds = (chatId, gen, actor) => {
+    const h = holdsOf(chatId, gen, null);
+    if (actor) h.actors.delete(actor), h.gone.add(actor);
+    else h.stopped = true, h.actors.clear();
+    if (!h.actors.size && h.timer) clearInterval(h.timer), (h.timer = null);
   };
   const beat = (chatId) => {
     const h = holds.get(chatId);
-    if (!h || !turnRuns(chatId, h.gen)) return dropHolds(chatId);
+    if (!h || !turnRuns(chatId, h.gen)) return endHolds(chatId);
     for (const actor of h.actors) void agentHook(h.ctx, actor, "pre-tool-use", holdInput(h.ctx, {}));
   };
-  // The actor holds timeline.tsx from now on, while the chat's turn runs (a chat whose turn main doesn't track: until
-  // the worker's quiet bound, as before).
-  const keepHolding = (ctx, actor) => {
-    const chatId = ctx?.chatId, gen = genOf(chatId);
+  // The actor holds timeline.tsx from now on, while the chat's turn of generation gen (the one its hook was called
+  // in, read before any wait: review of fix/turn-hold #1) runs and hasn't stopped. A chat whose turn main doesn't
+  // track: until the worker's quiet bound, as before.
+  const keepHolding = (ctx, actor, gen) => {
+    const chatId = ctx?.chatId;
     if (!turnRuns(chatId, gen)) return;
-    let h = holds.get(chatId);
-    if (h && h.gen !== gen) dropHolds(chatId), (h = null);
-    if (!h) {
-      h = { gen, ctx, actors: new Set(), timer: setInterval(() => beat(chatId), HOLD_BEAT_MS) };
-      h.timer.unref?.();
-      holds.set(chatId, h);
-    }
+    const h = holdsOf(chatId, gen, ctx);
+    if (h.stopped || h.gone.has(actor)) return;
+    h.ctx = ctx;
     h.actors.add(actor);
+    if (!h.timer) (h.timer = setInterval(() => beat(chatId), HOLD_BEAT_MS)), h.timer.unref?.();
   };
   // H8, regress prod4: a shell command of the turn's (Bash, PowerShell) that reaches Carton (its first cb call: a print
   // too, which holds nothing in the worker) or names the shared file holds timeline.tsx for the turn from now on, as
-  // a Read of it does. Returns the actor a cb command must run as, or null.
-  const shellHold = async (ctx, input, command) => {
+  // a Read of it does. gen: the turn the hook was called in. Returns the actor a cb command must run as, or null.
+  const shellHold = async (ctx, input, command, gen) => {
     if (typeof command !== "string") return null;
     const reads = /timeline\.tsx/i.test(command), cb = reachesCarton(command);
     if (!reads && !cb) return null;
     const actor = hookActor(ctx, input);
-    keepHolding(ctx, actor);
+    keepHolding(ctx, actor, gen);
     await agentHook(ctx, actor, "pre-tool-use", holdInput(ctx, input));
     return cb ? actor : null;
   };
   const psQuote = (s) => "'" + String(s).replaceAll("'", "''") + "'";
+  // Review of fix/turn-hold #3: a PowerShell command whose opening must stay first (a using statement, a param block,
+  // or the attribute before one, after any comments) breaks with an assignment in front (checked in PowerShell 7.4):
+  // it runs as it is, its cb calls as cb's own guess (Claude Code). The hold is sent all the same.
+  const psOpening = (cmd) => /^(?:\s|#[^\n]*|<#[\s\S]*?#>)*(?:using\s|param\s*\(|\[[\w.]+\s*\()/i.test(cmd);
   // Block once per conflict set: whatever the agent leaves unresolved becomes a card for the person (the worker's
   // stopHook: @carton/local's, as host Claude Code's cb carton-hook runs it, so the agent's own cards stay for cb
   // conflicts and cb resolve). A stop that goes through ends the agent's hold on the shared file (H8); a blocked one goes
@@ -141,7 +159,7 @@ module.exports = String.raw`var __cartonMain = (() => {
     if (out.decision === "block") return out;
     if (genOf(ctx?.chatId) !== gen) return {};
     // the beats stop first (a subagent's own; the turn's Stop, all of the turn's), so none holds after the stop
-    dropHolds(ctx?.chatId, input?.agent_id ? actor : null);
+    stopHolds(ctx?.chatId, gen, input?.agent_id ? actor : null);
     await agentHook(ctx, actor, "stop");
     return {};
   };
@@ -178,7 +196,7 @@ module.exports = String.raw`var __cartonMain = (() => {
       running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since: Date.now() });
       hooked.delete(chat.chatId);
       nextGen(chat.chatId);
-      dropHolds(chat.chatId);
+      endHolds(chat.chatId);
       live.set(chat.chatId, { chat, turn: turn.id, gen: genOf(chat.chatId) });
     },
     turnEnded(chat) {
@@ -186,7 +204,7 @@ module.exports = String.raw`var __cartonMain = (() => {
       if (!t) return;
       // review P2: the turn's hooks still waiting send nothing from here on (gens); its beats stop before its end lets go
       nextGen(chat.chatId);
-      dropHolds(chat.chatId);
+      endHolds(chat.chatId);
       if (live.get(chat.chatId)?.chat === chat) live.delete(chat.chatId);
       running.delete(chat);
       const actors = actorsOf(chat, t), director = t.provider === "director";
@@ -240,7 +258,7 @@ module.exports = String.raw`var __cartonMain = (() => {
         const out = r?.hookSpecificOutput;
         if (out?.permissionDecision === "deny") return r;
         const tool = { ...input.tool_input, ...out?.updatedInput };
-        const actor = await shellHold(ctx, input, tool.command);
+        const actor = await shellHold(ctx, input, tool.command, gen);
         if (!actor) return r;
         return { ...r, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", ...out, updatedInput: { ...tool, command: "export CARDBOARD_ACTOR=" + shQuote(actor) + "; " + tool.command } } };
       };
@@ -272,15 +290,15 @@ module.exports = String.raw`var __cartonMain = (() => {
       if (!on) return [];
       return [{ matcher: "Read|Write|Edit|MultiEdit", hooks: [async (input) => {
         if (input?.hook_event_name !== "PreToolUse") return {};
-        const actor = hookActor(ctx, input);
+        const gen = genOf(ctx?.chatId), actor = hookActor(ctx, input);
         const r = await agentHook(ctx, actor, "pre-tool-use", { ...input, cwd: input.cwd ?? ctx.project?.bundlePath });
-        if (r?.delivered && /(^|[\\/])timeline\.tsx$/i.test(String(input.tool_input?.file_path ?? ""))) keepHolding(ctx, actor);
+        if (r?.delivered && /(^|[\\/])timeline\.tsx$/i.test(String(input.tool_input?.file_path ?? ""))) keepHolding(ctx, actor, gen);
         return r?.output?.hookSpecificOutput?.permissionDecision === "deny" ? r.output : {};
       }] }, { matcher: "PowerShell", hooks: [async (input) => {
         if (input?.hook_event_name !== "PreToolUse") return {};
         const tool = input.tool_input ?? {};
-        const actor = await shellHold(ctx, input, tool.command);
-        if (!actor) return {};
+        const actor = await shellHold(ctx, input, tool.command, genOf(ctx?.chatId));
+        if (!actor || psOpening(tool.command)) return {};
         return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...tool, command: "$env:CARDBOARD_ACTOR=" + psQuote(actor) + "; " + tool.command } } };
       }] }];
     },

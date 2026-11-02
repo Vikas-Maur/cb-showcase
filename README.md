@@ -661,7 +661,8 @@ run below.
    agent's ordinary reads cost nothing extra. A Claude Code too old for `if` runs them on every call, with the same
    answers.
 5. Main: every agent gets `CARDBOARD_ACTOR`; the Director's Bash hook names its turn and subagent (and so does a hook
-   on Claude Code's PowerShell tool, which Cardboard's hooks don't cover: `$env:CARDBOARD_ACTOR` there); `Stop` and
+   on Claude Code's PowerShell tool, which Cardboard's hooks don't cover: `$env:CARDBOARD_ACTOR` there, left out of a
+   script that must open with `using` or `param(...)`; `cb` is found in any case and as a quoted path); `Stop` and
    `SubagentStop` hand a late conflict back to the agent once (then the cards it left are the person's); the
    Director's Read, Write and Edit calls and its turn's end reach the app's timeline (below). Cardboard 1.4.0 runs your
    own Claude Code the way it runs the Director (its Agent SDK, with the same hooks inside the app; it never starts it

@@ -395,6 +395,116 @@ test("regress prod4: while the turn runs, each actor holding timeline.tsx is tol
   m.turnEnded(chat, "result");
 });
 
+test("review of fix/turn-hold #1: a hook whose worker answer comes back after its turn ended, or after the turn's Stop, holds nothing in the next turn or after the Stop", async (tt) => {
+  tt.mock.timers.enable({ apis: ["setInterval"] });
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [], late = [];
+  let slow = false;
+  // the worker's answer to a hook event, held back while `slow` (a busy worker: up to the bridge's 3 s)
+  m.library({ call: (method, arg) => {
+    asked.push([method, arg]);
+    if (method === "carton.stopHook") return Promise.resolve({});
+    if (!slow) return Promise.resolve({ delivered: true });
+    const d = deferred();
+    late.push(d);
+    return d.promise;
+  } });
+  const beats = () => asked.splice(0).filter(([method, a]) => method === "carton.agentHook" && a.event === "pre-tool-use").map(([, a]) => a.actor);
+  // the Director: each turn's actor names its turn, so a stale one would never be let go by the next turn's Stop
+  const ctx = { project: { id: "p1", bundlePath: "/b" }, chatId: "c9", launch: { provider: "director" } };
+  let turn = "d1";
+  m.directorEnv({}, ctx, () => turn);
+  const [files] = m.fileHooks(ctx);
+  const read = { hook_event_name: "PreToolUse", tool_name: "Read", tool_input: { file_path: "/b/timeline.tsx" } };
+  const chat = { chatId: "c9", turn: { id: "d1", state: "running", text: "One." } };
+  m.turnStarted(chat, "p1", "/b", chat.turn, "director");
+  slow = true;
+  const pending = files.hooks[0](read);
+  await settle();
+  // the person interrupts and starts the next turn while the Read's answer is still on its way
+  m.turnEnded(chat, "stopped");
+  chat.turn = { id: "d2", state: "running", text: "Two." };
+  turn = "d2";
+  m.turnStarted(chat, "p1", "/b", chat.turn, "director");
+  late.shift().resolve({ delivered: true });
+  await pending;
+  asked.splice(0);
+  tt.mock.timers.tick(60_000);
+  assert.deepEqual(beats(), [], "the ended turn's actor is never held again in the next turn");
+  // in the next turn: a Read answered after the turn's Stop holds nothing after it
+  const pending2 = files.hooks[0](read);
+  await settle();
+  assert.deepEqual(await m.stopHooks(ctx).Stop[0].hooks[0]({ hook_event_name: "Stop" }), {});
+  late.shift().resolve({ delivered: true });
+  await pending2;
+  asked.splice(0);
+  tt.mock.timers.tick(60_000);
+  assert.deepEqual(beats(), [], "no beat after the turn's Stop");
+  slow = false;
+  m.turnEnded(chat, "result");
+});
+
+test("review of fix/turn-hold #2: cb is found in any case and as a quoted path (PowerShell's call operator, Windows' cb.cmd and cb.exe); other words are not", async () => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: true }) });
+  const ctx = { project: { id: "p1", bundlePath: "/b" }, chatId: "c1", launch: { provider: "claude" } };
+  const ps = m.fileHooks(ctx).find((h) => h.matcher === "PowerShell").hooks[0];
+  const bash = m.directorHook(ctx, gate({}));
+  const prefixed = async (tool, command) => {
+    const r = tool === "PowerShell" ? await ps({ hook_event_name: "PreToolUse", session_id: "sess1234", tool_name: tool, tool_input: { command } }) : await bash({ hook_event_name: "PreToolUse", session_id: "sess1234", tool_input: { command } });
+    return r?.hookSpecificOutput?.updatedInput?.command ?? null;
+  };
+  for (const command of ["& 'C:\\Cardboard\\cb.cmd' source print Demo", "CB source print Demo", '& "C:/Program Files/Cardboard/cardboard.exe" history Demo', "cb.cmd history Demo", "Write-Output (cb history Demo)"]) {
+    asked.splice(0);
+    assert.ok(await prefixed("PowerShell", command), "PowerShell: " + command);
+    assert.equal(asked.length, 1, "and it holds: " + command);
+  }
+  for (const command of ["'/c/Program Files/Cardboard/bin/cb' history Demo", "C:/tools/CB.cmd source print Demo"]) assert.ok(await prefixed("Bash", command), "Bash: " + command);
+  asked.splice(0);
+  for (const command of ["ls -la", "echo cbx", "mycb run", "npm run cb-tool", "Get-ChildItem cbs"]) {
+    assert.equal(await prefixed("PowerShell", command), null, command);
+    assert.equal(await prefixed("Bash", command), null, command);
+  }
+  assert.deepEqual(asked, [], "none of those hold anything");
+});
+
+/** PowerShell's own parser (CARTON_PWSH: a pwsh or powershell.exe), or null: the errors parsing each script. */
+function psParse(scripts) {
+  const exe = process.env.CARTON_PWSH || (process.platform === "win32" ? "powershell.exe" : null);
+  if (!exe) return null;
+  const { spawnSync } = require("child_process");
+  const src = "$in = [Console]::In.ReadToEnd() | ConvertFrom-Json; foreach ($s in $in) { $e = $null; [void][System.Management.Automation.Language.Parser]::ParseInput($s, [ref]$null, [ref]$e); Write-Output (@($e).Count) }";
+  const r = spawnSync(exe, ["-NoProfile", "-NonInteractive", "-Command", src], { input: JSON.stringify(scripts), encoding: "utf8", timeout: 60_000 });
+  if (r.status !== 0) throw new Error("PowerShell: " + r.stderr);
+  return r.stdout.trim().split(/\s+/).map(Number);
+}
+
+test("review of fix/turn-hold #3: a PowerShell command whose opening must stay first (using, a param block, the attribute before one) runs as it is, still holding; every rewrite parses in PowerShell", async (tt) => {
+  const m = load({ CARDBOARD_CARTON: "1" });
+  const asked = [];
+  m.library({ call: async (method, arg) => (asked.push([method, arg]), { delivered: true }) });
+  const ctx = { project: { id: "p1", bundlePath: "/b" }, chatId: "c1", launch: { provider: "claude" } };
+  const ps = m.fileHooks(ctx).find((h) => h.matcher === "PowerShell").hooks[0];
+  const rewrite = async (command) => (await ps({ hook_event_name: "PreToolUse", session_id: "sess1234", tool_name: "PowerShell", tool_input: { command } }))?.hookSpecificOutput?.updatedInput?.command ?? command;
+  const kept = ["using namespace System.IO\ncb source print Demo", "param([int]$n = 3)\ncb source print Demo", "[CmdletBinding()]\nparam()\ncb history Demo", "# list it\n<# twice #>\n  USING namespace System.Text\ncb history Demo"];
+  for (const command of kept) {
+    asked.splice(0);
+    assert.equal(await rewrite(command), command, "left as it is: " + command);
+    assert.equal(asked.length, 1, "and it still holds timeline.tsx: " + command);
+  }
+  const changed = ["cb source print Demo", "[IO.Path]::GetFileName('a/b.tsx'); cb history Demo", "# a comment\ncb history Demo", "cb source apply Demo .scratch/w2.tsx; Get-Content timeline.tsx", "$x = 'it''s'; cb history Demo"];
+  const out = [];
+  for (const command of changed) {
+    const r = await rewrite(command);
+    assert.equal(r, "$env:CARDBOARD_ACTOR='claude-code/sess1234'; " + command);
+    out.push(r);
+  }
+  const errors = psParse([...kept, ...out]);
+  if (!errors) return void tt.skip("the parse in PowerShell needs one (CARTON_PWSH)");
+  assert.deepEqual(errors, [...kept, ...out].map(() => 0), "every command parses in PowerShell, as rewritten");
+});
+
 test("H8: every agent's appended prompt gains the view flow with Carton on", () => {
   const m = load({ CARDBOARD_CARTON: "1" });
   const [line] = m.viewPrompt({ id: "p1" });
