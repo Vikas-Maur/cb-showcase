@@ -292,7 +292,7 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-media-notice[data-waiting] > .carton-icon){color:var(--cb-warn)}
 :where(${S}) :where(.carton-media-notice-text){flex:1;min-width:0;text-wrap:pretty}
 /* a short confirmation (Restore, Fold in, Keep …: scripts/carton/ui.js Toast), bottom centre of the stage */
-:where(.carton-stage${S}) > :where(.carton-stage-toast){position:absolute;left:12px;right:12px;bottom:12px;display:flex;justify-content:center;pointer-events:none}
+:where(.carton-stage${S}) > :where(.carton-stage-toast){position:absolute;left:12px;right:12px;bottom:52px;display:flex;justify-content:center;pointer-events:none}
 :where(${S}) :where(.carton-toast){display:flex;align-items:center;gap:8px;max-width:520px;min-height:40px;padding:4px 4px 4px 12px;border:1px solid #ffffff1a;border-radius:10px;
   background:#1b1b1bf2;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:var(--cb-shadow);color:var(--cb-fg-1);font-size:12px;line-height:16px;pointer-events:auto;
   animation:carton-pop var(--cb-base) var(--cb-decel)}
@@ -401,10 +401,10 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-credit-when){color:var(--cb-fg-3)}
 
 /* ---------------------------------------------------------------- read-only preview banner (Cardboard's recovery look) */
-:where(${S}) :where(.carton-preview-banner){display:flex;align-items:center;gap:8px;max-width:100%;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #fcd34d33;border-radius:10px;
+:where(${S}) :where(.carton-preview-banner){display:flex;flex-wrap:wrap;row-gap:6px;align-items:center;gap:8px;max-width:100%;min-height:40px;padding:6px 6px 6px 12px;border:1px solid #fcd34d33;border-radius:10px;
   background:#17140de6;color:#fde68a;font-size:12px;font-weight:500}
 :where(${S}) :where(.carton-preview-banner > .carton-icon){color:#fcd34dcc}
-:where(${S}) :where(.carton-preview-label){flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-preview-label){flex:1 1 140px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 :where(${S}) :where(.carton-preview-banner .carton-badge){background:#fcd34d1a;color:#fcd77fcc}
 :where(${S}) :where(.carton-preview-blocked){color:#fde68acc;font-weight:400}
 :where(${S}) :where(.carton-preview-banner .carton-btn){margin-left:auto;height:28px;padding:0 10px 0 8px;font-size:12px}
