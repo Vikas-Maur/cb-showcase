@@ -189,14 +189,18 @@ for (const [id, c] of commits) {
   conv.push(worst);
   if (c.online) convOnline.push(worst);
 }
-// the server's log, as each party holds it
+// the server's log, as each party holds it. A party that caught up from a keyframe holds placeholders (null) for the
+// rows before it, so the reference is every party's logs merged slot by slot: the first id any party holds there.
+// (Taking one party's log as the reference counted a reconnected party's placeholders as lost edits: 2026-11-02.)
 const logs = finals.map((f) => f.ids as (string | null)[]);
-const ref = logs.reduce((x, y) => (y.length > x.length ? y : x), logs[0]!);
+const ref: (string | null)[] = Array.from({ length: Math.max(...logs.map((l) => l.length)) }, (_, j) => logs.map((l) => l[j] ?? null).find((x) => x !== null) ?? null);
 const refIds = ref.filter((x): x is string => x !== null);
 const dupes = refIds.length - new Set(refIds).size;
 const orderMismatch = logs.reduce((s, l) => s + l.reduce((k, id, j) => k + (id !== null && ref[j] !== null && id !== ref[j] ? 1 : 0), 0) + (l.length !== ref.length ? 1 : 0), 0);
 const inLog = new Set(refIds);
 const lost = [...commits.keys()].filter((id) => { const o = outcome.get(id); return !(o?.kind === "absorbed" || o?.kind === "rejected" || inLog.has(id)); });
+// confirmed (the server gave it a seq) yet in no party's log, not even as a placeholder slot: should be none
+const placeholders = logs.map((l) => l.filter((x) => x === null).length);
 const absorbed = [...outcome.values()].filter((o) => o.kind === "absorbed").length;
 const sameState = new Set(finals.map((f) => f.stateHash)).size === 1;
 const ms = (x: ReturnType<typeof stats>) => Object.fromEntries(Object.entries(x).map(([k, v]) => [k, k === "n" ? v : Math.round(v as number)]));
@@ -214,7 +218,7 @@ const result = {
   confirmed: [...outcome.values()].filter((o) => o.kind === "confirmed").length,
   absorbed, rejectedByValidation: [...outcome.values()].filter((o) => o.kind === "rejected").length,
   lost: lost.length, lostIds: lost.slice(0, 10), duplicates: dupes, orderMismatches: orderMismatch, sameState, unseenPairs: unseen,
-  serverRows: ref.length,
+  serverRows: ref.length, placeholdersPerParty: placeholders, logs,
   convergenceMs: ms(stats(conv)), convergenceOnlineCommitsMs: ms(stats(convOnline)), perObserverMs: ms(stats(pair)), confirmMs: ms(stats(confirm)),
   conflictCards: cards, overwritten, rejects, rebases, errors, errorSamples: [...errorSamples].slice(0, 5), offlineEvents: offlines, keyframes,
   clientStats: finals.map((f) => f.stats),

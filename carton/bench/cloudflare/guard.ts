@@ -221,9 +221,20 @@ export async function check(est: Estimate, now = new Date()): Promise<Verdict> {
   return { ok: why.filter((w) => !w.startsWith("unknown")).length === 0, why, projected, analytics: an };
 }
 
-/** Check, then record the test as started. Throws when it must not run. */
+/**
+ * Check, then record the test as started. Throws when it must not run. With CARTON_LAB_GUARD_WAIT_SEC set, a test the
+ * ceilings refuse waits (re-checking every 30 s, up to that long) for earlier tests' declared use to age out of the
+ * lag window, instead of failing at once: a queue of runs then pauses rather than skipping them. The ceilings are the
+ * same either way.
+ */
 export async function guard(est: Estimate): Promise<{ id: number; verdict: Verdict }> {
-  const verdict = await check(est);
+  const waitUntil = Date.now() + Number(process.env.CARTON_LAB_GUARD_WAIT_SEC ?? 0) * 1000;
+  let verdict = await check(est);
+  while (!verdict.ok && Date.now() < waitUntil && !est.limitTest) {
+    console.error(`guard: ${est.test} waits: ${verdict.why.filter((w) => !w.startsWith("unknown")).join("; ")}`);
+    await new Promise((r) => setTimeout(r, 30_000));
+    verdict = await check(est);
+  }
   if (!verdict.ok) throw new Error(`guard refused ${est.test}:\n  ${verdict.why.join("\n  ")}`);
   const l = loadLedger();
   const { test, limitTest: _lt, ...declared } = est;

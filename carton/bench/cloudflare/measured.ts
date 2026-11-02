@@ -130,14 +130,16 @@ const speeds: any[] = [];
 const groups = new Map<string, any[]>();
 for (const [f, r] of runs) {
   if (!r.runId?.startsWith("sync-") || !(r.commits > 0) || /smoke/.test(r.runId)) continue;
-  const tag = /-r\d+-(.+)-[a-z0-9]+$/.exec(r.runId)?.[1] ?? "";
+  const tag = /-\d+p-r\d+-(.+)-[a-z0-9]+$/.exec(r.runId)?.[1] ?? "";
   const key = `${r.host}|${r.profile}|${r.chaos ?? ""}|${r.parties}|${tag}`;
   (groups.get(key) ?? groups.set(key, []).get(key)!).push({ f, r });
 }
 for (const [key, list] of [...groups].sort()) {
   const [host, profile, chaos, parties, tag] = key.split("|");
   const conv = list.map((x) => x.r.convergenceMs);
-  const lost = list.reduce((s, x) => s + x.r.lost, 0);
+  // lost: never answered (see the outage block); runs before the log-check fix counted keyframe placeholders too
+  const lostOf = (r: any) => (r.logs || !r.chaos ? r.lost : r.commits - r.confirmed - r.absorbed - r.rejectedByValidation);
+  const lost = list.reduce((s, x) => s + lostOf(x.r), 0);
   const id = `sync-${profile}${chaos ? `-${chaos}` : ""}-${parties}p-${host}${tag ? `-${tag}` : ""}`;
   speeds.push({
     id, what: chaos === "outage" ? "live sync through a link outage: an edit visible to every party (commit to held confirmed everywhere)" : "live sync: an edit visible to every party (commit to held confirmed everywhere)",
@@ -153,7 +155,7 @@ for (const [key, list] of [...groups].sort()) {
 const outageRuns = [...runs].filter(([, r]) => r.chaos === "outage" && Array.isArray(r.timeline) && Array.isArray(r.chaosLog) && r.chaosLog.length && r.chaosLog[0].t < 1e9);
 const outageGroups = new Map<string, [string, any][]>();
 for (const x of outageRuns) {
-  const tag = /-r\d+-(.+)-[a-z0-9]+$/.exec(x[1].runId)?.[1] ?? "";
+  const tag = /-\d+p-r\d+-(.+)-[a-z0-9]+$/.exec(x[1].runId)?.[1] ?? "";
   const k = `${x[1].host}|${x[1].profile}|${x[1].parties}|${tag}`;
   (outageGroups.get(k) ?? outageGroups.set(k, []).get(k)!).push(x);
 }
@@ -166,7 +168,11 @@ for (const [k, list] of outageGroups) {
     const back = tl.find(([t, ev, d]: any) => t >= off && (ev === "online" || (ev === "status" && (d === "syncing" || d === "up-to-date"))));
     const offlineCommits = (r.commitsByParty[0] as any[]).filter(([t]) => t >= on && t <= off);
     const lastConfirm = Math.max(...offlineCommits.map(([t, c]) => (c === null ? Infinity : t + c)));
-    return { f, offlineMs: shown ? shown[0] - on : null, reconnectMs: back ? back[0] - off : null, catchUpMs: lastConfirm - off, offlineEdits: offlineCommits.length, lost: r.lost, cards: r.conflictCards, settleMs: r.timing.settleMs, sameState: r.sameState };
+    // lost: committed and never answered (confirmed, absorbed or rejected). Runs before the log check was fixed
+    // (sync.ts, 2026-11-02 01:50) also counted a reconnected party's keyframe placeholders as lost; their outcome
+    // count is what holds.
+    const lost = r.logs ? r.lost : r.commits - r.confirmed - r.absorbed - r.rejectedByValidation;
+    return { f, offlineMs: shown ? shown[0] - on : null, reconnectMs: back ? back[0] - off : null, catchUpMs: lastConfirm - off, offlineEdits: offlineCommits.length, lost, cards: r.conflictCards, settleMs: r.timing.settleMs, sameState: r.sameState };
   });
   const base = { network: profile, storage: host, parties: Number(parties), sizeMB: null, unit: "ms", runs: list.length, status: "measured", runFiles: list.map(([f]) => f) };
   const tail = `lost ${per.map((p) => p.lost).join("/")}, conflict cards ${per.map((p) => p.cards).join("/")}, edits made offline ${per.map((p) => p.offlineEdits).join("/")}, same final state ${per.filter((p) => p.sameState).length}/${per.length}`;
