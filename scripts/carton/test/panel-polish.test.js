@@ -95,11 +95,52 @@ test("P2-11: a shared project's status shows over the preview, not only in the S
   const off = chip({ shared: true, status: "offline", pending: 3, peers: [] });
   assert.match(off, /data-state="offline"/);
   assert.match(off, />Offline: 3 edits waiting</);
-  const here = chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo(), { actor: null }] });
-  assert.match(here, /aria-label="Leo is here\. Open Share"/, "one bad entry skipped, the rest shown");
-  assert.match(here, /carton-avatar-initials">L</);
-  assert.match(chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo(true)] }), /data-idle=""/);
+  // who is here shows in the title bar now (round 2): over the preview only while edits wait
+  assert.equal(chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo()] }), "");
+  const both = render(React.createElement(T.LiveChipView, { st: { shared: true, status: "up-to-date", pending: 0, peers: [leo(), { actor: null }] }, onOpen() {}, peersToo: true }));
+  assert.match(both, /aria-label="Leo is here\. Open Share"/, "one bad entry skipped, the rest shown");
 });
+
+test("P2-11 (title bar): the strip's summary of a shared project: its state, its words, who is here", opt, () => {
+  assert.equal(U.liveSummary({ shared: false }), null);
+  const mia = { actor: { key: "human/mia", kind: "human", id: "mia", name: "Mia Chen" }, idle: true };
+  const s = U.liveSummary({ shared: true, status: "offline", pending: 2, peers: [leo(), mia, { actor: { id: "x" } }] });
+  assert.deepEqual([s.state, s.words, s.here, s.more], ["offline", "Offline: 2 edits waiting", "Leo, Mia Chen are here", 0]);
+  assert.deepEqual(s.people.map((p) => [p.name, p.initials, p.idle, /^#[0-9a-f]{6}$/.test(p.color)]), [["Leo", "L", false, true], ["Mia Chen", "MC", true, true]]);
+  assert.equal(U.liveSummary({ shared: true, status: "up-to-date", pending: 0, peers: [] }).state, "ok");
+  assert.equal(U.liveSummary({ shared: true, status: "syncing", pending: 1, peers: [] }).state, "syncing");
+  const many = U.liveSummary({ shared: true, status: "up-to-date", pending: 0, peers: ["a", "b", "c", "d", "e"].map((n) => ({ actor: { key: "human/" + n, kind: "human", id: n, name: n.toUpperCase() } })) });
+  assert.deepEqual([many.people.length, many.more, many.here], [3, 2, "A, B, C and 2 more are here"]);
+});
+
+// The title bar's strip (scripts/carton/strip-buttons.js), in its own bundle's scope: `n` the JSX runtime, `c` React,
+// `w` joins class names, `I` sends a strip command, `C` the strip's button class.
+function strip({ narrow = false } = {}) {
+  const src = require(path.join(ROOT, "scripts", "carton", "strip-buttons.js"));
+  const sent = [];
+  const matchMedia = () => ({ matches: narrow, addEventListener() {}, removeEventListener() {} });
+  const Strip = new Function("n", "c", "w", "I", "C", "matchMedia", src + "\nreturn __cbCartonStrip;")(require(path.join(CARTON, "node_modules", "react", "jsx-runtime")), React, (...a) => a.filter(Boolean).join(" "), (x) => sent.push(x), "btn", matchMedia);
+  return { html: (panel) => render(React.createElement(Strip, { panel })), sent };
+}
+
+test("P2-11, P3-6: the title bar shows the sync dot and who is here; a narrow window keeps History only", opt, () => {
+  const live = U.liveSummary({ shared: true, status: "offline", pending: 3, peers: [leo()] });
+  const wide = strip().html({ panel: null, live });
+  assert.match(wide, /data-carton-strip="history"/);
+  assert.match(wide, /aria-label="Share · Offline: 3 edits waiting · Leo is here"/);
+  assert.match(wide, /data-carton-sync="offline"/);
+  assert.match(wide, />L<\/span>/, "Leo's avatar");
+  // as before for a project that isn't shared: the panel's name alone, no dot, no avatars
+  const plain = strip().html("history");
+  assert.match(plain, /aria-pressed="true"[^>]*data-carton-strip="history"|data-carton-strip="history"[^>]*aria-pressed="true"/);
+  assert.doesNotMatch(plain, /data-carton-sync|>L</);
+  // narrow: History only, with the dot; Share is the side panel's own tab
+  const narrow = strip({ narrow: true }).html({ panel: "share", live });
+  assert.doesNotMatch(narrow, /data-carton-strip="share"/);
+  assert.match(narrow, /data-carton-sync="offline"/);
+  assert.match(narrow, /aria-pressed="true"/, "History shows the panel is open");
+});
+
 
 test("P2-13: the panel keeps the preview usable: its width, narrower, or a drawer over the chat", opt, () => {
   // a wide window: the chosen width

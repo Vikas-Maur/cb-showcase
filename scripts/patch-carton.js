@@ -269,10 +269,12 @@ if (mode === "--cli") {
     // The title bar's History and Share icons (the tab strip, tabsFile below): their commands go to the active tab's
     // page as carton:command (not menu:action, which Cardboard logs and maps to native commands), and the page's report
     // of the panel open (carton:panel) joins the tab's editor state, which the strip draws from. Carton off: neither.
+    // For a shared project the report also carries a small live summary (sync state, who is here: UI audit P2-11),
+    // and the strip gets {panel, live} instead of the panel's name alone.
     replace("command(t){let r=this.activeContents();if(r){", "command(t){let r=this.activeContents();if(r){if(__cartonMain.on&&/^carton-/.test(t?.action??\"\")){_e.emit(r,\"carton:command\",{action:t.action});return}");
     replace("setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}", "__cartonPanel(t,r){let n=this.tabIdOf(t);n&&this.model.__cartonPanel(n,r)}setEditorState(t,r){let n=this.tabIdOf(t);n&&this.model.setEditorState(n,r)}");
     replace("setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=r,this.changed())}", "__cartonPanel(t,r){let n=this.tabById(t);if(!n)return;n.__cartonPanel=r;n.editor&&n.editor.cartonPanel!==r&&(n.editor={...n.editor,cartonPanel:r},this.changed())}setEditorState(t,r){let n=this.tabById(t);!n||n.editor?.aspectRatio===r.aspectRatio&&n.editor.directorCollapsed===r.directorCollapsed&&RGt(n.editor.credits,r.credits)||(n.editor=n.__cartonPanel===void 0?r:{...r,cartonPanel:n.__cartonPanel},this.changed())}");
-    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.panel??null)}),');
+    replace('_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),', '_e.handle("window:set-editor-state",(t,r)=>he.setEditorState(r.sender,t)),_e.handle("carton:panel",(t,r)=>{__cartonMain.on&&he.__cartonPanel(r.sender,t?.live?{panel:t?.panel??null,live:t.live}:t?.panel??null)}),');
     replace("this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:b})", "this.deps.spawn(o.path,c.args(p),{cwd:i.bundlePath,env:__cartonMain.agentEnv(b,a.provider,s)})");
     replace("env:CVt(e,t,c),", "env:__cartonMain.directorEnv(CVt(e,t,c),t,()=>e.turnId(t.project.id,t.chatId)),");
     // H9: the Bash hook of Cardboard's Agent SDK transport (oH) names who runs each cb call; Stop and SubagentStop

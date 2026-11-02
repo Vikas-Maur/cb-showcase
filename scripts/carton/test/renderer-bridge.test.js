@@ -232,3 +232,15 @@ test("Join's Open (UI audit P2-9): the joined project opens in its own tab throu
   await off.c.ready;
   await assert.rejects(off.c.openProject("joined-1"));
 });
+
+test("the panel report carries a shared project's live summary for the title bar (UI audit P2-11); without one, as before", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const sent = [];
+  t.store.invoke = async (channel, payload) => { sent.push([channel, payload]); };
+  const live = { state: "offline", words: "Offline", here: "", people: [], more: 0 };
+  t.c.reportPanel("share", live);
+  t.c.reportPanel(null);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent, [["carton:panel", { panel: "share", live }], ["carton:panel", { panel: null }]]);
+});

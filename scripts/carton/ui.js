@@ -303,7 +303,11 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
   }), [bridge]);
   useEffect(() => { panelRequests.add(setPanelState); return () => { panelRequests.delete(setPanelState); }; }, []);
   // Tell the title bar which is open (null: none, which also says the icons apply to this tab), and the stage layer.
-  useEffect(() => { bridge.reportPanel?.(panel); sidePanel.set(panel); }, [bridge, panel]);
+  // With a shared project's live summary for the strip's status dot and avatars (P2-11); sent again only when what it
+  // shows changes.
+  const summary = liveSummary(useLiveStatus(projectId, bridge));
+  const summaryKey = summary ? JSON.stringify(summary) : "";
+  useEffect(() => { bridge.reportPanel?.(panel, summaryKey ? JSON.parse(summaryKey) : undefined); sidePanel.set(panel); }, [bridge, panel, summaryKey]);
   useEffect(() => () => sidePanel.set(null), []);
   if (!panel) return null;
   return h(CartonProvider, { ui: conn.ui }, h(Sidebar, { panel, setPanel, projectId, bridge }));
@@ -355,7 +359,8 @@ function MediaNotice({ projectId, bridge }) {
  * here, and Offline or Syncing while edits wait, in the preview's bottom-left corner. Up to date with nobody else here,
  * nothing. A click opens Share. Status words only (§0.1).
  */
-function LiveChip({ projectId, bridge }) {
+/** A shared project's live status (the worker's liveStatus, then its live events), or null. */
+function useLiveStatus(projectId, bridge) {
   const [st, setSt] = useState(null);
   useEffect(() => {
     let live = true;
@@ -363,16 +368,40 @@ function LiveChip({ projectId, bridge }) {
     const off = bridge.onEvent((ev) => { if (live && ev?.id === projectId && ev.topic === "live") setSt((s) => ({ ...s, ...ev.live })); });
     return () => { live = false; if (typeof off === "function") off(); };
   }, [projectId, bridge]);
+  return st;
+}
+const livePeers = (st) => (Array.isArray(st?.peers) ? st.peers : []).filter((p) => typeof p?.actor?.key === "string" && typeof p.actor.name === "string");
+const hereWords = (peers) => (peers.length ? `${peers.map((p) => p.actor.name).slice(0, 3).join(", ")}${peers.length > 3 ? ` and ${peers.length - 3} more` : ""} ${peers.length === 1 ? "is" : "are"} here` : "");
+/**
+ * The title bar's summary of a shared project (UI audit P2-11): its sync state and words, and up to three of the
+ * people here, as the strip draws them (scripts/carton/strip-buttons.js). Null for a project that isn't shared.
+ */
+export function liveSummary(st) {
+  if (!st?.shared) return null;
+  const peers = livePeers(st);
+  const offline = st.status === "offline" || st.status === "stopped", waiting = st.pending ?? 0;
+  const state = offline ? "offline" : st.status !== "up-to-date" || waiting ? "syncing" : "ok";
+  return {
+    state,
+    words: offline ? words.offline(waiting) : state === "syncing" ? words.syncing : words.upToDate,
+    here: hereWords(peers),
+    people: peers.slice(0, 3).map((p) => ({ name: p.actor.name, initials: initials(p.actor.name), color: actorColor(p.actor), idle: !!p.idle })),
+    more: Math.max(0, peers.length - 3),
+  };
+}
+function LiveChip({ projectId, bridge }) {
+  const st = useLiveStatus(projectId, bridge);
   return h(LiveChipView, { st, onOpen: () => { for (const f of panelRequests) f("share"); } });
 }
-function LiveChipView({ st, onOpen }) {
+// Over the preview, only while edits wait (offline or sending): who is here shows in the title bar (P2-11).
+function LiveChipView({ st, onOpen, peersToo = false }) {
   if (!st?.shared) return null;
-  const peers = (Array.isArray(st.peers) ? st.peers : []).filter((p) => typeof p?.actor?.key === "string" && typeof p.actor.name === "string");
+  const peers = peersToo ? livePeers(st) : [];
   const offline = st.status === "offline" || st.status === "stopped";
   const waiting = st.pending ?? 0;
   const status = offline ? words.offline(waiting) : st.status !== "up-to-date" && waiting ? words.syncing : null;
   if (!status && !peers.length) return null;
-  const here = peers.length ? `${peers.map((p) => p.actor.name).slice(0, 3).join(", ")}${peers.length > 3 ? ` and ${peers.length - 3} more` : ""} ${peers.length === 1 ? "is" : "are"} here` : "";
+  const here = hereWords(peers);
   return h("button", { type: "button", className: "carton-live-chip", "data-state": offline ? "offline" : status ? "syncing" : "ok", title: [status, here].filter(Boolean).join(" · ") + ". Open Share", "aria-label": [status, here].filter(Boolean).join(". ") + ". Open Share", onClick: onOpen },
     status ? h(Icon, { name: offline ? "cloudSlash" : "syncing", size: 14 }) : null,
     status ? h("span", null, status) : null,

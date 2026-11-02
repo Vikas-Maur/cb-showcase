@@ -681,8 +681,11 @@ with Carton off none of it runs at all.
 - **Live**: each save goes to the host change by change. A teammate's change appears in your editor without an undo
   step and without dropping your unsaved edit, and two people changing different fields of one clip both keep theirs.
   The panel shows the status ("Up to date", "Syncing", "Offline: 3 edits waiting") and who is in the project, with
-  what they are doing; a small chip over the preview shows the same while edits wait or someone else is here, with
-  no panel open (a click opens Share). Someone with the project open but idle stays listed, faded. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
+  what they are doing. The title bar shows it too, with no panel open: a dot on the Share icon (amber offline, white
+  while edits are sending) and the people here as small avatars, the words in its tooltip; a chip over the preview
+  says "Offline: 3 edits waiting" while edits wait (a click opens Share). Someone with the project open but idle stays
+  listed, faded. In a narrow window the title bar keeps only the History icon (Share is one of the panel's tabs), with
+  the dot on it. Offline you keep working; your changes go out when the host is back. When sync can't go on, the
   panel says why instead of "Syncing" for ever: a host older than the app ("it needs an update", with the host's own
   message), access refused, the host out of reach.
 - **Who made it**: your edits in the editor show as yours ("You" in History) on your computer and under the name you

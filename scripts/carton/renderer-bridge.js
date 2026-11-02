@@ -184,8 +184,9 @@ module.exports = String.raw`window.__carton = (() => {
     // The title bar's History and Share icons (the tab strip, another page): main routes them to this page as
     // carton:command, and the page says which panel is open, which main hands to the strip for the icons' pressed look.
     onCommand: (f) => store.on("carton:command", f),
-    reportPanel(panel) {
-      if (on && store) Promise.resolve(store.invoke("carton:panel", { panel: panel ?? null })).catch(() => {});
+    // live: a shared project's summary for the strip (sync state, who is here), or nothing.
+    reportPanel(panel, live) {
+      if (on && store) Promise.resolve(store.invoke("carton:panel", live ? { panel: panel ?? null, live } : { panel: panel ?? null })).catch(() => {});
     },
   };
 })();
