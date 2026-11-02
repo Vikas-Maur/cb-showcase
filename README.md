@@ -694,7 +694,9 @@ with Carton off none of it runs at all.
   Carton on, the loader asks the library worker about each clip it found no file for: a teammate's clip whose preview
   is on the host plays from it; one not sent yet shows as Cardboard's own "Offline" placeholder and is never offered for
   removal; a notice over the preview says which, that nothing was removed, and when it has arrived. The dialog still
-  appears for footage that was on this computer and is gone (moved, a drive unplugged).
+  appears for footage that was on this computer and is gone (moved, a drive unplugged). If the worker can't tell whose
+  a clip is (it fails, or doesn't answer within 6 s), the clips go Offline too, never to the dialog, and the notice says
+  to reopen the project to check again.
 - **Agents**: `cb` on a shared project hands its edit to the app's library worker, which holds the project's sync
   connection. With the app closed, `cb` starts a headless helper that syncs for a minute after its last call. In `cb`'s
   cloud mode (`CARDBOARD_CLOUD_PROJECTS=1`) a shared project is pulled through Carton before each tool call (the helper
