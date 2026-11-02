@@ -144,12 +144,14 @@ const history: CommandSpec = {
     const rows = [];
     for (const v of versions) {
       const row: Record<string, unknown> = { version: versionOf(v, names), ref: v.ref, at: v.at, by: v.author, kind: v.kind, name: v.name ?? null, change: v.change, ...(v.blank ? { empty: true } : {}) };
+      // a partial fold is one version, a merge, with what it left out (UI audit P1-3; `cb fold` again folds in the rest)
+      if (v.rejected) row.leftOut = v.rejected;
       if (a.stats) Object.assign(row, stats(carton, await carton.checkout(v.ref)));
       rows.push(row);
     }
     const head = ["VERSION", "SAVED", "BY", "WHAT", ...(a.stats ? ["TRACKS", "ITEMS", "DURATION"] : [])];
     const text = rows.length
-      ? table([head, ...rows.map((r: any) => [r.version, ago(r.at, now), who(r.by), r.name ?? (r.empty ? `${r.kind} (empty)` : r.kind), ...(a.stats ? [String(r.tracks), String(r.items), `${r.duration.toFixed(1)}s`] : [])])])
+      ? table([head, ...rows.map((r: any) => [r.version, ago(r.at, now), who(r.by), r.name ?? (r.empty ? `${r.kind} (empty)` : r.leftOut ? `${r.kind} (${r.leftOut.length} left out)` : r.kind), ...(a.stats ? [String(r.tracks), String(r.items), `${r.duration.toFixed(1)}s`] : [])])])
       : "No versions yet";
     return out({ cut: { id: cut.id, name: cut.name }, versions: rows }, text);
   },

@@ -56,6 +56,10 @@ test("real Carton: cuts, fold --check, fold in some of it, publish", async () =>
     const head = (await local.carton.head()).doc.timelineItems as Rec[];
     const name = (id: string) => head.find((i) => i.id === id)!.name;
     assert.deepEqual([name("c0"), name("c1"), name("c3")], ["main-0", "short-1", "c3"], "c3 was kept out (partial accept)");
+    // UI audit P1-3: the partial fold is one version, a merge that says what it left out
+    const h = await cb(local, ["history", "--json", "--limit", "2"]);
+    assert.deepEqual(h.json().versions.map((v: any) => [v.kind, v.leftOut ?? null]), [["merge", ["timelineItems/c3"]], ["edit", null]], h.out);
+    assert.match((await cb(local, ["history", "--limit", "1"])).out.split("\n")[1]!, /\smerge \(1 left out\)$/);
     const p = await cb(local, ["publish", "--name", "Sent to client"]);
     assert.equal(p.code, 0, p.err);
     assert.match((await cb(local, ["cut", "list"])).out, /Sent to client\s+published/);

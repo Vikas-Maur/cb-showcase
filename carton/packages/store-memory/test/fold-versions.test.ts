@@ -36,6 +36,8 @@ test("P1-3: a partial fold is one version, titled as a fold, by whoever folded, 
   assert.equal(log.length, before + 1, "one version for the fold, not the fold and its inverse");
   const f = log[0]!;
   assert.equal(f.author?.id, "alice", "credited to whoever folded");
+  // a fold reads as a fold (cb history, agents): kind merge, with what it left out
+  assert.deepEqual([f.kind, f.rejected], ["merge", ["items/d"]]);
   assert.equal(f.summary, "Folded 'Client review' into 'Main cut': 2 of 3 changes");
   assert.deepEqual(f.details, ["Moved 'a' 0.0 s → 2.0 s", 'Changed \'b\' name "b" → "Alternate opening"'], "exactly the chosen changes, nothing about 'd'");
   // the version's state is the chosen one, and nothing in History says 'd' changed

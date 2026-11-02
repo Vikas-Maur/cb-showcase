@@ -77,7 +77,10 @@ test("S2 variants: cut new, edits on both cuts, fold --check, a fold with cards,
   assert.equal(named(folded, SAMPLE.clipA)!.opacity, 0.2, "--keep mine kept main's value");
   assert.equal(named(folded, SAMPLE.logo)!.zIndex, 2, "the rejected record stayed out");
   const h = await cbOk(m, ["history", "--limit", "10"]);
-  assert.deepEqual(h.versions.slice(0, 2).map((v: any) => v.kind), ["partial-revert", "merge"], "a merge, then an inverse change that lists what was kept out");
+  // UI audit P1-3: the fold and the inverse change that keeps the logo out are stored as two changes, but History
+  // (log(), cb history) lists them as one version: a merge that says what it left out, then main's own edit
+  assert.deepEqual(h.versions.slice(0, 2).map((v: any) => v.kind), ["merge", "edit"], "one version for the partial fold: " + JSON.stringify(h.versions.slice(0, 2)));
+  assert.deepEqual(h.versions[0].leftOut, [`timelineItems/${ids.logo}`], "it says what it left out");
   assert.equal((await cbOk(m, ["credits", SAMPLE.title])).by.id, "director/chat2/turn1", "the folded edit keeps its author");
 
   // later: fold in the rest (R2-14: "Accept the rest later reverts that inverse"): `cb fold <cut>` again (B4, fixed by

@@ -194,8 +194,9 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   version"). Descriptions never print an id or a hash: an id field (`…Id`, `…Ids`, `…Hash`) or a hash-like value is
   told by its field's name, and a collection's `phrases` tell a field in a sentence ("Linked %s for sharing").
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
-    only the partial revert (the state that was chosen), titled "Folded 'X' into 'Y': 2 of 3 changes", its `details`
-    exactly the changes taken. The fold's own state, with what was left out, is no one's version: History, `cb
+    only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
+    out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3
+    changes", its `details` exactly the changes taken. `cb history` shows it as `merge (1 left out)`, `leftOut` in JSON. The fold's own state, with what was left out, is no one's version: History, `cb
     history`, the pickers and version counts leave it out, as they leave out withdraw rows. Seqs, ids, the DAG and
     undo are unchanged. A fold and partial revert with a change between them (a shared cut's queue) stay two versions.
   - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out

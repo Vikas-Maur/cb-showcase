@@ -729,13 +729,16 @@ export class History {
       if (c?.squashedInto || c?.withdrawn || (c && completedAt(br.log, s))) continue;
       const id = nodeId(cutId, s);
       const named = this.#names.get(id);
+      // a fold-some's partial revert is its fold's version: a merge, saying what it left out (UI audit P1-3)
+      const some = !!c && s > 1 && completedAt(br.log, s - 1);
       const v: Version = {
         ref: { branchId: cutId, seq: s, pending: [] },
         change: c?.id ?? null,
         // a fork version is its cut's maker's, when known
         author: (c ? c.author : br.rec.forkOf ? br.by : undefined) ?? null,
         at: c?.at ?? br.rec.at ?? 0,
-        kind: c ? c.kind ?? (c.mergeOf ? "merge" : "edit") : br.rec.forkOf ? "fork" : "root",
+        kind: some ? "merge" : c ? c.kind ?? (c.mergeOf ? "merge" : "edit") : br.rec.forkOf ? "fork" : "root",
+        ...(some ? { rejected: [...(c!.rejected ?? [])] } : {}),
       };
       const h = this.#hash.get(id);
       if (h) v.hash = h;
