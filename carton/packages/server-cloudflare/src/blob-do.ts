@@ -243,7 +243,8 @@ export class BlobVault {
           try {
             const declared = Number(q.get("len") ?? req.headers.get("content-length") ?? NaN);
             const got = await this.#receive(req, id, declared, lease);
-            if (q.has("len") && Number(q.get("len")) !== got.size) return fail("InvalidPart", `part ${n}: ${got.size} bytes arrived, ${q.get("len")} declared`);
+            // declared by `len` (a streamed part) or the request's length: anything else is never stored, truncated or not
+            if (got.declared && got.size !== declared) return fail("InvalidPart", `part ${n}: ${got.size} bytes arrived, ${declared} declared`);
             const data = got.data;
             const etag = this.#state.storage.transactionSync(() => {
               const up = this.#upload(id, key);
@@ -344,12 +345,13 @@ export class BlobVault {
 
   // The part's body, read as it arrives (each read refreshes the upload's lease) into one buffer of the declared size,
   // so a part is held once in memory, as arrayBuffer() held it. Without a declared size it is read whole.
-  async #receive(req: Request, id: string, declared: number, mine: { at: number; got: number }): Promise<{ data: Uint8Array; size: number }> {
-    if (!req.body || !Number.isSafeInteger(declared) || declared < 0) {
+  async #receive(req: Request, id: string, declared: number, mine: { at: number; got: number }): Promise<{ data: Uint8Array; size: number; declared: boolean }> {
+    if (!Number.isSafeInteger(declared) || declared < 0) {
       const data = new Uint8Array(await req.arrayBuffer());
       mine.got = data.byteLength;
-      return { data, size: data.byteLength };
+      return { data, size: data.byteLength, declared: false };
     }
+    if (!req.body) return { data: new Uint8Array(0), size: 0, declared: true };
     const out = new Uint8Array(declared);
     const reader = req.body.getReader();
     let size = 0;
@@ -363,7 +365,7 @@ export class BlobVault {
       const l = this.#leases.get(id);
       if (l) l.at = mine.at;
     }
-    return { data: size === declared ? out : out.subarray(0, Math.min(size, declared)), size };
+    return { data: out, size, declared: true };
   }
 
   #upload(id: string, key: string): Row | undefined {
