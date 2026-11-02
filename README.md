@@ -137,12 +137,16 @@ they are Cardboard's software, not ours to redistribute.
     handler left one copy per file served and the new one leaves none). Files outside the archive, such as your
     media, the library and preview copies, are served as before (that is a different handler, which this
     doesn't touch). macOS is unchanged.
-    The copies earlier builds left are deleted once, in the background, a few seconds after the window shows. Only
-    files named `<uuid>.tmp` or `<uuid>.tmp.<ext>` that are byte for byte a file in this `app.asar`, with the same
-    size and extension, are deleted. Nothing else in `%TEMP%` is read beyond its name and size. Copies of a file an
-    earlier build had patched differently (a few of the 57) don't match, so they stay. It's done once:
-    `temp-sweep.json` in Cardboard's user data folder records it, and the activity log says how many files went. It
-    stops after 20 seconds and, if it had to stop, carries on at the next start.
+    The copies earlier builds left are deleted in the background, a few seconds after the window shows. Only files
+    named `<uuid>.tmp` or `<uuid>.tmp.<ext>` that are byte for byte a file in this `app.asar`, with the same size and
+    extension, are deleted, and only if they were made before Windows last started. Electron keeps reopening its
+    copies, so an older Cardboard that's still running would lose a file it uses; no program still running was
+    started before Windows was. Nothing else in `%TEMP%` is read beyond its name, size and date. Copies of a file an
+    earlier build had patched differently (a few of the 57) don't match, so they stay. It stops after 20 seconds,
+    and it gives way to the app between files. When nothing it should delete is left, `temp-sweep.json` in
+    Cardboard's user data folder records that it's done, and it doesn't run again. A copy from since Windows started,
+    one it couldn't delete (in use) or a stop at 20 seconds leave it for the next start, for at most 20 starts. The
+    activity log says how many files went.
 
 `scripts\patch-worker.js` (applied to `asar-src\dist\library-worker.js`) uses the NVIDIA GPU
 (NVENC) for converting imported media and making preview copies, where macOS uses VideoToolbox.
@@ -729,7 +733,8 @@ them, in `cb` and the worker (the print equals `cb source print` but for the rev
 exact version, or refused when it's gone; with Carton off, the same file applies as in this build without Carton.
 38 tests. `asar-assets.test.js` (main's patch 15): `app://` gives the same status, headers and bytes for every
 request as Cardboard's own handler, on Windows and macOS. The sweep deletes the byte copies and keeps everything
-else (a byte changed, another extension or name, a prefix, an empty file, a folder, a link), and runs only once.
+else (a byte changed, another extension or name, a prefix, an empty file, a folder, a link), keeps copies made since
+Windows started, and is done once nothing it should delete is left.
 
 On the Windows laptop (on mains power, with a throwaway profile and library, never your own):
 

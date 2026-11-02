@@ -68,14 +68,25 @@ test("patch 15: app:// answers the same, byte for byte and header for header: pr
   assert.deepEqual(await run(patched, true), before);
   assert.deepEqual(await run(patched, false), before);
   assert.equal(before.find((r) => r.url.endsWith("big.woff2")).headers.find(([k]) => k === "content-length")[1], String(3 << 20));
-  // The Windows branch did read from the archive path: a file there that fails to read is a 404, as a failed stat was.
-  const h = appHandler(patched, true)(root);
-  fs.chmodSync(path.join(root, "vendor", "x.js"), 0);
-  try { if (process.platform !== "win32" && process.getuid?.() !== 0) assert.equal((await h(new Request("app://cardboard/vendor/x.js"))).status, 404); }
-  finally { fs.chmodSync(path.join(root, "vendor", "x.js"), 0o644); }
+  // A file that stats but can't be read: the stock stream answers 200 and its body fails; so does the Windows read,
+  // for an asset and for the index.html fallback.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    const fail = async (bundle, win, url) => {
+      const r = await appHandler(bundle, win)(root)(new Request(url));
+      return [r.status, await r.arrayBuffer().then(() => "read", () => "body failed")];
+    };
+    for (const [file, url] of [["vendor/x.js", "app://cardboard/vendor/x.js"], ["index.html", "app://cardboard/some/route"]]) {
+      fs.chmodSync(path.join(root, file), 0);
+      try {
+        const stock = await fail(pristine, false, url);
+        assert.deepEqual(stock, [200, "body failed"]);
+        assert.deepEqual(await fail(patched, true, url), stock);
+      } finally { fs.chmodSync(path.join(root, file), 0o644); }
+    }
+  }
 });
 
-test("patch 15: the sweep deletes only <uuid>.tmp[.ext] files that are byte copies of a file in app.asar, once", { skip }, async () => {
+test("patch 15: the sweep deletes only old <uuid>.tmp[.ext] files that are byte copies of a file in app.asar, until none are left", { skip }, async () => {
   const H = new Function("require", HELPERS + "\nreturn { __cbAsarSweepRun };")(require);
   const app = path.join(TMP, "sweep", "resources", "app.asar"), tmp = path.join(TMP, "sweep", "temp"), ud = path.join(TMP, "sweep", "ud");
   for (const d of [path.join(app, "dist", "renderer", "assets"), tmp, ud]) fs.mkdirSync(d, { recursive: true });
@@ -104,20 +115,41 @@ test("patch 15: the sweep deletes only <uuid>.tmp[.ext] files that are byte copi
   if (process.platform !== "win32") {
     const link = u() + ".tmp.js"; fs.symlinkSync(path.join(app, "dist", "renderer", "assets", "a.js"), path.join(tmp, link)); kept.push(link);
   }
-  const opts = { appPath: app, userData: ud, tempDirs: [tmp, path.join(TMP, "sweep", "no-such-dir")] };
-  // Out of time: nothing deleted, nothing recorded, so the next start carries on.
-  assert.deepEqual({ ...(await H.__cbAsarSweepRun({ ...opts, budgetMs: -1 })), ms: 0 }, { deleted: 0, bytes: 0, ms: 0, done: false });
-  assert.ok(!fs.existsSync(path.join(ud, "temp-sweep.json")));
+  const later = Date.now() + 60_000, mark = () => JSON.parse(fs.readFileSync(path.join(ud, "temp-sweep.json"), "utf8"));
+  // bootMs: when Windows started. These files were all made "before" it, except where a test says otherwise.
+  const opts = { appPath: app, userData: ud, tempDirs: [tmp, path.join(TMP, "sweep", "no-such-dir")], bootMs: later };
+  // Out of time: nothing deleted, not done, so the next start carries on.
+  assert.deepEqual({ ...(await H.__cbAsarSweepRun({ ...opts, budgetMs: -1 })), ms: 0 }, { deleted: 0, bytes: 0, recent: 0, failed: 0, ms: 0, done: false });
+  assert.deepEqual([mark().done, mark().tries], [false, 1]);
+  // Copies made since Windows started may belong to an older build that's still running: kept, and not done.
+  const recent = await H.__cbAsarSweepRun({ ...opts, bootMs: Date.now() - 60_000 });
+  assert.deepEqual([recent.deleted, recent.recent, recent.done], [0, 4, false]);
+  assert.equal(fs.readdirSync(tmp).length, gone.length + kept.length);
+  // A copy it can't delete (in use, antivirus): not done either. Here its folder refuses deletes.
+  if (process.platform !== "win32" && process.getuid?.() !== 0) {
+    fs.chmodSync(tmp, 0o555);
+    try {
+      const busy = await H.__cbAsarSweepRun(opts);
+      assert.deepEqual([busy.deleted, busy.failed, busy.done], [0, 4, false]);
+    } finally { fs.chmodSync(tmp, 0o755); }
+  }
   const r = await H.__cbAsarSweepRun(opts);
-  assert.deepEqual([r.deleted, r.bytes, r.done], [4, 2 * a.length + b.length + 2, true]);
+  assert.deepEqual([r.deleted, r.bytes, r.recent, r.failed, r.done], [4, 2 * a.length + b.length + 2, 0, 0, true]);
   const left = fs.readdirSync(tmp).sort();
   assert.deepEqual(left, [...kept].sort());
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(ud, "temp-sweep.json"), "utf8")).deleted, 4);
+  assert.deepEqual([mark().done, mark().deleted], [true, 4]);
   assert.ok(fs.readFileSync(path.join(app, "dist", "renderer", "assets", "a.js")).equals(a), "the app's own file is untouched");
-  // Recorded: it doesn't run again, even with a new copy there.
+  // Done: it doesn't run again, even with a new copy there.
   put(u() + ".tmp.js", a, false);
   assert.equal(await H.__cbAsarSweepRun(opts), null);
   assert.equal(fs.readdirSync(tmp).length, kept.length);
+  // Not done after 20 starts: it gives up.
+  fs.writeFileSync(path.join(ud, "temp-sweep.json"), JSON.stringify({ version: 1, done: false, tries: 20 }));
+  assert.equal(await H.__cbAsarSweepRun(opts), null);
+  fs.writeFileSync(path.join(ud, "temp-sweep.json"), JSON.stringify({ version: 1, done: false, tries: 19 }));
+  assert.equal((await H.__cbAsarSweepRun(opts)).deleted, 1);
+  assert.deepEqual([mark().done, mark().tries], [true, 20]);
+  kept.pop();
   // Not from an archive (a dev run from a folder): nothing to sweep.
   fs.rmSync(path.join(ud, "temp-sweep.json"));
   assert.equal(await H.__cbAsarSweepRun({ ...opts, appPath: path.join(TMP, "sweep", "resources") }), null);

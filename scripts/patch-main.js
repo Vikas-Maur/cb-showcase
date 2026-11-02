@@ -662,9 +662,10 @@ replace(
 // file with fs.createReadStream, and for a file packed in app.asar Electron copies it out to %TEMP%\<uuid>.tmp.<ext>
 // to stream it, and never deletes the copy: ~57 files (~9 MB) per launch, kept after a clean quit, ~1.7 GB after 200
 // launches. On Windows a file in app.asar is read with fs.promises.readFile, which reads it from the archive; the
-// response (200, its headers, the bytes) is the same. A file outside an archive (a dev run) still streams; macOS is
-// unchanged. The copies earlier builds left are deleted once, after the window shows (__cbAsarSweepSoon): only
-// <uuid>.tmp[.<ext>] files that are byte for byte a file in this app.asar.
+// response (200, its headers, the bytes, and a body that fails if the file can't be read) is the same. A file outside
+// an archive (a dev run) still streams; macOS is unchanged. The copies earlier builds left are deleted after the window
+// shows (__cbAsarSweepSoon): only <uuid>.tmp[.<ext>] files that are byte for byte a file in this app.asar and older
+// than Windows' last start, until none are left.
 replace(
   `let s=Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
   `let s=__cbWin&&__cbInAsar(e)?await __cbAsarBody(e):Hke.Readable.toWeb((0,Bke.createReadStream)(e));return new Response(s,{status:200,headers:i})`,
