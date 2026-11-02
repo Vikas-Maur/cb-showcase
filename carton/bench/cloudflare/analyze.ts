@@ -171,12 +171,15 @@ export async function analyze(run: any): Promise<any | null> {
     out.r2 = r2;
     out.worker = w;
     out.do = d && Object.fromEntries(Object.entries(d).map(([k, v]) => [k === ids.vault ? "vault" : k === ids.writeCap ? "writeCap" : "room", { requests: v.requests, rowsWritten: v.rowsWritten, rowsRead: v.rowsRead }]));
+    // the client counts every request it makes (each is one Worker request): exact when the tail missed some
+    const clientReq = run.requests ? sum(Object.values(run.requests as Record<string, number>)) : null;
+    out.clientRequests = clientReq;
     if (kind === "proxy") {
       const segs = run.segments;
-      out.per = { segments: segs, workerReqPerSeg: w.gap ? null : w.requests / segs, workerCpuMsPerSeg: w.gap ? null : w.cpuMs / segs, r2ClassAPerSeg: r2 ? r2.classA / segs : null, r2ClassBPerSeg: r2 ? r2.classB / segs : null, doReqPerSeg: sum(Object.values(d).map((v) => v.requests)) / segs, bytesPerSeg: run.bytes / segs };
+      out.per = { segments: segs, workerReqPerSeg: w.gap ? (clientReq !== null ? clientReq / segs : null) : w.requests / segs, workerReqSource: w.gap ? "client" : "tail", workerCpuMsPerSeg: w.gap ? null : w.cpuMs / segs, r2ClassAPerSeg: r2 ? r2.classA / segs : null, r2ClassBPerSeg: r2 ? r2.classB / segs : null, doReqPerSeg: sum(Object.values(d).map((v) => v.requests)) / segs, bytesPerSeg: run.bytes / segs };
     } else {
       const mib = run.bytes / (1 << 20);
-      out.per = { mib, workerReqPerMiB: w.gap ? null : w.requests / mib, workerCpuMsPerMiB: w.gap ? null : w.cpuMs / mib, r2ClassBPerMiB: r2 ? r2.classB / mib : null, r2ClassAPerMiB: r2 ? r2.classA / mib : null, mibPerGet: r2 ? mib / Math.max(1, r2.byAction.GetObject ?? 0) : null };
+      out.per = { mib, workerReqPerMiB: w.gap ? (clientReq !== null ? clientReq / mib : null) : w.requests / mib, workerReqSource: w.gap ? "client" : "tail", workerCpuMsPerMiB: w.gap ? null : w.cpuMs / mib, r2ClassBPerMiB: r2 ? r2.classB / mib : null, r2ClassAPerMiB: r2 ? r2.classA / mib : null, mibPerGet: r2 ? mib / Math.max(1, r2.byAction.GetObject ?? 0) : null };
     }
   }
   return out;
