@@ -92,6 +92,22 @@ export function parseRange(header: string | null, size: number): { offset: numbe
   return { offset: a, length: b - a + 1 };
 }
 
+// The read a Range header asks for, where it can be told without the object's size (as parseRange reads it): null for
+// the whole object (no header, or one parseRange ignores), `{offset, length?}` for `a-b` and `a-`; "needs-size" for a
+// suffix (`-n`), an end before its start, or numbers too large to be offsets, which parseRange resolves against the size.
+function rangeWithoutSize(header: string | null): { offset: number; length?: number } | null | "needs-size" {
+  if (!header) return null;
+  const m = /^bytes=(\d*)-(\d*)$/.exec(header.trim());
+  if (!m || (m[1] === "" && m[2] === "")) return null;
+  if (m[1] === "") return "needs-size";
+  const a = Number(m[1]);
+  if (!Number.isSafeInteger(a)) return "needs-size";
+  if (m[2] === "") return { offset: a };
+  const b = Number(m[2]);
+  if (!Number.isSafeInteger(b) || b < a) return "needs-size";
+  return { offset: a, length: b - a + 1 };
+}
+
 export class BodyTooLarge extends Error {
   readonly status = 413;
   constructor(max: number) {
@@ -216,6 +232,25 @@ export async function serveSignedBlob(req: Request, store: BlobStore, signer: Bl
     };
     const [status, info] = await (opts.aroundPut ? opts.aroundPut(key, write) : write());
     return storedInfo(status, info);
+  }
+  // A GET from a store that answers the info with the bytes (`getWithInfo`, R2): one storage call, not a head and then
+  // a read (R2 bills both; cf-lab measured 2 Class B per signed read). Ranges that need the size to resolve (a suffix,
+  // or an end before the start) take the head path below, as do HEADs and stores without it.
+  if (req.method === "GET" && store.getWithInfo) {
+    const want = rangeWithoutSize(req.headers.get("range"));
+    if (want !== "needs-size") {
+      const o = await store.getWithInfo(key, want ?? undefined);
+      if (!o) return new Response("not found", { status: 404 });
+      const headers = new Headers({ "accept-ranges": "bytes", "content-type": o.info.contentType ?? "application/octet-stream", "cache-control": "private, max-age=60" });
+      if (o.info.etag) headers.set("etag", o.info.etag);
+      if (!o.range) {
+        headers.set("content-range", `bytes */${o.info.size}`);
+        return new Response(null, { status: 416, headers });
+      }
+      headers.set("content-length", String(o.range.length));
+      if (want) headers.set("content-range", `bytes ${o.range.offset}-${o.range.offset + o.range.length - 1}/${o.info.size}`);
+      return new Response(o.body as ConstructorParameters<typeof Response>[0], { status: want ? 206 : 200, headers });
+    }
   }
   const head = await store.head(key);
   if (!head) return new Response("not found", { status: 404 });

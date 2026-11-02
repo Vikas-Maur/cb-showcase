@@ -8,7 +8,22 @@
 import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
 import { SHA256_HEADER } from "@carton/blob-memory/signed";
 import { platformFetch } from "@carton/http-node";
+import {
+  fromBase64,
+  streamEndOf,
+  streamPartOf,
+  streamSegmentOf,
+  StreamPartMissingError,
+  StreamRouteMissingError,
+  toBase64,
+  type StreamAppendBatch,
+  type StreamAppender,
+  type StreamBatchReader,
+  type StreamReadItem,
+  type StreamReadOptions,
+} from "@carton/media";
 import { eachLimit } from "./pool.ts";
+import { ByteReader, headerFrame, StreamWireError, STREAM_WIRE_VERSION, type AppendHeaderPart, type ReadHeader } from "./stream-wire.ts";
 
 export interface HostBlobsOptions {
   /** The host's origin, e.g. `https://carton.example` or `http://127.0.0.1:8787`. */
@@ -99,7 +114,7 @@ async function failed(r: Response, read?: string): Promise<never> {
   throw new HostApiError(r.status, code, message);
 }
 
-export interface HostMediaBlobs extends BlobStore {
+export interface HostMediaBlobs extends BlobStore, StreamAppender, StreamBatchReader {
   getStream(key: string, range?: ByteRange): Promise<ReadableStream<Uint8Array> | null>;
   /** A short-lived URL for a player or ffmpeg (GET, with HTTP ranges) or for a direct upload (PUT). */
   signedUrl(key: string, opts: { method: "GET" | "PUT"; expiresIn: number }): Promise<string>;
@@ -116,6 +131,16 @@ export interface HostMediaBlobs extends BlobStore {
    * Not part of BlobStore: code that takes any store should look for it (`"heads" in store`).
    */
   heads(keys: readonly string[]): Promise<({ size: number } | null)[]>;
+  /**
+   * A proxy stream's parts in one request (POST /streams/<id>/append): `@carton/media`'s ProxyStreamWriter batches
+   * through it. A host from before the route: StreamRouteMissingError (the writer goes part by part).
+   */
+  appendStream(stream: string, batch: StreamAppendBatch, signal?: AbortSignal): Promise<void>;
+  /**
+   * A batch of a stream's entries, manifests and bytes in one request (GET /streams/<id>/read), parts yielded as their
+   * bytes arrive; ProxyStreamReader reads through it. A host from before the route: StreamRouteMissingError.
+   */
+  readStream(stream: string, o: StreamReadOptions): AsyncGenerator<StreamReadItem>;
 }
 
 /** A store that answers many heads at once (hostMediaBlobs). */
@@ -274,6 +299,97 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
     },
     resumeMultipart: async (key, uploadId) => handle(key, uploadId),
     signedUrl: (key, o) => sign(key, o.method, o.expiresIn),
+    async appendStream(stream, batch, signal) {
+      const header = {
+        v: STREAM_WIRE_VERSION,
+        parts: batch.parts.map((p): AppendHeaderPart => ({
+          kind: p.kind,
+          hash: p.hash,
+          size: p.size,
+          manifest: toBase64(p.manifest),
+          bytes: p.bytes !== null,
+          ...(p.repair && p.bytes ? { repair: true } : {}),
+          ...(p.kind === "segment" ? { index: p.index!, durationSec: p.durationSec!, at: p.at! } : {}),
+        })),
+        ...(batch.end ? { end: batch.end } : {}),
+      };
+      const head = headerFrame(header);
+      let n = head.length;
+      for (const p of batch.parts) n += p.bytes?.length ?? 0;
+      const body = new Uint8Array(n);
+      body.set(head, 0);
+      let at = head.length;
+      for (const p of batch.parts) {
+        if (!p.bytes) continue;
+        body.set(p.bytes, at);
+        at += p.bytes.length;
+      }
+      const r = await f(api(`/streams/${stream}/append`), {
+        method: "POST",
+        headers: { authorization: await bearer(), "content-type": "application/octet-stream" },
+        body: body as Uint8Array<ArrayBuffer>,
+        ...(signal ? { signal } : {}),
+      });
+      if (r.ok) {
+        await r.body?.cancel();
+        return;
+      }
+      const text = await r.text().catch(() => "");
+      let j: { error?: unknown; code?: unknown } = {};
+      try {
+        j = JSON.parse(text) as typeof j;
+      } catch {}
+      if (r.status === 404 && j.error === "no such route") throw new StreamRouteMissingError("the host has no stream routes");
+      if (r.status === 409 && j.code === "Missing") throw new StreamPartMissingError(String(j.error ?? "a part isn't stored"));
+      await failed(r, text);
+    },
+    async *readStream(stream, o) {
+      const q = new URLSearchParams({ from: String(o.from) });
+      if (o.init) q.set("init", "1");
+      if (o.maxBytes !== undefined) q.set("bytes", String(o.maxBytes));
+      if (o.maxParts !== undefined) q.set("parts", String(o.maxParts));
+      if (o.waitMs) q.set("wait", String(o.waitMs));
+      const r = await f(`${api(`/streams/${stream}/read`)}?${q}`, { headers: { authorization: await bearer() }, ...(o.signal ? { signal: o.signal } : {}) });
+      if (!r.ok) {
+        const text = await r.text().catch(() => "");
+        let j: { error?: unknown } = {};
+        try {
+          j = JSON.parse(text) as typeof j;
+        } catch {}
+        if (r.status === 404 && j.error === "no such route") throw new StreamRouteMissingError("the host has no stream routes");
+        await failed(r, text);
+      }
+      if (!r.body) throw new StreamWireError("the host sent no body");
+      const rd = new ByteReader(r.body as ReadableStream<Uint8Array>);
+      try {
+        const h = (await rd.header()) as Partial<ReadHeader> | null;
+        if (!h || h.v !== STREAM_WIRE_VERSION || !Array.isArray(h.segments)) throw new StreamWireError("not a stream read answer");
+        // every entry checked as media's reader checks one read from the store
+        const bytesOf = async (listed: { bytes?: unknown; size: number }): Promise<Uint8Array | null> => {
+          if (listed.bytes !== true) return null;
+          const n = await rd.u32();
+          if (n === 0) return null;
+          if (n !== listed.size) throw new StreamWireError(`the host sent ${n} bytes for a part of ${listed.size}`);
+          return rd.exactly(n);
+        };
+        const manifestOf = (v: { manifest?: unknown }) => (typeof v.manifest === "string" ? fromBase64(v.manifest) : null);
+        if (h.init) {
+          const part = streamPartOf(h.init);
+          if (!part) throw new StreamWireError("bad init entry");
+          yield { kind: "init", part, manifest: manifestOf(h.init), bytes: await bytesOf(h.init) };
+        }
+        let i = o.from;
+        for (const raw of h.segments) {
+          const segment = streamSegmentOf(raw, i);
+          if (!segment) throw new StreamWireError(`bad entry for segment ${i}`);
+          yield { kind: "segment", segment, manifest: manifestOf(raw), bytes: await bytesOf(raw) };
+          i++;
+        }
+        yield { kind: "status", ...(h.end !== undefined ? { end: streamEndOf(h.end) } : {}), ...(h.init === null ? { initMissing: true } : {}) };
+      } finally {
+        rd.cancel();
+      }
+    },
     async reportDamaged(key, leaf) {
       return (await (await call("POST", api("/blobs/damaged"), { key, leaf })).json()) as { damaged: boolean; removed?: boolean };
     },

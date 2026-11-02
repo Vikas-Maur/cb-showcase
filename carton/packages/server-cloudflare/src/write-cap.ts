@@ -102,6 +102,26 @@ export function reserveIn(sql: { exec(q: string, ...b: unknown[]): { toArray(): 
   return { ok: true, bytes: bytes + addBytes, ops: ops + addOps };
 }
 
+/**
+ * `cap` with `bytes` and `ops` reserved in one call up front, for a request that knows what it will write (a stream
+ * append: a manifest, the bytes and an entry per part): its writes draw on the reservation, one counter request in all
+ * instead of one per write. A write past what is left reserves on its own, as without it.
+ */
+export async function prepaidCap(cap: WriteCap, bytes: number, ops: number): Promise<WriteCap> {
+  await cap.reserve(bytes, ops);
+  let leftBytes = bytes, leftOps = ops;
+  return {
+    async reserve(b, o = 1) {
+      if (b <= leftBytes && o <= leftOps) {
+        leftBytes -= b;
+        leftOps -= o;
+        return;
+      }
+      await cap.reserve(b, o);
+    },
+  };
+}
+
 /** A multipart handle that may also take a streamed part (fix/cf-stream-parts adds it to the contract). */
 type Streams = MultipartUpload & { uploadPartStream?(n: number, body: ReadableStream<Uint8Array>, size: number): Promise<{ partNumber: number; etag: string }> };
 

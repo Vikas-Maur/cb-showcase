@@ -21,10 +21,10 @@
 // R2 itself enforces the part rules (5 MiB minimum, equal parts, the last no larger); the shared checks run first so
 // the error is the same as on every other store.
 
-import type { BlobInfo, BlobStore, ByteRange, MultipartUpload } from "@carton/core/plugins";
-import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError, markCreated } from "@carton/blob-memory/rules";
+import type { BlobInfo, BlobStore, BlobWithInfo, ByteRange, MultipartUpload } from "@carton/core/plugins";
+import { checkKey, checkRange, checkPartNumber, checkCompleteParts, BlobError, markCreated, servedRange } from "@carton/blob-memory/rules";
 import type { BlobUrlSigner } from "@carton/blob-memory/signed";
-import type { R2Bucket, R2MultipartUpload, R2Object, R2UploadedPart } from "./cf.ts";
+import type { R2Bucket, R2MultipartUpload, R2Object, R2ObjectBody, R2UploadedPart } from "./cf.ts";
 
 const UPLOADS = ".carton-uploads/";
 export const R2_MIN_PART_SIZE = 5 * 1024 * 1024;
@@ -120,6 +120,38 @@ export class R2BlobStore implements BlobStore {
     if (o === null) return null;
     if (o === "empty") return new ReadableStream({ start: (c) => c.close() });
     return o.body;
+  }
+
+  // One GetObject answers the size and type with the bytes (a signed read's head-then-get was two Class B operations).
+  // R2 refuses a range at or past the end; only then does a HEAD tell absent from unsatisfiable.
+  async getWithInfo(key: string, range?: ByteRange): Promise<BlobWithInfo | null> {
+    checkUserKey(key);
+    if (range) checkRange(range);
+    if (range?.length === 0) {
+      // nothing to read (R2 refuses an empty range): the HEAD alone answers
+      const h = await this.#b.head(key);
+      if (!h) return null;
+      const span = servedRange(h.size, range);
+      return span ? { info: infoOf(h), range: { offset: span.offset, length: 0 }, body: new ReadableStream({ start: (c) => c.close() }) } : { info: infoOf(h), range: null, body: null };
+    }
+    let o: R2ObjectBody | null;
+    try {
+      o = range ? await this.#b.get(key, { range: range.length === undefined ? { offset: range.offset } : { offset: range.offset, length: range.length } }) : await this.#b.get(key);
+    } catch (e) {
+      if (!range) throw e;
+      const h = await this.#b.head(key);
+      if (!h) return null;
+      if (range.offset >= h.size) return { info: infoOf(h), range: null, body: null };
+      throw e;
+    }
+    if (!o) return null;
+    const span = servedRange(o.size, range);
+    if (!span) {
+      // a range past the end that R2 answered anyway (an empty object): the contract's 416
+      await o.body.cancel().catch(() => {});
+      return { info: infoOf(o), range: null, body: null };
+    }
+    return { info: infoOf(o), range: span, body: o.body };
   }
 
   async head(key: string): Promise<BlobInfo | null> {
