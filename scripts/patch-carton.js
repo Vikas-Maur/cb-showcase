@@ -319,7 +319,9 @@ if (mode === "--cli") {
   patch(storeFile, (replace, prepend) => {
     // `refuse` is Cardboard's own guard of its edits (me(): true and its "read-only" note over the timeline when a write
     // is blocked, as in a preview): the bridge's refuse() uses it for the stage's text editor (baseline P3-9).
-    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De,refuse:me});");
+    // `subscribe` (the store's, zustand's (state, prev)) and `clock` (its playback clock, qx, exported as aI: the
+    // playhead while playing) let a preview tell the person's moves of the playhead from its own (final re-check N5).
+    replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});");
     // H4: the save names the version the editor shows; initializeEditor starts from the project's.
     replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)}))');
     // H6: the editor's session starts here (Ctrl+Z never goes back past it), with nothing to undo or redo yet.

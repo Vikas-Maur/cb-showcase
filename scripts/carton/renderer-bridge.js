@@ -20,8 +20,20 @@ module.exports = String.raw`window.__carton = (() => {
   let stepping = null, deferred = null, canTimer = null;
   // The editor's own last timeline save not yet answered: the document holds it, whatever the base says (ui-words #3).
   let unanswered = null;
-  // A preview shorter than the playhead moved it to its end: where it was, and where the preview put it (preview()).
-  let held = null;
+  // A preview shorter than the playhead moved it to its end: where it was, where the preview put it, and the store
+  // subscription that drops it at the person's first move (preview()). "seeking": the bridge's own seek under way.
+  let held = null, seeking = false;
+  const release = () => { if (typeof held?.off === "function") held.off(); held = null; };
+  // The playhead: Cardboard's playheadTime while paused (its currentTime follows the pointer's hover then), its
+  // playback clock while playing.
+  const playhead = () => {
+    const st = store.state();
+    return st.isPlaying ? (store.clock?.() ?? st.currentTime) : (st.playheadTime ?? st.currentTime);
+  };
+  const seekOwn = (s) => {
+    seeking = true;
+    try { store.state().setPlaybackPosition?.(s); } finally { seeking = false; }
+  };
   let settle;
   const ready = new Promise((r) => (settle = r));
   const handlers = new Map();
@@ -144,30 +156,37 @@ module.exports = String.raw`window.__carton = (() => {
     // Compare and the A/B toggle: an earlier version in the editor, read-only (§9). null returns to current.
     // A version shorter than the playhead takes it to its end, where Cardboard's own "jump to end" puts it (final
     // re-check N5: a black stage, "0:09 / 0:08"); back to current, it goes back where the editor had it before the
-    // preview, unless the person moved it meanwhile (held: that place, and where the preview put it).
+    // preview, unless the person moved it meanwhile (held: that place and where the preview put it, until a move).
     async preview(projectId, ref) {
       if (!on || !store) return;
       if (ref != null) await store.flush();
       const doc = await call(ref == null ? "head" : "checkout", { projectId, ref });
       const project = store.deserialize(doc), t = timelineOf(project), end = duration(t.timelineItems);
-      const seek = (s) => store.state().setPlaybackPosition?.(s);
+      // a place held for another project (the editor opened another one meanwhile) isn't this one's
+      if (held && held.project !== projectId) release();
       if (ref == null) {
+        const h = held;
+        release();
         // Back to current: the project record and the editor take head, with its base.
         store.projects.setState({ projects: store.projects.getState().projects.map((p) => (p.id === projectId ? project : p)) });
         store.adopt({ ...t, duration: end, cartonBase: project.stateUpdatedAt ?? null, cartonPreview: null });
         stale = false;
         unanswered = null;
-        const h = held;
-        held = null;
-        if (h && store.state().currentTime === h.end) seek(Math.min(h.at, end));
+        // unmoved: told by the store's own moves when it says them, else by where the playhead is
+        if (h && (h.off || playhead() === h.end)) seekOwn(Math.min(h.at, end));
       } else {
         store.adopt({ ...t, duration: end, cartonPreview: { ref } });
-        const now = store.state().currentTime;
-        // the person moved it since the last preview put it: their place now is the one to go back to
-        if (held && now !== held.end) held = null;
+        const now = playhead();
+        if (held && !held.off && now !== held.end) release();
         if (Number.isFinite(now) && now > end) {
-          held = { at: held?.at ?? now, end };
-          seek(end);
+          held ??= { at: now, end, off: null, project: projectId };
+          held.end = end;
+          seekOwn(end);
+          // any other move of the playhead (a click on the ruler, Watch the changes, a comment's timecode, play) is
+          // the person's: their place is the one to keep (review #3: even one that ends where the preview put it)
+          held.off ??= store.subscribe?.((st, prev) => {
+            if (!seeking && (st.playheadTime !== prev.playheadTime || (st.isPlaying && !prev.isPlaying) || st.projectId !== prev.projectId)) release();
+          }) ?? null;
         }
       }
     },

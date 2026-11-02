@@ -167,7 +167,10 @@ test("Carton on: the stage's text editor asks the bridge before it opens; the st
   const guard = store.indexOf("function me(){return _v()?(xv(),!0):!1}const Ede=me,"), hook = store.indexOf("ne.setState=tN(");
   const between = store.slice(guard, hook);
   assert.ok(guard > 0 && hook > guard && between.includes(",Rde=t=>{") && between.endsWith(";") && between.length < 2000, "me and Rde in one statement list, right before the hook");
-  assert.equal(count(store, "deserialize:av,projects:De,refuse:me});"), 1, "the hook passes it");
+  assert.equal(count(store, "deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});"), 1, "the hook passes it, and the store's subscribe and playback clock (final re-check N5)");
+  // qx: the playback clock, a binding of the module itself (exported), declared before the hook runs
+  assert.ok(/[,;]qx=\{get:\(\)=>mg,set:/.test(store) && store.search(/[,;]qx=\{get:/) < hook && /\bqx as aI\b/.test(store), "qx is the module's own playback clock");
+  assert.ok(store.includes("ne.subscribe((t,e)=>{t.playheadTime!==e.playheadTime&&qx.set(t.playheadTime)"), "Cardboard's own subscriber: (state, prev), the clock following playheadTime");
 });
 
 // The real facade, built from the carton workspace, on real Carton and carton.db: the cb commands end to end.
