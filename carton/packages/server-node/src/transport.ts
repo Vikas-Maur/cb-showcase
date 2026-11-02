@@ -61,7 +61,21 @@ function probeUrl(wsUrl: string): string | null {
   }
 }
 
+/**
+ * Node abandons each connect attempt to one of a host's addresses after 250 ms by default (happy eyeballs), so over a
+ * link with a longer round trip (satellite, a congested mobile cell) the socket never opens, though browsers and curl
+ * connect fine (Cloudflare lab, 2026-11-02, a 400 ms link). Raises Node's process-wide default to at least 2 s, never
+ * lowering a longer one; @carton/http-node's allowSlowLinks does the same for the blob clients.
+ */
+function allowSlowLinks(ms = 2000): void {
+  const proc = (globalThis as { process?: { versions?: { node?: string }; getBuiltinModule?(id: string): unknown } }).process;
+  if (!proc?.versions?.node || typeof proc.getBuiltinModule !== "function") return;
+  const net = proc.getBuiltinModule("node:net") as { getDefaultAutoSelectFamilyAttemptTimeout?(): number; setDefaultAutoSelectFamilyAttemptTimeout?(ms: number): void } | undefined;
+  if (net?.getDefaultAutoSelectFamilyAttemptTimeout && net.setDefaultAutoSelectFamilyAttemptTimeout && net.getDefaultAutoSelectFamilyAttemptTimeout() < ms) net.setDefaultAutoSelectFamilyAttemptTimeout(ms);
+}
+
 export function webSocketTransport(opts: WebSocketTransportOptions = {}): Transport {
+  allowSlowLinks();
   const WS = opts.WebSocket ?? globalThis.WebSocket;
   const keepaliveMs = opts.keepaliveMs ?? 25_000;
   const deadAfterMs = opts.deadAfterMs ?? (keepaliveMs > 0 ? 15_000 : 0);
