@@ -37,6 +37,7 @@ import "../src/cardboard/system/app-options.ts";
 import "../src/cardboard/system/freeze-cb.ts";
 import "../src/cardboard/system/save-speed.ts";
 import "../src/cardboard/system/hosts-schema.ts";
+import "../src/cardboard/system/empty-root.ts";
 import "../src/cardboard/cli-codec.test.ts";
 
 await cardboardSuite();
