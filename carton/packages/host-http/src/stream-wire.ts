@@ -40,6 +40,8 @@ export interface AppendHeader {
   v: number;
   parts: AppendHeaderPart[];
   end?: unknown;
+  /** The publisher's lease renewal, written beside the entries (`ps/<id>/lease`): {n, at, every}. */
+  lease?: unknown;
 }
 
 export interface ReadHeaderPart {

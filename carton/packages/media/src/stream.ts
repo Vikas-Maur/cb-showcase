@@ -28,7 +28,7 @@ import { isMediaHash, toHex } from "./bytes.ts";
 import { decodeManifest, type Manifest } from "./manifest.ts";
 import type { BlobStore, Hasher } from "./contracts.ts";
 import { bytesSource, hashSource } from "./hash.ts";
-import { mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
+import { mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamLeaseKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
 import type { MediaStat, RangeSource } from "./range-source.ts";
 import type { LeafCache } from "./cache.ts";
 import { isDamaged, reportDamage } from "./damage.ts";
@@ -199,6 +199,12 @@ export interface ProxyStreamWriterOptions {
    */
   onWriteLimit?: (retryAt: number) => void;
   writeLimitJitterMs?: number;
+  /**
+   * A lease on the stream, renewed while the writer is open, so a share that finds the stream unfinished can tell a
+   * publisher at work from a dead one in seconds instead of STALE_MS (claimProxyStream's `leaseEveryMs`; the pointer
+   * declares it). Renewals ride on appends; with none for `everyMs`, one goes on its own. Off unless given.
+   */
+  lease?: { everyMs: number };
 }
 
 /**
@@ -206,13 +212,26 @@ export interface ProxyStreamWriterOptions {
  * host's POST /streams/<id>/append, `@carton/host-http/client`). Not part of BlobStore: looked for, as `heads` is.
  */
 export interface StreamAppender {
-  appendStream(stream: string, batch: StreamAppendBatch, signal?: AbortSignal): Promise<void>;
+  /** Resolves with what the host asks of later batches, when it says (an older host doesn't). */
+  appendStream(stream: string, batch: StreamAppendBatch, signal?: AbortSignal): Promise<void | StreamAppendAnswer>;
+}
+export interface StreamAppendAnswer {
+  /** The host's limits for one append: at most `parts` parts and `bytes` bytes (a Worker's CPU per request). */
+  limits?: { parts: number; bytes: number };
+}
+/** A publisher's lease renewal (`ps/<stream>/lease`): its count, when (its clock), and how often it renews. */
+export interface StreamLease {
+  n: number;
+  at: number;
+  every: number;
 }
 export interface StreamAppendBatch {
   /** In order: the init segment first (once), then consecutive segments. */
   parts: StreamAppendPart[];
   /** Written once every part of this batch is in. */
   end?: StreamEnd;
+  /** A lease renewal, written beside the entries. */
+  lease?: StreamLease;
 }
 export interface StreamAppendPart {
   kind: "init" | "segment";
@@ -249,8 +268,12 @@ const noAppend = new WeakSet<BlobStore>();
 const BATCH_PARTS = 4;
 const BATCH_BYTES = 2 << 20;
 const QUEUED_BYTES = 12 << 20;
-/** Batches under way at once (see ProxyStreamWriter.#kick). */
-const IN_FLIGHT = 2;
+/**
+ * Batches under way at once (see ProxyStreamWriter.#kick): more when batches are small, since a small append waits on its
+ * round trips (a Worker's write-cap counter, the bytes, the entries), not on its bytes. A host that asks for 1 part per
+ * append (a Worker on the Free plan) gets 4; 2 parts, 3; else 2.
+ */
+const inFlightFor = (parts: number): number => (parts <= 1 ? 4 : parts <= 2 ? 3 : 2);
 
 /** When a write refused for a while may go again (an error with `retryAt`, BlobStore's contract), else null. */
 function retryAtOf(e: unknown): number | null {
@@ -302,12 +325,87 @@ export class ProxyStreamWriter {
   #probe = true;
   #holdInit = true;
   #waiters: (() => void)[] = [];
+  /** The host's batch limits, once an append's answer said them. */
+  #hostLimits: { parts: number; bytes: number } | null = null;
+  // the lease (options.lease)
+  #leaseN = 0;
+  #leaseAt = -Infinity;
+  #leaseTimer: ReturnType<typeof setInterval> | null = null;
+  #renewing: Promise<void> | null = null;
+  #closed = false;
 
   constructor(o: ProxyStreamWriterOptions) {
     this.#o = o;
     this.id = o.id ?? newStreamId();
     this.#appender = o.batch !== false && isStreamAppender(o.store) && !noAppend.has(o.store) ? o.store : null;
-    this.#ceiling = this.#maxParts = Math.max(1, (o.batch && o.batch.maxParts) || BATCH_PARTS);
+    this.#ceiling = this.#maxParts = this.#partsLimit();
+    if (o.lease) {
+      const every = Math.max(1, o.lease.everyMs);
+      // checked a few times a period: a renewal goes on its own when no append carried one for a period
+      this.#leaseTimer = setInterval(() => void this.#renewAlone(), Math.max(1, Math.floor(every / 3)));
+      (this.#leaseTimer as { unref?: () => void }).unref?.();
+      o.upload?.signal?.addEventListener("abort", () => this.close(), { once: true });
+      void this.#renewAlone();
+    }
+  }
+
+  /** Parts per append: the host's limit when it said one (and the caller's own, if smaller), else the caller's or ours. */
+  #partsLimit(): number {
+    const own = this.#o.batch ? this.#o.batch.maxParts : undefined;
+    const host = this.#hostLimits?.parts;
+    return Math.max(1, host !== undefined ? Math.min(host, own ?? Infinity) : (own ?? BATCH_PARTS));
+  }
+  #bytesLimit(): number {
+    const own = this.#o.batch ? this.#o.batch.maxBytes : undefined;
+    const host = this.#hostLimits?.bytes;
+    return Math.max(1, host !== undefined ? Math.min(host, own ?? Infinity) : (own ?? BATCH_BYTES));
+  }
+  #learnLimits(a: void | StreamAppendAnswer): void {
+    const l = a && a.limits;
+    if (!l || !(l.parts >= 1) || !(l.bytes >= 1)) return;
+    this.#hostLimits = { parts: Math.floor(l.parts), bytes: Math.floor(l.bytes) };
+    const limit = this.#partsLimit();
+    this.#ceiling = Math.min(this.#ceiling, limit);
+    this.#maxParts = Math.min(this.#maxParts, this.#ceiling);
+  }
+
+  /** A renewal for the next append to carry, when one is due (half a period since the last). */
+  #leaseDue(): StreamLease | undefined {
+    const every = this.#o.lease?.everyMs;
+    if (!every || this.#closed || Date.now() - this.#leaseAt < every / 2) return undefined;
+    return { n: ++this.#leaseN, at: Date.now(), every };
+  }
+
+  /** A renewal on its own, when no append carried one for a whole period. Best effort: the next tick tries again. */
+  async #renewAlone(): Promise<void> {
+    const every = this.#o.lease?.everyMs;
+    if (!every || this.#closed || this.#renewing || Date.now() - this.#leaseAt < every) return;
+    const lease = { n: ++this.#leaseN, at: Date.now(), every };
+    this.#renewing = (async () => {
+      try {
+        if (this.#appender) this.#learnLimits(await this.#appender.appendStream(this.id, { parts: [], lease }, this.#o.upload?.signal));
+        else await this.#o.store.put(streamLeaseKey(this.id), utf8.encode(JSON.stringify(lease)), { contentType: "application/json" });
+        this.#leaseAt = lease.at;
+      } catch (e) {
+        if (e instanceof StreamRouteMissingError) {
+          noAppend.add(this.#o.store);
+          this.#appender = null;
+        }
+      } finally {
+        this.#renewing = null;
+      }
+    })();
+    await this.#renewing;
+  }
+
+  /**
+   * Stops the lease's renewals (a share that gives up on this writer, or is done with it): the stream reads as
+   * abandoned once its lease lapses. `end()` and a failure stop them too.
+   */
+  close(): void {
+    this.#closed = true;
+    if (this.#leaseTimer) clearInterval(this.#leaseTimer);
+    this.#leaseTimer = null;
   }
 
   /** Segments the store holds entries for. */
@@ -387,16 +485,20 @@ export class ProxyStreamWriter {
       sizes: this.#sizes.slice(),
       durations: this.#durations.slice(),
     };
-    if (this.#appender || this.#queue.length || this.#inflight) {
+    try {
+      if (this.#appender || this.#queue.length || this.#inflight) {
+        this.#ended = true;
+        this.#queue.push({ end });
+        this.#kick();
+        await this.flush();
+        return end;
+      }
+      await putOnce(this.#o.store, streamEndKey(this.id), end);
       this.#ended = true;
-      this.#queue.push({ end });
-      this.#kick();
-      await this.flush();
       return end;
+    } finally {
+      this.close(); // ended (finished streams need no lease) or failed
     }
-    await putOnce(this.#o.store, streamEndKey(this.id), end);
-    this.#ended = true;
-    return end;
   }
 
   /** Waits until everything queued is in the store (or throws the failure that stopped it). */
@@ -432,7 +534,7 @@ export class ProxyStreamWriter {
   }
 
   /**
-   * Starts batches while fewer than `inFlight` are under way: two by default, so the next batch uploads while the host
+   * Starts batches while fewer than `inFlight` are under way (inFlightFor: two, more for small batches), so the next uploads while the host
    * writes the last one to storage (round trips the link would otherwise sit idle through), and a lossy link carries two
    * TCP streams (one stream on the 4G profile, 0.5% loss and an 80 ms round trip, tops out near the proxy's own rate).
    * Entries of two batches may land in either order: a reader waits at the gap a moment, as within one batch. The end
@@ -440,14 +542,14 @@ export class ProxyStreamWriter {
    */
   #kick(): void {
     const limits = this.#o.batch || {};
-    const inFlight = Math.max(1, limits.inFlight ?? IN_FLIGHT);
+    const inFlight = Math.max(1, limits.inFlight ?? inFlightFor(this.#partsLimit()));
     while (!this.#failure && this.#inflight < inFlight && this.#queue.length) {
       // The init segment alone is of no use to a viewer (a player needs it and the first segment): it waits for the
       // first segment, so both go in one request, unless the writer flushes or ends first.
       if (this.#holdInit && this.#queue.length === 1 && "part" in this.#queue[0]! && this.#queue[0].part.kind === "init") return;
       // the last parts wait for what is under way, then go with the end
       if (this.#inflight > 0 && this.#queue.some((q) => "end" in q)) return;
-      const maxBytes = limits.maxBytes ?? BATCH_BYTES;
+      const maxBytes = this.#bytesLimit();
       const parts: StreamAppendPart[] = [];
       let bytes = 0, taken = 0, end: StreamEnd | undefined;
       for (const q of this.#queue) {
@@ -469,7 +571,10 @@ export class ProxyStreamWriter {
             this.#queuedBytes -= bytes;
             this.#published += parts.filter((p) => p.kind === "segment").length;
           },
-          (e: unknown) => void (this.#failure ??= { error: e }),
+          (e: unknown) => {
+            this.#failure ??= { error: e };
+            this.close();
+          },
         )
         .finally(() => {
           this.#inflight--;
@@ -519,8 +624,10 @@ export class ProxyStreamWriter {
     if (this.#appender) {
       const batch = parts.map((p) => ({ ...p }));
       if (this.#probe && batch.some((p) => p.kind === "segment") && !batch.some((p) => p.kind === "init")) await this.#skipStored(batch);
+      const lease = end ? undefined : this.#leaseDue();
       try {
-        await this.#appender.appendStream(this.id, { parts: batch, ...(end ? { end } : {}) }, signal);
+        this.#learnLimits(await this.#appender.appendStream(this.id, { parts: batch, ...(end ? { end } : {}), ...(lease ? { lease } : {}) }, signal));
+        if (lease) this.#leaseAt = lease.at;
         return;
       } catch (e) {
         if (e instanceof StreamPartMissingError) {
@@ -528,7 +635,8 @@ export class ProxyStreamWriter {
           // the report for the ones sent without them (repair)
           this.#probe = false;
           const again = parts.map((p, n) => (batch[n]!.bytes === null ? { ...p, repair: true } : p));
-          await this.#appender.appendStream(this.id, { parts: again, ...(end ? { end } : {}) }, signal);
+          this.#learnLimits(await this.#appender.appendStream(this.id, { parts: again, ...(end ? { end } : {}), ...(lease ? { lease } : {}) }, signal));
+          if (lease) this.#leaseAt = lease.at;
           return;
         }
         if (!(e instanceof StreamRouteMissingError)) throw e;
@@ -1137,7 +1245,7 @@ export function streamRangeSource(opts: { streams: (id: string) => ProxyStreamRe
 export async function findProxy(store: BlobStore, sourceHash: string, profileId: string): Promise<ProxyPointer | null> {
   const v = await getJson(store, proxyPointerKey(sourceHash, profileId));
   if (!v || typeof v.encoder !== "string") return null;
-  if (isMediaHash(v.stream) && isCount(v.at)) return { stream: v.stream, encoder: v.encoder, at: v.at };
+  if (isMediaHash(v.stream) && isCount(v.at)) return { stream: v.stream, encoder: v.encoder, at: v.at, ...(isCount(v.leaseEveryMs) && v.leaseEveryMs > 0 ? { leaseEveryMs: v.leaseEveryMs } : {}) };
   if (isMediaHash(v.hash) && isCount(v.size)) return { hash: v.hash, size: v.size, encoder: v.encoder };
   return null;
 }
@@ -1172,7 +1280,7 @@ async function check(
   let there = await findProxy(store, sourceHash, profileId);
   for (let round = 0; ; round++) {
     if (!there) return { there, usable: false };
-    if (await replaceable(store, there, staleMs, now())) return { there, usable: false };
+    if (await replaceable(store, there, staleMs, now(), now)) return { there, usable: false };
     const again = await findProxy(store, sourceHash, profileId);
     if (samePointer(again, there)) return { there, usable: true };
     // Still changing after a few rounds: don't vouch for any of them (the caller makes or claims one anew).
@@ -1202,11 +1310,12 @@ export async function claimProxyStream(
   sourceHash: string,
   profileId: string,
   encoder: string,
-  opts: { staleMs?: number; now?: () => number; id?: string } = {},
+  opts: { staleMs?: number; now?: () => number; id?: string; leaseEveryMs?: number } = {},
 ): Promise<ClaimResult> {
   const now = opts.now ?? Date.now;
   const key = proxyPointerKey(sourceHash, profileId);
-  const mine: ProxyPointer = { stream: opts.id ?? newStreamId(), encoder, at: now() };
+  // `leaseEveryMs`: the claimer's writer renews a lease that often (ProxyStreamWriter's `lease`), and says so here
+  const mine: ProxyPointer = { stream: opts.id ?? newStreamId(), encoder, at: now(), ...(opts.leaseEveryMs ? { leaseEveryMs: opts.leaseEveryMs } : {}) };
   const body = utf8.encode(JSON.stringify(mine));
   const isMine = (p: ProxyPointer | null) => p !== null && "stream" in p && p.stream === (mine as { stream: string }).stream;
   await store.put(key, body, { contentType: "application/json", ifAbsent: true });
@@ -1231,7 +1340,7 @@ export async function claimProxyStream(
   return { claimed: true, pointer: mine };
 }
 
-async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, now: number): Promise<boolean> {
+async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, nowMs: number, now: () => number = () => nowMs): Promise<boolean> {
   if ("hash" in p) {
     if (await isDamaged(store, p.hash)) return true;
     return (await store.head(mediaKey(p.hash)))?.size !== p.size;
@@ -1244,19 +1353,21 @@ async function replaceable(store: BlobStore, p: ProxyPointer, staleMs: number, n
     // Finished. A report covers damage someone read; a part that is gone is caught here, whoever removed it (a host
     // that found it damaged removes it, and a reader that then saw it missing may not have reported it): one HEAD per
     // part, so the check still needs no listing. What's wrong is reported, so later checks stop at the report.
-    const wrong = await finishedWrong(store, p.stream, endBytes, now);
+    const wrong = await finishedWrong(store, p.stream, endBytes, nowMs);
     if (wrong === null) return false;
     await reportDamage(store, p.stream, wrong);
     return true;
   }
-  // Live if anything happened lately: the newest entry, or the claim itself.
+  // A publisher that keeps a lease: live while it renews it (judged on this machine's clock alone), dead once it hasn't
+  // for three periods. Older publishers: live if anything happened lately (the newest entry, or the claim itself).
+  if (p.leaseEveryMs) return !(await leaseAlive(store, p.stream, p.leaseEveryMs, p.at, now));
   const newest = await newestEntry(store, p.stream);
   let latest = p.at;
   if (newest !== null) {
     const v = await getJson(store, streamSegmentKey(p.stream, newest));
     if (v && isCount(v.at)) latest = Math.max(latest, v.at);
   }
-  return now - latest > staleMs;
+  return nowMs - latest > staleMs;
 }
 
 /**
@@ -1389,6 +1500,53 @@ async function inBatches<T, R>(items: readonly T[], f: (item: T) => Promise<R>):
   };
   await Promise.all(Array.from({ length: Math.min(16, items.length) }, worker));
   return out;
+}
+
+/** A lease renewal as written (StreamLease), or null. */
+function asLease(v: Record<string, unknown> | null): StreamLease | null {
+  return v && isCount(v.n) && isCount(v.at) && isCount(v.every) && v.every > 0 ? { n: v.n, at: v.at, every: v.every } : null;
+}
+
+/**
+ * What this process has seen of each stream's lease, per store object: the renewal count, when it was first seen at
+ * that count, and when a renewal was last seen happen. Bounded: the oldest go first.
+ */
+const leaseSeen = new WeakMap<BlobStore, Map<string, { n: number; seen: number; renewed?: number }>>();
+const LEASE_SEEN_MAX = 1000;
+/** A lease last renewed this long ago by its writer's own clock is dead without watching it (no clock is that far off). */
+const LEASE_FORGOTTEN_MS = 10 * 60_000;
+
+/**
+ * Whether a stream's publisher is alive, by its lease (`every`: how often it renews). Only this machine's clock decides:
+ * alive once a renewal is seen (the count changes) or was seen within a period; dead once the count stays the same for
+ * three periods from when it was first seen (or the lease, by its own clock, is far past any skew). So a check of a
+ * publisher that died a moment ago waits up to three periods, and one of a live publisher at most about one. No lease
+ * yet counts as count -1 (a publisher that died before its first renewal).
+ */
+async function leaseAlive(store: BlobStore, stream: string, every: number, claimedAt: number, now: () => number): Promise<boolean> {
+  let seen = leaseSeen.get(store);
+  if (!seen) leaseSeen.set(store, (seen = new Map()));
+  const lapse = 3 * every;
+  for (;;) {
+    const lease = asLease(await getJson(store, streamLeaseKey(stream)));
+    const n = lease ? lease.n : -1;
+    const t = now();
+    const was = seen.get(stream);
+    if (was && was.n !== n) {
+      seen.delete(stream);
+      seen.set(stream, { n, seen: t, renewed: t });
+      return true; // renewed since this process last looked
+    }
+    if (was?.renewed !== undefined && t - was.renewed < every) return true;
+    if (!was) {
+      seen.set(stream, { n, seen: t });
+      if (seen.size > LEASE_SEEN_MAX) seen.delete(seen.keys().next().value!);
+    }
+    const first = seen.get(stream)!.seen;
+    if (t - first >= lapse) return false;
+    if (t - (lease ? lease.at : claimedAt) > LEASE_FORGOTTEN_MS) return false;
+    await sleep(Math.max(1, Math.min(every, first + lapse - t)));
+  }
 }
 
 /**

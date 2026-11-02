@@ -203,9 +203,45 @@ export class StorageProbe {
 
 type TestEnv = Env & { STORAGE_PROBE: DurableObjectNamespace };
 
+// A CPU cutoff as Cloudflare's Free plan makes one (error 1102), for the writer's retry path (cf-proxy-path): while set
+// (/__test/cpu-cutoff?parts=N, 0 to clear), a stream append of more than N parts is stopped partway, as the runtime
+// stops a request over its CPU limit: its first R2 writes land, the rest never happen, and the client gets Cloudflare's
+// answer, 503 "error code: 1102". `cutoffs` counts them.
+let cutoffParts = 0, cutoffs = 0;
+const APPEND = /^\/api\/projects\/[^/]+\/streams\/[^/]+\/append$/;
+async function partsOf(req: Request): Promise<number> {
+  const b = new Uint8Array(await req.clone().arrayBuffer());
+  const n = new DataView(b.buffer, b.byteOffset).getUint32(0);
+  const h = JSON.parse(new TextDecoder().decode(b.subarray(4, 4 + n))) as { parts?: unknown[] };
+  return h.parts?.length ?? 0;
+}
+/** env with R2 writes refused after the first `writes` of them (the request "cut off" there). */
+function cutAfter(env: TestEnv, writes: number): TestEnv {
+  if (!env.BLOBS) return env;
+  let left = writes;
+  const blobs = new Proxy(env.BLOBS, {
+    get(t, k) {
+      const v = Reflect.get(t, k, t) as unknown;
+      if (k !== "put" || typeof v !== "function") return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(t) : v;
+      return (...a: unknown[]) => (left-- > 0 ? (v as (...x: unknown[]) => unknown).apply(t, a) : Promise.reject(new Error("cut off")));
+    },
+  });
+  return { ...env, BLOBS: blobs };
+}
+
 export default {
   async fetch(req: Request, env: TestEnv, ctx?: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
+    if (url.pathname === "/__test/cpu-cutoff") {
+      cutoffParts = Number(url.searchParams.get("parts") ?? 0);
+      return Response.json({ parts: cutoffParts, cutoffs });
+    }
+    if (cutoffParts > 0 && req.method === "POST" && APPEND.test(url.pathname) && (await partsOf(req)) > cutoffParts) {
+      cutoffs++;
+      // the request runs until it is stopped: some of its writes land (3 R2 writes a part, so about one part's)
+      await worker.fetch(req, cutAfter(env, 3), ctx).catch(() => {});
+      return new Response("error code: 1102", { status: 503, headers: { "content-type": "text/plain; charset=UTF-8" } });
+    }
     if (url.pathname === "/__test/storage-checks") {
       const ns = env.STORAGE_PROBE;
       return ns.get(ns.idFromName(crypto.randomUUID())).fetch("https://probe/");

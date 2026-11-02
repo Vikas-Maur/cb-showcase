@@ -435,3 +435,34 @@ test("a reader waiting for the next segment asks once per poll: the batch read's
   // (the writer's own requests aside: its appends and its dedup probe)
   assert.deepEqual(seen.filter((s) => !s.startsWith("POST /") && s !== "GET /streams/:id/read"), [], `only batch reads while waiting: ${seen}`);
 });
+
+test("a host's stream limits: advertised in GET /api/host and each append's answer, reads clamped to them, and the writer follows them", async () => {
+  const store = createMemoryBlobStore();
+  const limits = { appendParts: 2, appendBytes: 500_000, readBytes: 300_000 };
+  const { fetch, client, seen } = host(store, { streamLimits: limits });
+  assert.deepEqual(((await (await fetch("http://host/api/host")).json()) as { streams?: unknown }).streams, limits);
+  const w = new ProxyStreamWriter({ store: await client(), hasher });
+  await w.init(INIT);
+  for (let i = 0; i < 7; i++) await w.segment(seg(i), 2);
+  await w.end();
+  // batches as the answers said: at most 2 parts and 500 kB (each segment ~200 kB) after the first answer
+  assert.ok(seen.filter((s) => s === "POST /streams/:id/append").length >= 4, `${seen}`);
+  // a read asking for more than the host's limit gets the host's (an older client asks 4 MiB)
+  const r = await fetch(`http://host/api/projects/p/streams/${w.id}/read?from=0&bytes=${4 << 20}`, { headers: { authorization: `Bearer ${await host(store).token()}` } });
+  const { header } = splitFrame(new Uint8Array(await r.arrayBuffer()), 1 << 20);
+  const sent = (header as { segments: { size: number; bytes: boolean }[] }).segments.filter((x) => x.bytes);
+  assert.ok(sent.length >= 1 && sent.slice(1).reduce((n, x) => n + x.size, sent[0]!.size) <= 300_000 + sent[0]!.size, "clamped");
+  assertStream(await playAll(reader(await client("viewer"), w.id)), 7);
+});
+
+test("an append may carry a lease renewal, alone or with parts: written beside the entries", async () => {
+  const store = createMemoryBlobStore();
+  const media = await host(store).client();
+  const id = "1a".repeat(32);
+  await media.appendStream(id, { parts: [], lease: { n: 1, at: 5, every: 15_000 } });
+  assert.deepEqual(JSON.parse(new TextDecoder().decode((await store.get(`ps/${id}/lease`))!)), { n: 1, at: 5, every: 15_000 });
+  const p0 = await segPart(0);
+  await media.appendStream(id, { parts: [p0], lease: { n: 2, at: 9, every: 15_000 } });
+  assert.equal(JSON.parse(new TextDecoder().decode((await store.get(`ps/${id}/lease`))!)).n, 2);
+  await assert.rejects(media.appendStream(id, { parts: [], lease: { n: -1, at: 9, every: 0 } as never }), (e: { status?: number }) => e.status === 400);
+});

@@ -14,6 +14,7 @@ import {
   StreamPartMissingError,
   StreamRouteMissingError,
   toBase64,
+  type StreamAppendAnswer,
   type StreamAppendBatch,
   type StreamReadItem,
   type StreamReadOptions,
@@ -31,7 +32,7 @@ class AppendingStore extends CountingMemoryStore {
   readonly batches: StreamAppendBatch[] = [];
   gate: () => Promise<void> = async () => {};
   fail: unknown = null;
-  async appendStream(stream: string, batch: StreamAppendBatch): Promise<void> {
+  async appendStream(stream: string, batch: StreamAppendBatch): Promise<void | StreamAppendAnswer> {
     this.batches.push(batch);
     await this.gate();
     if (this.fail) throw this.fail;
@@ -350,4 +351,69 @@ test("a write limit's wait ends with a cancel", async () => {
   const t0 = Date.now();
   await assert.rejects(w.end(), { name: "AbortError" });
   assert.ok(Date.now() - t0 < 2000);
+});
+
+test("the writer follows the host's limits from its first answer on (and keeps its own with a host that says none)", async () => {
+  class Limiting extends AppendingStore {
+    override async appendStream(stream: string, batch: StreamAppendBatch) {
+      await super.appendStream(stream, batch);
+      return { limits: { parts: 2, bytes: 10 << 20 } };
+    }
+  }
+  const store = new Limiting();
+  const g = gated();
+  store.gate = g.gate;
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, batch: { inFlight: 1 } });
+  await w.init(INIT);
+  await w.segment(seg(0), 2); // the first batch: init and segment 0, sent before any answer
+  for (let i = 1; i < 9; i++) await w.segment(seg(i), 2);
+  const ending = w.end();
+  while (store.batches.length < 5 || g.pending()) {
+    g.release();
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  g.release();
+  await ending;
+  assert.ok(store.batches.slice(1).every((b) => b.parts.length <= 2), JSON.stringify(store.batches.map((b) => b.parts.length)));
+  assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2, 3, 4, 5, 6, 7, 8]);
+  // a host that says nothing: the writer's own default (4 parts)
+  const plain = new AppendingStore();
+  const h = gated();
+  plain.gate = h.gate;
+  const v = new ProxyStreamWriter({ store: plain, hasher: nodeHasher, batch: { inFlight: 1 } });
+  await v.init(INIT);
+  for (let i = 0; i < 9; i++) await v.segment(seg(i), 2);
+  const done = v.end();
+  while (plain.batches.length < 2 || h.pending()) {
+    h.release();
+    await new Promise((r) => setTimeout(r, 1));
+  }
+  h.release();
+  await done;
+  assert.ok(plain.batches.some((b) => b.parts.length === 4), JSON.stringify(plain.batches.map((b) => b.parts.length)));
+});
+
+test("a host asking for 1 part an append gets 4 appends under way (each waits on round trips, not bytes); 2 parts, 3", async () => {
+  for (const [parts, want] of [[1, 4], [2, 3]] as const) {
+    class Limiting extends AppendingStore {
+      open = 0;
+      most = 0;
+      override async appendStream(stream: string, batch: StreamAppendBatch) {
+        this.most = Math.max(this.most, ++this.open);
+        await new Promise((r) => setTimeout(r, 15));
+        this.open--;
+        await super.appendStream(stream, batch);
+        return { limits: { parts, bytes: 10 << 20 } };
+      }
+    }
+    const store = new Limiting();
+    const w = new ProxyStreamWriter({ store, hasher: nodeHasher });
+    await w.init(INIT);
+    await w.segment(seg(0), 2);
+    await w.flush(); // the first answer says the limits
+    for (let i = 1; i < 13; i++) await w.segment(seg(i), 2);
+    await w.end();
+    assert.equal(store.most, want, `${parts} part(s) an append`);
+    assert.deepEqual(await indexes(reader(store, w.id)), Array.from({ length: 13 }, (_, i) => i));
+  }
 });

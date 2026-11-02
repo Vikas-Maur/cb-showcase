@@ -72,8 +72,17 @@ export interface ShareMediaOptions {
   /** The ffmpeg that segments (Cardboard's own on desktop). */
   ffmpeg?: string | readonly string[];
   segmenter?: Segmenter;
-  /** A claimed stream with no new segment for this long, and no end, is taken over by the next share. Default 10 min. */
+  /**
+   * A claimed stream with no new segment for this long, and no end, is taken over by the next share. Default 10 min. It
+   * applies to streams whose publisher keeps no lease (older apps); see `leaseEveryMs`.
+   */
   staleMs?: number;
+  /**
+   * How often this share's publisher renews its stream's lease (default 15 s; the pointer says so). A share that finds a
+   * stream unfinished takes it over once its lease isn't renewed for three periods, not after `staleMs`: a share killed
+   * mid-way blocks a re-share for about 45 s, not 10 minutes.
+   */
+  leaseEveryMs?: number;
 }
 
 export interface ShareMediaResult {
@@ -295,7 +304,8 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
   }
   if (!first) throw new ProxyChainError(attempts);
 
-  const claim = await claimProxyStream(o.store, original.hash, profile.id, first.name, { staleMs: o.staleMs });
+  const leaseEveryMs = o.leaseEveryMs ?? LEASE_EVERY_MS;
+  const claim = await claimProxyStream(o.store, original.hash, profile.id, first.name, { staleMs: o.staleMs, leaseEveryMs });
   if (!claim.claimed) return reuse(claim.pointer); // a teammate claimed it meanwhile
 
   const segmenter = o.segmenter ?? encodeSegments;
@@ -309,7 +319,7 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
       }
       // A new stream for each attempt: the failed one's init segment belongs to its encoder. The pointer is ours.
       stream = newStreamId();
-      const pointer: ProxyPointer = { stream, encoder: c.name, at: Date.now() };
+      const pointer: ProxyPointer = { stream, encoder: c.name, at: Date.now(), leaseEveryMs };
       await o.store.put(pointerKey, new TextEncoder().encode(JSON.stringify(pointer)), { contentType: "application/json" });
     }
     o.onEvent?.({ type: "proxy", how: "streaming", stream });
@@ -319,6 +329,7 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
       id: stream,
       upload: { state: o.uploadState, bytesPerSecond: o.bytesPerSecond, signal: o.signal },
       onWriteLimit: (until) => o.onEvent?.({ type: "waiting", what: "proxy", until }),
+      lease: { everyMs: leaseEveryMs },
     });
     const dir = join(o.workDir, `stream-${stream}`);
     try {
@@ -345,6 +356,7 @@ async function shareProxyStream(o: ShareMediaOptions, original: Manifest, profil
       }
       attempts.push({ encoder: c.name, outcome: "failed", error: e instanceof Error ? e.message : String(e) });
     } finally {
+      writer.close(); // its lease stops: a stream left unfinished reads as abandoned once the lease lapses
       await rm(dir, { recursive: true, force: true }).catch(() => {});
     }
   }
@@ -366,3 +378,6 @@ async function proxyOf(o: ShareMediaOptions, p: ProxyPointer, profile: string, h
 }
 
 const giveUp = (store: ShareMediaOptions["store"], stream: string): Promise<unknown> => reportDamage(store, stream, { unfinished: true });
+
+/** How often a share's publisher renews its stream's lease (ShareMediaOptions.leaseEveryMs). */
+const LEASE_EVERY_MS = 15_000;
