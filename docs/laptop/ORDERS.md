@@ -350,3 +350,14 @@ anything.
 6. **Spot checks:** the share crash 3/3 (one side), bug 6, page shortcuts 25/25, and `--os` 9/9 when the user is away.
 7. **Report** in step 5's format, then wait. If it's green, Update 7 (the merge to `main` and the reinstall) follows at
    once.
+
+### Update 6c (2026-11-02 ~23:50 UTC): the network test's upload, once more (user OK'd)
+The user approved re-running the network test on the hotspot, about 100–120 MB of mobile data.
+1. **When:** after the Update 6b report and after 00:00 UTC (the lab host's daily write cap resets then), with nothing
+   else running. Don't interrupt 6b for it.
+2. **Run once:** `cd D:\cbwork\cflab` then `node .\cf-lab-laptop.mjs .\config.json --upload-mb 100`. If the upload is refused
+   again, don't retry; send what it printed.
+3. **Send** the summary: upload MB/s and the time for the 100 MB, the download part, edit latencies, cut/recovery, the
+   slowed link. Push the results file to `audit/regress-2026-11-02` under `docs/regress/network/`, unless it contains the
+   config's tokens.
+4. **Then wait for Update 7.**
