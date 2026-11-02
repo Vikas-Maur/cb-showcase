@@ -11,7 +11,7 @@ const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "ru
 const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync"), "panel-polish");
 const opt = { skip, timeout: 60_000 };
 
-let T, React, render;
+let T, U, React, render;
 test.before(async () => {
   if (skip) return;
   const esbuild = require(path.join(CARTON, "node_modules", "esbuild"));
@@ -23,7 +23,8 @@ test.before(async () => {
     alias: { react: path.join(ROOT, "scripts", "carton", "react-shim.js") },
   });
   globalThis.window = { __cartonReact: require(path.join(CARTON, "node_modules", "react")) };
-  T = require(path.join(OUT, "carton-ui.cjs")).__forTests;
+  U = require(path.join(OUT, "carton-ui.cjs"));
+  T = U.__forTests;
   React = globalThis.window.__cartonReact;
   render = require(path.join(CARTON, "node_modules", "react-dom", "server")).renderToStaticMarkup;
 }, { timeout: 300_000 });
@@ -98,4 +99,19 @@ test("P2-11: a shared project's status shows over the preview, not only in the S
   assert.match(here, /aria-label="Leo is here\. Open Share"/, "one bad entry skipped, the rest shown");
   assert.match(here, /carton-avatar-initials">L</);
   assert.match(chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo(true)] }), /data-idle=""/);
+});
+
+test("P2-13: the panel keeps the preview usable: its width, narrower, or a drawer over the chat", opt, () => {
+  // a wide window: the chosen width
+  assert.deepEqual(U.fitPanel({ room: 1100, preferred: 384, viewport: 1920 }), { mode: "inline", width: 384 });
+  // less room: narrower, so the preview keeps 320 px
+  assert.deepEqual(U.fitPanel({ room: 680, preferred: 384, viewport: 1280 }), { mode: "inline", width: 360 });
+  assert.deepEqual(U.fitPanel({ room: 620, preferred: 384, viewport: 1280 }), { mode: "inline", width: 300 });
+  // too little even at 300 px (the audit's 960 px window): a drawer over the chat, the preview keeps all its room
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 960 }), { mode: "overlay", width: 384 });
+  assert.deepEqual(U.fitPanel({ room: 100, preferred: 600, viewport: 500 }), { mode: "overlay", width: 436 });
+  // before anything is measured: as chosen
+  assert.deepEqual(U.fitPanel({ room: 0, preferred: 384, viewport: 1280 }), { mode: "inline", width: 384 });
+  // the choice depends only on room: the same room gives the same answer whatever the panel did before
+  for (let room = 200; room <= 1200; room += 7) assert.deepEqual(U.fitPanel({ room, preferred: 420, viewport: 1400 }), U.fitPanel({ room, preferred: 420, viewport: 1400 }));
 });

@@ -464,7 +464,9 @@ What changes with it on:
   too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" (Undo and Redo look
   unavailable meanwhile); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
   Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
-  switch to the cut it went into). Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
+  switch to the cut it went into). In a narrow window the panel never takes the preview's room: it narrows (down to
+  300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer.
+  Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
 - **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
   your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at

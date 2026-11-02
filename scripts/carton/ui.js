@@ -11,7 +11,7 @@
 // worker's carton namespace, scripts/carton/carton-node.js); here remoteUi mirrors it, one connection per project shared
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
-import { Component, createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Component, createElement as h, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Button, CartonProvider, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
@@ -106,6 +106,48 @@ const sidePanel = { value: null, subs: new Set(), set(v) { this.value = v; for (
 // The stage's live chip asks the side panel to open Share (both parts live in this module).
 const panelRequests = new Set();
 const WIDTH = { key: "carton.sidePanelWidth", min: 300, max: 640, initial: 384 };
+// The preview keeps at least this much width beside the panel (UI audit P2-13: at a narrow window the panel took it all).
+const MIN_STAGE = 320;
+
+/**
+ * Where the side panel goes, from the room the preview would have without it (`room`: the stage's width plus the
+ * panel's own width while it is in the row). Its chosen width when that leaves the preview MIN_STAGE; narrower, down
+ * to its minimum, when that is enough; else it floats over the chat as a drawer (overlay), and the preview keeps the
+ * room Cardboard alone gives it. `room` doesn't change with the choice, so the choice never oscillates.
+ */
+export function fitPanel({ room, preferred, viewport, min = WIDTH.min, minStage = MIN_STAGE }) {
+  if (!(room > 0)) return { mode: "inline", width: preferred };
+  if (room - preferred >= minStage) return { mode: "inline", width: preferred };
+  if (room - min >= minStage) return { mode: "inline", width: Math.floor(room - minStage) };
+  return { mode: "overlay", width: Math.max(Math.min(preferred, viewport - 64), Math.min(min, viewport)) };
+}
+
+/** The panel's place in the row (fitPanel), kept up to date as the window, the Library or the chat change size. */
+function useFit(ref, preferred) {
+  const [fit, setFit] = useState({ mode: "inline", width: preferred });
+  const fitRef = useRef(fit);
+  fitRef.current = fit;
+  useLayoutEffect(() => {
+    const stage = document.querySelector("[data-carton-stage-host]");
+    if (!stage) { setFit({ mode: "inline", width: preferred }); return undefined; }
+    const measure = () => {
+      const aside = ref.current;
+      if (!aside) return;
+      const inflow = fitRef.current.mode === "inline" ? aside.getBoundingClientRect().width : 0;
+      const room = stage.getBoundingClientRect().width + inflow;
+      const row = aside.parentElement?.getBoundingClientRect();
+      const next = { ...fitPanel({ room, preferred, viewport: window.innerWidth }), ...(row ? { top: row.top, height: row.height } : {}) };
+      const was = fitRef.current;
+      if (was.mode !== next.mode || was.width !== next.width || (next.mode === "overlay" && (was.top !== next.top || was.height !== next.height))) setFit(next);
+    };
+    measure();
+    const ro = typeof ResizeObserver === "function" ? new ResizeObserver(measure) : null;
+    ro?.observe(stage);
+    window.addEventListener("resize", measure);
+    return () => { ro?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [ref, preferred]);
+  return fit;
+}
 
 /**
  * History in the side panel: the cut it shows, with its switcher (switch, New cut, rename, Fold into…, which opens
@@ -215,7 +257,11 @@ export class CartonBoundary extends Component {
 
 function Sidebar({ panel, setPanel, projectId, bridge }) {
   const ref = useRef(null);
-  const [width, onResize] = useWidth();
+  const [preferred, onResize] = useWidth();
+  const fit = useFit(ref, preferred);
+  const width = fit.width;
+  // A drawer over the chat when the window is too narrow for the preview, the panel and the chat side by side.
+  const overlay = fit.mode === "overlay" ? { position: "fixed", right: 0, top: fit.top ?? 0, height: fit.height ?? "100%", zIndex: 40, boxShadow: "-16px 0 40px -12px #000000b3" } : null;
   const share = window.__cartonSyncUi?.SharePanel ?? null;
   // Esc closes it, and only while focus is in it: the editor's own keys are never taken.
   const onKeyDown = (e) => {
@@ -226,7 +272,7 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
   const tabs = share ? ["history", "comments", "share"] : ["history", "comments"];
   // Cardboard's own classes, as its chat sidebar uses them: same width, rule, handle, header and buttons.
-  return h("aside", { ref, tabIndex: -1, className: "carton-sidebar relative shrink-0 overflow-hidden bg-[var(--desktop-panel)] outline-none", style: { width }, "data-carton-skin": "cardboard", "aria-label": PANELS[panel].label, onKeyDown },
+  return h("aside", { ref, tabIndex: -1, className: "carton-sidebar relative shrink-0 overflow-hidden bg-[var(--desktop-panel)] outline-none", style: { width, ...overlay }, "data-carton-skin": "cardboard", "data-fit": fit.mode, "aria-label": PANELS[panel].label, onKeyDown },
     h("div", { className: "pointer-events-none absolute inset-y-0 left-0 z-10 w-px bg-white/[0.06]" }),
     h("div", { className: "relative flex h-full flex-col", style: { width } },
       h("div", { className: "group absolute top-0 bottom-0 left-0 z-10 w-1", style: { cursor: "col-resize" }, onPointerDown: onResize, role: "separator", "aria-orientation": "vertical", "aria-label": "Resize" },
@@ -359,4 +405,4 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts, LiveChipView, MediaNotice };
+export const __forTests = { confirmations, toasts, LiveChipView, MediaNotice, Sidebar };
