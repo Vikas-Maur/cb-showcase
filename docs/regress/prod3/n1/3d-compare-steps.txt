@@ -1,0 +1,11 @@
+@10→@11: - Deleted title 'W6' 
+@11→@12: - Deleted media 'Text: W6' 
+@12→@13: - Added media 'Text: W6' 
+@13→@14: Main cut@14 doesn't exist yet (head is @13) 
+@14→@15: Main cut@14 doesn't exist yet (head is @13) 
+@15→@16: Main cut@15 doesn't exist yet (head is @13) 
+@16→@17: Main cut@16 doesn't exist yet (head is @13) 
+@17→@18: Main cut@17 doesn't exist yet (head is @13) 
+@14→@15: - Deleted title 'W6' 
+@15→@16: - Deleted media 'Text: W6' 
+@16→@17: - Added media 'Text: W6' 

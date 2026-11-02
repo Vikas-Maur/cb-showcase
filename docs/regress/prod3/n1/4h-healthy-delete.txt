@@ -1,0 +1,24 @@
+start: head main@3 just now Claude Code edit | disk 16:9 · 6.0s · 2 tracks · 7 items | editor {"tracks":["Mine","Agents"],"items":["video","W1","W2","W3","W4","W5","W6"]}
+selected W6 with click at dy -21
+after Delete: editor {"tracks":["Mine","Agents"],"items":["video","W1","W2","W3","W4","W5"]} | head main@5 just now person edit | disk 16:9 · 5.0s · 2 tracks · 6 items
+VERSION  SAVED     BY           WHAT
+main@5   just now  person       edit
+main@4   just now  person       edit
+main@3   just now  Claude Code  edit
+Ctrl+Z toasts: []
+after Ctrl+Z: editor {"tracks":["Mine","Agents"],"items":["video","W1","W2","W3","W4","W5","W6"]} | head main@6 just now person undo | disk 16:9 · 6.0s · 2 tracks · 7 items | snag false
+30 s later:
+VERSION  SAVED         BY           WHAT
+main@6   just now      person       undo
+main@5   just now      person       edit
+main@4   just now      person       edit
+main@3   1 minute ago  Claude Code  edit
+editor {"tracks":["Mine","Agents"],"items":["video","W1","W2","W3","W4","W5","W6"]} | snag false
+console warnings (1):
+console.warn: MaxListenersExceededWarning: Possible EventEmitter memory leak detected. 11 main:event listeners added. Use emitter.setMaxListeners() to increase limit
+    at _addListener (node:electron/js2c/sandbox_bundle:2:35008)
+    at IpcRenderer.addListener (node:electron/js2c/sandbox_bundle:2:37894)
+    at Ob
+console errors (0):
+(none)
+Invalid time value seen: false

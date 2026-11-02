@@ -1,0 +1,3 @@
+[off] before: editor W1,W2,W3,W4,W5,W6 | disk W1,W2,W3,W4,W5,W6
+[off] after Delete: editor W1,W2,W3,W4,W5 | disk W1,W2,W3,W4,W5
+[off] after 1 Ctrl+Z: editor W1,W2,W3,W4,W5,W6 | disk W1,W2,W3,W4,W5,W6

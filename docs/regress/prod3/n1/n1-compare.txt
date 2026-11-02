@@ -1,0 +1,6 @@
+== cb compare main@3 main@4
+- Deleted title 'W6'
+== cb compare main@4 main@5
+- Deleted media 'Text: W6'
+== cb compare main@5 main@6
+- Added media 'Text: W6'
