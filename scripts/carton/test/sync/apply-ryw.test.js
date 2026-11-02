@@ -43,11 +43,16 @@ function applyAndRead(actor, what) {
   const n = ++size;
   const edit = path.join(pc.home, "ryw-edit.tsx");
   fs.writeFileSync(edit, tsxNow().replace(/fontSize=\{\d+\}/, `fontSize={${n}}`));
-  const r = pc.cb(["source", "apply", "Demo", edit], { CARDBOARD_ACTOR: actor });
+  const r = pc.cb(["source", "apply", "Demo", edit], { CARDBOARD_ACTOR: actor, ...(actor ? {} : asTerminal()) });
   const read = tsxNow();
   assert.equal(r.code, 0, `${what}: ${r.out}${r.err}`);
   return { n, read, shown: read.includes(`fontSize={${n}}`), result: r.json() };
 }
+/**
+ * A terminal's cb: no agent named, and none of the environment variables an agent CLI sets (CLAUDECODE, CODEX_*,
+ * GEMINI_CLI, CURSOR_TRACE_ID, CARTON_AGENT), which would name one (review #5: under Codex the case ran as `codex@…`).
+ */
+const asTerminal = () => Object.fromEntries(Object.keys(pc.env).filter((k) => /^(CLAUDECODE|CLAUDE_CODE_ENTRYPOINT|CODEX_.*|GEMINI_CLI|CURSOR_TRACE_ID|CARTON_AGENT)$/.test(k)).map((k) => [k, undefined]));
 /** TRIES applies, each read back at once: the ones whose read missed the agent's own write. */
 function missesOf(actor, what) {
   const misses = [], results = [];
@@ -99,6 +104,8 @@ test("app open, local cut: a Carton command (cb undo) by the agent shows at once
 // shows in it.
 test("app open, local cut: a terminal's cb source apply shows at once too", t, async () => {
   const { misses, results } = missesOf("", "apply from a terminal");
+  const by = pc.cb(["history", "Demo", "--limit", "1"], asTerminal()).json().versions[0]?.by;
+  assert.match(String(by?.id), /^terminal:/, "the case runs as a terminal's cb, not an agent's: " + JSON.stringify(by));
   assert.deepEqual(misses, [], `timeline.tsx missed the terminal's own write on ${misses.length} of ${TRIES} immediate reads`);
   for (const r of results) assert.equal(r.carton?.timeline, "shown", JSON.stringify(r.carton));
   await pc.call("carton.agentHook", { bundlePath: path.join(pc.root, "Demo.cardboard"), actor: AGENT, event: "stop" });
