@@ -301,6 +301,8 @@ if (mode === "--cli") {
     // (director/<chat>/<turn>) and the person's Claude Code claude-code/<session>, never the Director.
     replace('PreToolUse:[{matcher:"Bash",hooks:[async v=>{', 'PreToolUse:[{matcher:"Bash",hooks:[__cartonMain.directorHook(e,async v=>{');
     // H8: and its Read/Write/Edit calls reach the worker's Materializer (the shared timeline.tsx's freeze, credit).
+    // Regress prod4 (director-hold): fileHooks also hooks Claude Code's PowerShell tool, which 1.4.0's transport hooked
+    // nowhere (a turn's cb calls and long pings there held nothing); main keeps a running turn's hold alive itself.
     replace("permissionDecisionReason:k.reason}}}],timeout:Tzt}]}", "permissionDecisionReason:k.reason}}})],timeout:Tzt},...__cartonMain.fileHooks(e)],...__cartonMain.stopHooks(e)}");
     // H9: each in-app agent's turn (the Director's, the person's own Claude Code's, Codex's) ends here (closeTurn: the
     // stream's result, an interrupt, an error): its hold on timeline.tsx ends, and its last version is named from the

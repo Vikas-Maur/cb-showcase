@@ -7,9 +7,11 @@
 //   hookActor), never the Director. A Claude Code Cardboard spawned as a process would get the hooks through
 //   --settings, run by `cb carton-hook` (hostSettings); 1.4.0 spawns only Codex, which gets agentEnv's actor.
 // - H8: the Director's hook events reach the library worker's Materializer for the project (sync/views.js, the
-//   `carton.agentHook` service): a Read of timeline.tsx (or a Bash command naming it) freezes the shared file for the
-//   turn, a Write/Edit of it is credited to the turn, and a stop the late-conflict hook lets through, or the turn's
-//   end, lets go of the freeze and the turn's pins.
+//   `carton.agentHook` service): a Read of timeline.tsx, or a Bash or PowerShell command naming it or running cb (a
+//   `cb source print` too), freezes the shared file for the turn, a Write/Edit of it is credited to the turn, and a
+//   stop the late-conflict hook lets through, or the turn's end, lets go of the freeze and the turn's pins. While the
+//   turn runs, main tells the worker again every 20 s, so a long tool call with no hook (a ping, a render) never
+//   outlasts the worker's one-minute quiet bound (regress prod4, director-hold).
 // - carton:call from the pages forwards to the library worker's `carton` namespace. (cb finds Carton's lease holder
 //   through carton.db's lease row, so Cardboard's control socket needs no Carton method.) A method main itself must
 //   answer (the live-sync half, scripts/carton/sync: a dialog, a link) is added with handle(name, fn); fn gets the
@@ -59,8 +61,11 @@ module.exports = String.raw`var __cartonMain = (() => {
   // Commands that reach Carton: cb, cardboard, or a script under the bundle that runs them. Others keep the actor
   // main gave the process (director/<chat>), so a script that calls cb is still the Director's, just without the turn.
   // (The person's own Claude Code has no actor of its own in its environment: a script's cb call there is cb's own
-  // guess, claude-code@<host>, "Claude Code" without hooks.)
-  const reachesCarton = (cmd) => /(^|[\s;&|(\x60])(cb|cardboard)(\.cmd)?(\s|$)/.test(cmd);
+  // guess, claude-code@<host>, "Claude Code" without hooks.) Review of fix/turn-hold #2: any case (PowerShell's command
+  // names are, and Windows finds CB.cmd for CB), and as a path's last part, quoted or not (& 'C:\...\cb.cmd' source
+  // print). A command that only mentions the word is prefixed and holds the file too: harmless, an environment variable
+  // and a hold that ends with the turn.
+  const reachesCarton = (cmd) => /(^|[\s;&|(\x60'"\\/])(cb|cardboard)(\.cmd|\.exe)?(?=$|[\s;&|)\x60'"])/i.test(cmd);
   // H8: a hook event for the worker's Materializer, waited for up to 3 s (the agent's tool call waits on it; a worker
   // that doesn't answer in time leaves the file as it is, never the agent stuck).
   const agentHook = (ctx, actor, event, input) => {
@@ -68,6 +73,80 @@ module.exports = String.raw`var __cartonMain = (() => {
     const call = library.call("carton.agentHook", { bundlePath: ctx.project.bundlePath, actor, event, input }).catch(() => {});
     return Promise.race([call, new Promise((r) => setTimeout(r, 3000).unref?.())]);
   };
+  // The hook event that holds timeline.tsx for an actor: a Read of the project's timeline.tsx (the worker's hookRead).
+  const holdInput = (ctx, input) => ({ ...input, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: ctx.project?.bundlePath });
+  // Regress prod4 (director-hold, the laptop): a turn's hold on timeline.tsx lasts the whole turn. The worker lets go
+  // of a hooked actor it hasn't heard from for a minute (its quiet bound: a Stop can be lost), and a tool call that
+  // isn't cb sends no hook (a 30 s ping in the foreground, a render, a backgrounded command the agent waits on): the
+  // person's edits reached the file mid-turn. Main knows the turn still runs (Cardboard's own turn state): every
+  // HOLD_BEAT_MS while it does, each actor that holds the file this turn is told again, with the same hold event. The
+  // turn's Stop (a subagent's for itself) and its end stop the beats before they let go, so no beat holds after them;
+  // a turn main stops hearing from (the app gone) is let go by the worker at its quiet bound, as before.
+  const HOLD_BEAT_MS = 20_000;
+  // The chat's turn as turnStarted saw it (Cardboard's chat object: closeTurn replaces its turn), and its generation.
+  const live = new Map();
+  // chatId → the chat's running turn's holds: its generation, the actors holding timeline.tsx, the ones whose Stop
+  // went through (gone; stopped: the turn's own Stop), and the beat.
+  const holds = new Map();
+  const turnRuns = (chatId, gen) => {
+    const l = live.get(chatId);
+    return !!l && l.gen === gen && genOf(chatId) === gen && l.chat.turn?.state === "running" && l.chat.turn.id === l.turn;
+  };
+  // The turn's holds for generation gen, made if needed (another generation's are let go first).
+  const holdsOf = (chatId, gen, ctx) => {
+    let h = holds.get(chatId);
+    if (h && h.gen !== gen) endHolds(chatId), (h = null);
+    if (!h) holds.set(chatId, (h = { gen, ctx, actors: new Set(), gone: new Set(), stopped: false, timer: null }));
+    return h;
+  };
+  // The turn started or ended: its beats stop and its holds are forgotten.
+  const endHolds = (chatId) => {
+    const h = holds.get(chatId);
+    if (h?.timer) clearInterval(h.timer);
+    holds.delete(chatId);
+  };
+  // A Stop that went through in generation gen: the subagent's own (actor), else the whole turn's. Kept, so a hook
+  // of the turn's that answers after it (review of fix/turn-hold #1) can't hold again in this turn.
+  const stopHolds = (chatId, gen, actor) => {
+    const h = holdsOf(chatId, gen, null);
+    if (actor) h.actors.delete(actor), h.gone.add(actor);
+    else h.stopped = true, h.actors.clear();
+    if (!h.actors.size && h.timer) clearInterval(h.timer), (h.timer = null);
+  };
+  const beat = (chatId) => {
+    const h = holds.get(chatId);
+    if (!h || !turnRuns(chatId, h.gen)) return endHolds(chatId);
+    for (const actor of h.actors) void agentHook(h.ctx, actor, "pre-tool-use", holdInput(h.ctx, {}));
+  };
+  // The actor holds timeline.tsx from now on, while the chat's turn of generation gen (the one its hook was called
+  // in, read before any wait: review of fix/turn-hold #1) runs and hasn't stopped. A chat whose turn main doesn't
+  // track: until the worker's quiet bound, as before.
+  const keepHolding = (ctx, actor, gen) => {
+    const chatId = ctx?.chatId;
+    if (!turnRuns(chatId, gen)) return;
+    const h = holdsOf(chatId, gen, ctx);
+    if (h.stopped || h.gone.has(actor)) return;
+    h.ctx = ctx;
+    h.actors.add(actor);
+    if (!h.timer) (h.timer = setInterval(() => beat(chatId), HOLD_BEAT_MS)), h.timer.unref?.();
+  };
+  // H8, regress prod4: a shell command of the turn's (Bash, PowerShell) that reaches Carton (its first cb call: a print
+  // too, which holds nothing in the worker) or names the shared file holds timeline.tsx for the turn from now on, as
+  // a Read of it does. gen: the turn the hook was called in. Returns the actor a cb command must run as, or null.
+  const shellHold = async (ctx, input, command, gen) => {
+    if (typeof command !== "string") return null;
+    const reads = /timeline\.tsx/i.test(command), cb = reachesCarton(command);
+    if (!reads && !cb) return null;
+    const actor = hookActor(ctx, input);
+    keepHolding(ctx, actor, gen);
+    await agentHook(ctx, actor, "pre-tool-use", holdInput(ctx, input));
+    return cb ? actor : null;
+  };
+  const psQuote = (s) => "'" + String(s).replaceAll("'", "''") + "'";
+  // Review of fix/turn-hold #3: a PowerShell command whose opening must stay first (a using statement, a param block,
+  // or the attribute before one, after any comments) breaks with an assignment in front (checked in PowerShell 7.4):
+  // it runs as it is, its cb calls as cb's own guess (Claude Code). The hold is sent all the same.
+  const psOpening = (cmd) => /^(?:\s|#[^\n]*|<#[\s\S]*?#>)*(?:using\s|param\s*\(|\[[\w.]+\s*\()/i.test(cmd);
   // Block once per conflict set: whatever the agent leaves unresolved becomes a card for the person (the worker's
   // stopHook: @carton/local's, as host Claude Code's cb carton-hook runs it, so the agent's own cards stay for cb
   // conflicts and cb resolve). A stop that goes through ends the agent's hold on the shared file (H8); a blocked one goes
@@ -78,7 +157,10 @@ module.exports = String.raw`var __cartonMain = (() => {
     let out = {};
     try { out = (await library?.call("carton.stopHook", { bundlePath: ctx.project.bundlePath, actor, input })) ?? {}; } catch {}
     if (out.decision === "block") return out;
-    if (genOf(ctx?.chatId) === gen) await agentHook(ctx, actor, "stop");
+    if (genOf(ctx?.chatId) !== gen) return {};
+    // the beats stop first (a subagent's own; the turn's Stop, all of the turn's), so none holds after the stop
+    stopHolds(ctx?.chatId, gen, input?.agent_id ? actor : null);
+    await agentHook(ctx, actor, "stop");
     return {};
   };
   // Gate G2 (§6.2): with CARDBOARD_CARTON_TIMING=<file>, every GUI save's round trip to the library worker (the
@@ -114,12 +196,16 @@ module.exports = String.raw`var __cartonMain = (() => {
       running.set(chat, { projectId, bundlePath, turn: turn.id, prompt: turn.text, provider, since: Date.now() });
       hooked.delete(chat.chatId);
       nextGen(chat.chatId);
+      endHolds(chat.chatId);
+      live.set(chat.chatId, { chat, turn: turn.id, gen: genOf(chat.chatId) });
     },
     turnEnded(chat) {
       const t = on ? running.get(chat) : null;
       if (!t) return;
-      // review P2: the turn's hooks still waiting send nothing from here on (gens)
+      // review P2: the turn's hooks still waiting send nothing from here on (gens); its beats stop before its end lets go
       nextGen(chat.chatId);
+      endHolds(chat.chatId);
+      if (live.get(chat.chatId)?.chat === chat) live.delete(chat.chatId);
       running.delete(chat);
       const actors = actorsOf(chat, t), director = t.provider === "director";
       hooked.delete(chat.chatId);
@@ -161,7 +247,8 @@ module.exports = String.raw`var __cartonMain = (() => {
     // the person's own Claude Code's): after it decides, a command that reaches Carton runs with the turn's (and
     // subagent's) actor, hookActor's. A denied command is left alone; a rewritten one is prefixed. A gate that answers
     // after its turn ended (its question waits on the person) adds nothing (review P2, gens): a read sent then would hold
-    // timeline.tsx with no turn left to let go of it.
+    // timeline.tsx with no turn left to let go of it. A command that reaches Carton or names timeline.tsx holds the
+    // file for the turn (shellHold).
     directorHook(ctx, inner) {
       if (!on) return inner;
       return async (input) => {
@@ -171,12 +258,8 @@ module.exports = String.raw`var __cartonMain = (() => {
         const out = r?.hookSpecificOutput;
         if (out?.permissionDecision === "deny") return r;
         const tool = { ...input.tool_input, ...out?.updatedInput };
-        const reads = typeof tool.command === "string" && /timeline\.tsx/i.test(tool.command), cb = typeof tool.command === "string" && reachesCarton(tool.command);
-        if (!reads && !cb) return r;
-        const actor = hookActor(ctx, input);
-        // H8: a command that reads the shared file freezes it for the turn, as a Read of it does.
-        if (reads) await agentHook(ctx, actor, "pre-tool-use", { ...input, tool_name: "Read", tool_input: { file_path: "timeline.tsx" }, cwd: ctx.project?.bundlePath });
-        if (!cb) return r;
+        const actor = await shellHold(ctx, input, tool.command, gen);
+        if (!actor) return r;
         return { ...r, hookSpecificOutput: { hookEventName: "PreToolUse", permissionDecision: "allow", ...out, updatedInput: { ...tool, command: "export CARDBOARD_ACTOR=" + shQuote(actor) + "; " + tool.command } } };
       };
     },
@@ -197,13 +280,26 @@ module.exports = String.raw`var __cartonMain = (() => {
     // H8: the file tools of the transport's agents (the Director, the person's own Claude Code), beside its Bash hook: a
     // Read or Write/Edit of timeline.tsx reaches the worker's Materializer, and a Write/Edit of project.json is refused
     // with a pointer to the agent's own view (PLAN §6.4). The worker decides as cb carton-hook decides (@carton/local's
-    // preToolUse); its only decision is that deny.
+    // preToolUse); its only decision is that deny. A Read or Write/Edit of timeline.tsx holds the file for the turn.
+    // Regress prod4 (director-hold): and Claude Code's PowerShell tool (Windows), which the transport hooked nowhere: on
+    // the laptop the agent ran its first cb source print and a 30 s ping there, so nothing held the file until a later
+    // Bash command, and the person's edit made meanwhile reached it mid-turn. Its commands get the Bash hook's Carton
+    // part (shellHold; the actor in PowerShell's form, $env:CARDBOARD_ACTOR='…'; in front), and no decision: Cardboard's
+    // credit gate is on Bash only, and this adds no permission.
     fileHooks(ctx) {
       if (!on) return [];
       return [{ matcher: "Read|Write|Edit|MultiEdit", hooks: [async (input) => {
         if (input?.hook_event_name !== "PreToolUse") return {};
-        const r = await agentHook(ctx, hookActor(ctx, input), "pre-tool-use", { ...input, cwd: input.cwd ?? ctx.project?.bundlePath });
+        const gen = genOf(ctx?.chatId), actor = hookActor(ctx, input);
+        const r = await agentHook(ctx, actor, "pre-tool-use", { ...input, cwd: input.cwd ?? ctx.project?.bundlePath });
+        if (r?.delivered && /(^|[\\/])timeline\.tsx$/i.test(String(input.tool_input?.file_path ?? ""))) keepHolding(ctx, actor, gen);
         return r?.output?.hookSpecificOutput?.permissionDecision === "deny" ? r.output : {};
+      }] }, { matcher: "PowerShell", hooks: [async (input) => {
+        if (input?.hook_event_name !== "PreToolUse") return {};
+        const tool = input.tool_input ?? {};
+        const actor = await shellHold(ctx, input, tool.command, genOf(ctx?.chatId));
+        if (!actor || psOpening(tool.command)) return {};
+        return { hookSpecificOutput: { hookEventName: "PreToolUse", updatedInput: { ...tool, command: "$env:CARDBOARD_ACTOR=" + psQuote(actor) + "; " + tool.command } } };
       }] }];
     },
     // A Claude Code Cardboard spawns as a process (its args: --settings). 1.4.0 runs its Claude Code through the Agent
