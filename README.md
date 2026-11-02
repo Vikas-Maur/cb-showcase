@@ -525,7 +525,8 @@ What changes with it on:
   kept them (a project an earlier build left like that, or one the root restore broke), Cardboard's own probe reads
   the file again, as its import does, and its thumbnails and waveform are made again from its cache. Nothing is
   guessed: when the clip was first added, which nothing recorded, stays unset. So a recovered project's clip plays at
-  once. A restore also moves the project's "Updated" time in the library.
+  once. A restore also moves the project's "Updated" time in the library. And `cb undo <project> 0` reads 0 as the
+  version to restore, `main@0`, which it refuses as empty, where it used to undo your newest change without a word.
   (`carton\packages\cardboard\src\node\media-details.ts`, `scripts\carton\carton-node.js`)
 
 The words, with git's (the app and `cb` use Carton's; git's work as `cb` aliases):

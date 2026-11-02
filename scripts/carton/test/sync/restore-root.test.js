@@ -97,8 +97,9 @@ test("1. Restore and New cut from here on \"Started the cut\": not offered, refu
     assert.match(c.error, /^Nothing to make a cut from: that version is empty/);
     assert.deepEqual(shape(envOf(pc).project), before, "project.json as it was");
     assert.deepEqual(names(await pc.call("projects.list")), ["Demo"], "still in the library");
-    // cb, while the app runs: the same, in cb history's words
-    for (const argv of [["restore", "Demo", "main@0"], ["revert", "Demo", "main@0"], ["cut", "new", "Demo", "From the start", "--from", "main@0"], ["publish", "Demo", "main@0"]]) {
+    // cb, while the app runs: the same, in cb history's words. `cb undo Demo 0` too: 1.4.0's `[rev]` reads "0" as the
+    // number 0, which Carton's undo took for no version at all and undid the newest change (laptop, merge/prod-2 P3)
+    for (const argv of [["restore", "Demo", "main@0"], ["revert", "Demo", "main@0"], ["cut", "new", "Demo", "From the start", "--from", "main@0"], ["publish", "Demo", "main@0"], ["undo", "Demo", "0"]]) {
       const x = pc.cb(argv);
       assert.equal(x.code, 1, argv.join(" ") + ": " + x.out + x.err);
       assert.match(x.out + x.err, /main@0 is where the history starts, before the project was added: there is nothing in it to (restore|make a cut from|publish)\. The project as it was first saved is main@1\./);
