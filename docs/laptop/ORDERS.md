@@ -170,3 +170,70 @@ mobile data. Run it with half the upload:
 4. **Send** the summary: edit latency, the 45 s cut and recovery, upload MB/s, the slowed link. Push the results file to
    `audit/regress-2026-11-02` under `docs/regress/network/`, unless it contains the config's tokens.
 5. If the reinstall order has already arrived, run this test first, then the build.
+
+### Update 5 (2026-11-02 ~18:20 UTC): the fixed head `eea781bb`, a short re-check
+`merge/prod-2` = **`eea781bb`** = `0cc587f1` + `fix/fold-count` `de364a11` + `fix/ui-final` `e3e8a27b` + `fix/recover-save`
+`0f1aac0c`. Each branch passed its own full Linux suite and one Codex review. The merges had only two small additive
+conflicts. The combined Linux suite is running on EC2 now; I'll tell you if it finds anything. `perf/apply-latency` isn't
+in (its timing is still being checked), so **skip timing B** this round.
+
+1. **Build** `eea781bb` into `out/carton-prod3` with Carton on, as `carton-final` was built. Once its own checks pass,
+   delete `out/carton-final`.
+2. **P1-1, recovered projects save** (needs a fresh copy of `profiles\dl` each time):
+   - Open "Oldest restore", then History → ⋯ on "Added 2 tracks, 7 clips and 6 media files" → Restore.
+   - In `project.json`, all 7 `project.media[]` entries have `createdAt`/`addedAt`. The titles also have `format: "text"`,
+     `size: 0`, `presetId: "custom"`.
+   - Click W6 and press Delete. You get a `person edit` version, `cb source print` shows 6 items, and there's no
+     "Invalid time value" in the console.
+   - Restart, edit again: it saves.
+   - On the kept **`fr-dl3`** profile (recovered under the old build), open "Oldest restore" and delete a title. It saves
+     and writes the dates.
+   - Optional: in DevTools run `window.__carton.saveFailed(new Error("x"))`. The stage toast "Your last change couldn't be
+     saved…" appears.
+3. **P2-1, undo after a recovery** (fresh `dl` copy, restored as in 2):
+   - Ctrl+Z, with a real key and with a DevTools key: the toast "Can't undo that: the project would be left empty", no
+     new version, no crash, the timeline unchanged.
+   - With the tab open, `cb undo "Oldest restore"`: exit 1 with the same words, and the tab stays fine.
+   - An allowed undo, 3 times: Delete W6, wait for its version, Ctrl+Z. After 30 s, `cb history` still has the undo as
+     head, with no `external:project.json edit` after it.
+   - Repeat on "Oldest newcut".
+4. **P3-1 and P3-2:**
+   - New project: `cb restore <p> main@1`, then `cb restore <p> main@3`. The top-level `media` lists the clip
+     (`ownedByBundle: true`). `cb project list`, `cb media list` and `cb app open` print no "[library] Recovered …
+     unlisted media path(s)", also after a restart.
+   - On a fresh `dl` copy, Restore `main@4` and `main@5`. Both refuse with "Nothing to restore: that version is empty
+     (nothing of the project is in it)".
+   - `cb restore "Oldest restore" main@4` prints "main@4 holds nothing of the project…".
+   - `main@0` still says "the history starts there".
+5. **N1, Join from an empty library** (fresh profiles; a host on 8795):
+   - Dashboard → "Join a shared project" → paste the invite → name → Join. "… is in your library now · Open / Done"
+     stays for 5 s or more, and Open opens the project's tab.
+   - Again from the Projects page with another fresh profile, once pressing Done.
+   - Carton off: no Join control.
+6. **N2–N5 and baseline P3s 2, 7, 9, 12b:**
+   - N2: `s-escpreview.js sel-before "Added track"`: the first Esc deselects (the banner stays), the second returns.
+     Also `sel-during`.
+   - N3: `s-rowenter.js 2` with W6 selected: the row previews, no text editor opens, and ↑/↓ don't move the playhead.
+   - Baseline 9: in a preview, Enter or a double-click on a title shows "Previewing an earlier version. Return to
+     current to edit." and opens no editor. After Return, both edit normally.
+   - N4: a one-change row's open toggle reads "Hide the change".
+   - N5: playhead at 9.5 s, then preview the 8 s version: 0:08 / 0:08. Return puts it back at 9.5 s. Preview, click
+     the ruler at 3 s, return: it stays at 3 s.
+   - Baseline 2: Restore, then Ctrl+Z gives a row "Undid the restore"; redo gives "Redid the restore".
+   - Baseline 7: in a 960 CSS px window, History is 300 px wide and ends above the timeline toolbar, with Fullscreen
+     and Hide timeline clickable. Same with the chat collapsed.
+   - Baseline 12b: fold some, then fold in the rest. That row has the fold icon; its undo has ↺.
+7. **Counts** (fold-count):
+   - Split a clip with auto reframe on: History reads only "Split 'clip.mp4' at 1.5 s".
+   - New cut "Alt": split a clip and change a title's font size. Fold into Main: the dialog says "2 changes". Untick the
+     split → "Fold in 1 of 2". Main's row reads "Folded 'Alt' into 'Main cut': 1 of 2 changes", and `cb history` says
+     `merge (1 left out)`.
+   - Fold in the rest: "Folded the rest of 'Alt' into 'Main cut': 1 change".
+   - A project with 1 clip and 6 titles: the setup row reads "Added 2 tracks, video 'clip.mp4', 6 titles and media
+     'clip.mp4'". Compare's Clips reads "1 clip, 6 titles". Compare's and Watch's change counts match, and Watch
+     reads "Section 1 of M".
+8. **Spot checks:** the share crash 3/3 (one side), bug 6, page shortcuts 25/25, and `--os` 9/9 when the user is
+   away. `writers.js --writers 4 --rate 1 --seconds 120`: the table looks as before, and any failure prints a
+   `failed: …` line.
+9. **Report** in step 5's format: pass/fail per item, new bugs by priority, disk. Then wait. If all is green, the next
+   order is the merge to `main` and the reinstall.
