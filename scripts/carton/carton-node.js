@@ -1093,8 +1093,11 @@ export const cardboard14 = {
       // cards then (review H8 r3 #5: compared with the panel's own cut, from its cuts topic, not the shared handle's).
       let shownCut = lc.carton.cut;
       const cutShown = (m) => (m?.t === "topic" && m.topic === "cuts" ? m.value : m?.t === "init" ? m.topics?.cuts : null)?.find?.((x) => x.current)?.id ?? null;
-      // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them.
-      for (const m of ["switchCut", "newCut", "renameCut", "fold", "resolve", "restore", "nameVersion", "undo", "publish"]) {
+      // The panel's writes (restore, fold, switching cut…) go into project.json, and the pages adopt them. "Fold in the
+      // rest" too: it writes the cut the panel shows (only that cut's partial folds offer it), so without this the editor
+      // kept the version before it (laptop #2). Each is the person's: fromCarton records its writes as `me`, never as
+      // this handle's own actor, which for a project that isn't shared is the worker process's identity chain.
+      for (const m of ["switchCut", "newCut", "renameCut", "fold", "foldRest", "resolve", "restore", "nameVersion", "undo", "publish"]) {
         const f = ui[m];
         if (typeof f === "function") ui[m] = async (...a) => {
           // The card behind a conflict, as reported (fromCarton forgets it once resolved).

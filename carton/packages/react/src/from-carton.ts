@@ -58,7 +58,9 @@ export interface FromCartonOptions {
   /**
    * The local person. The handle doesn't expose its actor, and "you" needs it. A host whose GUI saves are recorded as
    * the generic person (`human/person`) may pass the resolved person here (`setIdentity`); give it the GUI saves' group
-   * then (`me.group` or `group`), so Undo finds them.
+   * then (`me.group` or `group`), so Undo finds them. Every write the handle makes for the person (fold, fold some and
+   * the rest, a new cut, naming a version, restore, undo, publish, a card's pick) is recorded as `me`, never as the
+   * Carton's own actor: a host may open its Carton as another actor (Cardboard's worker opens it with the process's).
    */
   me: CoreActor;
   /** Your undo group (§8). Default: `me.group`, else your actor key. */
@@ -1181,7 +1183,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       await refresh();
     },
     async newCut(name, fromRef) {
-      const rec = await carton.fork(name, { from: fromRef });
+      const rec = await carton.fork(name, { from: fromRef, author: opts.me });
       await handle.switchCut(rec.id);
       return cuts.find((c) => c.id === rec.id) ?? fallbackCut(rec.id);
     },
@@ -1211,7 +1213,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
             throw new NewCards();
           }
         : undefined;
-      const common = { into: intoId, ...(choices ? { choices } : {}), ...(o.allCards ? { missingBase: "all-cards" as const } : {}) };
+      const common = { into: intoId, author: opts.me, ...(choices ? { choices } : {}), ...(o.allCards ? { missingBase: "all-cards" as const } : {}) };
       let r;
       try {
         r = o.leaveOut.length ? await carton.foldSome(fromId, { ...common, reject: [...o.leaveOut] }) : await carton.fold(fromId, common);
@@ -1292,7 +1294,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const i = pos.get(id);
       const r = i === undefined ? undefined : rows[i];
       if (!r?.core) return;
-      await carton.name(r.v.ref, name);
+      await carton.name(r.v.ref, name, { author: opts.me });
       const j = pos.get(id);
       if (j === undefined) return;
       const row = rows[j]!;
@@ -1304,7 +1306,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     async undo(turnId) {
       if (undo?.id !== turnId) return { ok: false, error: "Something changed. Try again." };
       const onCut = cutId;
-      const r = await carton.undo(myGroup, { cut: onCut });
+      const r = await carton.undo(myGroup, { cut: onCut, author: opts.me });
       await refreshUndo();
       if (r.status === "confirmed" || r.status === "pending") return { ok: true };
       if (r.status === "conflicts") {
@@ -1316,7 +1318,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     },
     async publish(id) {
       const src = cuts.find((c) => c.id === id);
-      await carton.publish({ from: src?.head ?? id, name: `${src?.name ?? "Cut"} (published)` });
+      await carton.publish({ from: src?.head ?? id, name: `${src?.name ?? "Cut"} (published)`, author: opts.me });
       await refreshCuts();
     },
     openPreview(ref, label) {
