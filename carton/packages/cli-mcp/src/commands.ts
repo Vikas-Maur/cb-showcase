@@ -152,8 +152,8 @@ const history: CommandSpec = {
     const rows = [];
     for (const v of versions) {
       // "Fold in the rest" (a revert of a partial fold's inverse, `restOf`) is the fold it finishes: a merge (regress
-      // prod3: it read `revert`)
-      const row: Record<string, unknown> = { version: versionOf(v, names), ref: v.ref, at: v.at, by: v.author, kind: v.restOf ? "merge" : v.kind, name: v.name ?? null, change: v.change, ...(v.restOf ? { rest: true } : {}), ...(v.blank ? { empty: true } : {}) };
+      // prod3: it read `revert`); a redo (a revert of an undo, `redoOf`) is a `redo`, as an undo is an `undo` (laptop)
+      const row: Record<string, unknown> = { version: versionOf(v, names), ref: v.ref, at: v.at, by: v.author, kind: v.restOf ? "merge" : v.redoOf ? "redo" : v.kind, name: v.name ?? null, change: v.change, ...(v.restOf ? { rest: true } : {}), ...(v.blank ? { empty: true } : {}) };
       // a partial fold is one version, a merge, with what it left out (UI audit P1-3; `cb fold` again folds in the rest)
       // (`leftOut` its paths; `leftOutChanges` how many changes, counted as History and the Fold dialog count them)
       if (v.rejected) Object.assign(row, { leftOut: v.rejected, leftOutChanges: v.leftOutChanges ?? v.rejected.length });

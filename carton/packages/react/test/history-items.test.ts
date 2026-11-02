@@ -198,6 +198,29 @@ test("P1-4 (review #1): a left-out change edited on Main since isn't offered, an
   ui.dispose();
 });
 
+// Laptop P2-1: Fold in with one change left out, then "Fold in the rest", then History's Undo twice: the second Undo
+// brought the rest back in (and read "Undid the fold of 'Alt'…"), and only a third undid the fold. Two actions, two
+// Undos; and the Undo offered for the partial fold names what the fold took, not the change it left out.
+test("P2-1: History's Undo after a partial fold and its rest: the rest, then the whole partial fold, then nothing", async () => {
+  const { carton, ui, main, v } = await alt();
+  await ui.planFold(v.id, main);
+  await ui.fold(v.id, main, { leaveOut: ["items/d"], choices: {} });
+  await settle();
+  assert.doesNotMatch(ui.undoTurn()!.label, /'D'|color/, `the partial fold's Undo names what it took: ${ui.undoTurn()!.label}`);
+  assert.equal((await ui.foldRest((await rows(ui))[0]!.id)).ok, true);
+  await settle();
+  const shown = async () => { const d = (await carton.head(main)).doc; return [item(d, "a").startTime, item(d, "b").name, item(d, "d").color]; };
+  assert.deepEqual(await shown(), [1, "Opening", "black"]);
+  assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true, "Undo the rest");
+  assert.deepEqual(await shown(), [1, "Opening", "red"]);
+  await settle();
+  assert.equal((await ui.undo(ui.undoTurn()!.id)).ok, true, "Undo the partial fold");
+  assert.deepEqual(await shown(), [0, "B", "red"], "Main as it was before the fold");
+  await settle();
+  assert.equal(ui.undoTurn(), null, "nothing of the fold is left to undo");
+  ui.dispose();
+});
+
 test("P1-4 (review #2): undoing 'Fold in the rest' offers the rest again, on its row and in Fold in", async () => {
   const { carton, ui, main, v } = await alt();
   await ui.planFold(v.id, main);

@@ -552,8 +552,13 @@ What changes with it on:
   row, left out together. The Fold dialog names a track the same fold adds ("Moved 'W1' to track 'Text 1'", as
   History's row says it; it read "to track another track"). Every undo or redo of a restore says so ("Undid the
   restore", "Redid the restore"), also the second and later ones (they read as fresh edits), and the undo of a fold or
-  of "Folded the rest…" reads "Undid the fold of 'Alt' into 'Main cut'". `cb history` lists "Folded the rest" as
-  `merge (the rest)` (it read `revert`). **You can fold in the rest later** is true now: the next Fold in lists what
+  of "Folded the rest…" reads "Undid the fold of 'Alt' into 'Main cut'". **Fold in some of it is one undo**
+  (laptop P2-1): after "Fold in 2 of 3" and then the rest, Ctrl+Z takes back the rest, and the next Ctrl+Z the whole
+  partial fold, leaving Main as it was before it. The second press used to bring the rest back in (the two presses
+  flipped between the same two states, the second misnamed) and a third undid the fold; a partial fold on its own
+  undid to the rest brought in. Redo walks forward the same way, and `cb undo`, `cb undo --turn` and History's Undo
+  do the same, also on a shared cut with a teammate's edits in between. `cb history` lists "Folded the rest" as
+  `merge (the rest)` (it read `revert`), and a redo as `redo` (it read `revert` too), as an undo reads `undo`. **You can fold in the rest later** is true now: the next Fold in lists what
   was left out ("Left out earlier") beside anything new, instead of "Nothing to fold in"; what one fold left out comes
   in, or stays out, together. The filter "Agent turns" (it was "Director turns", and empty for agents with no turn
   recorded) lists every agent's turns: a Director turn, and a run of your Claude Code's or Codex's versions up to the

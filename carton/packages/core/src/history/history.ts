@@ -71,7 +71,6 @@ export const groupOf = (a: Actor | null | undefined): string => a?.group ?? acto
 
 const SYSTEM: Actor = { kind: "system", id: "carton" };
 /** Changes inverted at a cut's head: the state and the remap the inversion applies there, or the cards that stop it. */
-export type Inverted = { doc: Doc; maps: RemapMaps } | { cards: MergeResult["conflicts"]; merge: MergeResult };
 const REF_RE = /^(.+)@(\d+)~([0-9a-f]{8}) b:([0-9a-f]{8})(?: p:(\S+))?(?: by (.+))?$/;
 /**
  * A cut's `b:` token in a printed header: 8 lowercase hex characters, the only form the header's parser reads. The id's
@@ -769,14 +768,13 @@ export class History {
       if (!memo.has(id)) memo.set(id, false), memo.set(id, (by.get(id) ?? []).some((r) => !undone(r)));
       return memo.get(id)!;
     };
-    const reverted = { has: undone };
     const out: ConfirmedChange[] = [];
     let head: Doc | undefined;
     for (let i = log.length - 1; i >= 0; i--) {
       const c = log[i]!;
-      if (c.kind !== "partial-revert" || c.withdrawn || reverted.has(c.id)) continue;
+      if (c.kind !== "partial-revert" || c.withdrawn || undone(c.id)) continue;
       const m = log.find((x) => x.id === [c.reverts ?? []].flat()[0]);
-      if (!m?.mergeOf || reverted.has(m.id) || m.mergeOf.branchId !== from) continue;
+      if (!m?.mergeOf || undone(m.id) || m.mergeOf.branchId !== from) continue;
       head ??= this.stateOf(this.head(into))!;
       const after = this.stateOf(nodeId(into, c.seq));
       if (after && c.ops.some((op) => op.op !== "remap" && E.deepEqual(E.getIn(head!, op.path, this.schema), E.getIn(after, op.path, this.schema)))) out.push(c);
@@ -1035,9 +1033,7 @@ export class History {
   planRevert(cutId: string, changeId: ChangeId, { author, kind = "revert", tail, what = "revert" }: { author?: Actor; kind?: ChangeKind; tail?: Tail; what?: string } = {}): Planned | (CommitResult & { status: "conflicts" }) {
     const c = this.#log(cutId, tail).find((x) => x.id === changeId);
     if (!c) throw new Error(`no change ${changeId}`);
-    const inv = this.#inverted(cutId, [c], tail, what);
-    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
-    return { doc: inv.doc, author: author ?? c.author, kind, ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: changeId }, inverse: true };
+    return this.#inverted(cutId, [c], tail, what, author ?? c.author, kind);
   }
   #log(cutId: string, tail?: Tail): readonly ConfirmedChange[] {
     const log = this.#mustCut(cutId).log;
@@ -1048,13 +1044,13 @@ export class History {
     return seq > n ? tail!.states[seq - n - 1]! : this.stateOf(nodeId(cutId, seq))!;
   }
   // The head with `changes` (newest last) inverted one by one, newest first, and the remap that inversion applies at
-  // the head. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
+  // the head, planned as a change of `kind` by `author` that reverts them. A change's recorded remap is inverted as a remap (§8), so what others placed since in its coordinates
   // moves back with it; the changes made since it are the other side's recorded remaps. A card in any step stops it.
   // `what` (undo, redo, revert): P2-1, an undo, redo or revert never empties a project its head holds. A result the
   // schema's own rule takes for empty (`Schema.empty`: Cardboard's name with no aspect ratio, tracks, clips or media),
   // made from a head that isn't, is refused before anything is written or queued. Core's own rule (no field, every
   // collection empty) is a state a generic schema reaches by undoing its first record, so only the schema's refuses.
-  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail: Tail | undefined, what: string): Inverted {
+  #inverted(cutId: string, changes: readonly ConfirmedChange[], tail: Tail | undefined, what: string, author: Actor, kind: ChangeKind): Planned | (CommitResult & { status: "conflicts" }) {
     const log = this.#log(cutId, tail);
     const head: Doc = tail?.states.length ? tail.states[tail.states.length - 1]! : this.#mustCut(cutId).sq!.head;
     let cur = head;
@@ -1069,13 +1065,14 @@ export class History {
         infer: false,
         remaps: { ...(isEmptyMap(since) ? {} : { ours: { maps: since } }), ...(isEmptyMap(inv) ? {} : { theirs: { maps: inv } }) },
       });
-      if (m.conflicts.length) return { cards: m.conflicts, merge: m };
+      if (m.conflicts.length) return { status: "conflicts", cards: m.conflicts, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: m };
       cur = m.doc;
       if (!isEmptyMap(inv)) done = E.composeMaps(done, m.edges.ours);
     }
     const empty = this.schema.empty;
     if (empty?.(cur) && !empty(head)) throw new EmptyVersion(null, what, "result");
-    return { doc: cur, maps: done };
+    const ids = changes.map((c) => c.id);
+    return { doc: cur, author, kind, ...(isEmptyMap(done) ? {} : { intent: { kind: "inverse", maps: done } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, inverse: true };
   }
   acceptRest(cutId: string, inverseId: ChangeId, opts: { author?: Actor } = {}): CommitResult {
     return this.revert(cutId, inverseId, opts);
@@ -1108,6 +1105,8 @@ export class History {
   undoStack(cutId: string, group: string, tail?: Tail, scope: UndoScope = {}): UndoEntry[] {
     const log = this.#log(cutId, tail);
     const undone = undoneIn(log);
+    // P2-1: a fold-some's fold is undone with its partial revert (planUndo), never on its own
+    for (const c of log) if (c.kind === "partial-revert" && !c.withdrawn && !undone.has(c.id)) undone.add(c.reverts as ChangeId);
     const out: UndoEntry[] = [];
     for (let i = log.length - 1; i >= 0; i--) {
       const c = log[i]!;
@@ -1196,11 +1195,13 @@ export class History {
         entries.push(e);
       }
     }
-    const changes = entries.map((e) => log[e.seq - 1]!).reverse();
-    const inv = this.#inverted(cutId, changes, tail, "undo");
-    if ("cards" in inv) return { status: "conflicts", cards: inv.cards, ref: this.#refAt(cutId, this.headSeq(cutId)), merge: inv.merge };
-    const ids = changes.map((c) => c.id);
-    return { doc: inv.doc, author: author ?? top.author, kind: "undo", ...(isEmptyMap(inv.maps) ? {} : { intent: { kind: "inverse", maps: inv.maps } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, inverse: true, entry: top };
+    // a fold-some is one action, one undo (P2-1): its partial revert's entry takes the fold it reverts with it
+    const changes = entries.flatMap((e) => {
+      const c = log[e.seq - 1]!, m = c.kind === "partial-revert" && log.find((x) => x.id === c.reverts);
+      return m ? [c, m] : [c];
+    }).reverse();
+    const p = this.#inverted(cutId, changes, tail, "undo", author ?? top.author, "undo");
+    return "status" in p ? p : { ...p, entry: top };
   }
 
   // ------------------------------------------------------------ credits (blame)
@@ -1633,13 +1634,12 @@ const inScope = (c: ConfirmedChange, group: string, scope: UndoScope): boolean =
 /** The changes an undo change took back, from every undo change in the log. */
 function undoneIn(log: readonly ConfirmedChange[]): Set<ChangeId> {
   const undone = new Set<ChangeId>();
-  for (const c of log) if (c.kind === "undo") for (const id of Array.isArray(c.reverts) ? c.reverts : c.reverts ? [c.reverts] : []) undone.add(id);
+  for (const c of log) if (c.kind === "undo") for (const id of [c.reverts ?? []].flat()) undone.add(id);
   return undone;
 }
 /** "Redo Director: tighter intro": what the undo took back, worded as its undo was. */
 function redoLabel(u: ConfirmedChange, byId: ReadonlyMap<ChangeId, ConfirmedChange>): string {
-  const ids = Array.isArray(u.reverts) ? u.reverts : u.reverts ? [u.reverts] : [];
-  const first = byId.get(ids[ids.length - 1] ?? "");
+  const first = byId.get([u.reverts ?? []].flat().at(-1)!);
   return (first ? undoLabel(first) : undoLabel(u)).replace(/^Undo\b/, "Redo");
 }
 export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {

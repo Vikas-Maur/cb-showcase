@@ -1496,6 +1496,9 @@ class CartonImpl implements Carton {
     await this.#refresh(cut);
     const versions = this.#h.log(cut, opts).map((v) => {
       if (v.rejected) v.leftOutChanges = this.#leftOutChanges(cut, v);
+      // a redo is a revert of an undo: marked, so a list shows it as a redo (laptop: `cb history` listed it as `revert`)
+      const c = v.kind === "revert" && v.change ? this.#h.findChange(v.change) : null;
+      if (typeof c?.reverts === "string" && this.#h.findChange(c.reverts)?.kind === "undo") v.redoOf = c.reverts;
       const who = this.#who(v.author, v.change);
       // an owner only adds to the actor as recorded: `authoredAs` is for an actor told as someone else
       return who === v.author ? v : who && v.author && who.kind === v.author.kind && who.id === v.author.id ? { ...v, author: who } : { ...v, author: who, authoredAs: v.author! };
@@ -1741,13 +1744,21 @@ class CartonImpl implements Carton {
     // a named version's label is its name, given with the edit or after it (as a teammate who joined sees it, on the
     // row); an unnamed edit's says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
     const names = new Map(this.#h.names());
+    const at = (seq: number) => (seq > n ? tail!.states[seq - n - 1] : this.#h.stateOf(nodeId(cut, seq))) ?? {};
     return listed.map((e) => {
       const c = log[e.seq - 1]!;
       const name = e.seq <= n ? names.get(nodeId(cut, e.seq))?.name : undefined;
       if (name) return { ...e, label: undoLabel(c, name) };
+      // P2-1: a fold-some's entry undoes its fold and partial revert together. It says what the fold kept, as its
+      // version does (or, with a teammate's change between the two, what the fold brought, as a whole fold's says)
+      const m = c.kind === "partial-revert" ? log.find((x) => x.id === c.reverts) : undefined;
+      if (m) {
+        const before = at(m.seq - 1);
+        const what = E.describe(m.seq === e.seq - 1 ? E.diff(before, at(e.seq), this.schema) : m.ops, before, this.schema)[0];
+        return what ? { ...e, label: undoLabel(c, what) } : e;
+      }
       if (c.name || c.intent?.kind) return e;
-      const before = e.seq - 1 > n ? tail!.states[e.seq - n - 2] : this.#h.stateOf(nodeId(cut, e.seq - 1));
-      const what = E.describe(c.ops, before ?? {}, this.schema, c.intent)[0];
+      const what = E.describe(c.ops, at(e.seq - 1), this.schema, c.intent)[0];
       return what ? { ...e, label: undoLabel(c, what) } : e;
     });
   }
@@ -2058,8 +2069,13 @@ class CartonImpl implements Carton {
     const actor = this.#actor(opts.author);
     const scope = scopeOf(opts);
     this.#writable(cut);
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope }));
-    return this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    const r: CommitResult & { entry?: UndoEntry } = this.#isShared(cut)
+      ? await this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope }))
+      : await this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    // P2-1: a fold-some's undo took its fold too, so its entry (`cb undo` prints it) reads as a whole fold's does
+    const c = r.entry && this.#h.findChange(r.entry.changeId);
+    const m = c?.kind === "partial-revert" && this.#h.findChange(c.reverts as ChangeId);
+    return m ? { ...r, entry: { ...r.entry!, label: undoLabel(m) } } : r;
   }
   async redo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
     const cut = opts.cut ?? this.#h.current;
