@@ -134,7 +134,10 @@ they are Cardboard's software, not ours to redistribute.
     deletes that copy. macOS empties its temp folder; Windows keeps `%TEMP%` unless Storage Sense is on. On Windows
     such a file is now read straight from the archive, with no copy. The answer is the same: the status, every
     header and the bytes (tested against Cardboard's own handler, and on the real Electron 43.7.0, where the old
-    handler left one copy per file served and the new one leaves none). Files outside the archive, such as your
+    handler left one copy per file served and the new one leaves none). It isn't slower either. Measured in a test
+    app around Cardboard's own handler, on Electron 43.7.0 for Linux, 57 of Cardboard's files (9.1 MB), 20 alternated
+    rounds: fetching them all took 123 ms instead of 170 (medians), the handler's time for the first request
+    (`index.html`) 10 ms instead of 18, and the page load was the same (264 ms). Files outside the archive, such as your
     media, the library and preview copies, are served as before (that is a different handler, which this
     doesn't touch). macOS is unchanged.
     The copies earlier builds left are deleted in the background, a few seconds after the window shows. Only files
