@@ -12,6 +12,10 @@
 //   CARDBOARD_PRISTINE=<Cardboard 1.4.0 unpacked> node scripts/carton/test/sync/apply-bench.js --out <dir> \
 //     --build before=<tree> --build after=<tree> [--rounds 6] [--trips 10] [--writers 1,4] [--modes on,off] \
 //     [--lock /tmp/gfv-race/cpu.lock] [--quiet 0.5] [--cb-env KEY=VALUE ({build} and {mode} are replaced)]
+//     [--resume] [--deadline-min 110]
+// --resume: cells already in <dir>/cells.jsonl for the same commit and facade (bundle hash) are kept, not run again,
+// and count in the medians. --deadline-min: no cell starts after that many minutes (the run exits 3, to be resumed),
+// so a run on a busy box can be continued past a time limit without a cell cut off halfway.
 // Writes <dir>/rows.jsonl (every round trip), <dir>/cells.jsonl (every cell: uptime, gate, checks) and prints medians.
 const fs = require("fs"), path = require("path"), os = require("os");
 const { spawn, spawnSync } = require("child_process");
@@ -190,15 +194,45 @@ async function drive() {
   const rowsFile = path.join(OUT, "rows.jsonl"), cellsFile = path.join(OUT, "cells.jsonl");
   const RUN = new Date().toISOString(); // this invocation's rows, told apart from an earlier run's in the same files
   const rows = [], cells = [];
+  const DEADLINE = Date.now() + Number(arg("deadline-min", 1e9)) * 60_000;
+  // --resume: what an earlier invocation measured for these exact builds (commit and facade hash) stays, once per cell
+  const cellKey = (head, facade, build, mode, w, r) => [head, facade, build, mode, w, r, TRIPS].join("|");
+  const done = new Set();
+  if (args.includes("--resume")) {
+    const read = (f) => { try { return fs.readFileSync(f, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l)); } catch { return []; } };
+    const byBuild = new Map(builds.map((b) => [b.name, b]));
+    const runOf = new Map();
+    for (const c of read(cellsFile)) {
+      const bld = byBuild.get(c.build);
+      if (!bld || c.head !== bld.head || c.artifacts?.facade !== bld.artifacts.facade || c.trips !== TRIPS) continue;
+      const k = cellKey(c.head, c.artifacts.facade, c.build, c.mode, c.writers, c.round);
+      if (done.has(k)) continue;
+      done.add(k);
+      runOf.set(k, c.run);
+      cells.push({ build: c.build, ...c });
+    }
+    for (const y of read(rowsFile)) {
+      const k = cellKey(y.head, y.facade, y.build, y.mode, y.writers, y.round);
+      if (runOf.get(k) === y.run) rows.push(y); // the rows of the invocation whose cell counted
+    }
+    console.log(JSON.stringify({ resumed: done.size, rows: rows.length }));
+  }
   for (let r = 0; r < ROUNDS; r++) for (const w of WRITERS) for (const mode of MODES) {
     // alternate which build goes first, so a warming (or busier) box favours neither
     const order = (r + MODES.indexOf(mode)) % 2 ? [...builds].reverse() : builds;
     for (const bld of order) {
+      if (done.has(cellKey(bld.head, bld.artifacts.facade, bld.name, mode, w, r))) continue;
+      if (Date.now() > DEADLINE) { console.log(JSON.stringify({ deadline: true, next: bld.name + "/" + mode + "/w" + w + "/r" + r, resume: "run again with --resume" })); process.exit(3); }
       const spec = { tree: bld.tree, build: bld.name, mode, writers: w, trips: TRIPS, round: r, quiet: QUIET, tmpdir: bld.tmp, cbEnv };
       for (let attempt = 0; ; attempt++) {
         const p = spawnSync("flock", [LOCK, process.execPath, me, "--cell", JSON.stringify(spec)], { env: { ...process.env, CARTON_TEST_DIR: bld.dir }, encoding: "utf8", maxBuffer: 64 << 20, timeout: 7_200_000 });
         const lines = p.stdout.split("\n").filter(Boolean).map((l) => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
-        if (p.status === 75) { console.log(JSON.stringify({ busy: lines[0]?.cores, cell: spec.build + "/" + mode + "/w" + w + "/r" + r, retryIn: 60 })); await sleep(60_000); continue; }
+        if (p.status === 75) {
+          console.log(JSON.stringify({ busy: lines[0]?.cores, cell: spec.build + "/" + mode + "/w" + w + "/r" + r, retryIn: 60, at: new Date().toISOString() }));
+          if (Date.now() > DEADLINE) { console.log(JSON.stringify({ deadline: true, next: spec.build + "/" + mode + "/w" + w + "/r" + r, resume: "run again with --resume" })); process.exit(3); }
+          await sleep(60_000);
+          continue;
+        }
         const fatal = lines.find((x) => x.fatal);
         if (p.status !== 0 || fatal) { console.error(bld.name, mode, "w" + w, "round", r, "failed:", fatal?.fatal ?? p.stderr.slice(-3000)); if (attempt < 1) continue; throw new Error("cell failed twice"); }
         for (const x of lines) {
