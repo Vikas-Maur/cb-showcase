@@ -1026,11 +1026,11 @@ export class History {
   revert(cutId: string, changeId: ChangeId, { author, kind = "revert", id }: { author?: Actor; kind?: ChangeKind; id?: ChangeId } = {}): CommitResult {
     const done = this.#done(id);
     if (done) return done;
-    const p = this.planRevert(cutId, changeId, { ...(author ? { author } : {}), kind });
+    const p = this.planRevert(cutId, changeId, { author, kind });
     return "status" in p ? p : this.commit(cutId, { ...p, ...(id ? { id } : {}) });
   }
   /** A revert without committing (a shared cut queues it); `tail`: the cut's pending changes, which it may revert. */
-  planRevert(cutId: string, changeId: ChangeId, { author, kind = "revert", tail, what = "revert" }: { author?: Actor; kind?: ChangeKind; tail?: Tail; what?: string } = {}): Planned | (CommitResult & { status: "conflicts" }) {
+  planRevert(cutId: string, changeId: ChangeId, { author, kind = "revert", tail, what = "revert" }: { author?: Actor | undefined; kind?: ChangeKind; tail?: Tail; what?: string } = {}): Planned | (CommitResult & { status: "conflicts" }) {
     const c = this.#log(cutId, tail).find((x) => x.id === changeId);
     if (!c) throw new Error(`no change ${changeId}`);
     return this.#inverted(cutId, [c], tail, what, author ?? c.author, kind);
@@ -1071,7 +1071,7 @@ export class History {
     }
     const empty = this.schema.empty;
     if (empty?.(cur) && !empty(head)) throw new EmptyVersion(null, what, "result");
-    const ids = changes.map((c) => c.id);
+    const ids = changes.flatMap((c) => c.id);
     return { doc: cur, author, kind, ...(isEmptyMap(done) ? {} : { intent: { kind: "inverse", maps: done } }), extra: { reverts: ids.length === 1 ? ids[0]! : ids }, inverse: true };
   }
   acceptRest(cutId: string, inverseId: ChangeId, opts: { author?: Actor } = {}): CommitResult {
@@ -1148,19 +1148,23 @@ export class History {
   }
   /** Redo for an actor group: re-apply what the newest undo on its redo stack took back (a revert of that undo). */
   redo(cutId: string, group: string, { author, id, scope }: { author?: Actor; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
+    return this.#step(cutId, id, () => this.planRedo(cutId, group, { author, scope }));
+  }
+  /** An undo or a redo, planned and committed under `id`: a retry with it answers the first one. */
+  #step(cutId: string, id: ChangeId | undefined, plan: () => (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null): CommitResult & { entry?: UndoEntry } {
     const done = this.#done(id);
     if (done) return done;
-    const p = this.planRedo(cutId, group, { ...(author ? { author } : {}), ...(scope ? { scope } : {}) });
+    const p = plan();
     if (!p) return this.#empty(id, cutId, this.headSeq(cutId));
     if ("status" in p) return p;
     const { entry, ...c } = p;
     return { ...this.commit(cutId, { ...c, ...(id ? { id } : {}) }), entry };
   }
   /** What redo for an actor group would do, without doing it (a shared cut queues it); null when nothing is to redo. */
-  planRedo(cutId: string, group: string, { author, tail, scope }: { author?: Actor; tail?: Tail; scope?: UndoScope } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+  planRedo(cutId: string, group: string, { author, tail, scope }: { author?: Actor | undefined; tail?: Tail; scope?: UndoScope | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
     const top = this.redoStack(cutId, group, tail, scope)[0];
     if (!top) return null;
-    const p = this.planRevert(cutId, top.changeId, { ...(author ? { author } : { author: top.author }), tail, what: "redo" });
+    const p = this.planRevert(cutId, top.changeId, { author: author ?? top.author, tail, what: "redo" });
     return "status" in p ? p : { ...p, entry: top };
   }
   /**
@@ -1169,37 +1173,29 @@ export class History {
    * invalid comes back as conflicts, never silently.
    */
   undo(cutId: string, group: string, { author, turn = true, id, scope }: { author?: Actor; turn?: boolean; id?: ChangeId; scope?: UndoScope } = {}): CommitResult & { entry?: UndoEntry } {
-    const done = this.#done(id);
-    if (done) return done;
-    const p = this.planUndo(cutId, group, { ...(author ? { author } : {}), turn, ...(scope ? { scope } : {}) });
-    if (!p) return this.#empty(id, cutId, this.headSeq(cutId));
-    if ("status" in p) return p;
-    const { entry, ...c } = p;
-    return { ...this.commit(cutId, { ...c, ...(id ? { id } : {}) }), entry };
+    return this.#step(cutId, id, () => this.planUndo(cutId, group, { author, turn, scope }));
   }
   /**
    * What ⌘Z for an actor group would do, without doing it (a shared cut queues it): the inverse of the newest entry of
    * its stack (an agent turn as one) at the head, or the cards that stop it; null when the stack is empty.
    */
-  planUndo(cutId: string, group: string, { author, turn = true, tail, scope }: { author?: Actor; turn?: boolean; tail?: Tail; scope?: UndoScope } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
+  planUndo(cutId: string, group: string, { author, turn = true, tail, scope }: { author?: Actor | undefined; turn?: boolean; tail?: Tail; scope?: UndoScope | undefined } = {}): (Planned & { entry: UndoEntry }) | (CommitResult & { status: "conflicts" }) | null {
     const stack = this.undoStack(cutId, group, tail, scope);
     const top = stack[0];
     if (!top) return null;
     const log = this.#log(cutId, tail);
-    let entries = [top];
-    const t = top.author.turn;
-    if (turn && t) {
-      entries = [];
-      for (const e of stack) {
-        if (e.author.turn !== t) break;
-        entries.push(e);
-      }
-    }
-    // a fold-some is one action, one undo (P2-1): its partial revert's entry takes the fold it reverts with it
+    // an agent turn: the entries from the newest on while they share its turn (all of them when they all do)
+    const t = turn && top.author.turn;
+    const entries = t ? stack.slice(0, stack.findIndex((e) => e.author.turn !== t) >>> 0) : [top];
+    // a fold-some is one action, one undo (P2-1): its partial revert's entry takes the fold it reverts with it. Right
+    // after the fold (one version) the two are one step, from before the fold to after the partial revert (as a
+    // compaction's squashed change is), so what the fold left out never meets a later edit of it as a card; with a
+    // teammate's change between them, each in turn. Inverted oldest first by seq; the one step names both changes it
+    // inverts (`id`: [fold, partial revert]), so `reverts` lists every change, oldest first.
     const changes = entries.flatMap((e) => {
       const c = log[e.seq - 1]!, m = c.kind === "partial-revert" && log.find((x) => x.id === c.reverts);
-      return m ? [c, m] : [c];
-    }).reverse();
+      return !m ? [c] : m.seq < c.seq - 1 ? [m, c] : [{ ...c, id: [m.id, c.id], squashedFrom: m.seq, intent: { kind: "inverse", maps: E.composeMaps(firstParentMap(m), firstParentMap(c)) } } as never];
+    }).sort((a, b) => a.seq - b.seq);
     const p = this.#inverted(cutId, changes, tail, "undo", author ?? top.author, "undo");
     return "status" in p ? p : { ...p, entry: top };
   }
@@ -1639,8 +1635,7 @@ function undoneIn(log: readonly ConfirmedChange[]): Set<ChangeId> {
 }
 /** "Redo Director: tighter intro": what the undo took back, worded as its undo was. */
 function redoLabel(u: ConfirmedChange, byId: ReadonlyMap<ChangeId, ConfirmedChange>): string {
-  const first = byId.get([u.reverts ?? []].flat().at(-1)!);
-  return (first ? undoLabel(first) : undoLabel(u)).replace(/^Undo\b/, "Redo");
+  return undoLabel(byId.get([u.reverts ?? []].flat().at(-1)!) ?? u).replace(/^Undo\b/, "Redo");
 }
 export function undoLabel(c: ConfirmedChange, what: string = c.name ?? c.intent?.kind ?? c.kind ?? "edit"): string {
   const a = c.author;

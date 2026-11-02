@@ -116,3 +116,27 @@ test("P2-1: an agent turn's fold-some is undone with the rest of its turn, each 
   assert.equal(reverts.length, 3);
   assert.equal(new Set(reverts).size, 3, "each change named once");
 });
+
+test("P2-1 (review #1): a teammate's later edit of what the fold left out: the undo keeps it, no card", () => {
+  const { h, main } = folded();
+  h.commit(main, { ops: [set("d", "Bob's d")], author: bob });
+  const r = h.undo(main, ME, { author: me });
+  assert.equal(r.status, "confirmed", JSON.stringify((r as { cards?: unknown }).cards ?? ""));
+  assert.deepEqual(names(h, main), { a: "a", b: "b", d: "Bob's d" }, "the fold-some undone; d was never the fold's, bob's edit stays");
+});
+
+test("P2-1 (review #2): a turn's own edit between its fold and partial revert: inverted newest first by seq, no card", () => {
+  const h = History.create(schema, film(), { cut: "Main cut" });
+  const main = h.current;
+  const alt = h.fork(nodeId(main, 0), "Alt");
+  h.commit(alt, { ops: [set("a", "A"), set("d", "D")], author: me });
+  const director = { kind: "agent" as const, id: "director", group: "me/director", turn: "t1" };
+  assert.equal(h.fold(main, h.head(alt), { author: director }).status, "confirmed");
+  const fold = h.changes(main).at(-1)!;
+  h.commit(main, { ops: [set("a", "A2")], author: director }); // the turn changes again what the fold changed
+  h.commit(main, { ops: [set("d", "d")], author: director, kind: "partial-revert", id: `${fold.id}.inverse`, extra: { rejected: ["items/d"], reverts: fold.id } });
+  const r = h.undo(main, "me/director", { author: director });
+  assert.equal(r.status, "confirmed", JSON.stringify((r as { cards?: unknown }).cards ?? ""));
+  assert.deepEqual(names(h, main), BEFORE);
+  assert.deepEqual(h.changes(main).at(-1)!.reverts, [fold.id, h.changes(main).at(-3)!.id, `${fold.id}.inverse`], "oldest first");
+});

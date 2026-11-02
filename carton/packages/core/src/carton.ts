@@ -586,6 +586,20 @@ const CURRENT = ["current"] as const;
  */
 const PINS_GEN = ["pinsGen"] as const;
 const NODE_RE = /^[^~\s]+@\d+$/;
+/**
+ * P2-1: a fold-some's undo takes its fold with it (History's planUndo), so the entry of that undo, and of the redo of
+ * that undo, reads as a whole fold's ("Undo merge", "Redo merge"), never by the partial revert's kind. `log`: the cut's
+ * changes the entry was planned on (a shared cut's pending ones included).
+ */
+function asFold<R>(r: R, log: readonly ConfirmedChange[], redo = false): R {
+  const e = (r as { entry?: UndoEntry } | null)?.entry;
+  const find = (id: unknown) => (typeof id === "string" ? log.find((x) => x.id === id) : undefined);
+  const u = e && log[e.seq - 1], undid = [u?.reverts ?? []].flat();
+  const p = redo ? find(undid.at(-1)) : u;
+  const m = p?.kind === "partial-revert" ? find(p.reverts) : undefined;
+  if (!m || (redo && !undid.includes(m.id))) return r;
+  return { ...r, entry: { ...e!, label: redo ? undoLabel(m).replace(/^Undo\b/, "Redo") : undoLabel(m) } };
+}
 const emptyDoc = (schema: Schema): Doc => Object.fromEntries(Object.keys(schema.collections).map((k) => [k, []]));
 interface ProjectMeta {
   projectId: string;
@@ -1740,7 +1754,7 @@ class CartonImpl implements Carton {
     const entries = which === "undo" ? this.#h.undoStack(cut, g, tail, scope) : this.#h.redoStack(cut, g, tail, scope);
     // labelled only as far as asked: a label describes the change against the state before it
     const listed = opts.limit === undefined ? entries : entries.slice(0, Math.max(0, opts.limit));
-    if (which === "redo") return listed;
+    if (which === "redo") return listed.map((e) => asFold({ entry: e }, log, true).entry);
     // a named version's label is its name, given with the edit or after it (as a teammate who joined sees it, on the
     // row); an unnamed edit's says what it did ("Undo Director: Trimmed 'Intro' end 6.0 s → 5.0 s")
     const names = new Map(this.#h.names());
@@ -2069,13 +2083,9 @@ class CartonImpl implements Carton {
     const actor = this.#actor(opts.author);
     const scope = scopeOf(opts);
     this.#writable(cut);
-    const r: CommitResult & { entry?: UndoEntry } = this.#isShared(cut)
-      ? await this.#planShared(cut, opts.id, (tail) => this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope }))
-      : await this.#mutate(opts.id ? undefined : cut, () => this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
-    // P2-1: a fold-some's undo took its fold too, so its entry (`cb undo` prints it) reads as a whole fold's does
-    const c = r.entry && this.#h.findChange(r.entry.changeId);
-    const m = c?.kind === "partial-revert" && this.#h.findChange(c.reverts as ChangeId);
-    return m ? { ...r, entry: { ...r.entry!, label: undoLabel(m) } } : r;
+    // P2-1: its entry (`cb undo` prints it) is labelled from the log it was planned on, a shared cut's pending tail too
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planUndo(cut, group ?? groupOf(actor), { author: actor, tail, scope }), [...this.#h.changes(cut), ...tail.rows]));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.undo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut)), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
   async redo(group?: string, opts: { cut?: string; author?: Actor; id?: ChangeId } & UndoScope = {}) {
     const cut = opts.cut ?? this.#h.current;
@@ -2083,8 +2093,8 @@ class CartonImpl implements Carton {
     const actor = this.#actor(opts.author);
     const scope = scopeOf(opts);
     this.#writable(cut);
-    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope }));
-    return this.#mutate(opts.id ? undefined : cut, () => this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
+    if (this.#isShared(cut)) return this.#planShared(cut, opts.id, (tail) => asFold(this.#h.planRedo(cut, group ?? groupOf(actor), { author: actor, tail, scope }), [...this.#h.changes(cut), ...tail.rows], true));
+    return this.#mutate(opts.id ? undefined : cut, () => asFold(this.#h.redo(cut, group ?? groupOf(actor), { author: actor, scope, ...(opts.id ? { id: opts.id } : {}) }), this.#h.changes(cut), true), { idempotent: !!opts.id, ...(opts.id ? { id: opts.id } : {}) });
   }
 
   // ------------------------------------------------------------ retention (§5.4)

@@ -267,11 +267,15 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     **It is one undo** (laptop P2-1: after it and "fold in the rest", Ctrl+Z ② reverted the partial revert alone, which
     brought the rest back in, and Ctrl+Z ③ undid the fold). The undo stack lists only the partial revert: a fold whose
     partial revert (the `partial-revert` that `reverts` it, not withdrawn) is in effect is never an entry of its own,
-    also with a teammate's change between the two. Undoing that entry inverts both, newest first, as one undo change
-    with `reverts: [fold, inverse]` (so History reads "Undid the fold of 'X' into 'Y'"), and its redo re-applies both.
-    A partial revert that an earlier build undid alone leaves its fold an ordinary entry. `undoStack()` labels the
-    entry by what the fold kept, `undo()`'s entry reads as a whole fold's (`Undo merge`), and `@carton/local`'s
-    `undo --turn` undoes a fold-some version from before its fold, naming both changes.
+    also with a teammate's change between the two. Undoing that entry is one undo change with `reverts: [fold,
+    inverse]` (so History reads "Undid the fold of 'X' into 'Y'"), and its redo re-applies both. The two right after
+    each other (one version) are inverted as one step, from before the fold to after the partial revert, so what the
+    fold left out never meets a teammate's later edit of it as a card (review #1); with a change between them, each in
+    turn. An agent turn's changes are inverted newest first by seq (review #2). A partial revert that an earlier build
+    undid alone leaves its fold an ordinary entry. `undoStack()` labels the entry by what the fold kept; `undo()`'s
+    and `redo()`'s entries and the redo stack's read as a whole fold's (`Undo merge`, `Redo merge`), a shared cut's
+    pending ones too (review #3, #4); `@carton/local`'s `undo --turn` undoes a fold-some version from before its fold,
+    naming both changes.
     The partial revert's id is always `<fold's id>.inverse` (local and shared), which is how a server, holding only
     ids and flags, pairs them; its count reads archived rows from the segment index, so it holds across an archive.
   - **What was left out.** `leftOut(from, { into })` lists the partial folds of cut `from` into `into` whose left-out

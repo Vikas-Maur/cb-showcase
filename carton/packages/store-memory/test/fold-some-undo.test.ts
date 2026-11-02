@@ -73,6 +73,15 @@ test("P2-1: a fold-some on its own: ⌘Z puts Main back as it was before it; und
   const [entry, ...more] = await c.undoStack(undefined, { cut: main });
   assert.equal(more.length, 0, "one entry");
   assert.equal(entry!.label, "Undo Moved 'a' 0.0 s → 2.0 s", "what the fold kept (as a whole fold's entry reads), not the partial revert's own change");
+  // review #4: its undo, the redo stack and the redo read as a whole fold's do, never by the partial revert's kind
+  const u = await c.undo(undefined, { cut: main, author: alice });
+  assert.equal(u.entry?.label, "Undo merge");
+  assert.equal((await c.redoStack(undefined, { cut: main }))[0]?.label, "Redo merge");
+  const r = await c.redo(undefined, { cut: main, author: alice });
+  assert.equal(r.entry?.label, "Redo merge");
+  assert.equal((await c.undo(undefined, { cut: main, author: alice })).status, "confirmed");
+  assert.equal((await c.redo(undefined, { cut: main, author: alice })).status, "confirmed");
+  assert.deepEqual(await state(c, main), SOME);
   const said: string[] = [];
   for (const step of ["undo", "redo", "undo"] as const) {
     assert.equal((await c[step](undefined, { cut: main, author: alice })).status, "confirmed", step);
@@ -122,6 +131,42 @@ test("P2-1: on a shared cut, with a teammate's edits before the rest and before 
     assert.deepEqual(await state(a, main), SOME);
     await confirmed(a.redo(undefined, { cut: main, author: alice }));
     assert.deepEqual(await state(a, main), ALL);
+  } finally {
+    await a.close();
+    await b.close();
+    w.host.close();
+  }
+});
+
+test("P2-1 (review #1, #3): on a shared cut, offline: the pending undo of a pending fold-some is named as a fold's; a teammate's edit of what it left out is kept", async () => {
+  const w = world();
+  const sa = createMemoryStore();
+  const a = await Carton.open({ adapter, store: sa, init: { doc: doc0(), cutName: "Main cut" }, actor: alice, sync: w.sync("alice") });
+  await a.share();
+  await until(async () => (await a.cuts())[0]!.sequencer.kind === "server", 5000, "the hand-off");
+  const b = await Carton.open({ adapter, store: await copyStore(sa), actor: bob, sync: w.sync("bob") });
+  await until(() => b.sync!.status === "up-to-date", 5000, "bob connected");
+  try {
+    const main = a.cut;
+    const v = await review(a);
+    // offline: the fold-some and its undo both wait in the queue, and the undo's entry still names a fold
+    await a.sync!.disconnect();
+    assert.equal((await a.foldSome(v.id, { into: main, reject: ["items/d"], author: alice })).status, "pending");
+    const u = await a.undo(undefined, { cut: main, author: alice });
+    assert.equal(u.status, "pending");
+    assert.equal(u.entry?.label, "Undo merge", "named from the pending rows it was planned on");
+    assert.deepEqual(await state(a, main), BEFORE);
+    assert.equal((await a.redo(undefined, { cut: main, author: alice })).entry?.label, "Redo merge");
+    assert.deepEqual(await state(a, main), SOME);
+    // back online: everything confirmed; then bob edits d, which the fold left out, and alice undoes the fold-some
+    assert.ok(await a.sync!.connect());
+    await until(() => a.sync!.state(main).pending === 0, 10_000, "alice's queue confirmed");
+    assert.equal((await b.commit({ ops: [set("d", "name", "Bob's d")], author: bob, wait: 5000 })).status, "confirmed");
+    await until(async () => item((await a.head(main)).doc, "d")!.name === "Bob's d", 5000, "bob's d at alice");
+    const z = await a.undo(undefined, { cut: main, author: alice });
+    assert.equal(z.status, "pending", JSON.stringify(z));
+    assert.equal((await a.sync!.waitFor((z as { id: string }).id, 5000)).status, "confirmed");
+    assert.deepEqual(await state(a, main), [0, "b", "Bob's d"], "the fold-some undone, no card, bob's d kept");
   } finally {
     await a.close();
     await b.close();
