@@ -494,9 +494,11 @@ export class Materializer {
   /**
    * What the installed timeline.tsx print holds (read-your-writes, `showChange`): the cut it shows, the confirmed seq it
    * was made from, the changes past that seq it holds (a freeze view's causal past and the pending changes shown on it,
-   * or head's pending changes), and the file's stamp once installed. Null until this materializer prints or checks it.
+   * or head's pending changes), and the hash of the print's bytes: a write is shown only while the file on disk has
+   * exactly those bytes (review #1: a stamp taken after the install could name a foreign file that replaced the print
+   * in between). Null until this materializer prints or checks it.
    */
-  private printed: { cut: string | undefined; seq: number; ids: ReadonlySet<string>; stamp: string | null } | null = null;
+  private printed: { cut: string | undefined; seq: number; ids: ReadonlySet<string>; hash: string } | null = null;
   /** Writes waiting to show in timeline.tsx (`showChange`). */
   private readonly showing = new Set<{ c: ShowTarget; done: (s: Showing) => void }>();
   /** The cause the coalesced local rewrite (`localTimer`) was armed for. */
@@ -943,8 +945,15 @@ export class Materializer {
   private async holdsChange(c: ShowTarget): Promise<boolean> {
     const p = this.printed;
     if (!p) return false;
-    // the file is still that print (a foreign save since is imported, and the file printed again)
-    if (p.stamp !== null && (await statStamp(this.abs(TIMELINE_FILE), this.busy).catch(() => null)) !== p.stamp) return false;
+    // the file on disk is that print, byte for byte (a foreign save since is imported, and the file printed again); one
+    // that can't be read shows nothing
+    let bytes: Buffer;
+    try {
+      bytes = await retryBusy(() => fs.readFileSync(this.abs(TIMELINE_FILE)), this.busy);
+    } catch {
+      return false;
+    }
+    if (sha(bytes) !== p.hash) return false;
     if (p.ids.has(c.id)) return true;
     const at = c.seq !== undefined && c.cut !== undefined ? { cut: c.cut, seq: c.seq } : ((await this.engine.changeAt?.(c.id).catch(() => null)) ?? (c.seq !== undefined ? { cut: c.cut, seq: c.seq } : null));
     return !!at && at.seq <= p.seq && (at.cut === undefined || p.cut === undefined || at.cut === p.cut);
@@ -1242,8 +1251,8 @@ export class Materializer {
     const carry = { rows: pinned.record ? [pinned.record] : [] };
     // what the file shows once this print is there (read-your-writes, `showChange`): told to the writes waiting for it
     const holds = { cut: pinned.cut, seq: pinned.seq, ids: new Set(shown ? [...this.freeze.causal, ...shown.ids] : (pinned.pending ?? [])) };
-    const showed = async (): Promise<void> => {
-      this.printed = { ...holds, stamp: this.lastInstall.get(TIMELINE_FILE)?.stamp ?? null };
+    const showed = async (hash: string): Promise<void> => {
+      this.printed = { ...holds, hash };
       if (this.showing.size) await this.wakeShowing();
     };
     let landedBefore: number | null = null;
@@ -1260,7 +1269,7 @@ export class Materializer {
       landedBefore = this.landedWrites;
       const src = await this.projectSource();
       const same = !force && !!cur && cur.hash === this.lastInstall.get(TIMELINE_FILE)?.hash && this.sharedRef === body;
-      if (same && this.sharedEnv === src.key) return await showed();
+      if (same && this.sharedEnv === src.key) return await showed(cur!.hash);
       const project = (src.env?.project as Project | undefined) ?? null;
       if (same && this.sharedHeader) {
         // only project.json changed since (written again for fields the print doesn't show, `lastOpenedAt`): printed
@@ -1269,7 +1278,7 @@ export class Materializer {
         const again = await this.codec.print(this.host.toProject(pinned.doc, project), this.sharedHeader.slice(REV_PREFIX.length));
         if (sha(Buffer.from(again, "utf8")) === cur!.hash) {
           this.sharedEnv = src.key;
-          return await showed();
+          return await showed(cur!.hash);
         }
       }
       const header = renderRev({ ref: pinned.ref, branchId: pinned.branchId, nonce: printNonce(), by: this.opts.printedBy });
@@ -1281,7 +1290,7 @@ export class Materializer {
       this.sharedHeader = header;
       this.shownPin = { branchId: pinned.branchId, ref: pinned.ref };
       this.log.rewrites.push({ t: this.clock.now(), path: TIMELINE_FILE, cause, ref: body, frozen: this.freeze.active });
-      await showed();
+      await showed(sha(Buffer.from(text, "utf8")));
     } finally {
       if (landedBefore !== null && (this.landedWrites !== landedBefore || this.landing.size)) this.printedLanding = true;
       // not stored with another write (unchanged, or a failure before it): on its own, so the pin can be released early
@@ -1325,7 +1334,7 @@ export class Materializer {
       await this.foldAgentChanges();
       for (const id of [...saves.keys()]) if (!waiting.has(id)) saves.delete(id);
     }
-    const mine = changes.filter((p) => isAgent(p.author) || this.freeze.callers.has(p.author?.id ?? "") || saves.has(p.id));
+    const mine = changes.filter((p) => this.showsPending(p));
     let doc = this.freeze.view!;
     const ids: string[] = [];
     for (const p of mine) {
@@ -1355,7 +1364,15 @@ export class Materializer {
   private async pendingMoved(): Promise<boolean> {
     if (!this.engine.pendingChanges || !this.engine.shared() || !this.freeze.view) return false;
     const { changes } = await this.engine.pendingChanges(this.freeze.cut ?? undefined);
-    return this.pendingKey(changes.filter((p) => isAgent(p.author) || this.freeze.saves.has(p.id))) !== this.freeze.pending;
+    return this.pendingKey(changes.filter((p) => this.showsPending(p))) !== this.freeze.pending;
+  }
+  /**
+   * The pending changes a frozen file shows (`withPending`) and whose moves rewrite it (`pendingMoved`): this replica's
+   * agents', a windowless `cb` caller's whose call holds the freeze (apply-ryw review #2: one predicate for both, so an
+   * offline terminal's edit rewrites the file), and saves applied in the freeze.
+   */
+  private showsPending(p: PendingChange): boolean {
+    return isAgent(p.author) || this.freeze.callers.has(p.author?.id ?? "") || this.freeze.saves.has(p.id);
   }
 
   /** The project.json envelope of the file on disk (null if absent or unreadable). */

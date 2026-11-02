@@ -1362,3 +1362,40 @@ test("apply-ryw: a windowless cb caller named to onCb (a terminal's) is held to 
   assert.equal(await asked, "later");
   land();
 });
+
+// Review #1: "shown" only while the file on disk is the print's bytes. A foreign writer that replaced the print (before
+// any watch event was read) leaves the write unshown, never certified by a stamp taken after the install.
+test("apply-ryw review #1: a print a foreign writer replaced doesn't count as showing the write", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const old = fs.readFileSync(s.abs(TIMELINE_FILE), "utf8");
+  s.engine.external((d) => ((d.timelineItems as Item[])[0]!.name = "the agent's write"), "agent.9");
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "agent.9", seq: s.engine.headSeq }, 2000), "shown");
+  s.writeAtomic(TIMELINE_FILE, old); // someone else's bytes over the print, not read yet
+  const asked = s.mz.showChange({ id: "agent.9", seq: s.engine.headSeq }, 2000);
+  await s.tick(2001);
+  assert.equal(await asked, "later", "the file doesn't hold the write: not 'shown'");
+});
+
+// Review #2: a shared cut offline, the file frozen by a terminal's cb, and its own edit still pending: the pending change
+// moves the file (pendingMoved and withPending take the same changes), so it shows at once.
+test("apply-ryw review #2: an offline terminal's pending edit shows in the file its call holds", async (t) => {
+  const s = await setup(t, [clip("a", 0, 5)]);
+  const terminal = { kind: "external" as const, id: "terminal:me@box", name: "Terminal" };
+  const engine = s.engine as FakeEngine & { pendingChanges?: unknown };
+  engine.isShared = true;
+  const pending: { id: string; author: typeof terminal; before: Record<string, unknown>; after: Record<string, unknown> }[] = [];
+  engine.pendingChanges = async () => ({ seq: engine.headSeq, changes: pending });
+  // the host tells a change's edits (cardboard's does), so a pending change shows by its own edits
+  (s.mz as unknown as { host: typeof plainHost }).host = { ...plainHost, changes: (from, to) => {
+    const was = new Map(((from.timelineItems ?? []) as Item[]).map((i) => [i.id, JSON.stringify(i)]));
+    return ((to.timelineItems ?? []) as Item[]).filter((i) => was.get(i.id) !== JSON.stringify(i)).map((i) => JSON.stringify(i));
+  } };
+  await s.mz.onCb(terminal);
+  const before = await engine.head();
+  const after = { ...before, timelineItems: (before.timelineItems as Item[]).map((i) => (i.id === "a" ? { ...i, name: "typed offline" } : i)) };
+  pending.push({ id: "term.1", author: terminal, before, after });
+  s.mz.onHeadChange("local");
+  assert.equal(await s.mz.showChange({ id: "term.1", author: terminal }, 2000), "shown");
+  assert.equal(s.find(s.read().items, "a").name, "typed offline");
+});
