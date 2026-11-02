@@ -649,7 +649,12 @@ run below.
    computer's history is never used. Cardboard's reader still decides, and a project it reads costs nothing more.
 
 `scripts\carton\build.js` bundles it: `resources\carton\carton-node.cjs` (for the worker, main and `cb`), its engine
-thread and helper beside it, and `carton-ui.js` beside the editor's code. `build-windows.js --no-carton` leaves Carton
+thread and helper beside it, and `carton-ui.js` beside the editor's code. **A `cb` call with Carton on starts faster**
+(perf/apply-latency): it used to compile all of `carton-node.cjs` from source on every call, twice per agent's print
+and apply; Node's compile cache (in `%TEMP%\node-compile-cache`, checked against the file's contents) now keeps that
+work between calls. And a `cb` call no longer runs a checkpoint of the project's `carton.db` log when it opens it (it
+copied and synced the log, even for a read-only `cb source print`): while the log is small, the app's worker does it
+on its own timer; a log past 4 MiB is still checkpointed by whoever opens it. `build-windows.js --no-carton` leaves Carton
 out entirely, and `--baseline` does too.
 
 #### Testing Carton
