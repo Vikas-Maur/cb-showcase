@@ -381,8 +381,14 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 - Laptop, final candidate P2-1: an undo, redo or revert whose result the schema takes for empty (`Schema.empty`:
   Cardboard's name with no aspect ratio, tracks, clips or media), made from a head that isn't, is refused by core before
   anything is written (`EmptyVersion`, "Can't undo that: the project would be left empty"; `planUndo`, `planRevert`,
-  and local's `undoTurn`). The worker answers the page `{status: "refused", error}`, and the page shows the words over
-  the stage and does not fall back to Cardboard's snapshot undo. Before, Ctrl+Z right after recovering a project
+  and local's `undoTurn`; a shared cut's queued undo made empty by a teammate's edit is refused at the push). The
+  worker answers the page `{status: "refused", error}` (the code survives the control socket when another process
+  holds the lease), and the page shows the words over the stage and does not fall back to Cardboard's snapshot undo.
+- The displaced-file review no longer imports a `project.json` that is exactly a version history holds (its rev
+  recorded, its versioned content that version's: `isKnownState`). Such a file is Carton's own whose `seen.json` entry
+  was lost (two processes writing the file at once can lose one); imported against head as an outside edit, it put
+  that version back over everything since, an undo made meanwhile included ("external:project.json"). A file under a
+  known rev with other content is still imported. Before, Ctrl+Z right after recovering a project
   undid the Restore into the state the root-restore bug left, and the tab crashed in the layouts panel, which splits
   the aspect ratio: every state the page adopts (an undo's answer, a change from elsewhere) now gets Cardboard's own
   default, 16:9, as its load gives a project without one.

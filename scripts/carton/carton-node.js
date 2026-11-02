@@ -1263,6 +1263,15 @@ async function sweep(file, s, journal, held) {
 // A displaced file Carton didn't write is someone's save: a project.json is imported as an outside change, a
 // timeline.tsx is applied through Cardboard's own mirror (as its watcher would have), and only then is it deleted.
 // One that can't be applied yet stays in .carton/displaced/ and is reported: never lost, never silently dropped.
+// Whether a project.json's project is exactly a version history holds: its rev recorded against that version (the rev
+// map), and its versioned content that version's. A file under a known rev with other content is still an edit.
+async function isKnownState(lc, project) {
+  const ref = await refOf(lc, project?.stateUpdatedAt).catch(() => undefined);
+  if (!ref || pendingRef(ref)) return false;
+  const doc = await lc.carton.checkout(ref).catch(() => null);
+  if (!doc) return false;
+  try { return hashDoc(fromHost(project, doc), lc.carton.schema) === hashDoc(doc, lc.carton.schema); } catch { return false; }
+}
 async function review(file, s) {
   const bundle = path.dirname(file), isProject = path.basename(file) === "project.json";
   const parse = (b) => { try { return JSON.parse(b.toString("utf8")); } catch { return null; } };
@@ -1272,7 +1281,11 @@ async function review(file, s) {
       if (isProject) {
         const lc = await open(bundle);
         if (!lc) throw new Error("no history for the project");
-        await importForeign(lc, parse(f.bytes).project);
+        const p = parse(f.bytes).project;
+        // a late copy of a version history already holds is no outside edit (it lost its seen.json entry to a race):
+        // imported against head it put that version back over everything since, an undo made meanwhile included, as
+        // "external:project.json" (laptop, final candidate P2-1; review of fix/recover-save)
+        if (!(await isKnownState(lc, p))) await importForeign(lc, p);
       } else {
         const h = hostOf(bundle), id = h?.store.idForBundlePath?.(path.resolve(bundle));
         if (!id) throw new Error("no mirror for the project in this process");

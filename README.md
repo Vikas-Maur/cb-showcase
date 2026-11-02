@@ -549,7 +549,10 @@ What changes with it on:
   Restore and "New cut from here" refuse such a version too. Their message used to say "the history starts there",
   which is true only of the first row: a later emptied version says "nothing of the project is in it", and `cb`
   names it ("main@4 holds nothing of the project"). The editor also never takes a project without an aspect ratio
-  from History without Cardboard's own default (16:9), so a tab can't crash on one.
+  from History without Cardboard's own default (16:9), so a tab can't crash on one. In a shared project, an undo
+  made offline that a teammate's edit would turn into one is refused when it is sent, and you're told. And an earlier
+  copy of the project file that Carton itself wrote, found again on disk, is no longer taken for someone else's edit
+  that puts the old version back over your undo.
 - **`cb restore` lists the clip's file again.** After `cb restore` to a version without a clip and back, the project's
   list of where its media files are stayed empty, and every `cb` command printed "Recovered 1 unlisted media path(s)"
   until the next real save. The restore now lists the clip's file, as the app's own restore did.

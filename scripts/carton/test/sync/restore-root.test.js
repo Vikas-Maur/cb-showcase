@@ -823,3 +823,38 @@ test("7. P3-1: after a cb restore round trip the media manifest lists the clip's
     S.killHelpers();
   }
 });
+
+test("6b. P2-1 (review): a late copy of an earlier version that lost its seen.json entry is no outside edit: displaced by the next write, it doesn't put that version back", t, async () => {
+  const b = await S.build();
+  const pc = await S.computer("late-copy", b);
+  S.seed(pc, b);
+  try {
+    const file = path.join(bundleOf(pc), "project.json");
+    const early = fs.readFileSync(file); // main@4, its rev recorded
+    // an edit after it (as an undo would be), main@5
+    must(pc.cb(["source", "print", "Demo"]), "print");
+    const edit = path.join(pc.home, "edit6b.tsx");
+    fs.writeFileSync(edit, fs.readFileSync(path.join(bundleOf(pc), "timeline.tsx"), "utf8").replace("fontSize={140}", "fontSize={191}"));
+    must(pc.cb(["source", "apply", "Demo", edit]), "apply");
+    const head = must(pc.cb(["history", "Demo"]), "history").json().versions[0].version;
+    const now = fs.readFileSync(file);
+    // the earlier file back on disk, its entry in seen.json lost (two processes writing it at once can lose one)
+    fs.writeFileSync(file, early);
+    fs.rmSync(path.join(bundleOf(pc), ".carton", "seen.json"), { force: true });
+    // the next write displaces it (the facade's install, as both copies of the store install), and its review runs
+    const r = asProcess(pc, b, `
+      const fs = require("fs"), path = require("path");
+      const tmp = path.join(args.bundle, ".project.json.late.tmp");
+      fs.writeFileSync(tmp, args.now);
+      const env = JSON.parse(args.now);
+      const ok = await f.cardboard14.install(tmp, args.file, undefined, env.project.stateUpdatedAt, env);
+      await new Promise((r) => setTimeout(r, 2000)); // the review of what it displaced (300 ms after the install)
+      return ok;`, { bundle: bundleOf(pc), file, now: now.toString("utf8") });
+    assert.notEqual(r, false, "installed");
+    const h = must(pc.cb(["history", "Demo"]), "history after").json().versions;
+    assert.equal(h[0].version, head, "no version put the earlier one back: " + JSON.stringify(h.slice(0, 2).map((v) => [v.version, v.kind, v.by?.id])));
+    assert.ok(envOf(pc).project.timelineItems.some((i) => i.fontSize === 191), "the edit stays in project.json");
+  } finally {
+    S.killHelpers();
+  }
+});
