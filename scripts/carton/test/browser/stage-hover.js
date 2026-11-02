@@ -11,7 +11,11 @@
 // while the pointer is over the timeline, the stage shows the frame under the pointer (the store's currentTime is the
 // hover time, 4.5 s, where there is no picture), selected or not, after Esc and after Delete; when the pointer leaves
 // the timeline the stage shows the playhead's frame again. Pristine 1.4.0's renderer does the same.
-// It exits 1 if Carton on differs from Carton off or from the build without Carton.
+// Carton on runs twice: once with its own saves echoed, once with each save announced as a newer head (as when Carton
+// merged it), so the bridge fetches and adopts head (renderer-bridge.js receive) during the steps.
+// It exits 1 if any build doesn't do what Cardboard does on these steps (W5 selected, hovered 4.5 s, nothing selected
+// and W5 gone after Delete, the picture back once the pointer leaves), or if Carton on differs from Carton off or from
+// the build without Carton at any step.
 //
 // Usage: CARDBOARD_PRISTINE=<_inspect/cardboard-1.4.0> [PLAYWRIGHT=<path to playwright>] [CHROME=<chromium binary>]
 //        node scripts/carton/test/browser/stage-hover.js [out dir]
@@ -74,7 +78,7 @@ const project = {
 };
 
 // main, in the page
-const fakeMain = ({ project, carton }) => {
+const fakeMain = ({ project, carton, merge }) => {
   const events = new Set(), responses = new Set();
   let doc = JSON.parse(JSON.stringify(project));
   const later = (f) => setTimeout(f, 0);
@@ -104,7 +108,19 @@ const fakeMain = ({ project, carton }) => {
     }
     if (channel in BOOT) return BOOT[channel];
     if (channel === "project:patch") {
-      doc = { ...doc, ...data.document };
+      // the store's scoped write (the library worker's updateScoped): the document carries only what the scope owns
+      const d = data.document, sc = data.scope ?? {}, removed = new Set(sc.removedMediaIds ?? []), owned = new Set(sc.ownedMediaIds ?? []);
+      const theirs = new Map((d.media ?? []).filter((m) => !removed.has(m.id)).map((m) => [m.id, m]));
+      const media = (doc.media ?? []).filter((m) => !removed.has(m.id)).map((m) => {
+        const t = theirs.get(m.id), fields = sc.ownedMediaDataFields?.[m.id];
+        return owned.has(m.id) && t ? t : fields && t ? { ...m, data: { ...m.data, ...Object.fromEntries(fields.filter((f) => f in t.data).map((f) => [f, t.data[f]])) } } : m;
+      });
+      for (const [id, m] of theirs) if (owned.has(id) && !media.some((x) => x.id === id)) media.push(m);
+      doc = { ...doc, ...Object.fromEntries((sc.ownedFields ?? []).filter((f) => f in d).map((f) => [f, d[f]])), media, updatedAt: d.updatedAt ?? doc.updatedAt, stateUpdatedAt: Math.max(doc.stateUpdatedAt ?? 0, d.stateUpdatedAt ?? 0) };
+      // merge: as when Carton merged the save into a head that had moved: head is written under a newer revision and
+      // announced, so the page's bridge doesn't take it for its own save's echo and adopts it (receive's fetch, adopt)
+      if (merge) doc = { ...doc, stateUpdatedAt: doc.stateUpdatedAt + 1 };
+      window.__cbTestAnnounced = doc.stateUpdatedAt;
       emit("project:changed", { id: doc.id, stateUpdatedAt: doc.stateUpdatedAt, ...(carton ? { carton: true } : {}) });
       return { ok: true };
     }
@@ -136,7 +152,7 @@ const fakeMain = ({ project, carton }) => {
 };
 
 const TYPES = { ".js": "text/javascript", ".css": "text/css", ".html": "text/html", ".json": "application/json", ".wasm": "application/wasm", ".svg": "image/svg+xml", ".png": "image/png", ".woff2": "font/woff2" };
-const runCase = async (browser, { name, renderer, carton, key, ui }) => {
+const runCase = async (browser, { name, renderer, carton, merge = false, key, ui }) => {
   const context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
   const page = await context.newPage(), errors = [];
   page.on("pageerror", (e) => errors.push(String(e).slice(0, 300)));
@@ -149,7 +165,7 @@ const runCase = async (browser, { name, renderer, carton, key, ui }) => {
     return route.fulfill({ status: 200, contentType: TYPES[path.extname(f)] ?? "application/octet-stream", body: fs.readFileSync(f) });
   });
   await page.addInitScript({ content: ui });
-  await page.addInitScript(fakeMain, { project, carton });
+  await page.addInitScript(fakeMain, { project, carton, merge });
   await page.goto(`http://localhost:5199/app/editor/${PID}`);
   await page.waitForSelector("canvas[data-preview-canvas]", { timeout: 90000 });
   const settle = () => page.waitForTimeout(1500);
@@ -169,7 +185,7 @@ const runCase = async (browser, { name, renderer, carton, key, ui }) => {
       let sum = 0;
       for (let i = 0; i < d.length; i += 4) sum += 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
       const s = window.__cbTestStore();
-      return { luma: +(sum / (d.length / 4)).toFixed(1), currentTime: s.currentTime, playheadTime: s.playheadTime, hover: s.isHoverScrubberVisible ? s.hoverTime : null, selected: s.selectedTimelineItemIds.length };
+      return { luma: +(sum / (d.length / 4)).toFixed(1), currentTime: s.currentTime, playheadTime: s.playheadTime, hover: s.isHoverScrubberVisible ? s.hoverTime : null, selected: s.selectedTimelineItemIds.join(","), w5: s.timelineItems.some((i) => i.id === "eeeeeeee-0000-4000-8000-000000000005"), base: s.cartonBase ?? null, announced: window.__cbTestAnnounced ?? null };
     }, shot.toString("base64"));
   };
   const steps = {};
@@ -211,24 +227,41 @@ const runCase = async (browser, { name, renderer, carton, key, ui }) => {
   const results = [];
   try {
     for (const key of ["Escape", "Delete"])
-      for (const c of [{ name: "carton-on", renderer: dirs.carton, carton: true }, { name: "carton-off", renderer: dirs.carton, carton: false }, { name: "no-carton", renderer: dirs.none, carton: false }])
+      for (const c of [{ name: "carton-on", renderer: dirs.carton, carton: true }, { name: "carton-on-merged", renderer: dirs.carton, carton: true, merge: true }, { name: "carton-off", renderer: dirs.carton, carton: false }, { name: "no-carton", renderer: dirs.none, carton: false }])
         results.push(await runCase(browser, { ...c, key, ui }));
   } finally { await browser.close(); }
   let failed = false;
   for (const r of results) {
-    const row = Object.entries(r.steps).filter(([k]) => k !== "layer").map(([k, s]) => `${k} ${s.luma} (t ${s.currentTime}, playhead ${s.playheadTime}, hover ${s.hover ?? "-"}, sel ${s.selected})`);
-    console.log(`${r.name.padEnd(10)} ${r.key.padEnd(6)} layer=${r.steps.layer} | ${row.join(" | ")}${r.errors.length ? " | errors: " + r.errors.join("; ") : ""}`);
+    const row = Object.entries(r.steps).filter(([k]) => k !== "layer").map(([k, s]) => `${k} ${s.luma} (t ${s.currentTime}, playhead ${s.playheadTime}, hover ${s.hover ?? "-"}, sel ${s.selected ? "W" + s.selected.slice(-1) : "-"}, W5 ${s.w5 ? "on" : "gone"}${s.base !== null ? `, base ${s.base}` : ""})`);
+    console.log(`${r.name.padEnd(16)} ${r.key.padEnd(6)} layer=${r.steps.layer} | ${row.join(" | ")}${r.errors.length ? " | errors: " + r.errors.join("; ") : ""}`);
     if (r.errors.length) failed = true;
   }
-  // Carton on must do what Carton off and the build without Carton do, at every step
-  const same = (a, b) => Math.abs(a.luma - b.luma) <= 2 && a.currentTime === b.currentTime && a.hover === b.hover && a.selected === b.selected;
+  // What Cardboard does on these steps, in every build: the picture at the playhead; the hovered time (4.5 s, no
+  // picture) while the pointer is on the timeline, W5 selected; after the key, nothing selected (and W5 gone after
+  // Delete), still the hovered time; the playhead's picture again once the pointer leaves.
+  const W5 = "eeeeeeee-0000-4000-8000-000000000005";
+  const expect = (r) => {
+    const { before, selected, away } = r.steps, after = r.steps[r.key], bad = [];
+    const check = (ok, what) => { if (!ok) bad.push(what); };
+    check(before.luma > 50 && before.currentTime === 1 && before.playheadTime === 1 && before.hover === null && before.selected === "", "before: the picture at 1 s");
+    check(selected.selected === W5 && selected.hover === 4.5 && selected.currentTime === 4.5 && selected.playheadTime === 1 && selected.luma < 20, "selected: W5, the hovered 4.5 s");
+    check(after.selected === "" && after.hover === 4.5 && after.currentTime === 4.5 && after.playheadTime === 1 && after.luma < 20 && after.w5 === (r.key !== "Delete"), `${r.key}: nothing selected${r.key === "Delete" ? ", W5 gone" : ""}, still the hovered 4.5 s`);
+    check(away.luma > 50 && away.currentTime === 1 && away.playheadTime === 1 && away.hover === null && away.w5 === (r.key !== "Delete"), "pointer away: the picture at 1 s");
+    // Carton on: its stage layer is there; merged: the editor adopted the announced head (its base is that revision)
+    if (r.name.startsWith("carton-on")) check(r.steps.layer, "Carton's stage layer");
+    if (r.name === "carton-on-merged") check(away.announced !== null && away.base === away.announced, "the merged head adopted");
+    return bad;
+  };
+  for (const r of results) for (const b of expect(r)) { failed = true; console.log(`${r.name}, ${r.key}: not as expected: ${b}`); }
+  // and Carton on does at every step what Carton off and the build without Carton do
+  const same = (a, b) => Math.abs(a.luma - b.luma) <= 2 && a.currentTime === b.currentTime && a.playheadTime === b.playheadTime && a.hover === b.hover && a.selected === b.selected && a.w5 === b.w5;
   for (const key of ["Escape", "Delete"]) {
-    const [on, off, none] = ["carton-on", "carton-off", "no-carton"].map((n) => results.find((r) => r.name === n && r.key === key));
-    if (!on.steps.layer) { failed = true; console.log(`${key}: Carton's stage layer wasn't there with Carton on`); }
-    for (const step of ["before", "selected", key, "away"])
-      for (const other of [off, none])
-        if (!same(on.steps[step], other.steps[step])) { failed = true; console.log(`${key}, ${step}: carton-on differs from ${other.name}`); }
+    const of = (n) => results.find((r) => r.name === n && r.key === key);
+    for (const on of [of("carton-on"), of("carton-on-merged")])
+      for (const other of [of("carton-off"), of("no-carton")])
+        for (const step of ["before", "selected", key, "away"])
+          if (!same(on.steps[step], other.steps[step])) { failed = true; console.log(`${key}, ${step}: ${on.name} differs from ${other.name}`); }
   }
-  console.log(failed ? "FAIL" : "PASS: Carton on matches Carton off and the build without Carton at every step");
+  console.log(failed ? "FAIL" : "PASS: every build does what Cardboard does, and Carton on (also adopting a merged head) matches Carton off and the build without Carton at every step");
   process.exit(failed ? 1 : 0);
 })().catch((e) => { console.error(e); process.exit(1); });
