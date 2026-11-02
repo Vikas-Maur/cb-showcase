@@ -348,7 +348,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   const seenSeq = new Map<string, number>();
   // Only the current cut's own partial folds offer the rest: an inherited one (History shows the cut a fork came
   // from) would fold into that other cut (R3-2).
-  const offersRest = (c: CoreVersion) => c.kind === "partial-revert" && !!c.change && c.ref.branchId === cutId && restDecision.get(c.change) === true && !restDone.has(c.change);
+  // A partial fold: its own version (core lists it as a merge with what it left out), or a partial revert on its own
+  const partial = (c: CoreVersion) => c.kind === "partial-revert" || !!c.rejected;
+  const offersRest = (c: CoreVersion) => partial(c) && !!c.change && c.ref.branchId === cutId && restDecision.get(c.change) === true && !restDone.has(c.change);
 
   const toVersion = (c: CoreVersion, kindOverride?: VersionKind, turnEdits?: number): Version => {
     const id = c.change ?? `${c.ref.branchId}@${c.ref.seq}`;
@@ -841,17 +843,19 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
         }
         // A fold-some's partial revert right after its fold: the two are one version, the partial revert's (UI audit
         // P1-3), as log() lists them. The fold's row goes.
+        let some = false;
         if (c.kind === "partial-revert" && typeof c.reverts === "string") {
           const i = pos.get(c.reverts);
           const f = i === undefined ? undefined : rows[i]!.core;
           if (f && f.ref.branchId === e.branchId && f.ref.seq === e.seq - 1) {
             reindexFrom(dropRow(c.reverts));
             hub.notify("history");
+            some = true;
           }
         }
         // A withdraw row (H1: a sent edit a rebase emptied, its id spent) moves the head but is no version: History
         // leaves it out, as log() does
-        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: some ? "merge" : c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(some ? { rejected: [...(c.rejected ?? [])] } : {}), ...(c.name ? { name: c.name } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
@@ -978,7 +982,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
     const todo: CoreVersion[] = [];
     for (const r of rows) {
       const c = r.core;
-      if (c?.change && c.kind === "partial-revert" && c.ref.branchId === cutId && !restDone.has(c.change) && !restDecision.has(c.change)) todo.push(c);
+      if (c?.change && partial(c) && c.ref.branchId === cutId && !restDone.has(c.change) && !restDecision.has(c.change)) todo.push(c);
     }
     for (const c of todo) {
       const id = c.change!;
