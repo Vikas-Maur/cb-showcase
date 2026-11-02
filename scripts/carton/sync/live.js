@@ -127,7 +127,8 @@ export class Live {
         const key = actorKey(e.actor);
         if (e.state) {
           const actor = peerActor(e.actor, e.state.who);
-          if (actor) this.peers.set(key, { actor, cut: e.branchId, activity: typeof e.state.activity === "string" ? e.state.activity : null, at: Date.now() });
+          // `idle`: here, without input for a while (the page says so instead of leaving: UI audit P2-11)
+          if (actor) this.peers.set(key, { actor, cut: e.branchId, activity: typeof e.state.activity === "string" ? e.state.activity : null, idle: e.state.idle === true, at: Date.now() });
           else if (!this.skippedPeer) {
             this.skippedPeer = true;
             this.log({ type: "presence-skipped", project: this.projectId, why: "no id" });
@@ -158,7 +159,7 @@ export class Live {
   /** The state the Share panel shows; each of `peers` is `{actor: {key, kind, id, name}, cut, activity, idle}`. */
   view() {
     const now = Date.now();
-    const peers = [...this.peers.values()].map((p) => ({ actor: p.actor, cut: p.cut, activity: p.activity, idle: now - p.at > PEER_IDLE_MS }));
+    const peers = [...this.peers.values()].map((p) => ({ actor: p.actor, cut: p.cut, activity: p.activity, idle: !!p.idle || now - p.at > PEER_IDLE_MS }));
     return { shared: true, status: this.status.status, pending: this.status.pending, label: this.status.label, holder: this.holds(), peers, problem: problemOf(this.error) };
   }
   #publish() {

@@ -12,7 +12,7 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, actorLabel, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, actorColor, actorLabel, initials, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
 
 // Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
@@ -103,6 +103,8 @@ const PANELS = { history: { label: "History", icon: "versions" }, comments: { la
 // Which side panel is open, for the stage layer of this page (both parts live in this module, so it stays in it): the
 // card stack folds to its pill while a panel takes the room beside the chat.
 const sidePanel = { value: null, subs: new Set(), set(v) { this.value = v; for (const f of this.subs) f(v); } };
+// The stage's live chip asks the side panel to open Share (both parts live in this module).
+const panelRequests = new Set();
 const WIDTH = { key: "carton.sidePanelWidth", min: 300, max: 640, initial: 384 };
 
 /**
@@ -253,6 +255,7 @@ export const CartonSide = memo(function CartonSide({ projectId, bridge }) {
     const which = ev?.action === "carton-history" ? "history" : ev?.action === "carton-share" ? "share" : null;
     if (which) setPanelState((p) => (p === which ? null : which));
   }), [bridge]);
+  useEffect(() => { panelRequests.add(setPanelState); return () => { panelRequests.delete(setPanelState); }; }, []);
   // Tell the title bar which is open (null: none, which also says the icons apply to this tab), and the stage layer.
   useEffect(() => { bridge.reportPanel?.(panel); sidePanel.set(panel); }, [bridge, panel]);
   useEffect(() => () => sidePanel.set(null), []);
@@ -299,6 +302,36 @@ function MediaNotice({ projectId, bridge }) {
     h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => setClosed(true) }));
 }
 
+/**
+ * A shared project's status where it is always seen (UI audit P2-11: it was only inside the Share tab): who else is
+ * here, and Offline or Syncing while edits wait, in the preview's bottom-left corner. Up to date with nobody else here,
+ * nothing. A click opens Share. Status words only (§0.1).
+ */
+function LiveChip({ projectId, bridge }) {
+  const [st, setSt] = useState(null);
+  useEffect(() => {
+    let live = true;
+    bridge.call("liveStatus", [{ projectId }]).then((s) => live && setSt(s), () => {});
+    const off = bridge.onEvent((ev) => { if (live && ev?.id === projectId && ev.topic === "live") setSt((s) => ({ ...s, ...ev.live })); });
+    return () => { live = false; if (typeof off === "function") off(); };
+  }, [projectId, bridge]);
+  return h(LiveChipView, { st, onOpen: () => { for (const f of panelRequests) f("share"); } });
+}
+function LiveChipView({ st, onOpen }) {
+  if (!st?.shared) return null;
+  const peers = (Array.isArray(st.peers) ? st.peers : []).filter((p) => typeof p?.actor?.key === "string" && typeof p.actor.name === "string");
+  const offline = st.status === "offline" || st.status === "stopped";
+  const waiting = st.pending ?? 0;
+  const status = offline ? words.offline(waiting) : st.status !== "up-to-date" && waiting ? words.syncing : null;
+  if (!status && !peers.length) return null;
+  const here = peers.length ? `${peers.map((p) => p.actor.name).slice(0, 3).join(", ")}${peers.length > 3 ? ` and ${peers.length - 3} more` : ""} ${peers.length === 1 ? "is" : "are"} here` : "";
+  return h("button", { type: "button", className: "carton-live-chip", "data-state": offline ? "offline" : status ? "syncing" : "ok", title: [status, here].filter(Boolean).join(" · ") + ". Open Share", "aria-label": [status, here].filter(Boolean).join(". ") + ". Open Share", onClick: onOpen },
+    status ? h(Icon, { name: offline ? "cloudSlash" : "syncing", size: 14 }) : null,
+    status ? h("span", null, status) : null,
+    peers.length ? h("span", { className: "carton-live-peers", "aria-hidden": true }, ...peers.slice(0, 3).map((p) => h("span", { key: p.actor.key, className: "carton-avatar", "data-idle": p.idle ? "" : undefined, style: { ["--carton-actor"]: actorColor(p.actor), width: 20, height: 20, fontSize: 8 } }, h("span", { className: "carton-avatar-initials" }, initials(p.actor.name)))),
+      peers.length > 3 ? h("span", { className: "carton-live-more" }, `+${peers.length - 3}`) : null) : null);
+}
+
 /** The layer over the stage: the conflict cards' floating stack, the preview banner, and the shared-footage notice. */
 export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   const [conn, ready] = useConn(projectId, bridge);
@@ -321,6 +354,7 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
     h("div", { className: "carton-stage", "data-carton-skin": "cardboard" }, h(CartonBoundary, { panel: "stage" },
       h("div", { className: "carton-stage-banner" }, h(PreviewBanner, null), h(MediaNotice, { projectId, bridge })),
       h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen })),
-      h("div", { className: "carton-stage-toast" }, h(Toast)))));
+      h("div", { className: "carton-stage-toast" }, h(Toast)),
+      h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));
 });
-export const __forTests = { confirmations, toasts };
+export const __forTests = { confirmations, toasts, LiveChipView };

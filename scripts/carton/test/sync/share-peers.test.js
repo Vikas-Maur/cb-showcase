@@ -242,3 +242,18 @@ test("boundary, stage layer: a throw over the stage shows a small Try again ther
     assert.equal(container.querySelector("#banner")?.textContent, "the preview banner");
   } finally { await act(() => root.unmount()); container.remove(); }
 });
+
+test("P2-11: a teammate who is here without input says idle instead of leaving: still listed, faded", opt, async () => {
+  const { live: l, presence } = await live();
+  presence(ALICE, { activity: null, idle: true, who: { id: "alice", name: "Alice" } });
+  const st = status(l);
+  assert.deepEqual(st.peers.map((p) => [p.actor.name, p.idle]), [["Alice", true]]);
+  const m = await openShare(st);
+  try {
+    const row = [...m.container.querySelectorAll(".carton-share li")].find((li) => li.textContent.includes("Alice"));
+    assert.ok(!!row, "listed: " + m.container.querySelector(".carton-share")?.textContent);
+    assert.match(row.getAttribute("style") ?? "", /opacity:\s*0\.55/);
+  } finally { await m.done(); }
+  presence(ALICE, { activity: "Editing", who: { id: "alice", name: "Alice" } });
+  assert.equal(l.view().peers[0].idle, false);
+});

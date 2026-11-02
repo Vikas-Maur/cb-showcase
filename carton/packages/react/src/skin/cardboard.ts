@@ -297,6 +297,20 @@ export const cardboardSkin = `
   background:#1b1b1bf2;-webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);box-shadow:var(--cb-shadow);color:var(--cb-fg-1);font-size:12px;line-height:16px;pointer-events:auto;
   animation:carton-pop var(--cb-base) var(--cb-decel)}
 :where(${S}) :where(.carton-toast > .carton-icon){color:var(--cb-ok)}
+/* a shared project's status over the preview (scripts/carton/ui.js LiveChip): who is here, Offline / Syncing */
+:where(.carton-stage${S}) > :where(.carton-stage-live){position:absolute;left:12px;bottom:12px;pointer-events:none}
+:where(${S}) :where(.carton-live-chip){display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 6px 0 8px;border:1px solid #ffffff14;border-radius:999px;background:#1b1b1be6;
+  -webkit-backdrop-filter:blur(10px);backdrop-filter:blur(10px);color:var(--cb-fg-2);font:inherit;font-size:12px;font-weight:500;cursor:pointer;pointer-events:auto;box-shadow:var(--cb-shadow-near)}
+:where(${S}) :where(.carton-live-chip[data-state=ok]){padding:0 4px}
+:where(${S}) :where(.carton-live-chip[data-state=offline]){color:#fcd77f;border-color:color-mix(in srgb, var(--cb-warn) 35%, transparent)}
+:where(${S}) :where(.carton-live-chip[data-state=offline] .carton-icon){color:var(--cb-warn)}
+:where(${S}) :where(.carton-live-chip[data-state=syncing] .carton-icon){animation:carton-spin 1.1s linear infinite}
+:where(${S}) :where(.carton-live-chip:focus-visible){outline:none;box-shadow:0 0 0 2px color-mix(in srgb, var(--cb-ring) 50%, transparent)}
+:where(${S}) :where(.carton-live-peers){display:inline-flex}
+:where(${S}) :where(.carton-live-peers .carton-avatar){box-shadow:0 0 0 2px #1b1b1b}
+:where(${S}) :where(.carton-live-peers .carton-avatar + .carton-avatar){margin-left:-4px}
+:where(${S}) :where(.carton-live-peers .carton-avatar[data-idle]){opacity:.5}
+:where(${S}) :where(.carton-live-more){margin-left:4px;font-size:11px;color:var(--cb-fg-3)}
 :where(${S}) :where(.carton-toast-text){flex:1;min-width:0;text-wrap:pretty}
 :where(${S}) :where(.carton-toast .carton-btn:not([data-icon-only])){height:28px;padding:0 10px;font-size:12px}
 :where(${S}) :where(.carton-stage-banner > *){pointer-events:auto;box-shadow:var(--cb-shadow)}

@@ -11,7 +11,7 @@ const skip = !fs.existsSync(path.join(CARTON, "node_modules", "esbuild")) && "ru
 const OUT = path.join(process.env.CARTON_TEST_DIR ?? path.join(os.homedir(), "gfv-scratch", "carton", "windows-sync"), "panel-polish");
 const opt = { skip, timeout: 60_000 };
 
-let T;
+let T, React, render;
 test.before(async () => {
   if (skip) return;
   const esbuild = require(path.join(CARTON, "node_modules", "esbuild"));
@@ -24,6 +24,8 @@ test.before(async () => {
   });
   globalThis.window = { __cartonReact: require(path.join(CARTON, "node_modules", "react")) };
   T = require(path.join(OUT, "carton-ui.cjs")).__forTests;
+  React = globalThis.window.__cartonReact;
+  render = require(path.join(CARTON, "node_modules", "react-dom", "server")).renderToStaticMarkup;
 }, { timeout: 300_000 });
 
 const you = { key: "human/me", kind: "human", name: "Vikas", isYou: true };
@@ -80,4 +82,20 @@ test("P2-4: a conflict card's pick says whose edit was kept", opt, async () => {
   assert.equal(T.toasts.value.text, "Kept yours · 'W6' timing");
   await ui.resolve("c1", "both");
   assert.equal(T.toasts.value.text, "Kept both · 'W6' timing");
+});
+
+// A teammate as Live.view() sends one (sync/live.js peerActor).
+const leo = (idle = false) => ({ actor: { key: "human/leo", kind: "human", id: "leo", name: "Leo" }, cut: "main", activity: idle ? null : "Editing", idle });
+const chip = (st) => render(React.createElement(T.LiveChipView, { st, onOpen() {} }));
+
+test("P2-11: a shared project's status shows over the preview, not only in the Share tab", opt, () => {
+  assert.equal(chip({ shared: false }), "", "not shared: nothing");
+  assert.equal(chip({ shared: true, status: "up-to-date", pending: 0, peers: [] }), "", "up to date, nobody else: nothing");
+  const off = chip({ shared: true, status: "offline", pending: 3, peers: [] });
+  assert.match(off, /data-state="offline"/);
+  assert.match(off, />Offline: 3 edits waiting</);
+  const here = chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo(), { actor: null }] });
+  assert.match(here, /aria-label="Leo is here\. Open Share"/, "one bad entry skipped, the rest shown");
+  assert.match(here, /carton-avatar-initials">L</);
+  assert.match(chip({ shared: true, status: "up-to-date", pending: 0, peers: [leo(true)] }), /data-idle=""/);
 });

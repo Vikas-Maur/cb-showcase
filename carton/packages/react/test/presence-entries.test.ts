@@ -68,6 +68,11 @@ test("fromCarton names a present teammate by the person the sync layer sends (wh
   assert.equal(ui.peers()[0]!.actor.name, "Leo");
   assert.equal(ui.peers()[0]!.activity, "Editing");
   assert.equal(typeof ui.peers()[0]!.actor.key, "string");
+  // Here but idle (the page says so after 30 s without input, instead of leaving: UI audit P2-11): still listed, idle.
+  emit({ type: "presence", branchId, actor: handleActor as CoreActor, state: { activity: null, idle: true, who: { id: "Leo", name: "Leo" } } } as unknown as CartonEvent);
+  assert.deepEqual([ui.peers().length, ui.peers()[0]!.idle, ui.peers()[0]!.actor.name], [1, true, "Leo"]);
+  emit({ type: "presence", branchId, actor: handleActor as CoreActor, state: { activity: "Editing", who: { id: "Leo", name: "Leo" } } } as CartonEvent);
+  assert.equal(ui.peers()[0]!.idle, false, "back to work");
   // A malformed who is no one: the handle's actor stays, and nothing throws.
   emit({ type: "presence", branchId, actor: handleActor as CoreActor, state: { activity: "Editing", who: { id: 42 } } } as unknown as CartonEvent);
   assert.equal(ui.peers().length, 1);
