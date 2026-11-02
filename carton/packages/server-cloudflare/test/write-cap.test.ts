@@ -98,10 +98,12 @@ test("whatever else the store offers passes through, bound to the store", async 
 });
 
 test("the Worker answers a refused write 429 with Retry-After and the code", async () => {
-  const r = writeCapResponse(new WriteCapError("full", 123));
+  const e = new WriteCapError("full", 123);
+  const r = writeCapResponse(e);
   assert.equal(r.status, 429);
   assert.equal(r.headers.get("retry-after"), "123");
-  assert.deepEqual(await r.json(), { error: "full", code: "DailyWriteCap" });
+  // the wait in the body too: when (retryAt) and how long (retryAfterMs, whatever the client's clock says)
+  assert.deepEqual(await r.json(), { error: "full", code: "DailyWriteCap", retryAt: e.retryAt, retryAfterMs: 123_000 });
 });
 
 test("a streamed part reserves its declared size before the store sees it", async () => {
