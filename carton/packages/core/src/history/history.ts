@@ -460,7 +460,8 @@ export class History {
       E.apply(doc, d, this.schema);
       delta.push(...d);
     }
-    const hash = E.hashDoc(doc, this.schema);
+    // nothing laid over the confirmed version: its own hash, kept per version (a print of head pins it on every save)
+    const hash = delta.length ? E.hashDoc(doc, this.schema) : this.hashOf(nodeId(o.cutId, seq))!;
     const key = `${o.cutId}|${seq}|${hash.slice(0, 8)}`;
     let p = this.#pins.get(key);
     if (!p) this.#pins.set(key, (p = { seq, hash, pending: (o.pending ?? []).map((c) => c.id), delta, owners: new Map() }));

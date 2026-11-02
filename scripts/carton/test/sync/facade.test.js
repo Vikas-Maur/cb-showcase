@@ -217,3 +217,12 @@ test("#7 one host media client per project, kept from one share to the next; rel
   assert.ok(!got.error && r.status === 0, got.error ?? r.stdout + r.stderr);
   assert.deepEqual(got, { same: true, perLibrary: true, otherReleased: true, keptElsewhere: true, newAfterRelease: true, newForAnotherHost: true });
 });
+
+// Every `cb` call loads carton-node.cjs. Its sync transport is made at the first connect: reading globalThis.WebSocket
+// at load made Node load its WebSocket client (undici) in every process, syncing or not.
+test("loading the facade doesn't load Node's WebSocket client: only a sync connect does", { skip: S.skip || S.noBuild }, async () => {
+  const b = await S.build();
+  const r = spawnSync(process.execPath, ["-e", `require(${JSON.stringify(path.join(b.carton, "carton-node.cjs"))}); process.stdout.write(JSON.stringify(process.moduleLoadList.filter((m) => /undici/.test(m))))`], { env: { ...process.env, CARDBOARD_CARTON: "1" }, encoding: "utf8" });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), []);
+});

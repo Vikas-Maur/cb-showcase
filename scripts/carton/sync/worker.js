@@ -40,7 +40,10 @@ let workerApi = null; // the facade's api, in the library worker
 const lives = new Map(); // bundlePath → Promise<Live | null>
 const holding = new WeakMap(); // LocalCarton → its Live, once started
 const lastError = new Map(); // bundlePath → why live sync last failed to start (said once in the log, and to the caller)
-const transport = webSocketTransport();
+// Made at the first connect, not when this file loads: reading globalThis.WebSocket loads Node's WebSocket client
+// (undici), which every process that loads carton-node.cjs (each `cb` call too) paid for at start, syncing or not.
+let ws = null;
+const transport = { connect: (url, o) => (ws ??= webSocketTransport()).connect(url, o) };
 
 /**
  * Sync for a handle, resolved when it connects rather than when it opens: a project shared after its handle opened
