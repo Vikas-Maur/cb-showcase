@@ -396,8 +396,14 @@ export function HistoryPanel(props: HistoryPanelProps) {
           {
             label: words.versionActions(menuVersion.name ?? menuVersion.summary),
             onClose: (why?: string) => {
+              const id = menu.id;
               setMenu(null);
-              if (why === "escape") toList();
+              // Esc (the keyboard): back to the list on the row whose menu it was, so ↓ goes on from there, not from
+              // the top (regress 2026-11-02 P3-5). A click elsewhere leaves no row picked (P2-2).
+              if (why === "escape") {
+                setActiveId(id);
+                toList();
+              }
             },
             className: "carton-history-menu",
             style: menu.bottom != null ? { position: "absolute", bottom: menu.bottom, left: Math.max(8, menu.x - 220) } : { position: "absolute", top: menu.y, left: Math.max(8, menu.x - 220) },

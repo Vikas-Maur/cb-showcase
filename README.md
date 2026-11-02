@@ -458,7 +458,8 @@ What changes with it on:
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
 - **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
-  panel beside the agent's chat, in the chat's look (drag its edge to resize); the same icon closes it, and the icon
+  panel beside the agent's chat, in the chat's look (drag its edge to resize; under 340 px its tabs not open show their
+  icon only, so they stay clear of the close button); the same icon closes it, and the icon
   of the open panel shows as pressed. Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
   keymap). The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
   History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu

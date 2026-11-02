@@ -284,3 +284,40 @@ test("regress #4: in the side panel, Esc returns from a preview first; the next 
     await w.happyDOM.close();
   }
 });
+
+// Regress 2026-11-02 P3-3: at the panel's 300 px minimum the three tabs' labels ran under the close ✕ ("Share✕"). Below
+// 340 px the tabs not open show their icon only (named for screen readers and on hover); the open one keeps its label.
+test("regress P3-3: a narrow panel keeps the open tab's label and shows the others as icons, clear of the close button", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
+  globalThis.document = w.document;
+  globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+    const ui = createMockUi({ versions: 5 });
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const bridge = { call: async () => ({}), onEvent: () => () => {} };
+    const tabs = async (width) => {
+      globalThis.localStorage = { getItem: (k) => (k === "carton.sidePanelWidth" ? String(width) : null), setItem() {} };
+      const el = w.document.createElement("div");
+      w.document.body.appendChild(el);
+      root = client.createRoot(el);
+      await React.act(async () => { root.render(React.createElement(T.CartonProvider, { ui }, React.createElement(T.Sidebar, { panel: "history", setPanel() {}, projectId: "p1", bridge }))); });
+      const out = [...el.querySelectorAll("[role=tab]")].map((b) => ({ name: b.getAttribute("aria-label"), text: b.textContent }));
+      await React.act(async () => root.unmount());
+      root = null;
+      el.remove();
+      return out;
+    };
+    assert.deepEqual(await tabs(300), [{ name: "History", text: "History" }, { name: "Comments", text: "" }, { name: "Share", text: "" }]);
+    assert.deepEqual(await tabs(384), [{ name: "History", text: "History" }, { name: "Comments", text: "Comments" }, { name: "Share", text: "Share" }]);
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+    await w.happyDOM.close();
+  }
+});

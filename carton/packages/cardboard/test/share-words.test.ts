@@ -48,3 +48,13 @@ test("P1-2 (review #3): adding or removing a clip's effect names the effect, nev
   const removed = describe(diff(b, a, cardboardSchema), b, cardboardSchema);
   assert.deepEqual([added, removed], [["Added effect \"blur\" on 'clip.mp4'"], ["Removed effect \"blur\" on 'clip.mp4'"]]);
 });
+
+test("regress 2026-11-02 P3-1: the first effect on a clip that had none (no effects field) is named as any other", () => {
+  const d = doc();
+  const UUID = "7ba56a6c-9992-42a1-88be-b30091622288";
+  const plain = { ...d, timelineItems: (d.timelineItems as Rec[]).map(({ effects: _e, ...r }) => r) };
+  const fx = { ...d, timelineItems: (d.timelineItems as Rec[]).map((r) => ({ ...r, effects: [{ id: UUID, type: "sharpen", amount: 2 }] })) };
+  const two = { ...d, timelineItems: (d.timelineItems as Rec[]).map((r) => ({ ...r, effects: [{ id: UUID, type: "sharpen", amount: 2 }, { id: UUID.replace("7", "8"), type: "glow", amount: 1 }] })) };
+  assert.deepEqual(describe(diff(plain, fx, cardboardSchema), plain, cardboardSchema), ["Added effect \"sharpen\" on 'clip.mp4'"]);
+  assert.deepEqual(describe(diff(plain, two, cardboardSchema), plain, cardboardSchema), ["Added effect \"sharpen\" on 'clip.mp4', added effect \"glow\""]);
+});

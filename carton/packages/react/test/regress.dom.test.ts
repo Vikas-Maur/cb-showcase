@@ -5,6 +5,7 @@ import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
 import { VirtualList } from "../src/virtual.ts";
+import { dayNumber } from "../src/history-groups.ts";
 import { createMockUi } from "../src/mock.ts";
 import { commentsSkin } from "../src/comments/skin.ts";
 import { cardboardSkin } from "../src/skin/cardboard.ts";
@@ -134,4 +135,69 @@ test(name("regress #5: the comment box has no resize grip, and its height stops 
   const last = (prop: string) => [...decls(cardboardSkin), ...decls(commentsSkin)].filter(([k]) => k === prop).at(-1)?.[1];
   assert.equal(last("resize"), "none", "no resize grip");
   assert.equal(last("max-height"), "160px", "the box grows with its text to 160 px (TextBox), and no further");
+});
+
+// Regress P3-5: after Esc on a row's ⋯ menu, focus came back to the list with no row picked, so ↓ started at the top.
+// The row whose menu it was is the picked one, and ↓ goes on from it.
+test(name("regress P3-5: Esc on a row's menu leaves that row picked, and ↓ goes on from it"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const rows = $$(m.container, ".carton-version");
+  await click(rows[4]!.querySelector(".carton-version-more"));
+  assert.ok($(m.container, "[role=menu]"), "the menu is open");
+  await act(async () => { document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await flush();
+  await act(async () => { await new Promise((r) => setTimeout(r, 30)); });
+  const list = $(m.container, "[role=listbox]")!;
+  assert.equal($(m.container, "[role=menu]"), null, "closed");
+  assert.equal(list.getAttribute("aria-activedescendant"), rows[4]!.id, "the menu's row is the picked one");
+  await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); });
+  await flush();
+  assert.equal(list.getAttribute("aria-activedescendant"), $$(m.container, ".carton-version")[5]!.id, "↓ goes to the next row");
+  await m.unmount();
+});
+
+// Regress P3-12: a version's one change was offered as "Show all 1 changes".
+test(name("regress P3-12: a version of one change offers \"Show the change\""), async () => {
+  const ui = createMockUi({ versions: 10 });
+  await act(async () => { ui.addVersion({ summary: "Folded 'Client review' into 'Main cut'", details: ["Moved 'clip.mp4' 0.0 s → 2.0 s"] } as never); });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const toggle = $(m.container, ".carton-version-expand")!;
+  assert.equal(toggle.getAttribute("aria-label"), "Show the change");
+  assert.equal(toggle.textContent, "1 change");
+  await m.unmount();
+});
+
+// The laptop's run of #2 (docs/regress/ui, bug-days-jump-*): "Yesterday" opened from the keyboard, so its header is the
+// picked row; scrolled down into it; a version arrives. The list jumped back with that header at the top, every time.
+test(name("regress #2 (the laptop's steps): Yesterday opened with Enter, scrolled into, a version arrives: the place holds"), async () => {
+  const now = new Date(2026, 10, 2, 5, 0).getTime();
+  const ui = createMockUi({ versions: 400, now });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const list = $(m.container, "[role=listbox]")!;
+  const yesterday = () => $$(m.container, ".carton-day").find((d) => d.id.endsWith(`-day:${dayNumber(now) - 1}`));
+  const picked = () => (list.getAttribute("aria-activedescendant") ?? "").endsWith(`-day:${dayNumber(now) - 1}`);
+  // ↓ from the top until Yesterday's header is the picked row (the list follows it), then Enter opens it
+  for (let i = 0; i < 400 && !picked(); i++)
+    await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })); });
+  assert.ok(picked(), "Yesterday's header is picked");
+  await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
+  assert.match(yesterday()!.textContent ?? "", /^Yesterday/);
+  assert.equal(yesterday()!.getAttribute("aria-expanded"), "false", "folded (a long History)");
+  await act(async () => { list.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+  await flush();
+  assert.equal(yesterday()!.getAttribute("aria-expanded"), "true", "opened");
+  const top = ty(yesterday()!.closest(".carton-vrow")!);
+  list.scrollTop = top + 52 * 12;
+  await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
+  const before = list.scrollTop;
+  for (let i = 0; i < 3; i++) {
+    await act(async () => { ui.addVersion(); });
+    await flush();
+  }
+  assert.equal(list.scrollTop, before + 3 * 52, "moved only by the three rows that arrived above, never back to Yesterday's header");
+  await m.unmount();
 });

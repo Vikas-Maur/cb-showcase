@@ -277,6 +277,9 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
   };
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, [panel]);
   const tabs = share ? ["history", "comments", "share"] : ["history", "comments"];
+  // Below 340 px three labelled tabs run under the close ✕ ("Share✕" at the 300 px minimum: regress 2026-11-02 P3-3):
+  // the tabs not open show their icon only, named for screen readers and on hover; the open one keeps its label.
+  const compact = tabs.length > 2 && width < 340;
   // Cardboard's own classes, as its chat sidebar uses them: same width, rule, handle, header and buttons.
   return h("aside", { ref, tabIndex: -1, className: "carton-sidebar relative shrink-0 overflow-hidden bg-[var(--desktop-panel)] outline-none", style: { width, ...overlay }, "data-carton-skin": "cardboard", "data-fit": fit.mode, "aria-label": PANELS[panel].label, onKeyDown },
     h("div", { className: "pointer-events-none absolute inset-y-0 left-0 z-10 w-px bg-white/[0.06]" }),
@@ -286,10 +289,10 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
       h("div", { className: "flex h-[40px] shrink-0 items-center gap-[2px] pr-[16px] pl-[12px]" },
         h("div", { className: "flex min-w-0 flex-1 items-center gap-[2px]", role: "tablist" },
           ...tabs.map((id) => h("button", {
-            key: id, type: "button", role: "tab", "aria-selected": panel === id, onClick: () => setPanel(id), title: PANELS[id].key ? `${PANELS[id].label} (${PANELS[id].key})` : undefined, "aria-keyshortcuts": PANELS[id].key ? "Control+Shift+H" : undefined,
+            key: id, type: "button", role: "tab", "aria-selected": panel === id, "aria-label": PANELS[id].label, onClick: () => setPanel(id), title: PANELS[id].key ? `${PANELS[id].label} (${PANELS[id].key})` : compact ? PANELS[id].label : undefined, "aria-keyshortcuts": PANELS[id].key ? "Control+Shift+H" : undefined,
             className: "relative flex h-[26px] shrink-0 cursor-pointer items-center gap-[6px] rounded-ui-md px-[8px] text-ui-sm font-medium outline-none transition-colors focus-visible:ring-2 focus-visible:ring-white/30 " +
               (panel === id ? "bg-white/[0.07] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.06] hover:text-foreground"),
-          }, h(Icon, { name: PANELS[id].icon, size: 14 }), PANELS[id].label))),
+          }, h(Icon, { name: PANELS[id].icon, size: 14 }), compact && panel !== id ? null : PANELS[id].label))),
         h("button", { type: "button", "aria-label": "Close", title: "Close (Esc)", onClick: () => setPanel(null),
           className: "flex size-control-sm shrink-0 cursor-pointer items-center justify-center rounded-ui-md text-muted-foreground outline-none transition-colors hover:bg-foreground/[0.06] hover:text-foreground focus-visible:ring-2 focus-visible:ring-white/30" },
           h(Icon, { name: "x", size: 16 }))),
