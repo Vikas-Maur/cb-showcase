@@ -208,6 +208,17 @@ export const cardboardSkin = `
 :where(${S}) :where(.carton-version:hover .carton-version-more, .carton-version[data-menu] .carton-version-more, .carton-history-list:focus-within .carton-version[data-active] .carton-version-more){opacity:1}
 :where(${S}) :where(.carton-version-more:hover){background:var(--cb-accent);color:var(--cb-fg-1)}
 :where(${S}) :where(.carton-history-compare){margin:8px 12px 12px}
+/* a day's header in a long History (UI audit P2-17): a quiet divider row with its count; click to fold or open */
+:where(${S}) :where(.carton-day){display:flex;align-items:center;gap:8px;height:100%;padding:0 10px 0 6px;border-radius:8px;cursor:pointer;
+  color:var(--cb-fg-2);font-size:12px;font-weight:500;line-height:16px;-webkit-user-select:none;user-select:none;transition:background-color var(--cb-fast)}
+:where(${S}) :where(.carton-day:hover){background:#ffffff08;color:var(--cb-fg-1)}
+:where(${S}) :where(.carton-history-list:focus-visible .carton-day[data-active]){box-shadow:inset 0 0 0 1px var(--cb-line-2)}
+:where(${S}) :where(.carton-day-mark){display:flex;align-items:center;justify-content:center;width:20px;flex:none;color:var(--cb-fg-3)}
+:where(${S}) :where(.carton-day-label){flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:where(${S}) :where(.carton-day-count){flex:none;font-size:11.5px;font-weight:400;color:var(--cb-fg-3);font-variant-numeric:tabular-nums}
+/* the list scrolled under the filters: a hairline under them (UI audit P3-9) */
+:where(${S}) :where(.carton-panel-head){position:relative;z-index:1;transition:box-shadow var(--cb-fast)}
+:where(${S}) :where(.carton-history[data-scrolled] > .carton-panel-head){box-shadow:0 1px 0 #ffffff12}
 
 /* ---------------------------------------------------------------- avatars and presence */
 :where(${S}) :where(.carton-avatar){--carton-actor:#999;display:inline-flex;align-items:center;justify-content:center;flex:none;border-radius:50%;

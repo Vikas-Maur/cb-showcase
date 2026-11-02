@@ -237,4 +237,65 @@ test(name("review finding 7: with another row's menu open, only that row looks p
   await m.unmount();
 });
 
+test(name("P2-17: a long History is grouped by day; a folded day keeps its anchors and opens with a click or Enter"), async () => {
+  const ui = createMockUi({ versions: 10_000 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const today = $$(m.container, ".carton-day")[0]!;
+  assert.equal(today.getAttribute("aria-expanded"), "true", "today is open");
+  assert.match(today.textContent ?? "", /^Today\d[\d,]* versions$/);
+  assert.ok($$(m.container, "[role=option]").length < 40, "still a window of rows at 10k");
+  // fold today: the older days, folded from the start, come into view
+  await click(today);
+  const days = $$(m.container, ".carton-day");
+  assert.equal(days[0]!.getAttribute("aria-expanded"), "false");
+  assert.ok(days.length >= 3, `${days.length} day headers on screen`);
+  const folded = days[1]!;
+  assert.equal(folded.getAttribute("aria-expanded"), "false");
+  assert.match(folded.textContent ?? "", /\d versions?( · \d+ named)?$/, "a folded day says how many versions it holds (and its named ones, still shown)");
+  await click(folded);
+  const again = $$(m.container, ".carton-day").find((d) => d.id === folded.id)!;
+  assert.equal(again.getAttribute("aria-expanded"), "true", "a click opens it");
+  // keyboard: Enter on a day's header folds it again
+  const list = $(m.container, "[role=listbox]")!;
+  const idx = $$(m.container, "[role=option]").indexOf(again);
+  for (let i = 0; i <= idx; i++) await key(list, "ArrowDown");
+  assert.equal(list.getAttribute("aria-activedescendant"), again.id);
+  await key(list, "Enter");
+  assert.equal($$(m.container, ".carton-day").find((d) => d.id === folded.id)!.getAttribute("aria-expanded"), "false");
+  await m.unmount();
+});
+
+test(name("P3-9: the filters get a divider once the list scrolls under them"), async () => {
+  const ui = createMockUi({ versions: 500 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const list = $(m.container, ".carton-history-list")!;
+  assert.equal($(m.container, ".carton-history")!.dataset.scrolled, undefined);
+  list.scrollTop = 300;
+  await act(async () => { list.dispatchEvent(new Event("scroll")); await raf(); await new Promise((r) => setTimeout(r, 10)); });
+  assert.equal($(m.container, ".carton-history")!.dataset.scrolled, "");
+  list.scrollTop = 0;
+  await act(async () => { list.dispatchEvent(new Event("scroll")); await raf(); await new Promise((r) => setTimeout(r, 10)); });
+  assert.equal($(m.container, ".carton-history")!.dataset.scrolled, undefined);
+  await m.unmount();
+});
+
+test(name("P2-17: the reader keeps their place in a grouped History while versions arrive above"), async () => {
+  const ui = createMockUi({ versions: 10_000 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const list = $(m.container, ".carton-history-list")!;
+  const scrollTo = async (y: number) => {
+    list.scrollTop = y;
+    await act(async () => { list.dispatchEvent(new Event("scroll")); await new Promise((r) => setTimeout(r, 10)); });
+  };
+  await scrollTo(5200); // 100 rows down
+  const before = list.scrollTop;
+  const topRow = () => $$(m.container, ".carton-vrow").map((r) => [r, parseFloat((r.style.transform.match(/translateY\(([\d.]+)px\)/) ?? [])[1] ?? "0")] as const).filter(([, y]) => y <= list.scrollTop).sort((a, b) => b[1] - a[1])[0]![0].querySelector("[role=option]")!.id;
+  const was = topRow();
+  await act(async () => { ui.addVersion(); ui.addVersion(); });
+  await flush();
+  assert.equal(list.scrollTop, before + 2 * 52, "shifted by the two rows that arrived above");
+  assert.equal(topRow(), was, "the same row is still at the top");
+  await m.unmount();
+});
+
 void act;

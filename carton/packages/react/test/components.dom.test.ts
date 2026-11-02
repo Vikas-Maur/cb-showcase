@@ -52,9 +52,14 @@ test(name("History renders a window of a 10k list, marks checkpoints, named and 
   assert.ok(rows.some((r) => r.dataset.provisional !== undefined && /Waiting to sync/.test(r.textContent ?? "")));
   assert.ok(rows.some((r) => r.dataset.kind === "turn" && /Checkpoint/.test(r.textContent ?? "") && /tighter intro/.test(r.textContent ?? "")));
   assert.ok(rows.some((r) => r.dataset.named !== undefined && /Sent to client, Monday/.test(r.textContent ?? "")));
-  // The list's full height is there for the scrollbar.
+  // The list's full height is there for the scrollbar: 10k versions over several days are grouped by day (UI audit
+  // P2-17), every day but the newest folded to its named versions and turns, so the height is the rows shown.
   const inner = $(m.container, ".carton-vlist > div")!;
-  assert.equal(inner.style.height, `${10_004 * 52}px`);
+  const days = $$(m.container, ".carton-day");
+  assert.ok(days.length >= 1 && days[0]!.getAttribute("aria-expanded") === "true", "the newest day is open");
+  const height = parseFloat(inner.style.height);
+  assert.ok(height > 600 && height < 10_004 * 52, `${height}px for the grouped list`);
+  assert.equal(height % 2, 0);
   // Named filter.
   await click(byText(m.container, "[role=radio]", "Named"));
   const named = $$(m.container, "[role=option]");

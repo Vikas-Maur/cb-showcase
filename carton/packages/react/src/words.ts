@@ -24,6 +24,11 @@ export const words = {
   historyEmptyNamed: "No named versions yet. Name one to find it again.",
   historyEmptyTurns: "No Director turns yet.",
   checkpoint: "Checkpoint",
+  // Day headers in a long History (UI audit P2-17)
+  today: "Today",
+  yesterday: "Yesterday",
+  dayCount: (n: number) => plural(n, "version", "versions"),
+  dayFolded: (n: number, named: number) => `${plural(n, "version", "versions")}${named ? ` · ${named} named` : ""}`,
   turnEdits: (n: number) => plural(n, "edit", "edits"),
   provisional: "Waiting to sync",
   provisionalHint: "This version gets its final place in History once it reaches the server.",
