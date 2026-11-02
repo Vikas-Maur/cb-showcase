@@ -12,8 +12,40 @@
 // by both parts. Messages go out through the bridge's carton:call "ui" and come back as carton:event for this page's
 // client id. A preview is the editor's own read-only one (the bridge's preview).
 import { Component, createElement as h, memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Button, CartonProvider, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
+import { Button, CartonProvider, actorLabel, CommentsPanel, ConflictStack, CutsMenu, FoldInDialog, HistoryPanel, Icon, PreviewBanner, WatchTheChanges, injectCommentsSkin, remoteComments, remoteUi, useCuts, words } from "@carton/react";
 import { injectCardboardSkin } from "@carton/react/skin/cardboard";
+
+// Short confirmations over the stage (UI audit P2-4): Restore, Fold in and a conflict card's pick said nothing, so a
+// person couldn't tell they had worked. One at a time, gone after 6 s; Fold in offers to switch to the cut it went into.
+const toasts = { value: null, seq: 0, subs: new Set(), show(text, action) { this.set({ id: ++this.seq, text, action }); }, set(v) { this.value = v; for (const f of this.subs) f(v); } };
+const clockTime = (at) => new Date(at).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+function confirmations(ui) {
+  const versionByRef = (ref) => (ui.history().all?.() ?? []).find((v) => v.ref === ref);
+  const restore = ui.restore.bind(ui);
+  ui.restore = async (ref) => {
+    const v = versionByRef(ref);
+    await restore(ref);
+    toasts.show(v?.name ? `Restored “${v.name}”. It's saved as a new version.` : v ? `Restored the version from ${clockTime(v.at)}. It's saved as a new version.` : "Restored. It's saved as a new version.");
+  };
+  const fold = ui.fold.bind(ui);
+  ui.fold = async (from, into, opts) => {
+    const r = await fold(from, into, opts);
+    if (r?.ok) {
+      const cuts = ui.cuts(), a = cuts.find((c) => c.id === from), b = cuts.find((c) => c.id === into);
+      const left = opts?.leaveOut?.length ? " Some changes were left out." : "";
+      toasts.show(`Folded “${a?.label ?? "the cut"}” into ${b?.label ?? "the cut"}.${left}`, b && !b.current ? { label: `Switch to ${b.label}`, run: () => ui.switchCut(into) } : null);
+    }
+    return r;
+  };
+  const resolve = ui.resolve.bind(ui);
+  ui.resolve = async (id, choice) => {
+    const c = ui.conflicts().find((x) => x.id === id);
+    await resolve(id, choice);
+    if (!c) return;
+    const who = choice === "both" ? null : actorLabel((choice === "mine" ? c.mine : c.theirs).author, ui.actor.bind(ui), words.you);
+    toasts.show(choice === "both" ? `Kept both · ${c.title}` : `Kept ${who === words.you ? "yours" : `${who}'s`} · ${c.title}`);
+  };
+}
 
 function connect(projectId, bridge) {
   const client = projectId + ":" + Math.random().toString(36).slice(2);
@@ -22,7 +54,25 @@ function connect(projectId, bridge) {
   // Opening a version: the editor shows it read-only; null returns to current.
   const openPreview = r.ui.openPreview.bind(r.ui);
   r.ui.openPreview = (ref, label) => { openPreview(ref, label); return bridge.preview(projectId, ref ?? null); };
+  confirmations(r.ui);
   return { ...r, close: off };
+}
+
+/** The confirmation over the stage: Cardboard's toast look, a polite status, its action as a button, ✕ to close. */
+function Toast() {
+  const [t, setT] = useState(toasts.value);
+  useEffect(() => { toasts.subs.add(setT); return () => { toasts.subs.delete(setT); }; }, []);
+  useEffect(() => {
+    if (!t) return undefined;
+    const id = t.id, timer = setTimeout(() => { if (toasts.value?.id === id) toasts.set(null); }, 6000);
+    return () => clearTimeout(timer);
+  }, [t]);
+  if (!t) return null;
+  return h("div", { className: "carton-toast", role: "status", "aria-live": "polite" },
+    h(Icon, { name: "check", size: 14 }),
+    h("span", { className: "carton-toast-text" }, t.text),
+    t.action ? h(Button, { onClick: () => { toasts.set(null); void t.action.run(); } }, t.action.label) : null,
+    h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: () => toasts.set(null) }));
 }
 
 // One connection per project, shared by the side panel and the stage layer; closed when neither uses it.
@@ -49,7 +99,7 @@ function useConn(projectId, bridge) {
   return [conn, ready];
 }
 
-const PANELS = { history: { label: "History", icon: "history" }, comments: { label: "Comments", icon: "comment" }, share: { label: "Share", icon: "users" } };
+const PANELS = { history: { label: "History", icon: "versions" }, comments: { label: "Comments", icon: "comment" }, share: { label: "Share", icon: "users" } };
 // Which side panel is open, for the stage layer of this page (both parts live in this module, so it stays in it): the
 // card stack folds to its pill while a panel takes the room beside the chat.
 const sidePanel = { value: null, subs: new Set(), set(v) { this.value = v; for (const f of this.subs) f(v); } };
@@ -270,5 +320,7 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   return h(CartonProvider, { ui: conn.ui },
     h("div", { className: "carton-stage", "data-carton-skin": "cardboard" }, h(CartonBoundary, { panel: "stage" },
       h("div", { className: "carton-stage-banner" }, h(PreviewBanner, null), h(MediaNotice, { projectId, bridge })),
-      h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen })))));
+      h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen })),
+      h("div", { className: "carton-stage-toast" }, h(Toast)))));
 });
+export const __forTests = { confirmations, toasts };

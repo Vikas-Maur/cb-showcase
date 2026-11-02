@@ -460,8 +460,12 @@ What changes with it on:
 - **History and Share** icons in the title bar, beside "Report an issue", on a project tab. Each opens a full-height
   panel beside the agent's chat, in the chat's look (drag its edge to resize); the same icon closes it, and the icon
   of the open panel shows as pressed. The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
-  History: versions, compare with current and "Watch the changes", restore, cuts, fold in. Opening an old version
-  shows it read-only until "Return to current".
+  History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
+  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" (Undo and Redo look
+  unavailable meanwhile); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
+  Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
+  switch to the cut it went into). Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
+  and back where it came from as it closes, and Esc closes the innermost one only.
 - **Conflict cards float** in the preview's bottom-right corner, newest on top with the others peeking out behind it:
   your own edits that clashed, and an agent's view edit that clashed with yours (see "An agent's edit and yours at
   once" below). The stack folds to a "2 conflicts" pill; "Not now" sets a card aside under the pill without deciding

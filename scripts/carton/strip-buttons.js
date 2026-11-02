@@ -8,7 +8,8 @@
 // panel and reports the one open, which comes back here as the icon's pressed look.
 module.exports = String.raw`
 const __cbCartonStripIcons = {
-  history: ["M3.6 12.4A8.5 8.5 0 1 0 6 6.1", "M3.4 3.9v4.4h4.4", "M12 7.8V12l3.1 2"],
+  // a stack of versions, not the clock the chat's own "chat history" button uses beside it (UI audit P2-14)
+  history: ["M12 3.8l8.2 4.2-8.2 4.2-8.2-4.2z", "M3.8 12.2l8.2 4.2 8.2-4.2", "M3.8 16.2l8.2 4.2 8.2-4.2"],
   share: ["M12.3 8.8a3.3 3.3 0 1 1-6.6 0 3.3 3.3 0 0 1 6.6 0z", "M3 19.5c1-3.1 3.3-4.7 6-4.7s5 1.6 6 4.7", "M15.2 5.8a3.3 3.3 0 0 1 0 6.1", "M17.4 14.9c1.6.6 2.9 2.1 3.6 4.6"],
 };
 function __cbCartonStripButton({ id, label, pressed }) {
@@ -25,7 +26,7 @@ function __cbCartonStripButton({ id, label, pressed }) {
 }
 function __cbCartonStrip({ panel }) {
   return n.jsxs("div", { className: "flex shrink-0 items-center gap-[2px]", children: [
-    n.jsx(__cbCartonStripButton, { id: "history", label: "History", pressed: panel === "history" }),
+    n.jsx(__cbCartonStripButton, { id: "history", label: "Version history", pressed: panel === "history" }),
     n.jsx(__cbCartonStripButton, { id: "share", label: "Share", pressed: panel === "share" }),
   ] });
 }
