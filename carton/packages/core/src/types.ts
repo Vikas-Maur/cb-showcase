@@ -406,7 +406,8 @@ export interface ShallowExport {
 export interface FullExport {
   format: "carton-full/1";
   projectId: string;
-  branches: { id: string; name: string; forkOf: NodeId | null; owner: string; root: Doc | null; log: ConfirmedChange[] }[];
+  /** `by`: who made the cut (a fork), its fork version's author; absent when not known. */
+  branches: { id: string; name: string; forkOf: NodeId | null; owner: string; root: Doc | null; log: ConfirmedChange[]; by?: Actor }[];
 }
 
 // ------------------------------------------------------------------ merge, conflict cards (§7)

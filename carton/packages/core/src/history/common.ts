@@ -8,7 +8,7 @@ import type { SoftWarning } from "../schema.ts";
  * and the `.cbproj` full export see. Tables marked local are never exported (R3-07, §13).
  */
 export const STORE_TABLES = {
-  /** `[name]` -> JSON: projectId, schemaVersion, rids used (R10-02), current cut. */
+  /** `[name]` -> JSON: projectId, schemaVersion, rids used (R10-02), current cut; `["maker", cutId]` -> who made a fork. */
   meta: "meta",
   /** `[cutId]` -> CutRecord. */
   cuts: "cuts",

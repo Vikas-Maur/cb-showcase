@@ -107,6 +107,8 @@ export interface JoinInit {
   cut: CutRecord;
   doc0: Doc;
   rootHash?: string;
+  /** Who made the cut, when it is a fork (the sharer's `maker(cut)`): kept beside its record, as the sharer keeps it. */
+  by?: Actor;
 }
 
 /** A commit: the new state (`doc`) or ops, made on `base` (a header ref, an MCP rev, a pin, a held state, or the head). */
@@ -273,10 +275,12 @@ export interface Carton {
   release(ref: StateRef, owner: string): Promise<void>;
 
   cuts(): Promise<CutRecord[]>;
+  /** Who made a cut (a fork), as recorded: its fork version's author; null when not known. A join carries it (JoinInit). */
+  maker(cut: string): Promise<Actor | null>;
   /** Rename a cut (its id never changes; the name is only a label). */
   renameCut(cut: string, name: string): Promise<CutRecord>;
   /** Publish a version (default: the current cut's head) as a Published cut: what the share link shows. */
-  publish(opts?: { from?: StateRef | string; name?: string; id?: string }): Promise<CutRecord>;
+  publish(opts?: { from?: StateRef | string; name?: string; id?: string; author?: Actor }): Promise<CutRecord>;
   /** Published cuts, each with the cut it came from and whether that cut has edits newer than what was published. */
   publications(): Promise<Publication[]>;
   /** New cut (`cb cut new`): forks from `from` (default: the current cut's head). */
@@ -306,7 +310,8 @@ export interface Carton {
   /** History: versions of a cut, newest first; `summary`: each says what it did in plain words. */
   log(opts?: { cut?: string; limit?: number; before?: number; summary?: boolean }): Promise<Version[]>;
   /** Name a version ("Sent to client, Monday"). */
-  name(ref: StateRef | string, name: string): Promise<void>;
+  /** Name a version; `author`: who named it (default: this handle's actor). */
+  name(ref: StateRef | string, name: string, opts?: { author?: Actor }): Promise<void>;
   /** Restore: the state at `ref`, saved as a new version on the current cut. */
   restore(ref: StateRef | string, opts?: { author?: Actor; cut?: string; id?: ChangeId }): Promise<CommitResult>;
   /** Undo one change (revert by change). */
@@ -549,6 +554,13 @@ function syncError(message: string, code?: string, until?: number): SyncError {
 }
 /** Confirmed states past the stored rows that pending rows were made on (meta `[QUEUE_HEAD, cut, seq]`): `#gapWrites`. */
 const QUEUE_HEAD = "queue-head";
+/**
+ * Who made a cut (meta `[MAKER, cut]` → Actor): its fork version's author. Beside the cut record, never in it: every
+ * write on a cut is conditioned on its whole stored record, which a client that doesn't know the maker rebuilds without
+ * it (review P2: a maker in the record made that client's writes fail). Written with the cut; a full export and a join
+ * (JoinInit.by, from the sharer's `maker`) carry it.
+ */
+const MAKER = "maker";
 /** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
 const TURN = ["append-turn"] as const;
 /** A turn its holder never gave back is free after this long (a crashed writer; one append takes far less). */
@@ -878,13 +890,17 @@ class CartonImpl implements Carton {
     if (!this.#opts.sync) throw new Error("Carton.open: `join` needs `sync` (the rows come from the host)");
     if (j.rootHash !== undefined && E.hashDoc(j.doc0, this.schema) !== j.rootHash) throw new Error("Carton.open: the joined cut's root doesn't match its hash");
     const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
+    // who made it goes beside the record (MAKER), never in it: a record from a build that kept it there gives it up
+    const { by: inRecord, ...cut } = j.cut as CutRecord & { by?: unknown };
+    const by = j.cut.forkOf ? (j.by ?? inRecord) : undefined;
     const ok = await this.store.write(
       [
         { table: T.meta, key: PROJECT, value: meta },
         { table: T.meta, key: CURRENT, value: j.cut.id },
         // a fork's record gets its fork point once its lineage is here (a fork node's state comes with it): until then
         // `doc0` is its root, as for any joined cut. ["join", cut] says the lineage is still to fetch (Stage F2).
-        { table: T.cuts, key: [j.cut.id], value: { ...j.cut, forkOf: null } },
+        { table: T.cuts, key: [j.cut.id], value: { ...cut, forkOf: null } },
+        ...(by ? [{ table: T.meta, key: [MAKER, j.cut.id], value: by }] : []),
         { table: T.keyframes, key: [j.cut.id, 0], value: j.doc0 },
         { table: T.meta, key: ["join", j.cut.id], value: { forkOf: j.cut.forkOf ?? null } },
         // for good (["join", cut] goes once the lineage is here): the project's import is the sharer's (#who)
@@ -934,6 +950,8 @@ class CartonImpl implements Carton {
     for (const e of await s.range<{ to: string; at: number }>(T.meta, { prefix: ["export"] })) exp.set(e.key[1] as string, [...(exp.get(e.key[1] as string) ?? []), e.value]);
     h.loadKnowledge({ exports: [...exp] });
     const cuts = (await s.range<CutRecord>(T.cuts)).map((e) => e.value);
+    // who made each fork, kept beside its record (MAKER); History takes only a well-formed actor
+    const makers = new Map((await s.range<unknown>(T.meta, { prefix: [MAKER] })).map((e) => [e.key[1] as string, e.value]));
     const done = new Set<string>();
     const byId = new Map(cuts.map((c) => [c.id, c]));
     // a root cut's state at 0, or a fork's own copy of its fork state (SF1-1; older forks have none and rebuild it from
@@ -955,7 +973,7 @@ class CartonImpl implements Carton {
         if (p) await add(p, [...stack, c.id]);
       }
       const root = roots.get(c.id) ?? null;
-      h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}) });
+      h.addCut({ id: c.id, name: c.name, forkOf: c.forkOf, root, ...(c.tracking ? { tracking: true } : {}), ...(c.shallow ? { shallow: true } : {}), owner: c.owner, kind: c.kind, ...(c.at !== undefined ? { at: c.at } : {}), ...(makers.has(c.id) ? { by: makers.get(c.id) } : {}) });
       if (c.protected !== undefined || c.sequencer.kind !== "local" || c.source) h.updateCut(c.id, { ...(c.protected !== undefined ? { protected: c.protected } : {}), sequencer: c.sequencer, ...(c.source ? { source: c.source } : {}) });
       done.add(c.id);
       if (c.shallow) return;
@@ -1435,6 +1453,10 @@ class CartonImpl implements Carton {
     await this.#refresh();
     return this.#h.cuts();
   }
+  async maker(cut: string) {
+    await this.#refresh();
+    return this.#h.maker(cut) ?? null;
+  }
   async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean } = {}) {
     const cut = opts.cut ?? this.#h.current;
     await this.#whole();
@@ -1725,6 +1747,7 @@ class CartonImpl implements Carton {
     return { node, doc: this.#h.resolve(ref).doc };
   }
   async fork(name: string, opts: { from?: StateRef | string; kind?: CutKind; author?: Actor; id?: string; source?: string } = {}): Promise<CutRecord> {
+    const author = this.#actor(opts.author);
     const cur = this.#h.current;
     await this.#whole();
     let rec!: CutRecord;
@@ -1736,16 +1759,21 @@ class CartonImpl implements Carton {
         const known = opts.id ? this.#h.cut(opts.id) : undefined;
         if (known) return void (rec = known); // a retried fork: the cut it already made
         const from = opts.from === undefined ? { node: this.#h.head(cur), doc: null } : this.#held(opts.from);
-        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
+        // who made it is recorded with it (MAKER): its fork version's author (History's "Made this cut", cb history)
+        rec = this.#h.cut(this.#h.fork(from.node, name, { kind: opts.kind ?? "variant", owner: this.#opts.name ?? this.#h.name, by: author, ...(opts.id ? { id: opts.id } : {}), ...(opts.source ? { source: opts.source } : {}) }))!;
         made = true;
         // forking from a held state: the cut forks at its version and the held edits are its first change
-        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author: this.#actor(opts.author), publish: opts.kind === "published", ...(opts.id ? { id: `${opts.id}.held` } : {}) });
+        if (from.doc) this.#h.commit(rec.id, { doc: from.doc, author, publish: opts.kind === "published", ...(opts.id ? { id: `${opts.id}.held` } : {}) });
         rec = this.#h.cut(rec.id)!;
       },
       {
         // the fork's root state is kept with it: it never depends on its fork version's state surviving (a compaction
         // in another process, or one this handle hasn't seen, may squash it: review SF1-1)
-        extra: () => (made ? { writes: [{ table: T.cuts, key: [rec.id], value: rec }, { table: T.keyframes, key: [rec.id, 0], value: this.#h.stateOf(nodeId(rec.id, 0))! }], conds: [{ table: T.cuts, key: [rec.id], expect: "absent" }] } : {}),
+        extra: () => {
+          if (!made) return {};
+          const by = this.#h.maker(rec.id);
+          return { writes: [{ table: T.cuts, key: [rec.id], value: rec }, { table: T.keyframes, key: [rec.id, 0], value: this.#h.stateOf(nodeId(rec.id, 0))! }, ...(by ? [{ table: T.meta, key: [MAKER, rec.id], value: by }] : [])], conds: [{ table: T.cuts, key: [rec.id], expect: "absent" }] };
+        },
         idempotent: !!opts.id,
       },
     );
@@ -1772,7 +1800,7 @@ class CartonImpl implements Carton {
     );
     return rec;
   }
-  async publish(opts: { from?: StateRef | string; name?: string; id?: string } = {}): Promise<CutRecord> {
+  async publish(opts: { from?: StateRef | string; name?: string; id?: string; author?: Actor } = {}): Promise<CutRecord> {
     const cur = this.#h.current;
     await this.#whole();
     // the cut it comes from, said explicitly: a fork node is canonical, so an unedited variant's would name its parent;
@@ -1783,7 +1811,7 @@ class CartonImpl implements Carton {
       const p = this.#h.parseRef(from);
       return "legacy" in p ? cur : p.branchId;
     })();
-    return this.fork(opts.name ?? "Published cut", { kind: "published", source, from: from ?? cur, ...(opts.id ? { id: opts.id } : {}) });
+    return this.fork(opts.name ?? "Published cut", { kind: "published", source, from: from ?? cur, ...(opts.id ? { id: opts.id } : {}), ...(opts.author ? { author: opts.author } : {}) });
   }
   async publications(): Promise<Publication[]> {
     await this.#whole();
@@ -1840,15 +1868,17 @@ class CartonImpl implements Carton {
     const { fold: _f, merge: _m, base: _b, doc: _d, ...out } = r as FoldResult & { fold?: unknown; merge?: unknown; base?: unknown; doc?: unknown };
     return out as FoldResult;
   }
-  async name(ref: StateRef | string, name: string): Promise<void> {
+  /** Name a version; `author`: who named it (default: this handle's actor). */
+  async name(ref: StateRef | string, name: string, opts: { author?: Actor } = {}): Promise<void> {
     await this.#whole();
+    const by = this.#actor(opts.author);
     let node!: NodeId;
-    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, this.#actor()), {
+    await this.#mutate(undefined, () => this.#h.nameVersion((node = this.#node(ref)), name, by), {
       extra: () => {
         const { branchId, seq } = parseNode(node);
         // a named version keeps a keyframe (§5.4)
         const doc = seq > 0 && !this.#h.cut(branchId)?.shallow ? this.#h.stateOf(node) : null;
-        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by: this.#actor() } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
+        return { writes: [{ table: T.names, key: [branchId, seq], value: { name, at: this.#opts.clock?.() ?? Date.now(), by } }, ...(doc ? [{ table: T.keyframes, key: [branchId, seq], value: doc }] : [])] };
       },
       idempotent: true,
     });
@@ -2059,7 +2089,9 @@ class CartonImpl implements Carton {
       // compaction squashed; review SF2-4). A fork without one is rebuilt from its fork version.
       const root = (await from.get<Doc>(T.keyframes, [c.id, 0])) ?? null;
       if (!c.forkOf && !root) continue; // a root cut without its root state can't be rebuilt here
-      branches.push({ id: c.id, name: c.name, forkOf: c.forkOf, owner: c.owner, root, log });
+      // who made it (review P4: an authored fork came in anonymous); History takes only a well-formed actor
+      const by = c.forkOf ? await from.get<Actor>(T.meta, [MAKER, c.id]) : undefined;
+      branches.push({ id: c.id, name: c.name, forkOf: c.forkOf, owner: c.owner, root, log, ...(by !== undefined ? { by } : {}) });
       for (const e of await from.range<{ name: string; at: number; by?: Actor }>(T.names, { prefix: [c.id] })) names.push({ key: e.key, value: e.value });
     }
     let took: { id: string; from: number }[] = [];
@@ -2095,7 +2127,8 @@ class CartonImpl implements Carton {
           const w: StoreWrite[] = [];
           for (const t of took) {
             const b = branches.find((x) => x.id === t.id)!;
-            if (!t.from) w.push({ table: T.cuts, key: [t.id], value: this.#h.cut(t.id)! }, ...(b.root ? [{ table: T.keyframes, key: [t.id, 0], value: b.root }] : []));
+            const by = t.from ? undefined : this.#h.maker(t.id);
+            if (!t.from) w.push({ table: T.cuts, key: [t.id], value: this.#h.cut(t.id)! }, ...(b.root ? [{ table: T.keyframes, key: [t.id, 0], value: b.root }] : []), ...(by ? [{ table: T.meta, key: [MAKER, t.id], value: by }] : []));
             for (const c of b.log.slice(t.from)) w.push({ table: T.changes, key: [t.id, c.seq], value: c });
           }
           for (const n of names) if (took.some((t) => t.id === n.key[0])) w.push({ table: T.names, key: n.key, value: n.value });

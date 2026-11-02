@@ -238,6 +238,12 @@ module.exports = ({ dir, slice, who, codec }) => {
         console.warn("[carton] commit failed; saving without history:", e?.message ?? e);
         return res;
       }
+      // Head into project.json made from a head that moved before its turn in this chain (a GUI save went first): it
+      // isn't written, and the store keeps the document it had (the facade's materializeIn makes it again).
+      if (out?.status === "stale") {
+        if (entry && entry.document === res.document) store.byId.set(id, { ...entry, document: base });
+        return { document: base, changed: false };
+      }
       last.set(id, out);
       if (!out?.doc || out.doc === res.document) return res;
       // The file gets head: the store and the queued write continue from it. When someone else's change was merged

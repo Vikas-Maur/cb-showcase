@@ -406,3 +406,61 @@ test("ui-words: the import row is the person's ('Imported the project', You); th
   ui.dispose();
   await carton.close();
 });
+
+// Laptop #2 (fold author): a host may open its Carton as someone other than the person at the panel (Cardboard's
+// library worker opens a project that isn't shared with its process's identity: "Terminal", or "Claude Code" when the
+// app was started from its shell). Every write the panel makes is the person's (`me`), never that actor.
+test("the panel's writes are `me`'s, not the Carton's own actor", async () => {
+  const terminal: Actor = { kind: "external", id: "terminal:vikas@laptop", name: "Terminal", group: "alice@laptop" };
+  const store = createMemoryStore();
+  const carton = await Carton.open({ adapter, store, init: { doc: doc0(), cutName: "Main cut" }, actor: terminal });
+  const ui = make(carton, { me: alice });
+  await ui.ready;
+  const main = carton.cut;
+  const by = (v: { author: Actor | null } | undefined) => (v?.author ? `${v.author.kind}/${v.author.id}` : "nobody");
+  const newest = async (cut: string) => (await carton.log({ cut, limit: 1 }))[0];
+  // New cut from here: its fork version ("Made this cut") is the person's
+  const alt = await ui.newCut("Alt", `${main}@0`);
+  const forkV = (await carton.log({ cut: alt.id })).find((v) => v.kind === "fork");
+  assert.equal(by(forkV), "human/alice", "Made this cut");
+  // Name this version: named by the person
+  await carton.commit({ cut: alt.id, ops: [set("b", "color", "blue"), set("d", "color", "blue")], author: alice });
+  await ui.refresh();
+  await ui.nameVersion(ui.history().at("all", 0)!.id, "Rough");
+  const named = (await carton.store.range<{ name: string; by?: Actor }>("names")).find((e) => e.value.name === "Rough");
+  assert.equal(by(named && { author: named.value.by ?? null }), "human/alice", "named by");
+  // Fold in, leaving one change out, then the rest
+  await ui.switchCut(main);
+  await ui.planFold(alt.id, main);
+  assert.equal((await ui.fold(alt.id, main, { leaveOut: ["items/d"], choices: {} })).ok, true);
+  assert.equal(by(await newest(main)), "human/alice", "the partial fold");
+  await settle();
+  const inv = ui.history().at("all", 0)!;
+  assert.equal((await ui.foldRest(inv.id)).ok, true);
+  assert.equal(by(await newest(main)), "human/alice", "fold in the rest");
+  // A whole fold
+  await carton.commit({ cut: alt.id, ops: [set("a", "color", "green")], author: alice });
+  await ui.planFold(alt.id, main);
+  assert.equal((await ui.fold(alt.id, main, { leaveOut: [], choices: {} })).ok, true);
+  assert.equal([(await newest(main))?.kind, by(await newest(main))].join(" "), "merge human/alice", "Fold in");
+  // Restore, then Undo
+  await ui.restore(`${main}@0`);
+  assert.equal(by(await newest(main)), "human/alice", "restore");
+  await settle();
+  const turn = ui.undoTurn();
+  assert.ok(turn, "Undo is offered for the person's restore");
+  assert.equal((await ui.undo(turn.id)).ok, true);
+  assert.equal(by(await newest(main)), "human/alice", "undo");
+  // Publish: the published cut's fork version
+  await ui.publish(main);
+  const pub = (await carton.cuts()).find((c) => c.kind === "published")!;
+  assert.equal(by((await carton.log({ cut: pub.id })).find((v) => v.kind === "fork")), "human/alice", "publish");
+  // And nothing in Main's or Alt's history is the Carton's own actor
+  for (const cut of [main, alt.id]) for (const v of await carton.log({ cut })) assert.notEqual(v.author?.id, terminal.id, `${cut}@${v.ref.seq} ${v.kind}`);
+  ui.dispose();
+  await carton.close();
+  // the fork's author is kept with the cut: another handle on the same store (another process: cb history) reads it
+  const again = await Carton.open({ adapter, store, actor: terminal });
+  assert.equal(by((await again.log({ cut: alt.id })).find((v) => v.kind === "fork")), "human/alice", "Made this cut, read again");
+  await again.close();
+});
