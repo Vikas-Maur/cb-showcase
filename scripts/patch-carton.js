@@ -326,7 +326,15 @@ if (mode === "--cli") {
     // playhead while playing) let a preview tell the person's moves of the playhead from its own (final re-check N5).
     replace("ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});", "ne.setState=tN({getState:ne.getState,isWriteBlocked:Tm,onAcceptedDocumentWrite:rN,onRejectedWrite:xv,setState:_m});window.__carton.store({state:ne.getState,raw:_m,adopt:Rde,armed:Mde,inflight:()=>Yy.size>0,flush:()=>cN().work,invoke:On,on:CI,deserialize:av,projects:De,refuse:me,subscribe:ne.subscribe,clock:qx.get});");
     // H4: the save names the version the editor shows; initializeEditor starts from the project's.
-    replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)}))');
+    // H4 (one action, one save): and a media entry an editor action owns goes with that action's timeline save (send answers its own save
+    // with that one), so one action is one version and one undo step (laptop, merge/prod-2 N-1).
+    replace('updateScoped:(t,e)=>Zp(t.id,cK(e),On("project:patch",{document:t,scope:e}))', 'updateScoped:(t,e)=>Zp(t.id,cK(e),window.__carton.send(t,e,()=>On("project:patch",{document:t,scope:e,carton:window.__carton.saveMeta(t,e)})))');
+    // H4 (one action, one save): deleting a title or code graphic drops the media entry it owns (Kx, after removeTimelineItem(s) armed the
+    // timeline save): noted as that action's, so the timeline save carries it. Both of the timeline save's call sites
+    // (the 300 ms debounce, de(), and its flush, cN()) board what their action noted.
+    replace("(nN.set(o.id,o),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))", "(nN.set(o.id,o),window.__carton.ride(i.id,{removedMediaIds:[o.id]}),r.removeMediaFromProject(i.id,o.id).catch(()=>{}))");
+    replace('c=oN(Jt(o,{ownedFields:["tracks","timelineItems"]}),r,"Failed to save timeline to IndexedDB:")', 'c=oN(Jt(o,window.__carton.board(r,{ownedFields:["tracks","timelineItems"]})),r,"Failed to save timeline to IndexedDB:")');
+    replace('s=oN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},{ownedFields:["tracks","timelineItems"]}),t,"Failed to flush timeline to IndexedDB:")', 's=oN(Jt({...r,tracks:n.tracks,timelineItems:i,updatedAt:new Date},window.__carton.board(t,{ownedFields:["tracks","timelineItems"]})),t,"Failed to flush timeline to IndexedDB:")');
     // H6: the editor's session starts here (Ctrl+Z never goes back past it), with nothing to undo or redo yet.
     replace('_m({projectId:n,projectName:r,activeLeftTab:"media",', '_m({cartonBase:a?.stateUpdatedAt??null,cartonPreview:null,cartonSince:Date.now(),cartonCanUndo:!1,cartonCanRedo:!1,projectId:n,projectName:r,activeLeftTab:"media",');
     // H4: a preview of an earlier version is read-only, says so, and is never saved.
@@ -369,6 +377,9 @@ if (mode === "--cli") {
     // other branch, is refused by Cardboard's guard already.
     replace('me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&(', 'me=o.useCallback(()=>{B&&B.type==="text"&&!ue&&!window.__carton?.refuse?.()&&(');
     replace('const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){', 'const Pe=Ds(Ce,Y.clientX,Y.clientY);if(Pe&&(Pe.type==="text"||Pe.type==="caption")){if(window.__carton?.refuse?.())return;');
+    // H4 (one action, one save): adding a title (iu) adds its "Text: …" media entry and the timeline item (addTimelineItem armed the timeline
+    // save), then saves the entry on its own: noted as that action's, so the title and its entry are one version.
+    replace("const g=je.getState().getProjectById(a)??f;return vt(async()=>{const{updateProjectScoped:b}", "const g=je.getState().getProjectById(a)??f;window.__carton?.ride?.(a,{ownedMediaIds:[m]});return vt(async()=>{const{updateProjectScoped:b}");
     prepend(require("./carton/editor-panel"));
   });
   // The title bar's History and Share icons (tabs-*.js, the tab strip), before "Report an issue": only on a tab whose
