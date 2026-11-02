@@ -100,7 +100,8 @@ async function main(): Promise<void> {
       branchId: src.branchId,
       have: src.at,
       onUpdate: (s) => {
-        state.newer = Math.max(0, s.head - src.at);
+        // the rows after the published version less withdraw rows (H1); rows still to come (a page, a gap) count as versions
+        state.newer = Math.max(0, s.head - src.at - (s.rows - s.versions));
         render();
       },
     });
@@ -129,7 +130,8 @@ async function main(): Promise<void> {
     onUpdate: (s) => {
       state.doc = s.doc;
       if (s.doc) showComments(s.head, s.doc);
-      if (s.source) state.newer = Math.max(0, s.source.head - s.source.at);
+      // the host's count leaves withdraw rows (H1) out; an older host sends only its head
+      if (s.source) state.newer = Math.max(0, s.source.versions ?? s.source.head - s.source.at);
       else if (!sourceFollower && descriptor.source) followSource(descriptor.source);
       render();
     },

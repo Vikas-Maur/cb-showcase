@@ -253,9 +253,10 @@ export interface WelcomeMsg {
   maxMessageBytes?: number;
   /**
    * A Published cut's source: the cut it came from, the version published (`at`) and that cut's head now. A watcher
-   * learns that newer edits exist (head > at) without being able to read them.
+   * learns that newer edits exist without being able to read them: `versions` of them (rows after `at` less withdraw
+   * rows, H1, which are no versions); a server that doesn't send it means `head - at`.
    */
-  source?: { branchId: string; at: number; head: number };
+  source?: { branchId: string; at: number; head: number; versions?: number };
   /**
    * The server checked the claims only on bases below this one (a cap per message): ask again for the rest before
    * acting on the list. Unchecked ids are never to be taken as unconfirmed.

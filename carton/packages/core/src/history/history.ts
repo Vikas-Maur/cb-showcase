@@ -707,13 +707,16 @@ export class History {
   }
 
   // ------------------------------------------------------------ versions (the log)
-  /** History: versions of a cut, newest first (`before`: only seqs below it). */
+  /**
+   * History: versions of a cut, newest first (`before`: only seqs below it). A squashed change and a withdraw row (H1,
+   * an id the server spent and nothing else) are no versions: their seqs are gaps.
+   */
   log(cutId: string, { limit = Infinity, before }: { limit?: number; before?: number } = {}): Version[] {
     const br = this.#mustCut(cutId);
     const out: Version[] = [];
     for (let s = Math.min(before === undefined ? br.log.length : before - 1, br.log.length); s >= 0 && out.length < limit; s--) {
       const c = s > 0 ? br.log[s - 1]! : null;
-      if (c?.squashedInto) continue;
+      if (c?.squashedInto || c?.withdrawn) continue;
       const id = nodeId(cutId, s);
       const named = this.#names.get(id);
       const v: Version = {

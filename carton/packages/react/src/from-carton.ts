@@ -621,8 +621,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       cuts = out;
       hub.notify("cuts");
     }
-    // The published cut: the newest publication; "newer edits" comes from core (and counts them when the source's
-    // head is known).
+    // The published cut: the newest publication; "newer edits" and their count come from core.
     const pubs = (await carton.publications()).sort((a, b) => (b.cut.at ?? 0) - (a.cut.at ?? 0));
     const p = pubs[0];
     let next: Published | null = null;
@@ -632,7 +631,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const i = pos.get(rows.find((r) => r.core?.ref.branchId === p.source && r.core.ref.seq === seq)?.v.id ?? "");
       const versionName = i === undefined ? undefined : rows[i]!.v.name;
       const url = opts.shareUrl?.(p.cut);
-      const newerEdits = !p.newer ? 0 : Math.max(1, (heads.get(p.source) ?? seq) - seq);
+      // core counts them as log() lists them: a withdraw row (H1) is no newer edit
+      const newerEdits = !p.newer ? 0 : Math.max(1, p.versions);
       next = { cutId: p.source, cutName: srcCut?.name ?? p.cut.name, ref: p.from, at: p.cut.at ?? 0, newerEdits, ...(versionName ? { versionName } : {}), ...(url ? { url } : {}) };
     }
     if (!samePublished(published, next)) {
@@ -805,7 +805,9 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
           void track(refreshCuts()); // tracked: settled() waits for it too
           break;
         }
-        appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
+        // A withdraw row (H1: a sent edit a rebase emptied, its id spent) moves the head but is no version: History
+        // leaves it out, as log() does
+        if (!c.withdrawn) appendConfirmed({ ref: { branchId: e.branchId, seq: e.seq, pending: [] }, hash: "", change: c.id, author: e.local ? own(c.author) : c.author, at: c.at, kind: c.kind ?? (c.mergeOf ? "merge" : "edit"), ...(c.name ? { name: c.name } : {}) });
         heads.set(e.branchId, e.seq);
         scheduleRefresh();
         break;
