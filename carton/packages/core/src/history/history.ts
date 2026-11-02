@@ -90,6 +90,11 @@ interface Cut {
   sq: LocalSequencer | null;
   /** The confirmed log (the sequencer's own array for writable cuts). */
   log: readonly ConfirmedChange[];
+  /**
+   * Who made the cut (a fork): its fork version's author. Kept beside the record, never in it: every write on a cut is
+   * conditioned on its whole stored record, and a client that doesn't know this field rebuilds the record without it.
+   */
+  by?: Actor;
 }
 interface Lineage extends DagNode {
   branchName?: string;
@@ -190,9 +195,10 @@ export class History {
   }
   /**
    * Add a cut. A root cut starts at `root`; a fork starts at its fork node's state. Tracking cuts are read-only here;
-   * shallow ones hold only lineage nodes. Low level: `fork` is the usual way.
+   * shallow ones hold only lineage nodes. Low level: `fork` is the usual way. `by`: who made a fork (its fork version's
+   * author), from wherever it was kept (the store, a full export): taken only when it is a well-formed actor.
    */
-  addCut(o: { name: string; forkOf: NodeId | null; root?: Doc | null; tracking?: boolean; shallow?: boolean; id?: string; owner?: string; kind?: CutKind; at?: number; by?: Actor }): CutRecord {
+  addCut(o: { name: string; forkOf: NodeId | null; root?: Doc | null; tracking?: boolean; shallow?: boolean; id?: string; owner?: string; kind?: CutKind; at?: number; by?: unknown }): CutRecord {
     const id = o.id ?? newCutId();
     const shallow = !!o.shallow,
       tracking = !!o.tracking;
@@ -208,9 +214,9 @@ export class History {
       ...(shallow ? { shallow } : {}),
       sequencer: { kind: "local" },
       at: o.at ?? this.#clock(),
-      ...(o.by ? { by: o.by } : {}),
     };
-    const cut: Cut = { rec, root, kf: new Map(), sq: null, log: [] };
+    const by = o.forkOf ? wellFormedActor(o.by) : undefined;
+    const cut: Cut = { rec, root, kf: new Map(), sq: null, log: [], ...(by ? { by } : {}) };
     if (!shallow) {
       if (!doc0) throw new StateUnknown(o.forkOf, "fork node state not held");
       cut.kf.set(0, doc0);
@@ -236,6 +242,10 @@ export class History {
   }
   cut(cutId: string): CutRecord | undefined {
     return this.#cuts.get(cutId)?.rec;
+  }
+  /** Who made a cut (a fork), when known: its fork version's author. */
+  maker(cutId: string): Actor | undefined {
+    return this.#cuts.get(cutId)?.by;
   }
   /** Rename or re-kind a cut (only labels; its id never changes). */
   updateCut(cutId: string, patch: Partial<Pick<CutRecord, "name" | "kind" | "protected" | "sequencer" | "source">>): CutRecord {
@@ -708,8 +718,8 @@ export class History {
       const v: Version = {
         ref: { branchId: cutId, seq: s, pending: [] },
         change: c?.id ?? null,
-        // a fork version is its cut's maker's (the cut record's `by`)
-        author: c ? c.author : (br.rec.forkOf ? br.rec.by : undefined) ?? null,
+        // a fork version is its cut's maker's, when known
+        author: (c ? c.author : br.rec.forkOf ? br.by : undefined) ?? null,
         at: c?.at ?? br.rec.at ?? 0,
         kind: c ? c.kind ?? (c.mergeOf ? "merge" : "edit") : br.rec.forkOf ? "fork" : "root",
       };
@@ -1494,7 +1504,7 @@ export class History {
       projectId: this.#projectId ?? "",
       branches: [...this.#cuts.values()]
         .filter((b) => !b.rec.shallow)
-        .map((b) => ({ id: b.rec.id, name: b.rec.name, forkOf: b.rec.forkOf, owner: b.rec.owner, root: b.root ? JSON.parse(E.snapshot(b.root, this.schema)) : null, log: b.log.map((c) => ({ ...c })) })),
+        .map((b) => ({ id: b.rec.id, name: b.rec.name, forkOf: b.rec.forkOf, owner: b.rec.owner, root: b.root ? JSON.parse(E.snapshot(b.root, this.schema)) : null, log: b.log.map((c) => ({ ...c })), ...(b.by ? { by: b.by } : {}) })),
     };
   }
   importFull(pkg: FullExport): void {
@@ -1507,7 +1517,7 @@ export class History {
       if (i < 0) throw new Error("full export: a cut forks from a cut that isn't in it");
       const b = pending.splice(i, 1)[0]!;
       this.#cuts.delete(b.id);
-      const br = this.#mustCut(this.addCut({ id: b.id, name: b.name, forkOf: b.forkOf, owner: b.owner, root: b.root, tracking: true }).id);
+      const br = this.#mustCut(this.addCut({ id: b.id, name: b.name, forkOf: b.forkOf, owner: b.owner, root: b.root, tracking: true, by: b.by }).id);
       for (const c of b.log) {
         (br.log as ConfirmedChange[]).push({ ...c });
         if (!this.#byId.has(c.id)) this.#byId.set(c.id, br.log.at(-1)!);
@@ -1518,6 +1528,23 @@ export class History {
 }
 
 // ------------------------------------------------------------------ helpers
+
+const ACTOR_KINDS: ReadonlySet<string> = new Set(["human", "agent", "subagent", "external", "system"]);
+const ACTOR_TEXT = ["name", "group", "chat", "turn", "agentId", "agentType", "provider", "model"] as const;
+/**
+ * An actor kept outside a change (a cut's maker), as any writer may have left it (another build, a hand edit): itself
+ * when well formed, else undefined, so a reader never meets an id that isn't a string (review P3: History's panel threw
+ * on `{kind: "agent", id: 42}`). `owner` is told, never recorded (as for a change's author): dropped.
+ */
+function wellFormedActor(a: unknown): Actor | undefined {
+  if (!a || typeof a !== "object") return undefined;
+  const x = a as Record<string, unknown>;
+  if (typeof x.kind !== "string" || !ACTOR_KINDS.has(x.kind) || typeof x.id !== "string" || !x.id) return undefined;
+  if (ACTOR_TEXT.some((k) => x[k] !== undefined && typeof x[k] !== "string") || (x.app !== undefined && typeof x.app !== "boolean")) return undefined;
+  if (x.owner === undefined) return a as Actor;
+  const { owner: _o, ...rest } = x;
+  return rest as unknown as Actor;
+}
 
 /** The remap a change applied to its cut: its intent's maps, or for a fold the edge map it applied to its first parent. */
 const firstParentMap = (c: ConfirmedChange): RemapMaps | undefined => (c.mergeOf ? c.mergeEdges?.first : c.intent?.maps);
