@@ -107,6 +107,8 @@ export interface JoinInit {
   cut: CutRecord;
   doc0: Doc;
   rootHash?: string;
+  /** Who made the cut, when it is a fork (the sharer's `maker(cut)`): kept beside its record, as the sharer keeps it. */
+  by?: Actor;
 }
 
 /** A commit: the new state (`doc`) or ops, made on `base` (a header ref, an MCP rev, a pin, a held state, or the head). */
@@ -273,6 +275,8 @@ export interface Carton {
   release(ref: StateRef, owner: string): Promise<void>;
 
   cuts(): Promise<CutRecord[]>;
+  /** Who made a cut (a fork), as recorded: its fork version's author; null when not known. A join carries it (JoinInit). */
+  maker(cut: string): Promise<Actor | null>;
   /** Rename a cut (its id never changes; the name is only a label). */
   renameCut(cut: string, name: string): Promise<CutRecord>;
   /** Publish a version (default: the current cut's head) as a Published cut: what the share link shows. */
@@ -530,7 +534,8 @@ const QUEUE_HEAD = "queue-head";
 /**
  * Who made a cut (meta `[MAKER, cut]` → Actor): its fork version's author. Beside the cut record, never in it: every
  * write on a cut is conditioned on its whole stored record, which a client that doesn't know the maker rebuilds without
- * it (review P2: a maker in the record made that client's writes fail). Written with the cut; a full export carries it.
+ * it (review P2: a maker in the record made that client's writes fail). Written with the cut; a full export and a join
+ * (JoinInit.by, from the sharer's `maker`) carry it.
  */
 const MAKER = "maker";
 /** The append turn (`lease` table, local): who may append while others wait (see `#mutate`). */
@@ -852,13 +857,17 @@ class CartonImpl implements Carton {
     if (!this.#opts.sync) throw new Error("Carton.open: `join` needs `sync` (the rows come from the host)");
     if (j.rootHash !== undefined && E.hashDoc(j.doc0, this.schema) !== j.rootHash) throw new Error("Carton.open: the joined cut's root doesn't match its hash");
     const meta: ProjectMeta = { projectId: j.projectId, schemaVersion: this.#opts.adapter.schemaVersion, schema: schemaFingerprint(this.schema) };
+    // who made it goes beside the record (MAKER), never in it: a record from a build that kept it there gives it up
+    const { by: inRecord, ...cut } = j.cut as CutRecord & { by?: unknown };
+    const by = j.cut.forkOf ? (j.by ?? inRecord) : undefined;
     const ok = await this.store.write(
       [
         { table: T.meta, key: PROJECT, value: meta },
         { table: T.meta, key: CURRENT, value: j.cut.id },
         // a fork's record gets its fork point once its lineage is here (a fork node's state comes with it): until then
         // `doc0` is its root, as for any joined cut. ["join", cut] says the lineage is still to fetch (Stage F2).
-        { table: T.cuts, key: [j.cut.id], value: { ...j.cut, forkOf: null } },
+        { table: T.cuts, key: [j.cut.id], value: { ...cut, forkOf: null } },
+        ...(by ? [{ table: T.meta, key: [MAKER, j.cut.id], value: by }] : []),
         { table: T.keyframes, key: [j.cut.id, 0], value: j.doc0 },
         { table: T.meta, key: ["join", j.cut.id], value: { forkOf: j.cut.forkOf ?? null } },
         // for good (["join", cut] goes once the lineage is here): the project's import is the sharer's (#who)
@@ -1390,6 +1399,10 @@ class CartonImpl implements Carton {
   async cuts() {
     await this.#refresh();
     return this.#h.cuts();
+  }
+  async maker(cut: string) {
+    await this.#refresh();
+    return this.#h.maker(cut) ?? null;
   }
   async log(opts: { cut?: string; limit?: number; before?: number; summary?: boolean } = {}) {
     const cut = opts.cut ?? this.#h.current;
