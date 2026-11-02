@@ -298,26 +298,31 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
 
 /**
  * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) added or deleted in the
- * same change as a record holding them (one of its fields is the part's key): no change of their own, as a split's
- * parts are told with the split (laptop, merge/prod-2 N-1: "Deleted title 'W6'" came with "Deleted media 'Text: W6'").
- * A part changed alone, or added or deleted on its own, is still told. Part's group key → its holder's.
+ * same change as their holder: no change of their own, as a split's parts are the split's (laptop, merge/prod-2 N-1:
+ * "Deleted title 'W6'" came with "Deleted media 'Text: W6'"). The holder is the one record of the part's `partOf`
+ * collection whose field names it, in base or among the records the change inserts, and the change adds (or deletes)
+ * it whole as it does the part. A part two records name (a duplicated title's shared entry), or none, or one changed,
+ * added or deleted on its own, is still told. Part's group key → its holder's.
  */
 function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
   const out = new Map<string, string>();
-  const whole = (g: Group) => g.ops.find((op) => op.path.length === 2);
-  const recOf = (g: Group, w: PlainOp) => (w.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined;
+  const whole = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
   for (const [k, g] of groups) {
-    const cs = g.coll ? schema.collections[g.coll] : undefined, w = cs?.nounOf && whole(g);
-    const r = w && recOf(g, w);
+    const cs = g.coll ? schema.collections[g.coll] : undefined, of = cs?.partOf, w = of && cs.nounOf && whole(g);
+    const r = w && ((w.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined);
     if (!r || cs!.nounOf!(r) !== null) continue;
-    const id = r[cs!.key];
-    for (const [k2, g2] of groups) {
-      const w2 = k2 !== k && whole(g2);
-      if (w2 && w2.op === w.op && Object.values(recOf(g2, w2) ?? {}).includes(id)) {
-        out.set(k, k2);
-        break;
-      }
+    const hk = schema.collections[of!.collection]?.key, id = r[cs!.key];
+    if (!hk) continue;
+    // every record naming it: in base, and inserted by this change
+    const names = new Set<unknown>();
+    for (const h of (base[of!.collection] as Rec[] | undefined) ?? EMPTY) if (h[of!.field] === id) names.add(h[hk]);
+    for (const [, g2] of groups) {
+      const w2 = g2.coll === of!.collection && whole(g2);
+      if (w2 && w2.op === "insert" && (w2.value as Rec)?.[of!.field] === id) names.add(g2.id);
     }
+    if (names.size !== 1) continue;
+    const hkey = of!.collection + "/" + [...names][0];
+    if (whole(groups.get(hkey))?.op === w.op) out.set(k, hkey);
   }
   return out;
 }

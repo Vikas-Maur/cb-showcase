@@ -68,6 +68,19 @@ test("N-1: a title deleted (or added) with its own media entry is one change: th
   // a title deleted while another title's entry is dropped alone: each told
   const two = fromHost(project([clip(), ...titles.slice(0, 5)], [video, ...media.slice(1, 6)]));
   assert.deepEqual(describe(diff(before, two, S), before, S).sort(), ["Deleted media 'Text: W1'", "Deleted title 'W6'"]);
+  // review #2: an entry two titles name (Cardboard's duplicate keeps mediaItemId) belongs to neither alone: told
+  const copy = { ...titleItem(6), id: "t6copy", startTime: 7, endTime: 8 };
+  const shared = fromHost(project([clip(), ...titles, copy], [video, ...media]));
+  const allGone = fromHost(project([clip(), ...titles.slice(0, 5)], [video, ...media.slice(0, 5)]));
+  assert.deepEqual(describe(diff(shared, allGone, S), shared, S).sort(), ["Deleted media 'Text: W6'", "Deleted title 'W6'", "Deleted title 'W6'"]);
+  assert.equal(countChanges(diff(shared, allGone, S), shared, S), 3);
+  assert.deepEqual(heldBy(diff(shared, allGone, S), shared, S), []);
+  // review #4: only the item's media field names its entry; a title whose name happens to be the entry's id isn't its holder
+  const named = { ...titleItem(2), name: "tm1" };
+  const before4 = fromHost(project([clip(), titleItem(1), named], [video, media[0]!, media[1]!]));
+  const after4 = fromHost(project([clip(), titleItem(1)], [video, media[1]!]));
+  assert.deepEqual(describe(diff(before4, after4, S), before4, S).sort(), ["Deleted media 'Text: W1'", "Deleted title 'tm1'"]);
+  assert.equal(countChanges(diff(before4, after4, S), before4, S), 2);
   // a library file's media (a clip's) is never a part: deleting a clip and its media is two changes, as before
   const noClip = fromHost(project(titles, media));
   assert.equal(countChanges(diff(before, noClip, S), before, S), 2);
