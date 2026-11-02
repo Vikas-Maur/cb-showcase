@@ -25,6 +25,11 @@ const shapes = {
   bookmark: [P("M7 3.8h10a.8.8 0 0 1 .8.8v15.6l-5.8-3.7-5.8 3.7V4.6a.8.8 0 0 1 .8-.8z")],
   cut: [C(6.5, 18, 2.4), C(6.5, 6, 2.4), C(17.5, 6, 2.4), P("M6.5 8.4v7.2"), P("M17.5 8.4c0 4.6-4.6 5-9.4 7.9")],
   fold: [P("M12 20.5V12.8L6.5 7.3V3.5"), P("M12 12.8l5.5-5.5V3.5"), P("M8.8 17.4l3.2 3.2 3.2-3.2")],
+  // Agents' own marks (UI audit P2-15), drawn for Carton in the set's weight, never a product's logo: Claude Code a
+  // burst, Codex a hexagon, the Director a clapperboard. Any other agent keeps the sparkle.
+  burst: [P("M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18")],
+  hexagon: [P("M12 3.4l7.4 4.3v8.6L12 20.6l-7.4-4.3V7.7z"), P("M9.4 10.2L7.6 12l1.8 1.8M14.6 10.2l1.8 1.8-1.8 1.8")],
+  clapper: [h("rect", { x: 4, y: 9.5, width: 16, height: 10, rx: 1.4 }), P("M4.4 9.5l-.6-3.2 15-2.8.6 3.2z"), P("M8.6 5.6l1.6 3.1M13.4 4.7l1.6 3.1")],
   sparkle: [P("M12 3.5l1.7 5.6c.2.6.6 1 1.2 1.2l5.6 1.7-5.6 1.7c-.6.2-1 .6-1.2 1.2L12 20.5l-1.7-5.6c-.2-.6-.6-1-1.2-1.2L3.5 12l5.6-1.7c.6-.2 1-.6 1.2-1.2z")],
   user: [C(12, 8.5, 3.8), P("M4.8 20c1.2-3.6 4-5.4 7.2-5.4s6 1.8 7.2 5.4")],
   cloud: [P("M7.2 18.5h9.6a4.2 4.2 0 0 0 .6-8.4 5.9 5.9 0 0 0-11.2 1.2 3.6 3.6 0 0 0 1 7.2z")],

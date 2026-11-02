@@ -60,6 +60,10 @@ export function Button(p: ButtonProps) {
   );
 }
 
+/** Each agent its own mark, so a long History tells them apart at a glance (UI audit P2-15). */
+const agentMark = (name: string | undefined): IconName =>
+  /claude/i.test(name ?? "") ? "burst" : /codex/i.test(name ?? "") ? "hexagon" : /director/i.test(name ?? "") ? "clapper" : "sparkle";
+
 /**
  * An actor's avatar. `named`: its name is shown beside it (History rows, cards, Credits), so the avatar is decoration:
  * no tooltip of its own (it would repeat the name over the row below) and hidden from screen readers. A system actor
@@ -69,17 +73,18 @@ export function Avatar({ actor, size = 22, title, named }: { actor: Actor; size?
   const ui = useCartonUi();
   const words = useWords();
   if (actor.kind === "system") return null;
-  const color = actorColor(actor, ui.actor.bind(ui));
+  // "You" keeps one look before and after a share (it read "Y" in blue, then "V" in purple: UI audit P3-3).
+  const color = actor.isYou && actor.kind === "human" ? actorColor({ ...actor, key: "human/you" }) : actorColor(actor, ui.actor.bind(ui));
   const label = title ?? actorLabel(actor, ui.actor.bind(ui), words.you);
   // Two letters need about 20 px; smaller avatars (history rows, card headers) show one.
   const letters = (s: string) => (size < 20 ? Array.from(s)[0] ?? "?" : s);
   const style: CSSProperties = { width: size, height: size, fontSize: Math.max(7, Math.round(size * (size < 20 ? 0.5 : 0.4))), ["--carton-actor" as string]: color };
   const glyph =
     actor.kind === "human"
-      ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.name)))
+      ? h("span", { className: "carton-avatar-initials" }, letters(initials(actor.isYou ? words.you : actor.name)))
       : actor.kind === "subagent" && !named
         ? h("span", { className: "carton-avatar-initials" }, initials(actor.subagentType ?? actor.name).slice(0, 1))
-        : h(Icon, { name: "sparkle", size: Math.round(size * 0.62) });
+        : h(Icon, { name: agentMark(actor.name), size: Math.round(size * 0.62) });
   // Beside a name, a subagent is its agent ("Director"): the agent's look too.
   return named
     ? h("span", { className: "carton-avatar", "data-kind": actor.kind === "subagent" ? "agent" : actor.kind, style, "aria-hidden": true }, glyph)

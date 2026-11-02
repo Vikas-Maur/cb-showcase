@@ -21,7 +21,7 @@ export const words = {
   // History panel
   historyFilters: { all: "All", named: "Named", turns: "Director turns" } as Record<"all" | "named" | "turns", string>,
   historyEmpty: "No versions yet. A version is saved after every edit and every Director turn.",
-  historyEmptyNamed: "No named versions yet. Name a version to find it again, like “Sent to client, Monday”.",
+  historyEmptyNamed: "No named versions yet. Name one to find it again.",
   historyEmptyTurns: "No Director turns yet.",
   checkpoint: "Checkpoint",
   turnEdits: (n: number) => plural(n, "edit", "edits"),
@@ -77,7 +77,7 @@ export const words = {
 
   // Conflict cards
   conflictCard: "Conflict card",
-  conflictLead: "Both edits kept; you pick.",
+  conflictLead: "Two different edits. Pick one.",
   // Each choice says whose edit and, in a fold, which cut, so "mine" never has to be guessed: the cut I'm in, or the
   // clip's author? (PLAN §2.6 "Keep mine/theirs/both", made explicit.)
   keepYours: (where?: string) => (where ? `Keep yours (${where})` : "Keep yours"),
