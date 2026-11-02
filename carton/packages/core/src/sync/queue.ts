@@ -462,7 +462,7 @@ export class ReplicaQueue {
         // the changes restored before it, as an integrate would have done
         top = onBase(chain.doc, { seq: at, pending: chain.ids }, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
         const concurrent = log.slice(at, head).filter((r): r is ConfirmedChange & { withdrawn?: boolean } => !r.placeholder && !(r as { withdrawn?: boolean }).withdrawn && !inBase.has(r.id));
-        const r = this.rebaseOne(top, o.doc, concurrent);
+        const r = this.rebaseOne(top, o.doc, concurrent, ch.history?.reverts !== undefined);
         rebased = onBase(o.doc, current, r.ops, r.intent, ch.k + 1, [...top.supersedes, `${ch.id}#${ch.k}`], r.cards);
         rebased.policy = policyFor(top.policy, rebased.decl);
       } else top = onBase(o.doc, current, ch.ops, intent, ch.k, [...ch.supersedes], byK.get(ch.k) ?? []);
@@ -536,7 +536,7 @@ export class ReplicaQueue {
     const ids: string[] = [];
     for (const p of chain) {
       const v = last(p.versions);
-      const r = this.rebaseOne(v, cur, concurrent);
+      const r = this.rebaseOne(v, cur, concurrent, p.history?.reverts !== undefined);
       const decl = declare(this.schema, cur, r.ops, r.intent);
       // an empty result (its effect is already in head, or a card kept head's value) stays as an empty version: the
       // pusher withdraws or absorbs it, and later bases leave it out
@@ -567,9 +567,10 @@ export class ReplicaQueue {
   /**
    * Rebase one version from its base onto `head` with merge3. `concurrent` = the confirmed rows between them; their
    * recorded remaps and edit kinds go in as the head side's, and the change's own remap is re-expressed in head
-   * coordinates (its edge map). Cards keep head's value (the provisional side).
+   * coordinates (its edge map). Cards keep head's value (the provisional side). `reverts`: the change reverts others (an
+   * undo, redo or revert: `HistoryFields.reverts`), so its recorded remap is all it moves: none is inferred for it.
    */
-  private rebaseOne(v: QueueVersion, head: Doc, concurrent: readonly ConfirmedChange[]): { ops: Op[]; cards: ConflictCard[]; intent: Intent | null } {
+  private rebaseOne(v: QueueVersion, head: Doc, concurrent: readonly ConfirmedChange[], reverts: boolean): { ops: Op[]; cards: ConflictCard[]; intent: Intent | null } {
     const S = this.schema;
     const mine = apply(fork(v.baseDoc, S), v.ops, S);
     // what landed meanwhile: its recorded maps (intents and first-class remap ops), lineage too (a concurrent split
@@ -582,8 +583,10 @@ export class ReplicaQueue {
     const ownMaps: RemapMaps[] = [];
     if (v.intent?.maps && !isEmptyMap(v.intent.maps)) ownMaps.push(v.intent.maps);
     for (const op of remapOps) if (!isEmptyMap(op.maps)) ownMaps.push(op.maps);
-    // its own: maps and lineage (a split records lineage only: kept, kit-docs)
-    const own = intentRemap({ maps: ownMaps.length ? (ownMaps.length === 1 ? ownMaps[0]! : composeMaps(...ownMaps)) : {}, lineage: v.intent?.lineage ?? remapOps[0]?.lineage });
+    // its own: maps and lineage (a split records lineage only: kept, kit-docs). An undo that records none moves nothing
+    // by remap: given as none, or merge3 infers one (the undo of a plain drag closes the gap it left, read as a ripple
+    // delete: a clip placed later on that track meanwhile was pulled left by it, laptop report #2, bug 6)
+    const own = intentRemap({ maps: ownMaps.length ? (ownMaps.length === 1 ? ownMaps[0]! : composeMaps(...ownMaps)) : {}, lineage: v.intent?.lineage ?? remapOps[0]?.lineage }) ?? (reverts ? { maps: {} } : undefined);
     const m = merge3(v.baseDoc, head, mine, S, {
       remaps: { ...(ours ? { ours } : {}), ...(own ? { theirs: own } : {}) },
       kinds: { ours: concKinds, theirs: v.kinds ?? {} },

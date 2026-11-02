@@ -2695,7 +2695,9 @@ class CartonImpl implements Carton {
   #sinceBase(sc: SharedCut, cut: string, at: { seq: number; causal: readonly ChangeId[]; cutId: string }): { remap?: ReturnType<typeof E.intentRemap>; kinds: EditKinds } {
     const rows = sc.queue.rows(cut).slice(at.seq);
     if (at.cutId !== cut || rows.some((r) => r.placeholder)) return { kinds: {} };
-    return E.sideOf([...rows, ...sc.queue.pending(cut).filter((p) => !at.causal.includes(p.id)).map((p) => p.versions[p.versions.length - 1]!)] as { intent?: Intent | null; kinds?: EditKinds | null }[]);
+    // a pending change with what it reverts, as a confirmed row has it (an undo: no remap is inferred for it, sideOf)
+    const pending = sc.queue.pending(cut).filter((p) => !at.causal.includes(p.id)).map((p) => ({ ...p.versions[p.versions.length - 1]!, reverts: p.history?.reverts }));
+    return E.sideOf([...rows, ...pending] as { intent?: Intent | null; kinds?: EditKinds | null; reverts?: unknown }[]);
   }
   #outcome(cut: string, o: WriteOutcome): CommitResult {
     if (o.status === "confirmed") return { status: "confirmed", seq: o.seq, ref: { branchId: cut, seq: o.seq, pending: [] }, change: this.#h.findChange(o.id), rebased: 0, notices: [] };
