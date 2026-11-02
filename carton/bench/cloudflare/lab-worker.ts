@@ -7,6 +7,9 @@
 //                                     the DO's SQLite otherwise: the vault has no lifecycle rule), and its size after
 //   POST /api/lab/r2-abort-uploads    abort every unfinished R2 multipart upload the adapter has records for
 //   POST /api/lab/r2-wipe             delete every object in the bucket, 500 a call (the lab's final cleanup)
+//   GET  /api/lab/projects/:p/ids     the project's Durable Object ids (room, vault, and today's write-cap counter
+//                                     room), so the lab reads each run's own objects from the analytics even when
+//                                     several runs share the clock (idFromName only: wakes no object)
 // Deletes are free on R2 and count as rows written on the vault.
 import worker, { ProjectRoom, BlobVault as RealBlobVault } from "../../packages/server-cloudflare/src/worker.ts";
 import type { DurableObjectState } from "../../packages/server-cloudflare/src/cf.ts";
@@ -38,7 +41,7 @@ export class BlobVault extends RealBlobVault {
   }
 }
 
-const LAB = /^\/api\/lab\/projects\/([A-Za-z0-9._~-]{1,128})\/(purge|stats|vault-drop-uploads)$/;
+const LAB = /^\/api\/lab\/projects\/([A-Za-z0-9._~-]{1,128})\/(purge|stats|vault-drop-uploads|ids)$/;
 
 async function admin(req: Request, env: Env): Promise<boolean> {
   const given = (req.headers.get("authorization") ?? "").replace(/^Bearer /, "");
@@ -85,6 +88,14 @@ export default {
     if (!m) return worker.fetch(req, env);
     if (!(await admin(req, env))) return Response.json({ error: "admin token required" }, { status: 401 });
     const [, projectId, what] = m;
+    if (what === "ids") {
+      const day = new Date().toISOString().slice(0, 10);
+      return Response.json({
+        room: String(env.PROJECT_ROOM.idFromName(projectId!)),
+        vault: env.BLOB_VAULT ? String(env.BLOB_VAULT.idFromName(projectId!)) : null,
+        writeCap: String(env.PROJECT_ROOM.idFromName(`write-cap/${day}`)),
+      });
+    }
     if (what === "vault-drop-uploads") {
       if (!env.BLOB_VAULT) return Response.json({ dropped: 0 });
       return env.BLOB_VAULT.get(env.BLOB_VAULT.idFromName(projectId!)).fetch("https://vault/lab/drop-uploads", { method: "POST" });

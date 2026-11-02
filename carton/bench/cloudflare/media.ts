@@ -13,6 +13,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { HOSTS, secrets, tokenFor, now, type HostName } from "./common.ts";
 import { guard, endTest } from "./guard.ts";
+import { idsOf } from "./objcost.ts";
 import { RUNS_DIR } from "./paths.ts";
 
 const { values: a } = parseArgs({
@@ -34,7 +35,9 @@ const { values: a } = parseArgs({
     keep: { type: "boolean", default: false },
     tag: { type: "string", default: "" },
     // the namespaces it uses: uploader cfl<base>, teammate cfl<base+1>
-    "ns-base": { type: "string", default: "40" },
+    "ns-base": { type: "string", default: "70" },
+    // the teammate's downloads as plain ranged GETs (the harness's old way) instead of the app's MediaReader
+    "download-raw": { type: "boolean", default: false },
   },
 });
 const host = a.host as HostName;
@@ -64,7 +67,9 @@ netns("profile", String(MATE), a["teammate-profile"] || a.profile!);
 const ownerToken = await tokenFor(projectId, "uploader");
 const mateToken = await tokenFor(projectId, "teammate");
 const stateDir = mkdtempSync(join(tmpdir(), "cflab-upload-"));
-const result: Record<string, any> = { runId, projectId, host, size, profile: a.profile, window: { start: new Date().toISOString() as string, end: "" } };
+const result: Record<string, any> = { runId, projectId, host, size, profile: a.profile, window: { start: new Date().toISOString() as string, end: "" }, ids: await idsOf(host, projectId).catch((e) => ({ error: String(e) })), phases: {} as Record<string, [number, number]> };
+const phase = (name: string, t0: number) => (result.phases[name] = [Math.round(t0), Math.round(now())]);
+const dlOp = a["download-raw"] ? "download-raw" : "download";
 const events: any[] = [];
 
 /** Runs media-client.ts in namespace `ns`; resolves with its lines. `watch` may kill it. */
@@ -92,8 +97,9 @@ if (a.preview) {
   const seg = 640 * 1024;
   const t0 = now();
   const put = await client(0, { op: "put", token: ownerToken, key: `lab/${projectId}/proxy-seg0`, seed: `${seed}-seg`, size: seg });
-  const got = await client(1, { op: "download", token: mateToken, key: `lab/${projectId}/proxy-seg0`, bytes: seg, chunk: seg });
+  const got = await client(1, { op: "download-raw", token: mateToken, key: `lab/${projectId}/proxy-seg0`, bytes: seg, chunk: seg });
   result.preview = { segmentBytes: seg, uploadMs: last(put, "put")?.ms, teammateFetchMs: last(got, "downloaded")?.ms, totalMs: now() - t0, failed: last(put, "failed") ?? last(got, "failed") };
+  phase("preview", t0);
   console.log("preview", JSON.stringify(result.preview));
 }
 
@@ -117,6 +123,8 @@ for (let i = 0; i < 5 && !last(sessions.at(-1)!, "uploaded"); i++) {
   sessions.push(await client(0, upCfg));
 }
 const done = last(sessions.at(-1)!, "uploaded");
+phase("upload", tUp);
+result.uploadIds = [...new Set(events.filter((e) => e.ev === "upload-id").map((e) => e.id))];
 const sent = sessions.map((s) => {
   const p = [...s].reverse().find((l) => l.ev === "progress");
   return { sent: last(s, "uploaded")?.result.bytesSent ?? p?.sent ?? 0, failed: last(s, "failed") ?? null, resumedParts: last(s, "uploaded")?.result.resumedParts ?? null };
@@ -142,8 +150,10 @@ console.log("upload", JSON.stringify({ ms: Math.round(result.upload.ms), mbps: r
 // the teammate opens the original: its head, then its first 1 MiB (what a player asks for first)
 if (done) {
   const key = `m/${done.hash}`;
+  const tm = now();
   const h = await client(1, { op: "head", token: mateToken, key });
-  const d = await client(1, { op: "download", token: mateToken, key, bytes: MiB, chunk: MiB });
+  const d = await client(1, { op: dlOp, token: mateToken, key, bytes: MiB, chunk: MiB });
+  phase("teammate", tm);
   result.teammateOriginal = { headMs: last(h, "head")?.ms, firstMiBMs: last(d, "downloaded")?.ms, afterUploadStartMs: now() - tUp };
 }
 
@@ -152,16 +162,19 @@ if (a.dedup && done) {
   const t = now();
   const again = await client(0, { ...upCfg, stateDir: mkdtempSync(join(tmpdir(), "cflab-upload-")) });
   const r = last(again, "uploaded")?.result;
-  result.dedup = { ms: now() - t, deduped: r?.deduped, bytesSent: r?.bytesSent, failed: last(again, "failed") ?? null };
+  result.dedup = { ms: now() - t, deduped: r?.deduped, bytesSent: r?.bytesSent, failed: last(again, "failed") ?? null, requests: last(again, "uploaded")?.requests };
+  phase("dedup", t);
   console.log("dedup", JSON.stringify(result.dedup));
 }
 
 // downloads on a (slower) profile
 if (downBytes && done) {
   netns("profile", String(MATE), a["down-profile"] || a.profile!);
-  const d = await client(1, { op: "download", token: mateToken, key: `m/${done.hash}`, bytes: Math.min(downBytes, size), chunk: 4 * MiB });
+  const td = now();
+  const d = await client(1, { op: dlOp, token: mateToken, key: `m/${done.hash}`, bytes: Math.min(downBytes, size), chunk: 4 * MiB });
   const r = last(d, "downloaded");
-  result.download = { profile: a["down-profile"] || a.profile, bytes: r?.bytes, ms: r?.ms, firstMs: r?.firstMs, mbps: r ? (r.bytes * 8) / 1e6 / (r.ms / 1000) : null, failed: last(d, "failed") ?? null };
+  result.download = { via: dlOp === "download" ? "MediaReader" : "ranged GET", profile: a["down-profile"] || a.profile, bytes: r?.bytes, ms: r?.ms, firstMs: r?.firstMs, mbps: r ? (r.bytes * 8) / 1e6 / (r.ms / 1000) : null, failed: last(d, "failed") ?? null, requests: r?.requests, events: r?.events };
+  phase("download", td);
   console.log("download", JSON.stringify(result.download));
 }
 

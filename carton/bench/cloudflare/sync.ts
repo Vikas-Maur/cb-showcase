@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { parseArgs } from "node:util";
 import { adopt, tokenFor, now, stats, type HostName } from "./common.ts";
 import { guard, endTest } from "./guard.ts";
+import { idsOf } from "./objcost.ts";
 import { RUNS_DIR } from "./paths.ts";
 
 const { values: a } = parseArgs({
@@ -36,6 +37,12 @@ const { values: a } = parseArgs({
     "idle-sec": { type: "string", default: "0" },
     // SyncClient options under test (e.g. maxBackoffMs), passed to every party
     client: { type: "string", default: "" },
+    // presence as the web app sends it (party.ts): "drag" (a dragged clip's ghost, fed at pointer-hz for presence-sec)
+    // or "once" (one "Idle", then silence), by the first presence-parties parties
+    "presence-mode": { type: "string", default: "" },
+    "presence-sec": { type: "string", default: "0" },
+    "presence-parties": { type: "string", default: "1" },
+    "pointer-hz": { type: "string", default: "60" },
   },
 });
 const host = a.host as HostName;
@@ -54,9 +61,10 @@ const branch = "main";
 const total = N * E;
 
 // worst case: each edit one push (and up to 3 again on rejects), a few connects per party per minute of chaos
-const minutes = (S + (chaos === "outage" ? outageSec : 0) + Number(a["idle-sec"]) + 120) / 60;
+const presenceSec = Number(a["presence-sec"]);
+const minutes = (S + presenceSec + (chaos === "outage" ? outageSec : 0) + Number(a["idle-sec"]) + 120) / 60;
 const reconnects = N * (chaos ? Math.ceil(minutes * 12) : 2);
-const presenceMsgs = N * Number(a["presence-hz"]) * S;
+const presenceMsgs = N * Number(a["presence-hz"]) * S + (a["presence-mode"] === "drag" ? Number(a["presence-parties"]) * presenceSec * 20 : 0);
 const g = await guard({ test: runId, workersReq: reconnects + 10, doReq: total * 4 + reconnects + 20 + presenceMsgs, doRowsWritten: total * 6 + 50, doRowsRead: total * 200 + 5000, doGBs: minutes * 60 * 0.128 }); // one room: a DO is billed per object, never per socket; this is no hibernation at all
 const t0 = Date.now();
 netns("up", String(NB + N));
@@ -71,7 +79,7 @@ for (let i = 0; i < N; i++) {
   // people and agents: every third party is an agent (a Director subagent), as in a real session
   const kind = i % 3 === 2 ? "agent" : "human";
   const who = `${kind === "agent" ? "agent" : "person"}${i}`;
-  const cfg = { host, projectId, branch, token: await tokenFor(projectId, who), who, kind, edits: E, intervalMs: (S * 1000) / E, seed: 1000 * Number(a.rep) + i + 1, ...(a.transport ? { transport: JSON.parse(a.transport) } : {}), ...(a.backoff ? { backoffMs: Number(a.backoff) } : {}), ...(a.client ? { client: JSON.parse(a.client) } : {}), presenceHz: Number(a["presence-hz"]) };
+  const cfg = { host, projectId, branch, token: await tokenFor(projectId, who), who, kind, edits: E, intervalMs: (S * 1000) / E, seed: 1000 * Number(a.rep) + i + 1, ...(a.transport ? { transport: JSON.parse(a.transport) } : {}), ...(a.backoff ? { backoffMs: Number(a.backoff) } : {}), ...(a.client ? { client: JSON.parse(a.client) } : {}), presenceHz: Number(a["presence-hz"]), ...(a["presence-mode"] && i < Number(a["presence-parties"]) ? { presenceMode: a["presence-mode"], presenceSec, pointerHz: Number(a["pointer-hz"]) } : presenceSec ? { presenceSec } : {}) };
   const proc = spawn("bash", [join(HERE, "netns.sh"), "exec", String(NB + i), process.execPath, join(HERE, "party.ts"), JSON.stringify(cfg)], { stdio: ["pipe", "pipe", "pipe"] });
   const lines: Record<string, any>[] = [];
   const waiters: { p: (l: any) => boolean; ok: (l: any) => void }[] = [];
@@ -94,6 +102,7 @@ for (let i = 0; i < N; i++) {
   });
 }
 await Promise.all(parties.map((p) => p.waitFor((l) => l.ev === "status" && l.status === "up-to-date", 90_000, "up-to-date")));
+const tUp = now();
 console.log(`${runId}: ${N} parties up to date; editing for ${S}s`);
 
 // link chaos
@@ -115,12 +124,13 @@ if (chaos === "flap") {
 }
 const tGo = now();
 for (const p of parties) p.send("go");
-await Promise.all(parties.map((p) => p.waitFor((l) => l.ev === "edits-done", (S + outageSec + 120) * 1000, "edits-done")));
+await Promise.all(parties.map((p) => p.waitFor((l) => l.ev === "edits-done", (S + presenceSec + outageSec + 120) * 1000, "edits-done")));
 // stop the chaos once the edits are made (an outage still running is waited out by the settle below)
 if (chaos === "flap") { for (const t of timers) clearTimeout(t), clearInterval(t); for (const p of parties) netns("hole", String(NB + p.i), "off"); }
 const tEdits = now();
 const idleSec = Number(a["idle-sec"]);
 if (idleSec > 0) { console.log(`${runId}: idle for ${idleSec}s`); await new Promise((r) => setTimeout(r, idleSec * 1000)); }
+const tIdleEnd = now();
 
 // settled: nothing pending anywhere and one head everywhere, twice in a row
 let last = "";
@@ -194,6 +204,11 @@ const result = {
   runId, projectId, host, profile, chaos: chaos || null, parties: N, editsPerParty: E, seconds: S, rep: Number(a.rep),
   window: { start: new Date(t0).toISOString(), end: new Date().toISOString() },
   timing: { editingMs: Math.round(tEdits - tGo), settleMs: Math.round(tSettled - tEdits), idleSec },
+  // the phases as epoch ms, so the analytics can be read per phase (objcost.ts minutesBetween)
+  phases: { start: t0, up: Math.round(tUp), go: Math.round(tGo), editsDone: Math.round(tEdits), idleEnd: Math.round(tIdleEnd), settled: Math.round(tSettled) },
+  ids: await idsOf(host, projectId).catch((e) => ({ error: String(e) })),
+  presenceMode: a["presence-mode"] || null, presenceSec, presenceParties: a["presence-mode"] ? Number(a["presence-parties"]) : 0,
+  sentByType: finals.map((f) => f.sentByType), presenceRecv: finals.map((f) => f.presenceRecv),
   presenceHz: Number(a["presence-hz"]), presenceSent: parties.reduce((s, p) => s + (p.lines.find((l) => l.ev === "edits-done")?.presenceSent ?? 0), 0),
   commits: commits.size,
   confirmed: [...outcome.values()].filter((o) => o.kind === "confirmed").length,

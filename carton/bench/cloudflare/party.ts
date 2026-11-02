@@ -10,6 +10,8 @@ import { sync, hashDoc } from "@carton/core";
 import { webSocketTransport } from "@carton/server-node";
 import { hostMessageBlobs } from "@carton/host-http/client";
 import { DOC0, schema, SCHEMA_VERSION, genEdit, rng, now, HOSTS, type HostName } from "./common.ts";
+// the Carton web app's own presence sender (20 Hz drag ghosts, 1 Hz activity), exactly as its timeline drives it
+import { PresenceSender } from "../../apps/web/src/presence.ts";
 
 interface Cfg {
   host: HostName;
@@ -28,6 +30,14 @@ interface Cfg {
   presenceHz?: number;
   /** Other SyncClient options under test (maxBackoffMs…). */
   client?: Record<string, unknown>;
+  /**
+   * "drag": the web app's PresenceSender fed a drag ghost at `pointerHz` (pointermove) for `presenceSec`, as its
+   * timeline does while a clip is dragged; "once": one presence ("Idle") when editing starts, then silence (the room's
+   * presence check keeps running while it shows).
+   */
+  presenceMode?: "drag" | "once";
+  presenceSec?: number;
+  pointerHz?: number;
 }
 const cfg = JSON.parse(process.argv[2]!) as Cfg;
 // this process's own scheduling delay: on a busy box it inflates every latency measured here, so it is reported
@@ -45,8 +55,25 @@ q.on((e) => {
   else if (e.type === "rejected") out({ ev: "rejected", id: e.change.id, reason: e.reason });
 });
 const origin = HOSTS[cfg.host];
+// every frame this client puts on the wire, by message type (what the room is billed a request for)
+const sentByType: Record<string, number> = {};
+let presenceRecv = 0;
+const baseTransport = webSocketTransport(cfg.transport ?? {});
+const countingTransport: typeof baseTransport = {
+  ...baseTransport,
+  async connect(url, o) {
+    const c = await baseTransport.connect(url, o);
+    return {
+      get open() { return c.open; },
+      send: (m) => { sentByType[m.type] = (sentByType[m.type] ?? 0) + 1; c.send(m); },
+      onMessage: (f) => c.onMessage(f),
+      onClose: (f) => c.onClose(f),
+      close: () => c.close(),
+    };
+  },
+};
 const client = sync.createSyncClient(q, {
-  transport: webSocketTransport(cfg.transport ?? {}),
+  transport: countingTransport,
   url: `${origin.replace(/^http/, "ws")}/api/projects/${cfg.projectId}/ws`,
   token: cfg.token,
   branchId: b,
@@ -63,6 +90,7 @@ const client = sync.createSyncClient(q, {
     else if (e.type === "rebase") out({ ev: "rebase", n: e.n });
     else if (e.type === "overwritten") out({ ev: "overwritten", id: e.id, by: e.by });
     else if (e.type === "error") out({ ev: "error", error: e.error.slice(0, 300), code: e.code });
+    else if (e.type === "presence" && e.state) presenceRecv++;
   },
 });
 client.start();
@@ -97,8 +125,22 @@ async function edit(): Promise<void> {
     if (wait > 0) await new Promise((r) => setTimeout(r, wait));
     commitOne();
   }
+  // presence for a set time (a drag, or one "Idle"), as the web app sends it
+  const actor = { kind: cfg.kind, id: cfg.who };
+  if (cfg.presenceMode === "once") client.sendPresence(actor, { activity: "Idle" });
+  if (cfg.presenceMode === "drag") {
+    const sender = new PresenceSender((st) => client.sendPresence(actor, st));
+    let x = 0;
+    const move = setInterval(() => { x += 0.01; sender.drag([{ item: "c0", track: "V1", start: Math.round(x * 100) / 100, end: Math.round((x + 5) * 100) / 100, label: "c0" }]); }, 1000 / (cfg.pointerHz ?? 60));
+    await new Promise((r) => setTimeout(r, (cfg.presenceSec ?? 60) * 1000));
+    clearInterval(move);
+    sender.endDrag();
+  } else if (cfg.presenceSec) {
+    const left = t0 + cfg.presenceSec * 1000 - now();
+    if (left > 0) await new Promise((r) => setTimeout(r, left));
+  }
   if (presence) clearInterval(presence);
-  out({ ev: "edits-done", n: committed.length, presenceSent });
+  out({ ev: "edits-done", n: committed.length, presenceSent, sentByType: { ...sentByType }, presenceRecv });
 }
 
 const rl = createInterface({ input: process.stdin });
@@ -117,6 +159,8 @@ rl.on("line", (line) => {
       stateHash: hashDoc(q.confirmedState(b, head), schema),
       committed,
       stats: client.stats,
+      sentByType,
+      presenceRecv,
       loopLagMs: { p50: lag.percentile(50) / 1e6, p99: lag.percentile(99) / 1e6, max: lag.max / 1e6 },
     });
   } else if (cmd === "quit") {
