@@ -87,11 +87,44 @@ function __cbCartonJoinTile() {
         i.jsx("span", { className: "truncate text-ui-md font-medium tracking-tight text-white/90", children: "Join a shared project" }),
         i.jsx("span", { className: "truncate text-ui-xs text-white/50", children: "From an invite link" })] })] })] });
 }
+// Joining from an empty library (regress prod3 P3-E): Home swaps the empty view for the grid as the join lands, and the
+// page jumped back to the Dashboard's top (the sidebar's Projects lit Dashboard), the new tile below the fold. The page
+// keeps the place it had as the swap began, for the moment the grid takes to measure itself, unless the person moves
+// meanwhile: scrolls anywhere, or clicks or presses a key outside the dialog (the sidebar's Dashboard, say, which
+// scrolls Home itself; review of P3-E); then the new tile (the newest project: the cell after New project and Join) is brought into view if it
+// isn't.
+const __cbCartonScroller = (n) => {
+  const view = n?.ownerDocument?.defaultView;
+  for (let el = n?.parentElement; el && view; el = el.parentElement) if (/auto|scroll/.test(view.getComputedStyle(el).overflowY)) return el;
+  return null;
+};
+function __cbCartonKeepPlace(el, top) {
+  const doc = el.ownerDocument, view = doc.defaultView, until = Date.now() + 1500;
+  let done = false;
+  const on = { wheel: () => off(), touchmove: () => off(), pointerdown: (e) => outside(e) && off(), keydown: (e) => outside(e) && off() };
+  const outside = (e) => !e.target?.closest?.('[role="dialog"]');
+  const off = () => { done = true; for (const t in on) doc.removeEventListener(t, on[t], true); };
+  for (const t in on) doc.addEventListener(t, on[t], { capture: true, passive: true });
+  const tick = () => {
+    if (done || !el.isConnected) return;
+    if (Math.abs(el.scrollTop - top) > 1) el.scrollTo({ top, behavior: "instant" });
+    if (Date.now() < until) return void view.requestAnimationFrame(tick);
+    off();
+    el.querySelectorAll('[role="list"] [role="listitem"]')[2]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  };
+  view.requestAnimationFrame(tick);
+}
 // The empty library's Join, in the look (its className) Cardboard gives the row's "Browse recipes".
 function __cbCartonJoinButton({ className }) {
   const on = __cbCartonUseOn();
+  const ref = r.useRef(null);
+  r.useLayoutEffect(() => {
+    const el = __cbCartonScroller(ref.current);
+    // leaving with the dialog open: the join put the first project in the library
+    return () => { if (el && __cbCartonJoin.open) __cbCartonKeepPlace(el, el.scrollTop); };
+  }, [on]);
   if (!on) return null;
-  return i.jsxs("button", { type: "button", onClick: __cbCartonJoinOpen, "data-carton-join": "", className, children: [__cbCartonJoinIcon("size-[14px]", 2), "Join a shared project"] });
+  return i.jsxs("button", { ref, type: "button", onClick: __cbCartonJoinOpen, "data-carton-join": "", className, children: [__cbCartonJoinIcon("size-[14px]", 2), "Join a shared project"] });
 }
 `;
 

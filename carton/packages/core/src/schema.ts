@@ -106,9 +106,11 @@ export interface CollectionDef {
    */
   nounOf?: (record: Rec) => string | null | undefined;
   /**
-   * Whose part a record is (`nounOf` null), for descriptions and counts only (laptop, merge/prod-2 N-1): the record of
-   * `collection` whose `field` holds its key (Cardboard: a title's "Text: W1" entry, `timelineItems.mediaItemId`).
-   * Added or deleted with its one holder in the same change, it is that holder's change ("Deleted title 'W1'").
+   * Whose part a record is (`nounOf` null), for descriptions and counts only (laptop, merge/prod-2 N-1; regress prod3
+   * P3-C): the record of `collection` whose `field` holds its key (Cardboard: a title's "Text: W1" entry,
+   * `timelineItems.mediaItemId`). With its one holder in the same change (both added, both deleted, or both edited),
+   * it is that holder's change ("Deleted title 'W1'"); named by several (a duplicated title) or none, its holder
+   * untouched, or added or deleted on its own, it is its own.
    */
   partOf?: { collection: string; field: string };
   /**

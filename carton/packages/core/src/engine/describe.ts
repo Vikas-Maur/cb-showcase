@@ -63,8 +63,13 @@ const HASH_IN = /[0-9a-f]{16,}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i;
 const opaque = (key: unknown, v: unknown): boolean =>
   isIdKey(String(key)) || /(?:^h|H)ash(?:es)?$/.test(String(key)) || (typeof v === "string" ? HASHY.test(v) : !!v && typeof v === "object" && HASH_IN.test(JSON.stringify(v) ?? ""));
 
-export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null): string[] {
-  return lines(ops, base, schema, intent).map((l) => l.text);
+/**
+ * `names`: when these ops are only some of a larger set (one row of the Fold dialog), the doc records are named from,
+ * `namingDoc(base, allOps)`, made once for all of them: a record the set adds is named ("to track 'Text 1'", a track
+ * the same fold adds; regress prod3 P3-B read "another track").
+ */
+export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null, names?: Doc): string[] {
+  return lines(ops, base, schema, intent, names).map((l) => l.text);
 }
 
 /**
@@ -128,28 +133,26 @@ function groupOps(plain: readonly PlainOp[], schema: Schema): Map<string, Group>
   return groups;
 }
 /**
- * A record's label (a clip is named after its media's file name), looked up in base plus the records this change
- * inserts, so a clip added with its media is named after it. That doc is built once, only when a label asks.
+ * `base` plus the records `ops` insert, as a new doc: the doc a label looks records up in (`describe`'s `names`, made
+ * once for many rows, and read as it is then: who holds a part is indexed on it).
  */
-function labeller(plain: readonly PlainOp[], base: Doc, schema: Schema) {
-  let named: Doc | null = null;
-  const nameDoc = (): Doc => {
-    if (named) return named;
-    const added = new Map<string, Rec[]>();
-    for (const op of plain) {
-      if (op.op !== "insert" || op.path.length !== 2 || !schema.collections[op.path[0] as string]) continue;
-      const c = op.path[0] as string;
-      let l = added.get(c);
-      if (!l) added.set(c, (l = []));
-      l.push(op.value as Rec);
-    }
-    named = base;
-    if (added.size) {
-      named = { ...base };
-      for (const [c, l] of added) named[c] = [...((base[c] as Rec[] | undefined) ?? EMPTY), ...l];
-    }
-    return named;
-  };
+export function namingDoc(base: Doc, ops: readonly Op[], schema: Schema): Doc {
+  const added = new Map<string, Rec[]>();
+  for (const op of ops) {
+    if (op.op !== "insert" || op.path.length !== 2 || !schema.collections[op.path[0] as string]) continue;
+    const c = op.path[0] as string;
+    let l = added.get(c);
+    if (!l) added.set(c, (l = []));
+    l.push(op.value as Rec);
+  }
+  // a doc of its own even with nothing added: heldParts keys its index on it
+  const named: Doc = { ...base };
+  for (const [c, l] of added) named[c] = [...((base[c] as Rec[] | undefined) ?? EMPTY), ...l];
+  return named;
+}
+function labeller(plain: readonly PlainOp[], base: Doc, schema: Schema, names?: Doc) {
+  let named: Doc | null = names ?? null;
+  const nameDoc = (): Doc => (named ??= namingDoc(base, plain, schema));
   return { nameDoc, label: (coll: string, rec: Rec | undefined) => schema.label?.(coll, rec, nameDoc()) ?? String(rec?.name ?? rec?.id ?? "?") };
 }
 
@@ -290,39 +293,63 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
     keys = ks;
   }
   let n = keys.size;
+  if (n < 2) return n;
+  // a record part of another (a title's own media entry) is its holder's change
   for (const [k, holder] of heldParts(groups, base, schema)) if (keys.has(k) && keys.has(holder)) n--;
-  if (n < 3) return n; // a split is three records at least
+  if (keys.size < 3) return n; // a split is three records at least
   for (const sp of findSplits(groups, base, schema, labeller(plain, base, schema).label)) if (keys.has(sp.key) && sp.parts.every((p) => keys.has(p.key))) n -= sp.parts.length;
   return n;
 }
 
 /**
- * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) added or deleted in the
- * same change as their holder: no change of their own, as a split's parts are the split's (laptop, merge/prod-2 N-1:
- * "Deleted title 'W6'" came with "Deleted media 'Text: W6'"). The holder is the one record of the part's `partOf`
- * collection whose field names it, in base or among the records the change inserts, and the change adds (or deletes)
- * it whole as it does the part. A part two records name (a duplicated title's shared entry), or none, or one changed,
- * added or deleted on its own, is still told. Part's group key → its holder's.
+ * The records that are part of another (`nounOf` null: a title's own "Text: W6" media entry) whose change is their
+ * holder's, as a split's parts are the split's (laptop, merge/prod-2 N-1: "Deleted title 'W6'" came with "Deleted
+ * media 'Text: W6'"; regress prod3 P3-C: a setup row's "15 changes" listed every title's entry). The holder is the one
+ * record of the part's `partOf` collection whose declared field names it, in base or among the records the change
+ * inserts (never any equal value elsewhere). Held when the change touches that holder too, and adds or deletes the part
+ * only as it adds or deletes the holder (or edits both: a title's text and its entry's). A part two records name (a
+ * duplicated title's shared entry), or none, or whose holder the change leaves alone, or added or deleted on its own,
+ * is still told. Who names what is read once per call (a restore of many titles stays linear), and once per `names`
+ * doc (describe's, `namingDoc(base, allOps)`: base plus all of a larger set's inserts) for the rows of one Fold plan,
+ * so a duplicate another row inserts counts too (review of the merge: each row rebuilt it). Part's key → holder's.
  */
-function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
+// by `names` doc, then "collection\0field": the value → the keys of every record whose field holds it
+const NAMERS = new WeakMap<Doc, Map<string, Map<unknown, Set<unknown>>>>();
+function heldParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema, names?: Doc): Map<string, string> {
   const out = new Map<string, string>();
   const whole = (g: Group | undefined) => g?.ops.find((op) => op.path.length === 2);
-  for (const [k, g] of groups) {
-    const cs = g.coll ? schema.collections[g.coll] : undefined, of = cs?.partOf, w = of && cs.nounOf && whole(g);
-    const r = w && ((w.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined);
-    if (!r || cs!.nounOf!(r) !== null) continue;
-    const hk = schema.collections[of!.collection]?.key, id = r[cs!.key];
-    if (!hk) continue;
-    // every record naming it: in base, and inserted by this change
-    const names = new Set<unknown>();
-    for (const h of (base[of!.collection] as Rec[] | undefined) ?? EMPTY) if (h[of!.field] === id) names.add(h[hk]);
-    for (const [, g2] of groups) {
-      const w2 = g2.coll === of!.collection && whole(g2);
-      if (w2 && w2.op === "insert" && (w2.value as Rec)?.[of!.field] === id) names.add(g2.id);
+  let index = names && NAMERS.get(names);
+  if (!index) {
+    index = new Map();
+    if (names) NAMERS.set(names, index);
+  }
+  const namers = (coll: string, field: string, hk: string) => {
+    const at = coll + "\0" + field;
+    let m = index!.get(at);
+    if (!m) {
+      const add = (v: unknown, id: unknown) => (m!.get(v) ?? m!.set(v, new Set()).get(v)!).add(id);
+      index!.set(at, (m = new Map()));
+      // `names` holds base and every insert of the set; else base, then what these ops insert
+      for (const h of ((names ?? base)[coll] as Rec[] | undefined) ?? EMPTY) add(h[field], h[hk]);
+      if (!names) for (const [, g] of groups) {
+        const w = g.coll === coll && whole(g);
+        if (w && w.op === "insert") add((w.value as Rec)?.[field], g.id);
+      }
     }
-    if (names.size !== 1) continue;
-    const hkey = of!.collection + "/" + [...names][0];
-    if (whole(groups.get(hkey))?.op === w.op) out.set(k, hkey);
+    return m;
+  };
+  for (const [k, g] of groups) {
+    const cs = g.coll ? schema.collections[g.coll] : undefined, of = cs?.partOf;
+    if (!of || !cs?.nounOf) continue;
+    const w = whole(g);
+    const r = (w?.op === "insert" ? w.value : getIn(base, [g.coll!, g.id as string], schema)) as Rec | undefined;
+    if (!r || cs!.nounOf(r) !== null) continue;
+    const hk = schema.collections[of.collection]?.key;
+    const names = hk ? namers(of.collection, of.field, hk).get(r[cs!.key]) : undefined;
+    if (names?.size !== 1) continue;
+    const hkey = of.collection + "/" + [...names][0], hw = whole(groups.get(hkey));
+    // the holder touched too; added or deleted together, or both edited
+    if (groups.has(hkey) && (w || hw ? w?.op === hw?.op : true)) out.set(k, hkey);
   }
   return out;
 }
@@ -340,15 +367,20 @@ export function heldBy(ops: readonly Op[], base: Doc, schema: Schema): { part: [
 
 const PART = ["first", "second", "third", "fourth", "fifth"];
 
-function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null): Line[] {
+function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null, names?: Doc): Line[] {
   const tl = schema.timeline,
     out: Line[] = [];
   const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
-  const { nameDoc, label } = labeller(plain, base, schema);
+  const { nameDoc, label } = labeller(plain, base, schema, names);
   // a track made in the same change is named too (UI audit P1-6's drag onto a new track read "to track track 3f9a1c")
   const laneName = (id: unknown) => {
     const t = tl && (getIn(nameDoc(), [tl.lanes, id as string], schema) as Rec | undefined);
     return t ? `'${label(tl!.lanes, t)}'` : "another track";
+  };
+  // "to track 'Text 1'"; a track it can't name is "to another track", never "to track another track" (P3-B)
+  const toTrack = (id: unknown) => {
+    const n = laneName(id);
+    return n[0] === "'" ? `track ${n}` : n;
   };
   const remapOps = ops.filter((op): op is RemapOp => op.op === "remap");
   let maps: RemapMaps = intent?.maps ?? (tl && !remapOps.length ? inferRemaps(schema, base, plain.map((op) => ({ path: op.path, op }))) : {});
@@ -413,7 +445,7 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     else if (e) parts.push(`Trimmed ${name} end ${fmtS(oe)} → ${fmtS(val(e))}`);
     else if (s) parts.push(`Trimmed ${name} start ${fmtS(os)} → ${fmtS(val(s))}`);
     else if (f.get(tl.source)) parts.push(`Slipped ${name} source in ${fmtS(before[tl.source] as number)} → ${fmtS(val(f.get(tl.source)))}`);
-    if (ln) parts.push(parts.length ? `to track ${laneName(val(ln))}` : `Moved ${name} to track ${laneName(val(ln))}`);
+    if (ln) parts.push(parts.length ? `to ${toTrack(val(ln))}` : `Moved ${name} to ${toTrack(val(ln))}`);
     if (!n0 && parts.length) verb = `${parts[0]!.split(" ")[0]} %s`;
     rest = rest.filter((op) => !used.has(op));
   }
@@ -460,11 +492,11 @@ function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | n
     split.set(sp.key, sp);
     for (const p of sp.parts) split.set(p.key, null);
   }
-  // a part added or deleted with the record holding it: told with it (heldParts)
-  for (const k of heldParts(groups, base, schema).keys()) split.set(k, null);
+  // a part with the record holding it: told with it (heldParts)
+  for (const k of heldParts(groups, base, schema, names).keys()) split.set(k, null);
   for (const [key, g] of groups) {
     const sp = split.get(key);
-    if (sp === null) continue; // a split's part: told with it
+    if (sp === null) continue; // a split's part, or a part held by another record: told with it
     if (sp) {
       // "Split 'clip.mp4' at 4.0 s", and what was done to a part after it, worded against what the split made of it:
       // its times, track, values set or cleared, plain values changed (a transition or a fade the split itself dropped,
@@ -596,7 +628,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
   const isTimeline = !!tl && coll === tl.collection;
   const laneName = (id: unknown) => {
     const t = tl && doc ? (getIn(doc, [tl.lanes, id as string], schema) as Rec | undefined) : undefined;
-    return t ? `'${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}'` : "another track";
+    return t ? `track '${schema.label?.(tl!.lanes, t, doc) ?? String(t.name ?? "")}'` : "another track";
   };
   // A field's words: its label (or its nearest labelled parent's), else its path when the collection labels nothing.
   const labelOf = (key: string): string | null => {
@@ -658,7 +690,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
       const t = timeWords(v, isObj(b) ? b : undefined);
       if (t) parts.push(t);
     }
-    if (isTimeline && tl && keys.includes(tl.lane)) parts.push(isObj(b) && b[tl.lane] !== undefined && b[tl.lane] !== v[tl.lane] ? `moved to track ${laneName(v[tl.lane])}` : `on track ${laneName(v[tl.lane])}`);
+    if (isTimeline && tl && keys.includes(tl.lane)) parts.push(isObj(b) && b[tl.lane] !== undefined && b[tl.lane] !== v[tl.lane] ? `moved to ${laneName(v[tl.lane])}` : `on ${laneName(v[tl.lane])}`);
     for (const k of keys) {
       if (isTimeline && (TIME.has(k) || k === tl!.lane)) continue;
       const p = fieldPart(k, lv.get(k));
@@ -673,7 +705,7 @@ export function describeCard(card: ConflictCard, schema: Schema, doc?: Doc, opts
     if (rest.at(-1) === POS) return "Its own order";
     if (whole || group) return isObj(v) ? fieldsWords(v, other, card.base) : "Changed it";
     const key = rest.join(".");
-    if (isTimeline && tl && key === tl.lane) return `On track ${laneName(v)}`;
+    if (isTimeline && tl && key === tl.lane) return `On ${laneName(v)}`;
     const w = valueWords(key, v);
     return w === null ? "Changed it" : cap(w);
   };

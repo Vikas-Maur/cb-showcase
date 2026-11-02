@@ -368,8 +368,8 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
 - A library file's media (an import, a sound from the panel) stays a save of its own: stock's undo never takes it back
   either. Two actions inside one 300 ms debounce were one save before this and still are (stock: two undo steps).
 - History reads it as one change: describe, `countChanges` and the Fold dialog's rows take a record that is part of
-  another (`nounOf` null, `partOf` its holder: an item's `mediaItemId`) added or deleted with its one holder as that
-  holder's (`heldBy`), as a split's parts are the split's: "Deleted title 'W6'". An entry two titles share (a
+  another (`nounOf` null, `partOf` its holder: an item's `mediaItemId`) added or deleted with its one holder (or edited
+  with it) as that holder's (`heldBy`), as a split's parts are the split's: "Deleted title 'W6'". An entry two titles share (a
   duplicate) is told, and folded, on its own.
 - Histories saved before this keep their two versions, and Ctrl+Z never reaches them (it stays in the editor's
   session). `cb undo` and History's Undo take them a version at a time, as History lists them.

@@ -225,12 +225,12 @@ test("Fold in the rest never puts an older timeline over a save made while it ra
     assert.equal(S.videoOf(after).opacity, 0.5, "the rest is in project.json");
     assert.equal(S.textOf(after).fontSize, fontSize + 26, "the save made meanwhile is still in project.json");
     assert.ok(after.stateUpdatedAt >= saved.stateUpdatedAt, "project.json is never older than the save");
-    // which is Carton's head: the rest (a revert of the change the partial fold left out), then the save, made on the
-    // version before the rest and merged with it
+    // which is Carton's head: the rest (a revert of the change the partial fold left out, which cb history lists as
+    // the fold it finishes: a merge, "the rest"), then the save, made on the version before the rest and merged with it
     const head = await pc.call("test.headProject", require("path").join(pc.root, "Demo.cardboard"));
     assert.deepEqual([S.textOf(head).fontSize, S.videoOf(head).opacity], [fontSize + 26, 0.5], "Carton's head");
     const [newest, before] = history(pc, main.id);
-    assert.deepEqual([before.kind, isPerson(before), newest.kind, isPerson(newest)], ["revert", true, "edit", true], "the rest, then the save: " + [newest, before].map(who).join("; "));
+    assert.deepEqual([before.kind, before.rest, isPerson(before), newest.kind, isPerson(newest)], ["merge", true, true, "edit", true], "the rest, then the save: " + [newest, before].map(who).join("; "));
     // an edit from the editor made now is made on what project.json shows, and keeps both
     await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, textContent: "Last words" } : undefined));
     const last = await S.projectOf(pc, id);

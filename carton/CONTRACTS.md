@@ -239,19 +239,24 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
     steps through the sections of the edit that differ ("Section 1 of 2"), which aren't changes.
   - **A record by what it is** (laptop re-check P3-8, P3-10). `CollectionDef.nounOf(record)` names a record when its
     collection holds several kinds (Cardboard: a text item is a title, a code item a code graphic, a caption a
-    caption), or returns null for a record that is part of another (a title's own media entry, "Text: W1"). A version's
-    summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
+    caption), or returns null for a record that is part of another (a title's own media entry, "Text: W1"). A version's summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
     media files"), an add or delete line names it ("Added title 'W1'"), and Compare's clip count leaves titles apart
     ("1 clip, 6 titles").
   - **A part goes with what holds it** (laptop, merge/prod-2 N-1). `CollectionDef.partOf: {collection, field}` says
     whose part a record is (`nounOf` null): the record of `collection` whose `field` holds its key (Cardboard: media
     `partOf: {collection: "timelineItems", field: "mediaItemId"}`; descriptions only, not in the schema fingerprint).
-    A part added or deleted in the same change as its holder, the one record naming it in base or among the change's
-    inserts, is no change of its own, as a split's parts are the split's: describe tells the holder alone ("Deleted
-    title 'W6'"), `countChanges` counts one, and `heldBy(ops, base, schema)` names the pairs (`{part: [coll, id],
-    holder: [coll, id]}`) so a list by record (the Fold dialog) joins the part to its holder's row, left out with it.
-    A part two records name (a duplicated title's shared entry), or one changed, added or deleted on its own, is still
-    told, and is its own row.
+    A part whose holder (the one record naming it by that field, in base or among the change's inserts; never any
+    equal value elsewhere) the same change also touches, adding or deleting the part only as it adds or deletes the
+    holder (or editing both: a title's text and its entry's), is no change of its own, as a split's parts are the
+    split's: describe tells the holder alone ("Deleted title 'W6'"), `countChanges` counts one (regress prod3 P3-C: a
+    setup row's "15 changes" listed every title's entry), and `heldBy(ops, base, schema)` names the pairs (`{part:
+    [coll, id], holder: [coll, id]}`) so a list by record (the Fold dialog) joins the part to its holder's row, left
+    out with it. A part two records name (a duplicated title's shared entry), or whose holder the change leaves
+    alone, or added or deleted on its own, is still told, and is its own row. Who names what is read once per call.
+  - **Naming from a larger set** (regress prod3 P3-B). `describe(ops, base, schema, intent, names)`: when the ops are
+    one row of a larger set (the Fold dialog), `names = namingDoc(base, allOps)`, made once per plan, names the
+    records the set adds ("Moved 'W1' to track 'Text 1'", a track the same fold adds). A track nothing names is
+    "another track", never "track another track".
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists
     only the partial revert (the state that was chosen), as a version of kind `merge` with `rejected` (what it left
     out; `change` is the partial revert's id, which "fold in the rest" reverts), titled "Folded 'X' into 'Y': 2 of 3

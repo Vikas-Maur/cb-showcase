@@ -234,6 +234,63 @@ test("baseline P3-7: the drawer covers the chat column only; past it, it stops a
   }
 });
 
+// Regress prod3 P3-A: at 960 px with the chat open the chat column is 384 px wide, the drawer as wide (not past it),
+// so it stayed full height, over the timeline toolbar's Fullscreen and Hide timeline, which run on under the chat column
+// at that width. Wherever the toolbar reaches under the drawer (tools: its last button's right edge), the drawer ends
+// above it; where the toolbar ends left of the drawer, as before.
+test("prod3 P3-A: the drawer ends above the timeline toolbar wherever the toolbar reaches under it", opt, async () => {
+  // the laptop's 960 px with the chat open: chat 384, Hide timeline's right edge under it
+  assert.deepEqual(U.fitPanel({ room: 380, preferred: 384, viewport: 960, chat: 384, tools: 940 }), { mode: "overlay", width: 384, over: true });
+  // the wider cases (fix/ui-final): the toolbar ends left of the drawer, or isn't found: full height over the chat
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1100, chat: 340, tools: 700 }), { mode: "overlay", width: 340, over: false });
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1300, chat: 520, tools: undefined }), { mode: "overlay", width: 384, over: false });
+  // in the page: Cardboard's layout at 960 px with the chat open, as the laptop measured it
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/", width: 960, height: 826 });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame, win: { ...globalThis.window } };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+  Object.assign(globalThis.window, { innerWidth: 960, addEventListener() {}, removeEventListener() {} });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const box = (r) => () => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top, x: r.left, y: r.top });
+    const row = w.document.createElement("div"), stage = w.document.createElement("div"), hide = w.document.createElement("button");
+    stage.setAttribute("data-carton-stage-host", "");
+    hide.setAttribute("aria-label", "Hide timeline");
+    row.getBoundingClientRect = box({ left: 0, right: 960, top: 0, bottom: 826 });
+    stage.getBoundingClientRect = box({ left: 200, right: 576, top: 0, bottom: 586 });
+    hide.getBoundingClientRect = box({ left: 912, right: 940, top: 594, bottom: 622 });
+    w.document.body.append(stage, hide, row);
+    const mount = async () => {
+      root = client.createRoot(row);
+      await React.act(async () => { root.render(React.createElement(T.CartonProvider, { ui: createMockUi({ versions: 5 }) }, React.createElement(T.Sidebar, { panel: "history", setPanel() {}, projectId: "p1", bridge: { call: async () => ({}), onEvent: () => () => {} } }))); });
+      const a = row.querySelector("aside");
+      const out = [a.getAttribute("data-fit"), a.style.width, a.style.top, a.style.height];
+      await React.act(async () => root.unmount());
+      root = null;
+      return out;
+    };
+    assert.deepEqual(await mount(), ["overlay", "384px", "0px", "586px"], "over the chat column, ending where the stage ends: the toolbar below stays clear");
+    // the timeline hidden: the same button, now "Show timeline"
+    hide.setAttribute("aria-label", "Show timeline");
+    assert.deepEqual(await mount(), ["overlay", "384px", "0px", "586px"]);
+    // a toolbar that ends left of the chat column: the drawer covers the column, top to bottom, as before
+    hide.getBoundingClientRect = box({ left: 540, right: 568, top: 594, bottom: 622 });
+    assert.deepEqual(await mount(), ["overlay", "384px", "0px", "826px"]);
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+    for (const k of ["innerWidth", "addEventListener", "removeEventListener"]) delete globalThis.window[k];
+    Object.assign(globalThis.window, keep.win);
+    await w.happyDOM.close();
+  }
+});
+
 test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors' words", opt, () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   globalThis.document = { getElementById: () => null, createElement: () => ({}), head: { appendChild() {} }, activeElement: null };
@@ -390,6 +447,94 @@ for (const when of ["before", "after"])
       await React.act(async () => { open.click(); await new Promise((r) => setTimeout(r, 10)); });
       assert.deepEqual(opened, ["p-fx"], "Open opens the joined project");
       assert.equal(body.querySelector(".carton-join-dialog"), null, "and the dialog closes");
+    } finally {
+      if (root) await React.act(async () => root.unmount());
+      delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+      await w.happyDOM.close();
+    }
+  });
+
+// Regress prod3 P3-E: joining from an empty library, the page jumped back to the Dashboard's top as the join landed
+// (Home swaps the empty view for the grid, and its scroller lost its place while the grid measured itself): the
+// sidebar's Projects lit Dashboard, and after Done the new tile was below the fold. Here Home's scroller is scrolled
+// down to the projects, and the grid, as it mounts, throws the scroller back to the top as Cardboard's did. The page
+// keeps its place, then shows the new tile; a person who scrolls meanwhile, or goes elsewhere (the sidebar's Dashboard,
+// outside the scroller: review of P3-E), keeps their own place. A click in the dialog (Done) isn't going elsewhere.
+for (const moves of [null, "scrolls", "sidebar"])
+  test(`prod3 P3-E: joining from an empty library keeps the page where it was${moves ? `, unless the person ${moves === "scrolls" ? "scrolls" : "goes to the Dashboard"}` : ", and shows the new tile"}`, opt, async () => {
+    const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+    const w = new Window({ url: "http://localhost/" });
+    const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
+    globalThis.document = w.document;
+    globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Bea" : null), setItem() {} };
+    globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    let root = null;
+    try {
+      const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+      const { createPortal } = require(path.join(CARTON, "node_modules", "react-dom"));
+      let addToLibrary = null;
+      const bridge = { on: true, ready: Promise.resolve(true), onEvent: () => () => {}, call: async () => { setTimeout(addToLibrary, 0); return { projectId: "p-fx", name: "FX ui" }; }, openProject: async () => {} };
+      const d = dashboard(bridge.ready, true, { win: { __carton: bridge, __testUi: async () => ({ JoinDialog: U.JoinDialog }) }, portal: createPortal, doc: w.document });
+      const revealed = [];
+      w.HTMLElement.prototype.scrollIntoView = function (o) { revealed.push([this.textContent, o?.block]); };
+      // Home: its scroller (overflow-y auto), the Dashboard's top, then the projects: the empty view or the grid, which
+      // throws the scroller back to the top as it mounts (the jump the laptop saw)
+      let scroller = null;
+      const toScroller = (n) => { if (n) scroller = n; };
+      function Grid({ cards }) {
+        React.useLayoutEffect(() => { scroller.scrollTop = 0; }, []);
+        return React.createElement("div", { role: "list", "data-view": "grid" },
+          React.createElement("div", { role: "listitem" }, "New project"), React.createElement("div", { role: "listitem" }, React.createElement(d.Tile)),
+          ...cards.map((c) => React.createElement("div", { key: c, role: "listitem" }, c)));
+      }
+      function Home() {
+        const [cards, setCards] = React.useState([]);
+        addToLibrary = () => setCards(["p-fx"]);
+        const P = cards.length === 0 ? React.createElement("section", { "data-view": "empty" }, React.createElement(d.Button, { className: "cb" })) : React.createElement(Grid, { cards });
+        return React.createElement("div", null,
+          React.createElement("nav", null, React.createElement("button", { id: "to-dashboard", onClick: () => scroller.scrollTo({ top: 0 }) }, "Dashboard")),
+          React.createElement("div", { ref: toScroller, style: { overflowY: "auto", height: "800px" } }, React.createElement("section", { style: { height: "700px" } }, "Dashboard"), P),
+          d.Host ? React.createElement(d.Host) : null);
+      }
+      const el = w.document.createElement("div");
+      w.document.body.appendChild(el);
+      root = client.createRoot(el);
+      await React.act(async () => { root.render(React.createElement(Home)); await new Promise((r) => setTimeout(r, 10)); });
+      scroller.scrollTop = 700; // Projects: Home scrolls its projects section to the top
+      const body = w.document.body;
+      await React.act(async () => { body.querySelector("[data-carton-join]").click(); await new Promise((r) => setTimeout(r, 10)); });
+      const link = body.querySelector("#carton-join-link");
+      await React.act(async () => {
+        link.focus();
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
+        for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
+      });
+      await React.act(async () => { link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 20)); });
+      assert.ok(el.querySelector('[data-view="grid"]'), "the join landed: the grid replaced the empty view");
+      if (moves === "scrolls") {
+        // the person scrolls up meanwhile: theirs, not put back
+        await React.act(async () => { scroller.dispatchEvent(new w.Event("wheel")); scroller.scrollTop = 120; await new Promise((r) => setTimeout(r, 50)); });
+        assert.equal(scroller.scrollTop, 120);
+      } else if (moves === "sidebar") {
+        // Done, then the sidebar's Dashboard, which scrolls Home to its top: Home's, not put back, no tile revealed
+        const done = [...body.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === "Done");
+        await React.act(async () => { done.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); done.click(); await new Promise((r) => setTimeout(r, 20)); });
+        const nav = body.querySelector("#to-dashboard");
+        await React.act(async () => { nav.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); nav.click(); await new Promise((r) => setTimeout(r, 1700)); });
+        assert.equal(scroller.scrollTop, 0);
+        assert.deepEqual(revealed, []);
+      } else {
+        // a click in the dialog isn't going elsewhere
+        const inDialog = body.querySelector('[role="dialog"]');
+        await React.act(async () => { inDialog.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); await new Promise((r) => setTimeout(r, 50)); });
+        assert.equal(scroller.scrollTop, 700, "still at the projects, not the Dashboard's top");
+        assert.match(body.textContent, /“FX ui” is in your library now\./, "with the dialog up");
+        await React.act(async () => { await new Promise((r) => setTimeout(r, 1600)); });
+        assert.equal(scroller.scrollTop, 700);
+        assert.deepEqual(revealed, [["p-fx", "nearest"]], "the new tile is brought into view if it isn't");
+      }
     } finally {
       if (root) await React.act(async () => root.unmount());
       delete globalThis.IS_REACT_ACT_ENVIRONMENT;

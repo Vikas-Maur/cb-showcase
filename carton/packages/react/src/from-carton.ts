@@ -10,7 +10,7 @@
 // - Presence from sync events: peers per actor, idle after 30 s (§12), ghosts from drags.
 // - Late conflicts addressed to you arrive as notices and become conflict cards.
 
-import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
+import { actorKey, apply, countChanges, deepEqual, describe, describeCard as coreDescribeCard, diff as docDiff, fork, getIn, groupOf, heldBy, lcs, namingDoc, pathKey, PERSON, shots as engineShots, splits } from "@carton/core";
 import type {
   Actor as CoreActor,
   Carton,
@@ -1218,20 +1218,23 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
   let planHeads = "";
   const joinSplits = (groups: Map<string, Op[]>, ops: readonly Op[], doc: Doc, joined?: Map<string, string[]>) => {
     const creditOf = new Map<string, string>();
+    const rowOf = new Map<string, string>();
     for (const sp of splits(ops, doc, schema)) {
       const key = pathKey([sp.collection, sp.removed]), parts = sp.parts.map((id) => pathKey([sp.collection, id]));
       if (!groups.has(key) || parts.some((k) => !groups.has(k))) continue;
-      for (const k of parts) groups.get(key)!.push(...groups.get(k)!), groups.delete(k);
+      for (const k of parts) groups.get(key)!.push(...groups.get(k)!), groups.delete(k), rowOf.set(k, key);
       joined?.set(key, parts);
       creditOf.set(key, parts[0]!);
     }
-    // a title's own media entry added or deleted with it (core's heldBy): one row with the title, left out with it
-    // (laptop, merge/prod-2 N-1: one change, as Compare and History count it)
+    // A title's own media entry with it (core's heldBy) is one row with the title, as History and the counts tell it,
+    // and is left out with it (laptop, merge/prod-2 N-1; regress prod3 P3-C). A title joined into a split's row takes
+    // its entry there.
     for (const { part, holder } of heldBy(ops, doc, schema)) {
-      const key = pathKey(holder), k = pathKey(part);
-      if (!groups.has(key) || !groups.has(k)) continue;
-      groups.get(key)!.push(...groups.get(k)!), groups.delete(k);
-      joined?.set(key, [...(joined.get(key) ?? []), k]);
+      const k = pathKey(part), h = pathKey(holder), row = rowOf.get(h) ?? h;
+      if (!groups.has(k) || !groups.has(row)) continue;
+      groups.get(row)!.push(...groups.get(k)!);
+      groups.delete(k);
+      joined?.set(row, [...(joined.get(row) ?? []), k]);
     }
     return creditOf;
   };
@@ -1263,13 +1266,14 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       }
       // a split left out is one row, as it was in the plan (all of a partial fold's rows fold in together anyway)
       const creditOf = joinSplits(groups, d.ops, doc);
+      const names = namingDoc(doc, d.ops, schema); // once for all its rows
       const ids: string[] = [];
       for (const [key, ops] of groups) {
         const record = !!schema.collections[splitPathKey(key)[0]!];
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }).catch(() => null) : null;
         const id = `left:${p.change}:${key}`;
         ids.push(id);
-        out.push({ id, summary: engine.describe(ops, doc, schema).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
+        out.push({ id, summary: engine.describe(ops, doc, schema, null, names).join("; ") || key, author: ui(who?.actor ?? p.author), at: who?.at ?? p.at, leftOut: p.change });
       }
       if (ids.length) planRest.set(p.change, { ids, ops: [...groups.values()].flat(), whole });
     }
@@ -1360,8 +1364,10 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       // a split clip is one row, left out whole (fold() adds its parts' keys)
       const creditOf = joinSplits(groups, preview.ops, intoDoc!, planJoined);
       const changes: FoldChange[] = [];
+      // named from all of the fold, made once: a track it adds names the clip moved onto it (regress prod3 P3-B)
+      const names = namingDoc(intoDoc!, preview.ops, schema);
       for (const [key, ops] of groups) {
-        const words = engine.describe(ops, intoDoc!, schema);
+        const words = engine.describe(ops, intoDoc!, schema, null, names);
         const record = !!schema.collections[splitPathKey(key)[0]!];
         const who = record ? await carton.credits(splitPathKey(creditOf.get(key) ?? key), { cut: fromId, detail: true }) : null;
         changes.push({ id: key, summary: words.join("; ") || key, author: ui(who?.actor ?? fromHead?.author), at: who?.at ?? fromHead?.at ?? clock() });
