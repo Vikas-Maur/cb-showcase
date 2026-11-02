@@ -24,7 +24,7 @@ export {
 } from "./manifest.ts";
 export { blobSource, bytesSource, hashSource, webCryptoHasher, type ByteSource, type HashOptions } from "./hash.ts";
 export { HashScheduler, MemoryManifestCache, type HashJobOptions, type HashPriority, type HashSchedulerOptions, type HashTarget, type ManifestCache } from "./scheduler.ts";
-export { damagedKey, manifestKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
+export { damagedKey, manifestKey, mediaKey, proxyPointerKey, streamEndKey, streamInitKey, streamLeaseKey, streamSegmentKey, type ProxyPointer } from "./keys.ts";
 export { isDamaged, markRepaired, openReport, repairedKey, reportDamage, reportToHost, type HostDamageReporting } from "./damage.ts";
 export {
   claimProxyStream,
@@ -49,7 +49,9 @@ export {
   type PlayedPart,
   type ProxyStreamReaderOptions,
   type ProxyStreamWriterOptions,
+  type StreamAppendAnswer,
   type StreamAppendBatch,
+  type StreamLease,
   type StreamAppendPart,
   type StreamAppender,
   type StreamBatchReader,

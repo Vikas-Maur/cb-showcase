@@ -52,4 +52,10 @@ export interface Env {
   // alarm comes a second later while more remain. Set them for tests and the lab; a deployment needs neither.
   VAULT_UPLOAD_TTL_MS?: string;
   VAULT_SWEEP_ROWS?: string;
+  // a proxy stream's batches (host-http streams.ts): parts and bytes per append, bytes per read. The Worker advertises
+  // them to writers and clamps reads to them, so one request's CPU stays inside the plan's (Free: 10 ms). Defaults in
+  // worker.ts (PREVIEW_DEFAULTS); a Paid plan can raise them for fewer requests.
+  PREVIEW_BATCH_PARTS?: string;
+  PREVIEW_BATCH_BYTES?: string;
+  PREVIEW_READ_BYTES?: string;
 }

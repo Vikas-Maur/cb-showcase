@@ -17,6 +17,11 @@
 //   in one response. Where the part-by-part path took six requests per segment (a signed URL and a read each for the
 //   entry, the manifest and the bytes), every read a head and a get. When it reaches a part that isn't up, it looks for
 //   the end, and with `wait` holds the answer (checking once a second, then every two) until the first part asked for is up.
+// - A host may set limits on a stream's batches (HttpDeps.streamLimits: a Worker sets them for the Free plan's 10 ms of
+//   CPU a request): each append's answer says the append limits (the writer follows them), GET /api/host says all of
+//   them, and a read is clamped to the read limit whatever it asks.
+// - An append may carry its publisher's lease renewal (`lease`, alone or with parts): written to `ps/<id>/lease` beside
+//   the entries. Readers ignore it; a share that finds the stream unfinished judges its publisher by it (media).
 //
 // Entries of one append may land in any order (they are written a few at once); the request answers once all are in,
 // and a writer retries a request that failed, so a gap lasts no longer than that, unless the writer dies mid-request:
@@ -71,8 +76,21 @@ const AT_ONCE = 6;
 /** Objects fetched ahead of the one being sent in a read. */
 const READ_AHEAD = 3;
 
+/**
+ * What a host asks of a stream's batches (HttpDeps.streamLimits): parts and bytes per append, bytes per read. A host
+ * whose requests have a CPU budget (a Worker on the Free plan: 10 ms) sets them to what fits; it advertises them in
+ * every append's answer and in GET /api/host, and the writer follows them. Reads it clamps itself.
+ */
+export interface StreamLimits {
+  appendParts: number;
+  appendBytes: number;
+  readBytes: number;
+}
+
 export interface StreamRouteContext {
   ctx: AuthContext;
+  /** The host's batch limits, when it sets any. */
+  limits?: StreamLimits;
   /** The project's media store, for reads. */
   store: BlobStore;
   /** The same store for a write of about `bytes` in `ops` calls (a host with a write cap reserves them in one go). */
@@ -122,6 +140,13 @@ export async function streamRoutes(req: Request, url: URL, rest: string, c: Stre
 
 // ------------------------------------------------------------------------------------------------------------ append
 
+/** A publisher's lease on its stream (media's stream.ts: `ps/<stream>/lease`): renewed, it says the publisher is alive. */
+const leaseKey = (stream: string) => `ps/${stream}/lease`;
+function leaseOf(v: unknown): { n: number; at: number; every: number } | null {
+  const l = v as { n?: unknown; at?: unknown; every?: unknown } | null;
+  return l && isCount(l.n) && isCount(l.at) && isCount(l.every) && l.every > 0 && l.every <= 3_600_000 ? { n: l.n, at: l.at, every: l.every } : null;
+}
+
 interface Part {
   kind: "init" | "segment";
   manifest: Manifest;
@@ -152,10 +177,13 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
   }
   if (raw.length > max) return err(413, "append body too large");
   const { header, rest } = splitFrame(raw, MAX_APPEND_HEADER);
-  const h = header as { v?: unknown; parts?: unknown; end?: unknown };
+  const h = header as { v?: unknown; parts?: unknown; end?: unknown; lease?: unknown };
   if (!h || typeof h !== "object" || h.v !== STREAM_WIRE_VERSION) return err(400, `stream wire version ${STREAM_WIRE_VERSION} expected`);
-  if (!Array.isArray(h.parts) || h.parts.length > MAX_APPEND_PARTS || (h.parts.length === 0 && h.end === undefined))
-    return err(400, `parts must be 1..${MAX_APPEND_PARTS} entries (or none, with the end)`);
+  if (!Array.isArray(h.parts) || h.parts.length > MAX_APPEND_PARTS || (h.parts.length === 0 && h.end === undefined && h.lease === undefined))
+    return err(400, `parts must be 1..${MAX_APPEND_PARTS} entries (or none, with the end or a lease)`);
+  const lease = h.lease === undefined ? null : leaseOf(h.lease);
+  if (h.lease !== undefined && !lease) return err(400, "bad lease");
+  const leaseBytes = lease ? utf8.encode(JSON.stringify(lease)) : null;
 
   // every part checked before anything is written: shapes, order, manifests, sizes, and the bytes that follow
   const parts: Part[] = [];
@@ -209,7 +237,7 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
   // One reservation for every write below: the manifest, the bytes and the entry per part, a repair's answer, and the
   // end. (A team store's grants aren't charged: the Worker keeps them outside its cap, room.ts mediaBlobs.) Refused, the
   // host's cap error (with `retryAt`) goes up before anything is written: the client waits and sends the batch again.
-  let bytes = endBytes?.length ?? 0, ops = end ? 1 : 0;
+  let bytes = (endBytes?.length ?? 0) + (leaseBytes?.length ?? 0), ops = (end ? 1 : 0) + (lease ? 1 : 0);
   for (const p of parts) {
     bytes += p.manifest.bytes.length + p.entry.length + (p.bytes?.length ?? 0) + (p.repair ? 256 : 0);
     ops += (p.bytes ? 3 : 2) + (p.repair ? 1 : 0);
@@ -241,6 +269,9 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
     if (report) await markRepaired(store, hash, report);
   };
   await eachLimit(parts, together ? AT_ONCE / 2 : AT_ONCE, media);
+  // the lease renewal rides with the entries (a plain overwrite: only this stream's publisher writes it)
+  const renewal = leaseBytes ? store.put(leaseKey(stream), leaseBytes, { contentType: "application/json" }) : null;
+  renewal?.catch(() => {});
   await eachLimit(parts, AT_ONCE, (p) =>
     putEntry(store, p.key, p.entry, (old) => {
       // a retried request writes the same entry; another writer's (or other metadata) is a conflict
@@ -259,7 +290,8 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
       return !!v && v.segments === end!.segments && v.size === end!.size && v.durationSec === end!.durationSec && same(v.parts, end!.parts) && same(v.sizes, end!.sizes) && same(v.durations, end!.durations);
     });
   }
-  return json({ stored: parts.length, ...(end ? { ended: true } : {}) });
+  await renewal;
+  return json({ stored: parts.length, ...(end ? { ended: true } : {}), ...(c.limits ? { limits: { parts: c.limits.appendParts, bytes: c.limits.appendBytes } } : {}) });
 }
 
 /** Writes an entry once. One already there must be the same entry (`same`): a retried request; else 409. */
@@ -330,7 +362,8 @@ async function read(url: URL, stream: string, c: StreamRouteContext, signal?: Ab
   if (!c.mayRead(streamInitKey(stream))) return err(403, "outside this link's scope");
   const from = intParam(url, "from", 0, MAX_INDEX);
   const wantInit = url.searchParams.get("init") === "1";
-  const maxBytes = intParam(url, "bytes", 4 << 20, MAX_READ_BYTES);
+  // the host's own read limit holds whatever a client asks (an older one asks for 4 MiB)
+  const maxBytes = intParam(url, "bytes", c.limits?.readBytes ?? 4 << 20, c.limits ? Math.min(MAX_READ_BYTES, c.limits.readBytes) : MAX_READ_BYTES);
   const maxParts = Math.max(1, intParam(url, "parts", c.maxEntries, c.maxEntries));
   const waitMs = intParam(url, "wait", 0, MAX_READ_WAIT_MS);
   const store = c.store;

@@ -16,6 +16,7 @@ import {
   StreamPartMissingError,
   StreamRouteMissingError,
   toBase64,
+  type StreamAppendAnswer,
   type StreamAppendBatch,
   type StreamAppender,
   type StreamBatchReader,
@@ -154,7 +155,7 @@ export interface HostMediaBlobs extends BlobStore, StreamAppender, StreamBatchRe
    * A proxy stream's parts in one request (POST /streams/<id>/append): `@carton/media`'s ProxyStreamWriter batches
    * through it. A host from before the route: StreamRouteMissingError (the writer goes part by part).
    */
-  appendStream(stream: string, batch: StreamAppendBatch, signal?: AbortSignal): Promise<void>;
+  appendStream(stream: string, batch: StreamAppendBatch, signal?: AbortSignal): Promise<StreamAppendAnswer>;
   /**
    * A batch of a stream's entries, manifests and bytes in one request (GET /streams/<id>/read), parts yielded as their
    * bytes arrive; ProxyStreamReader reads through it. A host from before the route: StreamRouteMissingError.
@@ -331,6 +332,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
           ...(p.kind === "segment" ? { index: p.index!, durationSec: p.durationSec!, at: p.at! } : {}),
         })),
         ...(batch.end ? { end: batch.end } : {}),
+        ...(batch.lease ? { lease: batch.lease } : {}),
       };
       const head = headerFrame(header);
       let n = head.length;
@@ -350,8 +352,10 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
         ...(signal ? { signal } : {}),
       });
       if (r.ok) {
-        await r.body?.cancel();
-        return;
+        // the host's limits for later batches, when it says them
+        const a = (await r.json().catch(() => null)) as { limits?: { parts?: unknown; bytes?: unknown } } | null;
+        const l = a?.limits;
+        return l && typeof l.parts === "number" && typeof l.bytes === "number" ? { limits: { parts: l.parts, bytes: l.bytes } } : {};
       }
       const text = await r.text().catch(() => "");
       let j: { error?: unknown; code?: unknown } = {};
@@ -360,7 +364,7 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
       } catch {}
       if (r.status === 404 && j.error === "no such route") throw new StreamRouteMissingError("the host has no stream routes");
       if (r.status === 409 && j.code === "Missing") throw new StreamPartMissingError(String(j.error ?? "a part isn't stored"));
-      await failed(r, text);
+      return failed(r, text);
     },
     async *readStream(stream, o) {
       const q = new URLSearchParams({ from: String(o.from) });

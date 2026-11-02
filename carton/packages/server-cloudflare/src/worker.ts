@@ -22,8 +22,26 @@ function authFor(env: Env): HmacAuth {
   return cached.auth;
 }
 
+/**
+ * A proxy stream's batch limits on a Worker (env PREVIEW_BATCH_PARTS, PREVIEW_BATCH_BYTES, PREVIEW_READ_BYTES), chosen
+ * so one request stays inside the Free plan's 10 ms of CPU. Measured on Cloudflare (cf-proxy-path, cf-verify2): an
+ * append costs about 3 ms plus about 1.5-3 ms per part of a 2 s, ~650 KB segment (1 part: at most 7.3 ms; 4 parts: p50
+ * 9.1, max 20.6); a read about 5 ms plus 1.5 ms per MiB (2 MiB: at most 9.2 in 30 reads, 10.1 in a 120-read burst).
+ */
+export const PREVIEW_DEFAULTS = { appendParts: 2, appendBytes: 1_572_864, readBytes: 2 << 20 } as const;
+
+const positiveOr = (v: string | undefined, dflt: number): number => {
+  const n = Number(v);
+  return v !== undefined && v.trim() !== "" && Number.isSafeInteger(n) && n > 0 ? n : dflt;
+};
+
 export function depsFor(env: Env): HttpDeps {
   const deps: HttpDeps = {
+    streamLimits: {
+      appendParts: positiveOr(env.PREVIEW_BATCH_PARTS, PREVIEW_DEFAULTS.appendParts),
+      appendBytes: positiveOr(env.PREVIEW_BATCH_BYTES, PREVIEW_DEFAULTS.appendBytes),
+      readBytes: positiveOr(env.PREVIEW_READ_BYTES, PREVIEW_DEFAULTS.readBytes),
+    },
     auth: authFor(env),
     secret: env.AUTH_SECRET,
     blobsFor: (projectId) => mediaBlobs(env, projectId),
