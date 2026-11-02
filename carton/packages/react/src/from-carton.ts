@@ -619,8 +619,7 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       cuts = out;
       hub.notify("cuts");
     }
-    // The published cut: the newest publication; "newer edits" comes from core (and counts them when the source's
-    // head is known).
+    // The published cut: the newest publication; "newer edits" and their count come from core.
     const pubs = (await carton.publications()).sort((a, b) => (b.cut.at ?? 0) - (a.cut.at ?? 0));
     const p = pubs[0];
     let next: Published | null = null;
@@ -630,7 +629,8 @@ export function fromCarton(carton: Carton, opts: FromCartonOptions): CartonUiHan
       const i = pos.get(rows.find((r) => r.core?.ref.branchId === p.source && r.core.ref.seq === seq)?.v.id ?? "");
       const versionName = i === undefined ? undefined : rows[i]!.v.name;
       const url = opts.shareUrl?.(p.cut);
-      const newerEdits = !p.newer ? 0 : Math.max(1, (heads.get(p.source) ?? seq) - seq);
+      // core counts them as log() lists them: a withdraw row (H1) is no newer edit
+      const newerEdits = !p.newer ? 0 : Math.max(1, p.versions);
       next = { cutId: p.source, cutName: srcCut?.name ?? p.cut.name, ref: p.from, at: p.cut.at ?? 0, newerEdits, ...(versionName ? { versionName } : {}), ...(url ? { url } : {}) };
     }
     if (!samePublished(published, next)) {

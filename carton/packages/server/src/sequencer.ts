@@ -790,7 +790,7 @@ export function createSequencer(opts: SequencerOptions): Sequencer {
     if (keyframe) msg.keyframe = keyframe;
     // a Published cut says how far the cut it came from has moved since (a count: its rows stay out of a watcher's reach)
     const src = publishedSource(b.rec);
-    if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId) };
+    if (src && tables.branch(src.branchId)) msg.source = { ...src, head: tables.head(src.branchId), versions: tables.versionsAfter(src.branchId, src.at) };
     // the client then never sends what would be refused unread (round 2 finding 2)
     if (st.envelopes) msg.maxMessageBytes = maxEnvelope;
     if (last < head) msg.more = true;

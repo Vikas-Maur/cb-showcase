@@ -90,6 +90,10 @@ test("a teammate's withdrawn edit is not a version in Bob's History", async () =
       assert.equal(top!.ref.seq, wr.seq - 1);
       assert.ok(top!.summary, "described as the edit it is");
     }
+    // Bob publishes his edit, the newest version: a trailing withdraw row is no newer edit
+    const pub = await b.publish({ from: `${cut}@${wr.seq - 1}` });
+    const p = (await b.publications()).find((x) => x.cut.id === pub.id)!;
+    assert.deepEqual([p.newer, p.versions], [false, 0], "nothing newer than the published version");
   } finally {
     await a.close();
     await b.close();
@@ -102,6 +106,8 @@ test("a real version after a withdraw shows normally, live, after a reload, and 
   let b2: Carton | undefined;
   try {
     const wseq = (await b.head()).ref.seq;
+    // published before the withdraw: the withdraw row and a later edit are one newer version
+    const pub = await b.publish({ from: `${cut}@${wseq - 1}` });
     assert.equal((await b.commit({ ops: [set("b", "name", "After")], wait: 5000 })).status, "confirmed");
     await until(async () => (await a.head()).ref.seq === wseq + 1, 5000, "bob's later edit at alice's");
     for (const c of [a, b]) {
@@ -111,6 +117,8 @@ test("a real version after a withdraw shows normally, live, after a reload, and 
       assert.equal(log[0]!.kind, "edit");
       assert.equal(item(await c.checkout(log[0]!.ref), "b")!.name, "After");
     }
+    const p = (await b.publications()).find((x) => x.cut.id === pub.id)!;
+    assert.deepEqual([p.newer, p.versions], [true, 1], "one newer version: bob's later edit");
     // each handle's change events: bob's edit, the withdraw row (flagged, so a listener can leave it out), bob's later edit
     for (const who of ["alice", "bob"])
       assert.deepEqual(seen.filter((e) => e.who === who).map((e) => [e.seq, e.id === id, e.withdrawn]), [[wseq - 1, false, false], [wseq, true, true], [wseq + 1, false, false]], who);

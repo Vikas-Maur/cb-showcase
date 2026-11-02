@@ -1795,7 +1795,13 @@ class CartonImpl implements Carton {
       const from = this.#h.canon(cut.forkOf);
       const source = cut.source ?? parseNode(from).branchId;
       const src = this.#h.cut(source);
-      out.push({ cut, from, source, newer: !!src && !src.shallow && this.#h.head(source) !== from });
+      // the versions after the one published, as log() lists them: a withdraw row (H1) or a squashed change is none
+      let versions = 0;
+      if (src && !src.shallow && this.#h.head(source) !== from) {
+        const log = this.#h.changes(source), at = parseNode(from);
+        for (let s = at.branchId === source ? at.seq : 0; s < log.length; s++) if (!log[s]!.withdrawn && !log[s]!.squashedInto) versions++;
+      }
+      out.push({ cut, from, source, newer: versions > 0, versions });
     }
     return out;
   }

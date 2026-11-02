@@ -134,6 +134,11 @@ test("History never shows a withdraw row, live or loaded, and a later real versi
     };
     for (const [ui, label] of [[liveA, "alice live"], [liveB, "bob live"], [loadedB, "bob loaded"]] as const) check(ui, label, [wseq - 1, 0]);
 
+    // Bob publishes his edit, the newest version: the trailing withdraw row is no newer edit
+    await b.publish({ from: `${cut}@${wseq - 1}` });
+    await liveB.refresh();
+    assert.equal(liveB.published()!.newerEdits, 0, "nothing newer than the published version");
+
     // a real version after the withdraw: on every screen, at its own seq, Bob's, comparable to the one before the gap
     assert.equal((await b.commit({ ops: [set("b", "name", "After")], wait: 5000 })).status, "confirmed");
     await until(async () => (await a.head()).ref.seq === wseq + 1, "bob's later edit at alice's");
@@ -149,6 +154,8 @@ test("History never shows a withdraw row, live or loaded, and a later real versi
       assert.deepEqual([cmp.a.ref, cmp.b.ref], [below.ref, top.ref], label);
       assert.deepEqual([cmp.a.author.name, cmp.b.author.name], ["Bob", "Bob"], label);
     }
+    await liveB.refresh();
+    assert.equal(liveB.published()!.newerEdits, 1, "one newer edit since publishing: the withdraw row is none");
   } finally {
     for (const ui of uis) ui.dispose();
     for (const c of cartons) await c.close();

@@ -16,7 +16,8 @@ export interface FollowOptions {
   branchId: string;
   /** -1: from nothing (with the document). n ≥ 0: the rows after version n, no document. */
   have: number;
-  onUpdate: (s: { head: number; doc: Doc | null; rows: number; source?: { branchId: string; at: number; head: number } }) => void;
+  /** `versions`: the rows taken that are versions (a withdraw row, H1, spends an id and is none). */
+  onUpdate: (s: { head: number; doc: Doc | null; rows: number; versions: number; source?: { branchId: string; at: number; head: number; versions?: number } }) => void;
   onError?: (why: string) => void;
   /**
    * Ask again every this many ms once caught up (a Published cut never moves, so the host fans nothing out to its
@@ -32,10 +33,11 @@ export class Follower {
   #seq: number;
   #head = 0;
   #rows = 0;
+  #withdrawn = 0;
   #stopped = false;
   #retry: ReturnType<typeof setTimeout> | null = null;
   #again: ReturnType<typeof setInterval> | null = null;
-  #source: { branchId: string; at: number; head: number } | undefined;
+  #source: { branchId: string; at: number; head: number; versions?: number } | undefined;
 
   constructor(o: FollowOptions) {
     this.#o = o;
@@ -84,16 +86,15 @@ export class Follower {
         this.#seq = m.keyframe.seq;
       }
       this.#head = Math.max(this.#head, m.head);
-      // a Published cut's source count (server extension until core's WelcomeMsg declares it)
-      const source = (m as sync.WelcomeMsg & { source?: { branchId: string; at: number; head: number } }).source;
-      if (source) this.#source = source;
+      // a Published cut's source count
+      if (m.source) this.#source = m.source;
       this.#take(m.rows);
       if (m.more) return this.#hello();
     } else {
       this.#take(m.rows);
       this.#head = Math.max(this.#head, this.#seq);
     }
-    this.#o.onUpdate({ head: Math.max(this.#head, this.#seq), doc: this.#doc, rows: this.#rows, ...(this.#source ? { source: this.#source } : {}) });
+    this.#o.onUpdate({ head: Math.max(this.#head, this.#seq), doc: this.#doc, rows: this.#rows, versions: this.#rows - this.#withdrawn, ...(this.#source ? { source: this.#source } : {}) });
   }
   #take(rows: readonly ConfirmedChange[]): void {
     for (const r of rows) {
@@ -101,6 +102,7 @@ export class Follower {
       if (this.#doc) this.#doc = apply(fork(this.#doc, this.#o.schema), r.ops, this.#o.schema);
       this.#seq = r.seq;
       this.#rows++;
+      if (r.withdrawn) this.#withdrawn++;
     }
   }
 }

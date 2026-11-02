@@ -24,7 +24,7 @@ test("a reader scoped to the Published cut can read it, not its source; the welc
   assert.equal(viewer.last("hello"), undefined, "no welcome, no rows");
   await seq.handle(viewer, hello(PUB));
   const w = viewer.last("hello")!;
-  assert.deepEqual(w.source, { branchId: BRANCH, at: 1, head: 2 }, "one newer version since publishing");
+  assert.deepEqual(w.source, { branchId: BRANCH, at: 1, head: 2, versions: 1 }, "one newer version since publishing");
   // a scoped viewer gets nothing fanned out from the source either
   viewer.inbox.length = 0;
   await push(seq, editor, d0, [set("c0", "name", "three")], { base: { seq: 2, pending: [] } });
@@ -123,7 +123,7 @@ test("a Published cut of an unedited variant counts the variant's edits since it
   await push(seq, editor, d0, [set("c0", "name", "a variant edit")], { branch: "variant", base: { seq: 0, pending: [] } });
   const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
   await seq.handle(viewer, hello(PUB));
-  assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 1 }, "one variant edit since the publication");
+  assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 1, versions: 1 }, "one variant edit since the publication");
 });
 
 test("an unedited variant's publication stays at the variant's version 0 after a later shallow share moves its root (stage review round 3)", async () => {
@@ -135,7 +135,7 @@ test("an unedited variant's publication stays at the variant's version 0 after a
   await seq.createBranch(rec("variant", { forkOf: `${BRANCH}@0` }) as never, { doc0: d0 as never, stateHash: "h2", rootSeq: 2 });
   const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
   await seq.handle(viewer, hello(PUB));
-  assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 2 }, "both edits since the publication count");
+  assert.deepEqual(viewer.last("hello")?.source, { branchId: "variant", at: 0, head: 2, versions: 2 }, "both edits since the publication count");
 });
 
 test("hello refusals carry a code a client can act on: schema-too-new, unauthorized, forbidden (REQ-9)", async () => {
@@ -162,4 +162,31 @@ test("hello refusals carry a code a client can act on: schema-too-new, unauthori
   watcher.auth.projectId = "p";
   assert.equal(await codeOf(watcher, hello(BRANCH)), "forbidden", "outside the token's cuts");
   now += 1;
+});
+
+test("a Published cut's welcome leaves withdraw rows (H1) out of the source's newer versions, and counts each row once", async () => {
+  const d0 = doc([clip("c0", 0, 5), clip("c1", 5, 10)]);
+  const { seq } = await world(d0);
+  const editor = fakeConn("e/k");
+  await push(seq, editor, d0, [set("c0", "name", "one")]);
+  await seq.createBranch({ id: PUB, name: "Main cut (published)", forkOf: `${BRANCH}@1`, owner: "alice", kind: "published", source: BRANCH, sequencer: { kind: "server", since: 0 } }, { doc0: d0 as never, stateHash: "h0" });
+  const viewer = fakeConn("v/k", "viewer", { branches: [PUB] });
+  const withdraw = async (id: string) => {
+    await seq.handle(editor, { type: "withdraw", branchId: BRANCH, id, base: seq.tables.head(BRANCH), epoch: 900 + seq.tables.head(BRANCH) });
+    assert.equal(editor.last("ack")?.withdrawn, true);
+  };
+  // only a withdraw since publishing: nothing newer
+  await withdraw("wd.1");
+  await seq.handle(viewer, hello(PUB));
+  assert.deepEqual(viewer.last("hello")?.source, { branchId: BRANCH, at: 1, head: 2, versions: 0 }, "a withdraw row is no newer version");
+  // an edit, another withdraw, an edit: two versions among four rows
+  await push(seq, editor, d0, [set("c1", "name", "two")], { base: { seq: 2, pending: [] } });
+  await withdraw("wd.2");
+  await push(seq, editor, d0, [set("c0", "name", "three")], { base: { seq: 4, pending: [] } });
+  await seq.handle(viewer, hello(PUB));
+  assert.deepEqual(viewer.last("hello")?.source, { branchId: BRANCH, at: 1, head: 5, versions: 2 });
+  // a watcher asks every few seconds: nothing new to read once counted
+  const read = seq.tables.meter.rowsRead;
+  assert.equal(seq.tables.versionsAfter(BRANCH, 1), 2);
+  assert.equal(seq.tables.meter.rowsRead, read, "counted rows aren't read again");
 });
