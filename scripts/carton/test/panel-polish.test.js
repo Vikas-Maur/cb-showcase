@@ -235,3 +235,45 @@ test("regress #3: an empty library offers Join beside Start a blank project, onl
   assert.equal(render(React.createElement(dashboard(Promise.resolve(false)).Button, { className: "x" })), "");
   assert.equal(render(React.createElement(dashboard(undefined).Button, { className: "x" })), "");
 });
+
+// Regress 2026-11-02 #4 (UI audit P2-1: Esc closes the innermost layer only, "… → preview → panel"): with focus in the
+// side panel during a preview, Esc closed the whole panel and left the preview open. It returns from the preview first,
+// as the banner's button does; the next Esc closes the panel. (Esc with focus on the page: @carton/react's
+// PreviewBanner, test/regress.dom.test.ts.)
+test("regress #4: in the side panel, Esc returns from a preview first; the next Esc closes the panel", opt, async () => {
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/" });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+    const ui = createMockUi({ versions: 20 });
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const el = w.document.createElement("div");
+    w.document.body.appendChild(el);
+    root = client.createRoot(el);
+    const closed = [];
+    const bridge = { call: async () => ({}), onEvent: () => () => {} };
+    const { CartonProvider, Sidebar } = T;
+    await React.act(async () => { root.render(React.createElement(CartonProvider, { ui }, React.createElement(Sidebar, { panel: "history", setPanel: (p) => closed.push(p), projectId: "p1", bridge }))); });
+    const list = el.querySelector(".carton-history-list");
+    assert.ok(list, "the History panel is open");
+    const esc = () => React.act(async () => { list.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    await React.act(async () => { ui.openPreview("main@3", "the version from 12:41"); });
+    await esc();
+    assert.equal(ui.preview(), null, "the first Esc returns from the preview");
+    assert.deepEqual(closed, [], "and leaves the panel open");
+    await esc();
+    assert.deepEqual(closed, [null], "the next Esc closes the panel");
+  } finally {
+    // unmounted whatever happened: the panel's timers would hold the test process open
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+    await w.happyDOM.close();
+  }
+});

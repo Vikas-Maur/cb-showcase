@@ -201,6 +201,7 @@ export const words = {
   versionFrom: (time: string, who: string) => (who ? `the version from ${time} (${who})` : `the version from ${time}`),
   readOnly: "Read-only",
   returnToCurrent: "Return to current to edit",
+  returnToCurrentKey: "Return to current (Esc)",
   previewBlocked: "This is a preview, so edits don't apply here.",
 
   // Times

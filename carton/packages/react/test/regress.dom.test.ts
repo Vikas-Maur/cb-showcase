@@ -3,7 +3,7 @@
 import { $, $$, React, act, click, cleanup, closeDom, flush, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, HistoryPanel } from "../src/index.ts";
+import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
 import { createMockUi } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
 
@@ -47,3 +47,42 @@ for (const [label, hour, grouped] of [["grouped by day, scrolled into an older d
     assert.equal($$(m.container, ".carton-version[data-active]").length, 0, "the picked row is off screen (it stays picked)");
     await m.unmount();
   });
+
+// Regress #4 (UI audit P2-1): Esc in a preview did nothing, as focus is on the page itself (<body>) there. It returns
+// from the preview, as the banner's button does, when nothing else has the key: not from a field, and not when
+// something nearer took it (a menu, a dialog, the editor's own Esc).
+test(name("regress #4: Esc returns from a preview when focus is on the page; a field or a handler that took the key keeps it"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const m = await render(wrap(ui, h(PreviewBanner, null)));
+  const esc = async (target: EventTarget) => act(() => { target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  await act(async () => { ui.openPreview("main@3", "the version from 12:41"); });
+  assert.ok($(m.container, ".carton-preview-banner"), "previewing");
+  // the button says its key
+  assert.equal($(m.container, ".carton-preview-banner .carton-btn")!.getAttribute("aria-keyshortcuts"), "Escape");
+  // typing in a field: its Esc
+  const field = document.createElement("input");
+  document.body.appendChild(field);
+  field.focus();
+  await esc(field);
+  assert.ok(ui.preview(), "a field's Esc stays the field's");
+  field.remove();
+  // a handler nearer the page took it (a menu, Cardboard's own Esc)
+  const took = (e: Event) => e.preventDefault();
+  document.body.addEventListener("keydown", took);
+  await esc(document.body);
+  document.body.removeEventListener("keydown", took);
+  assert.ok(ui.preview(), "a key someone took stays theirs");
+  // focus on the page: back to current
+  (document.activeElement as HTMLElement | null)?.blur?.();
+  await esc(document.body);
+  assert.equal(ui.preview(), null, "Esc returned from the preview");
+  assert.equal($(m.container, ".carton-preview-banner"), null);
+  // with no preview, Esc is nobody's business here
+  let seen = 0;
+  const count = (e: Event) => { if (e.defaultPrevented) seen++; };
+  window.addEventListener("keydown", count);
+  await esc(document.body);
+  window.removeEventListener("keydown", count);
+  assert.equal(seen, 0, "no preview: the key is left alone");
+  await m.unmount();
+});

@@ -136,19 +136,39 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
   );
 }
 
-/** Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click. */
+/**
+ * Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click, or Esc (regress
+ * 2026-11-02 #4, UI audit P2-1: in a preview focus is on the page itself, so Esc reached nothing). Esc returns only when
+ * nothing else has the key: focus on the page (<body>) or in the banner, and no handler nearer the page took it first
+ * (a menu, a dialog, the side panel, the editor's own Esc). Listened for only while a preview is open.
+ */
 export function PreviewBanner({ className }: { className?: string }) {
   const preview = usePreview();
   const ui = useCartonUi();
   const words = useWords();
+  const banner = useRef<HTMLDivElement>(null);
+  const open = !!preview;
+  useEffect(() => {
+    if (!open || typeof window === "undefined") return;
+    const onKey = (e: KeyboardEvent) => {
+      // a preview closed a moment ago (this listener goes after the render): the key isn't ours
+      if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || !ui.preview()) return;
+      const t = e.target as Node | null, doc = t?.ownerDocument ?? document;
+      if (t && t !== doc.body && t !== doc.documentElement && t !== doc && !banner.current?.contains(t)) return;
+      e.preventDefault();
+      ui.openPreview(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, ui]);
   if (!preview) return null;
   return h(
     "div",
-    { className: cx("carton-preview-banner", className), role: "status", "data-blocked": preview.blockedEdit ? "" : undefined },
+    { ref: banner, className: cx("carton-preview-banner", className), role: "status", "data-blocked": preview.blockedEdit ? "" : undefined },
     h(Icon, { name: "eye", size: 14 }),
     h("span", { className: "carton-preview-label", title: words.previewing(preview.label) }, words.previewing(preview.label)),
     h("span", { className: "carton-badge", "data-tone": "muted" }, words.readOnly),
     preview.blockedEdit ? h("span", { className: "carton-preview-blocked" }, words.previewBlocked) : null,
-    h(Button, { variant: "primary", icon: "arrowLeft", onClick: () => ui.openPreview(null) }, words.returnToCurrent),
+    h(Button, { variant: "primary", icon: "arrowLeft", keys: "Escape", title: words.returnToCurrentKey, onClick: () => ui.openPreview(null) }, words.returnToCurrent),
   );
 }

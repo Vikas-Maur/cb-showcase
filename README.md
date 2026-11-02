@@ -462,8 +462,9 @@ What changes with it on:
   of the open panel shows as pressed. Ctrl+Shift+H opens and closes History from the keyboard (H is free in Cardboard's
   keymap). The preview, the timeline, Ctrl+Z and the chat keep working while it is open.
   History: versions, compare with current and "Watch the changes", restore, cuts, fold in (from the cut's own menu
-  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" (Undo and Redo look
-  unavailable meanwhile); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
+  too: "Fold “X” in here"). Opening an old version shows it read-only until "Return to current" or Esc (Undo and Redo
+  look unavailable meanwhile; with focus in the History panel, the first Esc returns from the version and the next
+  closes the panel); "Watch the changes" moves the preview's playhead with it, so the frames are the real ones.
   Restore, Fold in and a conflict card's pick each end with a short confirmation over the preview (Fold in offers to
   switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
   each with its count; a day folds to its named versions with a click or Enter, and with more than 150 versions every
