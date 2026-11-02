@@ -392,6 +392,11 @@ export interface Version {
    * version (UI audit P1-3), of kind `merge`; `change` is the partial revert's id, which "fold in the rest" reverts.
    */
   rejected?: PathKey[];
+  /**
+   * "Fold in the rest" of a partial fold (a `revert` of its partial revert): that partial fold's `change`. A list marks
+   * it as the fold it is, not as an undo (final re-check, baseline P3-12b). Its undo and the redo of that have none.
+   */
+  restOf?: ChangeId;
 }
 
 export type LineageKind = "head" | "root" | "fork" | "merge" | "export" | "import";
