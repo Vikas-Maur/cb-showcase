@@ -269,7 +269,8 @@ function Sidebar({ panel, setPanel, projectId, bridge }) {
   // the next Esc closes the panel (regress 2026-11-02 #4: it closed the panel and left the preview open).
   const ui = useCartonUi();
   const onKeyDown = (e) => {
-    if (e.key !== "Escape") return;
+    // an Esc a handler nearer the page took (a Radix layer's, in the capture phase) is theirs: nothing here
+    if (e.key !== "Escape" || e.defaultPrevented || e.nativeEvent?.defaultPrevented) return;
     e.stopPropagation();
     if (ui.preview?.()) { void ui.openPreview(null); return; }
     setPanel(null);
@@ -460,7 +461,7 @@ export const CartonStage = memo(function CartonStage({ projectId, bridge }) {
   if (!ready) return null;
   return h(CartonProvider, { ui: conn.ui },
     h("div", { className: "carton-stage", "data-carton-skin": "cardboard" }, h(CartonBoundary, { panel: "stage" },
-      h("div", { className: "carton-stage-banner" }, h(PreviewBanner, null), h(MediaNotice, { projectId, bridge })),
+      h("div", { className: "carton-stage-banner" }, h(PreviewBanner, { escapeState: bridge.selection }), h(MediaNotice, { projectId, bridge })),
       h("div", { className: "carton-stage-stack" }, h(ConflictStack, { onPreview, onReveal, collapsed: panelOpen })),
       h("div", { className: "carton-stage-toast" }, h(Toast)),
       h("div", { className: "carton-stage-live" }, h(LiveChip, { projectId, bridge })))));

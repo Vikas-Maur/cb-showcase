@@ -4,6 +4,7 @@ import { $, $$, React, act, click, cleanup, closeDom, flush, render, runtime } f
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
+import { VirtualList } from "../src/virtual.ts";
 import { createMockUi } from "../src/mock.ts";
 import { commentsSkin } from "../src/comments/skin.ts";
 import { cardboardSkin } from "../src/skin/cardboard.ts";
@@ -51,16 +52,22 @@ for (const [label, hour, grouped] of [["grouped by day, scrolled into an older d
   });
 
 // Regress #4 (UI audit P2-1): Esc in a preview did nothing, as focus is on the page itself (<body>) there. It returns
-// from the preview, as the banner's button does, when nothing else has the key: not from a field, and not when
-// something nearer took it (a menu, a dialog, the editor's own Esc).
-test(name("regress #4: Esc returns from a preview when focus is on the page; a field or a handler that took the key keeps it"), async () => {
+// from the preview, as the banner's button does, when the key was nobody else's, whichever listened first: not from a
+// field, not when a handler took it (a Radix layer in the capture phase; the chat's approval card, which can appear
+// during the preview and so listens after the banner), and not when it cleared the editor's clip selection (Cardboard's
+// properties panel does that on Esc without taking the key). Review of fix/ui-regress #1.
+test(name("regress #4: Esc returns from a preview when the key was nobody else's, whichever handler listened first"), async () => {
   const ui = createMockUi({ versions: 10 });
-  const m = await render(wrap(ui, h(PreviewBanner, null)));
-  const esc = async (target: EventTarget) => act(() => { target.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+  let selection: string[] = ["clip-1"];
+  const m = await render(wrap(ui, h(PreviewBanner, { escapeState: () => selection })));
+  const esc = async (target: EventTarget) => {
+    const e = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => { target.dispatchEvent(e); await new Promise((r) => setTimeout(r, 5)); });
+    return e;
+  };
   await act(async () => { ui.openPreview("main@3", "the version from 12:41"); });
   assert.ok($(m.container, ".carton-preview-banner"), "previewing");
-  // the button says its key
-  assert.equal($(m.container, ".carton-preview-banner .carton-btn")!.getAttribute("aria-keyshortcuts"), "Escape");
+  assert.equal($(m.container, ".carton-preview-banner .carton-btn")!.getAttribute("aria-keyshortcuts"), "Escape", "the button says its key");
   // typing in a field: its Esc
   const field = document.createElement("input");
   document.body.appendChild(field);
@@ -68,26 +75,54 @@ test(name("regress #4: Esc returns from a preview when focus is on the page; a f
   await esc(field);
   assert.ok(ui.preview(), "a field's Esc stays the field's");
   field.remove();
-  // a handler nearer the page took it (a menu, Cardboard's own Esc)
-  const took = (e: Event) => e.preventDefault();
-  document.body.addEventListener("keydown", took);
+  // a layer took it in the capture phase (Radix)
+  const capture = (e: Event) => e.preventDefault();
+  document.addEventListener("keydown", capture, true);
   await esc(document.body);
-  document.body.removeEventListener("keydown", took);
-  assert.ok(ui.preview(), "a key someone took stays theirs");
-  // focus on the page: back to current
-  (document.activeElement as HTMLElement | null)?.blur?.();
+  document.removeEventListener("keydown", capture, true);
+  assert.ok(ui.preview(), "a key a layer took stays theirs");
+  // the chat's approval card, shown during the preview: its window listener comes after the banner's, skips a key
+  // already taken, else takes it
+  let skipped = 0;
+  const approval = (e: KeyboardEvent) => { if (e.defaultPrevented) return; if (e.key === "Escape") { e.preventDefault(); skipped++; } };
+  window.addEventListener("keydown", approval);
   await esc(document.body);
+  window.removeEventListener("keydown", approval);
+  assert.equal(skipped, 1, "the approval card got the key");
+  assert.ok(ui.preview(), "and the preview stays");
+  // the properties panel clears the selection on Esc, taking nothing: that Esc was the editor's
+  const deselect = (e: KeyboardEvent) => { if (e.key === "Escape" && selection.length) selection = []; };
+  window.addEventListener("keydown", deselect);
+  await esc(document.body);
+  assert.deepEqual(selection, [], "the clip was deselected");
+  assert.ok(ui.preview(), "and the preview stays");
+  // nothing selected now: the next Esc is nobody else's, and returns. The banner takes no key from anyone.
+  const e = await esc(document.body);
+  window.removeEventListener("keydown", deselect);
   assert.equal(ui.preview(), null, "Esc returned from the preview");
+  assert.equal(e.defaultPrevented, false, "without taking the key from a handler after it");
   assert.equal($(m.container, ".carton-preview-banner"), null);
-  // with no preview, Esc is nobody's business here
-  let seen = 0;
-  const count = (e: Event) => { if (e.defaultPrevented) seen++; };
-  window.addEventListener("keydown", count);
-  await esc(document.body);
-  window.removeEventListener("keydown", count);
-  assert.equal(seen, 0, "no preview: the key is left alone");
   await m.unmount();
 });
+
+// Review of fix/ui-regress #2: keeping the reader's place must not stop the picked row's own list of changes, opened near
+// the bottom of the view, from scrolling into view (the row is the same, but taller).
+for (const grouped of [false, true])
+  test(name(`regress #2: opening the picked row's changes near the bottom brings them into view (${grouped ? "day headers" : "fixed rows"})`), async () => {
+    const base = { count: 30, rowHeight: 52, rowKey: (i: number) => `row${i}`, label: "History", initialHeight: 260, renderRow: (i: number) => h("div", null, `row${i}`), ...(grouped ? { heightOf: (i: number) => (i === 0 ? 32 : 52), layoutKey: "same" } : {}) };
+    const view = (active: number, extra: number) => h(VirtualList, { ...base, active, expanded: extra ? { index: 4, extra } : null });
+    const m = await render(view(-1, 0));
+    const list = $(m.container, ".carton-vlist") as HTMLElement;
+    Object.defineProperty(list, "clientHeight", { value: 260, configurable: true });
+    await m.rerender(view(4, 0));
+    await flush();
+    assert.equal(list.scrollTop, 0, "row 4 fits: no scroll");
+    await m.rerender(view(4, 90));
+    await flush();
+    const row = $$(m.container, ".carton-vrow")[4]!;
+    assert.ok(ty(row) + parseFloat(row.style.height) <= list.scrollTop + 260, `its changes are in view (row ends at ${ty(row) + parseFloat(row.style.height)}, view at ${list.scrollTop + 260})`);
+    await m.unmount();
+  });
 
 // Regress #5 (UI audit P2-20): the comment box still showed a textarea's resize grip. The comments skin said
 // `resize:none` for it, then a later rule of the same weight (every rule is in :where()) said `resize:vertical` and won.

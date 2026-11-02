@@ -201,6 +201,21 @@ test("See it, Show on timeline: the clip is selected and the playhead goes to it
   assert.equal(off.c.reveal("clip-a"), false);
 });
 
+// Regress 2026-11-02 #4 (review #1): the preview banner's Esc yields to the editor's own, which clears the clip
+// selection without taking the key: it compares the selection before and after, by identity.
+test("the editor's clip selection, as its store holds it, for the preview's Esc; nothing with Carton off", async () => {
+  const t = load({ enabled: true });
+  await t.c.ready;
+  const picked = ["clip-a"];
+  t.store.raw({ selectedTimelineItemIds: picked });
+  assert.equal(t.c.selection(), picked, "the store's own array");
+  t.store.raw({ selectedTimelineItemIds: [] });
+  assert.notEqual(t.c.selection(), picked, "a deselect is a new value");
+  const off = load({ enabled: false });
+  await off.c.ready;
+  assert.equal(off.c.selection(), null);
+});
+
 test("the title bar's icons: the page hears carton:command and reports the panel open to main; nothing with Carton off", async () => {
   const t = load({ enabled: true });
   await t.c.ready;

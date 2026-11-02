@@ -139,27 +139,42 @@ export function CreditsPopover({ itemId, credits, onClose, className }: { itemId
 /**
  * Shown while a preview is open (§9, R2-16): it is read-only, and the way back to editing is one click, or Esc (regress
  * 2026-11-02 #4, UI audit P2-1: in a preview focus is on the page itself, so Esc reached nothing). Esc returns only when
- * nothing else has the key: focus on the page (<body>) or in the banner, and no handler nearer the page took it first
- * (a menu, a dialog, the side panel, the editor's own Esc). Listened for only while a preview is open.
+ * it was nobody else's: focus on the page (<body>) or in the banner, and decided once the key has reached every handler
+ * (not by which listened first: a chat approval that appears during the preview registers after this one). It stays
+ * when a handler took it (`preventDefault`: a menu, a dialog, the chat's approval card) or when it changed what the
+ * host's own Esc changes (`escapeState`; Cardboard's clip selection, which its Esc clears without saying so): that Esc
+ * was theirs, and the next one returns. Listened for only while a preview is open.
  */
-export function PreviewBanner({ className }: { className?: string }) {
+export function PreviewBanner({ className, escapeState }: { className?: string; escapeState?: () => unknown }) {
   const preview = usePreview();
   const ui = useCartonUi();
   const words = useWords();
   const banner = useRef<HTMLDivElement>(null);
+  const state = useRef(escapeState);
+  state.current = escapeState;
   const open = !!preview;
   useEffect(() => {
     if (!open || typeof window === "undefined") return;
+    let timer: ReturnType<typeof setTimeout> | null = null;
     const onKey = (e: KeyboardEvent) => {
       // a preview closed a moment ago (this listener goes after the render): the key isn't ours
       if (e.key !== "Escape" || e.defaultPrevented || e.isComposing || !ui.preview()) return;
       const t = e.target as Node | null, doc = t?.ownerDocument ?? document;
       if (t && t !== doc.body && t !== doc.documentElement && t !== doc && !banner.current?.contains(t)) return;
-      e.preventDefault();
-      ui.openPreview(null);
+      const before = state.current?.();
+      // a task, not a microtask: one runs between two listeners of the same key
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = null;
+        if (e.defaultPrevented || !ui.preview() || (state.current && !Object.is(state.current(), before))) return;
+        ui.openPreview(null);
+      }, 0);
     };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      if (timer) clearTimeout(timer);
+    };
   }, [open, ui]);
   if (!preview) return null;
   return h(

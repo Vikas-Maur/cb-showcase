@@ -264,6 +264,13 @@ test("regress #4: in the side panel, Esc returns from a preview first; the next 
     assert.ok(list, "the History panel is open");
     const esc = () => React.act(async () => { list.dispatchEvent(new w.KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
     await React.act(async () => { ui.openPreview("main@3", "the version from 12:41"); });
+    // a layer that took the key in the capture phase (Radix) keeps it: nothing here (review of fix/ui-regress #1)
+    const capture = (e) => e.preventDefault();
+    w.document.addEventListener("keydown", capture, true);
+    await esc();
+    w.document.removeEventListener("keydown", capture, true);
+    assert.ok(ui.preview(), "a key a layer took leaves the preview");
+    assert.deepEqual(closed, [], "and the panel");
     await esc();
     assert.equal(ui.preview(), null, "the first Esc returns from the preview");
     assert.deepEqual(closed, [], "and leaves the panel open");
