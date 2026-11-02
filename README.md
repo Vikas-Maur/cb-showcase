@@ -523,7 +523,8 @@ What changes with it on:
   Before, Restore of `main@1` and then of the newest version brought `clip.mp4` back without its duration, size or
   thumbnail, `cb media list` showed "-" for them, and the clip played black until Cardboard restarted. When nothing
   kept them (a project an earlier build left like that, or one the root restore broke), Cardboard's own probe reads
-  the file again, as its import does, and its thumbnails and waveform are made again from its cache. Nothing is
+  the file again, as its import does, and the app makes its thumbnails and waveform again (from its cache when it has
+  them). Nothing is
   guessed: when the clip was first added, which nothing recorded, stays unset. So a recovered project's clip plays at
   once. A restore also moves the project's "Updated" time in the library. And `cb undo <project> 0` reads 0 as the
   version to restore, `main@0`, which it refuses as empty, where it used to undo your newest change without a word.

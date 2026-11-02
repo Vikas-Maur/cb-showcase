@@ -758,8 +758,9 @@ function hostWrite(bundlePath) {
 //    drops nothing does no I/O for this.
 // 2. A materialization carries each entry's details over: from the file it replaces, else as last kept for its id.
 // 3. What neither has (a project an earlier build's restore, or the root-restore bug, left without them) Cardboard finds
-//    again as its import does (reprobeMedia: its own probe of the file), and its derive fills in thumbnails and
-//    waveforms (deriveMedia). Nothing is guessed: a detail none of these gives stays unset.
+//    again as its import does (reprobeMedia: its own probe of the file), and in the app its derive fills in thumbnails
+//    and waveforms (deriveMedia; cb leaves that to the app, so two processes never derive one file at once). Nothing is
+//    guessed: a detail none of these gives stays unset.
 const mediaMemory = new Map(); // landingKey(bundle) → MediaDetails (with its bundle)
 function detailsOf(bundle) {
   const key = landingKey(bundle);
@@ -1220,9 +1221,8 @@ export const cardboard14 = {
   headProject,
   hasHistory: async (bundlePath) => !!(await open(bundlePath)),
   // cb's `after` (cli-bridge.js): Cardboard's own probe of a media file whose entry head brought back without details,
-  // before head goes into project.json, and its derive after (P2-1)
+  // before head goes into project.json (P2-1). cb doesn't derive (thumbnails, waveforms): the app does, one at a time.
   reprobeMedia,
-  deriveMedia,
   // What was wrong with the head last refused for this bundle's project.json, else null (cb's `after`).
   headRefused: (bundlePath) => headRefusals.get(bundlePath) ?? null,
   // Laptop, build 915eb36: Restore of "Started the cut" wrote a project.json with no name, which Cardboard's reader
@@ -1385,6 +1385,21 @@ export const cardboard14 = {
   worker({ library, emit }) {
     inWorker = true;
     workerEmit = emit;
+    // Cardboard's derive (ensureDerived) runs for one project at a time in this process: main asks for it once a
+    // session, at the project's first save, and the re-probe after it fills in an entry (deriveMedia). Two at once on a
+    // file whose artefacts aren't cached both make its cache folder again, and Cardboard's cache write then fails with
+    // an ENOENT nothing catches, which ends the process (cbproj.test.js caught cb's and the worker's derives doing it).
+    // Main's call reads `ensureDerived` from the library at each call, so it waits here too.
+    const derive = library.ensureDerived;
+    if (typeof derive === "function") {
+      const chains = new Map();
+      library.ensureDerived = (projectId, ...rest) => {
+        const run = (chains.get(projectId) ?? Promise.resolve()).catch(() => {}).then(() => derive.call(library, projectId, ...rest));
+        chains.set(projectId, run);
+        run.finally(() => chains.get(projectId) === run && chains.delete(projectId)).catch(() => {});
+        return run;
+      };
+    }
     const bundleOf = (projectId) => library.projects.bundlePathFor?.(projectId) ?? null;
     const lcOf = async (projectId) => open(bundleOf(projectId), { projectId });
     const servers = new Map(); // client → serveUi

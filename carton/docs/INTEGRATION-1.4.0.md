@@ -235,9 +235,11 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
      has it at once; Cardboard's probe of the file as it is now (`inspect.probePath`, not the probe cached for the id,
      which may be of a file since replaced); the fields the import's `j4` sets from it, where the entry lacks them. A
      file not there is looked for again at the next materialization (the `media/` listing cached until the folder
-     changes); a failed probe once the file changes. After the write, Cardboard's derive
+     changes); a failed probe once the file changes. After the worker's write, Cardboard's derive
      (`ensureDerived`, which main otherwise runs once per session at the first save) fills in thumbnails and the
-     waveform, and the worker announces the change. Nothing is guessed: `createdAt` and `addedAt` stay unset.
+     waveform, and the worker announces the change; the worker runs one derive per project at a time (main's waits
+     for it), and cb runs none (two processes deriving one file's artefacts at once break Cardboard's cache write:
+     an ENOENT nothing catches ended cb in cbproj.test.js). Nothing is guessed: `createdAt` and `addedAt` stay unset.
    - Every Carton write into `project.json` (`headAt`) also moves `updatedAt`, the library's "Updated" time.
 
 **Tests:**
