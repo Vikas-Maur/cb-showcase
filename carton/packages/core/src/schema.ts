@@ -106,6 +106,13 @@ export interface CollectionDef {
    */
   nounOf?: (record: Rec) => string | null | undefined;
   /**
+   * Whose part a record `nounOf` calls nothing is (regress prod3 P3-C): the record of `collection` whose `field` holds
+   * its key (Cardboard: a title's own media entry, `timelineItems.mediaItemId`). When the one record of the same ops
+   * that holds it is that record, it is that record's change: no line or count of its own, and in its row of the Fold
+   * dialog. Held by several (a duplicated title), or by none the ops touch, it is its own change.
+   */
+  partOf?: { collection: string; field: string };
+  /**
    * Editors' words for fields in descriptions, by their dotted path in the record with keyed-array element keys left
    * out: `{"colorGrade.saturation": "saturation", "effects": "effect"}`. Unlabelled fields print their path.
    */
@@ -131,6 +138,7 @@ export interface CollectionSpec extends Required<Pick<CollectionDef, "key">> {
   readonly fields?: Record<string, FieldSpec>;
   readonly noun?: string;
   readonly nounOf?: (record: Rec) => string | null | undefined;
+  readonly partOf?: { collection: string; field: string };
   readonly labels?: Readonly<Record<string, string>>;
   readonly phrases?: Readonly<Record<string, FieldPhrase>>;
   readonly parent?: { field: string; collection: string };

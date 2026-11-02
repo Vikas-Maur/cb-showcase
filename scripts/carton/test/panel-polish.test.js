@@ -440,9 +440,10 @@ for (const when of ["before", "after"])
 // (Home swaps the empty view for the grid, and its scroller lost its place while the grid measured itself): the
 // sidebar's Projects lit Dashboard, and after Done the new tile was below the fold. Here Home's scroller is scrolled
 // down to the projects, and the grid, as it mounts, throws the scroller back to the top as Cardboard's did. The page
-// keeps its place, then shows the new tile; a person who scrolls meanwhile keeps their own scroll.
-for (const scrolls of [false, true])
-  test(`prod3 P3-E: joining from an empty library keeps the page where it was${scrolls ? ", unless the person scrolls" : ", and shows the new tile"}`, opt, async () => {
+// keeps its place, then shows the new tile; a person who scrolls meanwhile, or goes elsewhere (the sidebar's Dashboard,
+// outside the scroller: review of P3-E), keeps their own place. A click in the dialog (Done) isn't going elsewhere.
+for (const moves of [null, "scrolls", "sidebar"])
+  test(`prod3 P3-E: joining from an empty library keeps the page where it was${moves ? `, unless the person ${moves === "scrolls" ? "scrolls" : "goes to the Dashboard"}` : ", and shows the new tile"}`, opt, async () => {
     const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
     const w = new Window({ url: "http://localhost/" });
     const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
@@ -474,6 +475,7 @@ for (const scrolls of [false, true])
         addToLibrary = () => setCards(["p-fx"]);
         const P = cards.length === 0 ? React.createElement("section", { "data-view": "empty" }, React.createElement(d.Button, { className: "cb" })) : React.createElement(Grid, { cards });
         return React.createElement("div", null,
+          React.createElement("nav", null, React.createElement("button", { id: "to-dashboard", onClick: () => scroller.scrollTo({ top: 0 }) }, "Dashboard")),
           React.createElement("div", { ref: toScroller, style: { overflowY: "auto", height: "800px" } }, React.createElement("section", { style: { height: "700px" } }, "Dashboard"), P),
           d.Host ? React.createElement(d.Host) : null);
       }
@@ -492,12 +494,22 @@ for (const scrolls of [false, true])
       });
       await React.act(async () => { link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 20)); });
       assert.ok(el.querySelector('[data-view="grid"]'), "the join landed: the grid replaced the empty view");
-      if (scrolls) {
+      if (moves === "scrolls") {
         // the person scrolls up meanwhile: theirs, not put back
         await React.act(async () => { scroller.dispatchEvent(new w.Event("wheel")); scroller.scrollTop = 120; await new Promise((r) => setTimeout(r, 50)); });
         assert.equal(scroller.scrollTop, 120);
+      } else if (moves === "sidebar") {
+        // Done, then the sidebar's Dashboard, which scrolls Home to its top: Home's, not put back, no tile revealed
+        const done = [...body.querySelectorAll('[role="dialog"] button')].find((b) => b.textContent === "Done");
+        await React.act(async () => { done.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); done.click(); await new Promise((r) => setTimeout(r, 20)); });
+        const nav = body.querySelector("#to-dashboard");
+        await React.act(async () => { nav.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); nav.click(); await new Promise((r) => setTimeout(r, 1700)); });
+        assert.equal(scroller.scrollTop, 0);
+        assert.deepEqual(revealed, []);
       } else {
-        await React.act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+        // a click in the dialog isn't going elsewhere
+        const inDialog = body.querySelector('[role="dialog"]');
+        await React.act(async () => { inDialog.dispatchEvent(new w.Event("pointerdown", { bubbles: true })); await new Promise((r) => setTimeout(r, 50)); });
         assert.equal(scroller.scrollTop, 700, "still at the projects, not the Dashboard's top");
         assert.match(body.textContent, /“FX ui” is in your library now\./, "with the dialog up");
         await React.act(async () => { await new Promise((r) => setTimeout(r, 1600)); });

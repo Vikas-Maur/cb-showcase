@@ -89,8 +89,9 @@ function __cbCartonJoinTile() {
 }
 // Joining from an empty library (regress prod3 P3-E): Home swaps the empty view for the grid as the join lands, and the
 // page jumped back to the Dashboard's top (the sidebar's Projects lit Dashboard), the new tile below the fold. The page
-// keeps the place it had as the swap began, for the moment the grid takes to measure itself, unless the person scrolls
-// meanwhile; then the new tile (the newest project: the cell after New project and Join) is brought into view if it
+// keeps the place it had as the swap began, for the moment the grid takes to measure itself, unless the person moves
+// meanwhile: scrolls anywhere, or clicks or presses a key outside the dialog (the sidebar's Dashboard, say, which
+// scrolls Home itself; review of P3-E); then the new tile (the newest project: the cell after New project and Join) is brought into view if it
 // isn't.
 const __cbCartonScroller = (n) => {
   const view = n?.ownerDocument?.defaultView;
@@ -98,16 +99,12 @@ const __cbCartonScroller = (n) => {
   return null;
 };
 function __cbCartonKeepPlace(el, top) {
-  const view = el.ownerDocument.defaultView, until = Date.now() + 1500;
+  const doc = el.ownerDocument, view = doc.defaultView, until = Date.now() + 1500;
   let done = false;
-  const keys = new Set(["PageUp", "PageDown", "Home", "End", "ArrowUp", "ArrowDown", " "]);
-  const off = () => { done = true; el.removeEventListener("wheel", off); el.removeEventListener("touchmove", off); el.removeEventListener("pointerdown", bar); el.removeEventListener("keydown", key); };
-  const bar = (e) => { if (e.target === el) off(); };
-  const key = (e) => { if (keys.has(e.key)) off(); };
-  el.addEventListener("wheel", off, { passive: true });
-  el.addEventListener("touchmove", off, { passive: true });
-  el.addEventListener("pointerdown", bar);
-  el.addEventListener("keydown", key);
+  const on = { wheel: () => off(), touchmove: () => off(), pointerdown: (e) => outside(e) && off(), keydown: (e) => outside(e) && off() };
+  const outside = (e) => !e.target?.closest?.('[role="dialog"]');
+  const off = () => { done = true; for (const t in on) doc.removeEventListener(t, on[t], true); };
+  for (const t in on) doc.addEventListener(t, on[t], { capture: true, passive: true });
   const tick = () => {
     if (done || !el.isConnected) return;
     if (Math.abs(el.scrollTop - top) > 1) el.scrollTo({ top, behavior: "instant" });

@@ -64,10 +64,11 @@ const opaque = (key: unknown, v: unknown): boolean =>
   isIdKey(String(key)) || /(?:^h|H)ash(?:es)?$/.test(String(key)) || (typeof v === "string" ? HASHY.test(v) : !!v && typeof v === "object" && HASH_IN.test(JSON.stringify(v) ?? ""));
 
 /**
- * `names`: the whole set these ops are part of, when they are only some of it (one row of the Fold dialog): a record it
- * adds is named by it ("to track 'Text 1'", a track the same fold adds; regress prod3 P3-B read "another track").
+ * `names`: when these ops are only some of a larger set (one row of the Fold dialog), the doc records are named from,
+ * `namingDoc(base, allOps)`, made once for all of them: a record the set adds is named ("to track 'Text 1'", a track
+ * the same fold adds; regress prod3 P3-B read "another track").
  */
-export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null, names?: readonly Op[]): string[] {
+export function describe(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null = null, names?: Doc): string[] {
   return lines(ops, base, schema, intent, names).map((l) => l.text);
 }
 
@@ -132,27 +133,36 @@ function groupOps(plain: readonly PlainOp[], schema: Schema): Map<string, Group>
   return groups;
 }
 /**
- * Records that are part of another record the same ops touch: a record the schema's `nounOf` calls nothing (null:
- * Cardboard's title's own "Text: W1" media entry) that a touched record names by its key (the title's media id). Its
- * change is its owner's: never a line or a change of its own (regress prod3 P3-C: "15 changes" for a clip, 6 titles
- * and 2 tracks, with "Added media 'Text: W1'"…). Part key → owner key ("media/tm1" → "timelineItems/t1").
+ * Records that are part of another record the same ops touch (`CollectionDef.partOf`): a record `nounOf` calls
+ * nothing (Cardboard's title's own "Text: W1" media entry) whose key the declared field of exactly one touched record
+ * holds. Its change is that record's: never a line or a change of its own (regress prod3 P3-C: "15 changes" for a
+ * clip, 6 titles and 2 tracks, with "Added media 'Text: W1'"…). Held by several (a duplicated title shares its entry),
+ * it stays its own, so leaving one of them out never takes the others' entry. Part key → owner key.
  */
 function ownedParts(groups: ReadonlyMap<string, Group>, base: Doc, schema: Schema): Map<string, string> {
   const out = new Map<string, string>();
   const rec = (g: Group) => (getIn(base, [g.coll!, g.id as string], schema) ?? (g.ops.find((op) => op.op === "insert" && op.path.length === 2) as { value?: unknown } | undefined)?.value) as Rec | undefined;
-  const parts = new Map<unknown, string>();
+  // by the owning collection's field: part key's id → part key
+  const parts = new Map<string, Map<unknown, string>>();
   for (const [k, g] of groups) {
-    const r = g.coll ? rec(g) : undefined;
-    if (r && schema.collections[g.coll!]!.nounOf?.(r) === null) parts.set(g.id, k);
-  }
-  const partKeys = new Set(parts.values());
-  if (parts.size) for (const [k, g] of groups) {
-    const r = g.coll && !partKeys.has(k) ? rec(g) : undefined;
-    if (r) for (const f in r) {
-      const p = parts.get(r[f]);
-      if (p !== undefined && typeof r[f] === "string" && !out.has(p)) out.set(p, k);
+    const cs = g.coll ? schema.collections[g.coll]! : undefined, r = cs?.partOf ? rec(g) : undefined;
+    if (r && cs!.nounOf?.(r) === null) {
+      const at = cs!.partOf!.collection + "\0" + cs!.partOf!.field;
+      (parts.get(at) ?? parts.set(at, new Map()).get(at)!).set(g.id, k);
     }
   }
+  if (!parts.size) return out;
+  const held = new Map<string, string | null>();
+  for (const [k, g] of groups) {
+    if (!g.coll) continue;
+    for (const [at, ids] of parts) {
+      const [coll, field] = at.split("\0");
+      if (coll !== g.coll) continue;
+      const p = ids.get(rec(g)?.[field!]);
+      if (p !== undefined) held.set(p, held.has(p) ? null : k);
+    }
+  }
+  for (const [p, o] of held) if (o) out.set(p, o);
   return out;
 }
 /** Records part of another the ops touch (`ownedParts`), as [collection, key] pairs: the Fold dialog lists them with it. */
@@ -168,25 +178,24 @@ export function ownParts(ops: readonly Op[], base: Doc, schema: Schema): { part:
  * A record's label (a clip is named after its media's file name), looked up in base plus the records this change
  * inserts, so a clip added with its media is named after it. That doc is built once, only when a label asks.
  */
-function labeller(plain: readonly PlainOp[], base: Doc, schema: Schema) {
-  let named: Doc | null = null;
-  const nameDoc = (): Doc => {
-    if (named) return named;
-    const added = new Map<string, Rec[]>();
-    for (const op of plain) {
-      if (op.op !== "insert" || op.path.length !== 2 || !schema.collections[op.path[0] as string]) continue;
-      const c = op.path[0] as string;
-      let l = added.get(c);
-      if (!l) added.set(c, (l = []));
-      l.push(op.value as Rec);
-    }
-    named = base;
-    if (added.size) {
-      named = { ...base };
-      for (const [c, l] of added) named[c] = [...((base[c] as Rec[] | undefined) ?? EMPTY), ...l];
-    }
-    return named;
-  };
+/** `base` plus the records `ops` insert: the doc a label looks records up in (`describe`'s `names`, made once for many). */
+export function namingDoc(base: Doc, ops: readonly Op[], schema: Schema): Doc {
+  const added = new Map<string, Rec[]>();
+  for (const op of ops) {
+    if (op.op !== "insert" || op.path.length !== 2 || !schema.collections[op.path[0] as string]) continue;
+    const c = op.path[0] as string;
+    let l = added.get(c);
+    if (!l) added.set(c, (l = []));
+    l.push(op.value as Rec);
+  }
+  if (!added.size) return base;
+  const named: Doc = { ...base };
+  for (const [c, l] of added) named[c] = [...((base[c] as Rec[] | undefined) ?? EMPTY), ...l];
+  return named;
+}
+function labeller(plain: readonly PlainOp[], base: Doc, schema: Schema, names?: Doc) {
+  let named: Doc | null = names ?? null;
+  const nameDoc = (): Doc => (named ??= namingDoc(base, plain, schema));
   return { nameDoc, label: (coll: string, rec: Rec | undefined) => schema.label?.(coll, rec, nameDoc()) ?? String(rec?.name ?? rec?.id ?? "?") };
 }
 
@@ -337,11 +346,11 @@ export function countChanges(ops: readonly Op[], base: Doc, schema: Schema, amon
 
 const PART = ["first", "second", "third", "fourth", "fifth"];
 
-function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null, names?: readonly Op[]): Line[] {
+function lines(ops: readonly Op[], base: Doc, schema: Schema, intent: Intent | null, names?: Doc): Line[] {
   const tl = schema.timeline,
     out: Line[] = [];
   const plain = ops.filter((op): op is PlainOp => op.op !== "remap");
-  const { nameDoc, label } = labeller(names ? names.filter((op): op is PlainOp => op.op !== "remap") : plain, base, schema);
+  const { nameDoc, label } = labeller(plain, base, schema, names);
   // a track made in the same change is named too (UI audit P1-6's drag onto a new track read "to track track 3f9a1c")
   const laneName = (id: unknown) => {
     const t = tl && (getIn(nameDoc(), [tl.lanes, id as string], schema) as Rec | undefined);

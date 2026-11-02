@@ -23,7 +23,7 @@ const schema = defineSchema({
     tracks: { seq: true },
     // as Cardboard's: a text item is a title; a title's own media entry is no media file
     items: { parent: { field: "trackId", collection: "tracks" }, noun: "clip", nounOf: (r) => (r.type === "text" ? "title" : undefined), groups: [{ name: "time", fields: ["startTime", "endTime", "trimStart", "trimEnd", "playbackSpeed"], algebra: timeAlgebra(TL) }] },
-    media: { noun: "media", nounOf: (r) => (r.type === "text" ? null : undefined) },
+    media: { noun: "media", nounOf: (r) => (r.type === "text" ? null : undefined), partOf: { collection: "items", field: "mediaItemId" } },
   },
   timeline: TL,
   label: (coll, r) => String((r as Rec | undefined)?.name ?? coll),
@@ -83,5 +83,35 @@ test(name("prod3 P3-B, P3-C: the dialog names a track the fold adds; a title and
   const [f] = await carton.log({ cut: main, limit: 1, summary: true });
   assert.equal(f!.summary, "Folded 'Alt' into 'Main cut': 2 of 3 changes");
   assert.equal(f!.leftOutChanges, 1, "what cb history says it left out");
+  ui.dispose();
+});
+
+// Review: a title and its duplicate share one media entry (Cardboard's Duplicate keeps mediaItemId). The entry is
+// neither's alone: leaving the first title out must not take the entry its accepted duplicate shows.
+test(name("prod3 P3-C (review): an entry two titles share is its own row; leaving one title out keeps it"), async () => {
+  const { carton, ui } = await open();
+  const main = carton.cut;
+  const v = await carton.fork("Alt");
+  await carton.commit({ cut: v.id, ops: [
+    { op: "insert", path: ["items", "W3"], value: title("W3", 3) },
+    { op: "insert", path: ["items", "W4"], value: title("W4", 4, { mediaItemId: "m-W3" }) },
+    { op: "insert", path: ["media", "m-W3"], value: own("W3") },
+  ] });
+  await ui.refresh();
+  let done = 0;
+  const m = await render(h(CartonProvider, { ui }, h(FoldInDialog, { fromCutId: v.id, intoCutId: main, onClose: () => {}, onDone: () => void done++ })));
+  await waitFor(() => $$(m.container, ".carton-fold-change").length > 0, "the rows");
+  const rows = $$(m.container, ".carton-fold-change");
+  assert.equal(rows.length, 3, rows.map((r) => r.textContent).join(" | "));
+  const w3 = rows.find((r) => /'W3'/.test(r.querySelector(".carton-fold-text")?.textContent ?? ""))!;
+  await click(w3.querySelector("input[type=checkbox]")!);
+  await flush();
+  await click(byText(m.container, "button", /^Fold in 2 of 3$/));
+  await waitFor(() => done === 1, "folded");
+  await m.unmount();
+  const head = (await carton.head(main)).doc;
+  assert.equal(getIn(head, ["items", "W3"], schema), undefined);
+  assert.ok(getIn(head, ["items", "W4"], schema), "the duplicate came in");
+  assert.ok(getIn(head, ["media", "m-W3"], schema), "with the entry it shows");
   ui.dispose();
 });

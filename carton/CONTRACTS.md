@@ -240,10 +240,12 @@ Each interface's doc comment lists its **Invariants**; its conformance suite che
   - **A record by what it is** (laptop re-check P3-8, P3-10). `CollectionDef.nounOf(record)` names a record when its
     collection holds several kinds (Cardboard: a text item is a title, a code item a code graphic, a caption a
     caption), or returns null for a record that is part of another (a title's own media entry, "Text: W1"). Such a
-    record, when a record the same ops touch names it by its key (the title's `mediaItemId`), is that record's change:
-    no line of its own in `describe`, not counted by `countChanges`, and in the Fold dialog in its owner's row, left out
-    with it (`ownParts(ops, base, schema)`; regress prod3 P3-C: "15 changes" with "Added media 'Text: W1'"…). Alone (its
-    owner untouched) it is still told and counted. A version's summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
+    record, when exactly one record the same ops touch holds its key in the field `CollectionDef.partOf` declares
+    (Cardboard: `timelineItems.mediaItemId`), is that record's change: no line of its own in `describe`, not counted by
+    `countChanges`, and in the Fold dialog in its owner's row, left out with it (`ownParts(ops, base, schema)`; regress
+    prod3 P3-C: "15 changes" with "Added media 'Text: W1'"…). Held by several (a duplicated title shares its entry) or
+    by none the ops touch, it is told and counted on its own. `describe`'s 5th argument, `namingDoc(base, allOps)`,
+    names records a larger set adds when the ops are only one row of it (the Fold dialog: one doc per plan). A version's summary counts by it ("Added 2 tracks, video 'clip.mp4', 6 titles and media 'clip.mp4'": it read "7 clips and 6
     media files"), an add or delete line names it ("Added title 'W1'"), and Compare's clip count leaves titles apart
     ("1 clip, 6 titles").
   - **A fold-some is one version.** Its fold and the partial revert right after it are two changes, but `log()` lists

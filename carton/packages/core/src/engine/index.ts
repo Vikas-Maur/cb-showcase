@@ -16,5 +16,5 @@ export { merge3, resolve, compare2 } from "./merge.ts";
 export { validateHard } from "./validate.ts";
 export { declare } from "./declare.ts";
 export { shots, shotDiff } from "./shots.ts";
-export { countChanges, describe, describeVersion, describeCard, ownParts, splits, type CardWords, type CardWordsOptions } from "./describe.ts";
+export { countChanges, describe, describeVersion, describeCard, namingDoc, ownParts, splits, type CardWords, type CardWordsOptions } from "./describe.ts";
 export { lcs } from "./lcs.ts";

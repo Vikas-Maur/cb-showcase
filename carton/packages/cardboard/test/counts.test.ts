@@ -5,7 +5,7 @@
 //   left part, cleared auto reframe on its right part": the editor's save writes the new parts without it.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { countChanges, describe, describeVersion, diff } from "@carton/core";
+import { countChanges, describe, describeVersion, diff, namingDoc } from "@carton/core";
 import type { Rec } from "@carton/core";
 import { cardboardSchema as S, fromHost } from "../src/index.ts";
 
@@ -71,6 +71,17 @@ test("prod3 P3-C: a title's own media entry is the title's change, in the count 
   const only = fromHost(project([clip(), ...titles], media.map((m) => (m.id === "tm2" ? textMedia("tm2", "Hey") : m))));
   assert.equal(describe(diff(full, only, S), full, S).length, 1);
   assert.equal(countChanges(diff(full, only, S), full, S), 1);
+  // only the title that names it by mediaItemId owns it (review: any string field matched): a track that happens to be
+  // called "tm2", changed with that entry, doesn't take the entry's change
+  const named = fromHost({ ...project([clip(), ...titles], media.map((m) => (m.id === "tm2" ? textMedia("tm2", "Hey") : m))), tracks: [{ id: "V1", name: "Video 1", order: 0 }, { id: "T1", name: "tm2", order: 1, muted: true }] });
+  const lone = fromHost({ ...project([clip(), ...titles], media), tracks: [{ id: "V1", name: "Video 1", order: 0 }, { id: "T1", name: "tm2", order: 1 }] });
+  assert.equal(describe(diff(lone, named, S), lone, S).length, 2);
+  assert.equal(countChanges(diff(lone, named, S), lone, S), 2);
+  // an entry two titles share (Duplicate keeps mediaItemId) is neither's alone: its own change
+  const dup = fromHost(project([clip(), ...titles, { ...titleItem(7), id: "t1b", mediaItemId: "tm1" }], media));
+  const base1 = fromHost(project([clip(), ...titles.slice(1)], media.filter((m) => m.id !== "tm1")));
+  assert.equal(countChanges(diff(base1, dup, S), base1, S), 3, "two titles and the entry they share");
+  assert.match(describe(diff(base1, dup, S), base1, S).join("\n"), /Text: W1/);
   // a real media file is still its own change
   const more = fromHost(project([clip(), ...titles], [...media, { ...video, id: "m2", contentHash: "h2", data: { type: "video", fileName: "b-roll.mp4", duration: 9 } }]));
   assert.deepEqual(describe(diff(full, more, S), full, S), ["Added media 'b-roll.mp4'"]);
@@ -89,7 +100,7 @@ test("prod3 P3-B: a clip moved onto a track the same fold adds names it; an unna
   assert.deepEqual(describe(ops, before, S), ["Added track 'Text 1'", "Moved 'W1' to track 'Text 1', font size 100 → 150"]);
   // the dialog's row: W1's ops alone, named from all of the fold
   const row = ops.filter((op) => op.op !== "remap" && op.path[0] === "timelineItems");
-  assert.deepEqual(describe(row, before, S, null, ops), ["Moved 'W1' to track 'Text 1', font size 100 → 150"]);
+  assert.deepEqual(describe(row, before, S, null, namingDoc(before, ops, S)), ["Moved 'W1' to track 'Text 1', font size 100 → 150"]);
   // with nothing to name the track: not "to track another track"
   assert.deepEqual(describe(row, before, S), ["Moved 'W1' to another track, font size 100 → 150"]);
 });
