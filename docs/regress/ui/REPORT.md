@@ -1,6 +1,6 @@
 # Carton UI fixes: real-app check on Windows (2026-11-02)
 
-> Pushed from the laptop on 2026-11-02 (step 2 on `out/carton-rc` @ `12826273`). `shots/` here holds only the shots for the new bugs: the P2s, the P3s that name a shot, the PARTIAL/NOT FIXED rows'\'' shots, and the "Not counted" case. Every other shot named below is in the full set, which stays on the laptop at `D:\cbwork\regress\ui\shots\`.
+> Pushed from the laptop on 2026-11-02 (step 2 on `out/carton-rc` @ `12826273`). `shots/` here holds only the shots for the new bugs: the P2s, the P3s that name a shot, two of the PARTIAL and NOT FIXED rows' shots, and the "Not counted" case. Every other shot named below is in the full set, which stays on the laptop at `D:\cbwork\regress\ui\shots\`.
 
 
 **Build:** `out\carton-rc\Cardboard-win` (`build-info.json`: commit `1282627`, carton true), with `CARDBOARD_CARTON=1`.
