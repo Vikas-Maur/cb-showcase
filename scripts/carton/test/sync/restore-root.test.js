@@ -166,6 +166,9 @@ test("2. no writer puts a project.json Cardboard can't read on disk: the old fil
     fs.mkdirSync(probe);
     fs.writeFileSync(path.join(probe, "project.json"), JSON.stringify({ ...env, project: { ...env.project, id: env.project.id + "-probe", name: undefined, media: [] }, media: [] }));
     assert.deepEqual(names(await pc.call("projects.list")), ["Demo"], "a nameless project.json is not a project to Cardboard");
+    // and Carton never starts a history from one (its first version would be a project with no name)
+    assert.equal(asProcess(pc, b, "return await f.cardboard14.hasHistory(args.probe);", { probe }), false);
+    assert.equal(fs.existsSync(path.join(probe, ".carton", "carton.db")), false, "no history made");
     fs.rmSync(probe, { recursive: true, force: true });
     // a good save after all that lands as usual
     await S.guiSave(pc, id, (it) => (it.type === "text" ? { ...it, fontSize: 155 } : undefined));

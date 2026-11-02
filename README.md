@@ -472,8 +472,9 @@ What changes with it on:
   Carton took in begins, before the project itself (the next version): it has nothing to preview, restore or make a
   cut from, so History doesn't offer those, and `cb restore`, `cb cut new --from` and `cb publish` refuse it, naming
   the version that holds the project. (Restoring it used to write a `project.json` with no name and nothing in it, and
-  the project vanished from the library.) No writer puts a `project.json` on disk that Cardboard couldn't read back,
-  or one whose name was removed: the old file stays, and the refusal is logged in the bundle's `.carton\refused.log`.
+  the project vanished from the library.) No writer turns a `project.json` Cardboard reads into one it can't, or
+  removes a project's name: the old file stays, and the refusal is logged in the bundle's `.carton\refused.log`.
+  History never starts from a file Cardboard can't read.
   A project the earlier build broke that way is listed again under its name, found by `cb history` and `cb cut list`,
   and opens with its History: Restore of a version from before brings back its name, timeline and media library.
   What only the old file held about a clip's media (its size, duration and thumbnails, and where a file linked from

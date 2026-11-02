@@ -69,3 +69,14 @@ test("what Cardboard's reader can't take is refused, in words for the log", () =
   // never the project's own text
   assert.ok(!with_({ name: 3, timelineItems: [{ id: 1 }] }).some((x) => x.includes(p.name)));
 });
+
+test("breaks: a write never turns a project Cardboard reads into one it can't; over anything else, nothing to lose", async () => {
+  const { breaks } = await import("../src/valid.ts");
+  const env = demo();
+  const nameless = { ...env, project: { ...env.project, name: undefined } };
+  assert.deepEqual(breaks(nameless, env), ["no name"], "a listed project losing its name");
+  assert.deepEqual(breaks(env, nameless), [], "the write that mends it");
+  assert.deepEqual(breaks(nameless, null), [], "no file yet");
+  assert.deepEqual(breaks(nameless, { id: "p", name: "bare" }), [], "a file Cardboard can't read already (a host's own shape)");
+  assert.deepEqual(breaks({ ...env, project: { ...env.project, name: "" } }, env), ["its name was removed"]);
+});

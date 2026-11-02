@@ -195,9 +195,11 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
    Core refuses to restore an empty version or make a cut from one (`EmptyVersion`), and History and `cb` don't offer
    it. Every `project.json` a Carton-on process writes is checked first (`@carton/cardboard`'s `projectProblems`: what
    that reader needs in the fields Carton writes, and a name a project had is never removed): the commit of a store
-   mutation (no version is made of it), head going into the file (`headProject`, the Materializer), and the install
-   itself, both copies. A refused write keeps the old file, and the refusal goes to the console and to the bundle's
-   `.carton/refused.log` (when, which writer, what was wrong; never the project's text). A head that has no name (a
+   mutation (no version is made of it), head going into the file (`headProject`), and the install itself, both copies.
+   The Materializer, which also serves other hosts' files, refuses a write that turns a file Cardboard reads into one it
+   can't (`breaks`). History never starts from a file Cardboard can't read (a bundle without `carton.db`, or one whose
+   `carton.db` came from another machine). A refused write keeps the old file, and the refusal goes to the console and
+   to the bundle's `.carton/refused.log` (when, which writer, what was wrong; never the project's text). A head that has no name (a
    teammate on an older build restored the root of a shared cut) is never written: the file keeps its last good state
    until a good version is restored.
 8. **Found through its history.** The bundle loader (both copies) reads a `project.json` its own parse refused through

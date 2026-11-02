@@ -90,6 +90,7 @@ function remembered(p) {
 
 // ---------------------------------------------------------------- one Carton per bundle
 const opened = new Map(); // bundlePath → Promise<LocalCarton | null>
+const startable = (project) => !projectProblems({ format: "cardboard-project", project }).length;
 function open(bundlePath, { projectId, doc } = {}) {
   if (!bundlePath) return Promise.resolve(null);
   let p = opened.get(bundlePath);
@@ -97,8 +98,10 @@ function open(bundlePath, { projectId, doc } = {}) {
     p = (async () => {
       const id = projectId ?? doc?.id ?? readProject(bundlePath)?.id;
       const exists = fs.existsSync(path.join(bundlePath, ".carton", "carton.db"));
-      // A project without history yet starts from its document on disk (§16, main@1).
+      // A project without history yet starts from its document on disk (§16, main@1), never from one Cardboard can't
+      // read (laptop, build 915eb36: its first version would be a project with no name).
       let first = exists ? null : doc ?? readProject(bundlePath);
+      if (first && !startable(first)) throw new Error("its project.json can't be read by Cardboard, so its history doesn't start from it");
       // R1: extensions add openLocal options (live sync: the worker's handle gets the project's sync connection, the
       // person's actor and the replica's name; cb gets the helper that syncs headlessly).
       const more = await extOpenOptions({ bundlePath, projectId: id });
@@ -111,7 +114,7 @@ function open(bundlePath, { projectId, doc } = {}) {
         // project without one does; without this its history stayed off for good ("holds no project").
         if (first || !/holds no project/.test(errText(e))) throw e;
         first = doc ?? readProject(bundlePath);
-        if (!first) throw e;
+        if (!first || !startable(first)) throw e;
         lc = await openWith(first);
       }
       if (first) await setRev(lc, first.stateUpdatedAt, (await lc.carton.head()).ref);

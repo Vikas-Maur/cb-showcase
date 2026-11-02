@@ -58,6 +58,16 @@ export function projectProblems(envelope: unknown, before?: () => Obj | null | u
   return out;
 }
 
+/**
+ * What a write of `next` over `current` (the envelope on disk now) breaks: `projectProblems(next)` when Cardboard reads
+ * `current` (a write never turns a project it lists into one it can't), else nothing (no file, or one Cardboard can't
+ * read already: there is no listed project to lose, and the write may be the one that mends it).
+ */
+export function breaks(next: unknown, current: unknown): string[] {
+  if (!isObj(current) || projectProblems(current).length) return [];
+  return projectProblems(next, () => current.project as Obj);
+}
+
 /** A list field of the project: absent, or a list of objects, each checked. */
 function list(p: Obj, field: string, out: string[], each: (x: Obj, at: string) => void): void {
   const v = p[field];

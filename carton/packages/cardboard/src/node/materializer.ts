@@ -33,7 +33,7 @@ import { withInstallLock } from "./install-lock.ts";
 import { DisplacedFiles, type OwnInstall } from "./displaced.ts";
 import { findRev, renderRev, printNonce, REV_TAG, type Rev } from "../header.ts";
 import type { Project, TimelineCodec } from "../codec.ts";
-import { projectProblems } from "../valid.ts";
+import { breaks } from "../valid.ts";
 
 export const PROJECT_FILE = "project.json";
 export const TIMELINE_FILE = "timeline.tsx";
@@ -1299,9 +1299,9 @@ export class Materializer {
     const same = (x: unknown) => onDisk !== null && JSON.stringify(x) === JSON.stringify(onDisk);
     // (not when the head read found a cut switch: that head is the old cut's, review 12 #1's class)
     if (!fresh && this.projectPin && cur && on === this.engine.cut?.() && same({ ...env, project: this.host.toProject(head, cur) })) return;
-    // A project Cardboard couldn't read back (no name: laptop, build 915eb36, Restore of "Started the cut") is never
-    // written: the old file stays, with its pin, and the refusal is logged. Head's next change tries again.
-    const problems = projectProblems({ ...env, project: { ...this.host.toProject(head, cur), updatedAt: "", stateUpdatedAt: 0 } }, () => cur);
+    // A project Cardboard reads is never replaced by one it can't (no name: laptop, build 915eb36, Restore of "Started
+    // the cut"): the old file stays, with its pin, and the refusal is logged. Head's next change tries again.
+    const problems = breaks({ ...env, project: { ...this.host.toProject(head, cur), updatedAt: "", stateUpdatedAt: 0 } }, onDisk);
     if (problems.length) {
       this.log.refused.push({ t: this.clock.now(), path: PROJECT_FILE, cause, problems });
       return;
