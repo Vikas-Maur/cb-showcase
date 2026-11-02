@@ -156,7 +156,8 @@ function focusables(root: HTMLElement): HTMLElement[] {
 // children are optional in the props types because createElement passes them as extra arguments.
 export interface MenuListProps {
   children?: ReactNode;
-  onClose: () => void;
+  /** `why`: "escape" (the keyboard: focus goes back where the menu came from) or "outside" (a click elsewhere). */
+  onClose: (why?: "escape" | "outside") => void;
   label: string;
   style?: CSSProperties;
   className?: string;
@@ -167,22 +168,28 @@ export interface MenuListProps {
 /** role=menu with arrow-key focus, Escape and click-outside to close. Positioned by the caller. */
 export function MenuList(p: MenuListProps) {
   const ref = useRef<HTMLDivElement>(null);
+  const focused = useRef(false);
   const onCloseRef = useRef(p.onClose);
   onCloseRef.current = p.onClose;
   const ignoreRef = useRef(p.ignore);
   ignoreRef.current = p.ignore;
 
+  // Focus comes in without scrolling anything around the menu (a scroll moved the whole panel: UI audit P2-3). When
+  // the menu's content changes under the focus (a form inside it closes), focus comes back to its first item instead of
+  // falling to <body>, where Esc and the arrows did nothing (P2-1).
   useLayoutEffect(() => {
     const el = ref.current;
-    if (el && !el.contains(document.activeElement)) (focusables(el)[0] ?? el).focus();
-  }, []);
+    const lost = !document.activeElement || document.activeElement === document.body || !document.activeElement.isConnected;
+    if (el && (lost || !el.contains(document.activeElement)) && (lost || !focused.current)) (focusables(el)[0] ?? el).focus({ preventScroll: true });
+    focused.current = true;
+  });
 
   useEffect(() => {
     const down = (e: Event) => {
       const t = e.target as Node | null;
       if (!t || ref.current?.contains(t)) return;
       if (ignoreRef.current?.().some((x) => x?.contains(t))) return;
-      onCloseRef.current();
+      onCloseRef.current("outside");
     };
     document.addEventListener("pointerdown", down, true);
     return () => document.removeEventListener("pointerdown", down, true);
@@ -194,7 +201,7 @@ export function MenuList(p: MenuListProps) {
     if (e.key === "Escape") {
       e.preventDefault();
       e.stopPropagation();
-      p.onClose();
+      p.onClose("escape");
       return;
     }
     // Typing in an inline field (new cut name) must not move the menu focus.
@@ -266,6 +273,8 @@ export interface MenuButtonProps {
   children: (close: () => void) => ReactNode;
   align?: "start" | "end";
   title?: string;
+  /** The trigger's accessible name, when its content alone doesn't say what it is ("Cut: Main cut"). */
+  ariaLabel?: string;
   onOpenChange?: (open: boolean) => void;
 }
 
@@ -285,7 +294,7 @@ export function MenuButton(p: MenuButtonProps) {
   }, []);
   const close = useCallback(() => {
     setOpen(false);
-    btn.current?.focus();
+    btn.current?.focus({ preventScroll: true });
   }, [setOpen]);
   return h(
     "div",
@@ -297,6 +306,7 @@ export function MenuButton(p: MenuButtonProps) {
         type: "button",
         className: cx("carton-menu-trigger", p.triggerClassName),
         "aria-haspopup": "menu",
+        "aria-label": p.ariaLabel,
         "aria-expanded": open,
         "aria-controls": open ? id : undefined,
         "data-carton-tip": open ? undefined : p.title,
@@ -335,8 +345,9 @@ export function Dialog(p: DialogProps) {
   useLayoutEffect(() => {
     const before = document.activeElement as HTMLElement | null;
     const el = ref.current;
-    const first = el?.querySelector<HTMLElement>("[data-autofocus]") ?? el?.querySelector<HTMLElement>("button, input, [tabindex='0']");
-    (first ?? el)?.focus();
+    // The dialog itself takes focus, as Cardboard's own do (Export), not its first button (the ✕: UI audit P3-5); Tab
+    // goes on from there. A field marked data-autofocus takes it instead.
+    (el?.querySelector<HTMLElement>("[data-autofocus]") ?? el)?.focus({ preventScroll: true });
     return () => before?.focus?.();
   }, []);
   const onKeyDown = (e: KeyboardEvent<HTMLDivElement>) => {

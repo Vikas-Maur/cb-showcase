@@ -3,7 +3,7 @@
 import { $, $$, React, act, byText, cleanup, click, closeDom, flush, key, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
-import { CartonProvider, WatchTheChanges } from "../src/index.ts";
+import { CartonProvider, CutsMenu, FoldInDialog, HistoryPanel, WatchTheChanges } from "../src/index.ts";
 import { timecode } from "../src/components/WatchTheChanges.ts";
 import { createMockUi } from "../src/mock.ts";
 import type { CartonUi } from "../src/model.ts";
@@ -72,6 +72,115 @@ test("timecode reads as Cardboard's player does", () => {
   assert.equal(timecode(3725, 3725), "1:02:05 / 1:02:05");
 });
 
+const raf = () => new Promise((r) => requestAnimationFrame(() => r(null)));
+const rect = (el: Element, r: { top: number; bottom: number; left?: number; right?: number }) => {
+  (el as HTMLElement).getBoundingClientRect = () => ({ x: 0, y: r.top, top: r.top, bottom: r.bottom, left: r.left ?? 0, right: r.right ?? 384, width: (r.right ?? 384) - (r.left ?? 0), height: r.bottom - r.top, toJSON() {} }) as DOMRect;
+};
+
+test(name("P2-2, P2-1: a row looks picked while its menu is open, not after; Esc gives focus back to the list"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, currentRef: "main@30" })));
+  const rows = $$(m.container, "[role=option]");
+  await click(rows[2]!.querySelector(".carton-version-more"));
+  assert.ok($(m.container, "[role=menu]"), "the menu is open");
+  assert.equal(rows[2]!.dataset.menu, "", "its row looks picked");
+  assert.equal(rows[2]!.dataset.active, undefined, "without becoming the active row");
+  assert.equal((document.activeElement as HTMLElement).getAttribute("role"), "menuitem", "focus is in the menu");
+  await key(document.activeElement, "Escape");
+  await raf();
+  assert.equal($(m.container, "[role=menu]"), null);
+  assert.equal($$(m.container, "[role=option]")[2]!.dataset.menu, undefined, "no highlight left behind");
+  assert.ok((document.activeElement as HTMLElement).classList.contains("carton-history-list"), "focus is back on the list, not <body>");
+  await m.unmount();
+});
+
+test(name("P2-3: a row's menu opens above it when there's no room below"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600, currentRef: "main@30" })));
+  rect($(m.container, ".carton-history")!, { top: 0, bottom: 600 });
+  const [first, , , last] = [...$$(m.container, "[role=option] .carton-version-more").slice(0, 3), $$(m.container, "[role=option] .carton-version-more").at(-1)!];
+  rect(first!, { top: 60, bottom: 86 });
+  await click(first);
+  const below = $(m.container, ".carton-history-menu")!;
+  assert.ok(below.style.top && !below.style.bottom, "below a row near the top: " + below.getAttribute("style"));
+  await key(document.activeElement, "Escape");
+  rect(last, { top: 560, bottom: 586 });
+  await click(last);
+  const above = $(m.container, ".carton-history-menu")!;
+  assert.equal(above.style.bottom, "44px", "above a row near the bottom: " + above.getAttribute("style"));
+  assert.equal(above.style.top, "");
+  await m.unmount();
+});
+
+test(name("P2-1, P2-5: the Compare card takes focus, Esc closes only it, and the compared row is marked"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  let outer = 0;
+  // the side panel around it closes on Esc (scripts/carton/ui.js: a React handler, as here)
+  const m = await render(wrap(ui, h("div", { onKeyDown: (e: KeyboardEvent) => e.key === "Escape" && outer++ }, h(HistoryPanel, { initialHeight: 600, currentRef: "main@30" }))));
+  await click($$(m.container, "[role=option]")[3]!.querySelector(".carton-version-more"));
+  await click(byText(m.container, "[role=menuitem]", "Compare with current"));
+  await flush();
+  const card = $(m.container, ".carton-compare")!;
+  assert.equal(document.activeElement, card);
+  assert.equal($$(m.container, "[role=option]")[3]!.dataset.compared, "");
+  await key(card, "Escape");
+  await raf();
+  assert.equal($(m.container, ".carton-compare"), null);
+  assert.equal(outer, 0, "the panel around it never saw that Esc");
+  assert.ok((document.activeElement as HTMLElement).classList.contains("carton-history-list"));
+  await m.unmount();
+});
+
+test(name("P2-1: the History filters are one tab stop and move with the arrow keys"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const radios = $$(m.container, "[role=radio]");
+  assert.deepEqual(radios.map((r) => r.tabIndex), [0, -1, -1]);
+  radios[0]!.focus();
+  await key(radios[0]!, "ArrowRight");
+  assert.equal($$(m.container, "[role=radio]")[1]!.getAttribute("aria-checked"), "true");
+  assert.equal(document.activeElement, $$(m.container, "[role=radio]")[1]);
+  await m.unmount();
+});
+
+test(name("P2-7: the preview banner names the version by its time and author, not by a change's summary"), async () => {
+  const ui = createMockUi({ versions: 30 });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  const plain = $$(m.container, "[role=option]").find((r) => r.dataset.named === undefined && r.dataset.provisional === undefined && r.dataset.kind !== "turn")!;
+  rect(plain, { top: 0, bottom: 52 });
+  plain.dispatchEvent(new MouseEvent("dblclick", { bubbles: true }));
+  await flush();
+  assert.match(ui.preview()?.label ?? "", /^the version from \d{1,2}:\d{2}(\s?[AP]M)? \(.+\)$/);
+  await m.unmount();
+});
+
+test(name("P2-19, P2-1: Main's cut menu folds another cut in here; leaving New cut with Esc keeps the menu's focus"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const folds: [string, string][] = [];
+  const m = await render(wrap(ui, h(CutsMenu, { onFoldIn: (from: { id: string }, into: { id: string }) => folds.push([from.id, into.id]) })));
+  const trigger = $(m.container, ".carton-menu-trigger")!;
+  assert.equal(trigger.getAttribute("aria-label"), "Cut: Main cut");
+  await click(trigger);
+  await click(byText(m.container, "[role=menuitem]", "Fold “30s Instagram cut” in here"));
+  assert.deepEqual(folds, [["cut-ig", "cut-main"]]);
+  await click($(m.container, ".carton-menu-trigger"));
+  await click(byText(m.container, "[role=menuitem]", "New cut from here"));
+  const input = $(m.container, ".carton-menu-form input")!;
+  assert.equal(document.activeElement, input);
+  await key(input, "Escape");
+  assert.ok($(m.container, "[role=menu]"), "back to the menu");
+  assert.equal((document.activeElement as HTMLElement).getAttribute("role"), "menuitemradio", "focus in the menu, so a second Esc closes it");
+  await key(document.activeElement, "Escape");
+  assert.equal($(m.container, "[role=menu]"), null);
+  await m.unmount();
+});
+
+test(name("P3-5: the Fold in dialog takes focus itself, not its ✕"), async () => {
+  const ui = createMockUi({ versions: 10 });
+  const m = await render(wrap(ui, h(FoldInDialog, { fromCutId: "cut-ig", intoCutId: "cut-main", onClose() {} })));
+  await flush();
+  assert.equal((document.activeElement as HTMLElement).getAttribute("role"), "dialog");
+  await m.unmount();
+});
+
 void act;
-void byText;
-void click;

@@ -49,6 +49,7 @@ export const words = {
   switchTo: (name: string) => `Switch to ${name}`,
   renameCut: "Rename cut",
   foldInto: (into: string) => `Fold into ${into}`,
+  foldInHere: (from: string) => `Fold “${from}” in here`,
   readOnlyCut: "From someone else's copy. You can watch it and fold it in.",
   currentCut: "Current cut",
   qualified: (owner: string, name: string) => `${owner}'s ${name}`,
@@ -175,6 +176,8 @@ export const words = {
   // Read-only preview (§9, R2-16)
   // Mid-sentence, "Your edit" / "Your earlier edit" read lower-case: "Previewing your edit".
   previewing: (label: string) => `Previewing ${label.replace(/^Your\b/, "your")}`,
+  // A version as the banner names it (UI audit P2-7): "the version from 12:41 (Claude Code)".
+  versionFrom: (time: string, who: string) => (who ? `the version from ${time} (${who})` : `the version from ${time}`),
   readOnly: "Read-only",
   returnToCurrent: "Return to current to edit",
   previewBlocked: "This is a preview, so edits don't apply here.",

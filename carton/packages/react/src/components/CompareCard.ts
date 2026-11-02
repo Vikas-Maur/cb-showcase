@@ -1,7 +1,7 @@
 // Compare card (§9, generalizing the recovery picker): for two versions, when and by whom, how many clips, how long,
 // and "N shots / X s of Y s differ", with a way into Watch the changes.
 
-import { createElement as h, type ReactNode } from "react";
+import { createElement as h, useEffect, useRef, type KeyboardEvent, type ReactNode } from "react";
 import { duration, exactTime, when } from "../format.ts";
 import { useAsync, useCartonUi, useLocale, useNow, useWords } from "../hooks.ts";
 import type { CompareSide, Comparison } from "../model.ts";
@@ -45,6 +45,17 @@ export function CompareCard(p: CompareCardProps) {
   const words = useWords();
   const now = useNow();
   const loaded = useAsync(() => (p.comparison ? Promise.resolve(p.comparison) : ui.compare(p.a, p.b)), [ui, p.a, p.b, p.comparison]);
+  // The card takes focus when it opens, and Esc closes it (only it: UI audit P2-1).
+  const root = useRef<HTMLElement>(null);
+  useEffect(() => {
+    root.current?.focus({ preventScroll: true });
+  }, [p.a, p.b]);
+  const onKeyDown = (e: KeyboardEvent<HTMLElement>) => {
+    if (e.key !== "Escape" || !p.onClose) return;
+    e.preventDefault();
+    e.stopPropagation();
+    p.onClose();
+  };
   let body: ReactNode;
   if (loaded.status === "loading") body = h("p", { className: "carton-muted" }, words.loading);
   else if (loaded.status === "error") body = h("p", { className: "carton-error", role: "alert" }, words.failed);
@@ -61,12 +72,12 @@ export function CompareCard(p: CompareCardProps) {
   }
   return h(
     "section",
-    { className: cx("carton-card carton-compare", p.className), "aria-label": words.compare },
+    { ref: root, tabIndex: -1, onKeyDown, className: cx("carton-card carton-compare", p.className), "aria-label": words.compare },
     h(
       "header",
       { className: "carton-card-head" },
       h("h3", { className: "carton-card-title" }, words.compare),
-      p.onClose ? h(Button, { variant: "ghost", icon: "x", label: words.close, onClick: p.onClose }) : null,
+      p.onClose ? h(Button, { variant: "ghost", icon: "x", label: words.close, title: `${words.close} (Esc)`, onClick: p.onClose }) : null,
     ),
     body,
     h(

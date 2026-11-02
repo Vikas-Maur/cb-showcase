@@ -8,6 +8,9 @@ const C = (cx: number, cy: number, r: number, fill = false) => h("circle", { cx,
 
 const shapes = {
   history: [P("M3.6 12.4A8.5 8.5 0 1 0 6 6.1"), P("M3.4 3.9v4.4h4.4"), P("M12 7.8V12l3.1 2")],
+  // Version history: a stack of saved versions. Not the clock above, which is the chat's own "chat history" button in
+  // the same title bar (UI audit P2-14).
+  versions: [P("M12 3.8l8.2 4.2-8.2 4.2-8.2-4.2z"), P("M3.8 12.2l8.2 4.2 8.2-4.2"), P("M3.8 16.2l8.2 4.2 8.2-4.2")],
   check: [P("M5 12.5l4.4 4.4L19 7.4")],
   caretDown: [P("M7 10l5 5 5-5")],
   caretRight: [P("M10 7l5 5-5 5")],
