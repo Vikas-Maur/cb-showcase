@@ -448,9 +448,11 @@ What changes with it on:
   an agent or a teammate arrives in the editor without an undo step and without dropping your unsaved edit. Undo and
   redo step back and forward in the order you made the edits, as Cardboard's own do: split a clip, drag a piece, and
   Ctrl+Z twice gives the one clip back; Ctrl+Shift+Z gives the split back, and Ctrl+Y the drag. (Carton used to record
-  the drag's undo as if it closed a gap on the track, so the split's undo then clashed with it and did nothing.) An
-  undo that does clash with a later change, such as a terminal agent's `cb` edit of one of the pieces, changes nothing
-  and says why in a conflict card.
+  the drag's undo as if it closed a gap on the track, so the split's undo then clashed with it and did nothing.) With
+  live sync, that undo also leaves alone a clip a teammate or an agent put later on the same track meanwhile, whether
+  the undo was made offline or the other edit was: Carton used to slide that clip back by the length of the drag,
+  on every machine, without a card. An undo that does clash with a later change, such as a terminal agent's `cb` edit
+  of one of the pieces, changes nothing and says why in a conflict card.
 - **A timeline printed from a version that's gone** is refused ("print it again") where 1.4.0 silently merged
   against the current timeline and reverted newer edits. An edit of an older print merges against the version it was
   printed from, whether its header is Cardboard's number or Carton's version.
