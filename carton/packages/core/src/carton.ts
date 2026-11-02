@@ -684,6 +684,8 @@ class CartonImpl implements Carton {
   /** Change number within this handle's rid. Kept here, not in History: a rebuild after a lost race must not reuse ids. */
   #n = 0;
   #listeners = new Set<(e: CartonEvent) => void>();
+  /** The cuts as the last `cuts` event (or opening) knew them. History replaces a record on any change, never edits it. */
+  #cutsTold: readonly CutRecord[] | null = null;
   #queue: Promise<unknown> = Promise.resolve();
   #confirmed: { cut: string; change: ConfirmedChange }[] = [];
   #noops: { id: ChangeId; cut: string; seq: number }[] = [];
@@ -1041,6 +1043,7 @@ class CartonImpl implements Carton {
     this.#loadErr = null;
     h.loaded();
     this.#drain();
+    this.#noteCuts();
   }
   /**
    * (Carton.open, last) Start loading the rows opening held back, once open has returned and the caller has its head: a
@@ -1153,6 +1156,7 @@ class CartonImpl implements Carton {
       else ({ snap: this.#pinSnap, gen: this.#pinsGen } = loaded), (this.#pinsStale = false);
     }
     if (exports) await this.#newExports();
+    this.#noteCuts();
   }
   /**
    * Exports other processes made since this handle last looked: each exported version is a lineage point (R4-01), so a
@@ -1334,6 +1338,7 @@ class CartonImpl implements Carton {
           if (ok) {
             turn = null; // given back with the append
             done?.();
+            this.#noteCuts();
             return r;
           }
           // another process appended first, someone holds the turn, or a caller's condition (a lease fence) failed:
@@ -1372,6 +1377,22 @@ class CartonImpl implements Carton {
   }
   #emit(e: CartonEvent): void {
     for (const l of this.#listeners) l(e);
+  }
+  /**
+   * A `cuts` event when the cuts this handle knows differ from what it last told: a cut made, renamed or gone, here or
+   * by another process (seen at its next read), or by a sync. A cut made with no edit yet moves no head, so no `change`
+   * event tells a cut menu about it. The same records (no change, the usual case) cost one pass over them; a rebuild's
+   * new records of the same cuts are compared by content.
+   */
+  #noteCuts(): void {
+    const now = this.#h.cuts(),
+      was = this.#cutsTold;
+    if (was && now.length === was.length && now.every((c, i) => c === was[i])) return;
+    this.#cutsTold = now;
+    if (!was) return; // opening: nothing told yet
+    const before = new Map(was.map((c) => [c.id, E.canonical(c)]));
+    if (now.length === was.length && now.every((c) => before.get(c.id) === E.canonical(c))) return;
+    this.#emit({ type: "cuts" });
   }
   #actor(a?: Actor): Actor {
     // `owner` is told (log, credits), never recorded: an actor read back and passed in commits without it
@@ -2587,7 +2608,7 @@ class CartonImpl implements Carton {
       }
     }
     if (filled) for (const r of fresh) filled.delete(r.seq);
-    if (handed) this.#h.updateCut(cut, { sequencer: qs });
+    if (handed) this.#h.updateCut(cut, { sequencer: qs }), this.#noteCuts();
     for (const r of fresh) this.#emit({ type: "change", branchId: cut, seq: r.seq, change: r, local: r.id.startsWith(this.#rid + ".") });
     this.#tell(cut);
   }
