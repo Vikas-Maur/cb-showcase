@@ -1,6 +1,6 @@
 // The laptop's UI re-check of the final candidate (merge/prod-2 @ 0cc587f1, 2026-11-02, docs/regress/final/ui), in a
 // DOM: what it found in the real app. `npm test` runs this file on React 19 and on preact/compat.
-import { $, React, act, cleanup, closeDom, flush, render, runtime } from "./dom.ts";
+import { $, $$, React, act, click, cleanup, closeDom, flush, render, runtime } from "./dom.ts";
 import { after, afterEach, test } from "node:test";
 import assert from "node:assert/strict";
 import { CartonProvider, HistoryPanel, PreviewBanner } from "../src/index.ts";
@@ -73,5 +73,22 @@ test(name("final N3: the keys a History row acts on never reach the editor's own
   await press(list, "z");
   window.removeEventListener("keydown", editor);
   assert.deepEqual(seen, [" ", "z"], "only the keys the list doesn't act on reach the editor");
+  await m.unmount();
+});
+
+// N4: a version of one change, opened, read "Hide the changes".
+test(name("final N4: an opened version of one change offers \"Hide the change\"; of several, \"Hide the changes\""), async () => {
+  const ui = createMockUi({ versions: 10 });
+  await act(async () => { ui.addVersion({ summary: "Restored an earlier version", details: ["Removed effect \"sharpen\" on 'clip.mp4'"] } as never); });
+  await act(async () => { ui.addVersion({ summary: "Moved 'a', changed 'b'", details: ["Moved 'a'", "Changed 'b'"] } as never); });
+  const m = await render(wrap(ui, h(HistoryPanel, { initialHeight: 600 })));
+  await flush();
+  const toggle = (text: string) => $$(m.container, ".carton-version").find((r) => r.textContent?.includes(text))!.querySelector(".carton-version-expand")!;
+  for (const [text, shown, hidden] of [["Restored an earlier version", "Show the change", "Hide the change"], ["Moved 'a', changed 'b'", "Show all 2 changes", "Hide the changes"]]) {
+    assert.equal(toggle(text!).getAttribute("aria-label"), shown);
+    await click(toggle(text!));
+    await flush();
+    assert.equal(toggle(text!).getAttribute("aria-label"), hidden);
+  }
   await m.unmount();
 });

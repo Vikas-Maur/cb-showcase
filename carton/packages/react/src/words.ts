@@ -34,7 +34,7 @@ export const words = {
   // A version of several changes: its list, on expand (UI audit P1-5)
   versionChanges: (n: number) => plural(n, "change", "changes"),
   showChanges: (n: number) => (n === 1 ? "Show the change" : `Show all ${n} changes`),
-  hideChanges: "Hide the changes",
+  hideChanges: (n: number) => (n === 1 ? "Hide the change" : "Hide the changes"),
   turnEdits: (n: number) => plural(n, "edit", "edits"),
   provisional: "Waiting to sync",
   provisionalHint: "This version gets its final place in History once it reaches the server.",
