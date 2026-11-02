@@ -396,6 +396,8 @@ export function hostMediaBlobs(opts: HostBlobsOptions): HostMediaBlobs {
           return rd.exactly(n);
         };
         const manifestOf = (v: { manifest?: unknown }) => (typeof v.manifest === "string" ? fromBase64(v.manifest) : null);
+        // how many segments this answer carries, before any of its bytes: a reader can start its next read now
+        yield { kind: "listed", segments: h.segments.length };
         if (h.init) {
           const part = streamPartOf(h.init);
           if (!part) throw new StreamWireError("bad init entry");

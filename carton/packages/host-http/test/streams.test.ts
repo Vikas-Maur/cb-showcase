@@ -466,3 +466,40 @@ test("an append may carry a lease renewal, alone or with parts: written beside t
   assert.equal(JSON.parse(new TextDecoder().decode((await store.get(`ps/${id}/lease`))!)).n, 2);
   await assert.rejects(media.appendStream(id, { parts: [], lease: { n: -1, at: 9, every: 0 } as never }), (e: { status?: number }) => e.status === 400);
 });
+
+test("playback keeps two reads under way: the next starts when the current one's header is in, never past a known end (cf-verify3)", async () => {
+  const store = createMemoryBlobStore();
+  const limits = { appendParts: 1, appendBytes: 1 << 20, readBytes: 210_000 }; // one segment a read
+  let open = 0, most = 0, reads = 0;
+  const { deps, token } = host(store, { streamLimits: limits });
+  const slow = (async (url: string | URL | Request, init?: RequestInit) => {
+    const req = new Request(url, init);
+    const isRead = new URL(req.url).pathname.endsWith("/read");
+    const r = (await handleHttp(req, deps)) ?? new Response(null, { status: 404 });
+    if (!isRead || !r.body) return r;
+    // a read is under way until its body has all arrived, and the body arrives slowly
+    reads++;
+    most = Math.max(most, ++open);
+    const body = new Uint8Array(await r.arrayBuffer());
+    let at = 0, done = false;
+    const finish = () => void (done || ((done = true), open--));
+    const stream = new ReadableStream<Uint8Array>({
+      async pull(c) {
+        await new Promise((res) => setTimeout(res, 3));
+        if (at >= body.length) return (finish(), c.close());
+        c.enqueue(body.subarray(at, (at += 65536)));
+      },
+      cancel: finish,
+    });
+    return new Response(stream, { status: r.status, headers: r.headers });
+  }) as typeof globalThis.fetch;
+  const w = new ProxyStreamWriter({ store: hostMediaBlobs({ origin: "http://host", projectId: "p", token: await token(), fetch: slow }), hasher });
+  await w.init(INIT);
+  for (let i = 0; i < 8; i++) await w.segment(seg(i), 2);
+  await w.end();
+  reads = most = 0;
+  const viewer = hostMediaBlobs({ origin: "http://host", projectId: "p", token: await token("viewer"), fetch: slow });
+  assertStream(await playAll(reader(viewer, w.id)), 8);
+  assert.equal(most, 2, "two reads under way at most, and at some point two");
+  assert.ok(reads <= 8 + 2, `${reads} reads for 8 segments, one a read`);
+});

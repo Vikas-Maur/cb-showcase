@@ -547,15 +547,19 @@ export class ProxyStreamWriter {
       // The init segment alone is of no use to a viewer (a player needs it and the first segment): it waits for the
       // first segment, so both go in one request, unless the writer flushes or ends first.
       if (this.#holdInit && this.#queue.length === 1 && "part" in this.#queue[0]! && this.#queue[0].part.kind === "init") return;
-      // the last parts wait for what is under way, then go with the end
-      if (this.#inflight > 0 && this.#queue.some((q) => "end" in q)) return;
       const maxBytes = this.#bytesLimit();
       const parts: StreamAppendPart[] = [];
       let bytes = 0, taken = 0, end: StreamEnd | undefined;
       for (const q of this.#queue) {
         if ("end" in q) {
-          end = q.end;
-          taken++;
+          // The end lands after every entry (readers take an end with an entry before it missing for damage): it is
+          // taken only once nothing else is under way, alone or with the parts just before it. The parts queued before
+          // it keep every slot until then (cf-verify3: holding them all behind the end made a fast encode's last ~12
+          // MiB go one append at a time).
+          if (this.#inflight === 0) {
+            end = q.end;
+            taken++;
+          }
           break;
         }
         if (parts.length && (parts.length >= this.#maxParts || bytes + q.part.size > maxBytes)) break;
@@ -563,6 +567,7 @@ export class ProxyStreamWriter {
         bytes += q.part.size;
         taken++;
       }
+      if (!parts.length && !end) return; // only the end is left, and something is under way: it goes when that lands
       this.#queue.splice(0, taken);
       this.#inflight++;
       void this.#sendBatch(parts, end, 0)
@@ -710,6 +715,8 @@ export interface StreamReadOptions {
  * init segment asked for is missing (the stream is only claimed).
  */
 export type StreamReadItem =
+  /** First, as soon as the answer's header is in: how many segments it carries (so the next read can start at once). */
+  | { kind: "listed"; segments: number }
   | { kind: "init"; part: StreamPart; manifest: Uint8Array | null; bytes: Uint8Array | null }
   | { kind: "segment"; segment: StreamSegment; manifest: Uint8Array | null; bytes: Uint8Array | null }
   | { kind: "status"; end?: StreamEnd | null; initMissing?: boolean };
@@ -1073,84 +1080,120 @@ export class ProxyStreamReader {
     let failures = 0;
     let missingAt = -1;
     let wait = this.#o.pollMs ?? 500;
-    for (;;) {
-      signal?.throwIfAborted();
-      if (initDone) {
-        // kept segments play without a request (offline too)
-        for (;;) {
-          const seg = this.#segments[i] ?? (await this.#kept(streamSegmentKey(this.id, i), (v) => asSegment(v, i)));
-          const bytes = seg && (await this.#cachedBytes(seg));
-          if (!bytes) break;
-          if (seg.index === this.#segments.length) this.#segments.push(seg);
-          yield { part: "segment", segment: seg, bytes };
-          i++;
-        }
-        this.#end ??= await this.#kept(streamEndKey(this.id), asEnd);
-        this.#fromEnd();
-        if (this.#end && i >= this.#end.segments) return;
+    // A read, started: its own abort (tied to the play's), its answer, and its first item asked for (that starts it).
+    type Read = { from: number; ac: AbortController; gen: AsyncGenerator<StreamReadItem>; first: Promise<IteratorResult<StreamReadItem>> };
+    const open = (from: number, init: boolean, maxBytes: number): Read => {
+      const ac = new AbortController();
+      if (signal) {
+        if (signal.aborted) ac.abort(signal.reason);
+        else signal.addEventListener("abort", () => ac.abort(signal.reason), { once: true });
       }
-      let got = 0, initMissing = false, sawEnd: StreamEnd | null | undefined;
-      const t0 = Date.now();
-      try {
-        for await (const it of batch.readStream(this.id, { from: i, init: !initDone, maxBytes: first ? 1 : READ_BATCH_BYTES, waitMs: READ_WAIT_MS, signal })) {
-          if (it.kind === "init") {
-            if (initDone) continue;
-            this.#init ??= it.part;
-            await this.#cache?.putEntry?.(streamInitKey(this.id), utf8.encode(JSON.stringify(it.part))).catch(() => {});
-            yield { part: "init", bytes: await this.#accept(it.part, it.manifest, it.bytes, signal) };
-            initDone = true;
-          } else if (it.kind === "segment") {
-            if (it.segment.index !== i) throw new Error(`stream ${this.id.slice(0, 12)}: the host answered segment ${it.segment.index} for ${i}`);
-            await this.#learn(it.segment, it.manifest);
-            yield { part: "segment", segment: it.segment, bytes: await this.#accept(it.segment, it.manifest, it.bytes, signal) };
+      const gen = batch.readStream(this.id, { from, init, maxBytes, waitMs: READ_WAIT_MS, signal: ac.signal });
+      const first = gen.next();
+      first.catch(() => {});
+      return { from, ac, gen, first };
+    };
+    // a read no longer wanted: its request ends (an error from it is nobody's)
+    const drop = (r: Read | null): void => {
+      if (!r) return;
+      r.ac.abort();
+      void r.first.then(() => r.gen.return(undefined), () => {}).catch(() => {});
+    };
+    let ahead: Read | null = null;
+    try {
+      for (;;) {
+        signal?.throwIfAborted();
+        if (initDone) {
+          // kept segments play without a request (offline too)
+          for (;;) {
+            const seg = this.#segments[i] ?? (await this.#kept(streamSegmentKey(this.id, i), (v) => asSegment(v, i)));
+            const bytes = seg && (await this.#cachedBytes(seg));
+            if (!bytes) break;
+            if (seg.index === this.#segments.length) this.#segments.push(seg);
+            yield { part: "segment", segment: seg, bytes };
             i++;
-            got++;
-          } else {
-            initMissing = !!it.initMissing;
-            sawEnd = it.end;
-            await this.#learnEnd(it.end);
           }
+          this.#end ??= await this.#kept(streamEndKey(this.id), asEnd);
+          this.#fromEnd();
+          if (this.#end && i >= this.#end.segments) return;
         }
-        failures = 0;
-      } catch (e) {
-        if (e instanceof StreamRouteMissingError) {
-          noBatchRead.add(this.#o.store);
-          yield* this.#playEach(i, initDone, signal);
-          return;
-        }
-        if (signal?.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.name === "LeafMismatchError" || (e as Error)?.name === "MediaMissingError") throw e;
-        // a dropped request: again, with the media reader's backoff
-        const { retries, delayMs } = this.#o.media.retryPolicy;
-        if (++failures > retries) throw e;
-        await sleep(delayMs * 2 ** (failures - 1), signal);
-        continue;
-      }
-      first = false;
-      if (this.#end && i >= this.#end.segments) return;
-      if (sawEnd && got === 0 && !initMissing) {
-        // The stream ended with this segment in it, yet its entry wasn't there. The end may describe it (its lists):
-        // then its bytes are read the usual way, as an entry-by-entry reader would.
-        const known = this.#segments[i];
-        if (known && known.index === i) {
-          yield { part: "segment", segment: known, bytes: await this.#bytes(known, signal) };
-          i++;
+        let got = 0, initMissing = false, sawEnd: StreamEnd | null | undefined;
+        const t0 = Date.now();
+        // the read started ahead for exactly this position, else a new one
+        const read = ahead && ahead.from === i && initDone ? ahead : (drop(ahead), open(i, !initDone, first ? 1 : READ_BATCH_BYTES));
+        ahead = null;
+        try {
+          for (let r = await read.first; !r.done; r = await read.gen.next()) {
+            const it = r.value;
+            if (it.kind === "listed") {
+              // Two reads under way: the next starts as soon as this one's header says where it stops, while its bytes
+              // arrive (one segment a read at a Worker's 1 MiB, and one read at a time, played a 4G stream at about
+              // real time: cf-verify3). Not past a known end.
+              const next = read.from + it.segments;
+              if (it.segments > 0 && !(this.#end && next >= this.#end.segments)) ahead = open(next, false, READ_BATCH_BYTES);
+            } else if (it.kind === "init") {
+              if (initDone) continue;
+              this.#init ??= it.part;
+              await this.#cache?.putEntry?.(streamInitKey(this.id), utf8.encode(JSON.stringify(it.part))).catch(() => {});
+              yield { part: "init", bytes: await this.#accept(it.part, it.manifest, it.bytes, signal) };
+              initDone = true;
+            } else if (it.kind === "segment") {
+              if (it.segment.index !== i) throw new Error(`stream ${this.id.slice(0, 12)}: the host answered segment ${it.segment.index} for ${i}`);
+              await this.#learn(it.segment, it.manifest);
+              yield { part: "segment", segment: it.segment, bytes: await this.#accept(it.segment, it.manifest, it.bytes, signal) };
+              i++;
+              got++;
+            } else {
+              initMissing = !!it.initMissing;
+              sawEnd = it.end;
+              await this.#learnEnd(it.end);
+            }
+          }
+          failures = 0;
+        } catch (e) {
+          drop(ahead);
+          ahead = null;
+          if (e instanceof StreamRouteMissingError) {
+            noBatchRead.add(this.#o.store);
+            yield* this.#playEach(i, initDone, signal);
+            return;
+          }
+          if (signal?.aborted || (e as Error)?.name === "AbortError" || (e as Error)?.name === "LeafMismatchError" || (e as Error)?.name === "MediaMissingError") throw e;
+          // a dropped request: again, with the media reader's backoff
+          const { retries, delayMs } = this.#o.media.retryPolicy;
+          if (++failures > retries) throw e;
+          await sleep(delayMs * 2 ** (failures - 1), signal);
           continue;
         }
-        // Else the host read the entry before the end, and the writer puts the end after every entry, so it may have
-        // landed in between: ask once more first.
-        if (missingAt === i) {
-          await this.#reportDamage({ entry: i });
-          throw new StreamDamagedError(this.id, i);
+        first = false;
+        if (this.#end && i >= this.#end.segments) return;
+        if (sawEnd && got === 0 && !initMissing) {
+          // The stream ended with this segment in it, yet its entry wasn't there. The end may describe it (its lists):
+          // then its bytes are read the usual way, as an entry-by-entry reader would.
+          const known = this.#segments[i];
+          if (known && known.index === i) {
+            yield { part: "segment", segment: known, bytes: await this.#bytes(known, signal) };
+            i++;
+            continue;
+          }
+          // Else the host read the entry before the end, and the writer puts the end after every entry, so it may have
+          // landed in between: ask once more first.
+          if (missingAt === i) {
+            await this.#reportDamage({ entry: i });
+            throw new StreamDamagedError(this.id, i);
+          }
+          missingAt = i;
+          continue;
         }
-        missingAt = i;
-        continue;
+        if (got > 0) wait = this.#o.pollMs ?? 500;
+        else if (Date.now() - t0 < READ_WAIT_MS / 2) {
+          // nothing new, and the host didn't hold the answer: don't spin
+          await sleep(wait, signal);
+          wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
+        }
       }
-      if (got > 0) wait = this.#o.pollMs ?? 500;
-      else if (Date.now() - t0 < READ_WAIT_MS / 2) {
-        // nothing new, and the host didn't hold the answer: don't spin
-        await sleep(wait, signal);
-        wait = Math.min(this.#o.maxPollMs ?? 4000, wait * 2);
-      }
+    } finally {
+      drop(ahead);
     }
   }
 
