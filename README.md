@@ -475,7 +475,9 @@ What changes with it on:
   switch to the cut it went into). A History that spans days is grouped by day ("Today", "Yesterday", "Sat, Oct 31"),
   each with its count; a day folds to its named versions with a click or Enter, and with more than 150 versions every
   day but today starts folded. The reader keeps their place as versions arrive. In a narrow window the panel never takes the preview's room: it narrows (down to
-  300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer.
+  300 px) so the preview keeps at least 320 px, and when even that won't fit it floats over the chat as a drawer, as
+  wide as the chat column (a chat narrower than 300 px: 300 px, ending above the timeline, so the timeline and its
+  toolbar stay clear).
   Every layer takes the keyboard: focus moves into a menu, card or dialog as it opens
   and back where it came from as it closes, and Esc closes the innermost one only.
   Comments: notes pinned at the playhead, with replies; a timecode moves the playhead there. The comment box grows

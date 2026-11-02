@@ -157,6 +157,54 @@ test("P2-13: the panel keeps the preview usable: its width, narrower, or a drawe
   for (let room = 200; room <= 1200; room += 7) assert.deepEqual(U.fitPanel({ room, preferred: 420, viewport: 1400 }), U.fitPanel({ room, preferred: 420, viewport: 1400 }));
 });
 
+// Baseline P3-7 (final re-check): at a 960 px window the drawer (384 px, full height) covered the timeline's right end
+// and its toolbar's Fullscreen and Hide timeline buttons, as it reached past the chat column (about 240 px there) into
+// the editor's. It is as wide as the chat column when that is at least its 300 px minimum; when the chat is narrower,
+// it keeps 300 px and ends where the stage ends, so the timeline and its toolbar stay clear.
+test("baseline P3-7: the drawer covers the chat column only; past it, it stops above the timeline", opt, async () => {
+  // as wide as the chat when the chat is wide enough, up to the chosen width
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1100, chat: 340 }), { mode: "overlay", width: 340, over: false });
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 1300, chat: 520 }), { mode: "overlay", width: 384, over: false });
+  // the audit's 960 px window: the chat is 240 px, so 300 px reaches past it
+  assert.deepEqual(U.fitPanel({ room: 263, preferred: 384, viewport: 960, chat: 240 }), { mode: "overlay", width: 300, over: true });
+  // inline, as before; with no chat measured, as before
+  assert.deepEqual(U.fitPanel({ room: 1100, preferred: 384, viewport: 1920, chat: 400 }), { mode: "inline", width: 384 });
+  assert.deepEqual(U.fitPanel({ room: 430, preferred: 384, viewport: 960 }), { mode: "overlay", width: 384 });
+  // in the page: the drawer's box, from the stage's and the row's (Cardboard's layout at 960 px, as the laptop measured)
+  const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+  const w = new Window({ url: "http://localhost/", width: 960, height: 770 });
+  const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame, win: { ...globalThis.window } };
+  globalThis.document = w.document;
+  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+  Object.assign(globalThis.window, { innerWidth: 960, addEventListener() {}, removeEventListener() {} });
+  globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+  let root = null;
+  try {
+    const { createMockUi } = await import(require("url").pathToFileURL(path.join(CARTON, "packages", "react", "src", "mock.ts")).href);
+    const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+    const box = (r) => () => ({ left: r.left, right: r.right, top: r.top, bottom: r.bottom, width: r.right - r.left, height: r.bottom - r.top, x: r.left, y: r.top });
+    // the editor's row (the aside's parent: the mount here), with the stage in it
+    const row = w.document.createElement("div"), stage = w.document.createElement("div");
+    stage.setAttribute("data-carton-stage-host", "");
+    row.getBoundingClientRect = box({ left: 0, right: 960, top: 40, bottom: 770 });
+    stage.getBoundingClientRect = box({ left: 366, right: 720, top: 40, bottom: 530 });
+    w.document.body.append(stage, row);
+    root = client.createRoot(row);
+    await React.act(async () => { root.render(React.createElement(T.CartonProvider, { ui: createMockUi({ versions: 5 }) }, React.createElement(T.Sidebar, { panel: "history", setPanel() {}, projectId: "p1", bridge: { call: async () => ({}), onEvent: () => () => {} } }))); });
+    const a = row.querySelector("aside");
+    assert.equal(a.getAttribute("data-fit"), "overlay");
+    assert.deepEqual([a.style.position, a.style.width, a.style.top, a.style.height], ["fixed", "300px", "40px", "490px"], "300 px wide, from the row's top to the stage's bottom: the timeline below stays clear");
+  } finally {
+    if (root) await React.act(async () => root.unmount());
+    delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+    Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+    for (const k of ["innerWidth", "addEventListener", "removeEventListener"]) delete globalThis.window[k];
+    Object.assign(globalThis.window, keep.win);
+    await w.happyDOM.close();
+  }
+});
+
 test("P2-9: the Dashboard's Join dialog holds the Join form at once, in editors' words", opt, () => {
   globalThis.localStorage = { getItem: () => null, setItem() {} };
   globalThis.document = { getElementById: () => null, createElement: () => ({}), head: { appendChild() {} }, activeElement: null };
