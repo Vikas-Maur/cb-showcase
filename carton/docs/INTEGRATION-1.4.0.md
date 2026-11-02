@@ -231,6 +231,7 @@ it runs the write listeners: revision, mirror, scaffold. `unsaved(id)` is `byId.
      probe (`inspect.probe`); the fields the import's `j4` sets from it. After the write, Cardboard's derive
      (`ensureDerived`, which main otherwise runs once per session at the first save) fills in thumbnails and the
      waveform, and the worker announces the change. Nothing is guessed: `createdAt` and `addedAt` stay unset.
+   - Every Carton write into `project.json` (`headAt`) also moves `updatedAt`, the library's "Updated" time.
 
 **Tests:**
 - 4 concurrent `cb source apply` on different clips keep all 4 edits (B1; `research/pretty-extra/race-cb-apply.sh`

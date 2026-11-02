@@ -335,7 +335,7 @@ test("3f. a recovered project's clip plays without a restart: Restore of a good 
   }
 });
 
-test("4. Restore of main@1, then of the newest version: each media entry comes back as Cardboard had it (duration, size, thumbnails, where it plays from)", t, async () => {
+test("4. Restore of main@1, then of the newest version: each media entry comes back as Cardboard had it (duration, size, thumbnails, where it plays from); the library's Updated time moves", t, async () => {
   const b = await S.build();
   const { pc, id } = await seeded(b, "restore-details");
   try {
@@ -344,9 +344,13 @@ test("4. Restore of main@1, then of the newest version: each media entry comes b
     assert.ok(clip.data.src && clip.data.duration > 0 && clip.data.size > 0 && clip.data.thumbnailIds?.length, "Cardboard's import gave the clip its details");
     const p = await panel(pc, id, "details-panel");
     const newest = p.rows().at(-1);
+    const updated0 = envOf(pc).project.updatedAt;
     let r = await p.call("restore", p.rows().find((v) => v.seq === 1).ref);
     assert.equal(r.ok, true, r.error);
     await S.until(() => (envOf(pc).project.media ?? []).length === 0, 20_000, "main@1 in project.json");
+    // a restore is an edit: the library's Updated time moves (the list shows the file's)
+    assert.ok(Date.parse(envOf(pc).project.updatedAt) > Date.parse(updated0), `updatedAt ${updated0} → ${envOf(pc).project.updatedAt}`);
+    assert.equal((await pc.call("projects.list")).find((x) => x.id === id).updatedAt, envOf(pc).project.updatedAt);
     r = await p.call("restore", newest.ref);
     assert.equal(r.ok, true, r.error);
     await S.until(() => (envOf(pc).project.media ?? []).length === Object.keys(before).length, 20_000, "the newest version in project.json");

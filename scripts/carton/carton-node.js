@@ -692,7 +692,10 @@ async function headAt(bundlePath, current, given) {
   const head = given?.doc ? given : await lc.carton.head();
   const known = given?.doc ? undefined : await revOf(lc, head.ref);
   if (known !== undefined && known === current?.stateUpdatedAt) return null;
-  const out = forCardboard({ ...(await projectFor(bundlePath, head.doc, current)), stateUpdatedAt: Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1) });
+  // A Carton write is an edit like any other: the library's "Updated" time moves with it (laptop, merge/prod-2 P3: a
+  // restore left it as it was). Cardboard's scoped merge keeps the newer of the store's and this one.
+  const at = Math.max(Date.now(), (current?.stateUpdatedAt ?? 0) + 1);
+  const out = forCardboard({ ...(await projectFor(bundlePath, head.doc, current)), stateUpdatedAt: at, updatedAt: new Date(at).toISOString() });
   // a head Cardboard couldn't read is never handed on (the pages adopt an undo's project at once): nothing to write
   const problems = projectProblems({ format: "cardboard-project", project: out }, () => current);
   if (problems.length) return headRefusals.set(bundlePath, problems), refuseProject(bundlePath, current?.id, problems, "head"), null;
