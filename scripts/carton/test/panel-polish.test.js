@@ -436,6 +436,82 @@ for (const when of ["before", "after"])
     }
   });
 
+// Regress prod3 P3-E: joining from an empty library, the page jumped back to the Dashboard's top as the join landed
+// (Home swaps the empty view for the grid, and its scroller lost its place while the grid measured itself): the
+// sidebar's Projects lit Dashboard, and after Done the new tile was below the fold. Here Home's scroller is scrolled
+// down to the projects, and the grid, as it mounts, throws the scroller back to the top as Cardboard's did. The page
+// keeps its place, then shows the new tile; a person who scrolls meanwhile keeps their own scroll.
+for (const scrolls of [false, true])
+  test(`prod3 P3-E: joining from an empty library keeps the page where it was${scrolls ? ", unless the person scrolls" : ", and shows the new tile"}`, opt, async () => {
+    const { Window } = require(path.join(CARTON, "node_modules", "happy-dom"));
+    const w = new Window({ url: "http://localhost/" });
+    const keep = { document: globalThis.document, localStorage: globalThis.localStorage, rAF: globalThis.requestAnimationFrame };
+    globalThis.document = w.document;
+    globalThis.localStorage = { getItem: (k) => (k === "carton.name" ? "Bea" : null), setItem() {} };
+    globalThis.requestAnimationFrame = (f) => setTimeout(f, 0);
+    globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+    let root = null;
+    try {
+      const client = require(path.join(CARTON, "node_modules", "react-dom", "client"));
+      const { createPortal } = require(path.join(CARTON, "node_modules", "react-dom"));
+      let addToLibrary = null;
+      const bridge = { on: true, ready: Promise.resolve(true), onEvent: () => () => {}, call: async () => { setTimeout(addToLibrary, 0); return { projectId: "p-fx", name: "FX ui" }; }, openProject: async () => {} };
+      const d = dashboard(bridge.ready, true, { win: { __carton: bridge, __testUi: async () => ({ JoinDialog: U.JoinDialog }) }, portal: createPortal, doc: w.document });
+      const revealed = [];
+      w.HTMLElement.prototype.scrollIntoView = function (o) { revealed.push([this.textContent, o?.block]); };
+      // Home: its scroller (overflow-y auto), the Dashboard's top, then the projects: the empty view or the grid, which
+      // throws the scroller back to the top as it mounts (the jump the laptop saw)
+      let scroller = null;
+      const toScroller = (n) => { if (n) scroller = n; };
+      function Grid({ cards }) {
+        React.useLayoutEffect(() => { scroller.scrollTop = 0; }, []);
+        return React.createElement("div", { role: "list", "data-view": "grid" },
+          React.createElement("div", { role: "listitem" }, "New project"), React.createElement("div", { role: "listitem" }, React.createElement(d.Tile)),
+          ...cards.map((c) => React.createElement("div", { key: c, role: "listitem" }, c)));
+      }
+      function Home() {
+        const [cards, setCards] = React.useState([]);
+        addToLibrary = () => setCards(["p-fx"]);
+        const P = cards.length === 0 ? React.createElement("section", { "data-view": "empty" }, React.createElement(d.Button, { className: "cb" })) : React.createElement(Grid, { cards });
+        return React.createElement("div", null,
+          React.createElement("div", { ref: toScroller, style: { overflowY: "auto", height: "800px" } }, React.createElement("section", { style: { height: "700px" } }, "Dashboard"), P),
+          d.Host ? React.createElement(d.Host) : null);
+      }
+      const el = w.document.createElement("div");
+      w.document.body.appendChild(el);
+      root = client.createRoot(el);
+      await React.act(async () => { root.render(React.createElement(Home)); await new Promise((r) => setTimeout(r, 10)); });
+      scroller.scrollTop = 700; // Projects: Home scrolls its projects section to the top
+      const body = w.document.body;
+      await React.act(async () => { body.querySelector("[data-carton-join]").click(); await new Promise((r) => setTimeout(r, 10)); });
+      const link = body.querySelector("#carton-join-link");
+      await React.act(async () => {
+        link.focus();
+        Object.getOwnPropertyDescriptor(Object.getPrototypeOf(link), "value").set.call(link, "https://share.example.com/#join=ct1.abc");
+        for (const type of ["input", "keyup"]) link.dispatchEvent(new w.Event(type, { bubbles: true }));
+      });
+      await React.act(async () => { link.closest("form").dispatchEvent(new w.Event("submit", { bubbles: true, cancelable: true })); await new Promise((r) => setTimeout(r, 20)); });
+      assert.ok(el.querySelector('[data-view="grid"]'), "the join landed: the grid replaced the empty view");
+      if (scrolls) {
+        // the person scrolls up meanwhile: theirs, not put back
+        await React.act(async () => { scroller.dispatchEvent(new w.Event("wheel")); scroller.scrollTop = 120; await new Promise((r) => setTimeout(r, 50)); });
+        assert.equal(scroller.scrollTop, 120);
+      } else {
+        await React.act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+        assert.equal(scroller.scrollTop, 700, "still at the projects, not the Dashboard's top");
+        assert.match(body.textContent, /“FX ui” is in your library now\./, "with the dialog up");
+        await React.act(async () => { await new Promise((r) => setTimeout(r, 1600)); });
+        assert.equal(scroller.scrollTop, 700);
+        assert.deepEqual(revealed, [["p-fx", "nearest"]], "the new tile is brought into view if it isn't");
+      }
+    } finally {
+      if (root) await React.act(async () => root.unmount());
+      delete globalThis.IS_REACT_ACT_ENVIRONMENT;
+      Object.assign(globalThis, { document: keep.document, localStorage: keep.localStorage, requestAnimationFrame: keep.rAF });
+      await w.happyDOM.close();
+    }
+  });
+
 // Regress 2026-11-02 #4 (UI audit P2-1: Esc closes the innermost layer only, "… → preview → panel"): with focus in the
 // side panel during a preview, Esc closed the whole panel and left the preview open. It returns from the preview first,
 // as the banner's button does; the next Esc closes the panel. (Esc with focus on the page: @carton/react's
