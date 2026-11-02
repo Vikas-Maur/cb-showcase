@@ -67,12 +67,30 @@ export function hostMessageBlobs(opts: HostBlobsOptions): BlobStore {
 export class HostApiError extends Error {
   readonly status: number;
   readonly code: string | undefined;
-  constructor(status: number, code: string | undefined, message: string) {
+  /**
+   * A refusal for a while (a host's daily write limit: 429 with Retry-After): when to try again, in ms since the epoch
+   * on this machine's clock (BlobStore's contract for such a refusal). Undefined for any other failure.
+   */
+  readonly retryAt?: number;
+  constructor(status: number, code: string | undefined, message: string, retryAt?: number) {
     super(`${code ? `${code}: ` : ""}${message} (HTTP ${status})`);
     this.name = "HostApiError";
     this.status = status;
     this.code = code;
+    if (retryAt !== undefined) this.retryAt = retryAt;
   }
+}
+
+/** When a refused request may go again: the answer's retryAfterMs, else its Retry-After (seconds or a date). */
+function retryAtOf(r: Response, body: { retryAfterMs?: unknown }): number | undefined {
+  if (r.status !== 429 && r.status !== 503) return undefined;
+  if (typeof body.retryAfterMs === "number" && Number.isFinite(body.retryAfterMs) && body.retryAfterMs >= 0) return Date.now() + body.retryAfterMs;
+  const h = r.headers.get("retry-after");
+  if (!h) return undefined;
+  const sec = Number(h);
+  if (Number.isFinite(sec) && sec >= 0) return Date.now() + sec * 1000;
+  const at = Date.parse(h);
+  return Number.isFinite(at) ? at : undefined;
 }
 
 // The stored object's info a signed PUT's answer carries, under the caller's key; null when it carries none.
@@ -106,12 +124,13 @@ async function olderHost(r: Response): Promise<{ older: boolean; text: string } 
 async function failed(r: Response, read?: string): Promise<never> {
   const text = read ?? (await r.text().catch(() => ""));
   let code: string | undefined, message = text || r.statusText;
+  let j: { error?: string; code?: string; retryAfterMs?: unknown } = {};
   try {
-    const j = JSON.parse(text) as { error?: string; code?: string };
+    j = JSON.parse(text) as typeof j;
     code = j.code;
     message = j.error ?? message;
   } catch {} // a signed blob URL answers in plain text
-  throw new HostApiError(r.status, code, message);
+  throw new HostApiError(r.status, code, message, retryAtOf(r, j));
 }
 
 export interface HostMediaBlobs extends BlobStore, StreamAppender, StreamBatchReader {

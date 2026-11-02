@@ -174,7 +174,8 @@ export function cappedBlobStore(inner: BlobStore, cap: WriteCap | undefined): Bl
 
 /** The Worker's answer to a refused write. */
 export function writeCapResponse(e: WriteCapError): Response {
-  return new Response(JSON.stringify({ error: e.message, code: e.code }), {
+  // retryAfterMs: what a client waits, whatever its clock says (Retry-After says the same in seconds)
+  return new Response(JSON.stringify({ error: e.message, code: e.code, retryAt: e.retryAt, retryAfterMs: e.retryAfterSec * 1000 }), {
     status: 429,
     headers: { "content-type": "application/json", "cache-control": "no-store", "retry-after": String(e.retryAfterSec) },
   });

@@ -264,7 +264,7 @@ test("a batch the host drops is sent again in smaller pieces, down to one part, 
     if (n > 2) throw Object.assign(new Error("Worker exceeded CPU"), { status: 503 });
   };
   const g = gated();
-  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, upload: { retryDelayMs: 1 }, batch: { inFlight: 1 } });
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, upload: { retryDelayMs: 1 }, batch: { inFlight: 1, maxParts: 8, maxBytes: 8 << 20 } });
   const first = g.gate;
   store.gate = async () => {
     await first(); // hold the first batch (the init) so the segments queue behind it
@@ -316,4 +316,38 @@ test("two batches under way: the second uploads while the first is written; one 
   for (let i = 0; i < 6; i++) await w1.segment(seg(i), 2);
   await w1.end();
   assert.equal(Math.max(...seen), 1);
+});
+
+test("a write limit (an error with retryAt): the batch waits it out and goes again as it was, nothing dropped or shrunk; the app is told", async () => {
+  const store = new AppendingStore();
+  let refusals = 0;
+  const told: number[] = [];
+  store.gate = async () => {
+    if (refusals++ < 2) throw Object.assign(new Error("DailyWriteCap: this host's daily write limit is reached"), { status: 429, retryAt: Date.now() + 40 });
+  };
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, batch: { inFlight: 1 }, upload: { retries: 0 }, onWriteLimit: (t) => told.push(t), writeLimitJitterMs: 0 });
+  const t0 = Date.now();
+  await w.init(INIT);
+  for (let i = 0; i < 3; i++) await w.segment(seg(i), 2);
+  await w.end();
+  assert.ok(Date.now() - t0 >= 70, "waited for the limit, twice");
+  assert.equal(told.length, 2);
+  // the refused batch went again whole: [init, 0] three times (two refusals), then the rest
+  assert.deepEqual(store.batches.map((b) => b.parts.length), [2, 2, 2, 2]);
+  assert.deepEqual(await indexes(reader(store, w.id)), [0, 1, 2]);
+});
+
+test("a write limit's wait ends with a cancel", async () => {
+  const store = new AppendingStore();
+  store.gate = async () => {
+    throw Object.assign(new Error("DailyWriteCap"), { status: 429, retryAt: Date.now() + 3_600_000 });
+  };
+  const ac = new AbortController();
+  const w = new ProxyStreamWriter({ store, hasher: nodeHasher, upload: { signal: ac.signal } });
+  await w.init(INIT);
+  await w.segment(seg(0), 2);
+  setTimeout(() => ac.abort(), 30);
+  const t0 = Date.now();
+  await assert.rejects(w.end(), { name: "AbortError" });
+  assert.ok(Date.now() - t0 < 2000);
 });

@@ -394,11 +394,11 @@ test("a part sent again after a Missing answer for a damage report answers the r
   assert.ok(await store.head(streamSegmentKey("e1".repeat(32), 0)), "a later append that sends no bytes is taken");
 });
 
-test("a team host's append reserves its grants' writes too, in the one reservation", async () => {
+test("a team host's append reserves its manifests, bytes and entries in one reservation (its grants are a host's to leave out of a cap)", async () => {
   const root = createMemoryBlobStore();
   const a = projectMediaStore(root, "p", "t1");
   const asked: [number, number][] = [];
   const media = await host(a, { blobsForWrites: async (_p, b, o) => (asked.push([b, o]), a) }).client();
   await media.appendStream("f1".repeat(32), { parts: [await segPart(0), await segPart(1)] });
-  assert.deepEqual(asked.map(([, o]) => o), [10], "manifest, bytes and entry per part, and a grant beside each of the first two");
+  assert.deepEqual(asked.map(([, o]) => o), [6], "manifest, bytes and entry per part");
 });

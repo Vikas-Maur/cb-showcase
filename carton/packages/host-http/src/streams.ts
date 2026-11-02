@@ -206,13 +206,13 @@ async function append(req: Request, stream: string, c: StreamRouteContext): Prom
     if (c.maxUploadBytes !== undefined && endBytes.length > c.maxUploadBytes) return err(413, "the end entry is bigger than this host takes");
   }
 
-  // One reservation for every write below: the manifest, the bytes and the entry per part (a team store also writes a
-  // grant beside each of the first two), a repair's answer, and the end.
-  const team = isTeamMediaStore(c.store);
+  // One reservation for every write below: the manifest, the bytes and the entry per part, a repair's answer, and the
+  // end. (A team store's grants aren't charged: the Worker keeps them outside its cap, room.ts mediaBlobs.) Refused, the
+  // host's cap error (with `retryAt`) goes up before anything is written: the client waits and sends the batch again.
   let bytes = endBytes?.length ?? 0, ops = end ? 1 : 0;
   for (const p of parts) {
     bytes += p.manifest.bytes.length + p.entry.length + (p.bytes?.length ?? 0) + (p.repair ? 256 : 0);
-    ops += (p.bytes ? 3 : 2) + (team ? (p.bytes ? 2 : 1) : 0) + (p.repair ? 1 : 0);
+    ops += (p.bytes ? 3 : 2) + (p.repair ? 1 : 0);
   }
   const store = await c.storeForWrites(bytes, ops);
 

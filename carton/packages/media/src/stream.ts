@@ -191,6 +191,14 @@ export interface ProxyStreamWriterOptions {
    * `segment()` waits for the uploads (the encoder's back-pressure).
    */
   batch?: false | { maxParts?: number; maxBytes?: number; maxQueuedBytes?: number; inFlight?: number };
+  /**
+   * The store refused a write for a while (a host's daily write limit: an error with `retryAt`, BlobStore's contract):
+   * the batch waits until then, kept in memory with what queues behind it (the encoder waits past the queue's limit), and
+   * goes again as it was; called with the time, for the app to say so. Up to `writeLimitJitterMs` (default a minute) is
+   * added, so writers refused together don't all come back at once.
+   */
+  onWriteLimit?: (retryAt: number) => void;
+  writeLimitJitterMs?: number;
 }
 
 /**
@@ -242,6 +250,12 @@ const BATCH_BYTES = 4 << 20;
 const QUEUED_BYTES = 12 << 20;
 /** Batches under way at once (see ProxyStreamWriter.#kick). */
 const IN_FLIGHT = 2;
+
+/** When a write refused for a while may go again (an error with `retryAt`, BlobStore's contract), else null. */
+function retryAtOf(e: unknown): number | null {
+  const at = (e as { retryAt?: unknown } | null)?.retryAt;
+  return typeof at === "number" && Number.isFinite(at) ? at : null;
+}
 
 /** Errors a retry can't fix: a cancel, the host's refusal (4xx but a timeout or a rate limit), or a route to switch. */
 function final(e: unknown): boolean {
@@ -471,12 +485,22 @@ export class ProxyStreamWriter {
    */
   async #sendBatch(parts: StreamAppendPart[], end: StreamEnd | undefined, attempt: number): Promise<void> {
     const retries = this.#o.upload?.retries ?? 4, signal = this.#o.upload?.signal;
-    try {
-      await this.#send(parts, end);
-      this.#maxParts = Math.min(this.#ceiling, this.#maxParts + 1);
-      return;
-    } catch (e) {
-      if (final(e) || signal?.aborted || attempt >= retries) throw e;
+    for (;;) {
+      try {
+        await this.#send(parts, end);
+        this.#maxParts = Math.min(this.#ceiling, this.#maxParts + 1);
+        return;
+      } catch (e) {
+        const until = retryAtOf(e);
+        if (until === null || signal?.aborted) {
+          if (final(e) || signal?.aborted || attempt >= retries) throw e;
+          break;
+        }
+        // A write limit (the host's daily cap): nothing of this batch is lost, and nothing is dropped. It waits the
+        // limit out and goes again as it was: not an attempt, not a reason to shrink.
+        this.#o.onWriteLimit?.(until);
+        await sleep(Math.max(0, until - Date.now()) + Math.random() * (this.#o.writeLimitJitterMs ?? 60_000), signal);
+      }
     }
     if (parts.length > 1) this.#ceiling = Math.min(this.#ceiling, parts.length - 1);
     this.#maxParts = Math.max(1, Math.floor(parts.length / 2));
