@@ -149,12 +149,14 @@ test("media: Alice's clips are shared (content id, collab proxy); Bob streams on
     for (const v of bob.cb(["history", "Demo"]).json().versions.filter((x) => x.by?.id === "Alice")) {
       const cmp = compare(v);
       seen.push(v.version + ": " + cmp.out.trim().replace(/\s+/g, " ").slice(0, 160));
-      if (/content|shared media/.test(cmp.out)) return { v, cmp };
+      // in editor words (UI audit P1-2: it read `Set 'clip.mp4' content to "8291f1d9…"`, a hash)
+      if (/for sharing/.test(cmp.out)) return { v, cmp };
     }
     return null;
   };
   const { cmp } = await S.until(shareVersion, 30_000, "alice's share version at bob").catch((e) => { throw new Error(e.message + "; her versions there: " + JSON.stringify(seen)); });
-  assert.match(cmp.out, /content|shared media/, cmp.out + cmp.err);
+  assert.match(cmp.out, /Linked '[^']+' for sharing/, cmp.out + cmp.err);
+  assert.doesNotMatch(cmp.out.replace(/"(from|to)": "[^"]*"/g, ""), /[0-9a-f]{16,}/, "no hash in the share version's words at Bob's: " + cmp.out);
   // Bob has no file for it: main asks his worker where it lives, then answers cardboard-media:// from the range cache.
   const src = await bob.call("carton.liveMediaSource", { mediaId });
   assert.equal(src.stream, r.proxy.stream);
